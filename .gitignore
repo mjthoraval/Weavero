@@ -1,0 +1,6 @@
+# Build artifacts at repo root.
+/weavero-v*.xpi
+/update.json
+
+# Local archive of past builds.
+releases/

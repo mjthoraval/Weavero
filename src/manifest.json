@@ -1,0 +1,21 @@
+{
+  "manifest_version": 2,
+  "name": "Weavero",
+  "version": "0.4.0",
+  "description": "Adds clickable link buttons to Zotero annotation comments that contain URLs.",
+  "author": "mjthoraval",
+  "applications": {
+    "zotero": {
+      "id": "weavero@mjthoraval",
+      "update_url": "https://github.com/mjthoraval/Weavero/releases/download/release/update.json",
+      "strict_min_version": "7.0",
+      "strict_max_version": "10.*"
+    }
+  },
+  "icons": {
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  }
+}

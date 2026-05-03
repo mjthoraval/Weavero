@@ -1,0 +1,361 @@
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <style><![CDATA[
+    body {
+      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      margin: 0;
+      padding: 0;
+      color: inherit;
+      background: transparent;
+    }
+
+    .wv-radio-group { display: flex; flex-direction: column; gap: 10px; }
+
+    .wv-radio-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid rgba(127, 127, 127, 0.35);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .wv-radio-card:hover {
+      background: rgba(127, 127, 127, 0.08);
+    }
+    .wv-radio-card input[type="radio"] {
+      margin-top: 2px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .wv-radio-card.is-checked {
+      border-color: rgba(64, 128, 255, 0.65);
+      background: rgba(64, 128, 255, 0.08);
+    }
+
+    .wv-radio-card .wv-card-body { line-height: 1.45; }
+    .wv-radio-card .wv-card-text {
+      margin: 0;
+      font-size: 12.5px;
+    }
+    .wv-radio-card .wv-card-title {
+      font-weight: 600;
+    }
+    .wv-radio-card .wv-card-rec {
+      display: inline-block;
+      margin: 6px 0 0;
+      padding: 3px 8px;
+      font-size: 12px;
+      background: rgba(127, 127, 127, 0.18);
+      border-radius: 4px;
+    }
+    .wv-radio-card .wv-card-rec::before {
+      content: "\2192\00a0";
+    }
+    .wv-radio-card .wv-card-subs {
+      display: flex;
+      gap: 14px;
+      margin: 8px 0 0;
+      flex-wrap: wrap;
+    }
+    .wv-radio-card .wv-sub-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      font-size: 12.5px;
+    }
+    .wv-radio-card .wv-sub-row input[type="checkbox"] {
+      cursor: pointer;
+      margin: 0;
+    }
+
+    .wv-section-title {
+      font-weight: 600;
+      font-size: 14px;
+      margin: 22px 0 8px;
+    }
+    /* <summary> reuses .wv-section-title so the Debug header reads the
+       same as the other section titles. The native disclosure triangle
+       (rendered by the browser) signals that the section can expand. */
+    summary.wv-summary {
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    /* Hide the default disclosure marker — list-style:none covers Firefox /
+       Gecko (where Zotero runs); ::-webkit-details-marker covers Chromium /
+       Safari. Without list-style:none, Gecko shows its native triangle in
+       front of our custom one. */
+    summary.wv-summary::-webkit-details-marker { display: none; }
+    summary.wv-summary::before {
+      content: "\25B8";  /* ▸ — right-pointing triangle */
+      display: inline-block;
+      margin-right: 6px;
+      /* Roughly matches Firefox's native disclosure marker size when the
+         section title inherits the 13px body font. */
+      font-size: 14px;
+      transition: transform 0.12s ease;
+    }
+    details[open] > summary.wv-summary::before {
+      transform: rotate(90deg);
+    }
+    details.wv-collapsible {
+      margin: 0;
+    }
+    .wv-subsection-title {
+      font-weight: 600;
+      font-size: 12.5px;
+      margin: 14px 0 6px;
+      /* Aligns with the bold .wv-surface-name text after the checkbox:
+         12px (.wv-surface-row left padding) + ~14px (checkbox) + 10px (gap). */
+      padding-left: 36px;
+      opacity: 0.85;
+    }
+    .wv-subsection-title:first-of-type {
+      margin-top: 6px;
+    }
+    .wv-surface-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 0 0 8px;
+    }
+    .wv-surface-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .wv-surface-row:hover {
+      background: rgba(127, 127, 127, 0.06);
+    }
+    .wv-surface-row input[type="checkbox"] {
+      margin-top: 2px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .wv-surface-row .wv-surface-body { line-height: 1.4; }
+    .wv-surface-row .wv-surface-text {
+      margin: 0;
+      font-size: 12.5px;
+    }
+    .wv-surface-row .wv-surface-name {
+      font-weight: 600;
+    }
+    .wv-section-hint {
+      margin: 0 0 6px;
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    /* Same look as .wv-section-hint, applied to inline descriptions
+       inside radio cards and surface rows so the explanation reads
+       the same as the plugin intro line beside the section title. */
+    .wv-desc {
+      font-size: 12px;
+      opacity: 0.7;
+    }
+    /* Compact 3-column grid for the "Extra link schemes" tickable
+       list. Each row is just `[ ] scheme:` — the description rides
+       in the parent label's `title=` attribute (browser tooltip on
+       hover). 16 schemes fit in ~6 rows instead of 16. */
+    .wv-scheme-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 4px 12px;
+      margin: 4px 0 8px;
+    }
+    .wv-scheme-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12.5px;
+    }
+    .wv-scheme-row:hover {
+      background: rgba(127, 127, 127, 0.08);
+    }
+    .wv-scheme-row input[type="checkbox"] {
+      margin: 0;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .wv-scheme-name {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    /* Tier subheadings inside `.wv-scheme-grid`. Spans the full grid
+       width so the `name:` / `name://` rows live under their own
+       label. Same look as `.wv-subsection-title` but tweaked for
+       the tighter grid spacing. */
+    .wv-scheme-tier {
+      grid-column: 1 / -1;
+      font-weight: 600;
+      font-size: 12px;
+      opacity: 0.7;
+      margin: 4px 0 2px;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    .wv-scheme-tier:first-of-type {
+      margin-top: 0;
+    }
+  ]]></style>
+</head>
+<body>
+  <p class="wv-section-hint" style="margin: 0 0 14px;">Weavero renders URLs, app links, and markdown formatting inside annotation comments across Zotero.</p>
+  <p class="wv-section-title" style="margin-top:0">Display Mode</p>
+  <p class="wv-section-hint">How URLs, app links, and markdown appear in annotation comments.</p>
+  <div class="wv-radio-group" role="radiogroup" aria-label="Display mode">
+
+    <label class="wv-radio-card" data-value="inline">
+      <input type="radio" name="wv-mode" value="inline" />
+      <div class="wv-card-body">
+        <p class="wv-card-text"><span class="wv-card-title">Inline</span>&#160;<span class="wv-desc">&#8212; Render directly inside each comment. An icon appears when content is clipped, opening a popup with the full comment.</span></p>
+        <div class="wv-card-subs">
+          <label class="wv-sub-row" onclick="event.stopPropagation()">
+            <input type="checkbox" name="wv-feature" value="enableInlineUrls" />
+            URLs
+          </label>
+          <label class="wv-sub-row" onclick="event.stopPropagation()">
+            <input type="checkbox" name="wv-feature" value="enableCommentMarkdown" />
+            Markdown
+          </label>
+          <label class="wv-sub-row" onclick="event.stopPropagation()" title="Recognize links that open in other apps (mailto:, obsidian://, slack://, …). Pick which schemes in the &quot;Extra link schemes&quot; section below.">
+            <input type="checkbox" name="wv-feature" value="enableAppLinks" />
+            App links
+          </label>
+        </div>
+        <p class="wv-card-rec">Full rendering.</p>
+      </div>
+    </label>
+
+    <label class="wv-radio-card" data-value="icon">
+      <input type="radio" name="wv-mode" value="icon" />
+      <div class="wv-card-body">
+        <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments stay plain text. An icon next to each annotation opens a popup with the formatted view.</span></p>
+        <p class="wv-card-rec">Light &#8212; Use if Full mode becomes too slow.</p>
+      </div>
+    </label>
+
+  </div>
+
+  <p class="wv-section-title">Icons</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableReaderViewIcons" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Show icons over annotations in the Document view</span>&#160;<span class="wv-desc">&#8212; When checked, link badges appear directly on the page over annotation icons (and floating buttons next to text annotations). Uncheck to keep the document page free of plugin overlays; the in-document popup still gets URL / markdown rendering.</span></p>
+      </div>
+    </label>
+
+  </div>
+
+  <p class="wv-section-title">Apply to</p>
+
+  <p class="wv-subsection-title">My Library</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-surface" value="enableItemsList" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Items list</span>&#160;<span class="wv-desc">&#8212; Annotation rows under each item in the main library.</span></p>
+      </div>
+    </label>
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-surface" value="enableRightPane" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Annotations panel</span>&#160;<span class="wv-desc">&#8212; The right pane when an item is selected.</span></p>
+      </div>
+    </label>
+
+  </div>
+
+  <p class="wv-subsection-title">Reader</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-surface" value="enableReaderSidebar" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Sidebar</span>&#160;<span class="wv-desc">&#8212; The annotation list on the left side of the reader.</span></p>
+      </div>
+    </label>
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-surface" value="enableReaderView" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Document view</span>&#160;<span class="wv-desc">&#8212; In-document popups (when you click an annotation) and small link badges over annotation icons.</span></p>
+      </div>
+    </label>
+
+  </div>
+
+  <p class="wv-subsection-title">Notes</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-surface" value="enableNotes" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Render in notes</span>&#160;<span class="wv-desc">&#8212; Standalone and child notes across all surfaces: items-tree note rows, the right-pane Notes section, and the note editor (right pane and pop-out window).</span></p>
+      </div>
+    </label>
+
+  </div>
+
+  <details class="wv-collapsible">
+    <summary class="wv-section-title wv-summary">App link schemes</summary>
+    <p class="wv-section-hint">Pick which schemes Weavero recognises as app links in annotation comments. Active only when <strong>App links</strong> is ticked above &#8212; otherwise these are ignored even if checked. Hover a row for what it means.</p>
+    <label class="wv-surface-row" style="margin: 0 0 8px;" title="When ticked, Weavero sets network.protocol-handler.warn-external.&lt;scheme&gt; = false for every enabled scheme so clicks open the target app immediately, without Firefox's confirmation dialog. Only the schemes you tick below are affected; unticking restores the default prompt for those schemes.">
+      <input type="checkbox" name="wv-feature" value="enableAppLinksSkipConfirm" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Open without confirmation dialog</span>&#160;<span class="wv-desc">&#8212; Skip Firefox&#8217;s &#8220;Allow this site to open the &#8230; link?&#8221; prompt for enabled schemes.</span></p>
+      </div>
+    </label>
+    <div class="wv-scheme-grid">
+      <div class="wv-scheme-tier">name:</div>
+      <label class="wv-scheme-row" title="Torrent magnet links"><input type="checkbox" name="wv-scheme" value="enableMagnetScheme" /><span class="wv-scheme-name">magnet:</span></label>
+      <label class="wv-scheme-row" title="Email addresses"><input type="checkbox" name="wv-scheme" value="enableMailtoScheme" /><span class="wv-scheme-name">mailto:</span></label>
+      <label class="wv-scheme-row" title="Skype calls / chats"><input type="checkbox" name="wv-scheme" value="enableSkypeScheme" /><span class="wv-scheme-name">skype:</span></label>
+      <label class="wv-scheme-row" title="SMS messages"><input type="checkbox" name="wv-scheme" value="enableSmsScheme" /><span class="wv-scheme-name">sms:</span></label>
+      <label class="wv-scheme-row" title="Spotify tracks / playlists"><input type="checkbox" name="wv-scheme" value="enableSpotifyScheme" /><span class="wv-scheme-name">spotify:</span></label>
+      <label class="wv-scheme-row" title="Phone numbers"><input type="checkbox" name="wv-scheme" value="enableTelScheme" /><span class="wv-scheme-name">tel:</span></label>
+      <div class="wv-scheme-tier">name://</div>
+      <label class="wv-scheme-row" title="Discord servers"><input type="checkbox" name="wv-scheme" value="enableDiscordScheme" /><span class="wv-scheme-name">discord://</span></label>
+      <label class="wv-scheme-row" title="Evernote notes"><input type="checkbox" name="wv-scheme" value="enableEvernoteScheme" /><span class="wv-scheme-name">evernote://</span></label>
+      <label class="wv-scheme-row" title="Figma files"><input type="checkbox" name="wv-scheme" value="enableFigmaScheme" /><span class="wv-scheme-name">figma://</span></label>
+      <label class="wv-scheme-row" title="Local files"><input type="checkbox" name="wv-scheme" value="enableFileScheme" /><span class="wv-scheme-name">file://</span></label>
+      <label class="wv-scheme-row" title="FTP servers"><input type="checkbox" name="wv-scheme" value="enableFtpScheme" /><span class="wv-scheme-name">ftp://</span></label>
+      <label class="wv-scheme-row" title="Microsoft Teams"><input type="checkbox" name="wv-scheme" value="enableMsteamsScheme" /><span class="wv-scheme-name">msteams://</span></label>
+      <label class="wv-scheme-row" title="Notion pages"><input type="checkbox" name="wv-scheme" value="enableNotionScheme" /><span class="wv-scheme-name">notion://</span></label>
+      <label class="wv-scheme-row" title="Obsidian notes"><input type="checkbox" name="wv-scheme" value="enableObsidianScheme" /><span class="wv-scheme-name">obsidian://</span></label>
+      <label class="wv-scheme-row" title="Slack channels"><input type="checkbox" name="wv-scheme" value="enableSlackScheme" /><span class="wv-scheme-name">slack://</span></label>
+      <label class="wv-scheme-row" title="VS Code workspaces / files"><input type="checkbox" name="wv-scheme" value="enableVscodeScheme" /><span class="wv-scheme-name">vscode://</span></label>
+      <label class="wv-scheme-row" title="Zoom meetings"><input type="checkbox" name="wv-scheme" value="enableZoomScheme" /><span class="wv-scheme-name">zoommtg://</span></label>
+    </div>
+  </details>
+
+  <details class="wv-collapsible">
+    <summary class="wv-section-title wv-summary">Debug</summary>
+    <div class="wv-surface-list">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="debug" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Enable debug logging</span>&#160;<span class="wv-desc">&#8212; Emits detailed plugin activity via Zotero.debug. To see it, also enable Help &#8594; Debug Output Logging &#8594; Enable in Zotero, then open Help &#8594; Debug Output Logging &#8594; View Output. Useful when reporting issues; leave off for normal use.</span></p>
+        </div>
+      </label>
+
+    </div>
+  </details>
+
+  <p class="wv-section-hint" style="margin-top:18px">Supported markdown: <strong>**bold**</strong>, <em>*italic*</em>, <s>~~strike~~</s>, <code>`code`</code>, <code>[label](url)</code>.</p>
+</body>
+</html>

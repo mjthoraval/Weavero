@@ -76,7 +76,10 @@
     .wv-section-title {
       font-weight: 600;
       font-size: 14px;
-      margin: 22px 0 8px;
+      /* Matches Zotero's pref h2 spacing (scss/preferences.scss:200 —
+         "groupbox:not(:first-of-type) label > h2 { margin-top: 2em }").
+         2em at 13px body = 26px. */
+      margin: 26px 0 10px;
     }
     /* <summary> reuses .wv-section-title so the Debug header reads the
        same as the other section titles. The native disclosure triangle
@@ -109,32 +112,33 @@
     .wv-subsection-title {
       font-weight: 600;
       font-size: 12.5px;
-      margin: 14px 0 6px;
+      margin: 16px 0 6px;
       /* Aligns with the bold .wv-surface-name text after the checkbox:
-         12px (.wv-surface-row left padding) + ~14px (checkbox) + 10px (gap). */
-      padding-left: 36px;
+         ~14px (checkbox) + 10px (gap). No left padding on .wv-surface-row
+         since these aren't card-styled — they follow Zotero's native
+         settings list look. */
+      padding-left: 24px;
       opacity: 0.85;
     }
     .wv-subsection-title:first-of-type {
-      margin-top: 6px;
+      margin-top: 8px;
     }
     .wv-surface-list {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      /* Row padding (4px top + 4px bottom) gives the 8px effective gap
+         that Zotero's `checkbox { margin-block: 4px }` produces between
+         consecutive checkboxes (scss/preferences.scss:374-376). */
+      gap: 0;
       margin: 0 0 8px;
+      max-width: 630px;
     }
     .wv-surface-row {
       display: flex;
       align-items: flex-start;
       gap: 10px;
-      padding: 8px 12px;
-      border: 1px solid rgba(127, 127, 127, 0.25);
-      border-radius: 6px;
+      padding: 4px 0;
       cursor: pointer;
-    }
-    .wv-surface-row:hover {
-      background: rgba(127, 127, 127, 0.06);
     }
     .wv-surface-row input[type="checkbox"] {
       margin-top: 2px;
@@ -240,6 +244,20 @@
       <input type="radio" name="wv-mode" value="icon" />
       <div class="wv-card-body">
         <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments stay plain text. An icon next to each annotation opens a popup with the formatted view.</span></p>
+        <div class="wv-card-subs">
+          <label class="wv-sub-row" onclick="event.stopPropagation()">
+            <input type="checkbox" name="wv-feature" value="enableIconUrls" />
+            URLs
+          </label>
+          <label class="wv-sub-row" onclick="event.stopPropagation()">
+            <input type="checkbox" name="wv-feature" value="enableIconMarkdown" />
+            Markdown
+          </label>
+          <label class="wv-sub-row" onclick="event.stopPropagation()" title="Show the icon on comments containing app-link schemes (mailto:, obsidian:// etc). Requires the master &quot;App links&quot; toggle above.">
+            <input type="checkbox" name="wv-feature" value="enableIconAppLinks" />
+            App links
+          </label>
+        </div>
         <p class="wv-card-rec">Light &#8212; Use if Full mode becomes too slow.</p>
       </div>
     </label>

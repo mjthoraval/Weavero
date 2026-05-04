@@ -293,7 +293,7 @@ const PLUGIN_CSS = [
     // Flex layout gives the icon its own slot the text physically can't enter.
     // Comment text lives in .wv-text-wrap which clips with ellipsis; icon is a
     // non-shrinking flex sibling.
-    ".annotation-row.tight .cell.annotation-comment[data-has-links],",
+    ".annotation-row.tight .cell.annotation-comment[data-has-rich],",
     ".annotation-row.tight .cell.annotation-comment[data-has-relations] {",
     "  display: flex; align-items: center; gap: 3px;",
     "}",
@@ -343,7 +343,7 @@ const PLUGIN_CSS = [
     "  width: 1em; height: 1em; display: block; flex-shrink: 0;",
     "}",
     ":root.wv-show-tree-icon .wv-tree-icon,",
-    ":root.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-has-links] .wv-tree-icon,",
+    ":root.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-icon-wanted] .wv-tree-icon,",
     ".annotation-row.tight .cell.annotation-comment[data-truncated=\"true\"] .wv-tree-icon {",
     "  display: inline-block; cursor: pointer;",
     "}",
@@ -356,12 +356,12 @@ const PLUGIN_CSS = [
     // small icons. 7% / 8% gives a visible-but-restrained hover halo
     // that matches the inner-iframe values from _applyDynamicReaderTheme.
     ":root.wv-show-tree-icon .wv-tree-icon:hover,",
-    ":root.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-has-links] .wv-tree-icon:hover,",
+    ":root.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-icon-wanted] .wv-tree-icon:hover,",
     ".annotation-row.tight .cell.annotation-comment[data-truncated=\"true\"] .wv-tree-icon:hover {",
     "  background: rgba(0, 0, 0, 0.07);",
     "}",
     ":root.wv-ui-dark.wv-show-tree-icon .wv-tree-icon:hover,",
-    ":root.wv-ui-dark.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-has-links] .wv-tree-icon:hover,",
+    ":root.wv-ui-dark.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-icon-wanted] .wv-tree-icon:hover,",
     ":root.wv-ui-dark .annotation-row.tight .cell.annotation-comment[data-truncated=\"true\"] .wv-tree-icon:hover {",
     "  background: rgba(255, 255, 255, 0.08);",
     "}",
@@ -571,21 +571,21 @@ class WeaveroPlugin {
         return "wv-link-app";
     }
 
-    /** Launch a URL the way Zotero would — but for app-link schemes
-     *  (mailto:, obsidian://, slack://, …) call `launchWithURI`
-     *  directly on a handler info we obtain via
-     *  `getProtocolHandlerInfo` (the user-stored variant), so the
-     *  `alwaysAskBeforeHandling` / `preferredAction` overrides set
-     *  by `_applyAppLinkConfirmPref` actually take effect.
+    /** Launch a URL the way Zotero would — with a fast no-prompt path
+     *  for app-link schemes (mailto:, obsidian://, slack://, …) gated
+     *  on the user's `enableAppLinksSkipConfirm` preference.
      *
-     *  Why not just call `Zotero.launchURL`? For non-HTTP URLs it goes
-     *  through `svc.loadURI(uri)` which uses
-     *  `getProtocolHandlerInfoFromOS` (OS-level, ignores our stored
-     *  prefs) and prompts the user via the full app-picker dialog
-     *  regardless of what we set on the handler info. The HTTP path
-     *  in `Zotero.launchURL` does the right thing
-     *  (`handler.launchWithURI(uri, null)`) — we mirror that here for
-     *  app links. */
+     *  When skip-confirm is OFF (default): fall through to
+     *  `Zotero.launchURL`, which goes through `svc.loadURI` → OS
+     *  dispatch → Firefox's "Open with…" prompt. The user gets the
+     *  safety dialog they expect.
+     *
+     *  When skip-confirm is ON: call `handlerInfo.launchWithURI`
+     *  directly on the user-stored handler info. This bypasses the
+     *  prompt entirely. We use the user-stored variant
+     *  (`getProtocolHandlerInfo`, not `…FromOS`) so the
+     *  `alwaysAskBeforeHandling` / `preferredAction` overrides set
+     *  by `_applyAppLinkConfirmPref` are honored. */
     _launchURL(url) {
         if (!url) return;
         try {
@@ -601,17 +601,23 @@ class WeaveroPlugin {
             }
             const cls = this._urlLinkClass(url);
             if (cls === "wv-link-app") {
-                const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
-                const scheme = m && m[1].toLowerCase();
-                if (scheme) {
-                    const svc = Components.classes[
-                        "@mozilla.org/uriloader/external-protocol-service;1"]
-                        .getService(Components.interfaces.nsIExternalProtocolService);
-                    const handlerInfo = svc.getProtocolHandlerInfo(scheme);
-                    if (handlerInfo) {
-                        const uri = Services.io.newURI(url, null, null);
-                        handlerInfo.launchWithURI(uri, null);
-                        return;
+                let skip = false;
+                try { skip = !!Zotero.Prefs.get(
+                    "weavero.enableAppLinksSkipConfirm"); }
+                catch (e) {}
+                if (skip) {
+                    const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
+                    const scheme = m && m[1].toLowerCase();
+                    if (scheme) {
+                        const svc = Components.classes[
+                            "@mozilla.org/uriloader/external-protocol-service;1"]
+                            .getService(Components.interfaces.nsIExternalProtocolService);
+                        const handlerInfo = svc.getProtocolHandlerInfo(scheme);
+                        if (handlerInfo) {
+                            const uri = Services.io.newURI(url, null, null);
+                            handlerInfo.launchWithURI(uri, null);
+                            return;
+                        }
                     }
                 }
             }
@@ -739,27 +745,103 @@ class WeaveroPlugin {
 
     normalize(t) { return t ? String(t).replace(this.INVISIBLE_RE, "") : ""; }
     hasURI(t)    { return !!t && this.URL_REGEX.test(this.normalize(t)); }
+
+    /** Detect Mozilla "dead wrappers" — JS handles to XPCOM objects whose
+     *  underlying native object has been destroyed. Common when our
+     *  setTimeout / MutationObserver callbacks capture references to
+     *  reader windows that the user then closes; accessing any property
+     *  on a dead wrapper throws "TypeError: can't access dead object".
+     *
+     *  Use as a guard at the entry of any callback that holds onto an
+     *  element/window/document captured from a closure that may outlive
+     *  its target. Returns false if the platform API isn't available
+     *  (better to attempt access than to abort everything).
+     *
+     *  Reference: https://firefox-source-docs.mozilla.org/js/index.html#dead-wrappers */
+    _isDead(obj) {
+        try {
+            if (typeof ChromeUtils !== "undefined" && ChromeUtils.isDeadWrapper) {
+                return ChromeUtils.isDeadWrapper(obj);
+            }
+            if (typeof Components !== "undefined"
+                && Components.utils && Components.utils.isDeadWrapper) {
+                return Components.utils.isDeadWrapper(obj);
+            }
+        } catch(e) {}
+        return false;
+    }
     /** Markdown marks that the popup renders. Cheap regex; runs only on
      * comments that already failed the hasURI fast path. */
     MD_REGEX = /(\*\*[\s\S]+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|~~[\s\S]+?~~|`[^`\n]+?`|\[[^\]\n]+?\]\([^)\s]+\))/;
-    /** True if the comment has a URL or any markdown mark that the popup renders. */
-    hasRichContent(t) {
+    /** Layout / rendering predicate: does this comment have any URL or
+     *  markdown content that the popup or inline renderer would format?
+     *  NOT a mode-aware icon-show predicate — for that, see _iconWantedFor.
+     *
+     *  Used to gate the items-tree CSS flex layout (the data-has-rich
+     *  attribute) and to short-circuit the right-pane render path when a
+     *  comment is plain text. Stays a static union of URL ∨ markdown
+     *  because the layout/render setup is needed in both display modes.
+     */
+    _commentHasIconableContent(t) {
         if (!t) return false;
         const n = this.normalize(t);
         if (this.URL_REGEX.test(n)) return true;
         return this._anyMarkdownEnabled() && this.MD_REGEX.test(n);
     }
 
-    /** Should we attach a chain icon to a comment with this text?
-     *  Only URL-bearing comments get the icon — markdown-only comments
-     *  render their formatting inline (bold / italic / etc.) without a
-     *  separate "this comment has markdown" indicator. Used by every
-     *  surface that decides whether to attach an icon (sidebar /
-     *  popup / pane / canvas badge / text annotation). */
-    _shouldShowIcon(t) {
+    /** Mode-aware icon-show predicate: should we attach a chain icon to a
+     *  comment with this text? Used by every surface that decides whether
+     *  to render the icon (right pane, reader sidebar, in-PDF popup,
+     *  canvas badges, text annotation buttons, items-tree overflow).
+     *
+     *  Inline mode (inlineLinks=true): byte-equivalent to legacy behaviour.
+     *    Only URL-bearing comments get the icon — markdown is rendered
+     *    in place so doesn't need a separate indicator.
+     *
+     *  Icon & Popup mode (inlineLinks=false): the popup is the only access
+     *    path to formatted content. Each content type has its own sub-toggle
+     *    (enableIconUrls / enableIconMarkdown / enableIconAppLinks); the
+     *    icon shows when ANY enabled type is present in the comment.
+     *    URLs are classified per-match via matchAll: a comment containing
+     *    BOTH http://… and mailto:… triggers the icon if EITHER toggle is on.
+     *
+     *  Master gates still apply: enableAppLinks=false strips app schemes
+     *  from URL_REGEX entirely, so enableIconAppLinks becomes a no-op when
+     *  the master is off. _anyMarkdownEnabled() must also be true for the
+     *  markdown branch to fire. */
+    _iconWantedFor(t) {
         if (!t) return false;
         const n = this.normalize(t);
-        return this.URL_REGEX.test(n);
+
+        if (this._getInlineLinks()) {
+            // Inline mode: byte-equivalent to the old _shouldShowIcon.
+            return this.URL_REGEX.test(n);
+        }
+
+        // Icon & Popup mode: classify URL matches and gate per sub-toggle.
+        if (this.URL_REGEX.test(n)) {
+            // Mixed-content comments (e.g. http://… + mailto:…) should
+            // pass if EITHER sub-toggle is on. Iterate matches via
+            // matchAll to classify each one — a whole-string starts-with
+            // check would misclassify embedded URLs.
+            const re = new RegExp(this.URL_REGEX.source, "gi");
+            let hasHttpOrZotero = false, hasAppLink = false;
+            for (const m of n.matchAll(re)) {
+                if (/^(https?|zotero):/i.test(m[0])) hasHttpOrZotero = true;
+                else hasAppLink = true;
+                if (hasHttpOrZotero && hasAppLink) break;
+            }
+            if (hasHttpOrZotero && this._getEnableIconUrls()) return true;
+            if (hasAppLink && this._getEnableIconAppLinks()) return true;
+        }
+
+        if (this._getEnableIconMarkdown()
+            && this._anyMarkdownEnabled()
+            && this.MD_REGEX.test(n)) {
+            return true;
+        }
+
+        return false;
     }
 
     /** Returns true if a popup-access icon (the 🔗 / M button) on a comment
@@ -2386,7 +2468,7 @@ class WeaveroPlugin {
         // --- Comment icon (chain / amber-disc) ------------------------------
         // Only emitted when there's something the icon should reveal that
         // isn't already rendered inline by the preview panel.
-        if (this._shouldShowIcon(cmt) && this._iconAddsValueBeyondInline(cmt)) {
+        if (this._iconWantedFor(cmt) && this._iconAddsValueBeyondInline(cmt)) {
             const btn = doc.createElementNS(ns, "button");
             btn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS;
             this._applyIconState(btn, cmt);
@@ -2808,14 +2890,14 @@ class WeaveroPlugin {
             const key     = this._findAnnotationKey(popup, reader);
             const comment = this.getModelComment(lib, key) ?? (commentEl.textContent || "");
             const anchors = this.collectAnchorURLs(commentEl);
-            const hasURIs = this._shouldShowIcon(comment) || anchors.length > 0;
+            const hasURIs = this._iconWantedFor(comment) || anchors.length > 0;
 
             // Decide whether the popup-icon button adds value here. Same
             // logic as the right pane and reader sidebar (_iconAddsValueBeyondInline)
             // — show only when inline rendering can't carry the comment by
             // itself, OR when the popup text is overflowing so some content
             // may be clipped.
-            let shouldShow = this._shouldShowIcon(comment)
+            let shouldShow = this._iconWantedFor(comment)
                 && this._iconAddsValueBeyondInline(comment);
             if (!shouldShow && hasURIs) {
                 try {
@@ -4223,7 +4305,7 @@ class WeaveroPlugin {
         const expectedIds = new Set();
         for (const ta of annotations) {
             const text = (ta.value || ta.getAttribute("data-comment") || "").trim();
-            if (!this._shouldShowIcon(text)) continue;
+            if (!this._iconWantedFor(text)) continue;
             let taTop  = parsePxLiteral(ta.style.top);
             let taLeft = parsePxLiteral(ta.style.left);
             const page = ta.closest && ta.closest(".page");
@@ -4886,7 +4968,7 @@ class WeaveroPlugin {
                 continue;
             }
             const comment = ann.annotationComment || "";
-            const wantsComment = this._shouldShowIcon(comment);
+            const wantsComment = this._iconWantedFor(comment);
             let relCount = 0;
             try { relCount = (ann.relatedItems || []).length; } catch (e) {}
             const wantsRel = relCount > 0;
@@ -5403,7 +5485,7 @@ class WeaveroPlugin {
         for (const ann of annotations) {
             if (!ann || !ann.key) continue;
             const comment = ann.annotationComment || "";
-            const wantsComment = this._shouldShowIcon(comment);
+            const wantsComment = this._iconWantedFor(comment);
             let relCount = 0;
             try { relCount = (ann.relatedItems || []).length; } catch (e) {}
             const wantsRel = relCount > 0;
@@ -5887,6 +5969,16 @@ class WeaveroPlugin {
 
         const tryOnce = () => {
             attempts++;
+            // Dead-wrapper guard: when the user closes / navigates the
+            // reader window during the 1-second poll window, outerDoc
+            // becomes a dead wrapper and `outerDoc.querySelector(...)`
+            // throws "TypeError: can't access dead object". Returning
+            // true halts the retry chain (no more tick re-schedules).
+            if (this._isDead(outerDoc)) {
+                this._dbg("[Weavero] inner setup: outerDoc is dead — "
+                    + "reader was closed/navigated; abandoning retry");
+                return true;
+            }
             const innerFrame = outerDoc.querySelector("iframe");
             if (!innerFrame) {
                 this._dbg("[Weavero] inner setup: no iframe found (attempt "
@@ -6214,7 +6306,7 @@ class WeaveroPlugin {
                 // comment that overflows must NOT get an icon when
                 // the user has opted out of markdown decorations,
                 // even though the popup would still show formatting.
-                if (!this._shouldShowIcon(comment)) {
+                if (!this._iconWantedFor(comment)) {
                     if (existing
                         && existing.getAttribute("data-wv-icon-reason") === "overflow") {
                         existing.remove();
@@ -6412,7 +6504,7 @@ class WeaveroPlugin {
         return null;
     }
 
-    /** Scan visible annotation-comment cells, stamp data-has-links, and inject colored URL spans. */
+    /** Scan visible annotation-comment cells, stamp data-has-rich, and inject colored URL spans. */
     _markCellLinks() {
         if (!this._getEnableItemsList()) {
             this._stripItemsList();
@@ -6499,8 +6591,18 @@ class WeaveroPlugin {
                         this._dbg("[Weavero] cache HIT mode=" + cachedMode
                             + " text=" + JSON.stringify(t.slice(0, 40))
                             + (cacheValid ? "" : " (rate-limited)"));
-                        if (!cell.hasAttribute("data-has-links")) {
-                            if (this.hasRichContent(t)) { cell.setAttribute("data-has-links", "true"); stamped++; }
+                        if (!cell.hasAttribute("data-has-rich")) {
+                            if (this._commentHasIconableContent(t)) { cell.setAttribute("data-has-rich", "true"); stamped++; }
+                        }
+                        // data-icon-wanted gates the items-tree chain icon's
+                        // visibility per the mode-aware _iconWantedFor (Inline
+                        // = URL-only; Icon mode = per-content-type sub-toggles).
+                        // ALWAYS update on cache HIT — the new icon sub-toggles
+                        // can flip this without changing wantMode.
+                        if (this._iconWantedFor(t)) {
+                            cell.setAttribute("data-icon-wanted", "true");
+                        } else {
+                            cell.removeAttribute("data-icon-wanted");
                         }
                         // Stamp data-has-url so CSS can hide the icon
                         // for markdown-only cells when the pref is off.
@@ -6541,7 +6643,8 @@ class WeaveroPlugin {
                         || (wrap ? (wrap.textContent || "") : "")
                         || (cell.textContent || "").replace(/[\s\u00A0]*🔗\s*$/, "").trim();
                     cell.textContent = flatText;
-                    cell.removeAttribute("data-has-links");
+                    cell.removeAttribute("data-has-rich");
+                    cell.removeAttribute("data-icon-wanted");
                     cell.removeAttribute("data-comment-text");
                     cell.removeAttribute("data-truncated");
                     cell.removeAttribute("data-has-url");
@@ -6556,12 +6659,18 @@ class WeaveroPlugin {
                     || (cell.textContent || "")
                           .replace(/[\s\u00A0]*🔗\s*$/, "")
                 ).trim();
-                if (!this.hasRichContent(text)) {
-                    cell.removeAttribute("data-has-links");
+                if (!this._commentHasIconableContent(text)) {
+                    cell.removeAttribute("data-has-rich");
+                    cell.removeAttribute("data-icon-wanted");
                     cell.removeAttribute("data-has-url");
                     continue;
                 }
-                cell.setAttribute("data-has-links", "true");
+                cell.setAttribute("data-has-rich", "true");
+                if (this._iconWantedFor(text)) {
+                    cell.setAttribute("data-icon-wanted", "true");
+                } else {
+                    cell.removeAttribute("data-icon-wanted");
+                }
                 if (this.URL_REGEX.test(this.normalize(text))) {
                     cell.setAttribute("data-has-url", "true");
                 } else {
@@ -6719,7 +6828,7 @@ class WeaveroPlugin {
                     + " childCount=" + wrap.children.length
                     + " urlSpans=" + cell.querySelectorAll(".wv-url-span").length);
             }
-            this._dbg("[Weavero] _markCellLinks: stamped " + stamped + " cells with data-has-links");
+            this._dbg("[Weavero] _markCellLinks: stamped " + stamped + " cells with data-has-rich");
 
             // Note-annotation rows in the items tree don't use `.tight` and
             // store their text in `.cell.title > span.cell-text` instead of
@@ -6868,7 +6977,7 @@ class WeaveroPlugin {
     _updateTruncationFlags() {
         const doc = Zotero.getMainWindow().document;
         const cells = doc.querySelectorAll(
-            ".annotation-row.tight .cell.annotation-comment[data-has-links]");
+            ".annotation-row.tight .cell.annotation-comment[data-has-rich]");
         let n = 0;
         for (const cell of cells) {
             const wrap = cell.querySelector(".wv-text-wrap");
@@ -7622,9 +7731,9 @@ class WeaveroPlugin {
         //   2. Spans stripped, textContent matches data-wv-rendered → spans
         //      got reaped by Zotero's React reconciliation; data-wv-raw is
         //      still the source of truth, so we use it. Without this case,
-        //      _shouldShowIcon would see only the markerless inner text and
-        //      bail with "no rich content", leaving the comment stuck as
-        //      raw markdown forever.
+        //      _commentHasIconableContent would see only the markerless inner
+        //      text and bail with "no rich content", leaving the comment
+        //      stuck as raw markdown forever.
         //   3. Spans stripped AND textContent differs from data-wv-rendered
         //      → user edited the comment; live textContent is fresh.
         const ourMarkers = commentEl.querySelector(".wv-md, .wv-url-span");
@@ -7640,13 +7749,13 @@ class WeaveroPlugin {
             plainText = liveText;
         }
         // Bail only if there's nothing to render — neither URL nor markdown
-        // formatting. Use hasRichContent (NOT _shouldShowIcon) so that the
-        // user-facing enableIconForMarkdown pref controls only the icon,
-        // not the inline rendering. Items-tree's _markCellLinks gates the
-        // same way; until v0.1.77 the right pane gated on the icon pref by
-        // accident, which made markdown-only comments stop rendering when
-        // the user turned the icon off.
-        if (!this.hasRichContent(plainText)) {
+        // formatting. Use _commentHasIconableContent (NOT _iconWantedFor) so
+        // that the user-facing icon prefs control only the icon, not the
+        // inline rendering. Items-tree's _markCellLinks gates the same way;
+        // until v0.1.77 the right pane gated on the icon pref by accident,
+        // which made markdown-only comments stop rendering when the user
+        // turned the icon off.
+        if (!this._commentHasIconableContent(plainText)) {
             this._dbg("[Weavero] pane row: no rich content in commentEl");
             return;
         }
@@ -9751,8 +9860,8 @@ class WeaveroPlugin {
         } catch(e) { return true; }
     }
     /** Master switch for inline markdown rendering inside the popup.
-     *  Default true. When false: hasRichContent ignores markdown marks (so
-     *  the icon doesn't appear on markdown-only comments) and
+     *  Default true. When false: _commentHasIconableContent ignores markdown
+     *  marks (so the icon doesn't appear on markdown-only comments) and
      *  _renderInlineMarkdown degrades to a URL-only render. */
     _getEnableMarkdown() {
         // Hardcoded true since v0.0.161: the popup always renders markdown.
@@ -9782,9 +9891,41 @@ class WeaveroPlugin {
         } catch(e) { return true; }
     }
 
+    /** Show the chain icon on URL-bearing comments in Icon & Popup mode.
+     *  Sub-toggle parallel to enableInlineUrls but mode-flipped. Only
+     *  effective when _getInlineLinks() is FALSE. Default true. */
+    _getEnableIconUrls() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableIconUrls");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Show the chain icon on markdown-bearing comments in Icon & Popup mode.
+     *  In Icon mode the popup is the only access to formatted markdown, so
+     *  without this toggle markdown-only comments would have no affordance.
+     *  Default true. */
+    _getEnableIconMarkdown() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableIconMarkdown");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Show the chain icon on app-link-bearing comments (mailto:, obsidian://,
+     *  vscode://, ...) in Icon & Popup mode. Requires the master enableAppLinks
+     *  toggle to be on (master invalidates URL_REGEX, dominating this sub).
+     *  Default true. */
+    _getEnableIconAppLinks() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableIconAppLinks");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
     /** True when markdown rendering is on for AT LEAST ONE surface.
-     *  Used by hasRichContent to decide whether markdown markers
-     *  count as "rich" — if neither popup nor inline rendering will
+     *  Used by _commentHasIconableContent to decide whether markdown markers
+     *  count as "iconable" — if neither popup nor inline rendering will
      *  format them, the marks are just text. */
     _anyMarkdownEnabled() {
         return this._getEnableMarkdown() || this._getEnableCommentMarkdown();
@@ -9830,7 +9971,7 @@ class WeaveroPlugin {
                 const isDirty =
                     cell.querySelector(".wv-text-wrap, .wv-tree-icon, .wv-tree-rel-icon, .wv-url-span")
                     || cell.hasAttribute("data-comment-text")
-                    || cell.hasAttribute("data-has-links")
+                    || cell.hasAttribute("data-has-rich")
                     || cell.hasAttribute("data-has-relations")
                     || cell.hasAttribute("data-truncated");
                 if (!isDirty) continue;
@@ -9847,7 +9988,8 @@ class WeaveroPlugin {
                 // Only assign textContent when it actually changes —
                 // assigning the same value still emits a childList mutation.
                 if (cell.textContent !== text) cell.textContent = text;
-                if (cell.hasAttribute("data-has-links"))     cell.removeAttribute("data-has-links");
+                if (cell.hasAttribute("data-has-rich"))     cell.removeAttribute("data-has-rich");
+                if (cell.hasAttribute("data-icon-wanted"))   cell.removeAttribute("data-icon-wanted");
                 if (cell.hasAttribute("data-has-relations")) cell.removeAttribute("data-has-relations");
                 if (cell.hasAttribute("data-comment-text"))  cell.removeAttribute("data-comment-text");
                 if (cell.hasAttribute("data-truncated"))     cell.removeAttribute("data-truncated");
@@ -9952,7 +10094,7 @@ class WeaveroPlugin {
             let existingRel = row.querySelector(".wv-btn-relations");
             const comment = key ? this.getModelComment(lib, key) : "";
             const wantsComment = !!key
-                && this._shouldShowIcon(comment)
+                && this._iconWantedFor(comment)
                 && this._iconAddsValueBeyondInline(comment);
             const ann = this._getAnnotationItem(lib, key);
             const wantsRel = !!ann
@@ -10265,7 +10407,8 @@ class WeaveroPlugin {
                 // Flatten back to plain text — also drops the .wv-tree-icon
                 // and any leftover .wv-url-span children.
                 cell.textContent = text;
-                cell.removeAttribute("data-has-links");
+                cell.removeAttribute("data-has-rich");
+                cell.removeAttribute("data-icon-wanted");
                 cell.removeAttribute("data-comment-text");
                 cell.removeAttribute("data-truncated");
                 cell.removeAttribute("data-has-url");
@@ -10485,10 +10628,15 @@ class WeaveroPlugin {
         } catch(e) {
             Zotero.debug("[Weavero] enablePdfReader migration err: " + e);
         }
-        // Inline-mode sub-toggles (URLs / Markdown). Default to true
-        // so inline mode shows full rendering out of the box.
+        // Inline-mode sub-toggles (URLs / Markdown) and Icon & Popup-mode
+        // sub-toggles (URLs / Markdown / App links). Default to true so
+        // both modes show full content affordances out of the box. The Icon-
+        // mode sub-toggles let users pick which content types trigger the
+        // chain icon when comments stay plain text in the items tree.
         for (const k of ["enableInlineUrls", "enableCommentMarkdown",
-                         "enableReaderViewIcons"]) {
+                         "enableReaderViewIcons",
+                         "enableIconUrls", "enableIconMarkdown",
+                         "enableIconAppLinks"]) {
             try {
                 Services.prefs.getDefaultBranch("extensions.zotero.")
                     .setBoolPref("weavero." + k, true);
@@ -10902,9 +11050,11 @@ class WeaveroPlugin {
                     if (data === "extensions.zotero.weavero.enableReaderViewIcons") {
                         this._applySurfacePref("readerView");
                     }
-                    // Inline sub-prefs (URLs / Markdown) — toggling either
-                    // changes how comments render on every surface, so
-                    // rescan all three. The comment-md pref also drives
+                    // Content-type sub-prefs — Inline mode (enableInlineUrls /
+                    // enableCommentMarkdown) and Icon & Popup mode (enableIcon*).
+                    // Toggling any of these changes how comments render or
+                    // whether the chain icon attaches on every surface, so
+                    // rescan all four. The comment-md pref also drives
                     // :root.wv-md-disabled (gates M-icon visibility in the
                     // items list).
                     //
@@ -10918,7 +11068,10 @@ class WeaveroPlugin {
                     // (running on every observer fire risks an infinite
                     // loop during sidebar tear-down).
                     if (data === "extensions.zotero.weavero.enableInlineUrls"
-                        || data === "extensions.zotero.weavero.enableCommentMarkdown") {
+                        || data === "extensions.zotero.weavero.enableCommentMarkdown"
+                        || data === "extensions.zotero.weavero.enableIconUrls"
+                        || data === "extensions.zotero.weavero.enableIconMarkdown"
+                        || data === "extensions.zotero.weavero.enableIconAppLinks") {
                         if (data === "extensions.zotero.weavero.enableCommentMarkdown") {
                             this._applyCommentMarkdownPref();
                         }
@@ -11169,7 +11322,8 @@ class WeaveroPlugin {
                               .trim();
                 }
                 cell.textContent = text;
-                cell.removeAttribute("data-has-links");
+                cell.removeAttribute("data-has-rich");
+                cell.removeAttribute("data-icon-wanted");
                 cell.removeAttribute("data-comment-text");
                 cell.removeAttribute("data-truncated");
                 cell.removeAttribute("data-has-url");

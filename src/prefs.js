@@ -141,13 +141,18 @@
     }
 
     // === Per-feature enable checkboxes ====================================
-    // These live as sub-checkboxes inside the Inline radio card. Both
-    // default to true. Their effect is gated on Inline mode being active
-    // — flipping them while Icon-only is selected does nothing visible
-    // until the user switches back to Inline.
+    // Sub-checkboxes inside the two display-mode radio cards. The Inline
+    // card's enableInlineUrls / enableCommentMarkdown only apply when
+    // Inline is active; the Icon & Popup card's enableIconUrls /
+    // enableIconMarkdown / enableIconAppLinks only apply when Icon mode
+    // is active. All default to true so each mode shows full content
+    // affordances out of the box.
     const FEATURES = [
         "enableInlineUrls",
         "enableCommentMarkdown",
+        "enableIconUrls",
+        "enableIconMarkdown",
+        "enableIconAppLinks",
         "enableAppLinks",
         "enableAppLinksSkipConfirm",
         "enableReaderViewIcons",

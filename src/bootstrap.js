@@ -331,6 +331,36 @@ const PLUGIN_CSS = [
     ":root.wv-ui-dark .wv-tree-rel-icon:hover {",
     "  background: rgba(255, 255, 255, 0.08);",
     "}",
+    // Items-list custom column header icons. iconPath plugs the
+    // icon URL into a `<span class=\"icon icon-bg\" style=\"background-
+    // image: url(...)\">` inside the header cell. The Zotero SVGs
+    // we use declare fill=\"context-fill\", so without
+    // `-moz-context-properties: fill` set on the host span, the
+    // fill falls back to black — invisible on dark themes.
+    //
+    // Match by the svg URL in the inline style attribute since
+    // each plugin column's dataKey contains a literal `\\@`,
+    // awkward to escape in a CSS class selector.
+    //
+    // \"Related\" → --accent-wood, mirroring the item-pane Related
+    // section header (scss/abstracts/_variables.scss:
+    // $item-pane-sections \"related\": --accent-wood).
+    // \"Annotations\" → --tag-yellow, Zotero's highlight-annotation
+    // yellow (scss/themes/_light.scss: #ffd400; _dark.scss:
+    // #ffd400bf with alpha for softer dark-mode contrast). Same
+    // hex Zotero stores on the default highlight annotation
+    // (annotationColor). Both variables are already theme-aware,
+    // so no :root.wv-ui-dark override is needed.
+    ".virtualized-table-header .cell-icon",
+    "  .icon-bg[style*=\"universal/related.svg\"] {",
+    "  -moz-context-properties: fill, fill-opacity;",
+    "  fill: var(--accent-wood);",
+    "}",
+    ".virtualized-table-header .cell-icon",
+    "  .icon-bg[style*=\"universal/annotate-highlight.svg\"] {",
+    "  -moz-context-properties: fill, fill-opacity;",
+    "  fill: var(--tag-yellow);",
+    "}",
     // Format-state styling — A3 (amber disc) + M1 (bold sans M).
     // The selector list covers every surface where we drop a 🔗 icon: the
     // items-tree icon, the generic .wv-btn family (sidebar / popup / pane /
@@ -6911,6 +6941,135 @@ class WeaveroPlugin {
         } catch (e) { return null; }
     }
 
+    /** Register the "Related" items-list column. Mirrors Zotero's
+     *  built-in `numNotes` column shape: icon-only header, narrow
+     *  static width, count text in the cell (empty when zero so the
+     *  column reads as blank for items with no relations).
+     *
+     *  Uses Zotero's ItemTreeManager plugin API (introduced 2023; the
+     *  registered dataKey is auto-prefixed with our plugin ID).
+     *  Auto-removed when the plugin is uninstalled via `pluginID`,
+     *  but we also call `unregisterColumn` in `destroy()` so a hot
+     *  plugin reload during dev cleanly recycles the column. */
+    _registerItemTreeColumns() {
+        try {
+            if (!Zotero.ItemTreeManager
+                || typeof Zotero.ItemTreeManager.registerColumn !== "function") {
+                this._dbg("[Weavero] ItemTreeManager unavailable; skip column register");
+                return;
+            }
+            // Use Zotero's built-in `related.svg`. virtualized-table
+            // expands `iconPath` into an `iconLabel` <span class="icon
+            // icon-bg"> with backgroundImage:url(...), and the
+            // presence of iconLabel triggers the `cell-icon` class
+            // (zero column padding, fixed icon sizing). htmlLabel
+            // alone does NOT trigger cell-icon, so the SVG would
+            // render with normal padding and stretch oddly.
+            // Shared cell renderer: blank when count is 0, count
+            // text otherwise. Matches numNotes' display pattern at
+            // itemTree.jsx:2299 (`treeRow.numNotes() || \"\"`).
+            const renderCount = (_index, data, column, _isFirstColumn, doc) => {
+                const span = doc.createElement("span");
+                span.className = "cell " + (column.className || "");
+                span.textContent = (data && data > 0) ? String(data) : "";
+                return span;
+            };
+            // Both columns return numbers (0 when empty) from
+            // dataProvider so _compareField skips the
+            // empty-string-sorts-last shortcut and 0 collates
+            // before 1, mirroring numNotes at itemTree.jsx:550-552.
+            this._weaveroColumnKeys = this._weaveroColumnKeys || [];
+
+            // Register Annotations BEFORE Related so when both are
+            // visible the Annotations column appears first by
+            // default. Zotero's column ordering follows registration
+            // order (after the built-in columns).
+            //
+            // Annotations column: count of annotations on the item
+            // itself when it's an attachment, or sum across all
+            // attachments when it's a regular item. Annotations
+            // themselves and notes get 0 — Zotero only shows
+            // annotations under attachment containers.
+            const annKey = Zotero.ItemTreeManager.registerColumn({
+                dataKey: "weaveroAnnotations",
+                label: "Annotations",
+                pluginID: "weavero@mjthoraval",
+                iconPath: "chrome://zotero/skin/16/universal/annotate-highlight.svg",
+                width: "30",
+                minWidth: 26,
+                staticWidth: true,
+                fixedWidth: true,
+                showInColumnPicker: true,
+                zoteroPersist: ["width", "hidden", "sortDirection"],
+                dataProvider: (item) => {
+                    try {
+                        if (!item) return 0;
+                        if (item.isAttachment && item.isAttachment()) {
+                            const ids = (item.getAnnotations && item.getAnnotations()) || [];
+                            return ids.length;
+                        }
+                        if (item.isRegularItem && item.isRegularItem()) {
+                            let total = 0;
+                            const attIds = (item.getAttachments && item.getAttachments()) || [];
+                            for (const id of attIds) {
+                                const att = Zotero.Items.get(id);
+                                if (!att || !att.isAttachment()) continue;
+                                const annIds = (att.getAnnotations && att.getAnnotations()) || [];
+                                total += annIds.length;
+                            }
+                            return total;
+                        }
+                        return 0;
+                    } catch (e) { return 0; }
+                },
+                renderCell: renderCount,
+            });
+            if (annKey) this._weaveroColumnKeys.push(annKey);
+
+            const relKey = Zotero.ItemTreeManager.registerColumn({
+                dataKey: "weaveroRelated",
+                label: "Related",
+                pluginID: "weavero@mjthoraval",
+                iconPath: "chrome://zotero/skin/16/universal/related.svg",
+                width: "30",
+                minWidth: 26,
+                staticWidth: true,
+                fixedWidth: true,
+                showInColumnPicker: true,
+                zoteroPersist: ["width", "hidden", "sortDirection"],
+                dataProvider: (item) => {
+                    try {
+                        if (!item || !item.relatedItems) return 0;
+                        return item.relatedItems.length;
+                    } catch (e) { return 0; }
+                },
+                renderCell: renderCount,
+            });
+            if (relKey) this._weaveroColumnKeys.push(relKey);
+
+            this._dbg("[Weavero] columns registered: "
+                + this._weaveroColumnKeys.join(", "));
+        } catch (e) {
+            Zotero.debug("[Weavero] _registerItemTreeColumns err: " + e);
+        }
+    }
+
+    _unregisterItemTreeColumns() {
+        try {
+            if (Zotero.ItemTreeManager
+                && typeof Zotero.ItemTreeManager.unregisterColumn === "function"
+                && this._weaveroColumnKeys) {
+                for (const k of this._weaveroColumnKeys) {
+                    try { Zotero.ItemTreeManager.unregisterColumn(k); }
+                    catch (e) {}
+                }
+            }
+            this._weaveroColumnKeys = [];
+        } catch (e) {
+            Zotero.debug("[Weavero] _unregisterItemTreeColumns err: " + e);
+        }
+    }
+
     /** Add (or refresh) a `.wv-tree-rel-icon` at the right edge of the
      *  annotation-comment cell when the underlying annotation has
      *  related items. Anchors to the cell as a flex sibling so the
@@ -10961,6 +11120,8 @@ class WeaveroPlugin {
 
         // 8. Preferences pane + apply saved icon pref
         this._registerPrefPane();
+        // Items-list "Related" column.
+        this._registerItemTreeColumns();
         this._applyTreeIconPref(this._getShowTreeIcon());
         this._applyInlineLinksPref(this._getInlineLinks());
         this._applyCommentMarkdownPref();
@@ -11239,6 +11400,7 @@ class WeaveroPlugin {
 
         try { Zotero.Reader.unregisterEventListener("renderSidebarAnnotationHeader", "weavero"); } catch(e) {}
         try { Zotero.Reader.unregisterEventListener("createAnnotationContextMenu", "weavero"); } catch(e) {}
+        this._unregisterItemTreeColumns();
 
         for (const id of this._notifierIDs || []) {
             try { Zotero.Notifier.unregisterObserver(id); } catch(e) {}

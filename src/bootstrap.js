@@ -1713,10 +1713,61 @@ class WeaveroPlugin {
             const lastKey = parts[parts.length - 1];
 
             if (url.startsWith("zotero://select/")) {
-                const item = Zotero.Items.getByLibraryAndKey(getLib(), lastKey);
+                // Path shapes Zotero accepts:
+                //   .../items/<key>            (user-library item)
+                //   .../collections/<key>      (user-library collection)
+                //   .../searches/<key>         (user-library saved search)
+                //   .../groups/<gid>/items/<key>
+                //   .../groups/<gid>/collections/<key>
+                //   .../groups/<gid>/searches/<key>
+                // The selector keyword is the second-to-last segment;
+                // the key is always last. Falling back to "items"
+                // preserves behavior for the legacy bare form.
+                const lib = getLib();
+                const kind = parts[parts.length - 2] || "items";
+                const win  = Zotero.getMainWindow();
+                const pane = Zotero.getActiveZoteroPane();
+                // When the link is clicked from a note tab (or any
+                // non-library tab), `selectItem` / `selectCollection`
+                // affect the library tab in the background but the
+                // user keeps seeing the note. Switch to the library
+                // tab first so the result is visible. Mirrors the
+                // "Show in Library" affordance on the annotation
+                // context menu.
+                const switchToLibrary = () => {
+                    try {
+                        if (win.Zotero_Tabs
+                            && typeof win.Zotero_Tabs.select === "function") {
+                            win.Zotero_Tabs.select("zotero-pane");
+                        }
+                    } catch (e) {}
+                };
+                if (kind === "collections") {
+                    const col = Zotero.Collections.getByLibraryAndKey(lib, lastKey);
+                    if (col && pane.collectionsView
+                        && typeof pane.collectionsView.selectCollection === "function") {
+                        switchToLibrary();
+                        await pane.collectionsView.selectCollection(col.id);
+                        win.focus();
+                    }
+                    return;
+                }
+                if (kind === "searches") {
+                    const search = Zotero.Searches.getByLibraryAndKey(lib, lastKey);
+                    if (search && pane.collectionsView
+                        && typeof pane.collectionsView.selectSearch === "function") {
+                        switchToLibrary();
+                        await pane.collectionsView.selectSearch(search.id);
+                        win.focus();
+                    }
+                    return;
+                }
+                // Default: items
+                const item = Zotero.Items.getByLibraryAndKey(lib, lastKey);
                 if (item) {
-                    await Zotero.getActiveZoteroPane().selectItem(item.id);
-                    Zotero.getMainWindow().focus();
+                    switchToLibrary();
+                    await pane.selectItem(item.id);
+                    win.focus();
                 }
                 return;
             }
@@ -2753,21 +2804,103 @@ class WeaveroPlugin {
             const menu = doc.getElementById("zotero-itemmenu");
             if (!menu) return;
             this._teardownItemsListContextMenu();
-            const ITEM_ID = "wv-itemmenu-add-related";
+            const ADD_REL_ID = "wv-itemmenu-add-related";
+            const COPY_LINK_ID = "wv-itemmenu-copy-link";
+            const SEP_ID = "wv-itemmenu-separator";
+            // Include any item type that has an `addRelatedItem`
+            // method — annotations, attachments, regular items, and
+            // notes all support the dc:relation predicate. Excludes
+            // pure collections / search rows. Same capability check
+            // is reused for Copy Item Link since `zotero://select`
+            // works for any item type.
+            const isRelatable = (it) => !!it && (
+                (it.isAnnotation && it.isAnnotation())
+                || (it.isAttachment && it.isAttachment())
+                || (it.isRegularItem && it.isRegularItem())
+                || (it.isNote && it.isNote())
+            );
+            // Build a `zotero://select/...` URI for an item, picking
+            // the right library prefix (`library` vs `groups/<gid>`)
+            // so the link works for both personal and group items.
+            const buildSelectURI = (item) => {
+                let prefix = "library";
+                try {
+                    if (!Zotero.Libraries.isUserLibrary(item.libraryID)) {
+                        const gid = Zotero.Groups.getGroupIDFromLibraryID(
+                            item.libraryID);
+                        if (gid) prefix = "groups/" + gid;
+                    }
+                } catch (e) {}
+                return "zotero://select/" + prefix + "/items/" + item.key;
+            };
             const onShowing = () => {
                 try {
-                    const stale = doc.getElementById(ITEM_ID);
-                    if (stale) stale.remove();
+                    // Remove any prior entries before re-adding.
+                    for (const id of [ADD_REL_ID, COPY_LINK_ID, SEP_ID]) {
+                        const stale = doc.getElementById(id);
+                        if (stale) stale.remove();
+                    }
                     const zp = win.ZoteroPane;
                     const selected = (zp && typeof zp.getSelectedItems === "function")
                         ? zp.getSelectedItems() : [];
-                    const annotations = selected.filter(
-                        it => it && it.isAnnotation && it.isAnnotation());
-                    if (!annotations.length) return;
+                    const targets = selected.filter(isRelatable);
+                    if (!targets.length) return;
+                    const isDark = doc.documentElement
+                        && doc.documentElement.classList.contains("wv-ui-dark");
+
+                    // Order mirrors _buildAnnotationContextMenu
+                    // exactly: Copy Item Link → separator → Add
+                    // Related…. Keeps the same affordance ordering
+                    // across both context-menu surfaces (annotation
+                    // popup vs items-list).
+
+                    // --- Copy Item Link --------------------------
+                    // Mirrors the entry on the annotation context
+                    // menu (_buildAnnotationContextMenu). Zotero
+                    // doesn't expose this in the items-tree menu by
+                    // default, so we add it for parity with the
+                    // annotation surface. Multi-selection: copy
+                    // newline-separated URIs so the user gets one
+                    // link per selected item.
+                    const cl = doc.createXULElement("menuitem");
+                    cl.id = COPY_LINK_ID;
+                    cl.setAttribute("label", targets.length > 1
+                        ? "Copy Item Links  (" + targets.length + " items)"
+                        : "Copy Item Link");
+                    const linkIconURL = this._menuItemIconURL;
+                    if (linkIconURL) {
+                        cl.classList.add("menuitem-iconic");
+                        cl.setAttribute("image", linkIconURL);
+                    }
+                    cl.addEventListener("command", () => {
+                        try {
+                            const zp2 = win.ZoteroPane;
+                            const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
+                                ? zp2.getSelectedItems() : [];
+                            const fresh = sel2.filter(isRelatable);
+                            if (!fresh.length) return;
+                            const uris = fresh.map(buildSelectURI).join("\n");
+                            Zotero.Utilities.Internal.copyTextToClipboard(uris);
+                        } catch (cmdErr) {
+                            Zotero.debug(
+                                "[Weavero] itemmenu copy-link cmd err: " + cmdErr);
+                        }
+                    });
+                    menu.appendChild(cl);
+
+                    // Separator between the two Weavero entries —
+                    // matches the addSep() in
+                    // _buildAnnotationContextMenu between Copy Item
+                    // Link and Add Related….
+                    const sep = doc.createXULElement("menuseparator");
+                    sep.id = SEP_ID;
+                    menu.appendChild(sep);
+
+                    // --- Add Related… ----------------------------
                     const mi = doc.createXULElement("menuitem");
-                    mi.id = ITEM_ID;
-                    mi.setAttribute("label", annotations.length > 1
-                        ? "Add Related…  (" + annotations.length + " annotations)"
+                    mi.id = ADD_REL_ID;
+                    mi.setAttribute("label", targets.length > 1
+                        ? "Add Related…  (" + targets.length + " items)"
                         : "Add Related…");
                     // Chain icon — semantic match for "Add Related…".
                     // Pick the theme-baked amber data URL so the icon
@@ -2776,26 +2909,21 @@ class WeaveroPlugin {
                     // consistency. The plugin's own _applyUIThemeClass
                     // toggles `wv-ui-dark` on the main window's
                     // documentElement, which we use as the theme signal.
-                    const isDark = doc.documentElement
-                        && doc.documentElement.classList.contains("wv-ui-dark");
-                    const iconURL = isDark
+                    const relIconURL = isDark
                         ? this._relationsIconURLDark
                         : this._relationsIconURLLight;
-                    if (iconURL) {
+                    if (relIconURL) {
                         mi.classList.add("menuitem-iconic");
-                        mi.setAttribute("image", iconURL);
+                        mi.setAttribute("image", relIconURL);
                     }
                     mi.addEventListener("command", async () => {
-                        // Re-resolve at click time — selection may have
-                        // changed since popupshowing fired.
                         try {
                             const zp2 = win.ZoteroPane;
                             const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
                                 ? zp2.getSelectedItems() : [];
-                            const anns = sel2.filter(
-                                it => it && it.isAnnotation && it.isAnnotation());
-                            if (!anns.length) return;
-                            await this._addRelatedItemDialog(anns);
+                            const fresh = sel2.filter(isRelatable);
+                            if (!fresh.length) return;
+                            await this._addRelatedItemDialog(fresh);
                         } catch (cmdErr) {
                             Zotero.debug(
                                 "[Weavero] itemmenu add-related cmd err: " + cmdErr);
@@ -2809,8 +2937,10 @@ class WeaveroPlugin {
             };
             const onHidden = () => {
                 try {
-                    const el = doc.getElementById(ITEM_ID);
-                    if (el) el.remove();
+                    for (const id of [ADD_REL_ID, COPY_LINK_ID, SEP_ID]) {
+                        const el = doc.getElementById(id);
+                        if (el) el.remove();
+                    }
                 } catch (e) {}
             };
             menu.addEventListener("popupshowing", onShowing);
@@ -2828,11 +2958,117 @@ class WeaveroPlugin {
             try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
             try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
             try {
-                const stale = menu.ownerDocument.getElementById("wv-itemmenu-add-related");
-                if (stale) stale.remove();
+                for (const id of ["wv-itemmenu-add-related", "wv-itemmenu-copy-link", "wv-itemmenu-separator"]) {
+                    const stale = menu.ownerDocument.getElementById(id);
+                    if (stale) stale.remove();
+                }
             } catch (e) {}
         } catch (e) {}
         this._itemMenuHandlers = null;
+    }
+
+    /** Hook the collections-tree right-click menu
+     *  (`#zotero-collectionmenu`) and insert "Copy Collection Link"
+     *  when the right-clicked row is a regular collection. Zotero
+     *  doesn't expose a copy-link affordance for collections by
+     *  default; this matches the items-list copy-link entry so users
+     *  have a consistent way to drop `zotero://select/...` URIs.
+     *
+     *  Same lifecycle as `_setupItemsListContextMenu`: bind once,
+     *  rebuild the entry on each open, strip on `popuphidden` so we
+     *  never leave a stale entry. */
+    _setupCollectionsContextMenu() {
+        try {
+            const win = Zotero.getMainWindow();
+            const doc = win && win.document;
+            if (!doc) return;
+            const menu = doc.getElementById("zotero-collectionmenu");
+            if (!menu) return;
+            this._teardownCollectionsContextMenu();
+            const COPY_LINK_ID = "wv-collectionmenu-copy-link";
+            // Build a `zotero://select/<lib-prefix>/collections/<key>`
+            // URI for a collection. Same library-prefix logic as the
+            // items-list copy-link.
+            const buildCollectionURI = (col) => {
+                let prefix = "library";
+                try {
+                    if (!Zotero.Libraries.isUserLibrary(col.libraryID)) {
+                        const gid = Zotero.Groups.getGroupIDFromLibraryID(
+                            col.libraryID);
+                        if (gid) prefix = "groups/" + gid;
+                    }
+                } catch (e) {}
+                return "zotero://select/" + prefix + "/collections/" + col.key;
+            };
+            const onShowing = () => {
+                try {
+                    const stale = doc.getElementById(COPY_LINK_ID);
+                    if (stale) stale.remove();
+                    const zp = win.ZoteroPane;
+                    // Skip when the right-clicked row isn't a real
+                    // collection (could be a library root, saved
+                    // search, feed, or trash). `getSelectedCollection`
+                    // returns the Collection object for a collection
+                    // row; everything else returns null/false.
+                    const col = (zp && typeof zp.getSelectedCollection === "function")
+                        ? zp.getSelectedCollection() : null;
+                    if (!col || !col.key) return;
+                    const cl = doc.createXULElement("menuitem");
+                    cl.id = COPY_LINK_ID;
+                    cl.setAttribute("label", "Copy Collection Link");
+                    const linkIconURL = this._menuItemIconURL;
+                    if (linkIconURL) {
+                        cl.classList.add("menuitem-iconic");
+                        cl.setAttribute("image", linkIconURL);
+                    }
+                    cl.addEventListener("command", () => {
+                        try {
+                            // Re-resolve at click time in case the
+                            // selection moved between popupshowing
+                            // and the user actually clicking.
+                            const zp2 = win.ZoteroPane;
+                            const col2 = (zp2 && typeof zp2.getSelectedCollection === "function")
+                                ? zp2.getSelectedCollection() : null;
+                            if (!col2 || !col2.key) return;
+                            const uri = buildCollectionURI(col2);
+                            Zotero.Utilities.Internal.copyTextToClipboard(uri);
+                        } catch (cmdErr) {
+                            Zotero.debug(
+                                "[Weavero] collectionmenu copy-link cmd err: " + cmdErr);
+                        }
+                    });
+                    menu.appendChild(cl);
+                } catch (showErr) {
+                    Zotero.debug(
+                        "[Weavero] collectionmenu popupshowing err: " + showErr);
+                }
+            };
+            const onHidden = () => {
+                try {
+                    const el = doc.getElementById(COPY_LINK_ID);
+                    if (el) el.remove();
+                } catch (e) {}
+            };
+            menu.addEventListener("popupshowing", onShowing);
+            menu.addEventListener("popuphidden", onHidden);
+            this._collectionMenuHandlers = { menu, onShowing, onHidden };
+        } catch (e) {
+            Zotero.debug("[Weavero] _setupCollectionsContextMenu err: " + e);
+        }
+    }
+
+    _teardownCollectionsContextMenu() {
+        if (!this._collectionMenuHandlers) return;
+        try {
+            const { menu, onShowing, onHidden } = this._collectionMenuHandlers;
+            try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
+            try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
+            try {
+                const stale = menu.ownerDocument.getElementById("wv-collectionmenu-copy-link");
+                if (stale) stale.remove();
+            } catch (e) {}
+        } catch (e) {}
+        this._collectionMenuHandlers = null;
     }
 
     // ---- In-PDF annotation popup (MutationObserver) -----------------------
@@ -7875,6 +8111,18 @@ class WeaveroPlugin {
         // scan strips again → ... Same shape as the items-list freeze
         // bug fixed in v0.0.149.
         if (!this._getEnableRightPane()) return;
+        // Relations icon is independent of comment content (an
+        // annotation with no comment can still have relations).
+        // Run this BEFORE the comment-iconable bailout below, which
+        // would otherwise short-circuit the relations decoration on
+        // plain-text-only comments. Bug surfaced in v0.5.1: a Test
+        // comment annotation kept its relation in data but the
+        // chain icon never appeared on the right-pane card because
+        // _commentHasIconableContent returned false and we returned.
+        try { this._decoratePaneRowRelations(row); }
+        catch (e) {
+            Zotero.debug("[Weavero] _decoratePaneRowRelations err: " + e.message);
+        }
         const commentEl = this._qsDeep(row, ".body .comment")
                        || this._qsDeep(row, ".comment");
         if (!commentEl) {
@@ -8020,50 +8268,51 @@ class WeaveroPlugin {
             existingBtn = btn;
         }
 
-        // --- Relations icon -------------------------------------------------
-        // Mirrors the reader-sidebar pathway: if the annotation has
-        // any related items, surface a chain icon next to the comment
-        // icon. Independent of comment content (an annotation with no
-        // comment can still have relations).
-        //
-        // Order policy: relations is the closer analog to a native
-        // Zotero feature, so it sits LEFT of the comment icon when
-        // both are present. Insert the new button BEFORE any existing
-        // comment button to maintain that order — falling back to
-        // appendChild when no comment button exists yet.
-        try {
-            const ann = row.annotation;
-            const wantsRel = !!ann
-                && this._getAnnotationRelatedItems(ann).length > 0;
-            const existingRel = this._qsDeep(row, ".wv-btn-relations");
-            if (!wantsRel) {
-                existingRel?.remove();
-            } else if (!existingRel && actionEl) {
-                const doc = row.ownerDocument;
-                const relBtn = doc.createElementNS(
-                    "http://www.w3.org/1999/xhtml", "button");
-                relBtn.className = BTN_CLASS + " " + BTN_PANE_CLASS
-                    + " wv-btn-relations";
-                const count = this._getAnnotationRelatedItems(ann).length;
-                relBtn.title = count + " Related";
-                relBtn.appendChild(this._makeRelationsSvg(doc));
-                relBtn.addEventListener("click", e => {
-                    e.stopPropagation(); e.preventDefault();
-                    this.openRelationsPopup(ann, { anchorNode: relBtn });
-                });
-                // Order policy: comment LEFT, relations RIGHT. Insert
-                // relations immediately AFTER any existing comment
-                // button. If none, append to the end of `.action`.
-                const commentBtnEl = actionEl.querySelector(
-                    "." + BTN_PANE_CLASS + ":not(.wv-btn-relations)");
-                if (commentBtnEl) {
-                    actionEl.insertBefore(relBtn, commentBtnEl.nextSibling);
-                } else {
-                    actionEl.appendChild(relBtn);
-                }
-            }
-        } catch (e) {
-            Zotero.debug("[Weavero] right-pane relations icon err: " + e.message);
+    }
+
+    /** Add (or refresh / remove) the right-pane chain icon for a
+     *  single `<annotation-row>` based on the annotation's current
+     *  `relatedItems`. Independent of comment content — pulled out
+     *  of `_injectPaneRowIcon` so plain-text-only comments still
+     *  surface relations. Order policy: comment icon LEFT, relations
+     *  RIGHT. Inserts the relations button after any existing
+     *  comment button; falls back to appendChild when no comment
+     *  button is present yet. */
+    _decoratePaneRowRelations(row) {
+        const ann = row && row.annotation;
+        if (!ann) return;
+        const actionEl = this._qsDeep(row, ".head .action")
+                      || this._qsDeep(row, ".action");
+        const wantsRel = this._getAnnotationRelatedItems(ann).length > 0;
+        const existingRel = this._qsDeep(row, ".wv-btn-relations");
+        if (!wantsRel) {
+            existingRel?.remove();
+            return;
+        }
+        if (existingRel) {
+            const newTitle = this._getAnnotationRelatedItems(ann).length + " Related";
+            if (existingRel.title !== newTitle) existingRel.title = newTitle;
+            return;
+        }
+        if (!actionEl) return;
+        const doc = row.ownerDocument;
+        const relBtn = doc.createElementNS(
+            "http://www.w3.org/1999/xhtml", "button");
+        relBtn.className = BTN_CLASS + " " + BTN_PANE_CLASS
+            + " wv-btn-relations";
+        const count = this._getAnnotationRelatedItems(ann).length;
+        relBtn.title = count + " Related";
+        relBtn.appendChild(this._makeRelationsSvg(doc));
+        relBtn.addEventListener("click", e => {
+            e.stopPropagation(); e.preventDefault();
+            this.openRelationsPopup(ann, { anchorNode: relBtn });
+        });
+        const commentBtnEl = actionEl.querySelector(
+            "." + BTN_PANE_CLASS + ":not(.wv-btn-relations)");
+        if (commentBtnEl) {
+            actionEl.insertBefore(relBtn, commentBtnEl.nextSibling);
+        } else {
+            actionEl.appendChild(relBtn);
         }
     }
 
@@ -11101,6 +11350,9 @@ class WeaveroPlugin {
         // 7b. Items-tree right-click menu — adds "Add related item…"
         // when the right-clicked selection contains annotation(s).
         this._setupItemsListContextMenu();
+        // 7b-bis. Collections-tree right-click menu — adds
+        // "Copy Collection Link" on collection rows.
+        this._setupCollectionsContextMenu();
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
         // see them, so wire a Window Mediator listener that catches
@@ -11310,6 +11562,7 @@ class WeaveroPlugin {
         try {
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
+            this._teardownCollectionsContextMenu();
             this._paneObserver?.disconnect();
             this._paneObserver = null;
             this._treeMarkObserver?.disconnect();
@@ -11342,6 +11595,7 @@ class WeaveroPlugin {
             // Re-attach to the now-live document.
             this._setupTreeClickDelegate();
             this._setupItemsListContextMenu();
+            this._setupCollectionsContextMenu();
             this._setupPaneObserver();
             // Re-apply CSS-class state (these set classes on root.documentElement).
             this._applyTreeIconPref(this._getShowTreeIcon());
@@ -11368,6 +11622,7 @@ class WeaveroPlugin {
         try {
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
+            this._teardownCollectionsContextMenu();
             this._paneObserver?.disconnect();
             this._paneObserver = null;
             this._treeMarkObserver?.disconnect();
@@ -11410,6 +11665,7 @@ class WeaveroPlugin {
         clearInterval(this._pollInterval); this._pollInterval = null;
         this._teardownTreeClickDelegate();
         this._teardownItemsListContextMenu();
+        this._teardownCollectionsContextMenu();
         this._teardownNoteWindowListener();
         this._paneObserver?.disconnect(); this._paneObserver = null;
 

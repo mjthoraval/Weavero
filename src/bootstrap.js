@@ -8188,8 +8188,14 @@ class WeaveroPlugin {
                 dataProvider: (item) => {
                     try {
                         if (!item) return 0;
-                        if (item.isAttachment && item.isAttachment()) {
-                            const ids = (item.getAnnotations && item.getAnnotations()) || [];
+                        // `getAnnotations` throws on non-file
+                        // attachments (web links / snapshots without
+                        // a file). The outer try/catch swallows it,
+                        // but the throw still spams the console —
+                        // gate on `isFileAttachment` to avoid the
+                        // call altogether.
+                        if (item.isFileAttachment && item.isFileAttachment()) {
+                            const ids = item.getAnnotations() || [];
                             return ids.length;
                         }
                         if (item.isRegularItem && item.isRegularItem()) {
@@ -8197,8 +8203,9 @@ class WeaveroPlugin {
                             const attIds = (item.getAttachments && item.getAttachments()) || [];
                             for (const id of attIds) {
                                 const att = Zotero.Items.get(id);
-                                if (!att || !att.isAttachment()) continue;
-                                const annIds = (att.getAnnotations && att.getAnnotations()) || [];
+                                if (!att || !att.isFileAttachment
+                                    || !att.isFileAttachment()) continue;
+                                const annIds = att.getAnnotations() || [];
                                 total += annIds.length;
                             }
                             return total;
@@ -9881,7 +9888,12 @@ class WeaveroPlugin {
         }
         if (isAtt) {
             if (annActive) {
-                const anns = (typeof item.getAnnotations === "function")
+                // `item.getAnnotations` exists on every Item (it's on
+                // the prototype) but THROWS unless the item is a file
+                // attachment. Web-link / standalone-link attachments
+                // hit this path with attachmentFileType + Has Related
+                // active. Gate by `isFileAttachment` instead.
+                const anns = (item.isFileAttachment && item.isFileAttachment())
                     ? (item.getAnnotations() || []) : [];
                 let hasOK = false;
                 for (const a of anns) {
@@ -9905,7 +9917,10 @@ class WeaveroPlugin {
                     if (!att) continue;
                     if (attActive && !this._kindOK(att, group, "attachment")) continue;
                     if (annActive) {
-                        const anns = (typeof att.getAnnotations === "function")
+                        // Same `isFileAttachment` gate as the isAtt
+                        // branch above — non-file attachments throw
+                        // from getAnnotations.
+                        const anns = (att.isFileAttachment && att.isFileAttachment())
                             ? (att.getAnnotations() || []) : [];
                         const someAnnOK = anns.some(
                             a => this._kindOK(a, group, "annotation"));
@@ -9915,6 +9930,23 @@ class WeaveroPlugin {
                     break;
                 }
                 if (!hasOK) return false;
+            }
+            return true;
+        }
+        // Notes — only kind left. Notes have no attachments and no
+        // annotations of their own, so a group with annActive or
+        // attActive set can never be satisfied by a note as
+        // "primary at its kind". Without this, a note carrying a
+        // matching cross-level filter (e.g. Has Related) AND a
+        // kind-active filter (e.g. annotationType=Underline) would
+        // wrongly pass tree-join because the fall-through `return
+        // true` ignored the unsatisfiable kind constraint.
+        const isNote = !!(item.isNote && item.isNote());
+        if (isNote) {
+            if (annActive || attActive) return false;
+            if (regActive) {
+                const reg = item.parentItem;
+                if (!reg || !this._kindOK(reg, group, "regular")) return false;
             }
             return true;
         }

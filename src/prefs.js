@@ -156,6 +156,9 @@
         "enableAppLinks",
         "enableAppLinksSkipConfirm",
         "enableReaderViewIcons",
+        "enableTagsCountAuto",
+        "enableAnnotationAddedBy",
+        "enableAddedByColors",
         "debug",
     ];
 

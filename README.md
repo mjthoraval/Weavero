@@ -1,22 +1,43 @@
 # Weavero
 
-A Zotero 7+ plugin that turns URLs in annotation comments into clickable links — with rich rendering across the items tree, the right-hand item pane, the reader sidebar, and the in-PDF popup.
+A Zotero 7+ plugin that turns URLs in annotation comments into clickable links and adds a fast filter pane, related-item plumbing, and items-tree columns on top of the standard library view.
 
-Out of the box, `https://`, `http://`, and `zotero://` links are recognised everywhere a comment is shown. Sixteen additional schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be enabled individually from the preferences pane.
+Out of the box, `https://`, `http://`, and `zotero://` links are recognised everywhere a comment is shown. Sixteen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
 
 ## Features
 
-- **Two display modes** (set in preferences):
-  - **Inline** — URLs, markdown, and app links render directly inside each comment. When the comment is clipped, an icon opens a popup with the full formatted view.
-  - **Icon & Popup** — Comments stay plain text. An icon next to each annotation opens a popup with the formatted view.
-- **Renders across the UI** — items list, annotations panel (right pane), reader sidebar, in-document popups, link badges over annotation icons in the reader, and notes (standalone and child). Each surface is independently toggleable.
-- **Built-in URL schemes**: `https://`, `http://`, `zotero://`. Sixteen more are toggleable per-scheme:
-  - Tier 1 (`name:`): `magnet`, `mailto`, `skype`, `sms`, `spotify`, `tel`.
-  - Tier 2 (`name://`): `discord`, `evernote`, `figma`, `file`, `ftp`, `msteams`, `notion`, `obsidian`, `slack`, `vscode`, `zoommtg`.
-- **Three colour buckets** so each kind of link reads differently at a glance: blue for `http(s)`, orange for `zotero://`, purple for app-scheme links.
-- **Inline markdown** rendering — `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `[label](url)` — on by default in Inline mode; toggleable from preferences.
-- **Open app links without the confirmation dialog** — optional opt-in that bypasses Firefox's *"Allow this site to open the … link?"* prompt for the schemes you've enabled.
+**Clickable links in annotation comments** across the items tree, right item pane, reader sidebar, in-PDF popup, link badges over annotation icons, and notes. Each surface is independently toggleable.
+
+- **Two display modes** (preferences):
+  - **Inline** — URLs, markdown, and app links render directly in the comment; an icon opens a popup with the full formatted view when the row is clipped.
+  - **Icon & Popup** — Comments stay plain text; an icon next to each annotation opens the popup. Per-content-type sub-toggles for URLs / markdown / app-links.
+- **Three colour buckets** so each kind of link reads at a glance: blue for `http(s)`, orange for `zotero://`, purple for app-scheme links.
+- **Inline markdown** — `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `[label](url)`.
+- **App-link skip-confirm** — optional opt-in that bypasses Firefox's *"Allow this site to open the … link?"* prompt.
 - **Right-click "Copy Link"** on any rendered URL.
+
+**Filter popup** — a toolbar `▼` next to the search box opens a compact filter panel. Click to include, Alt+click to exclude.
+
+- Annotation **color**, **type**, **has-comment**
+- **Attachment** file type
+- **Item Type** (native menulist + icon-only chips for selected types)
+- **Cross-level**: *Has Related*, *Has Links* — applied across every row kind
+- **Multi-select search**: Tag, Author, Added By, Collection, Saved Search. Colored tags rendered like Zotero's tag selector (colored block first by position, then plain — on separate rows).
+- **Selection Target**: Parent / Attachment / Annotation tri-state — controls Ctrl+A scope and dims out-of-scope rows.
+- Strict per-row matching: filtering keeps only items that match; ancestors are kept for tree shape, descendants are not auto-pulled.
+
+**Items-list columns** (icon-only, hidden by default; enable via column-picker right-click):
+
+- **Annotations** — count of annotations on attachments; sums across attachments on regular items.
+- **Related** — count of related items per row.
+
+**Right-click menus.**
+
+- *Items list* — **Copy Item Link** (`zotero://select/.../items/<key>`, multi-select joins with newlines) and **Add Related…** (Zotero's select-items dialog, links the chosen items as `dc:relation` peers).
+- *Collections tree* — **Copy Collection Link**.
+- `zotero://` URI handler now resolves `…/collections/<key>` and `…/searches/<key>` paths (group-library variants supported), and switches focus to the library tab when followed from a note.
+
+**Related-items badge.** Annotations with related items show a chain badge in the items tree; click opens a popup listing the relations.
 
 ## Install
 

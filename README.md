@@ -79,6 +79,10 @@ Open `Tools → Plugins → Weavero → Preferences` to enable/disable individua
 
 Plugin source is in `src/`. A Zotero plugin is just a zip file with a `.xpi` extension — to build, zip the contents of `src/` (files at the archive root, no `src/` prefix) and name the result `weavero-v<version>.xpi`.
 
+## Development
+
+Developed with [Claude Opus 4.7](https://claude.ai) and [MCP Server Zotero Dev](https://github.com/introfini/mcp-server-zotero-dev) (hot-reload + privileged-context JS for fast iteration).
+
 ## Compatibility
 
 - Zotero 7.0+ (declared `strict_min_version: 7.0`, `strict_max_version: 10.*`).

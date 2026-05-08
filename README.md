@@ -16,6 +16,8 @@ Out of the box, `https://`, `http://`, and `zotero://` links are recognised ever
 - **App-link skip-confirm** — optional opt-in that bypasses Firefox's *"Allow this site to open the … link?"* prompt.
 - **Right-click "Copy Link"** on any rendered URL.
 
+<img src="docs/screenshots/08-annotation-links.png" width="320" alt="Reader sidebar with annotation comments containing clickable links">
+
 **Filter popup** — a toolbar `▼` next to the search box opens a compact filter panel. Click to include, Alt+click to exclude.
 
 - Annotation **color**, **type**, **has-comment**
@@ -26,6 +28,8 @@ Out of the box, `https://`, `http://`, and `zotero://` links are recognised ever
 - **Selection Target**: Parent / Attachment / Annotation tri-state — controls Ctrl+A scope and dims out-of-scope rows.
 - Strict per-row matching: filtering keeps only items that match; ancestors are kept for tree shape, descendants are not auto-pulled.
 
+<img src="docs/screenshots/06-items-filter.png" width="500" alt="Items-tree filter popup">
+
 **Tabs menu.** The "List all tabs" dropdown gets a structured layout:
 
 - **Library grouping** — section headers (themed library icon + name + tab count); the Library tab stays above all sections.
@@ -33,9 +37,20 @@ Out of the box, `https://`, `http://`, and `zotero://` links are recognised ever
 - **File-type filter** (funnel button) — same theme-aware attachment icons as the items-tree filter (PDF / EPUB / Snapshot / Image / Video / Web Link / Other File), plus a yellow Note tile. Same Alt+click-to-exclude tristate, same `Alt+click hint / Clear / Clear and Close` header.
 - **Settings** (gear button) — *Sort by Library* and *Show Annotations Count* toggles. The annotation count badge on each tab row matches the item-pane attachment row's display.
 
+<img src="docs/screenshots/03-tabs-menu.png" width="380" alt="Tabs menu popup with library grouping">
+&nbsp;
+<img src="docs/screenshots/04-filetype-filter.png" width="380" alt="File-type filter popup">
+&nbsp;
+<img src="docs/screenshots/05-settings.png" width="380" alt="Tabs menu settings popup">
+
 **Group-library tab visuals.** Tabs whose item lives in a group library get a small "Group Libraries" cluster glyph in the top-left corner of the file-type icon, plus a custom tooltip showing the tab title and a `[library icon] Library Name` header.
 
+<img src="docs/screenshots/02-tab-strip.png" width="900" alt="Tab strip with group library badge on the third tab">
+
 **Item-pane libraries highlight.** When an item is replicated across libraries (linked items), the row matching the displayed item's library gets an accent background in the *Libraries and Collections* section of the item pane.
+
+<img src="docs/screenshots/07-libraries-highlight.png" width="320" alt="Libraries and Collections section with the active library highlighted">
+
 
 **Items-list columns** (icon-only, hidden by default; enable via column-picker right-click):
 

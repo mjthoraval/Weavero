@@ -677,6 +677,9 @@ const PLUGIN_CSS = [
     ".wv-filter-panel-inner {",
     "  display: flex; flex-direction: column;",
     "  gap: 3px; padding: 4px 6px;",
+    // Anchor for absolutely-positioned children — currently used
+    // by the per-cross-level-filter scope popup.
+    "  position: relative;",
     "}",
     ".wv-filter-section {",
     "  display: flex; flex-direction: row; align-items: center; gap: 4px;",
@@ -946,6 +949,16 @@ const PLUGIN_CSS = [
     "  grid-template-columns: 1fr 1fr;",
     "  column-gap: 4px; row-gap: 2px;",
     "}",
+    // Thin vertical bar used to visually split related tile groups
+    // inside the same `.wv-filter-options` row — currently used in
+    // the Attachment File Type row to set the Item Note tile apart
+    // from the file-type icons. align-self lets it stretch to the
+    // row's natural height.
+    ".wv-filter-vertical-separator {",
+    "  width: 1px; align-self: stretch;",
+    "  background: rgba(127,127,127,0.45);",
+    "  margin: 2px 4px;",
+    "}",
     // Group separator. In horizontal flex-wrap lists (e.g. the Tag
     // dropdown), force `flex-basis: 100%` so the separator spans
     // a full row, pushing what comes after it onto a new line
@@ -1113,6 +1126,63 @@ const PLUGIN_CSS = [
     ".wv-filter-selected-pill-x:hover {",
     "  opacity: 1; background: rgba(127,127,127,0.18);",
     "}",
+    // Cross-level filter slot — the main icon button + a small ▾
+    // scope arrow share the same border-rounding so they read as
+    // one widget. The arrow opens a per-filter row-kind scope
+    // popup (Annotation / Attachment+Item-Note / Parent).
+    ".wv-filter-cross-slot {",
+    "  display: inline-flex; align-items: stretch;",
+    "}",
+    ".wv-filter-cross-slot .wv-filter-cross-main {",
+    "  border-top-right-radius: 0; border-bottom-right-radius: 0;",
+    "  border-right: none;",
+    "}",
+    ".wv-filter-cross-scope-arrow {",
+    "  display: inline-flex; align-items: center; justify-content: center;",
+    "  font: inherit; font-size: 9px; line-height: 1;",
+    "  color: inherit; cursor: pointer;",
+    "  padding: 0 4px;",
+    "  border: 1px solid rgba(127,127,127,0.4);",
+    "  border-top-left-radius: 0; border-bottom-left-radius: 0;",
+    "  border-top-right-radius: 4px; border-bottom-right-radius: 4px;",
+    "  background: transparent;",
+    "  opacity: 0.7;",
+    "}",
+    ".wv-filter-cross-scope-arrow:hover {",
+    "  opacity: 1; background: rgba(127,127,127,0.12);",
+    "}",
+    // Visible cue when the scope is narrowed below the all-on
+    // default (any kind unchecked) — uses the same accent the
+    // Tags item-pane section uses.
+    ".wv-filter-cross-scope-arrow[data-modified=\"true\"] {",
+    "  color: var(--accent-orange, #cc8400);",
+    "  border-color: var(--accent-orange, rgba(204,132,0,0.6));",
+    "}",
+    // Per-filter scope popup. Lives inside the panel's inner box
+    // so its absolute positioning is relative to the popup —
+    // parking it in mainPopupSet would make positioning fragile
+    // when the panel shifts.
+    ".wv-filter-scope-popup {",
+    "  position: absolute; z-index: 200;",
+    "  background: var(--material-background, rgba(40,40,40,0.98));",
+    "  color: inherit;",
+    "  border: 1px solid rgba(127,127,127,0.5);",
+    "  border-radius: 4px;",
+    "  padding: 4px 6px;",
+    "  box-shadow: 0 2px 6px rgba(0,0,0,0.25);",
+    "  font-size: 12px;",
+    "  min-width: 160px;",
+    "}",
+    ".wv-filter-scope-popup-head {",
+    "  font-size: 10px; opacity: 0.6;",
+    "  text-transform: uppercase; letter-spacing: 0.04em;",
+    "  margin: 1px 0 3px;",
+    "}",
+    ".wv-filter-scope-popup-row {",
+    "  display: flex; align-items: center; gap: 6px;",
+    "  padding: 2px 0; cursor: pointer;",
+    "}",
+    ".wv-filter-scope-popup-row input { margin: 0; }",
     // Subtle text-button used for "Clear all" both in the chip bar
     // and in the panel footer.
     ".wv-filter-clear {",
@@ -1216,6 +1286,376 @@ const PLUGIN_CSS = [
     // siblings. Visual gap stays where the row was, but the alternative
     // (re-running Zotero's data layer) would require deep integration.
     ".row.wv-filter-hidden { display: none !important; }",
+    // "List all tabs" panel — when there are 2+ libraries open in
+    // tabs, Weavero groups the rows by library and inserts a header
+    // row before each group: themed library icon + library name,
+    // matching the look of a top-level row in Zotero's collection
+    // tree. Headers are presentation-only (not focusable, don't
+    // participate in keyboard nav).
+    ".wv-tabs-menu-library-header {",
+    "  display: flex; align-items: center; gap: 6px;",
+    // Flush-left so the section title sits at the panel edge.
+    "  padding: 6px 6px 4px 2px;",
+    "  font-size: 12px; font-weight: 600;",
+    "  border-top: 1px solid rgba(127,127,127,0.25);",
+    "  margin-top: 4px;",
+    "  pointer-events: none;",
+    "}",
+    ".wv-tabs-menu-library-header:first-child {",
+    "  border-top: none;",
+    "  margin-top: 0;",
+    "}",
+    ".wv-tabs-menu-library-header .icon {",
+    "  width: 16px; height: 16px;",
+    "  flex: 0 0 16px;",
+    "}",
+    ".wv-tabs-menu-library-name {",
+    "  overflow: hidden;",
+    "  text-overflow: ellipsis;",
+    "  white-space: nowrap;",
+    "  min-width: 0;",
+    "  flex: 0 1 auto;",
+    "}",
+    // Tab count badge — sits flush against the library name so the
+    // pair reads as one unit (\"My Library 5\"). The tickbox is
+    // pushed to the far right via `margin-left: auto`, leaving the
+    // intervening space between count and tick rather than between
+    // name and count.
+    ".wv-tabs-menu-library-count {",
+    "  flex: 0 0 auto;",
+    "  font-size: 11px;",
+    "  font-weight: 400;",
+    "  opacity: 0.65;",
+    "  font-variant-numeric: tabular-nums;",
+    "  margin-left: 4px;",
+    "}",
+    // Tristate tickbox at the right end of the library header.
+    // Idle: empty square. `data-selected`: filled accent (include).
+    // `data-excluded`: red diagonal slash on red-tinted background.
+    // Header has pointer-events: none so the box re-enables them.
+    ".wv-tabs-menu-library-tick {",
+    "  pointer-events: auto;",
+    "  flex: 0 0 14px;",
+    "  width: 14px; height: 14px;",
+    "  margin-left: auto;",
+    "  padding: 0;",
+    "  border: 1px solid rgba(127,127,127,0.55);",
+    "  border-radius: 3px;",
+    "  background: transparent;",
+    "  cursor: pointer;",
+    "  position: relative;",
+    "}",
+    ".wv-tabs-menu-library-tick:hover {",
+    "  border-color: rgba(127,127,127,0.85);",
+    "}",
+    ".wv-tabs-menu-library-tick[data-selected=\"true\"] {",
+    "  background: var(--color-accent, #2ea8e5);",
+    "  border-color: var(--color-accent, #2ea8e5);",
+    "}",
+    ".wv-tabs-menu-library-tick[data-selected=\"true\"]::after {",
+    "  content: \"\";",
+    "  position: absolute;",
+    "  left: 3px; top: 1px;",
+    "  width: 5px; height: 8px;",
+    "  border: solid #fff;",
+    "  border-width: 0 1.5px 1.5px 0;",
+    "  transform: rotate(45deg);",
+    "}",
+    ".wv-tabs-menu-library-tick[data-excluded=\"true\"] {",
+    "  border-color: rgba(220,72,72,0.75);",
+    "  background:",
+    "    linear-gradient(to top right,",
+    "      transparent calc(50% - 1px),",
+    "      rgba(220,72,72,0.9) calc(50% - 1px),",
+    "      rgba(220,72,72,0.9) calc(50% + 1px),",
+    "      transparent calc(50% + 1px)),",
+    "    rgba(220,72,72,0.18);",
+    "}",
+    // Filter-driven hide: applied to row[data-tab-id] elements
+    // whose library is excluded (or not in the active include set).
+    // Headers remain visible so the user can toggle the filter
+    // back off without exiting the panel.
+    ".wv-tabs-menu-row-hidden {",
+    "  display: none !important;",
+    "}",
+    // Tabs-menu toolbar button picks up an accent tint when at least
+    // one library filter is active, so the user can tell at a glance
+    // that the visible tab list is narrowed.
+    "#zotero-tb-tabs-menu.wv-tabs-menu-filter-active {",
+    "  background-color: var(--color-accent-secondary, rgba(46,168,229,0.18)) !important;",
+    "  border-radius: 4px;",
+    "}",
+    "#zotero-tb-tabs-menu.wv-tabs-menu-filter-active .toolbarbutton-icon {",
+    "  fill: var(--color-accent, #2ea8e5);",
+    "}",
+    // File-type filter button: small funnel positioned over the right
+    // edge of the search input. Wrapper is given `position: relative`
+    // so the absolute positioning anchors to the panel header.
+    "#zotero-tabs-menu-wrapper {",
+    "  position: relative;",
+    "}",
+    // Trim the input on the right so the funnel button sits OUTSIDE
+    // it (not floating on top of the input background).
+    "#zotero-tabs-menu-panel #zotero-tabs-menu-filter {",
+    "  margin-inline-end: 38px !important;",
+    "}",
+    // Transparent at rest, hover/active fills from the same
+    // `--fill-*` vars Zotero's `toolbarbutton` (and the items-tree
+    // filter button) uses. No border, no permanent background.
+    "#wv-tabs-menu-filetype-btn {",
+    "  position: absolute;",
+    // Match the search input's row exactly: it sits at the top of
+    // the wrapper and is 32 px tall. We can't anchor with `bottom`
+    // because the wrapper extends down through the tab list.
+    "  top: 0;",
+    "  inset-inline-end: 4px;",
+    "  height: 32px;",
+    "  display: inline-flex;",
+    "  align-items: center; justify-content: center;",
+    "  gap: 1px;",
+    "  padding: 2px 4px;",
+    "  background: none;",
+    "  background-color: transparent;",
+    "  border: none;",
+    "  box-shadow: none;",
+    "  outline: none;",
+    "  border-radius: 5px;",
+    "  color: var(--fill-secondary);",
+    "  cursor: pointer;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: currentColor;",
+    "  appearance: none;",
+    "  -moz-appearance: none;",
+    "}",
+    "#wv-tabs-menu-filetype-btn .wv-tabs-menu-filetype-icon {",
+    "  width: 16px; height: 16px;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: currentColor;",
+    "}",
+    "#wv-tabs-menu-filetype-btn .wv-tabs-menu-filetype-chev {",
+    "  display: inline-flex; align-items: center;",
+    "  width: 8px; height: 8px;",
+    "  opacity: 0.85;",
+    "}",
+    "#wv-tabs-menu-filetype-btn:hover {",
+    "  background-color: var(--fill-quinary);",
+    "}",
+    "#wv-tabs-menu-filetype-btn:active {",
+    "  background-color: var(--fill-quarternary);",
+    "}",
+    "#wv-tabs-menu-filetype-btn.wv-active {",
+    "  color: var(--color-accent, #2ea8e5);",
+    "}",
+    "#wv-tabs-menu-filetype-btn.wv-active:hover {",
+    "  background-color: var(--fill-quinary);",
+    "}",
+    // Custom tooltip for group-library tabs. XUL <tooltip> won't
+    // render HTML children, so the inner structure is built from
+    // <vbox>/<hbox>/<description>/<image>; these CSS rules style
+    // them.
+    "tooltip#wv-tab-library-tooltip {",
+    "  --panel-padding: 0;",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-wrap {",
+    "  padding: 6px 8px;",
+    "  min-width: 200px;",
+    "  max-width: 480px;",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-title {",
+    "  font-weight: 600;",
+    "  margin: 0 0 2px 0 !important;",
+    "  white-space: normal;",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-sep {",
+    "  height: 1px;",
+    "  margin: 2px 0;",
+    "  background: rgba(127,127,127,0.3);",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-header {",
+    "  margin-top: 2px;",
+    "  gap: 6px;",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-icon {",
+    "  width: 16px;",
+    "  height: 16px;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: #59ADC4;",
+    "}",
+    "#wv-tab-library-tooltip .wv-tab-tooltip-libname {",
+    "  margin: 0 !important;",
+    "  font-weight: 600;",
+    "}",
+    // File-type popup: small floating row of icon buttons under the
+    // funnel. Mounts inside the tabs-menu panel so clicks on it
+    // don't dismiss the parent <panel>. Matches the items-tree
+    // filter popup's background by using the same `--material-menu`
+    // var Mozilla applies to its menu/panel chrome. No transition
+    // — appears in a single render.
+    // Gear (settings) button mirroring the funnel — sits OUTSIDE
+    // the search input on the LEFT. Same visual rules as the
+    // funnel: no permanent box, hover fill from `--fill-quinary`.
+    "#zotero-tabs-menu-panel #zotero-tabs-menu-filter {",
+    "  margin-inline-start: 38px !important;",
+    "}",
+    "#wv-tabs-menu-settings-btn {",
+    "  position: absolute;",
+    "  top: 0;",
+    "  inset-inline-start: 4px;",
+    "  height: 32px;",
+    "  display: inline-flex;",
+    "  align-items: center; justify-content: center;",
+    "  padding: 2px 4px;",
+    "  background: none;",
+    "  background-color: transparent;",
+    "  border: none;",
+    "  box-shadow: none;",
+    "  outline: none;",
+    "  border-radius: 5px;",
+    "  color: var(--fill-secondary);",
+    "  cursor: pointer;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: currentColor;",
+    "  appearance: none;",
+    "  -moz-appearance: none;",
+    "}",
+    "#wv-tabs-menu-settings-btn .wv-tabs-menu-settings-icon {",
+    "  width: 16px; height: 16px;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: currentColor;",
+    "}",
+    "#wv-tabs-menu-settings-btn:hover {",
+    "  background-color: var(--fill-quinary);",
+    "}",
+    "#wv-tabs-menu-settings-btn:active {",
+    "  background-color: var(--fill-quarternary);",
+    "}",
+    // Settings popup: stacked checkbox rows. Same chrome / no-fade
+    // treatment as the file-type popup.
+    "#wv-tabs-menu-settings-popup {",
+    "  position: absolute;",
+    "  top: 38px;",
+    "  inset-inline-start: 6px;",
+    "  display: flex; flex-direction: column; gap: 4px;",
+    "  padding: 8px 10px;",
+    "  background-color: var(--material-sidepane);",
+    "  background-image: linear-gradient(var(--material-menu), var(--material-menu));",
+    "  border: 1px solid var(--material-panedivider, rgba(127,127,127,0.4));",
+    "  border-radius: 6px;",
+    "  box-shadow: 0 4px 12px rgba(0,0,0,0.18);",
+    "  z-index: 1000;",
+    "  transition: none !important;",
+    "  animation: none !important;",
+    "  opacity: 1;",
+    "  min-width: 180px;",
+    "}",
+    ".wv-tabs-menu-settings-row {",
+    "  display: flex; align-items: center; gap: 8px;",
+    "  font-size: 12px;",
+    "  cursor: pointer;",
+    "  padding: 2px 0;",
+    "}",
+    ".wv-tabs-menu-settings-cb {",
+    "  margin: 0;",
+    "  cursor: pointer;",
+    "}",
+    ".wv-tabs-menu-settings-label {",
+    "  user-select: none;",
+    "}",
+    // Highlight the library row of the currently-displayed item in
+    // the libraries-collections-box when the item is replicated
+    // across libraries (linked items present). Coloured background
+    // on the inner `.box` so the existing `.current` font-weight
+    // overlay still applies when both states match.
+    "libraries-collections-box .row.wv-libraries-current-library .box {",
+    "  background-color: var(--color-accent-secondary, rgba(46,168,229,0.18));",
+    "  border-radius: 4px;",
+    "}",
+    // Annotation count badge — matches the item-pane attachment row
+    // (`scss/elements/_attachmentRow.scss .annotation-btn`): a 12×12
+    // universal `annotation-12` icon followed by the count, both
+    // tinted with `--fill-secondary`.
+    "#zotero-tabs-menu-list .row .wv-tabs-menu-anncount {",
+    "  flex: 0 0 auto;",
+    "  display: inline-flex;",
+    "  align-items: center;",
+    "  gap: 4px;",
+    "  margin: 0 6px;",
+    "  color: var(--fill-secondary);",
+    "  font-variant-numeric: tabular-nums;",
+    "}",
+    "#zotero-tabs-menu-list .row .wv-tabs-menu-anncount-icon {",
+    "  width: 12px;",
+    "  height: 12px;",
+    "  display: inline-block;",
+    "  background-image: url(\"chrome://zotero/skin/16/universal/annotation-12.svg\");",
+    "  background-repeat: no-repeat;",
+    "  background-position: center;",
+    "  background-size: 12px 12px;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: currentColor;",
+    "}",
+    "#zotero-tabs-menu-list .row .wv-tabs-menu-anncount-label {",
+    "  line-height: 16px;",
+    "}",
+    // Row of file-type tiles inside the popup — sits below the
+    // top bar (hint + Clear / × buttons) in column flow.
+    "#wv-tabs-menu-filetype-popup .wv-tabs-menu-filetype-row {",
+    "  display: flex; flex-direction: row; gap: 4px;",
+    "  align-items: stretch;",
+    "}",
+    // Thin vertical separator between the file-type icons and the
+    // Note tile inside the file-type filter popup.
+    "#wv-tabs-menu-filetype-popup .wv-tabs-menu-filetype-sep {",
+    "  width: 1px;",
+    "  align-self: stretch;",
+    "  background: rgba(127,127,127,0.4);",
+    "  margin: 2px 4px;",
+    "}",
+    "#wv-tabs-menu-filetype-popup {",
+    "  position: absolute;",
+    "  top: 38px;",
+    "  inset-inline-end: 6px;",
+    // Stack the top bar (hint + Clear / × buttons) above the row
+    // of file-type tiles.
+    "  display: flex; flex-direction: column; gap: 8px;",
+    // Match the items-tree filter popup's breathing room: the
+    // platform `<panel type="arrow">` chrome adds ~6 px padding on
+    // each side and `wv-filter-popup-inner` adds another 6 px on top
+    // — combined ~12 px. Mirror that here so both popups feel the
+    // same despite us being a plain HTML div.
+    "  padding: 12px;",
+    // `--material-menu` is rgba(…, 0.58) — designed for XUL panels
+    // that have a native backdrop-filter blur. Without the blur it
+    // reads as transparent, so layer the same translucent menu var
+    // on top of an opaque sidepane fill so the result is solid and
+    // close to the items-tree filter's visual.
+    "  background-color: var(--material-sidepane);",
+    "  background-image: linear-gradient(var(--material-menu), var(--material-menu));",
+    "  border: 1px solid var(--material-panedivider, rgba(127,127,127,0.4));",
+    "  border-radius: 6px;",
+    "  box-shadow: 0 4px 12px rgba(0,0,0,0.18);",
+    "  z-index: 1000;",
+    "  transition: none !important;",
+    "  animation: none !important;",
+    "  opacity: 1;",
+    "}",
+    // When the Tabs panel is in grouped layout (Weavero added
+    // section headers), every row is indented uniformly so the
+    // Library tab and the section tabs align — headers
+    // themselves stay flush-left (they don't match `.row`).
+    "#zotero-tabs-menu-panel.wv-tabs-menu-grouped .row[data-tab-id] {",
+    "  padding-inline-start: 18px !important;",
+    "}",
+    // Widen the panel to recover the horizontal space the row
+    // indent eats into the tab title — AND to leave room for the
+    // gear / funnel buttons flanking the search input. Default
+    // upstream width is 350px (`scss/elements/_tabsMenuPanel.scss`).
+    // Driven by `wv-tabs-menu-wide` (separate from `wv-tabs-menu-grouped`)
+    // so the panel stays the same width whether or not the user has
+    // "Sort by Library" enabled — avoids a width-jump on toggle.
+    "#zotero-tabs-menu-panel.wv-tabs-menu-wide {",
+    "  width: 420px !important;",
+    "}",
 ].join("\n");
 
 // ===========================================================================
@@ -9289,7 +9729,58 @@ class WeaveroPlugin {
             //   true  → must have the property
             //   false → must NOT have the property (alt+click)
             hasRelated: null,
-            hasLinks: null,
+            hasLink: null,
+            hasTag: null,
+            // Per-filter row-kind scope for the three cross-level
+            // tri-states. Default all-on = current behavior (filter
+            // applies to every kind). Each key maps to a row kind:
+            //   annotation = annotation rows
+            //   attachment = attachment rows + item notes (notes
+            //                 attached to a regular item — same
+            //                 tree level)
+            //   parent     = regular items + standalone notes
+            //                 (top-level rows)
+            // Unchecking a kind makes the filter relax through for
+            // that kind (the row passes regardless of the property).
+            hasRelatedScope: { annotation: true, attachment: true, parent: true },
+            // Has Link's scope keys are text-source-specific rather
+            // than row-kind-generic, since URL detection only makes
+            // sense in three text fields:
+            //   annotationComment → annotation.annotationComment
+            //   itemNoteText      → note body, child notes
+            //   standaloneText    → note body, top-level notes
+            // Other row kinds (attachment, regular item) never
+            // satisfy Has Link and aren't surfaced in the scope.
+            hasLinkScope: {
+                annotationComment: true,
+                itemNoteText: true,
+                standaloneText: true,
+            },
+            hasTagScope: { annotation: true, attachment: true, parent: true },
+            // Note-kind defining tri-states. Strict per-row.
+            // (Zotero's UI calls notes attached to a regular item
+            // "Item Notes" — `itemNote=true` matches those.)
+            //   itemNote=true        → row must be a note attached
+            //                          to a regular item
+            //   standaloneNote=true  → row must be a top-level
+            //                          (parentless) note
+            // exclude variants reject those rows.
+            itemNote: null,
+            standaloneNote: null,
+            // Parent-targeting tri-state filters (regular items
+            // only; non-regulars relax through). Each is `null /
+            // true / false` for off / include / exclude.
+            hasAbstract: null,
+            hasDOI: null,
+            hasURL: null,
+            hasAttachment: null,
+            // Attachment-targeting tri-state — file attachments only.
+            hasAnnotations: null,
+            // Publication multi-select (parent items only). State
+            // shape mirrors Tag / Author / Added By: parallel
+            // include + exclude arrays of titles.
+            publication: [],
+            publicationExclude: [],
         };
     }
 
@@ -9312,7 +9803,17 @@ class WeaveroPlugin {
         if (group.addedBy && group.addedBy.length) return true;
         if (group.addedByExclude && group.addedByExclude.length) return true;
         if (group.hasRelated != null) return true;
-        if (group.hasLinks != null) return true;
+        if (group.hasLink != null) return true;
+        if (group.hasTag != null) return true;
+        if (group.itemNote != null) return true;
+        if (group.standaloneNote != null) return true;
+        if (group.hasAbstract != null) return true;
+        if (group.hasDOI != null) return true;
+        if (group.hasURL != null) return true;
+        if (group.hasAttachment != null) return true;
+        if (group.hasAnnotations != null) return true;
+        if (group.publication && group.publication.length) return true;
+        if (group.publicationExclude && group.publicationExclude.length) return true;
         return false;
     }
 
@@ -9727,13 +10228,117 @@ class WeaveroPlugin {
         // for tree shape happens via `_hasMatchingAnnotation` in
         // the apply loop, which is what brings the parent in when
         // a descendant matches.
+        // Cross-level filters honour their per-kind scope: a row
+        // whose kind has its scope flag OFF relaxes through (the
+        // filter doesn't apply at that level). `_rowKindOf` maps
+        // every row to one of {annotation, attachment, parent};
+        // anything else (e.g. unknown kinds) trivially in scope.
+        const inScope = (scopeObj, kind) =>
+            !scopeObj || !kind || scopeObj[kind] !== false;
         if (group.hasRelated != null) {
-            const rels = (item.relatedItems && item.relatedItems.length) || 0;
-            if ((rels > 0) !== group.hasRelated) return false;
+            const k = this._rowKindOf(item);
+            if (inScope(group.hasRelatedScope, k)) {
+                const rels = (item.relatedItems && item.relatedItems.length) || 0;
+                if ((rels > 0) !== group.hasRelated) return false;
+            }
         }
-        if (group.hasLinks != null) {
-            const has = this._itemHasLinks(item);
-            if (has !== group.hasLinks) return false;
+        if (group.hasLink != null) {
+            // Has Link's scope keys are text-source-specific
+            // (annotationComment / itemNoteText / standaloneText).
+            // Rows that aren't one of those text sources fall
+            // outside Has Link's universe entirely → trivially pass.
+            const sk = this._hasLinkScopeKeyOf(item);
+            if (sk) {
+                const sc = group.hasLinkScope;
+                if (!sc || sc[sk] !== false) {
+                    const has = this._itemHasLinks(item);
+                    if (has !== group.hasLink) return false;
+                }
+            }
+        }
+        if (group.hasTag != null) {
+            const k = this._rowKindOf(item);
+            if (inScope(group.hasTagScope, k)) {
+                const tags = (item.getTags && item.getTags()) || [];
+                const has = tags.length > 0;
+                if (has !== group.hasTag) return false;
+            }
+        }
+        // Note-kind defining filters. Strict per-row check: when
+        // include is set, ONLY note items of the requested sub-kind
+        // pass; everything else fails. Exclude rejects the matching
+        // sub-kind. The cascade still keeps ancestors of the few
+        // notes that match (item notes pull in their parent regular
+        // item) because `_hasMatchingAnnotation` walks `item.getNotes`
+        // and returns true for any primary descendant.
+        if (group.itemNote != null) {
+            const isNote = !!(item.isNote && item.isNote());
+            const isChild = isNote && !!item.parentItem;
+            if (isChild !== group.itemNote) return false;
+        }
+        if (group.standaloneNote != null) {
+            const isNote = !!(item.isNote && item.isNote());
+            const isStandalone = isNote && !item.parentItem;
+            if (isStandalone !== group.standaloneNote) return false;
+        }
+        // Parent-targeting "Has *" tri-states. Each one only fails
+        // when the item IS a regular item and doesn't satisfy the
+        // chosen direction. Non-regulars relax through (matches the
+        // pattern used by `annotationHasComment` for non-annotations).
+        if (group.hasAbstract != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const v = !!(item.getField
+                    && String(item.getField("abstractNote") || "").trim().length);
+                if (v !== group.hasAbstract) return false;
+            }
+        }
+        if (group.hasDOI != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const v = !!(item.getField
+                    && String(item.getField("DOI") || "").trim().length);
+                if (v !== group.hasDOI) return false;
+            }
+        }
+        if (group.hasURL != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const v = !!(item.getField
+                    && String(item.getField("url") || "").trim().length);
+                if (v !== group.hasURL) return false;
+            }
+        }
+        if (group.hasAttachment != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const ids = (item.getAttachments && item.getAttachments()) || [];
+                const v = ids.length > 0;
+                if (v !== group.hasAttachment) return false;
+            }
+        }
+        if (group.hasAnnotations != null) {
+            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
+            if (isFa) {
+                const ids = item.getAnnotations() || [];
+                const v = ids.length > 0;
+                if (v !== group.hasAnnotations) return false;
+            }
+        }
+        // Publication — regular items only.
+        const wantedPub = group.publication;
+        const wantedPubX = group.publicationExclude;
+        if ((wantedPub && wantedPub.length)
+            || (wantedPubX && wantedPubX.length)) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const pub = (item.getField
+                    && item.getField("publicationTitle")) || "";
+                if (wantedPub && wantedPub.length
+                    && !wantedPub.includes(pub)) return false;
+                if (wantedPubX && wantedPubX.length
+                    && wantedPubX.includes(pub)) return false;
+            }
         }
         const wantedTags = group.annotationTag;
         const wantedTagsX = group.annotationTagExclude;
@@ -9953,6 +10558,26 @@ class WeaveroPlugin {
         return true;
     }
 
+    /** Map an item to one of three "row kinds" used by the
+     *  cross-level filter scope sub-filters.
+     *  - "annotation" — annotation rows
+     *  - "attachment" — attachment rows AND item notes (notes
+     *                    attached to a regular item), since they
+     *                    sit at the same tree level
+     *  - "parent"     — regular items AND standalone notes
+     *                    (top-level rows in the items tree)
+     *  Returns `null` for anything else. */
+    _rowKindOf(item) {
+        if (!item) return null;
+        if (item.isAnnotation && item.isAnnotation()) return "annotation";
+        if (item.isAttachment && item.isAttachment()) return "attachment";
+        if (item.isNote && item.isNote()) {
+            return item.parentItem ? "attachment" : "parent";
+        }
+        if (item.isRegularItem && item.isRegularItem()) return "parent";
+        return null;
+    }
+
     /** Strict kind-specific check: returns true iff `item` is
      *  actually of `kind` AND passes all filters in `group` that
      *  target that kind. Used by `_rowSatisfiesTreeJoin`. */
@@ -10120,15 +10745,1525 @@ class WeaveroPlugin {
         // field primary, parents with `relatedItems` primary, etc.,
         // so the cascade pulls in their ancestors and (for parents)
         // walks their subtree on the keep pass.
+        // Cross-level scope check (mirrors _rowPassesFilters).
+        const cInScope = (scopeObj, kind) =>
+            !scopeObj || !kind || scopeObj[kind] !== false;
         if (group.hasRelated != null) {
-            const rels = (item.relatedItems && item.relatedItems.length) || 0;
-            if ((rels > 0) === group.hasRelated) return true;
+            const k = this._rowKindOf(item);
+            if (cInScope(group.hasRelatedScope, k)) {
+                const rels = (item.relatedItems && item.relatedItems.length) || 0;
+                if ((rels > 0) === group.hasRelated) return true;
+            }
         }
-        if (group.hasLinks != null) {
-            const has = this._itemHasLinks(item);
-            if (has === group.hasLinks) return true;
+        if (group.hasLink != null) {
+            const sk = this._hasLinkScopeKeyOf(item);
+            if (sk) {
+                const sc = group.hasLinkScope;
+                if (!sc || sc[sk] !== false) {
+                    const has = this._itemHasLinks(item);
+                    if (has === group.hasLink) return true;
+                }
+            }
+        }
+        if (group.hasTag != null) {
+            const k = this._rowKindOf(item);
+            if (cInScope(group.hasTagScope, k)) {
+                const tags = (item.getTags && item.getTags()) || [];
+                const has = tags.length > 0;
+                if (has === group.hasTag) return true;
+            }
+        }
+        // Note-kind defining filters count as a kind-match for the
+        // matching row, so child / standalone notes become primary
+        // and the cascade pulls in their ancestors.
+        if (group.itemNote != null) {
+            const isCN = !!(item.isNote && item.isNote() && !!item.parentItem);
+            if (isCN === group.itemNote) return true;
+        }
+        if (group.standaloneNote != null) {
+            const isSN = !!(item.isNote && item.isNote() && !item.parentItem);
+            if (isSN === group.standaloneNote) return true;
+        }
+        // Parent-targeting Has-* — only regular items can be primary
+        // for these. Non-regulars don't count as kind matches here.
+        if (isReg) {
+            if (group.hasAbstract != null) {
+                const v = !!(item.getField
+                    && String(item.getField("abstractNote") || "").trim().length);
+                if (v === group.hasAbstract) return true;
+            }
+            if (group.hasDOI != null) {
+                const v = !!(item.getField
+                    && String(item.getField("DOI") || "").trim().length);
+                if (v === group.hasDOI) return true;
+            }
+            if (group.hasURL != null) {
+                const v = !!(item.getField
+                    && String(item.getField("url") || "").trim().length);
+                if (v === group.hasURL) return true;
+            }
+            if (group.hasAttachment != null) {
+                const ids = (item.getAttachments && item.getAttachments()) || [];
+                const v = ids.length > 0;
+                if (v === group.hasAttachment) return true;
+            }
+            if ((group.publication && group.publication.length)
+                || (group.publicationExclude && group.publicationExclude.length)) {
+                const pub = (item.getField
+                    && item.getField("publicationTitle")) || "";
+                if (group.publication && group.publication.length
+                    && group.publication.includes(pub)) return true;
+                if (group.publicationExclude && group.publicationExclude.length
+                    && !group.publicationExclude.includes(pub)) return true;
+            }
+        }
+        // Has Annotations — file attachments only.
+        if (group.hasAnnotations != null) {
+            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
+            if (isFa) {
+                const ids = item.getAnnotations() || [];
+                const v = ids.length > 0;
+                if (v === group.hasAnnotations) return true;
+            }
         }
         return false;
+    }
+
+    /** Patch the "List all tabs" panel (the dropdown reachable from
+     *  the chevron at the right of the tab bar) so its rows are
+     *  grouped by library when more than one library has tabs open.
+     *  Each group gets a small dimmed header above its first row;
+     *  group order is User Library → group libraries alphabetically.
+     *  Single-library cases are left alone.
+     *
+     *  Implementation: monkey-patch the panel instance's `refreshList`
+     *  method. After the upstream method finishes laying out rows,
+     *  we read each row's `data-tab-id`, look up its library, and
+     *  reorder the DOM in-place. */
+    _setupTabsMenuLibrarySort(win) {
+        if (!win) return;
+        // Tab-bar decoration (group-library tints + tooltip suffix)
+        // is independent of the popup patch — set it up first so it
+        // works even before the user opens the popup once.
+        try { this._setupTabBarLibraryDecoration(win); }
+        catch (e) { Zotero.debug("[Weavero] tab-bar deco err: " + e); }
+        // File-type filter button on the tabs-menu search row.
+        // Set up here so the button is in place the first time the
+        // panel opens.
+        try { this._setupTabsMenuFileTypeFilter(win); }
+        catch (e) { Zotero.debug("[Weavero] file-type filter err: " + e); }
+        const doc = win.document;
+        const panel = doc && doc.getElementById("zotero-tabs-menu-panel");
+        if (!panel) {
+            // tabs-menu-panel is a custom element that may not be
+            // upgraded yet on first window load — retry once.
+            win.setTimeout(() => this._setupTabsMenuLibrarySort(win), 1000);
+            return;
+        }
+        // If a previous Weavero load left a patched refreshList on
+        // this panel, restore the upstream version before re-binding
+        // — otherwise we'd build the new wrapper on top of the old
+        // one (and on plugin upgrade the old wrapper's closure runs
+        // forever, leaking stale code paths).
+        if (panel._wvLibrarySortInstalled) {
+            try {
+                if (panel._wvOrigRefreshList) {
+                    panel.refreshList = panel._wvOrigRefreshList;
+                    delete panel._wvOrigRefreshList;
+                }
+            } catch (e) {}
+            delete panel._wvLibrarySortInstalled;
+        }
+        panel._wvLibrarySortInstalled = true;
+        // Always apply the wider-panel class once Weavero is active
+        // on the panel, regardless of grouping / filter state — the
+        // gear and funnel buttons flanking the search input need the
+        // extra horizontal room either way, and a constant width
+        // avoids a UI jump when the user toggles "Sort by Library".
+        panel.classList.add("wv-tabs-menu-wide");
+        const orig = panel.refreshList && panel.refreshList.bind(panel);
+        if (!orig) return;
+        panel._wvOrigRefreshList = orig;
+        const self = this;
+        panel.refreshList = function (opts) {
+            orig(opts);
+            try { self._groupTabsMenuByLibrary(panel); }
+            catch (e) {
+                Zotero.debug("[Weavero] tabs-menu library sort err: " + e);
+            }
+        };
+        // The panel may already have content from an earlier open
+        // before the patch landed — refresh it now so the header
+        // structure is in place even without a popupshowing event.
+        try {
+            if (panel.visible) panel.refreshList();
+        } catch (e) {}
+    }
+
+    _teardownTabsMenuLibrarySort(win) {
+        if (!win) return;
+        const doc = win.document;
+        // Always strip the tab-bar filter stylesheet first, regardless
+        // of panel state — the rule is global to the window and would
+        // outlive plugin disable if we only cleaned it up alongside
+        // the panel patch.
+        try {
+            const tabBarStyle = doc
+                && doc.getElementById("wv-tab-bar-filter-style");
+            if (tabBarStyle) tabBarStyle.remove();
+        } catch (e) {}
+        // Tear down group-library tints and tooltip suffixes — also
+        // global to the window, also needs cleaning regardless of
+        // popup state.
+        try { this._teardownTabBarLibraryDecoration(win); } catch (e) {}
+        // Drop the file-type filter button + popup from the panel
+        // and clear any open-popup outside-click listener.
+        try {
+            const p = doc && doc.getElementById("zotero-tabs-menu-panel");
+            if (p) {
+                const ftBtn = p.querySelector("#wv-tabs-menu-filetype-btn");
+                if (ftBtn) ftBtn.remove();
+                const ftPopup = p.querySelector(
+                    "#wv-tabs-menu-filetype-popup");
+                if (ftPopup) ftPopup.remove();
+                const gearBtn = p.querySelector(
+                    "#wv-tabs-menu-settings-btn");
+                if (gearBtn) gearBtn.remove();
+                const gearPopup = p.querySelector(
+                    "#wv-tabs-menu-settings-popup");
+                if (gearPopup) gearPopup.remove();
+                delete p._wvFileTypeFilterInstalled;
+            }
+            if (this._wvFileTypeOutsideClose && doc) {
+                doc.removeEventListener("mousedown",
+                    this._wvFileTypeOutsideClose, true);
+                delete this._wvFileTypeOutsideClose;
+            }
+            if (this._wvSettingsOutsideClose && doc) {
+                doc.removeEventListener("mousedown",
+                    this._wvSettingsOutsideClose, true);
+                delete this._wvSettingsOutsideClose;
+            }
+        } catch (e) {}
+        // Drop the filter-active marker class on the tabs-menu
+        // button so its CSS reverts to the default appearance.
+        try {
+            const menuBtn = doc
+                && doc.getElementById("zotero-tb-tabs-menu");
+            if (menuBtn) {
+                menuBtn.classList.remove("wv-tabs-menu-filter-active");
+            }
+        } catch (e) {}
+        const panel = doc && doc.getElementById("zotero-tabs-menu-panel");
+        if (!panel || !panel._wvLibrarySortInstalled) return;
+        try {
+            if (panel._wvOrigRefreshList) {
+                panel.refreshList = panel._wvOrigRefreshList;
+                delete panel._wvOrigRefreshList;
+            }
+        } catch (e) {}
+        delete panel._wvLibrarySortInstalled;
+        // Strip any existing headers and re-run the upstream refresh
+        // so the panel returns to its native flat layout immediately
+        // — otherwise our injected headers and reordered rows linger
+        // until the user opens, closes, and reopens the panel.
+        try {
+            const list = panel._tabsList
+                || panel.querySelector("#zotero-tabs-menu-list");
+            if (list) {
+                for (const h of list.querySelectorAll(
+                    ".wv-tabs-menu-library-header")) h.remove();
+            }
+            panel.classList.remove("wv-tabs-menu-grouped");
+            panel.classList.remove("wv-tabs-menu-wide");
+            if (panel.visible && typeof panel.refreshList === "function") {
+                panel.refreshList();
+            }
+        } catch (e) {}
+    }
+
+    /** Reorder the rendered rows under #zotero-tabs-menu-list into
+     *  per-library groups, inserting a header before each group.
+     *  The Library tab (`zotero-pane`) stays at the top, ungrouped
+     *  — it can navigate between libraries on its own, so binding
+     *  it to one section would be misleading. Headers carry the
+     *  same colour-themed library icon used by Zotero's collection
+     *  tree (`icon-library` / `icon-library-group` / `icon-feed`). */
+    _groupTabsMenuByLibrary(panel) {
+        if (!panel) return;
+        const tabsList = panel._tabsList
+            || panel.querySelector("#zotero-tabs-menu-list");
+        if (!tabsList) return;
+        const win = panel.ownerGlobal;
+        const doc = panel.ownerDocument;
+        const Zotero_Tabs = win && win.Zotero_Tabs;
+        if (!Zotero_Tabs || !Array.isArray(Zotero_Tabs._tabs)) return;
+
+        // Drop any prior headers from a previous invocation. The
+        // upstream `refreshList` calls `replaceChildren()` first so
+        // they're already gone — but defensively handle the case
+        // where another tool injected its own headers.
+        for (const h of tabsList.querySelectorAll(
+            ".wv-tabs-menu-library-header")) h.remove();
+
+        const allRows = [...tabsList.querySelectorAll(".row[data-tab-id]")];
+        if (!allRows.length) return;
+
+        // Decorate every row with the optional annotation count
+        // before any grouping/visibility logic runs. The decoration
+        // is idempotent — calling it on a row that already has a
+        // count badge will replace the badge.
+        if (this._tabsMenuShowAnnotationCount) {
+            for (const row of allRows) {
+                this._addAnnotationCountToRow(row);
+            }
+        }
+
+        // If "Sort by Library" is off, the user wants the upstream
+        // flat list. Apply only the file-type filter (per-row) and
+        // leave sorting / headers alone. Tab-bar mirror still runs.
+        if (this._tabsMenuGroupByLibrary === false) {
+            panel.classList.remove("wv-tabs-menu-grouped");
+            for (const row of allRows) {
+                const passes = this._tabPassesFileTypeFilter(
+                    win, row.dataset.tabId);
+                if (passes) row.classList.remove("wv-tabs-menu-row-hidden");
+                else row.classList.add("wv-tabs-menu-row-hidden");
+            }
+            // Mirror file-type filter on the main window's tab bar
+            // (no library filter applies in this mode).
+            this._applyTabBarFilter(win,
+                () => null,
+                () => true);
+            try { this._refreshFileTypeFilterButtonState(panel); }
+            catch (e) {}
+            const ft = this._tabsMenuFileTypeFilter;
+            const ftActive = ft
+                && (ft.include.size > 0 || ft.exclude.size > 0);
+            const menuBtn = doc.getElementById("zotero-tb-tabs-menu");
+            if (menuBtn) {
+                menuBtn.classList.toggle("wv-tabs-menu-filter-active",
+                    !!ftActive);
+            }
+            return;
+        }
+
+        // Library tab is special — it doesn't have a single library
+        // (it's the meta-tab that switches between them). Pull it
+        // aside; the rest get grouped by their item's libraryID.
+        let libraryPaneRow = null;
+        const dataRows = [];
+        for (const row of allRows) {
+            if (row.dataset.tabId === "zotero-pane") libraryPaneRow = row;
+            else dataRows.push(row);
+        }
+
+        const libraryForTab = (tabId) => {
+            const tab = Zotero_Tabs._tabs.find(t => t.id === tabId);
+            const itemID = tab && tab.data && tab.data.itemID;
+            if (itemID == null) return null;
+            try {
+                const item = Zotero.Items.get(itemID);
+                return item ? item.libraryID : null;
+            } catch (e) { return null; }
+        };
+
+        const groupByLib = new Map();
+        const orderedLibs = [];
+        for (const row of dataRows) {
+            let libID = libraryForTab(row.dataset.tabId);
+            if (libID == null) libID = "__unknown__";
+            if (!groupByLib.has(libID)) {
+                groupByLib.set(libID, []);
+                orderedLibs.push(libID);
+            }
+            groupByLib.get(libID).push(row);
+        }
+
+        // Skip rendering of headers when there's nothing to group:
+        // - no data rows at all
+        // - exactly one library AND no Library tab (single-section,
+        //   header would be redundant)
+        if (orderedLibs.length === 0) return;
+
+        // Sort: user library first, then group / feed libraries
+        // alphabetically. Unknown bucket lands at the end.
+        const userLibID = (Zotero.Libraries && Zotero.Libraries.userLibraryID);
+        const libInfo = (id) => {
+            if (id === "__unknown__") {
+                return {
+                    name: "Other",
+                    iconClass: "icon-library",
+                    sortKey: "z9_other",
+                };
+            }
+            try {
+                const lib = Zotero.Libraries.get(id);
+                const name = (lib && lib.name) || ("Library " + id);
+                let iconClass = "icon-library";
+                if (lib && lib.libraryType === "group") {
+                    iconClass = "icon-library-group";
+                }
+                else if (lib && lib.libraryType === "feed") {
+                    iconClass = "icon-feed";
+                }
+                if (id === userLibID) {
+                    return { name, iconClass, sortKey: "0_" + name };
+                }
+                return {
+                    name, iconClass,
+                    sortKey: "5_" + name.toLocaleLowerCase(),
+                };
+            } catch (e) {
+                return {
+                    name: "Library " + id,
+                    iconClass: "icon-library",
+                    sortKey: "9_" + id,
+                };
+            }
+        };
+        const ordered = orderedLibs
+            .map(id => ({ id, ...libInfo(id) }))
+            .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+
+        // Skip headers entirely if there's only one library group
+        // AND no Library tab — the existing render is already
+        // correct, no value in adding a single redundant header.
+        if (ordered.length === 1 && !libraryPaneRow) {
+            panel.classList.remove("wv-tabs-menu-grouped");
+            return;
+        }
+
+        // Marker class on the panel drives the row-indent + wider
+        // panel rules. Kept in sync here so removing groupings
+        // (e.g. closing a group's last tab) drops the indent and
+        // restores the default width on the next refresh.
+        panel.classList.add("wv-tabs-menu-grouped");
+
+        // Per-library filter state — keyed by libraryID, value is
+        // "include" | "exclude" | undefined. `include` narrows the
+        // visible rows to libraries flagged include; `exclude`
+        // hides that library's rows. Lives on the Weavero instance
+        // so it survives panel close/reopen but resets across
+        // plugin reloads (good enough for an MVP).
+        if (!this._tabsMenuLibraryFilter) {
+            this._tabsMenuLibraryFilter = new Map();
+        }
+        const filterState = this._tabsMenuLibraryFilter;
+        const anyIncluded = [...filterState.values()].includes("include");
+        const isLibVisible = (libID) => {
+            const v = filterState.get(libID);
+            if (v === "exclude") return false;
+            if (anyIncluded) return v === "include";
+            return true;
+        };
+
+        // Wipe and re-attach in the desired order.
+        tabsList.replaceChildren();
+        if (libraryPaneRow) tabsList.appendChild(libraryPaneRow);
+        for (const grp of ordered) {
+            const header = doc.createElement("div");
+            header.className = "wv-tabs-menu-library-header";
+            header.setAttribute("role", "presentation");
+
+            // Themed library icon (same CSS class chain Zotero uses
+            // in the collection tree — `.icon.icon-css.icon-library`
+            // etc.) so the icon picks up the correct colour for each
+            // library type without us having to ship a sprite.
+            const icon = doc.createElement("span");
+            icon.className = "icon icon-css " + grp.iconClass;
+            header.appendChild(icon);
+
+            const label = doc.createElement("span");
+            label.className = "wv-tabs-menu-library-name";
+            label.textContent = grp.name;
+            header.appendChild(label);
+
+            // Count badge — number of tabs in this library group.
+            // Sits between the label and the tickbox so the eye lands
+            // on the count immediately after the library name.
+            const count = doc.createElement("span");
+            count.className = "wv-tabs-menu-library-count";
+            count.textContent = String(groupByLib.get(grp.id).length);
+            header.appendChild(count);
+
+            // Tickbox at the right end of the header — tri-state
+            // include / exclude / off, same gesture as the items-
+            // tree filter chips: click toggles include, Alt+click
+            // toggles exclude. Pointer-events on the tickbox alone
+            // (header itself stays click-through) so the surrounding
+            // header doesn't capture stray clicks.
+            const tick = doc.createElement("button");
+            tick.type = "button";
+            tick.className = "wv-tabs-menu-library-tick";
+            const cur = filterState.get(grp.id);
+            if (cur === "include") tick.dataset.selected = "true";
+            else if (cur === "exclude") tick.dataset.excluded = "true";
+            tick.title = "Click to filter to this library, "
+                + "Alt+click to exclude. Click again to clear.";
+            tick.addEventListener("click", (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                const prev = filterState.get(grp.id);
+                if (e.altKey) {
+                    if (prev === "exclude") filterState.delete(grp.id);
+                    else filterState.set(grp.id, "exclude");
+                }
+                else {
+                    if (prev === "include") filterState.delete(grp.id);
+                    else filterState.set(grp.id, "include");
+                }
+                // Re-run grouping so the visibility update lands
+                // immediately. Re-using `panel.refreshList` would
+                // also work but rebuilds rows from scratch — going
+                // directly through this method preserves the
+                // selection / focus state of existing row nodes.
+                this._groupTabsMenuByLibrary(panel);
+            });
+            header.appendChild(tick);
+
+            tabsList.appendChild(header);
+
+            // Honour the library filter AND the per-tab file-type
+            // filter — hide rows whose library is excluded (or not
+            // in the include set when any include exists), AND any
+            // row whose tab fails the active file-type filter.
+            // Headers always stay so the user can flip their tickbox
+            // state at will.
+            const libShows = isLibVisible(grp.id);
+            for (const row of groupByLib.get(grp.id)) {
+                const fileTypeOk = this._tabPassesFileTypeFilter(
+                    win, row.dataset.tabId);
+                const visible = libShows && fileTypeOk;
+                if (visible) row.classList.remove("wv-tabs-menu-row-hidden");
+                else row.classList.add("wv-tabs-menu-row-hidden");
+                tabsList.appendChild(row);
+            }
+        }
+
+        // Mirror the filter on the main window's tab bar: tabs in
+        // hidden libraries should disappear from the top strip too,
+        // not just the popup. The strip is React-rendered, so we
+        // can't toggle classes on the tab nodes (next render would
+        // wipe them); instead inject a stylesheet keyed by the
+        // hidden tabs' data-id and update its content when the
+        // filter changes.
+        this._applyTabBarFilter(win, libraryForTab, isLibVisible);
+
+        // Refresh the file-type filter button's "active" state so
+        // its accent / clear-control reflect the latest selections.
+        try { this._refreshFileTypeFilterButtonState(panel); } catch (e) {}
+
+        // Tag the tabs-menu toolbar button when any filter is set
+        // (library OR file-type) so the user gets a visible cue that
+        // the popup list is narrowed. The class flows through CSS to
+        // a coloured tint / dot. The button is a standard XUL
+        // toolbarbutton so classList.add survives across React
+        // re-renders (it's not React-managed).
+        const ft = this._tabsMenuFileTypeFilter;
+        const ftActive = ft
+            && (ft.include.size > 0 || ft.exclude.size > 0);
+        const anyFiltered = filterState.size > 0 || ftActive;
+        const menuBtn = doc.getElementById("zotero-tb-tabs-menu");
+        if (menuBtn) {
+            menuBtn.classList.toggle("wv-tabs-menu-filter-active",
+                anyFiltered);
+        }
+    }
+
+    /** Build (or update) a stylesheet that hides tabs in the main
+     *  window's tab bar for libraries that the popup filter has
+     *  excluded. Persists across React re-renders since it's CSS,
+     *  not a DOM attribute. The "zotero-pane" Library tab is never
+     *  hidden — it's the meta-tab that switches between libraries
+     *  in the first place. */
+    _applyTabBarFilter(win, libraryForTab, isLibVisible) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const Zotero_Tabs = win.Zotero_Tabs;
+        if (!Zotero_Tabs || !Array.isArray(Zotero_Tabs._tabs)) return;
+
+        const hiddenIds = [];
+        for (const tab of Zotero_Tabs._tabs) {
+            if (!tab || tab.id === "zotero-pane") continue;
+            let libID = libraryForTab(tab.id);
+            if (libID == null) libID = "__unknown__";
+            const passesLib = isLibVisible(libID);
+            const passesFt = this._tabPassesFileTypeFilter(win, tab.id);
+            if (!passesLib || !passesFt) hiddenIds.push(tab.id);
+        }
+
+        let style = doc.getElementById("wv-tab-bar-filter-style");
+        if (!hiddenIds.length) {
+            if (style) style.remove();
+            return;
+        }
+        if (!style) {
+            style = doc.createElementNS(
+                "http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-tab-bar-filter-style";
+            (doc.head || doc.documentElement).appendChild(style);
+        }
+        // CSS.escape ensures arbitrary tab ids embed safely in the
+        // selector. `display: none` removes the slot too so the
+        // remaining tabs reflow flush — no gap left behind.
+        const sel = hiddenIds
+            .map(id => `#tab-bar-container .tab[data-id="${
+                win.CSS && win.CSS.escape ? win.CSS.escape(id) : id}"]`)
+            .join(",\n");
+        style.textContent = sel + " { display: none !important; }";
+    }
+
+    /** Apply a light tint to tabs whose item lives in a group library
+     *  (matching the colour of Zotero's `library-group` icon, #59ADC4)
+     *  and bind a custom tooltip to those tabs that renders the
+     *  library icon + name (Zotero's plain `title` tooltip can't show
+     *  an icon). Sets up a MutationObserver so the decoration
+     *  survives React re-renders and tab open/close. Background
+     *  colour is delivered via a per-window stylesheet keyed by
+     *  `data-id` (React would wipe any class we added on the tab
+     *  node itself).
+     *
+     *  IMPORTANT — Mozilla's `tooltip="..."` attribute resolves only
+     *  on XUL ancestors; setting it on an HTML `<div>` is silently
+     *  ignored, so the window-level `tooltip="html-tooltip"` wins.
+     *  We therefore install the attribute on the closest XUL parent
+     *  of the tab strip (`#zotero-title-bar`) and let the
+     *  popupshowing handler decide per-trigger whether to render
+     *  the rich library card or fall back to plain-title behavior. */
+    _setupTabBarLibraryDecoration(win) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const container = doc.getElementById("tab-bar-container");
+        if (!container) {
+            // Tab bar mounts asynchronously — retry shortly.
+            win.setTimeout(
+                () => this._setupTabBarLibraryDecoration(win), 1000);
+            return;
+        }
+
+        // Custom XUL tooltip — populated dynamically each time it
+        // shows from the trigger tab. Lives in the popupset so it
+        // doesn't get reflowed with the rest of the document.
+        if (!doc.getElementById("wv-tab-library-tooltip")) {
+            const tooltip = doc.createXULElement("tooltip");
+            tooltip.id = "wv-tab-library-tooltip";
+            tooltip.addEventListener("popupshowing", (e) => {
+                try {
+                    const ok = this._populateTabTooltip(win, tooltip);
+                    if (!ok) e.preventDefault();
+                }
+                catch (err) {
+                    Zotero.debug("[Weavero] tooltip err: " + err);
+                    e.preventDefault();
+                }
+            });
+            let popupset = doc.querySelector("popupset");
+            if (!popupset) {
+                popupset = doc.createXULElement("popupset");
+                doc.documentElement.appendChild(popupset);
+            }
+            popupset.appendChild(tooltip);
+        }
+        // Re-route tooltip resolution for the entire tab strip to our
+        // custom tooltip. The handler dispatches on the trigger (group
+        // library → rich card; everything else → plain title via the
+        // `label` attribute, mirroring Zotero's html-tooltip behavior).
+        const titleBar = doc.getElementById("zotero-title-bar");
+        if (titleBar) {
+            titleBar.setAttribute("tooltip", "wv-tab-library-tooltip");
+        }
+
+        // Initial pass before we attach the observer so the user
+        // sees decoration immediately on plugin install / Zotero open.
+        try { this._decorateTabBar(win); } catch (e) {}
+
+        if (win._wvTabBarDecoMo) {
+            try { win._wvTabBarDecoMo.disconnect(); } catch (e) {}
+        }
+        const mo = new win.MutationObserver(() => {
+            try { this._decorateTabBar(win); } catch (e) {}
+        });
+        mo.observe(container, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            // `data-id` changes when tabs are reordered or replaced.
+            // We no longer rewrite the title attribute (the custom
+            // tooltip carries the library info) so we don't need to
+            // observe title mutations.
+            attributeFilter: ["data-id"],
+        });
+        win._wvTabBarDecoMo = mo;
+    }
+
+    _teardownTabBarLibraryDecoration(win) {
+        if (!win) return;
+        const doc = win.document;
+        try {
+            if (win._wvTabBarDecoMo) {
+                win._wvTabBarDecoMo.disconnect();
+                delete win._wvTabBarDecoMo;
+            }
+        } catch (e) {}
+        try {
+            const tintStyle = doc
+                && doc.getElementById("wv-tab-bar-tint-style");
+            if (tintStyle) tintStyle.remove();
+        } catch (e) {}
+        // Strip the title-bar tooltip override and the tooltip
+        // element itself. Per-tab attributes are no longer used.
+        try {
+            if (!doc) return;
+            const titleBar = doc.getElementById("zotero-title-bar");
+            if (titleBar
+                && titleBar.getAttribute("tooltip")
+                    === "wv-tab-library-tooltip") {
+                titleBar.removeAttribute("tooltip");
+            }
+            // Defensively strip the legacy per-tab attribute in case
+            // an older build set it on individual tabs.
+            const container = doc.getElementById("tab-bar-container");
+            if (container) {
+                for (const tab of container.querySelectorAll(
+                    ".tab[tooltip=\"wv-tab-library-tooltip\"]")) {
+                    tab.removeAttribute("tooltip");
+                }
+            }
+            const tooltip = doc.getElementById("wv-tab-library-tooltip");
+            if (tooltip) tooltip.remove();
+        } catch (e) {}
+    }
+
+    /** Single-pass decoration update: rebuild the tint stylesheet
+     *  from the current set of group-library tabs and re-apply the
+     *  library-name suffix to each matching tab's tooltip. Idempotent
+     *  — safe to call repeatedly. */
+    _decorateTabBar(win) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const Zotero_Tabs = win.Zotero_Tabs;
+        if (!Zotero_Tabs || !Array.isArray(Zotero_Tabs._tabs)) return;
+        const container = doc.getElementById("tab-bar-container");
+        if (!container) return;
+
+        const userLibID = (Zotero.Libraries
+            && Zotero.Libraries.userLibraryID);
+        const groupTabs = [];
+        for (const tab of Zotero_Tabs._tabs) {
+            if (!tab || tab.id === "zotero-pane") continue;
+            let libID = null;
+            try {
+                const item = Zotero.Items.get(
+                    tab.data && tab.data.itemID);
+                libID = item ? item.libraryID : null;
+            } catch (e) {}
+            if (libID == null || libID === userLibID) continue;
+            try {
+                const lib = Zotero.Libraries.get(libID);
+                if (!lib || lib.libraryType !== "group") continue;
+                groupTabs.push({ id: tab.id, libName: lib.name });
+            } catch (e) {}
+        }
+
+        // Tint stylesheet — selector list keyed by data-id so it
+        // survives React re-renders. #59ADC4 is the same hex used
+        // by chrome/skin/.../collection-tree/16/light/library-group.svg.
+        let style = doc.getElementById("wv-tab-bar-tint-style");
+        if (!groupTabs.length) {
+            if (style) style.remove();
+        }
+        else {
+            if (!style) {
+                style = doc.createElementNS(
+                    "http://www.w3.org/1999/xhtml", "style");
+                style.id = "wv-tab-bar-tint-style";
+                (doc.head || doc.documentElement).appendChild(style);
+            }
+            const escape = (s) => (win.CSS && win.CSS.escape)
+                ? win.CSS.escape(s) : s;
+            // Overlay the "Group Libraries" cluster icon as a small
+            // badge in the TOP-LEFT corner of the tab's
+            // attachment-file-type icon (PDF/EPUB/snapshot/note/etc.).
+            // Uses `groups.svg` (two-figures glyph — same icon Zotero
+            // shows next to the "Group Libraries" header in the
+            // collection-tree pane) rather than `library-group.svg`,
+            // so the badge reads as "this came from group libraries"
+            // generically rather than mimicking a specific group's
+            // icon. Implemented as an `::after` pseudo-element on
+            // `.tab-icon` so the badge overlays without disturbing
+            // any layout or React-managed styling. The SVG ships with
+            // a hard-coded #59ADC4 fill — same teal Zotero uses for
+            // group libraries throughout the UI.
+            const selIcon = groupTabs
+                .map(t => `#tab-bar-container .tab[data-id="${
+                    escape(t.id)}"] .tab-icon`)
+                .join(",\n");
+            const selBadge = groupTabs
+                .map(t => `#tab-bar-container .tab[data-id="${
+                    escape(t.id)}"] .tab-icon::after`)
+                .join(",\n");
+            style.textContent =
+                selIcon + " {\n"
+                + "  position: relative;\n"
+                + "  overflow: visible;\n"
+                + "}\n"
+                + selBadge + " {\n"
+                + "  content: \"\";\n"
+                + "  position: absolute;\n"
+                + "  left: -5px;\n"
+                + "  top: -4px;\n"
+                + "  width: 13px;\n"
+                + "  height: 13px;\n"
+                // Disc behind the badge so the (#59ADC4) glyph
+                // separates from the file-type icon underneath. The
+                // disc colour matches the tab-bar background tint.
+                + "  background-color: var(--material-toolbar, #fff);\n"
+                + "  border-radius: 50%;\n"
+                + "  background-image: url(\"chrome://zotero/skin/collection-tree/16/light/groups.svg\");\n"
+                + "  background-size: 11px 11px;\n"
+                + "  background-repeat: no-repeat;\n"
+                + "  background-position: center;\n"
+                + "  pointer-events: none;\n"
+                + "}\n";
+        }
+
+        // Tooltip resolution is now handled at the title-bar level
+        // (set up once in `_setupTabBarLibraryDecoration`) — no
+        // per-tab `tooltip="..."` wiring is needed. Mozilla ignores
+        // that attribute on HTML elements anyway. The popupshowing
+        // handler decides what to render based on the trigger tab.
+    }
+
+    /** popupshowing handler for the custom tab tooltip. Mounted on
+     *  `#zotero-title-bar` (which intercepts every hover in the tab
+     *  strip), so we dispatch on the trigger:
+     *    - Group-library tab → rich card (title + library header).
+     *    - Anything else → plain-title behavior, mirroring Zotero's
+     *      stock html-tooltip (set the `label` attribute and let
+     *      the platform render its auto-generated tooltip-label).
+     *  Returns true to allow the tooltip; false to suppress entirely. */
+    _populateTabTooltip(win, tooltip) {
+        const triggerNode = tooltip.triggerNode;
+        if (!triggerNode) return false;
+        const doc = win.document;
+
+        // Always start from a clean slate — strip prior children AND
+        // any previously-set label attribute so the two render modes
+        // don't bleed into each other.
+        while (tooltip.firstChild) tooltip.removeChild(tooltip.firstChild);
+        tooltip.removeAttribute("label");
+
+        const findTitle = () => {
+            const tn = triggerNode.closest && triggerNode.closest(
+                "div *[title], iframe *[title], browser *[title]");
+            return tn ? tn.getAttribute("title") : null;
+        };
+        // Build the platform's standard `<description class="tooltip-label">`
+        // child explicitly. Mozilla's auto-rendering from the `label`
+        // attribute does NOT fire when the attribute is set inside
+        // popupshowing (the popup paints a 0-px frame instead). Setting
+        // both attribute and an explicit child covers every code path.
+        const renderPlainLabel = (text) => {
+            tooltip.setAttribute("label", text);
+            const desc = doc.createXULElement("description");
+            desc.setAttribute("class", "tooltip-label");
+            desc.textContent = text;
+            tooltip.appendChild(desc);
+        };
+
+        const tab = (triggerNode.closest && triggerNode.closest(
+            ".tab[data-id]")) || null;
+
+        // Non-tab hover or Library tab: fall back to plain-title
+        // behavior so we don't suppress the standard tooltips for
+        // window-control / non-tab descendants of #zotero-title-bar.
+        if (!tab || tab.dataset.id === "zotero-pane") {
+            const t = findTitle();
+            if (t) {
+                renderPlainLabel(t);
+                return true;
+            }
+            return false;
+        }
+
+        const tabId = tab.dataset.id;
+        const Zotero_Tabs = win.Zotero_Tabs;
+        const tabData = Zotero_Tabs && Zotero_Tabs._tabs.find(
+            t => t.id === tabId);
+
+        let libID = null;
+        try {
+            const item = Zotero.Items.get(
+                tabData && tabData.data && tabData.data.itemID);
+            libID = item ? item.libraryID : null;
+        }
+        catch (e) {}
+        let lib = null;
+        if (libID != null) {
+            try { lib = Zotero.Libraries.get(libID); }
+            catch (e) {}
+        }
+
+        // Non-group-library tab: keep upstream's plain-text tooltip
+        // instead of an empty Weavero card.
+        if (!lib || lib.libraryType !== "group") {
+            const t = findTitle()
+                || (tabData && tabData.title)
+                || null;
+            if (t) {
+                renderPlainLabel(t);
+                return true;
+            }
+            return false;
+        }
+
+        // Group library tab — build the rich card. (children are
+        // already cleared from the early reset above.)
+
+        const wrap = doc.createXULElement("vbox");
+        wrap.setAttribute("class", "wv-tab-tooltip-wrap");
+
+        // Tab title row.
+        const titleEl = doc.createXULElement("description");
+        titleEl.setAttribute("class", "wv-tab-tooltip-title");
+        titleEl.textContent = tabData.title || "";
+        wrap.appendChild(titleEl);
+
+        // Thin separator between title and library header.
+        const sep = doc.createXULElement("box");
+        sep.setAttribute("class", "wv-tab-tooltip-sep");
+        wrap.appendChild(sep);
+
+        // Library header: themed library-group icon + library name,
+        // same visual as the popup's section header. The XUL <image>
+        // element renders the SVG via `chrome://` URL with
+        // -moz-context-properties so it picks up the right fill.
+        const headerRow = doc.createXULElement("hbox");
+        headerRow.setAttribute("class", "wv-tab-tooltip-header");
+        headerRow.setAttribute("align", "center");
+        const iconEl = doc.createXULElement("image");
+        iconEl.setAttribute("class", "wv-tab-tooltip-icon");
+        iconEl.setAttribute("src",
+            "chrome://zotero/skin/collection-tree/16/light/library-group.svg");
+        headerRow.appendChild(iconEl);
+        const nameEl = doc.createXULElement("description");
+        nameEl.setAttribute("class", "wv-tab-tooltip-libname");
+        nameEl.textContent = lib.name;
+        headerRow.appendChild(nameEl);
+        wrap.appendChild(headerRow);
+
+        tooltip.appendChild(wrap);
+        return true;
+    }
+
+    /** Funnel button at the right end of the tabs-menu search row.
+     *  Click opens an icon-grid popup of attachment file kinds (PDF,
+     *  EPUB, Snapshot, Image, Video, Web Link, Other File). Same
+     *  tristate gesture as the items-tree filter — click to include,
+     *  Alt+click to exclude. The first call inserts the button and
+     *  initialises the per-instance filter state (Set-of-include
+     *  + Set-of-exclude). Re-runs are idempotent. */
+    _setupTabsMenuFileTypeFilter(win) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const panel = doc.getElementById("zotero-tabs-menu-panel");
+        if (!panel) {
+            // tabs-menu-panel is a custom element; if it's not yet
+            // upgraded, the wrapper / input children won't exist.
+            // Retry shortly.
+            win.setTimeout(
+                () => this._setupTabsMenuFileTypeFilter(win), 1000);
+            return;
+        }
+        const input = panel.querySelector("#zotero-tabs-menu-filter");
+        if (!input) {
+            win.setTimeout(
+                () => this._setupTabsMenuFileTypeFilter(win), 1000);
+            return;
+        }
+        // Lazily init filter state — survives panel close/reopen
+        // but resets on plugin reload (Map / Set are fresh on each
+        // class instantiation).
+        if (!this._tabsMenuFileTypeFilter) {
+            this._tabsMenuFileTypeFilter = {
+                include: new Set(),
+                exclude: new Set(),
+            };
+        }
+        // Initialise display-settings state on first install. These
+        // ride the Weavero instance so they survive panel close/
+        // reopen but reset on plugin reload.
+        if (this._tabsMenuGroupByLibrary === undefined) {
+            this._tabsMenuGroupByLibrary = true;
+        }
+        if (this._tabsMenuShowAnnotationCount === undefined) {
+            this._tabsMenuShowAnnotationCount = false;
+        }
+        // Replace any prior install — picks up code changes after
+        // hot-reload without requiring a full window restart.
+        let prev = panel.querySelector("#wv-tabs-menu-filetype-btn");
+        if (prev) prev.remove();
+        let prevPopup = panel.querySelector("#wv-tabs-menu-filetype-popup");
+        if (prevPopup) prevPopup.remove();
+        let prevGear = panel.querySelector("#wv-tabs-menu-settings-btn");
+        if (prevGear) prevGear.remove();
+        let prevGearPopup = panel.querySelector("#wv-tabs-menu-settings-popup");
+        if (prevGearPopup) prevGearPopup.remove();
+
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        const btn = doc.createElementNS(NS_HTML, "button");
+        btn.id = "wv-tabs-menu-filetype-btn";
+        btn.type = "button";
+        btn.title = "Filter tabs by attachment file type. "
+            + "Click in the popup to filter, Alt+click to exclude.";
+        // Use the same `filter.svg` Zotero ships for the items-list
+        // filter button (themed via -moz-context-properties), plus a
+        // small dropmarker chevron so the visual matches the items
+        // toolbar button shape (icon + ▾).
+        btn.style.setProperty("-moz-context-properties",
+            "fill, fill-opacity, stroke, stroke-opacity");
+        btn.style.fill = "currentColor";
+        const ic = doc.createElementNS(NS_HTML, "img");
+        ic.className = "wv-tabs-menu-filetype-icon";
+        ic.src = "chrome://zotero/skin/16/universal/filter.svg";
+        btn.appendChild(ic);
+        // Tiny chevron — matches the look of a XUL toolbarbutton
+        // dropmarker (8×8 ▾). Inline SVG so it inherits the same
+        // currentColor treatment as the icon.
+        const chev = doc.createElementNS(NS_HTML, "span");
+        chev.className = "wv-tabs-menu-filetype-chev";
+        chev.innerHTML = "<svg xmlns=\"http://www.w3.org/2000/svg\" "
+            + "width=\"8\" height=\"8\" viewBox=\"0 0 8 8\" "
+            + "fill=\"currentColor\">"
+            + "<path d=\"M1 2.5h6L4 6z\"/>"
+            + "</svg>";
+        btn.appendChild(chev);
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            this._toggleTabsMenuFileTypePopup(win, panel, btn);
+        });
+        // Insert AFTER the input so the visual order is
+        // [gear] [search field] [funnel].
+        input.insertAdjacentElement("afterend", btn);
+
+        // Settings (gear) button on the LEFT of the search input —
+        // hosts display-only toggles like "Sort by Library" and
+        // "Show Annotations Count" (no filter semantics, hence
+        // separate from the funnel).
+        const gear = doc.createElementNS(NS_HTML, "button");
+        gear.id = "wv-tabs-menu-settings-btn";
+        gear.type = "button";
+        gear.title = "Tabs menu settings";
+        gear.style.setProperty("-moz-context-properties",
+            "fill, fill-opacity, stroke, stroke-opacity");
+        gear.style.fill = "currentColor";
+        const gearIcon = doc.createElementNS(NS_HTML, "img");
+        gearIcon.className = "wv-tabs-menu-settings-icon";
+        // Zotero's `cog.svg` is the actual gear/settings icon
+        // (universal 20). `options.svg` is three dots ("more
+        // actions") — different convention. Scaled to 16 in CSS.
+        gearIcon.src = "chrome://zotero/skin/20/universal/cog.svg";
+        gear.appendChild(gearIcon);
+        gear.addEventListener("click", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            this._toggleTabsMenuSettingsPopup(win, panel, gear);
+        });
+        // Insert BEFORE the input so the visual order is
+        // [gear] [search field] [funnel].
+        input.insertAdjacentElement("beforebegin", gear);
+
+        this._refreshFileTypeFilterButtonState(panel);
+    }
+
+    /** Open or close the file-type icon-grid popup, anchored under
+     *  the funnel button. The popup is an HTML <div> mounted inside
+     *  the tabs-menu panel so clicks inside it don't dismiss the
+     *  parent <panel>. */
+    _toggleTabsMenuFileTypePopup(win, panel, anchor) {
+        const doc = win.document;
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+        const existing = panel.querySelector(
+            "#wv-tabs-menu-filetype-popup");
+        if (existing) {
+            existing.remove();
+            if (this._wvFileTypeOutsideClose) {
+                doc.removeEventListener("mousedown",
+                    this._wvFileTypeOutsideClose, true);
+                delete this._wvFileTypeOutsideClose;
+            }
+            return;
+        }
+
+        const popup = doc.createElementNS(NS_HTML, "div");
+        popup.id = "wv-tabs-menu-filetype-popup";
+
+        // Clear all currently-active tab filters in one shot. Used
+        // by both the "Clear" text button and the red × button.
+        // Covers BOTH dimensions the tab filter applies — the
+        // file-type include/exclude sets and the per-library
+        // tickbox states — so the user gets a true reset, matching
+        // the items-tree filter's "Clear" semantics.
+        const clearAll = () => {
+            if (this._tabsMenuFileTypeFilter) {
+                this._tabsMenuFileTypeFilter.include.clear();
+                this._tabsMenuFileTypeFilter.exclude.clear();
+            }
+            if (this._tabsMenuLibraryFilter) {
+                this._tabsMenuLibraryFilter.clear();
+            }
+            renderButtons();
+            this._refreshFileTypeFilterButtonState(panel);
+            try { this._groupTabsMenuByLibrary(panel); }
+            catch (e) {}
+        };
+
+        const renderButtons = () => {
+            while (popup.firstChild) popup.removeChild(popup.firstChild);
+
+            // Top bar — same layout as the items-tree filter popup:
+            // [hint on the left] [Clear text button] [red × Clear-and-Close].
+            // Reuses the existing CSS classes wholesale.
+            const topBar = doc.createElementNS(NS_HTML, "div");
+            topBar.className = "wv-filter-top-bar wv-tabs-menu-filetype-topbar";
+            const hint = doc.createElementNS(NS_HTML, "span");
+            hint.className = "wv-filter-top-hint";
+            hint.textContent = "Alt+click to exclude";
+            topBar.appendChild(hint);
+            const clearTextBtn = doc.createElementNS(NS_HTML, "button");
+            clearTextBtn.type = "button";
+            clearTextBtn.className = "wv-filter-clear-btn";
+            clearTextBtn.textContent = "Clear";
+            clearTextBtn.title
+                = "Clear all tab filters (keep this window open)";
+            clearTextBtn.setAttribute("aria-label",
+                "Clear all tab filters");
+            clearTextBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                clearAll();
+            });
+            topBar.appendChild(clearTextBtn);
+            const clearBtn = doc.createElementNS(NS_HTML, "button");
+            clearBtn.type = "button";
+            clearBtn.className = "wv-filter-clear-icon";
+            clearBtn.setAttribute("aria-label", "Clear and Close");
+            clearBtn.title = "Clear and Close";
+            clearBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                clearAll();
+                // Dismiss the file-type popup once everything is
+                // cleared — there's nothing to interact with.
+                if (this._wvFileTypeOutsideClose) {
+                    doc.removeEventListener("mousedown",
+                        this._wvFileTypeOutsideClose, true);
+                    delete this._wvFileTypeOutsideClose;
+                }
+                popup.remove();
+            });
+            topBar.appendChild(clearBtn);
+            // Hide both controls when nothing is filtering anything
+            // — same UX as the items-tree popup.
+            const ft = this._tabsMenuFileTypeFilter;
+            const lf = this._tabsMenuLibraryFilter;
+            const anyActive
+                = !!(ft && (ft.include.size > 0 || ft.exclude.size > 0))
+                || !!(lf && lf.size > 0);
+            if (!anyActive) {
+                clearTextBtn.style.visibility = "hidden";
+                clearBtn.style.visibility = "hidden";
+            }
+            popup.appendChild(topBar);
+
+            const inc = this._tabsMenuFileTypeFilter.include;
+            const exc = this._tabsMenuFileTypeFilter.exclude;
+            // Reusable toggle for any tristate value — used for
+            // both attachment file kinds and the Note button.
+            const toggle = (val, alt) => {
+                if (alt) {
+                    if (exc.has(val)) exc.delete(val);
+                    else { inc.delete(val); exc.add(val); }
+                }
+                else {
+                    if (inc.has(val)) inc.delete(val);
+                    else { exc.delete(val); inc.add(val); }
+                }
+                renderButtons();
+                this._refreshFileTypeFilterButtonState(panel);
+                try { this._groupTabsMenuByLibrary(panel); }
+                catch (err) {}
+            };
+            const makeOpt = (val, label, opts) => {
+                const b = doc.createElementNS(NS_HTML, "button");
+                b.type = "button";
+                b.className = "wv-filter-opt wv-filter-opt-icon";
+                b.title = label
+                    + " — click to include, Alt+click to exclude.";
+                if (inc.has(val)) b.dataset.selected = "true";
+                if (exc.has(val)) b.dataset.excluded = "true";
+                let ic;
+                if (opts && opts.itemType) {
+                    // Use Zotero's `.icon-item-type[data-item-type=…]`
+                    // CSS — the item-tree stylesheet ships theme-aware
+                    // background-image rules (separate light/dark
+                    // SVG paths), so this picks the right icon for
+                    // the active theme automatically.
+                    ic = doc.createElementNS(NS_HTML, "span");
+                    ic.className = "icon icon-css icon-item-type";
+                    ic.setAttribute("data-item-type", opts.itemType);
+                }
+                else if (opts && opts.accentColor) {
+                    // Themed via `var(--accent-*)`: the
+                    // `wv-filter-svg` class enables
+                    // -moz-context-properties + `fill: currentColor`,
+                    // so a `style.color = var(--accent-*)` flows
+                    // through to the SVG fill and follows the active
+                    // light/dark theme.
+                    ic = doc.createElementNS(NS_HTML, "img");
+                    ic.className = "wv-filter-svg";
+                    ic.style.color = opts.accentColor;
+                    ic.src = opts.iconSrc;
+                }
+                else {
+                    ic = doc.createElementNS(NS_HTML, "img");
+                    ic.className = "wv-attach-icon";
+                    ic.src = opts.iconSrc;
+                }
+                b.appendChild(ic);
+                b.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    toggle(val, e.altKey);
+                });
+                return b;
+            };
+            // The file-type tiles + Note live in their own row so the
+            // popup can stack the top bar above them in column flow.
+            const ftRow = doc.createElementNS(NS_HTML, "div");
+            ftRow.className = "wv-tabs-menu-filetype-row";
+            popup.appendChild(ftRow);
+
+            for (const def of this._ATTACHMENT_FILE_TYPES) {
+                // `def.value` already matches Zotero's camelCase
+                // `data-item-type` (attachmentPDF, attachmentEPUB,…).
+                ftRow.appendChild(makeOpt(def.value, def.label,
+                    { itemType: def.value }));
+            }
+            // Vertical separator + Note tile at the right end —
+            // notes are a different kind of attachment-level row
+            // (not files), so visually grouped apart from the
+            // file-type icons. The filter value `"note"` matches
+            // `Zotero.Item.getItemTypeIconName(true)` for note items.
+            // Tinted with `--accent-yellow` — same theme-aware var
+            // Zotero uses for the notes section in the item pane.
+            const sep = doc.createElementNS(NS_HTML, "div");
+            sep.className = "wv-tabs-menu-filetype-sep";
+            ftRow.appendChild(sep);
+            ftRow.appendChild(makeOpt(
+                "note",
+                "Note",
+                {
+                    iconSrc: "chrome://zotero/skin/16/universal/note.svg",
+                    accentColor: "var(--accent-yellow)",
+                }));
+        };
+        renderButtons();
+        panel.appendChild(popup);
+
+        // Outside-click closer — anchor and popup stay open;
+        // anything else dismisses. Listen on capture so chained
+        // handlers can't swallow the event before us.
+        const onOutside = (e) => {
+            if (popup.contains(e.target)) return;
+            if (anchor.contains(e.target)) return;
+            popup.remove();
+            doc.removeEventListener("mousedown", onOutside, true);
+            delete this._wvFileTypeOutsideClose;
+        };
+        this._wvFileTypeOutsideClose = onOutside;
+        doc.addEventListener("mousedown", onOutside, true);
+    }
+
+    /** Open or close the settings popup (gear button), hosting
+     *  display-only toggles. Mirrors the file-type popup pattern:
+     *  HTML <div> mounted inside the tabs-menu panel so clicks
+     *  inside don't dismiss the parent. */
+    _toggleTabsMenuSettingsPopup(win, panel, anchor) {
+        const doc = win.document;
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+        const existing = panel.querySelector(
+            "#wv-tabs-menu-settings-popup");
+        if (existing) {
+            existing.remove();
+            if (this._wvSettingsOutsideClose) {
+                doc.removeEventListener("mousedown",
+                    this._wvSettingsOutsideClose, true);
+                delete this._wvSettingsOutsideClose;
+            }
+            return;
+        }
+
+        const popup = doc.createElementNS(NS_HTML, "div");
+        popup.id = "wv-tabs-menu-settings-popup";
+
+        const makeRow = (key, labelText, onChange) => {
+            const row = doc.createElementNS(NS_HTML, "label");
+            row.className = "wv-tabs-menu-settings-row";
+            const cb = doc.createElementNS(NS_HTML, "input");
+            cb.type = "checkbox";
+            cb.className = "wv-tabs-menu-settings-cb";
+            cb.checked = !!this[key];
+            cb.addEventListener("change", () => {
+                this[key] = cb.checked;
+                if (typeof onChange === "function") onChange();
+            });
+            const lbl = doc.createElementNS(NS_HTML, "span");
+            lbl.className = "wv-tabs-menu-settings-label";
+            lbl.textContent = labelText;
+            row.appendChild(cb);
+            row.appendChild(lbl);
+            return row;
+        };
+
+        // Re-run upstream `refreshList` so our wrapper rebuilds the
+        // panel from a clean state — that picks up the new toggle
+        // values without us having to reach into individual rows.
+        const refresh = () => {
+            try { panel.refreshList(); }
+            catch (e) {
+                Zotero.debug("[Weavero] settings refresh err: " + e);
+            }
+        };
+
+        popup.appendChild(makeRow(
+            "_tabsMenuGroupByLibrary",
+            "Sort by Library",
+            refresh));
+        popup.appendChild(makeRow(
+            "_tabsMenuShowAnnotationCount",
+            "Show Annotations Count",
+            refresh));
+
+        panel.appendChild(popup);
+
+        const onOutside = (e) => {
+            if (popup.contains(e.target)) return;
+            if (anchor.contains(e.target)) return;
+            popup.remove();
+            doc.removeEventListener("mousedown", onOutside, true);
+            delete this._wvSettingsOutsideClose;
+        };
+        this._wvSettingsOutsideClose = onOutside;
+        doc.addEventListener("mousedown", onOutside, true);
+    }
+
+    _refreshFileTypeFilterButtonState(panel) {
+        if (!panel) return;
+        const btn = panel.querySelector("#wv-tabs-menu-filetype-btn");
+        if (!btn) return;
+        const f = this._tabsMenuFileTypeFilter;
+        const active = !!(f
+            && (f.include.size > 0 || f.exclude.size > 0));
+        btn.classList.toggle("wv-active", active);
+    }
+
+    /** Predicate: does the tab pass the current file-type filter?
+     *  Always returns true when no filter is set, or when the tab
+     *  is the meta "Library" tab (`zotero-pane` has no item). For
+     *  other tabs, looks up the item's `getItemTypeIconName(true)`
+     *  (camelCase, link-mode-stripped) and compares against the
+     *  include / exclude sets. */
+    _tabPassesFileTypeFilter(win, tabId) {
+        const f = this._tabsMenuFileTypeFilter;
+        if (!f || (!f.include.size && !f.exclude.size)) return true;
+        if (!tabId || tabId === "zotero-pane") return true;
+        const Zotero_Tabs = win && win.Zotero_Tabs;
+        if (!Zotero_Tabs) return true;
+        const tab = Zotero_Tabs._tabs.find(t => t.id === tabId);
+        if (!tab) return true;
+        let kind = null;
+        try {
+            const item = Zotero.Items.get(tab.data && tab.data.itemID);
+            if (item && typeof item.getItemTypeIconName === "function") {
+                kind = item.getItemTypeIconName(true);
+            }
+        }
+        catch (e) {}
+        if (!kind) return false;
+        if (f.exclude.has(kind)) return false;
+        if (f.include.size && !f.include.has(kind)) return false;
+        return true;
+    }
+
+    /** Append an annotation-count badge to a tabs-menu row, using
+     *  the same `annotation-12.svg + count` layout the item-pane
+     *  attachment row uses (`elements/attachmentRow.js` +
+     *  `scss/elements/_attachmentRow.scss`): a 12×12 universal icon
+     *  themed via `-moz-context-properties: fill` and a label, both
+     *  coloured with `--fill-secondary`. Only renders a non-zero
+     *  count — same hide-when-zero rule as the item pane. */
+    _addAnnotationCountToRow(row) {
+        try {
+            // Strip any prior badge so toggling the setting doesn't
+            // stack badges on the same row.
+            const prior = row.querySelector(".wv-tabs-menu-anncount");
+            if (prior) prior.remove();
+
+            const tabId = row.dataset.tabId;
+            if (!tabId || tabId === "zotero-pane") return;
+            const win = row.ownerGlobal;
+            const doc = row.ownerDocument;
+            const Zotero_Tabs = win && win.Zotero_Tabs;
+            const tabData = Zotero_Tabs && Zotero_Tabs._tabs.find(
+                t => t.id === tabId);
+            if (!tabData) return;
+            const item = Zotero.Items.get(
+                tabData.data && tabData.data.itemID);
+            if (!item || typeof item.getAnnotations !== "function") return;
+            const annots = item.getAnnotations() || [];
+            const n = annots.length;
+            if (!n) return;
+
+            const NS_HTML = "http://www.w3.org/1999/xhtml";
+            const badge = doc.createElementNS(NS_HTML, "span");
+            badge.className = "wv-tabs-menu-anncount";
+            badge.title = n + " annotation" + (n === 1 ? "" : "s");
+            // Icon: same `annotation-12.svg` the item-pane uses,
+            // tinted via context-fill / currentColor.
+            const ic = doc.createElementNS(NS_HTML, "span");
+            ic.className = "wv-tabs-menu-anncount-icon";
+            badge.appendChild(ic);
+            const lbl = doc.createElementNS(NS_HTML, "span");
+            lbl.className = "wv-tabs-menu-anncount-label";
+            lbl.textContent = String(n);
+            badge.appendChild(lbl);
+
+            // Insert just before the row's close button so it sits
+            // at the right end of the row, not interrupting the title.
+            const closeBtn = row.querySelector(
+                ".zotero-tabs-menu-entry.close");
+            if (closeBtn) row.insertBefore(badge, closeBtn);
+            else row.appendChild(badge);
+        }
+        catch (e) {
+            // Annotation lookup can fail mid-import / mid-delete;
+            // swallow and skip the badge.
+        }
+    }
+
+    /** Highlight the row in each `<libraries-collections-box>` whose
+     *  library owns the currently-displayed item, but ONLY when the
+     *  item also exists in other libraries (linked items). Upstream
+     *  marks the row matching the active collection-tree branch
+     *  (`.box.current` -> bold), but in a reader tab there's no
+     *  active collection, and even in My Library the bold-only cue is
+     *  easy to miss when the user wants to know *which library this
+     *  item came from*. Adds a coloured background to the
+     *  library-row of `box._item` whenever `box._linkedItems` is
+     *  non-empty. */
+    _setupLibrariesBoxHighlight(win) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+
+        // Initial pass — boxes may already be mounted on plugin
+        // (re)start.
+        try { this._decorateAllLibrariesBoxes(win); } catch (e) {}
+
+        if (win._wvLibrariesBoxMo) {
+            try { win._wvLibrariesBoxMo.disconnect(); } catch (e) {}
+        }
+        // Top-level observer on the document — every render of a
+        // libraries-collections-box mutates its `.body`. We coalesce
+        // bursts of mutations behind a 50 ms timer so a full panel
+        // re-render only triggers one decoration pass.
+        let scheduled = false;
+        const mo = new win.MutationObserver(() => {
+            if (scheduled) return;
+            scheduled = true;
+            win.setTimeout(() => {
+                scheduled = false;
+                try { this._decorateAllLibrariesBoxes(win); }
+                catch (e) {}
+            }, 50);
+        });
+        mo.observe(doc.documentElement, {
+            childList: true,
+            subtree: true,
+        });
+        win._wvLibrariesBoxMo = mo;
+    }
+
+    _teardownLibrariesBoxHighlight(win) {
+        if (!win) return;
+        const doc = win.document;
+        try {
+            if (win._wvLibrariesBoxMo) {
+                win._wvLibrariesBoxMo.disconnect();
+                delete win._wvLibrariesBoxMo;
+            }
+        } catch (e) {}
+        // Strip our marker class from any rows that still carry it.
+        try {
+            if (!doc) return;
+            for (const r of doc.querySelectorAll(
+                ".wv-libraries-current-library")) {
+                r.classList.remove("wv-libraries-current-library");
+            }
+        } catch (e) {}
+    }
+
+    _decorateAllLibrariesBoxes(win) {
+        const doc = win.document;
+        if (!doc) return;
+        const boxes = doc.querySelectorAll("libraries-collections-box");
+        for (const box of boxes) {
+            try { this._decorateLibrariesBox(box); }
+            catch (e) {}
+        }
+    }
+
+    _decorateLibrariesBox(box) {
+        if (!box) return;
+        const body = box.querySelector(".body");
+        if (!body) return;
+
+        // Always strip prior markers first — set is idempotent.
+        for (const r of body.querySelectorAll(
+            ".wv-libraries-current-library")) {
+            r.classList.remove("wv-libraries-current-library");
+        }
+
+        const item = box._item;
+        if (!item) return;
+        const linkedItems = box._linkedItems || [];
+        // Only highlight when the item is replicated across libraries
+        // — for a single-library item the existing visual is fine.
+        if (linkedItems.length === 0) return;
+
+        const libID = item.libraryID;
+        if (libID == null) return;
+        let lib;
+        try { lib = Zotero.Libraries.get(libID); }
+        catch (e) { return; }
+        if (!lib) return;
+        const treeViewID = lib.treeViewID;
+        if (!treeViewID) return;
+
+        const win = box.ownerGlobal;
+        const escape = (s) => (win && win.CSS && win.CSS.escape)
+            ? win.CSS.escape(s) : String(s).replace(/"/g, "\\\"");
+        const targetRow = body.querySelector(
+            `.row[data-id="${escape(treeViewID)}"]`);
+        if (targetRow) {
+            targetRow.classList.add("wv-libraries-current-library");
+        }
     }
 
     _setupItemsListFilter() {
@@ -10188,6 +12323,14 @@ class WeaveroPlugin {
         const panel = doc.createXULElement("panel");
         panel.id = "wv-filter-popup";
         panel.setAttribute("type", "arrow");
+        // Skip the default Mozilla XUL panel fade-in animation so
+        // the filter window appears at full opacity in one step
+        // instead of fading from 0 → 1 over ~150 ms (which reads
+        // as a "faint then clear" two-step appearance because
+        // content has already rendered when the fade begins).
+        // Same flag Zotero's own tabs-menu / sync-error / lookup
+        // panels use (zoteroPane.xhtml).
+        panel.setAttribute("animate", "false");
         // `position` controls anchoring relative to the parent menu
         // button; "after_end" right-aligns the popup to the button so
         // the wide popup body extends LEFTWARD into the items-pane
@@ -10211,10 +12354,12 @@ class WeaveroPlugin {
             this._cachedAnnotationTags = null;
             this._cachedAnnotationAuthors = null;
             this._cachedAddedByUsers = null;
+            this._cachedPublications = null;
             this._tagSearchQuery = "";
             this._authorSearchQuery = "";
             this._itemTypeSearchQuery = "";
             this._addedBySearchQuery = "";
+            this._publicationSearchQuery = "";
             this._renderFilterPanelContents(panel, inner);
         });
 
@@ -10580,8 +12725,43 @@ class WeaveroPlugin {
             if (group.hasRelated != null) {
                 bar.appendChild(this._buildHasRelatedChip(doc, group, gi));
             }
-            if (group.hasLinks != null) {
-                bar.appendChild(this._buildHasLinksChip(doc, group, gi));
+            if (group.hasLink != null) {
+                bar.appendChild(this._buildHasLinkChip(doc, group, gi));
+            }
+            if (group.hasTag != null) {
+                bar.appendChild(this._buildHasTagChip(doc, group, gi));
+            }
+            if (group.itemNote != null) {
+                bar.appendChild(this._buildItemNoteChip(doc, group, gi));
+            }
+            if (group.standaloneNote != null) {
+                bar.appendChild(this._buildStandaloneNoteChip(doc, group, gi));
+            }
+            if (group.hasAbstract != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasAbstract", "Has Abstract"));
+            }
+            if (group.hasDOI != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasDOI", "Has DOI"));
+            }
+            if (group.hasURL != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasURL", "Has URL"));
+            }
+            if (group.hasAttachment != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasAttachment", "Has Attachment File"));
+            }
+            if (group.hasAnnotations != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasAnnotations", "Has Annotations"));
+            }
+            if (group.publication && group.publication.length) {
+                bar.appendChild(this._buildPublicationChip(doc, group, gi));
+            }
+            if (group.publicationExclude && group.publicationExclude.length) {
+                bar.appendChild(this._buildPublicationChip(doc, group, gi, true));
             }
         }
 
@@ -10811,19 +12991,92 @@ class WeaveroPlugin {
         });
     }
 
-    _buildHasLinksChip(doc, group, gi) {
-        const value = group.hasLinks;
+    _buildHasLinkChip(doc, group, gi) {
+        const value = group.hasLink;
         return this._buildFilterChip(doc, {
-            field: "Has Links",
+            field: "Has Link",
             op: value ? "is" : "is not",
             fillValue: () => {},
             onRemove: () => {
-                group.hasLinks = null;
+                group.hasLink = null;
                 this._pruneEmptyGroups();
             },
             onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
         });
     }
+
+    _buildHasTagChip(doc, group, gi) {
+        const value = group.hasTag;
+        return this._buildFilterChip(doc, {
+            field: "Has Tag",
+            op: value ? "is" : "is not",
+            fillValue: () => {},
+            onRemove: () => {
+                group.hasTag = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildItemNoteChip(doc, group, gi) {
+        const value = group.itemNote;
+        return this._buildFilterChip(doc, {
+            field: "Item Note",
+            op: value ? "is" : "is not",
+            fillValue: () => {},
+            onRemove: () => {
+                group.itemNote = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildStandaloneNoteChip(doc, group, gi) {
+        const value = group.standaloneNote;
+        return this._buildFilterChip(doc, {
+            field: "Standalone Note",
+            op: value ? "is" : "is not",
+            fillValue: () => {},
+            onRemove: () => {
+                group.standaloneNote = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildHasFieldChip(doc, group, gi, key, fieldLabel) {
+        const value = group[key];
+        return this._buildFilterChip(doc, {
+            field: fieldLabel,
+            op: value ? "is" : "is not",
+            fillValue: () => {},
+            onRemove: () => {
+                group[key] = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildPublicationChip(doc, group, gi, exclude) {
+        const list = exclude ? group.publicationExclude : group.publication;
+        return this._buildFilterChip(doc, {
+            field: "Publication",
+            op: exclude ? "excludes any" : "includes any",
+            fillValue: (valSeg) => { valSeg.textContent = list.join(", "); },
+            onRemove: () => {
+                if (exclude) group.publicationExclude = [];
+                else group.publication = [];
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+
 
     _buildTagChip(doc, group, gi, exclude) {
         const tags = exclude ? group.annotationTagExclude : group.annotationTag;
@@ -11069,16 +13322,25 @@ class WeaveroPlugin {
         const colorSection = doc.createElementNS(NS_HTML, "div");
         const typeSection = doc.createElementNS(NS_HTML, "div");
         const commentSection = doc.createElementNS(NS_HTML, "div");
+        // The Attachment File Type section also hosts the Item Note
+        // tile (right of the file-type icons, after a vertical bar).
         const attachmentFileTypeSection = doc.createElementNS(NS_HTML, "div");
+        // Has Annotations tri-state — Attachment group, below the
+        // file-type / item-note row.
+        const hasAnnotationsSection = doc.createElementNS(NS_HTML, "div");
         // Item Type row — sits ABOVE the unified search section.
-        // Has its own trigger + selected-icon chips, with a
-        // collapsible vertical 2-col list rendered inline below.
+        // Has its own trigger + selected-icon chips. The Standalone
+        // Note tile is also rendered inline at the right end of
+        // this row (after a vertical separator).
         const itemTypeRowSection = doc.createElementNS(NS_HTML, "div");
+        // Parent-targeting Has-* row (Has DOI / Has URL / Has
+        // Abstract / Has Attachment File) — Parent group.
+        const parentHasFieldsSection = doc.createElementNS(NS_HTML, "div");
         // Unified search section — one search input + suggestion box
         // with a mode dropdown that switches between Tag, Author,
         // Added By, Collection, Saved Search.
         const searchSection = doc.createElementNS(NS_HTML, "div");
-        // Cross-level icon-trigger group (Has Related, Has Links).
+        // Cross-level icon-trigger group (Has Related, Has Link).
         const crossLevelSection = doc.createElementNS(NS_HTML, "div");
 
         // Selection Target uses include/exclude semantics like every
@@ -11188,11 +13450,10 @@ class WeaveroPlugin {
             !== Zotero.Libraries.userLibraryID;
 
         // Section order, top → bottom:
-        //   Annotation  — color / type / comment (most-specific first)
-        //   Attachment  — file-type picker
-        //   Search      — unified Tag / Author / Added By / Item Type
-        //                 / Collection / Saved Search (mode dropdown
-        //                 + one input)
+        //   Annotation  — color / type / comment
+        //   Attachment  — file-type / item-note / has-annotations
+        //   Parent      — Item Type / standalone note / has-fields
+        //   Cross-level — has-* + multi-select search
         //   Selection Target — Ctrl+A target picker (bottom bar)
         addGroupHeader("Annotation");
         inner.appendChild(colorSection);
@@ -11200,16 +13461,24 @@ class WeaveroPlugin {
         inner.appendChild(commentSection);
 
         addGroupHeader("Attachment");
+        // attachmentFileTypeSection now also renders the Item Note
+        // tile inline (right of the file-type icons, after a thin
+        // vertical separator).
         inner.appendChild(attachmentFileTypeSection);
+        inner.appendChild(hasAnnotationsSection);
 
-        addGroupHeader("Search");
+        addGroupHeader("Parent");
         inner.appendChild(itemTypeRowSection);
+        // Item Type row already hosts the Standalone Note tile at
+        // its right end (after a vertical separator), so the only
+        // section to append here is the Has-fields row.
+        inner.appendChild(parentHasFieldsSection);
 
         addGroupHeader("Cross-level");
         inner.appendChild(crossLevelSection);
         // Multi-selection search bar (Tag / Author / Added By /
         // Collection / Saved Search) — sits in the Cross-level
-        // group, directly under the Has Related / Has Links icons,
+        // group, directly under the Has Related / Has Link icons,
         // since these searches all match across row kinds the same
         // way the icon triggers do.
         inner.appendChild(searchSection);
@@ -11285,7 +13554,9 @@ class WeaveroPlugin {
             this._renderTypeSection(doc, typeSection, refreshAll);
             this._renderHasCommentSection(doc, commentSection, refreshAll);
             this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
+            this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
             this._renderItemTypeRow(doc, itemTypeRowSection, refreshAll, searchCtx);
+            this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll);
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
             renderHeader();
@@ -11427,6 +13698,44 @@ class WeaveroPlugin {
                 }
                 g.annotationTag = [...sel];
                 g.annotationTagExclude = [...exc];
+                this._renderFilterBar();
+                this._applyItemsListFilter({ cascade: true });
+            },
+        });
+        modes.push({
+            key: "publication",
+            label: "Publication",
+            placeholder: "Search publications…",
+            queryField: "_publicationSearchQuery",
+            emptyAll: "No publications in this library",
+            emptyFiltered: "No matching publications",
+            ranked: true,
+            getValues: async () => {
+                if (this._cachedPublications) return this._cachedPublications;
+                const t = await this._collectPublications(libraryID);
+                this._cachedPublications = t;
+                return t;
+            },
+            getSelectedSet: () => new Set(
+                (this._activeGroup() && this._activeGroup().publication) || []),
+            getExcludedSet: () => new Set(
+                (this._activeGroup() && this._activeGroup().publicationExclude) || []),
+            valueId: (v) => v,
+            valueLabel: (v) => v,
+            getLabelById: (id) => id,
+            onToggle: (id, sel, altKey) => {
+                const g = this._activeGroup();
+                if (!g) return;
+                const exc = new Set(g.publicationExclude || []);
+                if (altKey) {
+                    if (exc.has(id)) exc.delete(id);
+                    else { exc.add(id); sel.delete(id); }
+                } else {
+                    if (sel.has(id)) sel.delete(id);
+                    else { sel.add(id); exc.delete(id); }
+                }
+                g.publication = [...sel];
+                g.publicationExclude = [...exc];
                 this._renderFilterBar();
                 this._applyItemsListFilter({ cascade: true });
             },
@@ -12110,6 +14419,44 @@ class WeaveroPlugin {
         selectedRow.className = "wv-filter-itype-selected";
         triggerRow.appendChild(selectedRow);
 
+        // Standalone Note tile, right end of the trigger row, after
+        // a thin vertical separator. The selectedRow above takes
+        // all remaining flex space, so the separator + tile sit
+        // flush against the right edge naturally.
+        const sep = doc.createElementNS(NS_HTML, "div");
+        sep.className = "wv-filter-vertical-separator";
+        triggerRow.appendChild(sep);
+
+        const sg0 = this._activeGroup();
+        const snCur = sg0 ? sg0.standaloneNote : null;
+        const snBtn = doc.createElementNS(NS_HTML, "button");
+        snBtn.type = "button";
+        snBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        snBtn.title = "Standalone Note — show only top-level "
+            + "(parentless) notes. Alt+click to exclude (hide "
+            + "standalone notes).";
+        if (snCur === true) snBtn.dataset.selected = "true";
+        else if (snCur === false) snBtn.dataset.excluded = "true";
+        const snIcon = doc.createElementNS(NS_HTML, "img");
+        snIcon.className = "wv-filter-svg";
+        snIcon.src = "chrome://zotero/skin/16/universal/note.svg";
+        snIcon.alt = "Standalone Note";
+        snIcon.style.color = "var(--accent-yellow)";
+        snBtn.appendChild(snIcon);
+        snBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.standaloneNote === false) ? null : false;
+            else next = (g.standaloneNote === true) ? null : true;
+            g.standaloneNote = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        triggerRow.appendChild(snBtn);
+
         // Vertical 2-col suggestion list (hidden until trigger is
         // clicked).
         const box = doc.createElementNS(NS_HTML, "div");
@@ -12315,10 +14662,15 @@ class WeaveroPlugin {
                     // Clicks inside the open list (picking a type)
                     // are handled by the menuitem listener below.
                     if (box.contains(e.target)) return;
-                    // Clicks on already-selected chips remove them
-                    // — keep the list open so the user can keep
-                    // pruning their selection without re-opening.
-                    if (selectedRow.contains(e.target)) return;
+                    // Clicks on an actual chip remove that chip —
+                    // keep the list open so the user can keep
+                    // pruning. Use a chip-class check rather than
+                    // `selectedRow.contains` so empty space inside
+                    // selectedRow (visible once it has chips and
+                    // grows in height) doesn't accidentally count
+                    // as a chip click and trap the dropdown open.
+                    if (e.target.closest
+                        && e.target.closest(".wv-filter-itype-chip")) return;
                     // Anywhere else (including empty space on the
                     // trigger row, or anywhere outside the section)
                     // collapses the list.
@@ -12467,14 +14819,14 @@ class WeaveroPlugin {
         }
     }
 
-    /** True iff `item` carries a URL we'd render as a clickable link.
-     *  Cross-level — kind-agnostic so the cross-level filter section
-     *  can be applied uniformly:
-     *    - annotation: comment field contains a URL
-     *    - note: note body contains a URL
-     *    - attachment: `url` field is a URL (web-link attachment),
-     *      OR its note text does
-     *    - regular item: `url` field contains a URL */
+    /** True iff `item` is one of the three text sources Has Link
+     *  scans AND that text contains a URL. The three sources are:
+     *    - annotation.annotationComment
+     *    - item-note body (note with a regular-item parent)
+     *    - standalone-note body (top-level note)
+     *  Attachment URL fields and regular-item URL fields are
+     *  intentionally NOT checked — Has Link is about URLs the user
+     *  embedded in their own text, not metadata fields. */
     _itemHasLinks(item) {
         if (!item) return false;
         try {
@@ -12485,24 +14837,28 @@ class WeaveroPlugin {
                 const note = (item.getNote && item.getNote()) || "";
                 return this.hasURI(note);
             }
-            if (item.isAttachment && item.isAttachment()) {
-                const url = (item.getField && item.getField("url")) || "";
-                if (url && this.hasURI(url)) return true;
-                const note = (item.getNote && item.getNote()) || "";
-                if (note && this.hasURI(note)) return true;
-                return false;
-            }
-            const url = (item.getField && item.getField("url")) || "";
-            return !!url && this.hasURI(url);
+            return false;
         } catch (e) {
             return false;
         }
     }
 
-    /** Cross-level section — two icon-only tri-state buttons that
+    /** Map an item to one of Has Link's three scope keys, or
+     *  `null` if Has Link doesn't apply to this kind at all. */
+    _hasLinkScopeKeyOf(item) {
+        if (!item) return null;
+        if (item.isAnnotation && item.isAnnotation()) return "annotationComment";
+        if (item.isNote && item.isNote()) {
+            return item.parentItem ? "itemNoteText" : "standaloneText";
+        }
+        return null;
+    }
+
+    /** Cross-level section — three icon-only tri-state buttons that
      *  apply to every row kind:
      *    - Has Related: item has at least one related-item link
-     *    - Has Links:   item carries at least one URL (per `_itemHasLinks`)
+     *    - Has Link:    item has a URL in annotation comment or note text (per `_itemHasLinks`)
+     *    - Has Tag:     item carries at least one tag (manual or auto)
      *  Click toggles include, Alt+click toggles exclude. */
     _renderCrossLevelSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
@@ -12519,15 +14875,40 @@ class WeaveroPlugin {
         section.appendChild(opts);
 
         const g0 = this._activeGroup();
-        // `iconBuilder(doc)` returns the icon element; either an
-        // <img> with src= or a fully-built <svg>. The plugin's own
-        // chain icon has its colours baked in via `_makeLinkSvg`,
-        // so we go through a builder rather than a src URL.
-        const buildBtn = (key, label, iconBuilder, tip) => {
+        // Default kind list (Has Tag / Has Related) — three row-
+        // kind buckets following `_rowKindOf`. Item notes are
+        // attachments (same tree level) so the "Attachment" bucket
+        // covers both attachment files AND item notes; non-note
+        // attachments are referred to as "Attachment Files"
+        // elsewhere in the UI.
+        const KINDS_ROW = [
+            { key: "annotation", label: "Annotation" },
+            { key: "attachment", label: "Attachment" },
+            { key: "parent",     label: "Parent" },
+        ];
+        // Has Link's kind list — text-source-specific buckets
+        // (URL detection only fires on annotation comments and
+        // note bodies; attachment URL fields and regular-item URL
+        // fields don't count).
+        const KINDS_HAS_LINK = [
+            { key: "annotationComment", label: "Annotation Comment" },
+            { key: "itemNoteText",      label: "Item Note Text" },
+            { key: "standaloneText",    label: "Standalone Note Text" },
+        ];
+
+        // Each cross-level filter renders as a slot containing the
+        // main icon button + a small `▾` scope arrow. Click the
+        // icon to toggle include/exclude (Alt+click for exclude);
+        // click the arrow to choose which row kinds the filter
+        // applies to.
+        const buildBtn = (key, scopeKey, kindList, label, iconBuilder, tip) => {
+            const slot = doc.createElementNS(NS_HTML, "div");
+            slot.className = "wv-filter-cross-slot";
+
             const cur = g0 ? g0[key] : null;
             const btn = doc.createElementNS(NS_HTML, "button");
             btn.type = "button";
-            btn.className = "wv-filter-opt wv-filter-opt-icon";
+            btn.className = "wv-filter-opt wv-filter-opt-icon wv-filter-cross-main";
             btn.title = tip;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
@@ -12538,10 +14919,265 @@ class WeaveroPlugin {
                 const g = this._activeGroup();
                 if (!g) return;
                 let next;
+                if (e.altKey) next = (g[key] === false) ? null : false;
+                else next = (g[key] === true) ? null : true;
+                g[key] = next;
+                this._renderFilterBar();
+                this._applyItemsListFilter({ cascade: true });
+                refreshAll();
+            });
+            slot.appendChild(btn);
+
+            // Scope arrow. `data-modified` flags non-default scopes
+            // so the user sees at a glance which filters are
+            // narrowed below the all-on default.
+            const arrow = doc.createElementNS(NS_HTML, "button");
+            arrow.type = "button";
+            arrow.className = "wv-filter-cross-scope-arrow";
+            arrow.title = "Choose which row kinds this filter applies to";
+            arrow.textContent = "▾";
+            const scope = (g0 && g0[scopeKey]) || {};
+            const allOn = kindList.every(k => scope[k.key] !== false);
+            if (!allOn) arrow.dataset.modified = "true";
+            arrow.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this._openCrossLevelScopePopup(
+                    arrow, scopeKey, kindList, refreshAll);
+            });
+            slot.appendChild(arrow);
+
+            opts.appendChild(slot);
+        };
+
+        // Order: Has Tag (leftmost) → Has Related → Has Link.
+        buildBtn(
+            "hasTag", "hasTagScope", KINDS_ROW,
+            "Has Tag",
+            (d) => {
+                const icon = d.createElementNS(NS_HTML, "img");
+                icon.className = "wv-filter-svg";
+                icon.src = "chrome://zotero/skin/16/universal/tag.svg";
+                icon.alt = "Has Tag";
+                icon.style.color = "var(--accent-orange)";
+                return icon;
+            },
+            "Has Tag — items carrying at least one tag. "
+            + "Alt+click to exclude. ▾ to scope by row kind.");
+        buildBtn(
+            "hasRelated", "hasRelatedScope", KINDS_ROW,
+            "Has Related",
+            (d) => {
+                const icon = d.createElementNS(NS_HTML, "img");
+                icon.className = "wv-filter-svg";
+                icon.src = "chrome://zotero/skin/16/universal/related.svg";
+                icon.alt = "Has Related";
+                icon.style.color = "var(--accent-wood)";
+                return icon;
+            },
+            "Has Related — items with at least one related-item link. "
+            + "Alt+click to exclude. ▾ to scope by row kind.");
+        buildBtn(
+            "hasLink", "hasLinkScope", KINDS_HAS_LINK,
+            "Has Link",
+            (d) => this._makeLinkSvg(d),
+            "Has Link — items whose annotation comment or note text "
+            + "contains a URL. Alt+click to exclude. ▾ to choose "
+            + "which text source(s) to scan.");
+    }
+
+    /** Open a small dropdown anchored under `anchor` with checkboxes
+     *  toggling the per-kind scope of a cross-level filter.
+     *  `scopeKey` is the group field name (`hasRelatedScope`,
+     *  `hasLinkScope`, `hasTagScope`). `kinds` is the list of
+     *  scope checkboxes to render: `[{key, label}]`. */
+    _openCrossLevelScopePopup(anchor, scopeKey, kinds, refreshAll) {
+        const doc = anchor.ownerDocument;
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        // Drop any existing popup before opening a new one — the
+        // user just clicked an arrow, treat the previous popup as
+        // dismissed regardless of which arrow it belonged to.
+        const inner = anchor.closest(".wv-filter-popup-inner")
+            || doc.querySelector(".wv-filter-popup-inner");
+        if (!inner) return;
+        const stale = inner.querySelectorAll(".wv-filter-scope-popup");
+        for (const s of stale) s.remove();
+
+        const g = this._activeGroup();
+        if (!g) return;
+        if (!g[scopeKey]) {
+            // Lazy default: every key in the kinds list set true.
+            g[scopeKey] = {};
+            for (const k of kinds) g[scopeKey][k.key] = true;
+        }
+        const scope = g[scopeKey];
+
+        const pop = doc.createElementNS(NS_HTML, "div");
+        pop.className = "wv-filter-scope-popup";
+
+        const heading = doc.createElementNS(NS_HTML, "div");
+        heading.className = "wv-filter-scope-popup-head";
+        heading.textContent = "Apply to";
+        pop.appendChild(heading);
+
+        for (const k of kinds) {
+            const lbl = doc.createElementNS(NS_HTML, "label");
+            lbl.className = "wv-filter-scope-popup-row";
+            const cb = doc.createElementNS(NS_HTML, "input");
+            cb.type = "checkbox";
+            cb.checked = scope[k.key] !== false;
+            cb.addEventListener("change", () => {
+                scope[k.key] = !!cb.checked;
+                this._renderFilterBar();
+                this._applyItemsListFilter({ cascade: true });
+                refreshAll();
+            });
+            lbl.appendChild(cb);
+            const txt = doc.createElementNS(NS_HTML, "span");
+            txt.textContent = k.label;
+            lbl.appendChild(txt);
+            pop.appendChild(lbl);
+        }
+
+        // Position relative to the panel's inner box. The arrow's
+        // bounding rect is in viewport coords; subtract the inner's
+        // own viewport position to get a coordinate the popup can
+        // use as `position: absolute` inside `inner`.
+        inner.appendChild(pop);
+        try {
+            const r = anchor.getBoundingClientRect();
+            const ir = inner.getBoundingClientRect();
+            pop.style.left = Math.max(0, (r.left - ir.left) - 4) + "px";
+            pop.style.top = (r.bottom - ir.top + 2) + "px";
+        } catch (e) {}
+
+        // Close on outside-click. setTimeout so the click that
+        // opened the popup doesn't immediately re-close it.
+        let onDoc = null;
+        const close = () => {
+            try { pop.remove(); } catch (e) {}
+            if (onDoc) {
+                doc.removeEventListener("mousedown", onDoc, true);
+                onDoc = null;
+            }
+        };
+        onDoc = (e) => {
+            if (pop.contains(e.target)) return;
+            if (anchor.contains(e.target)) return;
+            close();
+        };
+        const win = doc.defaultView || doc.ownerGlobal;
+        win.setTimeout(() => doc.addEventListener("mousedown", onDoc, true), 0);
+    }
+
+    /** Single-button tri-state section (matches `_renderHasCommentSection`'s
+     *  shape) for boolean kind filters that target a row sub-kind.
+     *  `key` is the group field name; `iconBuilder(doc)` returns an
+     *  icon element. The button cycles include / exclude via plain
+     *  click and Alt+click respectively, with `data-selected` /
+     *  `data-excluded` for the standard CSS treatment. */
+    _renderBoolKindIconSection(doc, section, refreshAll, opts) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "wv-filter-section";
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+        const title = doc.createElementNS(NS_HTML, "div");
+        title.className = "wv-filter-section-title";
+        title.textContent = opts.title;
+        section.appendChild(title);
+
+        const optsBox = doc.createElementNS(NS_HTML, "div");
+        optsBox.className = "wv-filter-options";
+        section.appendChild(optsBox);
+
+        const g0 = this._activeGroup();
+        const cur = g0 ? g0[opts.key] : null;
+        const btn = doc.createElementNS(NS_HTML, "button");
+        btn.type = "button";
+        btn.className = "wv-filter-opt wv-filter-opt-icon";
+        btn.title = opts.tip;
+        if (cur === true) btn.dataset.selected = "true";
+        else if (cur === false) btn.dataset.excluded = "true";
+        const icon = opts.iconBuilder(doc);
+        if (icon) btn.appendChild(icon);
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) {
+                next = (g[opts.key] === false) ? null : false;
+            }
+            else {
+                next = (g[opts.key] === true) ? null : true;
+            }
+            g[opts.key] = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        optsBox.appendChild(btn);
+    }
+
+    /** Item Note tile is now rendered inline by
+     *  `_renderAttachmentFileTypeSection` (right of the file-type
+     *  icons, after a vertical separator). This shim is kept as a
+     *  no-op placeholder in case external code references the
+     *  method name. */
+    _renderItemNoteSection(_doc, _section, _refreshAll) {
+        // Intentionally empty.
+    }
+
+    /** Standalone Note tile is now rendered inline by
+     *  `_renderItemTypeRow` (right end of the Item Type row, after
+     *  a vertical separator). No-op shim for back-compat. */
+    _renderStandaloneNoteSection(_doc, _section, _refreshAll) {
+        // Intentionally empty.
+    }
+
+    /** Render a row of parent-targeting "Has *" tri-state icon
+     *  buttons (Has DOI, Has URL, Has Abstract, Has Attachment File).
+     *  All four sit on the same line in the Parent group. */
+    _renderParentHasFieldsSection(doc, section, refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "wv-filter-section";
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+        const title = doc.createElementNS(NS_HTML, "div");
+        title.className = "wv-filter-section-title";
+        title.textContent = "Parent Has";
+        section.appendChild(title);
+
+        const optsBox = doc.createElementNS(NS_HTML, "div");
+        optsBox.className = "wv-filter-options";
+        section.appendChild(optsBox);
+
+        const g0 = this._activeGroup();
+        // Optional `color` ties the icon's currentColor to one of
+        // Zotero's `$item-pane-sections` palette entries so the
+        // Has-* tiles read as the same surface as their right-pane
+        // section header.
+        const buildBtn = (key, label, iconSrc, tip, color) => {
+            const cur = g0 ? g0[key] : null;
+            const btn = doc.createElementNS(NS_HTML, "button");
+            btn.type = "button";
+            btn.className = "wv-filter-opt wv-filter-opt-icon";
+            btn.title = tip;
+            if (cur === true) btn.dataset.selected = "true";
+            else if (cur === false) btn.dataset.excluded = "true";
+            const icon = doc.createElementNS(NS_HTML, "img");
+            icon.className = "wv-filter-svg";
+            icon.src = iconSrc;
+            icon.alt = label;
+            if (color) icon.style.color = color;
+            btn.appendChild(icon);
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const g = this._activeGroup();
+                if (!g) return;
+                let next;
                 if (e.altKey) {
                     next = (g[key] === false) ? null : false;
-                }
-                else {
+                } else {
                     next = (g[key] === true) ? null : true;
                 }
                 g[key] = next;
@@ -12549,37 +15185,58 @@ class WeaveroPlugin {
                 this._applyItemsListFilter({ cascade: true });
                 refreshAll();
             });
-            opts.appendChild(btn);
+            optsBox.appendChild(btn);
         };
+        // Order matches Zotero's right-pane sidenav for a regular
+        // item: Info fields (DOI, URL) → Abstract → Attachments.
+        // Colors come from `$item-pane-sections` (`scss/abstracts/
+        // _variables.scss`): Abstract → `--accent-azure`,
+        // Attachments → `--accent-green`. DOI / URL don't have
+        // dedicated section entries so they stay neutral
+        // (currentColor).
+        buildBtn("hasDOI", "Has DOI",
+            "chrome://zotero/skin/16/universal/crossref.svg",
+            "Has DOI — regular items with a DOI. Alt+click to exclude.");
+        buildBtn("hasURL", "Has URL",
+            "chrome://zotero/skin/16/universal/globe.svg",
+            "Has URL — regular items with a URL field. "
+            + "Alt+click to exclude.");
+        buildBtn("hasAbstract", "Has Abstract",
+            "chrome://zotero/skin/16/universal/abstract.svg",
+            "Has Abstract — regular items with a non-empty abstract. "
+            + "Alt+click to exclude.",
+            "var(--accent-azure)");
+        buildBtn("hasAttachment", "Has Attachment File",
+            "chrome://zotero/skin/16/universal/attachment.svg",
+            "Has Attachment File — regular items with at least "
+            + "one attachment file (PDF, EPUB, snapshot, etc.). "
+            + "Distinct from Item Note — item notes are also "
+            + "attachment-level rows but have their own tile in "
+            + "the Attachment group. Alt+click to exclude.",
+            "var(--accent-green)");
+    }
 
-        buildBtn(
-            "hasRelated",
-            "Has Related",
-            (d) => {
+    /** Single-tile "Has Annotations" tri-state for the Attachment
+     *  group. */
+    _renderHasAnnotationsSection(doc, section, refreshAll) {
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        this._renderBoolKindIconSection(doc, section, refreshAll, {
+            key: "hasAnnotations",
+            title: "Has Annotations",
+            tip: "Has Annotations — file attachments with at least "
+                + "one annotation. Alt+click to exclude.",
+            iconBuilder: (d) => {
                 const icon = d.createElementNS(NS_HTML, "img");
                 icon.className = "wv-filter-svg";
-                icon.src = "chrome://zotero/skin/16/universal/related.svg";
-                icon.alt = "Has Related";
-                // Same `--accent-wood` tint used by the Related
-                // column header and the in-tree `.wv-tree-rel-icon`.
-                // `wv-filter-svg` sets `fill: currentColor`, so
-                // tinting the host element flows through to the
-                // SVG fill. Theme-aware (variable resolves
-                // light/dark on its own).
-                icon.style.color = "var(--accent-wood)";
+                icon.src = "chrome://zotero/skin/16/universal/attachment-annotations.svg";
+                icon.alt = "Has Annotations";
+                // Zotero maps `attachment-annotations` to
+                // `--tag-purple` in the item-pane sections palette
+                // — same icon, same colour.
+                icon.style.color = "var(--tag-purple)";
                 return icon;
             },
-            "Has Related — items with at least one related-item link. "
-            + "Alt+click to exclude (items without relations).");
-        buildBtn(
-            "hasLinks",
-            "Has Links",
-            // Use Weavero's own chain SVG (the plugin's signature
-            // icon) rather than Zotero's generic link.svg, so the
-            // button visually identifies "Weavero detected URL".
-            (d) => this._makeLinkSvg(d),
-            "Has Links — items carrying a URL (annotation comment, "
-            + "note body, attachment URL, or item URL). Alt+click to exclude.");
+        });
     }
 
     _renderHasCommentSection(doc, section, refreshAll) {
@@ -12608,11 +15265,16 @@ class WeaveroPlugin {
         const cur = g0 ? g0.annotationHasComment : null;
         const btn = doc.createElementNS(NS_HTML, "button");
         btn.type = "button";
-        btn.className = "wv-filter-opt";
-        btn.textContent = "Has Comment";
+        btn.className = "wv-filter-opt wv-filter-opt-icon";
         if (cur === true) btn.dataset.selected = "true";
         else if (cur === false) btn.dataset.excluded = "true";
-        btn.title = "Has Comment";
+        btn.title = "Has Comment — annotations with non-empty "
+            + "comment text. Alt+click to exclude.";
+        // Speech-bubble + capital C, painted in `--tag-purple`
+        // (Zotero's annotation-pane accent). Inline SVG rather than
+        // a chrome:// URL since this is a Weavero-specific glyph
+        // not shipped with Zotero.
+        btn.appendChild(this._makeHasCommentSvg(doc));
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
             const g = this._activeGroup();
@@ -12631,6 +15293,61 @@ class WeaveroPlugin {
             refreshAll();
         });
         opts.appendChild(btn);
+    }
+
+    /** Build the Has Comment glyph — a rounded speech bubble with a
+     *  capital "C" inside, painted in `--tag-purple` to match the
+     *  annotation-pane accent. Inline SVG so we don't need to ship
+     *  a separate file in `src/icons/`. */
+    _makeHasCommentSvg(doc) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS, "svg");
+        svg.setAttribute("class", "wv-filter-svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("fill", "none");
+        svg.style.color = "var(--tag-purple)";
+        const path = doc.createElementNS(NS, "path");
+        // Coordinates aligned to the `.5` grid so the 1-px stroke
+        // covers integer pixel rows (otherwise the stroke center
+        // straddles two rows and anti-aliases to a blurry line —
+        // exactly the trick Zotero's `annotate-note.svg` uses,
+        // e.g. `1.5`, `8.5`, `14.5`). Bubble body: (1.5, 1.5) →
+        // (14.5, 11.5), corner radius ≈ 1.5; tail tip at (4.5, 14.5).
+        path.setAttribute("d",
+            "M1.5 3C1.5 2.17 2.17 1.5 3 1.5H13"
+            + "C13.83 1.5 14.5 2.17 14.5 3V10"
+            + "C14.5 10.83 13.83 11.5 13 11.5H6.5"
+            + "L4.5 14.5V11.5H3"
+            + "C2.17 11.5 1.5 10.83 1.5 10V3Z");
+        path.setAttribute("stroke", "currentColor");
+        // Match Zotero's stroke-only icons — `annotate-note.svg`
+        // and friends omit `stroke-width` so it defaults to 1.
+        path.setAttribute("stroke-width", "1");
+        path.setAttribute("stroke-linejoin", "round");
+        // `.wv-filter-svg { fill: currentColor }` would otherwise
+        // fill the bubble with the same purple as the C text,
+        // hiding the letter. Inline style beats the class rule.
+        path.style.fill = "none";
+        svg.appendChild(path);
+        const text = doc.createElementNS(NS, "text");
+        // C is centered on the bubble body (y midpoint ≈ 6.5).
+        // font-size 8 with cap-height ~5.6 → baseline at y=9 puts
+        // the cap visually centered. font-weight 600 (semi-bold)
+        // approximates the ~1.5-px stroke thickness of Zotero's
+        // letter-glyph icons (annotate-text "T", annotate-highlight
+        // "A") which draw their strokes as filled paths of that
+        // width. Bold (700) was too heavy and crowded the bubble.
+        text.setAttribute("x", "8");
+        text.setAttribute("y", "9");
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("font-family",
+            "-apple-system, Segoe UI, sans-serif");
+        text.setAttribute("font-size", "8");
+        text.setAttribute("font-weight", "600");
+        text.setAttribute("fill", "currentColor");
+        text.textContent = "C";
+        svg.appendChild(text);
+        return svg;
     }
 
     /** Annotation Tag picker — dynamic-list section with a GitHub-
@@ -13056,9 +15773,14 @@ class WeaveroPlugin {
             btn.title = def.label;
             if (selected.has(def.value)) btn.dataset.selected = "true";
             if (inExc) btn.dataset.excluded = "true";
-            const icon = doc.createElementNS(NS_HTML, "img");
-            icon.className = "wv-attach-icon";
-            icon.src = def.icon;
+            // Theme-aware: Zotero's `.icon-item-type[data-item-type]`
+            // rules (defined in `_item-tree.scss`) ship separate
+            // light/dark SVG paths and resolve at runtime to the
+            // correct one for the active theme. `def.value` is
+            // already the camelCase form (attachmentPDF, …).
+            const icon = doc.createElementNS(NS_HTML, "span");
+            icon.className = "icon icon-css icon-item-type";
+            icon.setAttribute("data-item-type", def.value);
             btn.appendChild(icon);
             btn.addEventListener("click", (e) => {
                 e.stopPropagation();
@@ -13075,12 +15797,76 @@ class WeaveroPlugin {
             });
             opts.appendChild(btn);
         }
+
+        // Item Note tile sits to the right of the file-type icons,
+        // after a thin vertical separator. Item notes are
+        // attachment-level rows (same tree depth as attachments)
+        // — the file-type tiles target attachment-files, the Item
+        // Note tile targets the OTHER kind of attachment-level
+        // row, hence the visual grouping.
+        const sep = doc.createElementNS(NS_HTML, "div");
+        sep.className = "wv-filter-vertical-separator";
+        opts.appendChild(sep);
+
+        const inCur = g0 ? g0.itemNote : null;
+        const inBtn = doc.createElementNS(NS_HTML, "button");
+        inBtn.type = "button";
+        inBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        inBtn.title = "Item Note — show only notes attached to a regular item. "
+            + "Alt+click to exclude (hide item notes).";
+        if (inCur === true) inBtn.dataset.selected = "true";
+        else if (inCur === false) inBtn.dataset.excluded = "true";
+        const inIcon = doc.createElementNS(NS_HTML, "img");
+        inIcon.className = "wv-filter-svg";
+        inIcon.src = "chrome://zotero/skin/16/universal/note.svg";
+        inIcon.alt = "Item Note";
+        // Same `--accent-yellow` Zotero uses for the notes section.
+        inIcon.style.color = "var(--accent-yellow)";
+        inBtn.appendChild(inIcon);
+        inBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.itemNote === false) ? null : false;
+            else next = (g.itemNote === true) ? null : true;
+            g.itemNote = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        opts.appendChild(inBtn);
     }
 
     /** Distinct user names who created (added) items in `libraryID`.
      *  Most useful for group libraries where multiple members
      *  contribute. In a personal library this typically returns
      *  zero or one entry. */
+    /** Distinct non-empty `publicationTitle` values across all
+     *  regular items in the library. Used by the Publication mode
+     *  in the unified search. */
+    async _collectPublications(libraryID) {
+        if (libraryID == null) return [];
+        try {
+            const fieldSql = "SELECT fieldID FROM fields WHERE fieldName = 'publicationTitle'";
+            const fieldRow = await Zotero.DB.valueQueryAsync(fieldSql);
+            if (!fieldRow) return [];
+            const sql = "SELECT DISTINCT idv.value AS title "
+                + "FROM itemDataValues idv "
+                + "JOIN itemData id ON id.valueID = idv.valueID "
+                + "JOIN items i ON i.itemID = id.itemID "
+                + "WHERE id.fieldID = ? "
+                + "AND i.libraryID = ? "
+                + "AND i.itemID NOT IN (SELECT itemID FROM deletedItems) "
+                + "AND idv.value <> ''";
+            const rows = await Zotero.DB.columnQueryAsync(sql, [fieldRow, libraryID]);
+            return (rows || []).sort((a, b) => String(a).localeCompare(String(b)));
+        } catch (e) {
+            Zotero.debug("[Weavero][filter] _collectPublications err: " + e);
+            return [];
+        }
+    }
+
     async _collectAddedByUsers(libraryID) {
         if (libraryID == null) return [];
         try {
@@ -17725,6 +20511,19 @@ class WeaveroPlugin {
         // tree). Self-retries until the items pane is mounted.
         this._setupItemsListFilter();
 
+        // 6a2. Patch the "List all tabs" panel to group rows by
+        // library when 2+ libraries are open in tabs. Self-retries
+        // if the tabs-menu-panel custom element isn't upgraded yet.
+        try {
+            this._setupTabsMenuLibrarySort(Zotero.getMainWindow());
+        } catch (e) {}
+        // 6a3. Highlight the library row of the current item in any
+        // `libraries-collections-box` (item pane) when the item is
+        // replicated across libraries.
+        try {
+            this._setupLibrariesBoxHighlight(Zotero.getMainWindow());
+        } catch (e) {}
+
         // 6b. Resolve the icon URLs used by `decorateContextMenu`. The
         // reader iframe is content (loaded from `resource://zotero/`),
         // which Mozilla's CheckLoadURI policy forbids from linking to
@@ -18037,6 +20836,8 @@ class WeaveroPlugin {
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();
+            this._teardownTabsMenuLibrarySort(_window);
+            this._teardownLibrariesBoxHighlight(_window);
             this._paneObserver?.disconnect();
             this._paneObserver = null;
             this._treeMarkObserver?.disconnect();
@@ -18084,6 +20885,8 @@ class WeaveroPlugin {
             this._setupCollectionsContextMenu();
             this._setupPaneObserver();
             this._setupItemsListFilter();
+            this._setupTabsMenuLibrarySort(_window);
+            this._setupLibrariesBoxHighlight(_window);
             // Re-apply CSS-class state (these set classes on root.documentElement).
             this._applyTreeIconPref(this._getShowTreeIcon());
             this._applyInlineLinksPref(this._getInlineLinks());
@@ -18156,6 +20959,12 @@ class WeaveroPlugin {
         this._teardownCollectionsContextMenu();
         this._teardownNoteWindowListener();
         this._teardownItemsListFilter();
+        try {
+            this._teardownTabsMenuLibrarySort(Zotero.getMainWindow());
+        } catch (e) {}
+        try {
+            this._teardownLibrariesBoxHighlight(Zotero.getMainWindow());
+        } catch (e) {}
         this._paneObserver?.disconnect(); this._paneObserver = null;
 
         // Clear any `network.protocol-handler.warn-external.<x>`

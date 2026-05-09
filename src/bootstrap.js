@@ -1,3 +1,4 @@
+// @ts-check
 // Annotation Links — Zotero 7/10 Plugin
 // bootstrap.js — plugin lifecycle entry point
 
@@ -2725,7 +2726,7 @@ class WeaveroPlugin {
                 const lib = item.libraryID;
                 let prefix = "library";
                 try {
-                    if (!Zotero.Libraries.isUserLibrary(lib)) {
+                    if (lib !== Zotero.Libraries.userLibraryID) {
                         const gid = Zotero.Groups.getGroupIDFromLibraryID(lib);
                         if (gid) prefix = "groups/" + gid;
                     }
@@ -3946,7 +3947,7 @@ class WeaveroPlugin {
             const buildSelectURI = (item) => {
                 let prefix = "library";
                 try {
-                    if (!Zotero.Libraries.isUserLibrary(item.libraryID)) {
+                    if (item.libraryID !== Zotero.Libraries.userLibraryID) {
                         const gid = Zotero.Groups.getGroupIDFromLibraryID(
                             item.libraryID);
                         if (gid) prefix = "groups/" + gid;
@@ -4113,7 +4114,7 @@ class WeaveroPlugin {
             const buildCollectionURI = (col) => {
                 let prefix = "library";
                 try {
-                    if (!Zotero.Libraries.isUserLibrary(col.libraryID)) {
+                    if (col.libraryID !== Zotero.Libraries.userLibraryID) {
                         const gid = Zotero.Groups.getGroupIDFromLibraryID(
                             col.libraryID);
                         if (gid) prefix = "groups/" + gid;
@@ -4288,9 +4289,16 @@ class WeaveroPlugin {
                 && this._iconAddsValueBeyondInline(comment);
             if (!shouldShow && hasURIs) {
                 try {
+                    // `popupTextEl` was a stale name from an earlier
+                    // refactor — never declared in this scope, so the
+                    // try/catch silently set `shouldShow = false` and
+                    // the icon never auto-appeared on overflowing
+                    // URI-bearing comments. The actual element whose
+                    // overflow we want to test is the .comment node
+                    // captured above.
                     shouldShow =
-                        popupTextEl.scrollHeight > popupTextEl.clientHeight + 1
-                        || popupTextEl.scrollWidth > popupTextEl.clientWidth + 1;
+                        commentEl.scrollHeight > commentEl.clientHeight + 1
+                        || commentEl.scrollWidth > commentEl.clientWidth + 1;
                 } catch(e) { shouldShow = false; }
             }
             if (!shouldShow) {
@@ -12780,7 +12788,9 @@ class WeaveroPlugin {
                     break;
                 }
             }
-            this._openFilterPanel(addBtn);
+            // _openFilterPanel resolves the toolbar button itself —
+            // no anchor argument needed.
+            this._openFilterPanel();
         });
         bar.appendChild(addBtn);
 
@@ -12797,7 +12807,7 @@ class WeaveroPlugin {
             e.stopPropagation();
             state.groups.push(this._emptyFilterGroup());
             state.activeGroupIndex = state.groups.length - 1;
-            this._openFilterPanel(addGroupBtn);
+            this._openFilterPanel();
         });
         bar.appendChild(addGroupBtn);
 
@@ -12904,10 +12914,13 @@ class WeaveroPlugin {
         }
     }
 
-    /** Open the filter panel scoped to the given group index. */
+    /** Open the filter panel scoped to the given group index. The
+     *  `anchor` arg is accepted for callsite compatibility (some
+     *  callers wire this onto a button-click handler) but is unused
+     *  — `_openFilterPanel` always anchors to the toolbar button. */
     _openFilterPanelForGroup(anchor, groupIdx) {
         this._filterState.activeGroupIndex = groupIdx;
-        this._openFilterPanel(anchor);
+        this._openFilterPanel();
     }
 
     _buildColorChip(doc, group, gi, exclude) {

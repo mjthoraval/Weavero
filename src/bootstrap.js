@@ -10,6 +10,11 @@ function startup({ id, version, rootURI }) {
     Zotero.initializationPromise.then(() => {
         try {
             Weavero = new WeaveroPlugin();
+            // Expose the live instance under `Zotero.Weavero` so the
+            // Mocha test suite (and the MCP debug bridge) can poke
+            // at internals without re-running bootstrap. No external
+            // Zotero code consumes this — it's a dev-only handle.
+            Zotero.Weavero = Weavero;
             Weavero.init().catch(e =>
                 Zotero.debug("[Weavero] init error: " + e)
             );
@@ -21,6 +26,7 @@ function startup({ id, version, rootURI }) {
 
 function shutdown() {
     if (Weavero) { Weavero.destroy(); Weavero = null; }
+    delete Zotero.Weavero;
 }
 
 // Zotero 7+ calls these whenever a main window is opened or closed. Without

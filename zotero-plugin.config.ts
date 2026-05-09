@@ -37,4 +37,38 @@ export default defineConfig({
     startupDelay: 8_000,
     abortOnFail: false,
   },
+
+  release: {
+    // Match the existing v0.7.0 release flow — version-tagged
+    // releases (`vX.Y.Z`) carry the XPI as an asset, and a
+    // separate rolling `release` tag holds `update.json` so
+    // Zotero's auto-updater can find the latest version.
+    bumpp: {
+      // CI mode: when invoked from the release.yml workflow,
+      // skip the interactive prompt and trust the tag that
+      // triggered the run.
+      execute: "npm run build",
+      // Don't open an editor for the commit message — use the
+      // default.
+      confirm: true,
+      tag: "v%s",
+    },
+    github: {
+      // `local` mode runs the publish step from the developer's
+      // machine; `ci` mode runs it from the GitHub Actions
+      // runner. The release.yml workflow sets this implicitly
+      // via NODE_ENV detection — set explicitly here too so
+      // local invocations also publish if the user wants.
+      enable: true,
+      releaseNote(ctx) {
+        // Default: a short auto-generated note. Custom release
+        // bodies (like the v0.7.0 hand-curated changelog) can
+        // still be edited via the GitHub UI after publish.
+        return `Release v${ctx.version}\n\n`
+            + `See [CHANGELOG](https://github.com/`
+            + `mjthoraval/Weavero/commits/v${ctx.version}) `
+            + `for the commit log since the last tag.`;
+      },
+    },
+  },
 });

@@ -1,0 +1,22 @@
+{
+  "name": "weavero",
+  "version": "0.7.0",
+  "private": true,
+  "description": "Zotero 7+ plugin — clickable links in annotation comments + filter pane + tabs-menu overhaul.",
+  "homepage": "https://github.com/mjthoraval/Weavero",
+  "license": "AGPL-3.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "zotero-plugin test"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "chai": "^6.2.1",
+    "mocha": "^11.7.5",
+    "typescript": "^5.9.3",
+    "zotero-plugin-scaffold": "^0.8.6",
+    "zotero-types": "^4.1.2"
+  }
+}

@@ -4,3 +4,10 @@
 
 # Local archive of past builds.
 releases/
+
+# Node toolchain
+/node_modules/
+/npm-debug.log*
+/.scaffold/
+/build/
+

@@ -20,7 +20,3 @@ update-beta.json
 
 # Local Zotero binary path for the scaffold tester (machine-specific).
 .env
-
-# Test specs are local-only for now (item 2 in the migration plan).
-# Remove this rule when test/ is published.
-test/

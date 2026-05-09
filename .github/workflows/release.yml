@@ -1,0 +1,78 @@
+name: Release
+
+# MANUAL TRIGGER ONLY. Pushing a `vX.Y.Z` tag does NOT auto-fire
+# this workflow — by design, so you can keep dev versions local
+# (build.ps1 + manual installs) without anything being uploaded
+# to GitHub until you explicitly ask.
+#
+# To cut a public release:
+#   1. Bump locally: `npm run release` (or just edit
+#      package.json + src/manifest.json and `git tag` the version).
+#   2. Push the tag: `git push origin v0.X.Y`
+#      → tests run via test.yml but nothing is published.
+#   3. Go to https://github.com/mjthoraval/Weavero/actions
+#      → pick "Release" → "Run workflow" → enter the tag name.
+#      → that triggers build → test → publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.8.0)"
+        required: true
+
+permissions:
+  contents: write     # create the release + upload assets
+  issues: write       # for release-comment notifications
+  pull-requests: write
+
+# Same Node 24 opt-in as test.yml — see comment there.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  release:
+    name: Build, test, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the full history so the changelog generator can
+          # walk back to the previous tag.
+          fetch-depth: 0
+          # Optional manual-trigger path — check out the tag the
+          # user picked from the Actions UI.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check (regression gate)
+        run: npm run typecheck
+
+      - name: Run tests (regression gate)
+        run: npm test
+
+      - name: Build XPI
+        run: npm run build
+
+      - name: Publish release
+        # Scaffold's release command, when run in CI with a
+        # GITHUB_TOKEN, creates the GitHub release tagged with
+        # the current `package.json` version, uploads the .xpi
+        # from `.scaffold/build/`, and updates the rolling
+        # `release` tag's `update.json`.
+        run: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tell the scaffold to skip its interactive bump prompt
+          # — the tag has already determined the version.
+          NODE_ENV: production
+          CI: "true"

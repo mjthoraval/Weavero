@@ -79,7 +79,7 @@ Open `Tools → Plugins → Weavero → Preferences` to enable/disable individua
 
 Plugin source is in `src/`. A Zotero plugin is just a zip file with a `.xpi` extension. Two paths are supported:
 
-- **Manual** (no Node toolchain required): zip the contents of `src/` (files at the archive root, no `src/` prefix) and name the result `weavero-v<version>.xpi`. The supplied `build.ps1` does this on Windows.
+- **Manual** (no Node toolchain required): zip the contents of `src/` (files at the archive root, no `src/` prefix) and name the result `weavero-v<version>.xpi`. The supplied `scripts/build.ps1` does this on Windows.
 - **Scripted**: `npm install` once, then `npm run build` produces `.scaffold/build/weavero.xpi` plus `update.json` (with the XPI's SHA512 hash baked in).
 
 Both paths produce a functionally-identical XPI.

@@ -45,10 +45,10 @@ jobs:
       - name: Type-check (tsc --noEmit)
         # Hard gate: fails if any new type error appears. The
         # baseline is 0 — bootstrap.js is `// @ts-nocheck`'d (its
-        // ~170 errors are DOM-narrowing noise from a 19k-line file
-        // never written with types in mind). Anything new — a TS
-        // module, a `// @ts-check` JS file, a test spec — gets
-        // checked normally.
+        # ~170 errors are DOM-narrowing noise from a 19k-line file
+        # never written with types in mind). Anything new — a TS
+        # module, a `// @ts-check` JS file, a test spec — gets
+        # checked normally.
         run: npm run typecheck
 
       - name: Run tests

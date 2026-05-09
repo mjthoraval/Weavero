@@ -1,6 +1,6 @@
 {
   "name": "weavero",
-  "version": "0.7.1-dev.1",
+  "version": "0.7.0",
   "private": true,
   "description": "Zotero 7+ plugin — clickable links in annotation comments + filter pane + tabs-menu overhaul.",
   "homepage": "https://github.com/mjthoraval/Weavero",

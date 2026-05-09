@@ -1,27 +1,24 @@
 name: Release
 
-# Triggered when a `vX.Y.Z` tag lands on main. Builds the XPI,
-# runs the test suite as a final regression gate, then publishes
-# a GitHub release tagged `v{version}` with the XPI as an asset
-# AND updates the rolling `release` tag's `update.json` so
-# Zotero's auto-updater offers the new version.
+# MANUAL TRIGGER ONLY. Pushing a `vX.Y.Z` tag does NOT auto-fire
+# this workflow — by design, so you can keep dev versions local
+# (build.ps1 + manual installs) without anything being uploaded
+# to GitHub until you explicitly ask.
 #
-# To cut a new release locally:
-#   1. `npm run release`     # interactive: bump → tag → push
-#   2. (this workflow runs)  # build → test → publish
-#
-# The bump step is interactive (prompts for major/minor/patch);
-# CI's only job is the build-test-publish phase.
+# To cut a public release:
+#   1. Bump locally: `npm run release` (or just edit
+#      package.json + src/manifest.json and `git tag` the version).
+#   2. Push the tag: `git push origin v0.X.Y`
+#      → tests run via test.yml but nothing is published.
+#   3. Go to https://github.com/mjthoraval/Weavero/actions
+#      → pick "Release" → "Run workflow" → enter the tag name.
+#      → that triggers build → test → publish.
 
 on:
-  push:
-    tags: ["v*"]
-  # Manual override — pick a tag from the Actions UI to re-run a
-  # publish if the original run failed mid-way.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish (e.g. v0.7.0)"
+        description: "Tag to publish (e.g. v0.8.0)"
         required: true
 
 permissions:

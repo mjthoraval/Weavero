@@ -1,9 +1,26 @@
-# The git working tree is this `GitHub/` folder. Everything outside
-# (npm tooling, node_modules, scaffold output, tests, scripts, dev
-# notes, the build artifact XPI, etc.) lives in the parent `Weavero/`
-# directory and is invisible to git regardless of what's listed here.
+# The git working tree is this `GitHub/` folder.
 #
-# Only patterns that target files INSIDE `GitHub/` need to be here.
-# At the moment there are none — everything inside GitHub/ should be
-# tracked by design. Keep this file as a stub so contributors looking
-# for the public ignore rules find them at the conventional location.
+# Patterns below target dev-time artifacts that will land inside
+# `GitHub/` once you run `npm install` / `npm run build` / `npm test`
+# from here. They are excluded so the public repo stays clean.
+
+# Node toolchain
+node_modules/
+npm-debug.log*
+
+# Scaffold build output and generated typings
+.scaffold/
+build/
+typings/
+
+# Build artifacts (XPI + auto-update manifests)
+weavero-v*.xpi
+update.json
+update-beta.json
+
+# Local Zotero binary path for the scaffold tester (machine-specific).
+.env
+
+# Test specs are local-only for now (item 2 in the migration plan).
+# Remove this rule when test/ is published.
+test/

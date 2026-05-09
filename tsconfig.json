@@ -1,0 +1,42 @@
+{
+  "compilerOptions": {
+    // Type-check JS as if it were TS — no emission, just diagnostics.
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+
+    // Don't fight the existing JS — start permissive, tighten later.
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+
+    // Pull Zotero / Mozilla privileged-context globals into scope so
+    // `Zotero`, `Components`, `IOUtils`, `Zotero_Tabs`, etc. type-resolve.
+    // `mocha` adds describe/it/before/after/etc. as globals — the
+    // scaffold's test runner injects those at runtime.
+    "types": ["zotero-types", "mocha"]
+  },
+  "include": [
+    "src/**/*.js",
+    "src/**/*.ts",
+    "test/**/*.js",
+    "test/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".scaffold",
+    "build",
+    "typings",
+    "docs"
+  ]
+}

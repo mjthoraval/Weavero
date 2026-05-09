@@ -42,6 +42,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check versions are in sync
+        # Fails if package.json and src/manifest.json disagree on
+        # the plugin version. Catches the regression where a bump
+        # touches one file but not the other before a release.
+        run: npm run check-versions
+
       - name: Type-check (tsc --noEmit)
         # Hard gate: fails if any new type error appears. The
         # baseline is 0 — bootstrap.js is `// @ts-nocheck`'d (its

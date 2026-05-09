@@ -44,9 +44,13 @@ export default defineConfig({
     // separate rolling `release` tag holds `update.json` so
     // Zotero's auto-updater can find the latest version.
     bumpp: {
-      // CI mode: when invoked from the release.yml workflow,
-      // skip the interactive prompt and trust the tag that
-      // triggered the run.
+      // Critical: bump src/manifest.json AS WELL AS package.json.
+      // The shipped XPI's user-visible version comes from
+      // src/manifest.json — without this, every release after
+      // the first scaffold-driven one would package an XPI
+      // labelled with the OLD version while the GitHub release
+      // tag carries the new one.
+      files: ["package.json", "src/manifest.json"],
       execute: "npm run build",
       // Don't open an editor for the commit message — use the
       // default.

@@ -29,6 +29,10 @@ permissions:
   issues: write       # for release-comment notifications
   pull-requests: write
 
+# Same Node 24 opt-in as test.yml — see comment there.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   release:
     name: Build, test, publish

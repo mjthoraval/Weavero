@@ -14,9 +14,10 @@
     "typecheck": "tsc --noEmit",
     "test": "zotero-plugin test",
     "build": "zotero-plugin build",
+    "start": "zotero-plugin serve",
     "check-versions": "node scripts/check-versions.mjs",
     "prerelease": "npm run check-versions",
-    "prebuild": "npm run check-versions",
+    "prebuild": "npm run check-versions && npm run typecheck",
     "release": "zotero-plugin release"
   },
   "config": {

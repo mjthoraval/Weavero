@@ -77,11 +77,29 @@ Open `Tools → Plugins → Weavero → Preferences` to enable/disable individua
 
 ## Build
 
-Plugin source is in `src/`. A Zotero plugin is just a zip file with a `.xpi` extension — to build, zip the contents of `src/` (files at the archive root, no `src/` prefix) and name the result `weavero-v<version>.xpi`.
+Plugin source is in `src/`. A Zotero plugin is just a zip file with a `.xpi` extension. Two paths are supported:
+
+- **Manual** (no Node toolchain required): zip the contents of `src/` (files at the archive root, no `src/` prefix) and name the result `weavero-v<version>.xpi`. The supplied `build.ps1` does this on Windows.
+- **Scripted**: `npm install` once, then `npm run build` produces `.scaffold/build/weavero.xpi` plus `update.json` (with the XPI's SHA512 hash baked in).
+
+Both paths produce a functionally-identical XPI.
 
 ## Development
 
 Developed with [Claude Opus 4.7](https://claude.ai) and [MCP Server Zotero Dev](https://github.com/introfini/mcp-server-zotero-dev) (hot-reload + privileged-context JS for fast iteration).
+
+The Node toolchain (optional but recommended) provides:
+
+```bash
+npm install              # one-time setup
+npm run typecheck        # tsc --noEmit, hard-gated to 0 errors
+npm test                 # Mocha + Chai inside a temp-profile Zotero (38 specs, ~8 s)
+npm run build            # build the XPI to .scaffold/build/
+npm start                # hot-reload dev loop (auto-reload on src/ changes)
+npm run release          # interactive: bump → tag → push (CI then publishes)
+```
+
+Tests run inside a separate Zotero instance against a temp profile — your primary library is unaffected. CI runs the same suite headlessly on every PR and on every push to `main`.
 
 ## Compatibility
 

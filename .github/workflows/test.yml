@@ -22,6 +22,13 @@ concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true
 
+# Opt into the Node 24 runtime for actions themselves (not just
+# the project's Node toolchain). Silences the deprecation warning
+# about actions/checkout@v4 and actions/setup-node@v4 running on
+# Node 20, which becomes the forced default on 2026-06-02.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     name: Mocha + Chai (Ubuntu, headless Zotero)

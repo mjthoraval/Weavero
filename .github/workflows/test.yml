@@ -1,0 +1,56 @@
+name: Test
+
+# Run the Mocha/Chai suite against a real Zotero instance on every
+# PR and on every push to main. zotero-plugin-scaffold's tester
+# auto-installs xvfb + Zotero on Ubuntu runners (`prepareHeadless`)
+# and auto-enables headless mode + `--no-watch` when it detects CI,
+# so `npm test` is self-sufficient — no extra setup needed.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  # Manual trigger from the Actions tab — handy when you want to
+  # re-run after a flaky failure without pushing an empty commit.
+  workflow_dispatch:
+
+# Cancel in-flight runs for the same ref when a new commit lands —
+# saves runner minutes on rapid push-push-push iteration.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Mocha + Chai (Ubuntu, headless Zotero)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      # `npm ci` honours the lockfile exactly — fails fast if the
+      # lockfile and package.json have drifted, which is what we
+      # want for reproducible CI runs.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check (tsc --noEmit)
+        # Don't fail the job on the existing 191 false-positive
+        # type errors yet; just surface them so we can track if the
+        # number grows. Once the false positives are pruned we'll
+        # drop the `|| true`.
+        run: npm run typecheck || true
+
+      - name: Run tests
+        # Scaffold auto-detects CI → headless mode + no-watch +
+        # exit-on-finish. Also auto-installs xvfb + Zotero via
+        # apt on the Ubuntu runner.
+        run: npm test

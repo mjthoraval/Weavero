@@ -22,7 +22,9 @@
 
     // Pull Zotero / Mozilla privileged-context globals into scope so
     // `Zotero`, `Components`, `IOUtils`, `Zotero_Tabs`, etc. type-resolve.
-    "types": ["zotero-types"]
+    // `mocha` adds describe/it/before/after/etc. as globals — the
+    // scaffold's test runner injects those at runtime.
+    "types": ["zotero-types", "mocha"]
   },
   "include": [
     "src/**/*.js",

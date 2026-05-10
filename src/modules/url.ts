@@ -1,8 +1,3 @@
-// @ts-nocheck — see note in src/index.ts. The DOM-narrowing
-// noise that justifies // @ts-nocheck on the bundle as a whole
-// also leaks into URL/Zotero-API call sites here. Phase 3 of
-// the TS migration tightens types per-module.
-
 // Module: URL handling — scheme registry, URL detection regex,
 // link classification, launch dispatch, and the per-scheme
 // `network.protocol-handler.warn-external.<x>` sync.
@@ -12,10 +7,6 @@
 // `Object.getOwnPropertyDescriptors` — that pattern (rather
 // than `Object.assign`) preserves getters as getters instead
 // of evaluating them once at module load time.
-
-declare const Zotero: any;
-declare const Services: any;
-declare const Components: any;
 
 /** User-toggleable URL schemes. The two always-on schemes
  *  (`https?://`, `zotero://`) are baked into URL_REGEX directly;

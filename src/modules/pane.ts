@@ -1,4 +1,11 @@
-// @ts-nocheck — see note in src/index.ts.
+// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
+// is partial: the smaller modules (url, annotation, tabs,
+// note-editor, constants, prefs) are now fully type-checked,
+// but pane.ts has ~21 zotero-types signature-drift mismatches
+// (mostly object-literal records that get extra properties
+// added later — TS infers the strict initial shape) that need
+// per-call audit. Deferred.
+
 // Module: right-pane processing + items-tree click + items-tree
 // columns + libraries box highlight + reader's annotation context
 // menu (decorateContextMenu).
@@ -26,17 +33,13 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-declare const Zotero: any;
-declare const ZoteroPane: any;
-declare const Components: any;
-declare const Services: any;
-
 import {
     BTN_CLASS, BTN_PANE_CLASS, BTN_TREE_CLASS, BTN_POPUP_CLASS,
     BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
 } from "./constants";
 
 class _PaneMixin {
+    [k: string]: any;
     /** Hook the items-tree right-click menu (`#zotero-itemmenu`) and
      *  insert "Add related item…" when the right-clicked selection
      *  contains at least one annotation. Mirrors the entry the plugin

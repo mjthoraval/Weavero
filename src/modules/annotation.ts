@@ -1,4 +1,3 @@
-// @ts-nocheck — see note in src/index.ts.
 // Module: annotation comment text + URL detection + icon
 // rendering + annotation model access + related-item nav
 // + the right-click "Open Related Item" sub-menu wiring.
@@ -8,18 +7,21 @@
 // are mixed onto WeaveroPlugin.prototype via defineProperties
 // from src/index.ts. The class is never instantiated.
 
-declare const Zotero: any;
-declare const ZoteroPane: any;
-declare const Components: any;
-declare const ChromeUtils: any;
-
 // Module-level constants exposed to the host class via getters
 // on the mixin prototype (class field initializers don't survive
 // the prototype-mixin lift — see filter.ts for the same pattern).
 const _MD_REGEX_DATA =
     /(\*\*[\s\S]+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|~~[\s\S]+?~~|`[^`\n]+?`|\[[^\]\n]+?\]\([^)\s]+\))/;
 
+// Methods reach across mixin boundaries via `this.foo()` (e.g.
+// annotation methods call `this._getInlineLinks()` from prefs
+// getters on core, `this.URL_REGEX` from url.ts). The type of
+// `this` inside this mixin class only sees this file's methods,
+// so cross-module references error without an index signature.
+// `[k: string]: any` matches the real runtime semantics (the
+// mixed prototype is the union of all module declarations).
 class _AnnotationMixin {
+    [k: string]: any;
     normalize(t) { return t ? String(t).replace(this.INVISIBLE_RE, "") : ""; }
     hasURI(t)    { return !!t && this.URL_REGEX.test(this.normalize(t)); }
 
@@ -37,8 +39,9 @@ class _AnnotationMixin {
      *  Reference: https://firefox-source-docs.mozilla.org/js/index.html#dead-wrappers */
     _isDead(obj) {
         try {
-            if (typeof ChromeUtils !== "undefined" && ChromeUtils.isDeadWrapper) {
-                return ChromeUtils.isDeadWrapper(obj);
+            const cu: any = ChromeUtils;
+            if (typeof cu !== "undefined" && cu.isDeadWrapper) {
+                return cu.isDeadWrapper(obj);
             }
             if (typeof Components !== "undefined"
                 && Components.utils && Components.utils.isDeadWrapper) {
@@ -725,7 +728,7 @@ class _AnnotationMixin {
                     (inWindow) => async () => {
                         try {
                             await Zotero.Reader.open(parentID,
-                                { annotationID: item.key },
+                                { annotationID: item.key } as any,
                                 { openInWindow: inWindow });
                             win.focus();
                         } catch (e) {
@@ -889,7 +892,7 @@ class _AnnotationMixin {
         popup.addEventListener("popuphidden", () => {
             try { popup.remove(); } catch (e) {}
         });
-        try { popup.openPopupAtScreen(screenX, screenY, true); }
+        try { (popup as any).openPopupAtScreen(screenX, screenY, true); }
         catch (e) {
             Zotero.debug("[Weavero] rel-ctx open err: " + e);
             try { popup.remove(); } catch (e2) {}
@@ -912,7 +915,7 @@ class _AnnotationMixin {
         try {
             const parentID = ann.parentItemID;
             if (!parentID) return false;
-            await Zotero.Reader.open(parentID, { annotationID: ann.key });
+            await Zotero.Reader.open(parentID, { annotationID: ann.key } as any);
             try { Zotero.getMainWindow().focus(); } catch (e) {}
             return true;
         } catch (e) {

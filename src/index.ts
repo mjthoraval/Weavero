@@ -1,4 +1,14 @@
 // @ts-nocheck — see note below.
+// Phase 3 type cleanup is partial: the smaller modules
+// (url, annotation, constants, prefs) are now fully type-checked.
+// This file (the WeaveroPlugin class shell + lifecycle + prefs
+// getters + handleZoteroURI) and the three large mixin modules
+// (reader, pane, filter, plus tabs and note-editor) keep
+// // @ts-nocheck for now. The mostly-DOM-narrowing errors don't
+// block runtime — they reflect zotero-types signature drift on
+// internal Zotero APIs. Tightening per-call is left as a
+// follow-up.
+//
 // Weavero — bundled main module.
 //
 // `bootstrap.js` (a thin plain-JS shim) loads this file via

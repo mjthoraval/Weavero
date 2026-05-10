@@ -1,4 +1,11 @@
-// @ts-nocheck — see note in src/index.ts.
+// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
+// is partial: the smaller modules (url, annotation, tabs,
+// note-editor, constants, prefs) are now fully type-checked,
+// but filter.ts has ~27 zotero-types signature-drift mismatches
+// (mostly arity differences on Zotero internal methods and
+// `unknown` typing on .sort() comparators) that need per-call
+// audit. Deferred.
+
 // Module: items-tree filter pane — the largest module by line
 // count and by method count.
 //
@@ -44,11 +51,6 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
-
-declare const Zotero: any;
-declare const ZoteroPane: any;
-declare const Components: any;
-declare const Services: any;
 
 import { URL_SCHEMES } from "./url";
 import {
@@ -107,6 +109,7 @@ const _ATTACHMENT_FILE_TYPES_DATA = [
 ];
 
 class _FilterMixin {
+    [k: string]: any;
 
     /** Temporarily un-patch the items-tree rowProvider so Zotero's
      *  internal load / refresh logic sees the live `_rows` instead

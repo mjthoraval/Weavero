@@ -1,4 +1,3 @@
-// @ts-nocheck — see note in src/index.ts.
 // Module: preferences pane binding script.
 //
 // Loaded into the prefs window via Zotero.PreferencePanes.register(
@@ -12,10 +11,6 @@
 // Bundled via esbuild from src/prefs/index.ts to addon/prefs.js
 // (preserving the filename Zotero looks up by name). esbuild's IIFE
 // wrapper takes the place of the original `(function(){...})()`.
-
-declare const Zotero: any;
-declare const document: any;
-declare const ChromeUtils: any;
 
     const PREF_BRANCH = "weavero.inlineLinks";
     const PREF_PATH   = "extensions.zotero." + PREF_BRANCH;
@@ -83,7 +78,7 @@ declare const ChromeUtils: any;
     }
 
     function bind(doc) {
-        const radios = Array.from(doc.querySelectorAll(RADIO_SEL));
+        const radios = Array.from(doc.querySelectorAll(RADIO_SEL)) as any[];
         dbg("bind: radios=" + radios.length + " in doc URL=" + doc.URL);
         if (!radios.length) return false;
 
@@ -228,7 +223,7 @@ declare const ChromeUtils: any;
         catch (e) {}
     }
     function bindSurfaces(doc) {
-        const boxes = Array.from(doc.querySelectorAll("input[name='wv-surface']"));
+        const boxes = Array.from(doc.querySelectorAll("input[name='wv-surface']")) as any[];
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);
@@ -300,7 +295,7 @@ declare const ChromeUtils: any;
     }
 
     function bindFeatures(doc) {
-        const boxes = Array.from(doc.querySelectorAll("input[name='wv-feature']"));
+        const boxes = Array.from(doc.querySelectorAll("input[name='wv-feature']")) as any[];
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);
@@ -365,7 +360,7 @@ declare const ChromeUtils: any;
      *  layout, just a different `name=` attribute on the inputs and
      *  a different observer-tracked list. */
     function bindSchemes(doc) {
-        const boxes = Array.from(doc.querySelectorAll("input[name='wv-scheme']"));
+        const boxes = Array.from(doc.querySelectorAll("input[name='wv-scheme']")) as any[];
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);

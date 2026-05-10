@@ -1,4 +1,11 @@
-// @ts-nocheck — see note in src/index.ts.
+// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
+// is partial: the smaller modules (url, annotation, tabs,
+// note-editor, constants, prefs) are now fully type-checked,
+// but reader.ts has ~40 zotero-types signature-drift mismatches
+// (mostly arity differences on Zotero internal methods and
+// loose intersection types from anonymous record state) that
+// need per-call audit. Deferred.
+
 // Module: reader and popup rendering — the largest module by
 // line count.
 //
@@ -24,16 +31,13 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-declare const Zotero: any;
-declare const ZoteroPane: any;
-declare const Components: any;
-declare const Services: any;
-
 import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
 } from "./constants";
 
 class _ReaderMixin {
+    [k: string]: any;
+
     // ---- Popup panel -------------------------------------------------------
 
     _getOrCreatePanel(doc) {

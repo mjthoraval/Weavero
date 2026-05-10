@@ -1,4 +1,8 @@
-// @ts-nocheck — see note in src/index.ts.
+// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
+// is partial: a couple of zotero-types signature drifts
+// (getItemTypeIconName arity) and one library-id type union
+// would need targeted casts. Deferred.
+
 // Module: tabs-menu (the "List all tabs" dropdown chevron at the
 // right of the tab strip) plus the tab-bar decoration overlays.
 //
@@ -17,12 +21,13 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties (see modules/annotation.ts for the pattern).
 
-declare const Zotero: any;
-declare const ZoteroPane: any;
+// Zotero_Tabs is the per-window globals — it's declared as `any`
+// rather than imported from zotero-types because zotero-types
+// doesn't ship a typing for the runtime per-window global yet.
 declare const Zotero_Tabs: any;
-declare const Components: any;
 
 class _TabsMixin {
+    [k: string]: any;
     /** Patch the "List all tabs" panel (the dropdown reachable from
      *  the chevron at the right of the tab bar) so its rows are
      *  grouped by library when more than one library has tabs open.

@@ -1,4 +1,3 @@
-// @ts-nocheck — see note in src/index.ts.
 // Module: shared top-level constants. These were inline at the
 // top of index.ts before the per-module split made them
 // inaccessible from extracted modules (esbuild's IIFE bundle

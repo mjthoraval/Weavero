@@ -1,4 +1,8 @@
-// @ts-nocheck — see note in src/index.ts.
+// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
+// is partial: XUL custom-element methods (hidePopup,
+// openPopupAtScreen) and a few Node-vs-Element narrowings on
+// editor DOM walks would need ~8 per-call casts. Deferred.
+
 // Module: in-note-editor link rendering, editing, and deletion.
 //
 // Zotero's note editor is a ProseMirror instance running inside
@@ -16,12 +20,10 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-declare const Zotero: any;
-declare const ZoteroPane: any;
-declare const Components: any;
-declare const Services: any;
+import { URL_SCHEMES } from "./url";
 
 class _NoteEditorMixin {
+    [k: string]: any;
 
     /** Render URLs / markdown in items-tree note rows. Each
      *  `<note-row>` (read-only custom element) has a `.note-content`
@@ -1097,7 +1099,7 @@ class _NoteEditorMixin {
             try {
                 const winEnum = Services.wm.getEnumerator("zotero:note");
                 while (winEnum.hasMoreElements()) {
-                    const w = winEnum.getNext();
+                    const w = winEnum.getNext() as any;
                     if (w && w.document) docs.push(w.document);
                 }
             } catch (e) {}
@@ -1134,7 +1136,7 @@ class _NoteEditorMixin {
         try {
             const winEnum = Services.wm.getEnumerator("zotero:note");
             while (winEnum.hasMoreElements()) {
-                const w = winEnum.getNext();
+                const w = winEnum.getNext() as any;
                 const wd = w && w.document;
                 if (!wd) continue;
                 for (const ne of wd.querySelectorAll("note-editor")) {
@@ -1239,7 +1241,7 @@ class _NoteEditorMixin {
             try {
                 const winEnum = Services.wm.getEnumerator("zotero:note");
                 while (winEnum.hasMoreElements()) {
-                    const w = winEnum.getNext();
+                    const w = winEnum.getNext() as any;
                     if (w && w.document) docs.push(w.document);
                 }
             } catch (e) {}

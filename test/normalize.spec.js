@@ -9,7 +9,7 @@ describe("Weavero — string normalization", () => {
     let wv;
 
     before(function () {
-        wv = Zotero.Weavero;
+        wv = Zotero.Weavero.plugin;
         if (!wv) this.skip();
     });
 

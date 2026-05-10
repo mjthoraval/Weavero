@@ -9,7 +9,7 @@
 describe("Weavero — URL classification", () => {
     let wv;
     before(function () {
-        wv = Zotero.Weavero;
+        wv = Zotero.Weavero.plugin;
         if (!wv) this.skip();
     });
 
@@ -53,7 +53,7 @@ describe("Weavero — URL classification", () => {
 describe("Weavero — URL_REGEX", () => {
     let wv;
     before(function () {
-        wv = Zotero.Weavero;
+        wv = Zotero.Weavero.plugin;
         if (!wv) this.skip();
     });
 
@@ -91,7 +91,7 @@ describe("Weavero — URL_REGEX", () => {
 describe("Weavero — hasURI()", () => {
     let wv;
     before(function () {
-        wv = Zotero.Weavero;
+        wv = Zotero.Weavero.plugin;
         if (!wv) this.skip();
     });
 
@@ -121,7 +121,7 @@ describe("Weavero — hasURI()", () => {
 describe("Weavero — MD_REGEX", () => {
     let wv;
     before(function () {
-        wv = Zotero.Weavero;
+        wv = Zotero.Weavero.plugin;
         if (!wv) this.skip();
     });
 

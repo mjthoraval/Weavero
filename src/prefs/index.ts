@@ -1,13 +1,22 @@
-// Weavero — preferences pane binding.
+// @ts-nocheck — see note in src/index.ts.
+// Module: preferences pane binding script.
 //
-// Loaded via `scripts:` on Zotero.PreferencePanes.register(). Per Zotero's
-// preferences.js, registered scripts run inside a Cu.Sandbox whose
-// sandboxPrototype is the *outer* prefs window — so `document` here is the
-// prefs window's document, NOT our pane HTML's document. To bind to the
-// radios in prefs.html we need to walk the prefs window for the
-// browser/iframe whose contentDocument actually contains our markup.
+// Loaded into the prefs window via Zotero.PreferencePanes.register(
+// {scripts: ["prefs.js"]}); the runtime puts us in a Cu.Sandbox whose
+// sandboxPrototype is the outer prefs window — so `document` is the
+// prefs window's document, NOT our pane HTML's document. To bind to
+// the radios declared in prefs.html, we walk the prefs window for
+// the browser/iframe whose contentDocument actually contains our
+// markup.
+//
+// Bundled via esbuild from src/prefs/index.ts to addon/prefs.js
+// (preserving the filename Zotero looks up by name). esbuild's IIFE
+// wrapper takes the place of the original `(function(){...})()`.
 
-(function () {
+declare const Zotero: any;
+declare const document: any;
+declare const ChromeUtils: any;
+
     const PREF_BRANCH = "weavero.inlineLinks";
     const PREF_PATH   = "extensions.zotero." + PREF_BRANCH;
     const RADIO_SEL   = "input[name='wv-mode']";
@@ -438,4 +447,3 @@
     } else {
         dbg("script loaded without document — skipping (this is the setDefaultPrefs pre-pass)");
     }
-})();

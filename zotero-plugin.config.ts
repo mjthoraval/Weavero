@@ -32,6 +32,14 @@ export default defineConfig({
         format: "iife",
         outfile: "addon/index.js",
       },
+      {
+        entryPoints: ["src/prefs/index.ts"],
+        bundle: true,
+        target: "firefox115",
+        platform: "browser",
+        format: "iife",
+        outfile: "addon/prefs.js",
+      },
     ],
     // Disable scaffold's PrefsManager. It expects `prefs.js` to be
     // in Mozilla's default-preferences format (lines like

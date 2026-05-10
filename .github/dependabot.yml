@@ -1,0 +1,37 @@
+# Dependabot config — open PRs when dev dependencies need an update.
+# Solo-friendly cadence: weekly check, modest concurrency, grouped
+# minors+patches so we don't get flooded with one-line PRs. Major
+# version bumps still come as their own PR (so a breaking change
+# in scaffold or typescript is reviewed individually).
+
+version: 2
+
+updates:
+  # npm devDependencies (typescript, mocha, chai, scaffold, etc.)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      dev-dependencies:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions versions (actions/checkout, actions/setup-node, ...)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"

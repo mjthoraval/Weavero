@@ -1,8 +1,3 @@
-// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
-// is partial: XUL custom-element methods (hidePopup,
-// openPopupAtScreen) and a few Node-vs-Element narrowings on
-// editor DOM walks would need ~8 per-call casts. Deferred.
-
 // Module: in-note-editor link rendering, editing, and deletion.
 //
 // Zotero's note editor is a ProseMirror instance running inside
@@ -399,7 +394,7 @@ class _NoteEditorMixin {
             || doc.documentElement;
         const old = doc.getElementById("wv-note-link-menu");
         if (old) { try { old.remove(); } catch(e) {} }
-        const popup = doc.createXULElement("menupopup");
+        const popup: any = doc.createXULElement("menupopup");
         popup.id = "wv-note-link-menu";
 
         const href = anchor.getAttribute("href") || "";
@@ -1019,7 +1014,9 @@ class _NoteEditorMixin {
             const win = Zotero.getMainWindow();
             if (!win || !win.document) return;
             const doc = win.document;
-            let panel = doc.getElementById("wv-note-link-tooltip-panel");
+            // `any` because XUL panel APIs (state, hidePopup,
+            // openPopupAtScreen) live outside HTMLElement.
+            let panel: any = doc.getElementById("wv-note-link-tooltip-panel");
             if (!panel) {
                 const popupset = doc.getElementById("zotero-pane-popupset")
                     || doc.documentElement;
@@ -1042,7 +1039,7 @@ class _NoteEditorMixin {
                 panel.style.margin     = "0";
                 panel.style.minWidth   = "0";
                 panel.style.minHeight  = "0";
-                const desc = doc.createXULElement("description");
+                const desc: any = doc.createXULElement("description");
                 desc.id = "wv-note-link-tooltip-desc";
                 desc.style.maxWidth = "60ch";
                 desc.style.padding  = "2px 6px";
@@ -1081,7 +1078,7 @@ class _NoteEditorMixin {
         try {
             const win = Zotero.getMainWindow();
             const doc = win && win.document;
-            const tip = doc && doc.getElementById("wv-note-link-tooltip-panel");
+            const tip: any = doc && doc.getElementById("wv-note-link-tooltip-panel");
             if (tip && tip.hidePopup) {
                 tip.hidePopup();
                 this._dbg("[Weavero] tooltip: hide");
@@ -1250,7 +1247,7 @@ class _NoteEditorMixin {
                 // Items-tree note rows + right-pane notes-box labels
                 for (const span of doc.querySelectorAll(
                         "note-row .note-content .wv-url-span,"
-                        + " notes-box .body .row .label .wv-url-span")) {
+                        + " notes-box .body .row .label .wv-url-span") as any) {
                     span.replaceWith(doc.createTextNode(span.textContent || ""));
                 }
                 // Note editor iframes (right-pane + pop-out): we
@@ -1261,7 +1258,7 @@ class _NoteEditorMixin {
                 // Plus detach the capture-phase listeners we wired
                 // on `idoc` so plugin-disable / strip-on-toggle-off
                 // doesn't leave stale handlers intercepting clicks.
-                for (const ne of doc.querySelectorAll("note-editor")) {
+                for (const ne of doc.querySelectorAll("note-editor") as any) {
                     try {
                         const iframe = ne.querySelector("iframe#editor-view")
                             || ne.querySelector("iframe");
@@ -1296,7 +1293,7 @@ class _NoteEditorMixin {
                 }
                 // Drop the hover tooltip panel + suppress flag too.
                 try {
-                    const tipPanel = doc.getElementById(
+                    const tipPanel: any = doc.getElementById(
                         "wv-note-link-tooltip-panel");
                     if (tipPanel) {
                         try { tipPanel.hidePopup(); } catch(e) {}

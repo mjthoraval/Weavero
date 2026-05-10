@@ -1,10 +1,13 @@
-// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
-// is partial: the smaller modules (url, annotation, tabs,
-// note-editor, constants, prefs) are now fully type-checked,
-// but pane.ts has ~21 zotero-types signature-drift mismatches
-// (mostly object-literal records that get extra properties
-// added later — TS infers the strict initial shape) that need
-// per-call audit. Deferred.
+// @ts-nocheck — Phase 3 type cleanup deferred. pane.ts has ~70
+// errors clustered into a few patterns: many Node-vs-Element
+// narrowings on iteration variables (querySelector / getAttribute
+// / classList missing on Node), the items-tree column registration
+// signature drift (our handlers return number; zotero-types declares
+// string), the cell-click pointer-targets state record gaining extra
+// properties after the object literal is created, and a couple of
+// custom-DOM-property bags (_wvUrlTitleListener). Tractable, just
+// not a five-minute job. Other modules (url, annotation, tabs,
+// note-editor, constants, prefs) are now type-checked.
 
 // Module: right-pane processing + items-tree click + items-tree
 // columns + libraries box highlight + reader's annotation context

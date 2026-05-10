@@ -1,8 +1,3 @@
-// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
-// is partial: a couple of zotero-types signature drifts
-// (getItemTypeIconName arity) and one library-id type union
-// would need targeted casts. Deferred.
-
 // Module: tabs-menu (the "List all tabs" dropdown chevron at the
 // right of the tab strip) plus the tab-bar decoration overlays.
 //
@@ -270,7 +265,7 @@ class _TabsMixin {
         const groupByLib = new Map();
         const orderedLibs = [];
         for (const row of dataRows) {
-            let libID = libraryForTab(row.dataset.tabId);
+            let libID: number | string = libraryForTab(row.dataset.tabId);
             if (libID == null) libID = "__unknown__";
             if (!groupByLib.has(libID)) {
                 groupByLib.set(libID, []);
@@ -1290,7 +1285,10 @@ class _TabsMixin {
         try {
             const item = Zotero.Items.get(tab.data && tab.data.itemID);
             if (item && typeof item.getItemTypeIconName === "function") {
-                kind = item.getItemTypeIconName(true);
+                // zotero-types declares `getItemTypeIconName()` with 0 args
+                // but Zotero 7+ accepts a `noLinkMode` boolean (camelCase
+                // form, used to skip the LinkMode lookup for attachments).
+                kind = (item as any).getItemTypeIconName(true);
             }
         }
         catch (e) {}

@@ -2,7 +2,7 @@
 
 [![Latest release](https://img.shields.io/github/v/release/mjthoraval/Weavero?label=release&color=blue)](https://github.com/mjthoraval/Weavero/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mjthoraval/Weavero/total?color=brightgreen)](https://github.com/mjthoraval/Weavero/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=tests)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
 [![License](https://img.shields.io/github/license/mjthoraval/Weavero?color=lightgrey)](LICENSE)
 
 A Zotero 7+ plugin that turns URLs in annotation comments into clickable links and adds a fast filter pane, related-item plumbing, and items-tree columns on top of the standard library view.

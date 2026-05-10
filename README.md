@@ -3,11 +3,12 @@
   Weavero
 </h1>
 
+[![Zotero](https://img.shields.io/badge/Zotero-7+-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
+[![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
+
 [![Latest release](https://img.shields.io/github/v/release/mjthoraval/Weavero?label=Release&color=blue)](https://github.com/mjthoraval/Weavero/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mjthoraval/Weavero/total?label=Downloads&color=brightgreen)](https://github.com/mjthoraval/Weavero/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
 [![License](https://img.shields.io/github/license/mjthoraval/Weavero?label=License&color=lightgrey)](LICENSE)
-[![Zotero](https://img.shields.io/badge/Zotero-7+-red?logo=zotero&logoColor=white)](https://www.zotero.org)
 
 A Zotero 7+ plugin that turns URLs in annotation comments into clickable links and adds a fast filter pane, related-item plumbing, and items-tree columns on top of the standard library view.
 

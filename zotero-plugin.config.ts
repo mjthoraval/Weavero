@@ -14,10 +14,33 @@ export default defineConfig({
   namespace: "weavero",
 
   build: {
-    // Copy every file under src/ into the build verbatim. No
-    // esbuildOptions — scaffold's builder will skip the bundle
-    // step when no entry points are declared.
-    assets: ["src/**/*"],
+    // Non-bundled assets are copied verbatim; .ts files are
+    // bundled by esbuild (below) and must NOT also be copied as
+    // sources, so we negate them here.
+    assets: ["src/**/*", "!src/**/*.ts"],
+    // esbuild entry points. Scaffold passes each block straight
+    // to esbuild; an `outfile` not already inside `dist` gets
+    // `dist/` prepended automatically. The bundled output lands
+    // at `<dist>/addon/index.js`, which is the XPI root, so
+    // bootstrap.js can load it as `rootURI + "index.js"`.
+    esbuildOptions: [
+      {
+        entryPoints: ["src/index.ts"],
+        bundle: true,
+        target: "firefox115",
+        platform: "browser",
+        format: "iife",
+        outfile: "addon/index.js",
+      },
+      {
+        entryPoints: ["src/prefs/index.ts"],
+        bundle: true,
+        target: "firefox115",
+        platform: "browser",
+        format: "iife",
+        outfile: "addon/prefs.js",
+      },
+    ],
     // Disable scaffold's PrefsManager. It expects `prefs.js` to be
     // in Mozilla's default-preferences format (lines like
     // `pref("key", value)`). Weavero's `prefs.js` is an IIFE that

@@ -24,7 +24,7 @@ concurrency:
 
 # Opt into the Node 24 runtime for actions themselves (not just
 # the project's Node toolchain). Silences the deprecation warning
-# about actions/checkout@v4 and actions/setup-node@v4 running on
+# about actions/checkout@v6 and actions/setup-node@v6 running on
 # Node 20, which becomes the forced default on 2026-06-02.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -36,9 +36,9 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: lts/*
           cache: npm

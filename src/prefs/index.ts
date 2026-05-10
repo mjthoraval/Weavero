@@ -1,13 +1,17 @@
-// Weavero — preferences pane binding.
+// Module: preferences pane binding script.
 //
-// Loaded via `scripts:` on Zotero.PreferencePanes.register(). Per Zotero's
-// preferences.js, registered scripts run inside a Cu.Sandbox whose
-// sandboxPrototype is the *outer* prefs window — so `document` here is the
-// prefs window's document, NOT our pane HTML's document. To bind to the
-// radios in prefs.html we need to walk the prefs window for the
-// browser/iframe whose contentDocument actually contains our markup.
+// Loaded into the prefs window via Zotero.PreferencePanes.register(
+// {scripts: ["prefs.js"]}); the runtime puts us in a Cu.Sandbox whose
+// sandboxPrototype is the outer prefs window — so `document` is the
+// prefs window's document, NOT our pane HTML's document. To bind to
+// the radios declared in prefs.html, we walk the prefs window for
+// the browser/iframe whose contentDocument actually contains our
+// markup.
+//
+// Bundled via esbuild from src/prefs/index.ts to addon/prefs.js
+// (preserving the filename Zotero looks up by name). esbuild's IIFE
+// wrapper takes the place of the original `(function(){...})()`.
 
-(function () {
     const PREF_BRANCH = "weavero.inlineLinks";
     const PREF_PATH   = "extensions.zotero." + PREF_BRANCH;
     const RADIO_SEL   = "input[name='wv-mode']";
@@ -74,7 +78,7 @@
     }
 
     function bind(doc) {
-        const radios = Array.from(doc.querySelectorAll(RADIO_SEL));
+        const radios = Array.from(doc.querySelectorAll(RADIO_SEL)) as any[];
         dbg("bind: radios=" + radios.length + " in doc URL=" + doc.URL);
         if (!radios.length) return false;
 
@@ -219,7 +223,7 @@
         catch (e) {}
     }
     function bindSurfaces(doc) {
-        const boxes = Array.from(doc.querySelectorAll("input[name='wv-surface']"));
+        const boxes = Array.from(doc.querySelectorAll("input[name='wv-surface']")) as any[];
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);
@@ -291,7 +295,7 @@
     }
 
     function bindFeatures(doc) {
-        const boxes = Array.from(doc.querySelectorAll("input[name='wv-feature']"));
+        const boxes = Array.from(doc.querySelectorAll("input[name='wv-feature']")) as any[];
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);
@@ -356,7 +360,7 @@
      *  layout, just a different `name=` attribute on the inputs and
      *  a different observer-tracked list. */
     function bindSchemes(doc) {
-        const boxes = Array.from(doc.querySelectorAll("input[name='wv-scheme']"));
+        const boxes = Array.from(doc.querySelectorAll("input[name='wv-scheme']")) as any[];
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);
@@ -438,4 +442,3 @@
     } else {
         dbg("script loaded without document — skipping (this is the setDefaultPrefs pre-pass)");
     }
-})();

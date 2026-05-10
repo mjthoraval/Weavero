@@ -1,0 +1,2336 @@
+// Weavero — bundled main module.
+//
+// `bootstrap.js` (a thin plain-JS shim) loads this file via
+// `Services.scriptloader.loadSubScript` on plugin startup, then
+// calls `Zotero.Weavero.hooks.onStartup({...})` to hand off the
+// lifecycle. Everything that used to live at top-level in
+// bootstrap.js — the constants, the `WeaveroPlugin` class, the
+// startup/shutdown/onMainWindowLoad/onMainWindowUnload bodies —
+// is bundled here. Module-by-module split is layered on top in
+// later commits.
+//
+import {
+    STYLE_ID, PANEL_ID,
+    BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS,
+    BTN_POPUP_CLASS, BTN_SIDEBAR_CLASS,
+    SCHEME_SVG_TEMPLATE, MENU_LABEL_PREFIXES, PLUGIN_CSS,
+} from "./modules/constants";
+import { URL_SCHEMES, urlMethods } from "./modules/url";
+import { annotationMethods } from "./modules/annotation";
+import { tabsMethods } from "./modules/tabs";
+import { noteEditorMethods } from "./modules/note-editor";
+import { readerMethods } from "./modules/reader";
+import { paneMethods } from "./modules/pane";
+import { filterMethods } from "./modules/filter";
+
+// Captured by the IIFE bundle's closure; the class methods read
+// `_rootURI` to build absolute URIs for resources inside the XPI
+// (icons, prefs.html, fetched assets). Set in onStartup.
+let _rootURI = "";
+
+
+// ===========================================================================
+
+class WeaveroPlugin {
+    // The mixin pattern (Object.defineProperties + getOwnPropertyDescriptors
+    // applied below the class definition) means TS doesn't see any of the
+    // ~240 methods that get glued onto the prototype at module load. Same
+    // for instance fields set in the constructor \u2014 they're not declared
+    // here. The index signature lets cross-mixin `this.foo()` and
+    // `this._fieldName` access resolve to `any`, matching the runtime
+    // shape of the assembled plugin.
+    [k: string]: any;
+
+    INVISIBLE_RE = /[\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+    TRAILING_RE  = /[.,;:!?)\]\}>'"`]+$/;
+
+
+    constructor() {
+        this._readerObservers = new WeakMap();
+        this._notifierIDs     = [];
+        this._pollInterval    = null;
+        this._treeObserver    = null;
+        this._treeScanTimer   = null;
+        this._paneObserver    = null;
+        // Keys we just removed via the delete notifier. The debounced
+        // _processNoteAnnotationOverlays scan that fires ~100 ms later
+        // calls attachment.getAnnotations(); if Zotero's in-memory cache
+        // hasn't settled yet, that call still returns the deleted
+        // annotation and the badge gets recreated. We exclude these keys
+        // from wantList for ~2 s, by which time the cache has caught up.
+        // Map<key, timestamp>.
+        this._recentlyDeletedKeys = new Map();
+
+        // Bound shims for the reader plugin event system. Originally
+        // arrow-function class fields on _ReaderMixin (see
+        // _sidebarHandlerImpl / _contextHandlerImpl in modules/reader.ts);
+        // arrow-field initializers don't survive the prototype-mixin
+        // lift, so we instantiate the bound copies here. Same callable
+        // identity across the lifetime of one plugin instance — the
+        // unhook in destroy() finds them by reference equality.
+        this._sidebarHandler = (event) => this._sidebarHandlerImpl(event);
+        this._contextHandler = (event) => this._contextHandlerImpl(event);
+    }
+
+    // ---- Utilities --------------------------------------------------------
+
+
+    // ---- CSS injection -----------------------------------------------------
+
+    injectStyles() {
+        const doc = Zotero.getMainWindow().document;
+        // Always remove any existing weavero-styles element first.
+        // Zotero's in-place plugin upgrade flow doesn't reliably tear
+        // down the previous plugin's DOM additions before the new init
+        // runs — if we just `return` on existing-style, the new init
+        // sees the OLD plugin's style element (with potentially stale
+        // PLUGIN_CSS content from before the update) and skips. Result:
+        // popup CSS rules don't match the new plugin's expectations,
+        // padding/line-breaks/etc disappear until the user manually
+        // disables and re-enables the plugin (which fully runs init
+        // again from a clean state).
+        const existing = doc.getElementById(STYLE_ID);
+        if (existing) existing.remove();
+        const s = doc.createElement("style");
+        s.id = STYLE_ID;
+        s.textContent = PLUGIN_CSS;
+        (doc.head || doc.documentElement).appendChild(s);
+    }
+
+    removeStyles() {
+        try {
+            const el = Zotero.getMainWindow().document.getElementById(STYLE_ID);
+            if (el) el.remove();
+        } catch {}
+    }
+
+    // ---- zotero:// URI dispatch --------------------------------------------
+
+    async handleZoteroURI(url) {
+        try {
+            const u = new URL(url);
+            const parts = u.pathname.split("/").filter(Boolean);
+            const getLib = (): number => {
+                if (parts[0] === "groups")
+                    return Zotero.Groups.getLibraryIDFromGroupID(Number(parts[1])) as number;
+                return Zotero.Libraries.userLibraryID;
+            };
+            const lastKey = parts[parts.length - 1];
+
+            if (url.startsWith("zotero://select/")) {
+                // Path shapes Zotero accepts:
+                //   .../items/<key>            (user-library item)
+                //   .../collections/<key>      (user-library collection)
+                //   .../searches/<key>         (user-library saved search)
+                //   .../groups/<gid>/items/<key>
+                //   .../groups/<gid>/collections/<key>
+                //   .../groups/<gid>/searches/<key>
+                // The selector keyword is the second-to-last segment;
+                // the key is always last. Falling back to "items"
+                // preserves behavior for the legacy bare form.
+                const lib = getLib();
+                const kind = parts[parts.length - 2] || "items";
+                const win  = Zotero.getMainWindow();
+                const pane = Zotero.getActiveZoteroPane();
+                // When the link is clicked from a note tab (or any
+                // non-library tab), `selectItem` / `selectCollection`
+                // affect the library tab in the background but the
+                // user keeps seeing the note. Switch to the library
+                // tab first so the result is visible. Mirrors the
+                // "Show in Library" affordance on the annotation
+                // context menu.
+                const switchToLibrary = () => {
+                    try {
+                        if (win.Zotero_Tabs
+                            && typeof win.Zotero_Tabs.select === "function") {
+                            win.Zotero_Tabs.select("zotero-pane");
+                        }
+                    } catch (e) {}
+                };
+                if (kind === "collections") {
+                    const col = Zotero.Collections.getByLibraryAndKey(lib, lastKey);
+                    if (col && pane.collectionsView
+                        && typeof pane.collectionsView.selectCollection === "function") {
+                        switchToLibrary();
+                        await pane.collectionsView.selectCollection(col.id);
+                        win.focus();
+                    }
+                    return;
+                }
+                if (kind === "searches") {
+                    const search = Zotero.Searches.getByLibraryAndKey(lib, lastKey);
+                    if (search && pane.collectionsView
+                        && typeof pane.collectionsView.selectSearch === "function") {
+                        switchToLibrary();
+                        await pane.collectionsView.selectSearch(search.id);
+                        win.focus();
+                    }
+                    return;
+                }
+                // Default: items
+                const item = Zotero.Items.getByLibraryAndKey(lib, lastKey);
+                if (item) {
+                    switchToLibrary();
+                    await pane.selectItem(item.id);
+                    win.focus();
+                }
+                return;
+            }
+            if (url.startsWith("zotero://open")) {
+                const item = Zotero.Items.getByLibraryAndKey(getLib(), lastKey);
+                if (!item) return;
+                const loc: any = {};
+                const page = u.searchParams.get("page");
+                const ann  = u.searchParams.get("annotation");
+                if (page !== null) loc.pageIndex = Number(page) - 1;
+                if (ann) loc.annotationID = ann;
+                await Zotero.Reader.open(item.id, loc);
+                return;
+            }
+            if (url.startsWith("zotero://note/")) {
+                let key, lib;
+                if (parts[0] === "u")      { lib = Zotero.Libraries.userLibraryID; key = parts[1]; }
+                else if (parts[0] === "g" || parts[0] === "groups")
+                                           { lib = getLib(); key = lastKey; }
+                else                       { lib = Zotero.Libraries.userLibraryID; key = lastKey; }
+                if (!key) return;
+                const note = Zotero.Items.getByLibraryAndKey(lib, key);
+                if (!note) return;
+                const win  = Zotero.getMainWindow();
+                const pane = win.ZoteroPane;
+                try {
+                    if (typeof pane.openNote === "function") await pane.openNote(note.id);
+                    else if (typeof pane.openNoteWindow === "function") await pane.openNoteWindow(note.id);
+                    else await pane.selectItem(note.id);
+                    win.focus();
+                } catch { await pane.selectItem(note.id); win.focus(); }
+                return;
+            }
+            Zotero.launchURL(url);
+        } catch (err) {
+            Zotero.debug("[Weavero] handleZoteroURI error: " + err.message);
+        }
+    }
+
+
+
+
+
+    // ---- Settings ---------------------------------------------------------
+
+    _getShowTreeIcon() {
+        try { return !!Zotero.Prefs.get("weavero.showTreeIcon"); }
+        catch(e) { return false; }
+    }
+
+    _getInlineLinks() {
+        try {
+            const v = Zotero.Prefs.get("weavero.inlineLinks");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    // ---- Per-surface enable/disable prefs ---------------------------------
+    // The user can independently enable each of the four surfaces where we
+    // decorate annotation comments. All default to true.
+    _getEnableItemsList() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableItemsList");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+    _getEnableRightPane() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableRightPane");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+    /** Show the per-annotation Added By badge in the items tree.
+     *  Effective only in group libraries (the underlying field is
+     *  empty in My Library). Default ON. */
+    _getEnableAnnotationAddedBy() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableAnnotationAddedBy");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+    /** Tint the Added By column text and annotation badge with a
+     *  per-user color (hashed from the user name into a small palette
+     *  via `_colorForUser`). Default ON. */
+    _getEnableAddedByColors() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableAddedByColors");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+    /** Notes — standalone + child note items across every surface
+     *  (items-tree note rows, right-pane Notes box, the note editor
+     *  in both the right pane and the pop-out note window). Defaults
+     *  OFF so existing users don't see new clickable spans on notes
+     *  they've already curated until they explicitly opt in. */
+    _getEnableNotes() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableNotes");
+            return v === undefined ? false : !!v;
+        } catch(e) { return false; }
+    }
+    /** Reader sidebar — the annotation list on the left side of the
+     *  reader. Format-agnostic (PDF / EPUB / snapshot). */
+    _getEnableReaderSidebar() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableReaderSidebar");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Reader document view — the page area where the document renders.
+     *  Covers in-document annotation popups and the link badges drawn
+     *  over annotation icons. Format-agnostic. */
+    _getEnableReaderView() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableReaderView");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Sub-toggle of enableReaderView. When false, badges (.wv-marker-badge)
+     *  and floating text-annotation buttons (.wv-text-annotation-btn) are NOT
+     *  drawn over the document. In-document annotation popups (the small
+     *  popup that shows when the user clicks an annotation) still receive
+     *  URL / markdown rendering. Default true. */
+    _getEnableReaderViewIcons() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableReaderViewIcons");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+    /** Master switch for inline markdown rendering inside the popup.
+     *  Default true. When false: _commentHasIconableContent ignores markdown
+     *  marks (so the icon doesn't appear on markdown-only comments) and
+     *  _renderInlineMarkdown degrades to a URL-only render. */
+    _getEnableMarkdown() {
+        // Hardcoded true since v0.0.161: the popup always renders markdown.
+        // The original `enableMarkdown` toggle is gone from the UI — having
+        // it off didn't add user value (the popup is the only fully
+        // formatted view, so disabling it left no way to see markdown).
+        return true;
+    }
+
+    /** Render markdown directly inside annotation comments. Sub-toggle of
+     *  Inline mode (only effective when _getInlineLinks() is also true).
+     *  Default true. */
+    _getEnableCommentMarkdown() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableCommentMarkdown");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Render URLs as coloured/clickable spans directly inside annotation
+     *  comments. Sub-toggle of Inline mode (only effective when
+     *  _getInlineLinks() is also true). Default true. */
+    _getEnableInlineUrls() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableInlineUrls");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Show the chain icon on URL-bearing comments in Icon & Popup mode.
+     *  Sub-toggle parallel to enableInlineUrls but mode-flipped. Only
+     *  effective when _getInlineLinks() is FALSE. Default true. */
+    _getEnableIconUrls() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableIconUrls");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Show the chain icon on markdown-bearing comments in Icon & Popup mode.
+     *  In Icon mode the popup is the only access to formatted markdown, so
+     *  without this toggle markdown-only comments would have no affordance.
+     *  Default true. */
+    _getEnableIconMarkdown() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableIconMarkdown");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** Show the chain icon on app-link-bearing comments (mailto:, obsidian://,
+     *  vscode://, ...) in Icon & Popup mode. Requires the master enableAppLinks
+     *  toggle to be on (master invalidates URL_REGEX, dominating this sub).
+     *  Default true. */
+    _getEnableIconAppLinks() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableIconAppLinks");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+
+    /** True when markdown rendering is on for AT LEAST ONE surface.
+     *  Used by _commentHasIconableContent to decide whether markdown markers
+     *  count as "iconable" — if neither popup nor inline rendering will
+     *  format them, the marks are just text. */
+    _anyMarkdownEnabled() {
+        return this._getEnableMarkdown() || this._getEnableCommentMarkdown();
+    }
+
+    /** Hidden debug pref. When true, every routine sidebar/render pass
+     *  emits verbose [Weavero] traces. Default false (silent).
+     *  Toggle via Tools → Developer → Run JavaScript:
+     *    Zotero.Prefs.set("weavero.debug", true);
+     *  Errors and significant one-time events still log unconditionally. */
+    _getDebug() {
+        try {
+            const v = Zotero.Prefs.get("weavero.debug");
+            return v === undefined ? false : !!v;
+        } catch(e) { return false; }
+    }
+
+    /** Routine debug log — only fires when the debug pref is on. Use this
+     *  for per-render-pass spam (sidebar scans, span cache hits, etc.).
+     *  Errors and rare events should keep using Zotero.debug() directly. */
+    _dbg(msg) {
+        if (this._getDebug()) Zotero.debug(msg);
+    }
+
+    /** Strip every decoration we add to the items-tree annotation rows. */
+    _stripItemsList() {
+        // Re-entry guard: with the items-list mutation observer running
+        // synchronously (v0.0.132), every DOM change we make here instantly
+        // re-fires _markCellLinks, which would call us again. Without this
+        // guard we recurse / livelock when there are many annotation cells
+        // visible. The idempotent shortcuts below also help.
+        if (this._stripItemsListBusy) return;
+        this._stripItemsListBusy = true;
+        try {
+            const doc = Zotero.getMainWindow().document;
+            // 1. Restore tight annotation-comment cells (highlight / underline /
+            //    image / ink / note rows) to plain text. SKIP cells that are
+            //    already clean — touching them triggers redundant childList
+            //    mutations that fire the tree observer in a tight loop and
+            //    freeze Zotero.
+            for (const cell of doc.querySelectorAll(
+                    ".annotation-row.tight .cell.annotation-comment") as any) {
+                const isDirty =
+                    cell.querySelector(".wv-text-wrap, .wv-tree-icon, .wv-tree-rel-icon, .wv-url-span")
+                    || cell.hasAttribute("data-comment-text")
+                    || cell.hasAttribute("data-has-rich")
+                    || cell.hasAttribute("data-has-relations")
+                    || cell.hasAttribute("data-truncated");
+                if (!isDirty) continue;
+
+                let text = cell.getAttribute("data-comment-text");
+                if (!text) {
+                    const wrap = cell.querySelector(".wv-text-wrap");
+                    text = wrap
+                        ? (wrap.textContent || "")
+                        : (cell.textContent || "")
+                              .replace(/[\s\u00A0]*🔗\s*$/, "")
+                              .trim();
+                }
+                // Only assign textContent when it actually changes —
+                // assigning the same value still emits a childList mutation.
+                if (cell.textContent !== text) cell.textContent = text;
+                if (cell.hasAttribute("data-has-rich"))     cell.removeAttribute("data-has-rich");
+                if (cell.hasAttribute("data-icon-wanted"))   cell.removeAttribute("data-icon-wanted");
+                if (cell.hasAttribute("data-has-relations")) cell.removeAttribute("data-has-relations");
+                if (cell.hasAttribute("data-comment-text"))  cell.removeAttribute("data-comment-text");
+                if (cell.hasAttribute("data-truncated"))     cell.removeAttribute("data-truncated");
+                if (cell.hasAttribute("data-has-url"))       cell.removeAttribute("data-has-url");
+            }
+            // 2. Unwrap any URL spans we injected into other annotation-row
+            //    types (text annotations and area / image annotations show
+            //    their text in `.cell-text` and get coloured spans there).
+            //    `.annotation-row` is the items-tree class — the right-pane
+            //    uses the `<annotation-row>` custom *element*, which is a
+            //    different selector and won't match.
+            for (const span of doc.querySelectorAll(".annotation-row .wv-url-span") as any) {
+                span.replaceWith(doc.createTextNode(span.textContent || ""));
+            }
+            // 3. Remove any leftover tree icons that escaped the cell flatten.
+            for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-icon") as any) {
+                ic.remove();
+            }
+            // 3b. Same for the relations icon.
+            for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-rel-icon") as any) {
+                ic.remove();
+            }
+        } catch(e) {
+            Zotero.debug("[Weavero] _stripItemsList: " + e);
+        } finally {
+            this._stripItemsListBusy = false;
+        }
+    }
+
+    /** Strip URL spans + popup buttons from right-pane <annotation-row>s. */
+    _stripRightPane() {
+        try {
+            const doc = Zotero.getMainWindow().document;
+            for (const span of doc.querySelectorAll("annotation-row .wv-url-span") as any) {
+                span.replaceWith(doc.createTextNode(span.textContent || ""));
+            }
+            // Revert inline-md rendering: restore the comment text from the
+            // cached raw source so disabling the feature gives the user back
+            // the original (markered) text instead of a stripped view.
+            for (const cmt of doc.querySelectorAll("annotation-row .comment[data-wv-raw]") as any) {
+                const raw = cmt.getAttribute("data-wv-raw") || "";
+                while (cmt.firstChild) cmt.removeChild(cmt.firstChild);
+                cmt.appendChild(doc.createTextNode(raw));
+                cmt.removeAttribute("data-wv-raw");
+                cmt.removeAttribute("data-wv-source");
+            }
+            for (const btn of doc.querySelectorAll("annotation-row .wv-btn-pane") as any) {
+                btn.remove();
+            }
+            // Related-box label rendering: replace decorated labels
+            // with a flat textNode of the same text.
+            for (const label of doc.querySelectorAll("related-box .body .row .label[data-wv-related-rendered]") as any) {
+                const t = label.dataset.wvRelatedRendered || label.textContent || "";
+                while (label.firstChild) label.removeChild(label.firstChild);
+                label.appendChild(doc.createTextNode(t));
+                delete label.dataset.wvRelatedRendered;
+            }
+        } catch(e) { Zotero.debug("[Weavero] _stripRightPane: " + e); }
+    }
+
+    /** Re-inject sidebar 🔗 buttons on existing annotation rows whose
+     *  comments contain URLs. Mirrors what _sidebarHandler does on render,
+     *  but we walk the DOM ourselves because the Reader event has already
+     *  fired for every visible row by the time the user toggles the pref. */
+    _reinjectSidebarButtons(outerDoc, reader) {
+        if (!outerDoc || !reader || !reader._item) return;
+        try { this._ensureReaderOuterStyles(outerDoc); } catch(e) {}
+        // Resolve the outer-iframe slot to inject into. Tried in priority
+        // order; first match wins. The slot is typically a `.head`/
+        // `<header>` end-area, sibling to the React `.custom-sections`
+        // div where event-driven appends land.
+        const findSlot = (row) =>
+               row.querySelector(".head .end")
+            || row.querySelector("header .end")
+            || row.querySelector(".head .menu")
+            || row.querySelector("header .menu")
+            || row.querySelector(".head")
+            || row.querySelector("header")
+            || row;
+        let addedComment = 0, addedRel = 0;
+        const rows = outerDoc.querySelectorAll(".annotation-row, .annotation");
+        for (const row of rows) {
+            const key = this._findAnnotationKey(row, reader);
+            const lib = this.libraryIDFromReader(reader);
+
+            // Capture both icons up-front. The event-driven path
+            // (`_sidebarHandler`) places them inside
+            // `.custom-sections > .section > .wv-icon-group`; the
+            // re-inject path (this function) historically placed them
+            // directly in `.end`. To keep the visual order
+            // [comment, relations, kebab] regardless of which level
+            // each icon happens to live at, we use the OTHER icon as
+            // the insertion reference rather than the slot's
+            // lastElementChild. That way new buttons land as siblings
+            // of any pre-existing icon.
+            let existingBtn = row.querySelector(
+                "." + BTN_SIDEBAR_CLASS + ":not(.wv-btn-relations)");
+            let existingRel = row.querySelector(".wv-btn-relations");
+            const comment = key ? this.getModelComment(lib, key) : "";
+            const wantsComment = !!key
+                && this._iconWantedFor(comment)
+                && this._iconAddsValueBeyondInline(comment);
+            const ann = this._getAnnotationItem(lib, key);
+            const wantsRel = !!ann
+                && this._getAnnotationRelatedItems(ann).length > 0;
+
+            // ---- Comment icon -------------------------------------------
+            if (!wantsComment) {
+                existingBtn?.remove();
+                existingBtn = null;
+            } else if (!existingBtn) {
+                const target = findSlot(row);
+                const btn = outerDoc.createElementNS(
+                    "http://www.w3.org/1999/xhtml", "button");
+                btn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS;
+                this._applyIconState(btn, comment);
+                const cmt = comment;
+                btn.addEventListener("click", e => {
+                    e.stopPropagation(); e.preventDefault();
+                    const sc = this._screenCoords(btn);
+                    this.openCommentPopup(cmt, {
+                        anchorNode: btn,
+                        ...(sc ? { anchorScreen: sc } : {}),
+                    });
+                });
+                // If a relations button is already present, insert
+                // BEFORE it (within its parent) so the order stays
+                // [comment, relations]. Otherwise fall back to
+                // insert-before-kebab in the slot.
+                if (existingRel && existingRel.parentNode) {
+                    existingRel.parentNode.insertBefore(btn, existingRel);
+                } else {
+                    const last = target.lastElementChild;
+                    if (last) target.insertBefore(btn, last);
+                    else      target.appendChild(btn);
+                }
+                existingBtn = btn;
+                addedComment++;
+            }
+
+            // ---- Relations icon -----------------------------------------
+            // Independent of comment content. Decision: present iff the
+            // annotation has any related items right now. Also
+            // self-heals when the last relation is removed (icon goes
+            // away) or the first is added (icon appears).
+            if (!wantsRel) {
+                existingRel?.remove();
+                existingRel = null;
+            } else if (!existingRel) {
+                const target = findSlot(row);
+                const relBtn = outerDoc.createElementNS(
+                    "http://www.w3.org/1999/xhtml", "button");
+                relBtn.className = BTN_CLASS + " " + BTN_SIDEBAR_CLASS
+                    + " wv-btn-relations";
+                const count = this._getAnnotationRelatedItems(ann).length;
+                relBtn.title = count + " Related";
+                relBtn.appendChild(this._makeRelationsSvg(outerDoc));
+                relBtn.addEventListener("click", e => {
+                    e.stopPropagation(); e.preventDefault();
+                    const sc = this._screenCoords(relBtn);
+                    this.openRelationsPopup(ann, {
+                        anchorNode: relBtn,
+                        ...(sc ? { anchorScreen: sc } : {}),
+                    });
+                });
+                // If a comment button is present (or was just added
+                // above), place relations immediately AFTER it in the
+                // same parent — guarantees [comment, relations]. The
+                // `existingBtn` variable was updated when the comment
+                // block inserted a fresh one, so this branch sees the
+                // up-to-date state. Otherwise insert-before-kebab.
+                if (existingBtn && existingBtn.parentNode) {
+                    existingBtn.parentNode.insertBefore(
+                        relBtn, existingBtn.nextSibling);
+                } else {
+                    const last = target.lastElementChild;
+                    if (last) target.insertBefore(relBtn, last);
+                    else      target.appendChild(relBtn);
+                }
+                addedRel++;
+            }
+        }
+        if (addedComment || addedRel) {
+            this._dbg("[Weavero] sidebar reinject: comment=" + addedComment
+                + " relations=" + addedRel);
+        }
+    }
+
+    /** Convenience wrapper: re-decorate every open reader's sidebar.
+     *  Called from the item-modify notifier (relations changes don't
+     *  flow through the reader's React annotation prop, so the
+     *  renderSidebarAnnotationHeader event won't re-fire — we have to
+     *  drive the refresh ourselves) and from `onMainWindowLoad` /
+     *  `init` to cover already-rendered rows after a plugin restart. */
+    _reinjectAllSidebars() {
+        if (!this._getEnableReaderSidebar()) return;
+        try {
+            for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                try {
+                    const iwin = reader._iframeWindow
+                        || (reader._iframe && reader._iframe.contentWindow);
+                    const idoc = iwin && iwin.document;
+                    if (idoc) this._reinjectSidebarButtons(idoc, reader);
+                } catch(e) {}
+            }
+        } catch(e) {
+            Zotero.debug("[Weavero] _reinjectAllSidebars err: " + e.message);
+        }
+    }
+
+    /** Strip URL spans from sidebar comments + remove sidebar 🔗 buttons.
+     *  If `idoc` is omitted, strips across every open reader. */
+    _stripReaderSidebar(idoc) {
+        if (!idoc) {
+            for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                try {
+                    const iwin = reader._iframeWindow
+                        || (reader._iframe && reader._iframe.contentWindow);
+                    if (iwin && iwin.document) this._stripReaderSidebar(iwin.document);
+                } catch(e) {}
+            }
+            return;
+        }
+        try {
+            // Sidebar URL spans live inside .annotation-row / .annotation
+            // wrappers; we exclude .annotation-popup so the in-PDF popup's
+            // own spans aren't yanked away from underneath that surface.
+            const sels = [
+                ".annotation-row .comment .wv-url-span",
+                ".annotation-row .body .wv-url-span",
+                ".annotation .comment .wv-url-span",
+            ];
+            for (const sel of sels) {
+                for (const span of idoc.querySelectorAll(sel) as any) {
+                    if (span.closest(".annotation-popup")) continue;
+                    span.replaceWith(idoc.createTextNode(span.textContent || ""));
+                }
+            }
+            // Tear down preview-panel DOM completely: remove the .wv-md-preview
+            // overlays, drop the wv-comment-preview/wv-editing classes from
+            // each .comment, so the raw .content becomes visible again. Also
+            // unwrap any .wv-md-* spans so the rendered formatting reverts.
+            for (const cmt of idoc.querySelectorAll(
+                    ".annotation-row .comment, .annotation .comment")) {
+                if (cmt.closest(".annotation-popup")) continue;
+                for (const p of cmt.querySelectorAll(".wv-md-preview") as any) p.remove();
+                cmt.classList.remove("wv-comment-preview");
+                cmt.classList.remove("wv-editing");
+                // Clear the rebuild rate-limit timestamp so the next
+                // _renderPreviewPanel call after a pref toggle can run
+                // immediately (the rate limit is only a loop-breaker —
+                // a deliberate user-driven rebuild shouldn't have to
+                // wait it out).
+                cmt.removeAttribute("data-wv-last-rebuild");
+            }
+            for (const span of idoc.querySelectorAll(
+                    ".wv-md-bold, .wv-md-italic, .wv-md-strike, .wv-md-code")) {
+                if (span.closest(".annotation-popup")) continue;
+                span.replaceWith(idoc.createTextNode(span.textContent || ""));
+            }
+            for (const btn of idoc.querySelectorAll("." + BTN_SIDEBAR_CLASS) as any) {
+                btn.remove();
+            }
+        } catch(e) { Zotero.debug("[Weavero] _stripReaderSidebar: " + e); }
+    }
+
+    /** Strip in-PDF popup decoration + marker badges + text-annotation
+     *  buttons. If `idoc` is omitted, strips across every open reader. */
+    _stripPdfView(idoc) {
+        if (!idoc) {
+            for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                try {
+                    const iwin = reader._iframeWindow
+                        || (reader._iframe && reader._iframe.contentWindow);
+                    if (iwin && iwin.document) this._stripPdfView(iwin.document);
+                } catch(e) {}
+            }
+            return;
+        }
+        try {
+            for (const b of idoc.querySelectorAll(".wv-marker-badge") as any) b.remove();
+            for (const b of idoc.querySelectorAll(".wv-text-annotation-btn") as any) b.remove();
+            for (const popup of idoc.querySelectorAll(".annotation-popup") as any) {
+                for (const span of popup.querySelectorAll(".wv-url-span") as any) {
+                    span.replaceWith(idoc.createTextNode(span.textContent || ""));
+                }
+                for (const btn of popup.querySelectorAll("." + BTN_POPUP_CLASS) as any) {
+                    btn.remove();
+                }
+            }
+        } catch(e) { Zotero.debug("[Weavero] _stripPdfView: " + e); }
+    }
+
+    /** Apply a per-surface pref change at runtime — re-runs the surface's
+     *  entry point, which now strips or rebuilds based on the new pref. */
+    _applySurfacePref(surface) {
+        Zotero.debug("[Weavero] _applySurfacePref: " + surface);
+        try {
+            if (surface === "itemsList") {
+                this._markCellLinks();
+                return;
+            }
+            if (surface === "rightPane") {
+                this._scanPaneRows();
+                return;
+            }
+            if (surface === "notes") {
+                // Three sub-surfaces share one toggle:
+                //   1. <note-row>       — items-tree note rows
+                //   2. <notes-box>      — right-pane Notes section on a
+                //                         parent item
+                //   3. <note-editor>    — the contenteditable iframe
+                //                         in both the right pane and
+                //                         the pop-out note window
+                try { this._processNoteRows(); }
+                catch(e) { Zotero.debug("[Weavero] _processNoteRows err: " + e); }
+                try { this._processNotesBoxes(); }
+                catch(e) { Zotero.debug("[Weavero] _processNotesBoxes err: " + e); }
+                try { this._processNoteEditors(); }
+                catch(e) { Zotero.debug("[Weavero] _processNoteEditors err: " + e); }
+                return;
+            }
+            if (surface !== "readerSidebar" && surface !== "readerView") return;
+            for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                // Outer reader iframe — sidebar list + the in-document popup
+                // (`.annotation-popup`) live here.
+                const iwin = reader._iframeWindow
+                    || (reader._iframe && reader._iframe.contentWindow);
+                const outerDoc = iwin && iwin.document;
+                if (outerDoc) {
+                    if (surface === "readerSidebar") {
+                        this._processReaderSidebar(outerDoc);
+                        // renderSidebarAnnotationHeader only fires on row
+                        // re-render, so a pref-flip alone won't restore the
+                        // sidebar 🔗 buttons. Re-inject manually.
+                        if (this._getEnableReaderSidebar()) {
+                            try { this._reinjectSidebarButtons(outerDoc, reader); }
+                            catch(e) { Zotero.debug("[Weavero] sidebar reinject err: " + e); }
+                        }
+                    }
+                    if (surface === "readerView") {
+                        for (const popup of outerDoc.querySelectorAll(".annotation-popup") as any) {
+                            this._injectIconIntoPopup(popup, reader);
+                        }
+                    }
+                }
+                if (surface === "readerView") {
+                    // Inner viewer iframe — marker badges and text-annotation
+                    // buttons live here. We cache the doc when our inner
+                    // observer wires up; if that hasn't run yet, fall back
+                    // to walking the outer doc's iframes for viewer.html.
+                    let innerDoc = null;
+                    try {
+                        const cached = this._readerObservers
+                            && this._readerObservers.get(reader);
+                        innerDoc = cached && cached.innerDoc;
+                    } catch(e) {}
+                    if (!innerDoc && outerDoc) {
+                        for (const f of outerDoc.querySelectorAll("iframe") as any) {
+                            try {
+                                const cd = f.contentDocument;
+                                if (cd && (cd.URL || "").includes("viewer.html")) {
+                                    innerDoc = cd;
+                                    break;
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                    if (innerDoc) {
+                        this._processTextAnnotations(innerDoc);
+                        this._processNoteAnnotationOverlays(innerDoc, reader);
+                    }
+                }
+                // Each entry point above gates on its own getter and strips
+                // on disabled, so this rescan handles both directions.
+            }
+        } catch(e) { Zotero.debug("[Weavero] _applySurfacePref err: " + e); }
+    }
+
+    /** Apply the inline-vs-icons-only mode change at runtime.
+     *  - Toggles :root.wv-icons-only so the tree icon is always visible in
+     *    Mode 2 (the only access path to URLs there).
+     *  - Wipes existing per-cell state in the items tree so the next mark
+     *    pass rebuilds in the new mode (with or without coloured spans).
+     *  - Strips any leftover .wv-url-span elements elsewhere so the switch
+     *    feels live; right-pane / sidebar will re-mark on the next scan
+     *    according to the new mode. */
+    _applyInlineLinksPref(inline) {
+        Zotero.debug("[Weavero] _applyInlineLinksPref: inline=" + inline);
+        try {
+            const win = Zotero.getMainWindow();
+            const doc = win.document;
+            const root = doc.documentElement;
+            root.classList.toggle("wv-icons-only", !inline);
+
+            // Items tree: restore each cell to its raw text so the next
+            // _markCellLinks pass rebuilds it in the new mode. Removing the
+            // .wv-text-wrap directly would wipe the cell content (the wrap
+            // holds the text), leaving _markCellLinks nothing to rebuild.
+            for (const cell of doc.querySelectorAll(
+                    ".annotation-row.tight .cell.annotation-comment") as any) {
+                let text = cell.getAttribute("data-comment-text");
+                if (!text) {
+                    const wrap = cell.querySelector(".wv-text-wrap");
+                    text = wrap
+                        ? (wrap.textContent || "")
+                        : (cell.textContent || "")
+                              .replace(/[\s\u00A0]*🔗\s*$/, "")
+                              .trim();
+                }
+                // Flatten back to plain text — also drops the .wv-tree-icon
+                // and any leftover .wv-url-span children.
+                cell.textContent = text;
+                cell.removeAttribute("data-has-rich");
+                cell.removeAttribute("data-icon-wanted");
+                cell.removeAttribute("data-comment-text");
+                cell.removeAttribute("data-truncated");
+                cell.removeAttribute("data-has-url");
+                // Reset the rate-limit timestamp so the upcoming rebuild
+                // can run regardless of how recent the previous one was.
+                cell.removeAttribute("data-wv-last-rebuild");
+            }
+            this._markCellLinks();
+            // Zotero's items-tree React reconciliation can strip our spans
+            // after our rebuild. Schedule retries that clear the per-cell
+            // rate-limit attribute and re-run _markCellLinks. The first
+            // retry runs at the next animation frame (~16 ms) — early
+            // enough that the user never sees plain text — and a backup
+            // retry at 150 ms catches reconciliations that happen later
+            // than that. The rate-limit on _markCellLinks (which we just
+            // cleared per-cell) means these retries can't induce a loop:
+            // each retry rebuilds at most once, then is blocked again
+            // until the next retry's clear.
+            const tryRecover = () => {
+                for (const cell of doc.querySelectorAll(".annotation-row.tight .cell.annotation-comment") as any) {
+                    cell.removeAttribute("data-wv-last-rebuild");
+                }
+                try { this._markCellLinks(); } catch(e) {}
+            };
+            if (win.requestAnimationFrame) {
+                win.requestAnimationFrame(tryRecover);
+            }
+            win.setTimeout(tryRecover, 150);
+
+            // Right pane / items-tree-note rows: unwrap any leftover URL spans
+            // back into plain text. Marking will re-add them only if Mode 1.
+            //
+            // CRITICAL: stripping the span invalidates the cache validation
+            // markers (data-wv-source / data-wv-rendered / data-wv-last-rebuild,
+            // _processRelatedBoxes' data-wv-related-rendered) — without
+            // clearing them, the next pass thinks "already rendered" and
+            // skips the rebuild that's needed to recreate the span we
+            // just removed.
+            //
+            // BUT — `data-wv-raw` is not a cache marker; it's the SOURCE
+            // text (the raw markdown). For text-annotation rows the only
+            // copy of the original source is `data-wv-raw` on the
+            // .cell-text — `el.textContent` is the stripped form
+            // ("bold ..." not "**bold** ..."). Clearing data-wv-raw here
+            // would force the next rebuild to read textContent and
+            // permanently lose the markdown markers, leaving bold
+            // unrendered after a disable/re-enable cycle.
+            for (const span of doc.querySelectorAll(".wv-url-span") as any) {
+                let p = span.parentNode;
+                while (p && p.nodeType === 1) {
+                    if (p.hasAttribute("data-wv-source")
+                        || p.hasAttribute("data-wv-rendered")
+                        || p.hasAttribute("data-wv-last-rebuild")
+                        || (p.dataset && p.dataset.wvRelatedRendered)) {
+                        p.removeAttribute("data-wv-source");
+                        p.removeAttribute("data-wv-rendered");
+                        p.removeAttribute("data-wv-last-rebuild");
+                        if (p.dataset) delete p.dataset.wvRelatedRendered;
+                        // NOTE: data-wv-raw deliberately NOT cleared.
+                        break;
+                    }
+                    p = p.parentNode;
+                }
+                span.replaceWith(doc.createTextNode(span.textContent || ""));
+            }
+            // Trigger a fresh pane scan so right-pane rows re-mark per the
+            // new mode (no-op in Mode 2 since _markTextLinks skips early).
+            try { this._scanPaneRows(); } catch(e) {}
+
+            // Reader iframe(s): unwrap leftover spans, then explicitly re-run
+            // the sidebar marker + popup icon pass for the new mode. Relying
+            // on the iframe mutation observer alone fails when Mode 2 → Mode 1
+            // because there's nothing to mutate (no spans to strip), so no
+            // observer callback fires and the sidebar stays plain text.
+            for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                try {
+                    const iwin = reader._iframeWindow
+                        || (reader._iframe && reader._iframe.contentWindow);
+                    const idoc = iwin && iwin.document;
+                    if (!idoc) continue;
+                    // Unwrap any leftover URL spans from when we used to mark
+                    // .content directly. SKIP spans inside .wv-md-preview —
+                    // those are part of our preview-panel DOM, owned by
+                    // _renderPreviewPanel; tearing them down here without
+                    // also invalidating the preview's data-source cache
+                    // would leave them un-restored on the next pass (the
+                    // cache hit makes _renderPreviewPanel skip the rebuild).
+                    for (const span of idoc.querySelectorAll(".wv-url-span") as any) {
+                        if (span.closest(".wv-md-preview")) continue;
+                        span.replaceWith(idoc.createTextNode(span.textContent || ""));
+                    }
+                    // Re-mark per the new mode (idempotent in Mode 1, no-op
+                    // in Mode 2 since _markTextLinks returns early).
+                    this._processReaderSidebar(idoc);
+                    // Mode 1 ↔ Mode 2 also flips _iconAddsValueBeyondInline
+                    // for every comment, so the 🔗 sidebar buttons must be
+                    // re-evaluated. The sidebar handler only fires on row
+                    // render (not on pref change), so without this the
+                    // buttons stay in whatever state Mode 1 left them.
+                    if (this._getEnableReaderSidebar()) {
+                        try { this._reinjectSidebarButtons(idoc, reader); }
+                        catch(e) { Zotero.debug(
+                            "[Weavero] sidebar reinject (inline-links) err: " + e); }
+                    }
+                    // Re-evaluate any open in-PDF popups too.
+                    for (const popup of idoc.querySelectorAll(".annotation-popup") as any) {
+                        this._injectIconIntoPopup(popup, reader);
+                    }
+                } catch(e) {}
+            }
+        } catch(e) {
+            Zotero.debug("[Weavero] _applyInlineLinksPref error: " + e);
+        }
+    }
+
+    /** Previously toggled :root.wv-md-disabled to drive M-icon
+     *  visibility. The M-icon decoration was removed in v0.3.130; the
+     *  pref now only affects whether markdown is rendered inline.
+     *  Kept as a no-op so call sites don't need refactoring; safe to
+     *  delete in a future cleanup. */
+    _applyCommentMarkdownPref() {}
+
+    _applyTreeIconPref(show) {
+        Zotero.debug("[Weavero] _applyTreeIconPref called: " + show);
+        try {
+            const win = Zotero.getMainWindow();
+            const el = win.document.documentElement;
+            el.classList.toggle("wv-show-tree-icon", show);
+            this._dbg("[Weavero] wv-show-tree-icon class set to: " + show
+                + " (classList has it: " + el.classList.contains("wv-show-tree-icon") + ")");
+            this._dbg("[Weavero] documentElement diag: tagName=" + el.tagName
+                + " localName=" + el.localName
+                + " namespaceURI=" + el.namespaceURI);
+            if (show) {
+                // Immediate stamp pass
+                this._markCellLinks();
+                // Delayed stamp after tree re-renders settle (PDF open / item-select re-renders follow pref change)
+                win.setTimeout(() => {
+                    this._dbg("[Weavero] _applyTreeIconPref delayed _markCellLinks firing");
+                    this._markCellLinks();
+                }, 250);
+            }
+        } catch(e) { Zotero.debug("[Weavero] _applyTreeIconPref error: " + e); }
+    }
+
+    _registerPrefPane() {
+        try {
+            // Theme-aware icon: pick the dark variant if Zotero's
+            // UI is currently dark. Theme is detected once at
+            // registration; switching theme mid-session won't swap
+            // the pref-pane icon (Zotero's PreferencePanes API has
+            // no live-update path), but startup is the dominant
+            // case anyway.
+            const theme = this._detectUIDark() ? "dark" : "light";
+            Zotero.PreferencePanes.register({
+                pluginID : "weavero@mjthoraval",
+                src      : _rootURI + "prefs.html",
+                scripts  : [_rootURI + "prefs.js"],
+                label    : "Weavero",
+                // Plugin icon bundled under icons/ at the XPI root.
+                // The pref-pane sidebar renders this around 16–20 px,
+                // so pick the smallest bundled size; bigger would
+                // just downscale and look softer.
+                image    : _rootURI + "icons/icon-" + theme + "-32.png",
+            });
+        } catch(e) {
+            Zotero.debug("[Weavero] _registerPrefPane error: " + e);
+        }
+    }
+
+    // ---- Init / Destroy ---------------------------------------------------
+
+    async init() {
+        // 0. Register default pref values so Zotero's pref-binding system can find them
+        try {
+            Services.prefs.getDefaultBranch("extensions.zotero.")
+                .setBoolPref("weavero.showTreeIcon", false);
+        } catch(e) {}
+        try {
+            Services.prefs.getDefaultBranch("extensions.zotero.")
+                .setBoolPref("weavero.inlineLinks", true);
+        } catch(e) {}
+        // Per-surface enable prefs — default to true so the four core
+        // surfaces are decorated out of the box. (Notes default OFF —
+        // see below.)
+        for (const k of ["enableItemsList", "enableRightPane",
+                         "enableReaderSidebar", "enableReaderView"]) {
+            try {
+                Services.prefs.getDefaultBranch("extensions.zotero.")
+                    .setBoolPref("weavero." + k, true);
+            } catch(e) {}
+        }
+        // Notes default to OFF — it's a new surface (post-v0.3.42) and
+        // we don't want to surprise existing users with new clickable
+        // spans / formatting on notes they've already curated.
+        try {
+            Services.prefs.getDefaultBranch("extensions.zotero.")
+                .setBoolPref("weavero.enableNotes", false);
+        } catch(e) {}
+        // Migration: if the old enablePdfReader pref was explicitly set
+        // (rare — user disabled the reader integration), mirror its value
+        // into the new sidebar+view keys the first time we run with them
+        // missing. The old pref then becomes inert (nothing reads it).
+        try {
+            const oldVal = Zotero.Prefs.get("weavero.enablePdfReader");
+            if (oldVal !== undefined) {
+                const sb = Zotero.Prefs.get("weavero.enableReaderSidebar");
+                const vw = Zotero.Prefs.get("weavero.enableReaderView");
+                if (sb === undefined) {
+                    Zotero.Prefs.set("weavero.enableReaderSidebar", !!oldVal);
+                }
+                if (vw === undefined) {
+                    Zotero.Prefs.set("weavero.enableReaderView", !!oldVal);
+                }
+            }
+        } catch(e) {
+            Zotero.debug("[Weavero] enablePdfReader migration err: " + e);
+        }
+        // Inline-mode sub-toggles (URLs / Markdown) and Icon & Popup-mode
+        // sub-toggles (URLs / Markdown / App links). Default to true so
+        // both modes show full content affordances out of the box. The Icon-
+        // mode sub-toggles let users pick which content types trigger the
+        // chain icon when comments stay plain text in the items tree.
+        for (const k of ["enableInlineUrls", "enableCommentMarkdown",
+                         "enableReaderViewIcons",
+                         "enableIconUrls", "enableIconMarkdown",
+                         "enableIconAppLinks"]) {
+            try {
+                Services.prefs.getDefaultBranch("extensions.zotero.")
+                    .setBoolPref("weavero." + k, true);
+            } catch(e) {}
+        }
+        // Diagnostic / advanced toggles default to FALSE.
+        try {
+            Services.prefs.getDefaultBranch("extensions.zotero.")
+                .setBoolPref("weavero.debug", false);
+        } catch(e) {}
+        // App links master toggle — defaults to FALSE so the per-scheme
+        // ticks below have no effect until the user explicitly opts in.
+        try {
+            Services.prefs.getDefaultBranch("extensions.zotero.")
+                .setBoolPref("weavero.enableAppLinks", false);
+        } catch(e) {}
+        // Skip-confirmation toggle — defaults to FALSE so Firefox's
+        // safety prompt stays in place unless the user opts out.
+        try {
+            Services.prefs.getDefaultBranch("extensions.zotero.")
+                .setBoolPref("weavero.enableAppLinksSkipConfirm", false);
+        } catch(e) {}
+        // Extra URL schemes default to FALSE — opt-in. Avoids
+        // surprising the user with new clickable spans on existing
+        // comments after an update.
+        for (const def of URL_SCHEMES) {
+            try {
+                Services.prefs.getDefaultBranch("extensions.zotero.")
+                    .setBoolPref("weavero." + def.pref, false);
+            } catch(e) {}
+        }
+
+        // 1. CSS — and clear any leftover popup panel from a previous
+        // plugin instance. Same rationale as injectStyles' defensive
+        // remove-then-add: Zotero's in-place plugin upgrade flow doesn't
+        // reliably tear down DOM artifacts the previous version added,
+        // so init must be defensive about cleaning before adding fresh.
+        try {
+            const oldPanel = Zotero.getMainWindow().document.getElementById(PANEL_ID);
+            if (oldPanel) oldPanel.remove();
+        } catch(e) {}
+        this.injectStyles();
+        // Plugin-upgrade recovery: clear DOM markers left behind by
+        // a previous plugin instance. Without this, the new code
+        // sees `data-wv-related-rendered` / `data-wv-ctx-wired` etc.
+        // on related-box rows and skips reprocessing — leaving the
+        // rendered DOM (and its event handlers) tied to the dead
+        // old closures. Runs from init() (covers plugin enable /
+        // upgrade cases where onMainWindowLoad doesn't refire) and
+        // also from onMainWindowLoad below (covers new windows).
+        try {
+            const win = Zotero.getMainWindow();
+            this._resetStaleMarkers(win && win.document);
+        } catch(e) {}
+
+        // 2. Reader event listeners
+        Zotero.Reader.registerEventListener(
+            "renderSidebarAnnotationHeader", this._sidebarHandler, "weavero");
+        Zotero.Reader.registerEventListener(
+            "createAnnotationContextMenu", this._contextHandler, "weavero");
+
+        // 3. Notifier: new reader tabs
+        this._notifierIDs.push(Zotero.Notifier.registerObserver({
+            notify: async (event, type) => {
+                if (type !== "tab" || event !== "add") return;
+                for (let i = 0; i < 20; i++) {
+                    await new Promise(r => setTimeout(r, 250));
+                    for (const reader of Zotero.Reader._readers || [])
+                        if (!this._readerObservers.has(reader)) this._setupReaderObserver(reader);
+                }
+            }
+        }, ["tab"], "weavero-tab"));
+
+        // 3b. Notifier: annotation lifecycle (delete/trash/modify).
+        // Backstop for the proactive Delete/Backspace handler — the
+        // notifier fires only after Zotero's DB transaction + queue
+        // commit (often ~100–300 ms after the keystroke), so this
+        // path runs second. We still use it because it's the only
+        // signal that catches non-keyboard deletions (right-click →
+        // Delete, undo, sync). Keys are stamped into
+        // _recentlyDeletedKeys so the inner observer's debounced
+        // overlay scan can't recreate badges while Zotero's in-memory
+        // cache is still settling.
+        this._notifierIDs.push(Zotero.Notifier.registerObserver({
+            notify: (event, type, ids, extraData) => {
+                if (type !== "item") return;
+                if (event !== "delete" && event !== "trash"
+                    && event !== "modify" && event !== "add") return;
+
+                // Pull annotation keys from extraData (the items are
+                // already gone from the DB so id-based lookup fails).
+                const deletedKeys = new Set();
+                if (event === "delete" || event === "trash") {
+                    if (extraData && typeof extraData === "object") {
+                        for (const id of ids || []) {
+                            const meta = extraData[id];
+                            if (meta && meta.key) deletedKeys.add(meta.key);
+                        }
+                    }
+                }
+
+                // Track the most-recently-touched annotation per
+                // reader. The proactive Delete-key handler uses this
+                // when `selectedAnnotationIDs` returns a stale key
+                // (the bug we're working around: after a delete,
+                // creating a fresh annotation, then pressing Delete,
+                // the reader's selectedAnnotationIDs still pointed at
+                // the previous, deleted key — so the proactive path
+                // tried to remove a badge that was already gone, and
+                // the slow notifier path was the only thing that
+                // could clean up the new annotation's badge).
+                if (event === "add" || event === "modify") {
+                    try {
+                        for (const id of ids || []) {
+                            let item;
+                            try { item = Zotero.Items.get(id); } catch (e2) { continue; }
+                            if (!item || !item.isAnnotation || !item.isAnnotation()) continue;
+                            const parentID = item.parentItemID;
+                            const key = item.key;
+                            if (!parentID || !key) continue;
+                            for (const reader of Zotero.Reader._readers || []) {
+                                if (reader._item && reader._item.id === parentID) {
+                                    const data = this._readerObservers.get(reader);
+                                    if (data) {
+                                        data.lastTouchedAnnotationKey = key;
+                                        this._dbg("[Weavero] lastTouched: key="
+                                            + key + " event=" + event);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        Zotero.debug("[Weavero] lastTouched track error: " + e);
+                    }
+                }
+
+                // ── Filter-side reapply hooks. Must run BEFORE the
+                // 'add' early-return below, otherwise the items-list
+                // filter never recomputes after item creation.
+                if (event === "add" && ids && ids.length) {
+                    if (!this._wvRecentlyAddedItemIDs) {
+                        this._wvRecentlyAddedItemIDs = new Set();
+                    }
+                    for (const id of ids) this._wvRecentlyAddedItemIDs.add(id);
+                }
+                if (event === "add" || event === "modify"
+                    || event === "delete" || event === "trash") {
+                    try {
+                        const fa = this._isFilterActive(this._filterState);
+                        Zotero.debug("[Weavero][add-debug] notifier"
+                            + " event=" + event
+                            + " ids=" + JSON.stringify(ids)
+                            + " filterActive=" + fa);
+                        if (fa) {
+                            const win = Zotero.getMainWindow();
+                            const itemsView = win && win.ZoteroPane
+                                && win.ZoteroPane.itemsView;
+                            const rp = itemsView && itemsView.rowProvider;
+                            const info = {
+                                rowsLen: rp && rp._rows ? rp._rows.length : "?",
+                                wrappedRowCount: itemsView && itemsView.rowCount,
+                                origRowCount: rp && rp._wvOrigGetRowCount
+                                    ? rp._wvOrigGetRowCount() : "n/a",
+                            };
+                            for (const id of ids || []) {
+                                info["rowMap[" + id + "]"] = itemsView
+                                    && itemsView._rowMap
+                                    ? itemsView._rowMap[id] : "n/a";
+                            }
+                            Zotero.debug(
+                                "[Weavero][add-debug] state at notifier: "
+                                + JSON.stringify(info));
+                        }
+                    } catch (e) {
+                        Zotero.debug(
+                            "[Weavero][add-debug] state probe err: " + e);
+                    }
+                }
+                if (event === "add" && ids && ids.length
+                    && this._isFilterActive(this._filterState)) {
+                    Zotero.debug(
+                        "[Weavero][add-debug] pausing filter patches"
+                        + " for add of " + JSON.stringify(ids));
+                    try {
+                        this._pauseFilterPatches();
+                        Zotero.debug(
+                            "[Weavero][add-debug] paused OK");
+                    } catch (e) {
+                        Zotero.debug(
+                            "[Weavero][add-debug] pause err: " + e);
+                    }
+                }
+                if ((event === "add" || event === "modify"
+                    || event === "delete" || event === "trash")
+                    && this._isFilterActive(this._filterState)) {
+                    try {
+                        const win = Zotero.getMainWindow();
+                        if (this._filterReapplyTimer) {
+                            win.clearTimeout(this._filterReapplyTimer);
+                        }
+                        const scheduledIDs = ids ? [...ids] : [];
+                        const evt = event;
+                        this._filterReapplyTimer = win.setTimeout(() => {
+                            this._filterReapplyTimer = null;
+                            Zotero.debug(
+                                "[Weavero][add-debug] deferred reapply firing"
+                                + " (event=" + evt
+                                + " scheduledIDs=" + JSON.stringify(scheduledIDs)
+                                + " recentlyAddedSize="
+                                + (this._wvRecentlyAddedItemIDs
+                                    ? this._wvRecentlyAddedItemIDs.size : 0)
+                                + ")");
+                            try {
+                                this._applyItemsListFilter({ cascade: false });
+                                const itemsView2 = Zotero.getMainWindow()
+                                    && Zotero.getMainWindow().ZoteroPane
+                                    && Zotero.getMainWindow().ZoteroPane.itemsView;
+                                const rp2 = itemsView2 && itemsView2.rowProvider;
+                                const post = {
+                                    wrappedCount: itemsView2 && itemsView2.rowCount,
+                                    origCount: rp2 && rp2._wvOrigGetRowCount
+                                        ? rp2._wvOrigGetRowCount() : "n/a",
+                                };
+                                for (const id of scheduledIDs) {
+                                    post["rowMap[" + id + "]"] = itemsView2
+                                        && itemsView2._rowMap
+                                        ? itemsView2._rowMap[id] : "n/a";
+                                }
+                                Zotero.debug(
+                                    "[Weavero][add-debug] post-reapply: "
+                                    + JSON.stringify(post));
+                            } catch (e) {
+                                Zotero.debug(
+                                    "[Weavero][add-debug] reapply err: " + e);
+                            }
+                        }, 100);
+                    } catch (e) {
+                        Zotero.debug(
+                            "[Weavero][filter] notifier reapply schedule err: " + e);
+                    }
+                }
+
+                // Only the delete/trash/modify branches do reader-
+                // doc work below; 'add' alone just primes the
+                // lastTouched tracker and exits.
+                if (event === "add") return;
+
+                for (const reader of Zotero.Reader._readers || []) {
+                    const data = this._readerObservers.get(reader);
+                    const innerDoc = data && data.innerDoc;
+                    if (!innerDoc) continue;
+
+                    // Stamp deleted keys so the debounced overlay scan
+                    // skips recreating their badges. Cleared again by
+                    // _processNoteAnnotationOverlays once getAnnotations()
+                    // stops returning the key (cache caught up), or
+                    // after 60 s as a safety net.
+                    if (deletedKeys.size) {
+                        const now = Date.now();
+                        for (const k of deletedKeys) {
+                            this._recentlyDeletedKeys.set(k, now);
+                        }
+                    }
+
+                    // Direct DOM removal by key — both inner PDF.js
+                    // and outer reader iframe (badges may live in
+                    // either depending on Zotero's layout).
+                    let removed = 0;
+                    if (deletedKeys.size) {
+                        let outerDoc = null;
+                        try {
+                            const iwin = reader._iframeWindow
+                                || (reader._iframe && reader._iframe.contentWindow);
+                            if (iwin && iwin.document) outerDoc = iwin.document;
+                        } catch (e) {}
+                        for (const doc of [innerDoc, outerDoc]) {
+                            if (!doc) continue;
+                            for (const k of deletedKeys) {
+                                for (const badge of doc.querySelectorAll(
+                                    ".wv-marker-badge[data-wv-for=\"" + k + "\"]")) {
+                                    badge.remove();
+                                    removed++;
+                                }
+                            }
+                        }
+                        if (removed) {
+                            this._dbg("[Weavero] notifier "
+                                + event + " removed " + removed
+                                + " badge(s) keys="
+                                + JSON.stringify([...deletedKeys]));
+                        }
+                    }
+
+                    // Refresh text-annotation buttons. For delete/
+                    // trash skip the full overlay scan — getAnnotations()
+                    // may still return the just-deleted annotation
+                    // (cache stale), and the inner observer will run
+                    // the scan ~100 ms later anyway, by which time the
+                    // _recentlyDeletedKeys gate is in place.
+                    try { this._processTextAnnotations(innerDoc); }
+                    catch (e) { Zotero.debug("[Weavero] notifier text-ann scan: " + e); }
+                    if (event !== "delete" && event !== "trash") {
+                        try { this._processNoteAnnotationOverlays(innerDoc, reader); }
+                        catch (e) { Zotero.debug("[Weavero] notifier overlay scan: " + e); }
+                    }
+                }
+
+                // Refresh relations icons across both surfaces (reader
+                // sidebar + right pane). Relations are stored as
+                // `dc:relation` triples on items and don't flow into
+                // the reader's React annotation prop or trigger a
+                // right-pane row re-render — so neither
+                // renderSidebarAnnotationHeader nor the right-pane
+                // mutation observer catches a relation add/remove.
+                // We drive the refresh from the notifier instead:
+                // `addRelatedItem` / `removeRelatedItem` both `save()`
+                // the involved items, which fires "modify".
+                //
+                // Bounded by visible rows (typically <50 per surface)
+                // and gated on each surface pref, so this is cheap to
+                // run on every item modification.
+                if (event === "modify" || (event as string) === "add"
+                    || (event as string) === "delete" || (event as string) === "trash") {
+                    try { this._reinjectAllSidebars(); }
+                    catch (e) { Zotero.debug(
+                        "[Weavero] notifier sidebar reinject: " + e); }
+                    try { this._scanPaneRows(); }
+                    catch (e) { Zotero.debug(
+                        "[Weavero] notifier pane reinject: " + e); }
+                }
+
+                // Items-list filter: when active, the row-keep array
+                // is computed against the current `_rows` snapshot. A
+                // new item lands in `_rows` via Zotero's own notifier
+                // handler — but our `keep` doesn't know about it, so
+                // the new row is invisible (and the items pane goes
+                // inconsistent: itemBox tries to render `this.item`
+                // and gets `undefined`). Defer a re-apply so Zotero's
+                // tree handler runs first; debounced so a burst of
+                // modifies (e.g. during sync) doesn't thrash.
+                //
+                // Newly-created items are tracked in a session Set so
+                // the filter pass can force-include them — otherwise
+                // a brand-new item that doesn't yet match the active
+                // filter (e.g. a fresh Journal Article with no yellow
+                // annotations under an annotation-color=yellow filter)
+                // would be created, selected by Zotero, then promptly
+                // hidden, leaving the item box without a current
+                // item.
+            }
+        }, ["item"], "weavero-item"));
+
+        // 4. Polling fallback for readers
+        this._pollInterval = setInterval(() => {
+            for (const reader of Zotero.Reader._readers || [])
+                if (!this._readerObservers.has(reader)) this._setupReaderObserver(reader);
+        }, 2000);
+
+        // 5. Readers already open at load time
+        for (const reader of Zotero.Reader._readers || [])
+            await this._setupReaderObserver(reader);
+
+        // 6. Tree: event delegation (no DOM injection, no blink)
+        this._setupTreeClickDelegate();
+
+        // 6a1. Items-list filter bar (chips + popover above the items
+        // tree). Self-retries until the items pane is mounted.
+        this._setupItemsListFilter();
+
+        // 6a2. Patch the "List all tabs" panel to group rows by
+        // library when 2+ libraries are open in tabs. Self-retries
+        // if the tabs-menu-panel custom element isn't upgraded yet.
+        try {
+            this._setupTabsMenuLibrarySort(Zotero.getMainWindow());
+        } catch (e) {}
+        // 6a3. Highlight the library row of the current item in any
+        // `libraries-collections-box` (item pane) when the item is
+        // replicated across libraries.
+        try {
+            this._setupLibrariesBoxHighlight(Zotero.getMainWindow());
+        } catch (e) {}
+
+        // 6b. Resolve the icon URLs used by `decorateContextMenu`. The
+        // reader iframe is content (loaded from `resource://zotero/`),
+        // which Mozilla's CheckLoadURI policy forbids from linking to
+        // `jar:file:///…/weavero.xpi!/icon-16.png` — `<img src>` set
+        // to the raw `_rootURI + …` path triggers a "may not load or
+        // link to" Security Error and renders the broken-image glyph.
+        // Workaround: fetch the icon once at startup and embed it as
+        // a `data:image/png;base64,…` URL, which is allowed inside
+        // content. Cache BOTH light and dark variants on the instance
+        // so we can swap them based on theme without re-encoding.
+        // `decorateContextMenu` reads `_menuItemIconURL` (a getter
+        // below) to pick the right variant at use time.
+        const encodeIcon = async (path) => {
+            try {
+                const resp = await fetch(_rootURI + path);
+                const buf = await resp.arrayBuffer();
+                const bytes = new Uint8Array(buf);
+                let bin = "";
+                for (let i = 0; i < bytes.length; i++) {
+                    bin += String.fromCharCode(bytes[i]);
+                }
+                return "data:image/png;base64," + btoa(bin);
+            } catch(e) {
+                Zotero.debug("[Weavero] menu icon encode err ("
+                    + path + "): " + e);
+                return "";
+            }
+        };
+        this._menuItemIconURLLight = await encodeIcon("icons/icon-light-16.png");
+        this._menuItemIconURLDark  = await encodeIcon("icons/icon-dark-16.png");
+        // Back-compat alias: callers that read `_menuItemIconURL`
+        // directly (rather than the getter below) get the
+        // theme-appropriate URL via the getter property.
+        Object.defineProperty(this, "_menuItemIconURL", {
+            get: () => this._detectUIDark()
+                ? this._menuItemIconURLDark
+                : this._menuItemIconURLLight,
+            configurable: true,
+        });
+        // (Chain icon for the iframe React menu is rendered as inline
+        // <svg> by `decorateContextMenu` via `_makeRelationsSvg`, which
+        // uses a baked amber fill via prefers-color-scheme — see
+        // `_injectReaderStyles`.)
+        // For the chrome XUL items-tree menu, bake amber-fill data URLs
+        // (one per theme) so the chain icon matches the sidebar's
+        // `.wv-btn-relations` color regardless of theme. The system
+        // chrome://...related.svg uses `context-fill` which resolves
+        // to the menu's neutral icon color, not amber.
+        try {
+            this._relationsIconURLLight = "data:image/svg+xml;base64,"
+                + btoa(SCHEME_SVG_TEMPLATE.replace("__FILL__", "#7a4a00"));
+            this._relationsIconURLDark = "data:image/svg+xml;base64,"
+                + btoa(SCHEME_SVG_TEMPLATE.replace("__FILL__", "#ffb84d"));
+        } catch (e) {
+            Zotero.debug("[Weavero] relations icon encode err: " + e);
+            this._relationsIconURLLight = "";
+            this._relationsIconURLDark  = "";
+        }
+
+        // 7. Right pane
+        this._setupPaneObserver();
+
+        // 7b. Items-tree right-click menu — adds "Add related item…"
+        // when the right-clicked selection contains annotation(s).
+        this._setupItemsListContextMenu();
+        // 7b-bis. Collections-tree right-click menu — adds
+        // "Copy Collection Link" on collection rows.
+        this._setupCollectionsContextMenu();
+
+        // 7c. Pop-out note windows — main-window pane observer doesn't
+        // see them, so wire a Window Mediator listener that catches
+        // note.xhtml windows as they open.
+        this._setupNoteWindowListener();
+        // Initial pass over any note surface that's already mounted
+        // when the plugin starts (e.g. user enabled the toggle, then
+        // restarted Zotero with a note already selected).
+        if (this._getEnableNotes()) {
+            try { this._processNoteRows(); }
+            catch(e) { Zotero.debug("[Weavero] init note-rows err: " + e); }
+            try { this._processNotesBoxes(); }
+            catch(e) { Zotero.debug("[Weavero] init notes-box err: " + e); }
+            try { this._processNoteEditors(); }
+            catch(e) { Zotero.debug("[Weavero] init note-editors err: " + e); }
+        }
+
+        // 8. Preferences pane + apply saved icon pref
+        this._registerPrefPane();
+        // Items-list "Related" column.
+        this._registerItemTreeColumns();
+        this._applyTreeIconPref(this._getShowTreeIcon());
+        this._applyInlineLinksPref(this._getInlineLinks());
+        this._applyCommentMarkdownPref();
+        this._applyUIThemeClass();
+        // Sync per-scheme `network.protocol-handler.warn-external.<x>`
+        // prefs with the user's "Open without confirmation" choice.
+        // Idempotent — covers a Zotero restart with the toggle still on.
+        try { this._applyAppLinkConfirmPref(); }
+        catch(e) { Zotero.debug("[Weavero] init confirm sync err: " + e); }
+        // React to OS-driven theme changes by listening on the main
+        // window's prefers-color-scheme media query. Zotero's
+        // theme-detection isn't fully exposed, but UI bg luma is
+        // what _detectUIDark samples — and a media-query change is
+        // a strong signal that bg may have flipped, so a re-detect
+        // is appropriate.
+        try {
+            const win = Zotero.getMainWindow();
+            if (win && win.matchMedia) {
+                this._uiThemeMq = win.matchMedia("(prefers-color-scheme: dark)");
+                this._uiThemeMqHandler = () => this._applyUIThemeClass();
+                if (typeof this._uiThemeMq.addEventListener === "function") {
+                    this._uiThemeMq.addEventListener("change", this._uiThemeMqHandler);
+                }
+            }
+            // Also watch the Zotero main window's documentElement for
+            // attribute/class flips. Zotero's three theme settings
+            // (System / Light / Dark in General → Appearance) toggle
+            // an attribute on this node; the matchMedia listener
+            // above only catches the System-mode case where a flip
+            // is OS-driven. Without this observer, a direct setting
+            // change between Light and Dark wouldn't fire any of our
+            // hooks until the next reader open / window load.
+            const win2 = Zotero.getMainWindow();
+            const doc2 = win2 && win2.document;
+            if (doc2 && doc2.documentElement && win2.MutationObserver) {
+                this._uiThemeObserver = new win2.MutationObserver(() => {
+                    try { this._applyUIThemeClass(); } catch (e) {}
+                });
+                this._uiThemeObserver.observe(doc2.documentElement, {
+                    attributes: true,
+                    attributeFilter: [
+                        "class", "lwtheme", "lwthemetextcolor",
+                        "theme", "data-theme",
+                    ],
+                });
+            }
+        } catch (e) {}
+
+        // 9. Watch pref changes from Settings pane
+        // Use root branch + broad match to diagnose what path Zotero actually writes
+        try {
+            this._prefBranch = Services.prefs.getBranch("");
+            this._prefObserver = {
+                observe: (_s, _t, data) => {
+                    if (data.includes("weavero")) {
+                        this._dbg("[Weavero] pref changed at path: " + data);
+                    }
+                    if (data === "extensions.zotero.weavero.showTreeIcon") {
+                        this._applyTreeIconPref(this._getShowTreeIcon());
+                    }
+                    if (data === "extensions.zotero.weavero.inlineLinks") {
+                        this._applyInlineLinksPref(this._getInlineLinks());
+                    }
+                    if (data === "extensions.zotero.weavero.enableItemsList") {
+                        this._applySurfacePref("itemsList");
+                    }
+                    if (data === "extensions.zotero.weavero.enableRightPane") {
+                        this._applySurfacePref("rightPane");
+                    }
+                    if (data === "extensions.zotero.weavero.enableNotes") {
+                        // Toggling Notes off → strip decorated content
+                        // back to plain text BEFORE the rescan (which
+                        // would no-op since `_processNote*` early-return
+                        // when the toggle is off). Toggling on → rescan
+                        // re-decorates everything.
+                        try {
+                            if (!this._getEnableNotes()) this._stripNotes();
+                        } catch(e) { Zotero.debug("[Weavero] strip-notes err: " + e); }
+                        this._applySurfacePref("notes");
+                    }
+                    if (data === "extensions.zotero.weavero.enableReaderSidebar") {
+                        this._applySurfacePref("readerSidebar");
+                    }
+                    if (data === "extensions.zotero.weavero.enableReaderView") {
+                        this._applySurfacePref("readerView");
+                    }
+                    if (data === "extensions.zotero.weavero.enableReaderViewIcons") {
+                        this._applySurfacePref("readerView");
+                    }
+                    // Tags column auto-count toggle — re-render the
+                    // items view so already-painted Tags cells pick
+                    // up the new pref. Without this the change only
+                    // shows after scrolling or selection moves.
+                    if (data === "extensions.zotero.weavero.enableTagsCountAuto") {
+                        try {
+                            const w = Zotero.getMainWindow();
+                            const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                            if (iv && iv.tree && iv.tree.invalidate) {
+                                iv.tree.invalidate();
+                            }
+                        } catch(e) {
+                            Zotero.debug("[Weavero] tags-pref invalidate err: " + e);
+                        }
+                    }
+                    // Added By prefs — invalidate so annotation-row badges
+                    // and addedBy-column tints rebuild with the new state.
+                    if (data === "extensions.zotero.weavero.enableAnnotationAddedBy"
+                        || data === "extensions.zotero.weavero.enableAddedByColors") {
+                        try {
+                            const w = Zotero.getMainWindow();
+                            const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                            if (iv && iv.tree && iv.tree.invalidate) {
+                                iv.tree.invalidate();
+                            }
+                            // The badge gating is in renderRow, the tint
+                            // is in `_paintAddedByCells` (called from
+                            // `_markCellLinks`). Invalidation triggers
+                            // both.
+                            try { this._markCellLinks(); } catch(e) {}
+                        } catch(e) {
+                            Zotero.debug("[Weavero] addedBy-pref invalidate err: " + e);
+                        }
+                    }
+                    // Content-type sub-prefs — Inline mode (enableInlineUrls /
+                    // enableCommentMarkdown) and Icon & Popup mode (enableIcon*).
+                    // Toggling any of these changes how comments render or
+                    // whether the chain icon attaches on every surface, so
+                    // rescan all four. The comment-md pref also drives
+                    // :root.wv-md-disabled (gates M-icon visibility in the
+                    // items list).
+                    //
+                    // Strip the right-pane and reader-sidebar spans /
+                    // previews BEFORE re-scanning so any stale state
+                    // (e.g. URL spans from a previous "URLs on" render)
+                    // is cleared. The re-scan then rebuilds whatever the
+                    // new prefs call for. Without this, URL-only comments
+                    // retain their old spans because the early-return
+                    // case in _renderPaneCommentInline can't safely strip
+                    // (running on every observer fire risks an infinite
+                    // loop during sidebar tear-down).
+                    if (data === "extensions.zotero.weavero.enableInlineUrls"
+                        || data === "extensions.zotero.weavero.enableCommentMarkdown"
+                        || data === "extensions.zotero.weavero.enableIconUrls"
+                        || data === "extensions.zotero.weavero.enableIconMarkdown"
+                        || data === "extensions.zotero.weavero.enableIconAppLinks") {
+                        if (data === "extensions.zotero.weavero.enableCommentMarkdown") {
+                            this._applyCommentMarkdownPref();
+                        }
+                        try { this._stripRightPane(); } catch(e) {}
+                        for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                            try {
+                                const iwin = reader._iframeWindow
+                                    || (reader._iframe && reader._iframe.contentWindow);
+                                const idoc = iwin && iwin.document;
+                                if (idoc) this._stripReaderSidebar(idoc);
+                            } catch(e) {}
+                        }
+                        this._applySurfacePref("itemsList");
+                        this._applySurfacePref("rightPane");
+                        this._applySurfacePref("readerSidebar");
+                        this._applySurfacePref("readerView");
+                    }
+                    // Skip-confirm toggle — sync warn-external prefs.
+                    if (data === "extensions.zotero.weavero.enableAppLinksSkipConfirm") {
+                        try { this._applyAppLinkConfirmPref(); }
+                        catch(e) { Zotero.debug("[Weavero] confirm sync err: " + e); }
+                    }
+                    // Extra-scheme toggles — invalidate the cached
+                    // URL_REGEX / URL_SCHEME_ALT, then strip and rescan
+                    // every surface so newly-enabled schemes start
+                    // rendering and newly-disabled ones flatten back to
+                    // plain text. Same teardown sequence as the
+                    // inline-toggle branch above.
+                    // Also fires for the master `enableAppLinks` toggle
+                    // since flipping it changes which schemes the regex
+                    // includes.
+                    if (/^extensions\.zotero\.weavero\.enable\w+Scheme$/.test(data)
+                        || data === "extensions.zotero.weavero.enableAppLinks") {
+                        // Re-apply warn-external prefs too, since the
+                        // set of "enabled schemes that should skip
+                        // confirmation" depends on this pref.
+                        try { this._applyAppLinkConfirmPref(); }
+                        catch(e) { Zotero.debug("[Weavero] confirm sync err: " + e); }
+                        // Refresh note-editor stylesheets too — the
+                        // app-link colour rules depend on enabled schemes.
+                        try { this._refreshAllNoteEditorStyles(); }
+                        catch(e) { Zotero.debug("[Weavero] note-css refresh err: " + e); }
+                        this._urlRegexCache     = null;
+                        this._urlSchemeAltCache = null;
+                        try { this._stripRightPane(); } catch(e) {}
+                        for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                            try {
+                                const iwin = reader._iframeWindow
+                                    || (reader._iframe && reader._iframe.contentWindow);
+                                const idoc = iwin && iwin.document;
+                                if (idoc) this._stripReaderSidebar(idoc);
+                            } catch(e) {}
+                        }
+                        this._applySurfacePref("itemsList");
+                        this._applySurfacePref("rightPane");
+                        this._applySurfacePref("readerSidebar");
+                        this._applySurfacePref("readerView");
+                    }
+                }
+            };
+            this._prefBranch.addObserver("", this._prefObserver, false);
+            Zotero.debug("[Weavero] pref observer registered on root branch");
+        } catch(e) { Zotero.debug("[Weavero] pref observer error: " + e); }
+
+        Zotero.debug("[Weavero] initialized — showTreeIcon=" + this._getShowTreeIcon());
+    }
+
+    /** Called by the bootstrap shim when a fresh main window opens. The
+     *  previous window's observers/handlers (if any) hold stale doc
+     *  references — tear them down and re-attach to the live window.
+     *  Called BEFORE init() too if Zotero opens the window before the
+     *  plugin's init resolves; the teardown calls are no-op safe so this
+     *  is idempotent. */
+    onMainWindowLoad(_window) {
+        try {
+            this._teardownTreeClickDelegate();
+            this._teardownItemsListContextMenu();
+            this._teardownCollectionsContextMenu();
+            this._teardownTabsMenuLibrarySort(_window);
+            this._teardownLibrariesBoxHighlight(_window);
+            this._paneObserver?.disconnect();
+            this._paneObserver = null;
+            this._treeMarkObserver?.disconnect();
+            this._treeMarkObserver = null;
+            // Drop the URL-title restorer attached to the items-tree
+            // XUL element (defends against Zotero's overflow handler
+            // stripping our title; see `_setupTreeClickDelegate`).
+            try {
+                const _doc = _window && _window.document;
+                const _tree = _doc && (_doc.getElementById("item-tree-main")
+                    || _doc.getElementById("item-tree-main-default"));
+                if (_tree && _tree._wvUrlTitleListener) {
+                    _tree.removeEventListener("mouseover", _tree._wvUrlTitleListener);
+                    delete _tree._wvUrlTitleListener;
+                }
+            } catch(e) {}
+            // Plugin-upgrade recovery: clear any DOM markers the
+            // OLD plugin instance left behind. Without this, the
+            // new code sees `data-wv-related-rendered` /
+            // `data-wv-ctx-wired` etc. on related-box rows and
+            // skips reprocessing — leaving the rendered DOM
+            // (and its event handlers) tied to the dead old
+            // closures, which then no-op.
+            try { this._resetStaleMarkers(_window && _window.document); }
+            catch(e) {}
+            // (Re-)inject the plugin stylesheet and clear any leftover
+            // popup panel. On a Zotero startup, init() runs as part of
+            // plugin startup BEFORE any main window has been created, so
+            // its injectStyles() call silently throws (Zotero.getMainWindow()
+            // returns null). Re-running it here, when a window is
+            // guaranteed to exist, finally lands the CSS — without this,
+            // the comment popup looks unstyled until the user disables
+            // and re-enables the plugin. injectStyles' defensive
+            // remove-then-add makes calling twice idempotent.
+            try {
+                const oldPanel = _window
+                    && _window.document
+                    && _window.document.getElementById(PANEL_ID);
+                if (oldPanel) oldPanel.remove();
+            } catch(e) {}
+            this.injectStyles();
+            // Re-attach to the now-live document.
+            this._setupTreeClickDelegate();
+            this._setupItemsListContextMenu();
+            this._setupCollectionsContextMenu();
+            this._setupPaneObserver();
+            this._setupItemsListFilter();
+            this._setupTabsMenuLibrarySort(_window);
+            this._setupLibrariesBoxHighlight(_window);
+            // Re-apply CSS-class state (these set classes on root.documentElement).
+            this._applyTreeIconPref(this._getShowTreeIcon());
+            this._applyInlineLinksPref(this._getInlineLinks());
+            this._applyCommentMarkdownPref();
+            this._applyUIThemeClass();
+            // Refresh sidebar icons across any open readers. The
+            // renderSidebarAnnotationHeader event won't re-fire for rows
+            // that were already mounted before the plugin (re-)started,
+            // so without this pass the relations + comment icons would
+            // be missing on those rows until the user scrolls or the
+            // annotation otherwise re-renders.
+            try { this._reinjectAllSidebars(); } catch(e) {}
+        } catch(e) {
+            Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
+        }
+    }
+
+    /** Called by the bootstrap shim when the main window closes. Disconnect
+     *  observers eagerly so the next mutation in the dying doc doesn't go
+     *  through dead refs. Lighter than destroy() — preferences observer,
+     *  reader event listeners etc. survive across windows. */
+    onMainWindowUnload(_window) {
+        try {
+            this._teardownTreeClickDelegate();
+            this._teardownItemsListContextMenu();
+            this._teardownCollectionsContextMenu();
+            this._paneObserver?.disconnect();
+            this._paneObserver = null;
+            this._treeMarkObserver?.disconnect();
+            this._treeMarkObserver = null;
+        } catch(e) {
+            Zotero.debug("[Weavero] onMainWindowUnload err: " + e);
+        }
+    }
+
+    destroy() {
+        // 1. Tear down listeners / observers / timers.
+        if (this._prefObserver && this._prefBranch) {
+            try { this._prefBranch.removeObserver("", this._prefObserver); } catch(e) {}
+            this._prefObserver = null;
+            this._prefBranch = null;
+        }
+        if (this._uiThemeMq && this._uiThemeMqHandler) {
+            try {
+                if (typeof this._uiThemeMq.removeEventListener === "function") {
+                    this._uiThemeMq.removeEventListener("change", this._uiThemeMqHandler);
+                }
+            } catch (e) {}
+            this._uiThemeMq = null;
+            this._uiThemeMqHandler = null;
+        }
+        if (this._uiThemeObserver) {
+            try { this._uiThemeObserver.disconnect(); } catch (e) {}
+            this._uiThemeObserver = null;
+        }
+
+        try { (Zotero.Reader as any).unregisterEventListener("renderSidebarAnnotationHeader", "weavero"); } catch(e) {}
+        try { (Zotero.Reader as any).unregisterEventListener("createAnnotationContextMenu", "weavero"); } catch(e) {}
+        this._unregisterItemTreeColumns();
+        try { this._unpatchAnnotationRow(); } catch (e) {}
+
+        for (const id of this._notifierIDs || []) {
+            try { Zotero.Notifier.unregisterObserver(id); } catch(e) {}
+        }
+        this._notifierIDs = [];
+
+        clearInterval(this._pollInterval); this._pollInterval = null;
+        this._teardownTreeClickDelegate();
+        this._teardownItemsListContextMenu();
+        this._teardownCollectionsContextMenu();
+        this._teardownNoteWindowListener();
+        this._teardownItemsListFilter();
+        try {
+            this._teardownTabsMenuLibrarySort(Zotero.getMainWindow());
+        } catch (e) {}
+        try {
+            this._teardownLibrariesBoxHighlight(Zotero.getMainWindow());
+        } catch (e) {}
+        this._paneObserver?.disconnect(); this._paneObserver = null;
+
+        // Clear any `network.protocol-handler.warn-external.<x>`
+        // overrides we set so the user's profile doesn't carry our
+        // pref churn after the plugin is removed. Only clears values
+        // we recognise as ours (FALSE) — leaves any TRUE overrides
+        // the user might have set themselves intact.
+        try {
+            for (const def of URL_SCHEMES) {
+                const prefName = "network.protocol-handler.warn-external." + def.name;
+                try {
+                    if (Services.prefs.prefHasUserValue(prefName)
+                            && Services.prefs.getBoolPref(prefName, true) === false) {
+                        Services.prefs.clearUserPref(prefName);
+                    }
+                } catch(e) {}
+            }
+        } catch(e) {}
+
+        // 2. Clean up everything we put into the main window's DOM.
+        try {
+            const doc = Zotero.getMainWindow().document;
+            const root = doc.documentElement;
+
+            // Drop the mode classes we add to <html>
+            root.classList.remove("wv-show-tree-icon", "wv-icons-only", "wv-ui-dark");
+
+            // DIAG: pre-unwrap snapshot of related-box labels so we can
+            // see the live state at disable-time.
+            try {
+                const relLabels: any = doc.querySelectorAll(
+                    "related-box .body .row .box .label");
+                Zotero.debug("[Weavero][diag] destroy: "
+                    + relLabels.length + " related-box label(s) before unwrap");
+                let i = 0;
+                for (const l of relLabels) {
+                    if (i >= 3) break;
+                    const box = l.closest(".box");
+                    Zotero.debug("[Weavero][diag] destroy pre[" + i + "]"
+                        + " live=" + JSON.stringify(
+                            (l.textContent || "").slice(0, 80))
+                        + " aria=" + JSON.stringify(
+                            ((box && box.getAttribute("aria-label")) || "").slice(0, 80))
+                        + " wvMd=" + l.querySelectorAll(".wv-md").length
+                        + " wvUrl=" + l.querySelectorAll(".wv-url-span").length);
+                    i++;
+                }
+            } catch (e) {}
+
+            // Strip notes surfaces (items-tree note rows, right-pane
+            // notes-box labels, note-editor iframes — both right-pane
+            // and pop-out windows). _stripNotes does the cell-by-cell
+            // unwrap + removes the injected note-editor stylesheet +
+            // detaches the per-iframe listeners, mirroring what
+            // happens when the user unticks the Notes surface pref.
+            // Without this call, plugin-disable leaves stale rendered
+            // links / formatted text in note content until the user
+            // re-enables the plugin or restarts Zotero.
+            try { this._stripNotes(); } catch(e) {}
+
+            // Restore items-tree annotation comment cells to their raw text.
+            for (const cell of doc.querySelectorAll(
+                    ".annotation-row.tight .cell.annotation-comment") as any) {
+                let text = cell.getAttribute("data-comment-text");
+                if (!text) {
+                    const wrap = cell.querySelector(".wv-text-wrap");
+                    text = wrap
+                        ? (wrap.textContent || "")
+                        : (cell.textContent || "")
+                              .replace(/[\s ]*🔗\s*$/, "")
+                              .trim();
+                }
+                cell.textContent = text;
+                cell.removeAttribute("data-has-rich");
+                cell.removeAttribute("data-icon-wanted");
+                cell.removeAttribute("data-comment-text");
+                cell.removeAttribute("data-truncated");
+                cell.removeAttribute("data-has-url");
+            }
+
+            // Unwrap leftover .wv-md / .wv-url-span elements (right pane,
+            // related-box labels, note rows). These need source-text restoration
+            // so a re-enable can re-parse the original markdown / URLs.
+            //
+            // Two render modes produce these spans:
+            //   - "tree" mode (related-box, items-list note .cell-text):
+            //     markdown markers / link brackets are STRIPPED so the row
+            //     reads cleanly. Restore them here so re-render works.
+            //   - "non-tree" mode (right pane / popup): the markers / brackets
+            //     are emitted as adjacent text nodes around the span. Just
+            //     unwrap; the surrounding text already has them.
+            //
+            // Detect mode by looking at the previous sibling text node — if
+            // it ends with the expected marker / bracket, we're in non-tree
+            // mode (markers already preserved). Otherwise we're in tree mode
+            // and need to re-emit them.
+            for (const span of doc.querySelectorAll(".wv-md") as any) {
+                const cls = span.className || "";
+                let marker = "";
+                if (cls.includes("wv-md-bold"))         marker = "**";
+                else if (cls.includes("wv-md-italic"))  marker = "*";
+                else if (cls.includes("wv-md-strike"))  marker = "~~";
+                else if (cls.includes("wv-md-code"))    marker = "`";
+                const prev = span.previousSibling;
+                const haveMarker = !!(prev && prev.nodeType === 3
+                    && (prev.nodeValue || "").endsWith(marker));
+                const inner = span.textContent || "";
+                const text = haveMarker ? inner : (marker + inner + marker);
+                span.replaceWith(doc.createTextNode(text));
+            }
+            for (const span of doc.querySelectorAll(".wv-url-span") as any) {
+                const inner = span.textContent || "";
+                const href = span.getAttribute("data-href") || "";
+                let text;
+                if (!href || inner === href) {
+                    // Bare URL — same in both modes.
+                    text = inner;
+                } else {
+                    // Markdown link [label](url). Tree mode strips the brackets
+                    // so the label is the only text; restore as `[label](url)`.
+                    // Non-tree mode keeps `[` before and `](url)` after as
+                    // adjacent text nodes; just unwrap the label.
+                    const prev = span.previousSibling;
+                    const prevHasBracket = !!(prev && prev.nodeType === 3
+                        && (prev.nodeValue || "").endsWith("["));
+                    text = prevHasBracket ? inner
+                        : ("[" + inner + "](" + href + ")");
+                }
+                span.replaceWith(doc.createTextNode(text));
+            }
+
+            // Remove any of our buttons / icons that escaped the cell-restore
+            // pass (e.g. injected outside .annotation-row.tight). Unwrap
+            // `.wv-text-wrap` separately — it contains the host element's
+            // text content, so removing it would erase the label / row.
+            for (const wrap of doc.querySelectorAll(".wv-text-wrap") as any) {
+                const parent = wrap.parentNode;
+                if (!parent) continue;
+                while (wrap.firstChild) {
+                    parent.insertBefore(wrap.firstChild, wrap);
+                }
+                parent.removeChild(wrap);
+            }
+            for (const el of doc.querySelectorAll(".wv-btn, .wv-tree-icon") as any) {
+                el.remove();
+            }
+
+            // DIAG: post-unwrap snapshot of related-box labels.
+            try {
+                const relLabels: any = doc.querySelectorAll(
+                    "related-box .body .row .box .label");
+                let i = 0;
+                for (const l of relLabels) {
+                    if (i >= 3) break;
+                    Zotero.debug("[Weavero][diag] destroy post[" + i + "]"
+                        + " live=" + JSON.stringify(
+                            (l.textContent || "").slice(0, 80))
+                        + " wvMd=" + l.querySelectorAll(".wv-md").length
+                        + " wvUrl=" + l.querySelectorAll(".wv-url-span").length);
+                    i++;
+                }
+            } catch (e) {}
+
+            // Drop our cache markers from any element that wasn't already
+            // wiped above (related-box labels, right-pane comments, note
+            // .cell-text spans). Without this the next plugin instance
+            // sees `data-wv-source` from the old run and skips the rebuild.
+            for (const el of doc.querySelectorAll(
+                    "[data-wv-source], [data-wv-rendered], [data-wv-raw],"
+                    + " [data-wv-related-rendered], [data-wv-ctx-wired],"
+                    + " [data-wv-last-rebuild]") as any) {
+                el.removeAttribute("data-wv-source");
+                el.removeAttribute("data-wv-rendered");
+                el.removeAttribute("data-wv-raw");
+                el.removeAttribute("data-wv-related-rendered");
+                el.removeAttribute("data-wv-ctx-wired");
+                el.removeAttribute("data-wv-last-rebuild");
+            }
+
+            // Remove the popup panel + main-window stylesheet.
+            doc.getElementById(PANEL_ID)?.remove();
+            this.removeStyles();
+
+            // Clean up the right-click Copy Link menu.
+            if (this._urlMenuState) {
+                try {
+                    const ms = this._urlMenuState;
+                    if (ms.root && ms.handlers) {
+                        try { ms.root.removeEventListener("contextmenu", ms.handlers.onCtx, true); } catch(e) {}
+                        try { ms.root.removeEventListener("click", ms.handlers.onAnyClick, true); } catch(e) {}
+                        try { ms.root.removeEventListener("keydown", ms.handlers.onKey, true); } catch(e) {}
+                        try { ms.root.removeEventListener("wheel", ms.handlers.onWheel, { capture: true, passive: true }); } catch(e) {}
+                    }
+                    if (ms.pointerTargets && ms.handlers && ms.handlers.onPointerDown) {
+                        for (const t of ms.pointerTargets) {
+                            try { t.removeEventListener("pointerdown", ms.handlers.onPointerDown, { capture: true }); } catch(e) {}
+                        }
+                    }
+                    if (ms.firstMoveHandler) {
+                        try { doc.removeEventListener("mousemove", ms.firstMoveHandler, true); } catch(e) {}
+                    }
+                    if (ms.win && ms.handlers && ms.handlers.onWinBlur) {
+                        try { ms.win.removeEventListener("blur", ms.handlers.onWinBlur); } catch(e) {}
+                    }
+                    if (ms.el && ms.el.parentNode) ms.el.parentNode.removeChild(ms.el);
+                } catch(e) {}
+                this._urlMenuState = null;
+            }
+            // Make sure the suppress class doesn't outlive the menu —
+            // would otherwise leave links stuck with default cursor
+            // after a teardown that didn't go through hideMenu.
+            try { root.classList.remove("wv-context-menu-open"); } catch(e) {}
+        } catch(e) {
+            Zotero.debug("[Weavero] destroy main-doc cleanup error: " + e);
+        }
+
+        // 3. Clean up open reader iframes.
+        try {
+            for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                try {
+                    const iwin = reader._iframeWindow
+                        || (reader._iframe && reader._iframe.contentWindow);
+                    const idoc = iwin && iwin.document;
+                    if (!idoc) continue;
+
+                    // Disconnect observer + drop the iframe-doc listeners.
+                    const data = this._readerObservers.get(reader);
+                    if (data) {
+                        try { data.observer && data.observer.disconnect(); } catch(e) {}
+                        try { data.innerObserver && data.innerObserver.disconnect(); } catch(e) {}
+                        if (data.sidebarMouseDown) {
+                            try { idoc.removeEventListener("mousedown",
+                                data.sidebarMouseDown, true); } catch(e) {}
+                        }
+                        if (data.sidebarFocusIn) {
+                            try { idoc.removeEventListener("focusin",
+                                data.sidebarFocusIn, true); } catch(e) {}
+                        }
+                        if (data.sidebarFocusOut) {
+                            try { idoc.removeEventListener("focusout",
+                                data.sidebarFocusOut, true); } catch(e) {}
+                        }
+                        // Proactive Delete/Backspace listeners (both
+                        // window and document on each iframe frame).
+                        if (data.proactiveOuterDoc) {
+                            try { idoc.removeEventListener("keydown",
+                                data.proactiveOuterDoc, true); } catch(e) {}
+                        }
+                        if (data.proactiveOuterWin && data.proactiveOuterWindow) {
+                            try { data.proactiveOuterWindow.removeEventListener("keydown",
+                                data.proactiveOuterWin, true); } catch(e) {}
+                        }
+                        if (data.selectionTrackerOuter) {
+                            try { idoc.removeEventListener("mousedown",
+                                data.selectionTrackerOuter, true); } catch(e) {}
+                        }
+                        // Inner-iframe cleanup: text-annotation buttons,
+                        // marker icon badges, our stylesheet, the inner
+                        // proactive keydown + selection tracker listeners,
+                        // and (for DOM-view readers) the shadow-root
+                        // MutationObserver and scroll/resize handlers.
+                        const innerDoc = data.innerDoc;
+                        const innerWindow = data.innerWindow;
+                        if (innerDoc) {
+                            try {
+                                if (data.proactiveInnerDoc) {
+                                    try { innerDoc.removeEventListener("keydown",
+                                        data.proactiveInnerDoc, true); } catch(e) {}
+                                }
+                                if (data.proactiveInnerWin && innerWindow) {
+                                    try { innerWindow.removeEventListener("keydown",
+                                        data.proactiveInnerWin, true); } catch(e) {}
+                                }
+                                if (data.selectionTrackerInner) {
+                                    try { innerDoc.removeEventListener("mousedown",
+                                        data.selectionTrackerInner, true); } catch(e) {}
+                                }
+                                if (data.dragEndPointerUp
+                                        && data.dragEndPointerUpWindow) {
+                                    try { data.dragEndPointerUpWindow
+                                        .removeEventListener("pointerup",
+                                            data.dragEndPointerUp, true);
+                                    } catch(e) {}
+                                }
+                                if (data.domViewObserver) {
+                                    try { data.domViewObserver.disconnect(); } catch(e) {}
+                                }
+                                if (data.domViewResizeObserver) {
+                                    try { data.domViewResizeObserver.disconnect(); } catch(e) {}
+                                }
+                                if (data.domViewScrollHandler && innerWindow) {
+                                    try { innerWindow.removeEventListener("scroll",
+                                        data.domViewScrollHandler, true); } catch(e) {}
+                                    try { innerWindow.removeEventListener("resize",
+                                        data.domViewScrollHandler); } catch(e) {}
+                                }
+                                for (const btn of innerDoc.querySelectorAll(
+                                        ".wv-text-annotation-btn")) {
+                                    btn.remove();
+                                }
+                                for (const b of innerDoc.querySelectorAll(
+                                        ".wv-marker-badge")) {
+                                    b.remove();
+                                }
+                                innerDoc.getElementById(
+                                    "weavero-inner-styles")?.remove();
+                            } catch(e) {}
+                        }
+                    }
+
+                    // Full sidebar teardown: unwrap URL spans, remove
+                    // .wv-md-preview panels and the wv-comment-preview
+                    // class, drop any markdown-style spans, and remove
+                    // sidebar buttons. This is what _stripReaderSidebar
+                    // does — calling it directly keeps the cleanup logic
+                    // in one place.
+                    //
+                    // Without removing .wv-md-preview here, the stale
+                    // preview node survives plugin disable. On re-enable,
+                    // _renderPreviewPanel's data-source cache hits on
+                    // that stale node and returns early — leaving the
+                    // OLD instance's render (with its URL spans already
+                    // unwrapped by this very pass) in place. URL-bearing
+                    // comments then look broken while markdown-only ones
+                    // look fine, matching the disable/enable regression.
+                    try { this._stripReaderSidebar(idoc); } catch(e) {}
+                    // Strip any of our wrappers / buttons that fell
+                    // outside _stripReaderSidebar's targeted selectors
+                    // (e.g. .wv-btn placed on rows that weren't part of
+                    // .annotation-row / .annotation, or popup spans).
+                    for (const span of idoc.querySelectorAll(".wv-url-span") as any) {
+                        span.replaceWith(idoc.createTextNode(span.textContent || ""));
+                    }
+                    for (const el of idoc.querySelectorAll(".wv-btn") as any) el.remove();
+                    idoc.getElementById("weavero-reader-styles")?.remove();
+                    // _ensureReaderOuterStyles also injects into idoc
+                    // (preview-panel CSS for the reader sidebar). Without
+                    // this cleanup, a stale element from this instance
+                    // leaks across disable/enable and the next instance's
+                    // remove-then-add still does the right thing — but
+                    // we strip it here for symmetry and to keep the doc
+                    // clean during the time the plugin is off.
+                    idoc.getElementById("weavero-reader-outer-styles")?.remove();
+                } catch(e) {}
+            }
+        } catch(e) {}
+
+        Zotero.debug("[Weavero] destroyed");
+    }
+}
+
+// === Module mixins ==========================================================
+// Each module file (`modules/<name>.ts`) exports an object whose
+// values are methods (and getters/setters) declared with
+// `function (this: WeaveroPlugin, …)`. Mixing them in via
+// `defineProperties` + `getOwnPropertyDescriptors` preserves
+// getters as getters — `Object.assign` would invoke them once
+// at module-load time and assign the resulting value, which is
+// not what we want for stateful instance getters like URL_REGEX.
+
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    Object.getOwnPropertyDescriptors(urlMethods),
+);
+// annotationMethods is already a PropertyDescriptorMap (built
+// from a class prototype with `constructor` filtered out — see
+// modules/annotation.ts), so it goes in directly.
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    annotationMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    tabsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    noteEditorMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    readerMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    paneMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    filterMethods,
+);
+
+// === Lifecycle hooks (called by bootstrap.js shim) ==========================
+// The shim awaits `Zotero.initializationPromise` before calling
+// onStartup, so we don't re-await it here.
+
+let _Weavero = null;
+
+Zotero.Weavero = {
+    plugin: null,
+    hooks: {
+        onStartup({ id, version, rootURI }) {
+            _rootURI = rootURI;
+            try {
+                _Weavero = new WeaveroPlugin();
+                // Mirror onto the instance so extracted modules
+                // (e.g. modules/reader.ts's _refreshPrefPaneIcon)
+                // can read the absolute rootURI without needing to
+                // import the index.ts closure.
+                _Weavero._rootURI = rootURI;
+                Zotero.Weavero.plugin = _Weavero;
+                _Weavero.init().catch(e =>
+                    Zotero.debug("[Weavero] init error: " + e)
+                );
+            } catch (e) {
+                Zotero.debug("[Weavero] startup error: " + e);
+            }
+        },
+        onShutdown() {
+            if (_Weavero) { _Weavero.destroy(); _Weavero = null; }
+            Zotero.Weavero.plugin = null;
+        },
+        onMainWindowLoad(window) {
+            if (!_Weavero) return;
+            try { _Weavero.onMainWindowLoad(window); }
+            catch (e) { Zotero.debug("[Weavero] onMainWindowLoad error: " + e); }
+        },
+        onMainWindowUnload(window) {
+            if (!_Weavero) return;
+            try { _Weavero.onMainWindowUnload(window); }
+            catch (e) { Zotero.debug("[Weavero] onMainWindowUnload error: " + e); }
+        },
+    },
+};

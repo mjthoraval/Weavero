@@ -80,12 +80,12 @@ export default defineConfig({
       tag: "v%s",
     },
     github: {
-      // `local` mode runs the publish step from the developer's
-      // machine; `ci` mode runs it from the GitHub Actions
-      // runner. The release.yml workflow sets this implicitly
-      // via NODE_ENV detection — set explicitly here too so
-      // local invocations also publish if the user wants.
-      enable: true,
+      // Scaffold's isEnabled() only accepts the strings "always" |
+      // "ci" | "local". Boolean `true` SILENTLY returns false, so
+      // the publish step never ran (this was the v0.8.1 release
+      // bug). "always" enables both CI runs and local
+      // `npm run release` invocations.
+      enable: "always",
       releaseNote(ctx) {
         // Default: a short auto-generated note. Custom release
         // bodies (like the v0.7.0 hand-curated changelog) can

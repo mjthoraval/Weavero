@@ -4,6 +4,7 @@
 </h1>
 
 [![Zotero](https://img.shields.io/badge/Zotero-7+-brightgreen?logo=zotero&logoColor=red)](https://www.zotero.org)
+[![Tested on](https://img.shields.io/badge/Tested-Zotero%2010.0--beta-blue?logo=zotero&logoColor=red)](https://www.zotero.org/support/dev/client_coding/zotero_7_for_developers)
 [![CI](https://img.shields.io/github/actions/workflow/status/mjthoraval/Weavero/test.yml?branch=main&label=CI&logo=github)](https://github.com/mjthoraval/Weavero/actions/workflows/test.yml)
 
 [![Latest release](https://img.shields.io/github/v/release/mjthoraval/Weavero?label=Release&color=blue)](https://github.com/mjthoraval/Weavero/releases/latest)

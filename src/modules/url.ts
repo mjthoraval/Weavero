@@ -66,7 +66,16 @@ export const urlMethods = {
      *  regex) can drop it in directly. */
     get URL_SCHEME_ALT() {
         if (this._urlSchemeAltCache) return this._urlSchemeAltCache;
-        const parts = ["https?:\\/\\/", "zotero:\\/\\/"];
+        const parts = ["https?:\\/\\/"];
+        // Zotero links toggle (v0.8.1) — when off, zotero:// is
+        // excluded from the URL regex so deep links render as plain
+        // text. Default ON. Mirrors the App Links pattern below.
+        let zoteroLinksOn = true;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableZoteroLinks");
+            zoteroLinksOn = v === undefined ? true : !!v;
+        } catch (e) {}
+        if (zoteroLinksOn) parts.push("zotero:\\/\\/");
         // Master "App links" toggle gates ALL URL_SCHEMES — when off,
         // even ticked individual schemes don't render. This lets the
         // user opt out of every non-web scheme with one click.

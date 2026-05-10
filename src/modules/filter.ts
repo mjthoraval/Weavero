@@ -1454,6 +1454,11 @@ class _FilterMixin {
     // =====================================================================
 
     _setupItemsListFilter() {
+        // Pref gate (Filters group → Items-tree filter pane).
+        if (!this._getEnableItemsTreeFilter()) {
+            try { this._teardownItemsListFilter(); } catch (e) {}
+            return;
+        }
         const win = Zotero.getMainWindow();
         const doc = win && win.document;
         if (!doc) return;

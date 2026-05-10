@@ -103,6 +103,15 @@ class _PaneMixin {
                     // Related…. Keeps the same affordance ordering
                     // across both context-menu surfaces (annotation
                     // popup vs items-list).
+                    //
+                    // Each entry is gated by its own pref (see prefs
+                    // pane → URI utilities / Relations groups). The
+                    // separator is only added when BOTH entries are
+                    // about to render, otherwise it'd float alone.
+
+                    const wantCopy = this._getEnableCopyItemLink();
+                    const wantAdd = this._getEnableAddRelatedMenu();
+                    if (!wantCopy && !wantAdd) return;
 
                     // --- Copy Item Link --------------------------
                     // Mirrors the entry on the annotation context
@@ -112,6 +121,7 @@ class _PaneMixin {
                     // annotation surface. Multi-selection: copy
                     // newline-separated URIs so the user gets one
                     // link per selected item.
+                    if (wantCopy) {
                     const cl = doc.createXULElement("menuitem");
                     cl.id = COPY_LINK_ID;
                     cl.setAttribute("label", targets.length > 1
@@ -137,16 +147,20 @@ class _PaneMixin {
                         }
                     });
                     menu.appendChild(cl);
+                    }   // /wantCopy
 
                     // Separator between the two Weavero entries —
                     // matches the addSep() in
                     // _buildAnnotationContextMenu between Copy Item
                     // Link and Add Related….
+                    if (wantCopy && wantAdd) {
                     const sep = doc.createXULElement("menuseparator");
                     sep.id = SEP_ID;
                     menu.appendChild(sep);
+                    }
 
                     // --- Add Related… ----------------------------
+                    if (wantAdd) {
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ADD_REL_ID;
                     mi.setAttribute("label", targets.length > 1
@@ -180,6 +194,7 @@ class _PaneMixin {
                         }
                     });
                     menu.appendChild(mi);
+                    }   // /wantAdd
                 } catch (showErr) {
                     Zotero.debug(
                         "[Weavero] itemmenu popupshowing err: " + showErr);
@@ -229,6 +244,13 @@ class _PaneMixin {
      *  never leave a stale entry. */
     _setupCollectionsContextMenu() {
         try {
+            // Pref gate (URI utilities → Copy Collection Link).
+            // Skip the binding entirely when the toggle is off so the
+            // popupshowing handler doesn't even run.
+            if (!this._getEnableCopyCollectionLink()) {
+                this._teardownCollectionsContextMenu();
+                return;
+            }
             const win = Zotero.getMainWindow();
             const doc = win && win.document;
             if (!doc) return;
@@ -790,6 +812,21 @@ class _PaneMixin {
      *  unticked kinds are dimmed AND skipped by Ctrl+A select-all. */
     _applySelectionTargetVisuals() {
         try {
+            // Pref gate (Filters group → Selection Target).
+            if (!this._getEnableSelectionTarget()) {
+                // When toggled off, clear any wv-not-target classes so
+                // previously-dimmed rows return to normal.
+                try {
+                    const win0 = Zotero.getMainWindow();
+                    const doc0 = win0 && win0.document;
+                    if (doc0) {
+                        for (const r of doc0.querySelectorAll(".row.wv-not-target") as any) {
+                            r.classList.remove("wv-not-target");
+                        }
+                    }
+                } catch (e) {}
+                return;
+            }
             // Re-attempt the isSelectable prop-patch on every paint —
             // React replaces props on each re-render, so a single
             // patch at init can be wiped. Idempotent.
@@ -970,7 +1007,9 @@ class _PaneMixin {
             // attachments when it's a regular item. Annotations
             // themselves and notes get 0 — Zotero only shows
             // annotations under attachment containers.
-            const annKey = (Zotero.ItemTreeManager as any).registerColumn({
+            // Pref-gated by enableAnnotationsCountColumn (Visual extras).
+            const annKey = this._getEnableAnnotationsCountColumn()
+                ? (Zotero.ItemTreeManager as any).registerColumn({
                 dataKey: "weaveroAnnotations",
                 label: "Annotations",
                 pluginID: "weavero@mjthoraval",
@@ -1010,7 +1049,8 @@ class _PaneMixin {
                     } catch (e) { return 0; }
                 },
                 renderCell: renderCount,
-            });
+            })
+                : null;
             if (annKey) this._weaveroColumnKeys.push(annKey);
 
             // Recursive tag count — returns {manual, auto}. Walks the
@@ -1198,7 +1238,9 @@ class _PaneMixin {
                 return total;
             };
 
-            const relKey = (Zotero.ItemTreeManager as any).registerColumn({
+            // Pref-gated by enableRelatedColumn (Relations group).
+            const relKey = this._getEnableRelatedColumn()
+                ? (Zotero.ItemTreeManager as any).registerColumn({
                 dataKey: "weaveroRelated",
                 label: "Related",
                 pluginID: "weavero@mjthoraval",
@@ -1250,7 +1292,8 @@ class _PaneMixin {
                     span.textContent = (Number(display) > 0) ? String(display) : "";
                     return span;
                 },
-            });
+            })
+                : null;
             if (relKey) this._weaveroColumnKeys.push(relKey);
 
             // No Added By column — Zotero already ships an `addedBy`
@@ -1292,6 +1335,8 @@ class _PaneMixin {
      *  sidebar uses. */
     _decorateAnnotationRowRelations(cell) {
         if (!cell) return;
+        // Pref gate (Relations group → Chain badge).
+        if (!this._getEnableChainBadge()) return;
         const row = cell.closest && cell.closest(".annotation-row");
         if (!row) return;
         const item = this._getItemFromTreeRow(row);
@@ -1974,6 +2019,11 @@ class _PaneMixin {
 
     _setupLibrariesBoxHighlight(win) {
         if (!win) return;
+        // Pref gate (Relations group → Libraries highlight).
+        if (!this._getEnableLibrariesHighlight()) {
+            try { this._teardownLibrariesBoxHighlight(win); } catch (e) {}
+            return;
+        }
         const doc = win.document;
         if (!doc) return;
 

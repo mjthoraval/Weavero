@@ -39,13 +39,25 @@ class _TabsMixin {
         // Tab-bar decoration (group-library tints + tooltip suffix)
         // is independent of the popup patch — set it up first so it
         // works even before the user opens the popup once.
-        try { this._setupTabBarLibraryDecoration(win); }
-        catch (e) { Zotero.debug("[Weavero] tab-bar deco err: " + e); }
+        // Pref gate (Visual extras → Group-library glyph).
+        if (this._getEnableGroupLibraryGlyph()) {
+            try { this._setupTabBarLibraryDecoration(win); }
+            catch (e) { Zotero.debug("[Weavero] tab-bar deco err: " + e); }
+        } else {
+            try { this._teardownTabBarLibraryDecoration(win); } catch (e) {}
+        }
         // File-type filter button on the tabs-menu search row.
         // Set up here so the button is in place the first time the
         // panel opens.
-        try { this._setupTabsMenuFileTypeFilter(win); }
-        catch (e) { Zotero.debug("[Weavero] file-type filter err: " + e); }
+        // Pref gate (Filters group → Tabs file-type filter).
+        if (this._getEnableTabsFileTypeFilter()) {
+            try { this._setupTabsMenuFileTypeFilter(win); }
+            catch (e) { Zotero.debug("[Weavero] file-type filter err: " + e); }
+        }
+        // Pref gate (Filters group → Tabs library filter). When off,
+        // skip patching refreshList entirely so the upstream popup
+        // renders without per-library tickboxes.
+        if (!this._getEnableTabsLibraryFilter()) return;
         const doc = win.document;
         const panel = doc && doc.getElementById("zotero-tabs-menu-panel");
         if (!panel) {

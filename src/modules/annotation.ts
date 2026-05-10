@@ -488,6 +488,11 @@ class _AnnotationMixin {
     _wireAnnotationRowContextMenu(row) {
         if (!row || !row.dataset) return;
         if (row.dataset.wvCtxWired === "1") return;
+        // Pref gate (Relations group → Open Related Item submenu).
+        // The right-click handler is bound only when the toggle is on;
+        // already-wired rows continue to fire their bound handler
+        // until a full surface re-render replaces them.
+        if (!this._getEnableOpenRelatedSubmenu()) return;
         try {
             const handler = (e) => {
                 try {

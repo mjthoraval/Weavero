@@ -78,7 +78,16 @@ class WeaveroPlugin {
     // ---- CSS injection -----------------------------------------------------
 
     injectStyles() {
-        const doc = Zotero.getMainWindow().document;
+        this.injectStylesInto(Zotero.getMainWindow().document);
+    }
+
+    /** Inject (or refresh) the Weavero stylesheet into the given
+     *  document. Used by injectStyles() for the main window AND lazily
+     *  by popup callers when the target document is a standalone
+     *  reader window — those don't get a main-window-load hook so the
+     *  styles aren't there until something pulls them in. */
+    injectStylesInto(doc) {
+        if (!doc) return;
         // Always remove any existing weavero-styles element first.
         // Zotero's in-place plugin upgrade flow doesn't reliably tear
         // down the previous plugin's DOM additions before the new init
@@ -91,6 +100,18 @@ class WeaveroPlugin {
         // again from a clean state).
         const existing = doc.getElementById(STYLE_ID);
         if (existing) existing.remove();
+        const s = doc.createElement("style");
+        s.id = STYLE_ID;
+        s.textContent = PLUGIN_CSS;
+        (doc.head || doc.documentElement).appendChild(s);
+    }
+
+    /** Idempotent variant: only inject if the stylesheet isn't already
+     *  in the document. For lazy injection at popup-open time where we
+     *  don't want to thrash the existing main-window stylesheet. */
+    ensureStylesIn(doc) {
+        if (!doc) return;
+        if (doc.getElementById(STYLE_ID)) return;
         const s = doc.createElement("style");
         s.id = STYLE_ID;
         s.textContent = PLUGIN_CSS;
@@ -234,12 +255,14 @@ class WeaveroPlugin {
     // The user can independently enable each of the four surfaces where we
     // decorate annotation comments. All default to true.
     _getEnableItemsList() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableItemsList");
             return v === undefined ? true : !!v;
         } catch(e) { return true; }
     }
     _getEnableRightPane() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableRightPane");
             return v === undefined ? true : !!v;
@@ -247,8 +270,10 @@ class WeaveroPlugin {
     }
     /** Show the per-annotation Added By badge in the items tree.
      *  Effective only in group libraries (the underlying field is
-     *  empty in My Library). Default ON. */
+     *  empty in My Library). Default ON.
+     *  Tab 3 (Visual extras) — gated by enableVisualExtras. */
     _getEnableAnnotationAddedBy() {
+        if (!this._getEnableVisualExtras()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableAnnotationAddedBy");
             return v === undefined ? true : !!v;
@@ -256,8 +281,10 @@ class WeaveroPlugin {
     }
     /** Tint the Added By column text and annotation badge with a
      *  per-user color (hashed from the user name into a small palette
-     *  via `_colorForUser`). Default ON. */
+     *  via `_colorForUser`). Default ON.
+     *  Tab 3 (Visual extras) — gated by enableVisualExtras. */
     _getEnableAddedByColors() {
+        if (!this._getEnableVisualExtras()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableAddedByColors");
             return v === undefined ? true : !!v;
@@ -269,6 +296,7 @@ class WeaveroPlugin {
      *  OFF so existing users don't see new clickable spans on notes
      *  they've already curated until they explicitly opt in. */
     _getEnableNotes() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableNotes");
             return v === undefined ? false : !!v;
@@ -277,6 +305,7 @@ class WeaveroPlugin {
     /** Reader sidebar — the annotation list on the left side of the
      *  reader. Format-agnostic (PDF / EPUB / snapshot). */
     _getEnableReaderSidebar() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableReaderSidebar");
             return v === undefined ? true : !!v;
@@ -287,6 +316,7 @@ class WeaveroPlugin {
      *  Covers in-document annotation popups and the link badges drawn
      *  over annotation icons. Format-agnostic. */
     _getEnableReaderView() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableReaderView");
             return v === undefined ? true : !!v;
@@ -299,6 +329,7 @@ class WeaveroPlugin {
      *  popup that shows when the user clicks an annotation) still receive
      *  URL / markdown rendering. Default true. */
     _getEnableReaderViewIcons() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableReaderViewIcons");
             return v === undefined ? true : !!v;
@@ -320,6 +351,7 @@ class WeaveroPlugin {
      *  Inline mode (only effective when _getInlineLinks() is also true).
      *  Default true. */
     _getEnableCommentMarkdown() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableCommentMarkdown");
             return v === undefined ? true : !!v;
@@ -330,6 +362,7 @@ class WeaveroPlugin {
      *  comments. Sub-toggle of Inline mode (only effective when
      *  _getInlineLinks() is also true). Default true. */
     _getEnableInlineUrls() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableInlineUrls");
             return v === undefined ? true : !!v;
@@ -340,6 +373,7 @@ class WeaveroPlugin {
      *  Sub-toggle parallel to enableInlineUrls but mode-flipped. Only
      *  effective when _getInlineLinks() is FALSE. Default true. */
     _getEnableIconUrls() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableIconUrls");
             return v === undefined ? true : !!v;
@@ -351,6 +385,7 @@ class WeaveroPlugin {
      *  without this toggle markdown-only comments would have no affordance.
      *  Default true. */
     _getEnableIconMarkdown() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableIconMarkdown");
             return v === undefined ? true : !!v;
@@ -362,6 +397,7 @@ class WeaveroPlugin {
      *  toggle to be on (master invalidates URL_REGEX, dominating this sub).
      *  Default true. */
     _getEnableIconAppLinks() {
+        if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableIconAppLinks");
             return v === undefined ? true : !!v;
@@ -374,6 +410,169 @@ class WeaveroPlugin {
      *  format them, the marks are just text. */
     _anyMarkdownEnabled() {
         return this._getEnableMarkdown() || this._getEnableCommentMarkdown();
+    }
+
+    // ====================================================================
+    // Per-feature toggles introduced in v0.8.1.
+    // Pattern: each group has a master pref + per-feature children.
+    // The child getters short-circuit to FALSE when the master is off,
+    // so any one call site that asks `_getEnableX()` gets a single
+    // truthful answer regardless of whether the master or the child
+    // alone is unticked. All defaults are TRUE so v0.8.0 -> v0.8.1
+    // upgrade is invisible to existing users (preserves prior behaviour).
+    //
+    // Three-tier hierarchy: tab master -> sub-master -> child.
+    // - Tab masters (enableLinksAndRelations, enableFilters, enableVisualExtras)
+    //   gate the entire tab. Live as a checkbox in the tab header.
+    // - Sub-masters (enableUriUtilities, enableRelations) gate a
+    //   coherent feature subgroup; live inline at the top of their
+    //   panel section.
+    // - Children gate one feature each.
+    // ====================================================================
+
+    // ---- Tier 1: tab masters ----
+    _getEnableLinksAndRelations() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableLinksAndRelations");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableVisualExtras() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableVisualExtras");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    // ---- Group 1: zotero:// link rendering toggle ----
+    // Mirrors the existing enableAppLinks master: when off, zotero://
+    // is excluded from URL_SCHEME_ALT, so it isn't detected as a URL
+    // anywhere and renders as plain text. Default ON.
+    _getEnableZoteroLinks() {
+        if (!this._getEnableLinksAndRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableZoteroLinks");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    // ---- Group 1: URI utilities ----
+    _getEnableUriUtilities() {
+        if (!this._getEnableLinksAndRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableUriUtilities");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableCopyItemLink() {
+        if (!this._getEnableUriUtilities()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableCopyItemLink");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableCopyCollectionLink() {
+        if (!this._getEnableUriUtilities()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableCopyCollectionLink");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    // ---- Group 1: Relations and linked items ----
+    _getEnableRelations() {
+        if (!this._getEnableLinksAndRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableRelations");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableAddRelatedMenu() {
+        if (!this._getEnableRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableAddRelatedMenu");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableChainBadge() {
+        if (!this._getEnableRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableChainBadge");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableOpenRelatedSubmenu() {
+        if (!this._getEnableRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableOpenRelatedSubmenu");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableRelatedColumn() {
+        if (!this._getEnableRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableRelatedColumn");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableLibrariesHighlight() {
+        if (!this._getEnableRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableLibrariesHighlight");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    // ---- Group 2: Filters ----
+    _getEnableFilters() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableFilters");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableItemsTreeFilter() {
+        if (!this._getEnableFilters()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableItemsTreeFilter");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableSelectionTarget() {
+        if (!this._getEnableFilters()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableSelectionTarget");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableTabsLibraryFilter() {
+        if (!this._getEnableFilters()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableTabsLibraryFilter");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableTabsFileTypeFilter() {
+        if (!this._getEnableFilters()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableTabsFileTypeFilter");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    // ---- Group 3: Visual extras (gated by enableVisualExtras tab master) ----
+    _getEnableAnnotationsCountColumn() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableAnnotationsCountColumn");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnableGroupLibraryGlyph() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableGroupLibraryGlyph");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
     }
 
     /** Hidden debug pref. When true, every routine sidebar/render pass
@@ -1023,6 +1222,76 @@ class WeaveroPlugin {
     // ---- Init / Destroy ---------------------------------------------------
 
     async init() {
+        // 0a. Patch Zotero.Utilities.Internal.openPreferences so EVERY
+        //     Settings-window open (Edit -> Settings, Ctrl+,, plugin-
+        //     triggered) uses a features string that gives the user
+        //     the standard three-button title bar (minimize, maximize /
+        //     full-screen, close). Zotero's stock features
+        //     ('chrome,titlebar,centerscreen,resizable=yes') omits
+        //     minimizable=yes and dialog=no, which on Windows greys
+        //     out the maximize button and hides the minimize button.
+        //     We save the original and restore it in destroy().
+        try {
+            const Internal: any = Zotero.Utilities.Internal;
+            if (typeof Internal.openPreferences === "function"
+                    && !Internal._wvOrigOpenPreferences) {
+                Internal._wvOrigOpenPreferences = Internal.openPreferences;
+                Internal.openPreferences = function (paneID, options: any = {}) {
+                    if (typeof options == "string") {
+                        throw new Error(
+                            "openPreferences() now takes an 'options' object");
+                    }
+                    // Reuse existing window (focus + navigate).
+                    const wm = Components.classes[
+                        "@mozilla.org/appshell/window-mediator;1"]
+                        .getService(Components.interfaces.nsIWindowMediator);
+                    const en = wm.getEnumerator("zotero:pref");
+                    if (en.hasMoreElements()) {
+                        const win: any = en.getNext();
+                        win.focus();
+                        if (paneID && win.Zotero_Preferences
+                                && typeof win.Zotero_Preferences.navigateToPane
+                                    === "function") {
+                            win.Zotero_Preferences.navigateToPane(paneID, {
+                                scrollTo: options.scrollTo,
+                                action: options.action,
+                            });
+                        }
+                        return win;
+                    }
+                    const io: any = {
+                        pane: paneID,
+                        scrollTo: options.scrollTo,
+                        action: options.action,
+                    };
+                    const args: any[] = [
+                        "chrome://zotero/content/preferences/preferences.xhtml",
+                        "zotero-prefs",
+                        // Same as Zotero's stock features PLUS:
+                        //   minimizable=yes  -> minimize button
+                        //   dialog=no        -> maximize / full-screen button
+                        //                       (openDialog defaults to dialog=yes
+                        //                       which suppresses it on Windows)
+                        //   scrollbars=yes   -> safe default for content longer
+                        //                       than the viewport
+                        "chrome,titlebar,toolbar,centerscreen,resizable=yes,"
+                            + "scrollbars=yes,minimizable=yes,dialog=no",
+                        io,
+                    ];
+                    const mainWindow = Services.wm
+                        .getMostRecentWindow("navigator:browser");
+                    if (mainWindow) {
+                        return (mainWindow as any).openDialog(...args);
+                    } else {
+                        args[args.length - 1].wrappedJSObject = args[args.length - 1];
+                        return (Services.ww as any).openWindow(null, ...args);
+                    }
+                };
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] openPreferences patch err: " + e);
+        }
+
         // 0. Register default pref values so Zotero's pref-binding system can find them
         try {
             Services.prefs.getDefaultBranch("extensions.zotero.")
@@ -1077,6 +1346,41 @@ class WeaveroPlugin {
                          "enableReaderViewIcons",
                          "enableIconUrls", "enableIconMarkdown",
                          "enableIconAppLinks"]) {
+            try {
+                Services.prefs.getDefaultBranch("extensions.zotero.")
+                    .setBoolPref("weavero." + k, true);
+            } catch(e) {}
+        }
+        // v0.8.1 per-feature toggles. All default TRUE so the upgrade
+        // is invisible — users see no behaviour change unless they
+        // open Settings and uncheck something.
+        for (const k of [
+            // Tab masters (v0.8.1-dev.3) — gate everything in their tab
+            "enableLinksAndRelations",
+            "enableVisualExtras",
+            // Zotero links master (gates zotero:// in URL_SCHEME_ALT)
+            "enableZoteroLinks",
+            // URI utilities (master + 2 children)
+            "enableUriUtilities",
+            "enableCopyItemLink",
+            "enableCopyCollectionLink",
+            // Relations and linked items (master + 5 children)
+            "enableRelations",
+            "enableAddRelatedMenu",
+            "enableChainBadge",
+            "enableOpenRelatedSubmenu",
+            "enableRelatedColumn",
+            "enableLibrariesHighlight",
+            // Filters (master + 4 children)
+            "enableFilters",
+            "enableItemsTreeFilter",
+            "enableSelectionTarget",
+            "enableTabsLibraryFilter",
+            "enableTabsFileTypeFilter",
+            // Visual extras (no master, 2 flat children)
+            "enableAnnotationsCountColumn",
+            "enableGroupLibraryGlyph",
+        ]) {
             try {
                 Services.prefs.getDefaultBranch("extensions.zotero.")
                     .setBoolPref("weavero." + k, true);
@@ -1546,6 +1850,52 @@ class WeaveroPlugin {
 
         // 8. Preferences pane + apply saved icon pref
         this._registerPrefPane();
+
+        // 8b. If Settings was on the Weavero pane before this re-init
+        //     (set in destroy()), navigate it back now that our pane is
+        //     re-registered. Poll briefly for our pane to appear in the
+        //     window's Zotero_Preferences.panes Map — register() triggers
+        //     the addition asynchronously, so the entry may not be there
+        //     on first try.
+        try {
+            const reopen = Zotero.Prefs.get("weavero._reopenOnInit");
+            if (reopen) {
+                try { Zotero.Prefs.set("weavero._reopenOnInit", false); }
+                catch (e) {}
+                const tryRestore = (retries: number) => {
+                    try {
+                        const wm = Components.classes[
+                            "@mozilla.org/appshell/window-mediator;1"]
+                            .getService(Components.interfaces.nsIWindowMediator);
+                        const en = wm.getEnumerator("zotero:pref");
+                        while (en.hasMoreElements()) {
+                            const win: any = en.getNext();
+                            const Zp = win.Zotero_Preferences;
+                            if (!Zp || !Zp.panes
+                                    || typeof Zp.navigateToPane !== "function") {
+                                continue;
+                            }
+                            for (const entry of Zp.panes.entries()) {
+                                const pane: any = entry[1];
+                                if (pane
+                                        && pane.pluginID === "weavero@mjthoraval") {
+                                    Zp.navigateToPane(pane.id);
+                                    Zotero.debug("[Weavero] reopenOnInit -> "
+                                        + pane.id);
+                                    return;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        Zotero.debug("[Weavero] reopenOnInit nav err: " + e);
+                        return;
+                    }
+                    if (retries > 0) setTimeout(() => tryRestore(retries - 1), 200);
+                    else Zotero.debug("[Weavero] reopenOnInit gave up — pane not found");
+                };
+                setTimeout(() => tryRestore(15), 200);
+            }
+        } catch (e) {}
         // Items-list "Related" column.
         this._registerItemTreeColumns();
         this._applyTreeIconPref(this._getShowTreeIcon());
@@ -1724,8 +2074,167 @@ class WeaveroPlugin {
                     // Also fires for the master `enableAppLinks` toggle
                     // since flipping it changes which schemes the regex
                     // includes.
+                    // ============================================================
+                    // v0.8.1 per-feature toggles (URI utilities, Relations,
+                    // Filters, Visual extras). When a toggle changes, run
+                    // the matching setup/teardown so the change takes
+                    // effect without restart.
+                    // Master toggles fall through to their children's
+                    // re-apply (same code path), so flipping a master
+                    // off cleans up everything its children installed.
+                    // ============================================================
+                    const winRA = Zotero.getMainWindow();
+
+                    // Tab masters (v0.8.1-dev.3): when toggled, re-run
+                    // EVERY setup/teardown in the affected tab, since the
+                    // master cascades down to all sub-getters.
+                    if (data === "extensions.zotero.weavero.enableLinksAndRelations") {
+                        try {
+                            this._setupItemsListContextMenu();
+                            this._setupCollectionsContextMenu();
+                            if (this._getEnableLibrariesHighlight() && winRA) {
+                                this._setupLibrariesBoxHighlight(winRA);
+                            } else if (winRA) {
+                                this._teardownLibrariesBoxHighlight(winRA);
+                            }
+                            this._unregisterItemTreeColumns();
+                            this._registerItemTreeColumns();
+                            // Surfaces — re-apply each so the cascade
+                            // takes effect (rebuild or strip).
+                            this._applySurfacePref("itemsList");
+                            this._applySurfacePref("rightPane");
+                            this._applySurfacePref("readerSidebar");
+                            this._applySurfacePref("readerView");
+                            this._applySurfacePref("notes");
+                            try { this._markCellLinks(); } catch (e) {}
+                        } catch (e) {
+                            Zotero.debug("[Weavero] tab-1 master toggle err: " + e);
+                        }
+                    }
+                    if (data === "extensions.zotero.weavero.enableVisualExtras") {
+                        try {
+                            this._unregisterItemTreeColumns();
+                            this._registerItemTreeColumns();
+                            // Tabs-strip group-library glyph + per-row Added By tints
+                            // — re-apply by re-running the tabs setup and the
+                            // items-tree paint pass.
+                            if (winRA) this._setupTabsMenuLibrarySort(winRA);
+                            try {
+                                const w = winRA;
+                                const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                                if (iv && iv.tree && iv.tree.invalidate) {
+                                    iv.tree.invalidate();
+                                }
+                            } catch (e) {}
+                            try { this._markCellLinks(); } catch (e) {}
+                        } catch (e) {
+                            Zotero.debug("[Weavero] tab-3 master toggle err: " + e);
+                        }
+                    }
+
+                    // URI utilities — re-bind the items-list / collections
+                    // context menus. The popupshowing handler already
+                    // re-evaluates the gates each time, so a re-bind also
+                    // re-checks whether to install the listener at all.
+                    if (data === "extensions.zotero.weavero.enableUriUtilities"
+                        || data === "extensions.zotero.weavero.enableCopyItemLink"
+                        || data === "extensions.zotero.weavero.enableAddRelatedMenu"
+                        || data === "extensions.zotero.weavero.enableRelations") {
+                        try { this._setupItemsListContextMenu(); }
+                        catch (e) { Zotero.debug("[Weavero] re-bind itemmenu err: " + e); }
+                    }
+                    if (data === "extensions.zotero.weavero.enableUriUtilities"
+                        || data === "extensions.zotero.weavero.enableCopyCollectionLink") {
+                        try { this._setupCollectionsContextMenu(); }
+                        catch (e) { Zotero.debug("[Weavero] re-bind colmenu err: " + e); }
+                    }
+
+                    // Relations — chain badge + libraries highlight + columns.
+                    if (data === "extensions.zotero.weavero.enableChainBadge"
+                        || data === "extensions.zotero.weavero.enableRelations") {
+                        try { this._markCellLinks(); } catch (e) {}
+                    }
+                    if (data === "extensions.zotero.weavero.enableLibrariesHighlight"
+                        || data === "extensions.zotero.weavero.enableRelations") {
+                        try {
+                            if (this._getEnableLibrariesHighlight()) {
+                                if (winRA) this._setupLibrariesBoxHighlight(winRA);
+                            } else {
+                                if (winRA) this._teardownLibrariesBoxHighlight(winRA);
+                            }
+                        } catch (e) {}
+                    }
+                    // Items-tree column toggles (Annotations / Related):
+                    // unregister all and re-register with the new gates.
+                    if (data === "extensions.zotero.weavero.enableAnnotationsCountColumn"
+                        || data === "extensions.zotero.weavero.enableRelatedColumn"
+                        || data === "extensions.zotero.weavero.enableRelations") {
+                        try {
+                            this._unregisterItemTreeColumns();
+                            this._registerItemTreeColumns();
+                        } catch (e) {
+                            Zotero.debug("[Weavero] re-register cols err: " + e);
+                        }
+                    }
+                    // Open Related Item submenu — already-bound rows keep
+                    // their old handler; new rows pick up the new gate at
+                    // re-render time. Force a re-scan so existing rows
+                    // re-wire (the wired flag is on the row dataset, so
+                    // we'd need to clear it for true re-binding).
+                    // For now, just log; effect appears on next row paint.
+                    if (data === "extensions.zotero.weavero.enableOpenRelatedSubmenu"
+                        || data === "extensions.zotero.weavero.enableRelations") {
+                        this._dbg("[Weavero] OpenRelatedSubmenu toggle "
+                            + "applies to newly-rendered rows.");
+                    }
+
+                    // Filters — items-tree filter pane + Selection Target
+                    // + tabs-menu sub-filters.
+                    if (data === "extensions.zotero.weavero.enableItemsTreeFilter"
+                        || data === "extensions.zotero.weavero.enableFilters") {
+                        try {
+                            if (this._getEnableItemsTreeFilter()) {
+                                this._setupItemsListFilter();
+                            } else {
+                                this._teardownItemsListFilter();
+                            }
+                        } catch (e) {
+                            Zotero.debug("[Weavero] filter pane toggle err: " + e);
+                        }
+                    }
+                    if (data === "extensions.zotero.weavero.enableSelectionTarget"
+                        || data === "extensions.zotero.weavero.enableFilters") {
+                        try { this._applySelectionTargetVisuals(); } catch (e) {}
+                    }
+                    if (data === "extensions.zotero.weavero.enableTabsLibraryFilter"
+                        || data === "extensions.zotero.weavero.enableTabsFileTypeFilter"
+                        || data === "extensions.zotero.weavero.enableFilters") {
+                        try {
+                            // Tear down first so flipping a gate from on -> off
+                            // strips the existing tabs-menu chrome (file-type
+                            // button, library sort patch, wider-panel class).
+                            // Setup then re-adds whatever is still enabled.
+                            if (winRA) {
+                                this._teardownTabsMenuLibrarySort(winRA);
+                                this._setupTabsMenuLibrarySort(winRA);
+                            }
+                        } catch (e) {
+                            Zotero.debug("[Weavero] tabs filter toggle err: " + e);
+                        }
+                    }
+
+                    // Visual extras — group-library glyph (re-setup the
+                    // tab-bar decoration which the gate inside
+                    // _setupTabsMenuLibrarySort short-circuits when off).
+                    if (data === "extensions.zotero.weavero.enableGroupLibraryGlyph") {
+                        try {
+                            if (winRA) this._setupTabsMenuLibrarySort(winRA);
+                        } catch (e) {}
+                    }
+
                     if (/^extensions\.zotero\.weavero\.enable\w+Scheme$/.test(data)
-                        || data === "extensions.zotero.weavero.enableAppLinks") {
+                        || data === "extensions.zotero.weavero.enableAppLinks"
+                        || data === "extensions.zotero.weavero.enableZoteroLinks") {
                         // Re-apply warn-external prefs too, since the
                         // set of "enabled schemes that should skip
                         // confirmation" depends on this pref.
@@ -1858,6 +2367,49 @@ class WeaveroPlugin {
     }
 
     destroy() {
+        // 0a. If Settings is currently open on the Weavero pane, mark a
+        //     pref so init() can navigate back once the plugin re-
+        //     registers its pane. Without this, plugin reinstall during
+        //     dev iteration drops the user on Zotero's General pane
+        //     because Settings auto-switches when our pane disappears.
+        //     Note: Zotero assigns each plugin pane a generated id like
+        //     "plugin-pane-XXXXXXXX-weavero@mjthoraval" — match by
+        //     pluginID via Zotero_Preferences.panes Map, not by literal id.
+        try {
+            const wm = Components.classes[
+                "@mozilla.org/appshell/window-mediator;1"]
+                .getService(Components.interfaces.nsIWindowMediator);
+            const en = wm.getEnumerator("zotero:pref");
+            outer: while (en.hasMoreElements()) {
+                const win: any = en.getNext();
+                const Zp = win.Zotero_Preferences;
+                if (!Zp || !Zp.panes || !Zp.navigation) continue;
+                const curId = Zp.navigation.value;
+                for (const entry of Zp.panes.entries()) {
+                    const pane: any = entry[1];
+                    if (pane && pane.pluginID === "weavero@mjthoraval"
+                            && pane.id === curId) {
+                        try { Zotero.Prefs.set("weavero._reopenOnInit", true); }
+                        catch (e) {}
+                        break outer;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        // 0. Restore Zotero.Utilities.Internal.openPreferences if we
+        //    monkey-patched it in init(). Skips silently if the original
+        //    was never saved (e.g., init() failed before the patch).
+        try {
+            const Internal: any = Zotero.Utilities.Internal;
+            if (Internal._wvOrigOpenPreferences) {
+                Internal.openPreferences = Internal._wvOrigOpenPreferences;
+                delete Internal._wvOrigOpenPreferences;
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] openPreferences un-patch err: " + e);
+        }
+
         // 1. Tear down listeners / observers / timers.
         if (this._prefObserver && this._prefBranch) {
             try { this._prefBranch.removeObserver("", this._prefObserver); } catch(e) {}

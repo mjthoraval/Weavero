@@ -9,9 +9,47 @@
       padding: 0;
       color: inherit;
       background: transparent;
+      /* Override Zotero's chrome-level `user-select: none` so users
+         can select + copy text inside the Weavero pane (the same
+         behaviour they'd get inside any normal HTML page). The
+         `!important` is necessary because the chrome rule lives on
+         the outer XUL <window> with high specificity. */
+      -moz-user-select: text !important;
+      user-select: text !important;
     }
 
     .wv-radio-group { display: flex; flex-direction: column; gap: 10px; }
+    .wv-radio-group.wv-radio-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    /* Shared sub-toggles row that lives ABOVE the two mode cards
+       (one set of checkboxes governs both Inline and Icon & Popup
+       modes via dual-write to the per-mode prefs). */
+    .wv-mode-subs {
+      display: flex;
+      gap: 14px;
+      margin: 8px 0 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .wv-mode-subs .wv-mode-subs-label {
+      font-size: 12.5px;
+      opacity: 0.75;
+      margin-right: 2px;
+    }
+    .wv-mode-subs .wv-sub-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      font-size: 12.5px;
+    }
+    .wv-mode-subs .wv-sub-row input[type="checkbox"] {
+      cursor: pointer;
+      margin: 0;
+    }
 
     .wv-radio-card {
       display: flex;
@@ -72,6 +110,40 @@
       cursor: pointer;
       margin: 0;
     }
+    /* Colour the Display Mode sub-toggle labels with the same hues
+       the plugin uses for rendered URLs and app-scheme links so the
+       prefs surface the visual mnemonic. Themed via prefers-color-
+       scheme so the colours stay readable on both backgrounds.
+       Source-of-truth is PLUGIN_CSS in modules/constants.ts. */
+    .wv-mark-zotero { color: #8b4513; } /* light theme — saddle brown */
+    .wv-mark-url    { color: #1a73e8; } /* light theme — Google blue */
+    .wv-mark-app    { color: #9333ea; } /* light theme — violet-600 */
+    @media (prefers-color-scheme: dark) {
+      .wv-mark-zotero { color: #cd853f; } /* dark theme — lighter orange */
+      .wv-mark-url    { color: #8ab4f8; } /* dark theme — lighter blue */
+      .wv-mark-app    { color: #c084fc; } /* dark theme — lighter violet */
+    }
+
+    /* Group-level header — one above .wv-section-title in the visual
+       hierarchy. Used for the three top-level feature groups
+       (Enhanced Links and Relations / Filters / Visual extras).
+       Renders larger and with a divider rule so the three groups
+       are visually distinct from each other. */
+    .wv-group-title {
+      font-weight: 700;
+      font-size: 16px;
+      margin: 32px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    }
+    .wv-group-title:first-of-type {
+      margin-top: 8px;
+    }
+    .wv-group-intro {
+      margin: -4px 0 12px;
+      font-size: 12px;
+      opacity: 0.7;
+    }
 
     .wv-section-title {
       font-weight: 600;
@@ -87,7 +159,6 @@
     summary.wv-summary {
       cursor: pointer;
       list-style: none;
-      user-select: none;
     }
     /* Hide the default disclosure marker — list-style:none covers Firefox /
        Gecko (where Zotero runs); ::-webkit-details-marker covers Chromium /
@@ -158,6 +229,147 @@
       font-size: 12px;
       opacity: 0.7;
     }
+    /* Tab "header card" — the per-tab intro paragraph + the master
+       toggle row form a single subtle card at the top of each tab.
+       Accent-blue tint + left border tie back to the active-tab
+       underline and make this area read as a meta-control distinct
+       from the per-feature toggles below. */
+    .wv-tab-panel > .wv-group-intro,
+    .wv-tab-panel > .wv-master-block > label.wv-surface-row {
+      background: rgba(64, 128, 255, 0.07);
+      padding-left: 14px;
+      padding-right: 14px;
+      border-left: 3px solid rgb(64, 128, 255);
+    }
+    .wv-tab-panel > .wv-group-intro {
+      padding-top: 12px;
+      padding-bottom: 6px;
+      margin: 0;
+      font-size: 12.5px;
+      opacity: 0.95;
+      border-radius: 6px 6px 0 0;
+    }
+    .wv-tab-panel > .wv-master-block > label.wv-surface-row {
+      padding-top: 4px;
+      padding-bottom: 12px;
+      margin: 0 0 18px;
+      border-radius: 0 0 6px 6px;
+    }
+    /* Master/child grey-out — when the .wv-master checkbox inside a
+       .wv-master-block is unchecked, the .wv-children container fades
+       and intercepts no clicks. Pure CSS via :has() (Firefox 121+,
+       Zotero 10's runtime is Firefox 140 so we're safe). */
+    .wv-master-block:has(input.wv-master:not(:checked)) .wv-children {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+    .wv-children {
+      transition: opacity 0.12s;
+    }
+
+    /* ==== Tabs ====================================================
+       Pure-CSS tabs via the radio + label trick. Three hidden
+       <input type="radio" name="wv-tab"> at the top of <body>; the
+       .wv-tab-nav <label> row below them flips the radio on click;
+       the .wv-tab-panel <section>s use the general-sibling
+       combinator to show only the panel matching the checked
+       radio. No JS needed; works back to Firefox 4. */
+    input[name="wv-tab"] {
+      display: none;
+    }
+    .wv-tab-nav {
+      display: flex;
+      gap: 2px;
+      margin: 4px 0 16px;
+      border-bottom: 1px solid rgba(127, 127, 127, 0.35);
+    }
+    /* Each tab is a div containing a small status dot + a label.
+       The dot is purely visual (CSS reads the matching tab-master's
+       checked state via :has() and tints accordingly). The actual
+       master toggle lives inside the tab panel as the first row. */
+    /* Underline-style tabs (Material 3 / GitHub / Linear convention).
+       Inactive tabs are text-only with the status dot; the active
+       tab gets a thick accent-blue bottom border + matching text
+       colour. The .wv-tab-nav already supplies the 1px divider line
+       below the row of tabs; the active item's box-shadow overlays
+       a 3px segment on top of it. */
+    .wv-tab-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 14px 10px;
+      margin-bottom: -1px;
+      cursor: pointer;
+      font-size: 13.5px;
+      font-weight: 600;
+      /* Inactive tabs are slightly muted so the active tab's full-
+         strength text + accent underline both stand out (GitHub /
+         Linear / Notion convention). */
+      opacity: 0.75;
+      transition: background 0.12s, opacity 0.12s, box-shadow 0.12s;
+    }
+    .wv-tab-item:hover {
+      background: rgba(127, 127, 127, 0.08);
+      opacity: 1;
+    }
+    /* Status dot — filled green when the matching master pref is
+       on; hollow grey outline when off. (Red was misleading — red
+       is universally an error / destructive signal.) */
+    .wv-tab-status {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #4caf50;
+      border: 1.5px solid transparent;
+      box-sizing: border-box;
+      flex-shrink: 0;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    body:has(input[value="enableLinksAndRelations"]:not(:checked)) .wv-tab-status[data-master="enableLinksAndRelations"],
+    body:has(input[value="enableFilters"]:not(:checked)) .wv-tab-status[data-master="enableFilters"],
+    body:has(input[value="enableVisualExtras"]:not(:checked)) .wv-tab-status[data-master="enableVisualExtras"] {
+      background: transparent;
+      border-color: rgba(127, 127, 127, 0.6);
+    }
+    /* Active-tab styling — accent-blue underline + full-strength
+       text (no colour change). Box-shadow inset places a 3px line
+       at the bottom of the item so it visually sits on top of the
+       .wv-tab-nav divider line without needing margin tricks.
+       Keeping the text at body colour preserves readability —
+       saturated blue text at 13px on dark backgrounds tests at the
+       WCAG AA contrast boundary and suffers from chromatic aberration
+       on LCD subpixels (GitHub / Linear / Notion all converged on
+       the underline-only-coloured pattern for this reason). */
+    #wv-tab-links:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-links"],
+    #wv-tab-filters:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-filters"],
+    #wv-tab-extras:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-extras"] {
+      box-shadow: inset 0 -3px 0 rgb(64, 128, 255);
+      opacity: 1;
+      /* No `background` override here — that lets the .wv-tab-item:hover
+         background apply on the active tab too, matching GitHub's
+         behaviour where hovering an already-selected tab still shows
+         the wash. */
+    }
+    /* Status dot stays visible on the active tab — with the
+       background now transparent (active state is signalled by the
+       blue underline + blue text), the green/hollow dot is legible
+       and gives the user a quick scan of "is this group on?"
+       without having to glance at every tab header in turn. */
+
+    .wv-tab-panel {
+      display: none;
+    }
+    #wv-tab-links:checked ~ .wv-tab-panel[data-tab="links"],
+    #wv-tab-filters:checked ~ .wv-tab-panel[data-tab="filters"],
+    #wv-tab-extras:checked ~ .wv-tab-panel[data-tab="extras"] {
+      display: block;
+    }
+    /* The first .wv-section-title inside each tab needs a tighter
+       top margin since it's no longer following a group header. */
+    .wv-tab-panel > .wv-section-title:first-child,
+    .wv-tab-panel > .wv-section-hint:first-child + .wv-section-title {
+      margin-top: 0;
+    }
     /* Same look as .wv-section-hint, applied to inline descriptions
        inside radio cards and surface rows so the explanation reads
        the same as the plugin intro line beside the section title. */
@@ -213,29 +425,46 @@
   ]]></style>
 </head>
 <body>
-  <p class="wv-section-hint" style="margin: 0 0 14px;">Weavero renders URLs, app links, and markdown formatting inside annotation comments across Zotero.</p>
+  <p class="wv-section-hint" style="margin: 0 0 14px;">Clickable links in comments and notes + Filters in the items list and tabs.</p>
+
+  <input type="radio" name="wv-tab" id="wv-tab-links" checked="checked" />
+  <input type="radio" name="wv-tab" id="wv-tab-filters" />
+  <input type="radio" name="wv-tab" id="wv-tab-extras" />
+
+  <div class="wv-tab-nav">
+    <label class="wv-tab-item" for="wv-tab-links">
+      <span class="wv-tab-status" data-master="enableLinksAndRelations" title="Status of the Enhanced Links and Relations master toggle (green = on, grey = off). Toggle inside the tab."></span>
+      <span class="wv-tab-name">Enhanced Links and Relations</span>
+    </label>
+    <label class="wv-tab-item" for="wv-tab-filters">
+      <span class="wv-tab-status" data-master="enableFilters" title="Status of the Filters master toggle (green = on, grey = off). Toggle inside the tab."></span>
+      <span class="wv-tab-name">Filters</span>
+    </label>
+    <label class="wv-tab-item" for="wv-tab-extras">
+      <span class="wv-tab-status" data-master="enableVisualExtras" title="Status of the Visual extras master toggle (green = on, grey = off). Toggle inside the tab."></span>
+      <span class="wv-tab-name">Visual extras</span>
+    </label>
+  </div>
+
+  <section class="wv-tab-panel" data-tab="links">
+  <p class="wv-group-intro" style="margin-top:0">In text support for clickable URIs and markdown + Icons to identify and access related items to annotations + Right-click utilities to copy Zotero links and add related items.</p>
+  <div class="wv-master-block">
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableLinksAndRelations" class="wv-master" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable Enhanced Links and Relations</span>&#160;<span class="wv-desc">&#8212; Master toggle for everything in this tab.</span></p>
+      </div>
+    </label>
+    <div class="wv-children">
   <p class="wv-section-title" style="margin-top:0">Display Mode</p>
-  <p class="wv-section-hint">How URLs, app links, and markdown appear in annotation comments.</p>
-  <div class="wv-radio-group" role="radiogroup" aria-label="Display mode">
+  <p class="wv-section-hint">How links and markdown appear in annotation comments and notes.</p>
+
+  <div class="wv-radio-group wv-radio-grid" role="radiogroup" aria-label="Display mode">
 
     <label class="wv-radio-card" data-value="inline">
       <input type="radio" name="wv-mode" value="inline" />
       <div class="wv-card-body">
-        <p class="wv-card-text"><span class="wv-card-title">Inline</span>&#160;<span class="wv-desc">&#8212; Render directly inside each comment. An icon appears when content is clipped, opening a popup with the full comment.</span></p>
-        <div class="wv-card-subs">
-          <label class="wv-sub-row" onclick="event.stopPropagation()">
-            <input type="checkbox" name="wv-feature" value="enableInlineUrls" />
-            URLs
-          </label>
-          <label class="wv-sub-row" onclick="event.stopPropagation()">
-            <input type="checkbox" name="wv-feature" value="enableCommentMarkdown" />
-            Markdown
-          </label>
-          <label class="wv-sub-row" onclick="event.stopPropagation()" title="Recognize links that open in other apps (mailto:, obsidian://, slack://, …). Pick which schemes in the &quot;Extra link schemes&quot; section below.">
-            <input type="checkbox" name="wv-feature" value="enableAppLinks" />
-            App links
-          </label>
-        </div>
+        <p class="wv-card-text"><span class="wv-card-title">Inline</span>&#160;<span class="wv-desc">&#8212; Render directly inside each comment and note. An icon only appears when content is clipped, opening a popup with the full comment.</span></p>
         <p class="wv-card-rec">Full rendering.</p>
       </div>
     </label>
@@ -243,60 +472,39 @@
     <label class="wv-radio-card" data-value="icon">
       <input type="radio" name="wv-mode" value="icon" />
       <div class="wv-card-body">
-        <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments stay plain text. An icon next to each annotation opens a popup with the formatted view.</span></p>
-        <div class="wv-card-subs">
-          <label class="wv-sub-row" onclick="event.stopPropagation()">
-            <input type="checkbox" name="wv-feature" value="enableIconUrls" />
-            URLs
-          </label>
-          <label class="wv-sub-row" onclick="event.stopPropagation()">
-            <input type="checkbox" name="wv-feature" value="enableIconMarkdown" />
-            Markdown
-          </label>
-          <label class="wv-sub-row" onclick="event.stopPropagation()" title="Show the icon on comments containing app-link schemes (mailto:, obsidian:// etc). Requires the master &quot;App links&quot; toggle above.">
-            <input type="checkbox" name="wv-feature" value="enableIconAppLinks" />
-            App links
-          </label>
-        </div>
-        <p class="wv-card-rec">Light &#8212; Use if Full mode becomes too slow.</p>
+        <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments and notes stay plain text. An icon next to each annotation opens a popup with the rendered view when needed.</span></p>
+        <p class="wv-card-rec">Light &#8212; If Inline mode too slow.</p>
       </div>
     </label>
 
   </div>
 
-  <p class="wv-section-title">Icons</p>
+  <div class="wv-mode-subs">
+    <span class="wv-mode-subs-label">Show:</span>
+    <label class="wv-sub-row">
+      <input type="checkbox" name="wv-feature" value="enableInlineUrls" data-wv-also="enableIconUrls" />
+      <span class="wv-mark-url">URLs</span>
+    </label>
+    <label class="wv-sub-row" title="Render zotero://select/... and zotero://open/... links inside annotation comments.">
+      <input type="checkbox" name="wv-feature" value="enableZoteroLinks" />
+      <span class="wv-mark-zotero">Zotero Links</span>
+    </label>
+    <label class="wv-sub-row" title="Recognize links that open in other apps (mailto:, obsidian://, slack://, …). Pick which schemes in the &quot;Extra link schemes&quot; section below.">
+      <input type="checkbox" name="wv-feature" value="enableAppLinks" data-wv-also="enableIconAppLinks" />
+      <span class="wv-mark-app">App Links</span>
+    </label>
+    <label class="wv-sub-row">
+      <input type="checkbox" name="wv-feature" value="enableCommentMarkdown" data-wv-also="enableIconMarkdown" />
+      Markdown
+    </label>
+  </div>
+
   <div class="wv-surface-list">
 
     <label class="wv-surface-row">
       <input type="checkbox" name="wv-feature" value="enableReaderViewIcons" />
       <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Show icons over annotations in the Document view</span>&#160;<span class="wv-desc">&#8212; When checked, link badges appear directly on the page over annotation icons (and floating buttons next to text annotations). Uncheck to keep the document page free of plugin overlays; the in-document popup still gets URL / markdown rendering.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-section-title">Items list columns</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableTagsCountAuto" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Show automatic tag count in the Tags column</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableAnnotationAddedBy" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Show Added By for annotations</span>&#160;<span class="wv-desc">&#8212; In group libraries, show a badge with the user who created each annotation, next to its row in the items list. Annotation rows aren&#8217;t covered by Zotero&#8217;s built-in Added By column.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableAddedByColors" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Use a different color per user in Added By</span>&#160;<span class="wv-desc">&#8212; Tint the Added By column text and the annotation badge with a per-user color so contributors are easier to scan. Uncheck to keep the default text color.</span></p>
+        <p class="wv-surface-text"><span class="wv-surface-name">Icons over annotations in the Document view</span>&#160;<span class="wv-desc">&#8212; When checked, clickable icons appear on the page over annotations containing links or related to identify them quickly. Uncheck to keep the document page free of plugin overlays.</span></p>
       </div>
     </label>
 
@@ -386,6 +594,195 @@
     </div>
   </details>
 
+  <div class="wv-master-block">
+    <p class="wv-section-title">URI utilities</p>
+    <p class="wv-section-hint">Right-click utilities that copy <code>zotero://</code> deep links to the clipboard.</p>
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableUriUtilities" class="wv-master" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable URI utilities</span>&#160;<span class="wv-desc">&#8212; Master toggle for the URI-link right-click items below.</span></p>
+      </div>
+    </label>
+    <div class="wv-surface-list wv-children">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableCopyItemLink" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Item Link&#8221; in the items list right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that copies <code>zotero://select/&#8230;/items/&lt;key&gt;</code> for each selected item (multi-select joins with newlines).</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableCopyCollectionLink" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Collection Link&#8221; in the collections tree right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that copies <code>zotero://select/&#8230;/collections/&lt;key&gt;</code> for the right-clicked collection.</span></p>
+        </div>
+      </label>
+
+    </div>
+  </div>
+
+  <div class="wv-master-block">
+    <p class="wv-section-title">Relations and linked items</p>
+    <p class="wv-section-hint">Features built around Zotero&#8217;s related-items relations (<code>dc:relation</code>) and the linked-items mechanism.</p>
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableRelations" class="wv-master" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable relations and linked-items features</span>&#160;<span class="wv-desc">&#8212; Master toggle for the items below.</span></p>
+      </div>
+    </label>
+    <div class="wv-surface-list wv-children">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableAddRelatedMenu" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Add Related&#8230;&#8221; in the items list right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that opens Zotero&#8217;s select-items dialog and links the chosen items as <code>dc:relation</code> peers (multi-annotation aware).</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableChainBadge" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Chain badge on annotation rows with related items</span>&#160;<span class="wv-desc">&#8212; Show a small chain icon next to annotations that have related items; click it for a popup listing the relations.</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableOpenRelatedSubmenu" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Open Related Item&#8221; sub-menu in the annotation right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds Open in Reader / In New Window entries in the reader&#8217;s annotation context menu for each related item.</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableRelatedColumn" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Items-tree &#8220;Related&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of related items per row. (Hidden by default; enable with the column-picker right-click on the items-tree header.)</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableLibrariesHighlight" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Tint linked-libraries rows in the item pane</span>&#160;<span class="wv-desc">&#8212; When an item is replicated across libraries (linked items), highlight the row matching the displayed item&#8217;s library in the <em>Libraries and Collections</em> section.</span></p>
+        </div>
+      </label>
+
+    </div>
+  </div>
+
+    </div>
+  </div>
+  <p class="wv-section-hint" style="margin-top:18px">Supported markdown: <strong>**bold**</strong>, <em>*italic*</em>, <s>~~strike~~</s>, <code>`code`</code>, <code>[label](url)</code>.</p>
+  </section>
+
+  <section class="wv-tab-panel" data-tab="filters">
+  <p class="wv-group-intro" style="margin-top:0">Controls that hide, dim, or scope the visible set: the items-tree filter pane (the toolbar &#9662; button) and the per-library / file-type filters in the tabs menu.</p>
+  <div class="wv-master-block">
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableFilters" class="wv-master" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable Filters</span>&#160;<span class="wv-desc">&#8212; Master toggle for everything in this tab.</span></p>
+      </div>
+    </label>
+    <div class="wv-children">
+
+    <div class="wv-surface-list">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableItemsTreeFilter" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Items-tree filter pane</span>&#160;<span class="wv-desc">&#8212; The toolbar &#9662; button next to the items-tree search box, plus the popup it opens (annotation color/type/has-comment, attachment file type, item type, multi-select tag/author/added-by/collection/saved-search).</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableSelectionTarget" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Selection Target tri-state</span>&#160;<span class="wv-desc">&#8212; The Parent / Attachment / Annotation tickboxes inside the filter popup that scope Ctrl+A and dim out-of-scope rows.</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableTabsLibraryFilter" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Tabs menu per-library filter</span>&#160;<span class="wv-desc">&#8212; The tickbox next to each library section header in the &#8220;List all tabs&#8221; popup, hiding tabs from both the popup and the main tab strip.</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableTabsFileTypeFilter" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Tabs menu file-type filter</span>&#160;<span class="wv-desc">&#8212; The funnel button at the top of the &#8220;List all tabs&#8221; popup that opens the per-attachment-kind tristate filter.</span></p>
+        </div>
+      </label>
+
+    </div>
+
+    </div>
+  </div>
+  </section>
+
+  <section class="wv-tab-panel" data-tab="extras">
+  <p class="wv-group-intro" style="margin-top:0">Smaller informational displays attached to existing Zotero UI: items-list badges and tab-strip glyphs.</p>
+  <div class="wv-master-block">
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableVisualExtras" class="wv-master" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable Visual extras</span>&#160;<span class="wv-desc">&#8212; Master toggle for everything in this tab.</span></p>
+      </div>
+    </label>
+    <div class="wv-children">
+
+  <p class="wv-section-title" style="margin-top:8px">Items list extras</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableTagsCountAuto" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Show automatic tag count in the Tags column</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
+      </div>
+    </label>
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableAnnotationAddedBy" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Show Added By for annotations</span>&#160;<span class="wv-desc">&#8212; In group libraries, show a badge with the user who created each annotation, next to its row in the items list. Annotation rows aren&#8217;t covered by Zotero&#8217;s built-in Added By column.</span></p>
+      </div>
+    </label>
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableAddedByColors" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Use a different color per user in Added By</span>&#160;<span class="wv-desc">&#8212; Tint the Added By column text and the annotation badge with a per-user color so contributors are easier to scan. Uncheck to keep the default text color.</span></p>
+      </div>
+    </label>
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableAnnotationsCountColumn" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Items-tree &#8220;Annotations&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of annotations on attachments (and sums across attachments on regular items). Hidden by default; enable with the column-picker right-click on the items-tree header.</span></p>
+      </div>
+    </label>
+
+  </div>
+
+  <p class="wv-section-title">Tab strip</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableGroupLibraryGlyph" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Group-library glyph + tooltip on tabs</span>&#160;<span class="wv-desc">&#8212; Tabs whose item lives in a group library get a small &#8220;Group Libraries&#8221; cluster glyph in the corner of the file-type icon, plus a custom tooltip showing the tab title and a <em>library icon + Library Name</em> header.</span></p>
+      </div>
+    </label>
+
+  </div>
+
+    </div>
+  </div>
+  </section>
+
   <details class="wv-collapsible">
     <summary class="wv-section-title wv-summary">Debug</summary>
     <div class="wv-surface-list">
@@ -393,13 +790,11 @@
       <label class="wv-surface-row">
         <input type="checkbox" name="wv-feature" value="debug" />
         <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Enable debug logging</span>&#160;<span class="wv-desc">&#8212; Emits detailed plugin activity via Zotero.debug. To see it, also enable Help &#8594; Debug Output Logging &#8594; Enable in Zotero, then open Help &#8594; Debug Output Logging &#8594; View Output. Useful when reporting issues; leave off for normal use.</span></p>
+          <p class="wv-surface-text"><span class="wv-surface-name">Enable debug logging</span>&#160;<span class="wv-desc">&#8212; Emits detailed plugin activity via Zotero.debug. To see it, open Help &#8594; Debug Output Logging &#8594; View Output. Useful when reporting issues; leave off for normal use.</span></p>
         </div>
       </label>
 
     </div>
   </details>
-
-  <p class="wv-section-hint" style="margin-top:18px">Supported markdown: <strong>**bold**</strong>, <em>*italic*</em>, <s>~~strike~~</s>, <code>`code`</code>, <code>[label](url)</code>.</p>
 </body>
 </html>

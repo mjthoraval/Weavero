@@ -152,18 +152,43 @@
     // is active. All default to true so each mode shows full content
     // affordances out of the box.
     const FEATURES = [
+        // Tab masters (v0.8.1-dev.3)
+        "enableLinksAndRelations",
+        "enableVisualExtras",
+        // Pre-existing
         "enableInlineUrls",
         "enableCommentMarkdown",
         "enableIconUrls",
         "enableIconMarkdown",
         "enableIconAppLinks",
         "enableAppLinks",
+        "enableZoteroLinks",
         "enableAppLinksSkipConfirm",
         "enableReaderViewIcons",
         "enableTagsCountAuto",
         "enableAnnotationAddedBy",
         "enableAddedByColors",
         "debug",
+        // v0.8.1 — URI utilities
+        "enableUriUtilities",
+        "enableCopyItemLink",
+        "enableCopyCollectionLink",
+        // v0.8.1 — Relations and linked items
+        "enableRelations",
+        "enableAddRelatedMenu",
+        "enableChainBadge",
+        "enableOpenRelatedSubmenu",
+        "enableRelatedColumn",
+        "enableLibrariesHighlight",
+        // v0.8.1 — Filters
+        "enableFilters",
+        "enableItemsTreeFilter",
+        "enableSelectionTarget",
+        "enableTabsLibraryFilter",
+        "enableTabsFileTypeFilter",
+        // v0.8.1 — Visual extras
+        "enableAnnotationsCountColumn",
+        "enableGroupLibraryGlyph",
     ];
 
     // === Per-surface enable checkboxes ====================================
@@ -299,11 +324,27 @@
         if (!boxes.length) return false;
         for (const cb of boxes) {
             cb.checked = readSurface(cb.value);
+            // For shared Display Mode toggles (data-wv-also), force the
+            // alias prefs to match the canonical at mount time so any
+            // out-of-sync state from earlier per-mode UIs gets healed.
+            const also0 = (cb.dataset.wvAlso || "").split(",")
+                .map((s) => s.trim()).filter(Boolean);
+            for (const alias of also0) {
+                if (readSurface(alias) !== cb.checked) writeSurface(alias, cb.checked);
+            }
             if (cb.dataset.wvBound) continue;
             cb.dataset.wvBound = "1";
             cb.addEventListener("change", () => {
                 dbg("feature " + cb.value + " -> " + cb.checked);
                 writeSurface(cb.value, cb.checked);
+                // data-wv-also: comma-separated list of additional pref
+                // names that should mirror this checkbox's value. Used by
+                // the shared Display Mode toggles where ONE UI checkbox
+                // governs both the Inline-mode and Icon-mode prefs (e.g.
+                // enableInlineUrls + enableIconUrls).
+                const also = (cb.dataset.wvAlso || "").split(",")
+                    .map((s) => s.trim()).filter(Boolean);
+                for (const alias of also) writeSurface(alias, cb.checked);
             });
         }
         // Initial sync after all checkboxes have their value loaded.
@@ -415,6 +456,42 @@
         return true;
     }
 
+    // === Active-tab persistence ============================================
+    // The three top-level tabs (Enhanced Links and Relations / Filters /
+    // Visual extras) are pure-CSS via radio inputs; reloading the prefs
+    // pane (e.g. after a plugin re-install during dev iteration) resets
+    // the radios to their HTML-default first tab. Persist the user's
+    // last-viewed tab to a pref so the pane reopens where they left off.
+    const TAB_PREF = "weavero.activeTab";
+    const TAB_IDS  = ["links", "filters", "extras"];
+    function bindTabs(doc) {
+        const radios = TAB_IDS
+            .map((id) => doc.getElementById("wv-tab-" + id))
+            .filter(Boolean);
+        if (radios.length !== TAB_IDS.length) return false;
+
+        // Restore the saved tab (default to "links").
+        let saved = "links";
+        try {
+            const v = Zotero.Prefs.get(TAB_PREF);
+            if (typeof v === "string" && TAB_IDS.indexOf(v) !== -1) saved = v;
+        } catch (e) {}
+        for (const r of radios as any[]) r.checked = (r.id === "wv-tab-" + saved);
+
+        for (const r of radios as any[]) {
+            if (r.dataset.wvTabBound) continue;
+            r.dataset.wvTabBound = "1";
+            r.addEventListener("change", () => {
+                if (!r.checked) return;
+                const id = (r.id || "").replace(/^wv-tab-/, "");
+                if (TAB_IDS.indexOf(id) === -1) return;
+                try { Zotero.Prefs.set(TAB_PREF, id); }
+                catch (e) { dbg("activeTab write err: " + e); }
+            });
+        }
+        return true;
+    }
+
     /** Poll for the pane document — the iframe may not be fully ready when
      *  the script first runs, even though Zotero awaits a delay() before
      *  loading us. We retry up to ~3 s. */
@@ -424,6 +501,7 @@
             try { bindSurfaces(doc); } catch (e) { dbg("bindSurfaces err: " + e); }
             try { bindFeatures(doc); } catch (e) { dbg("bindFeatures err: " + e); }
             try { bindSchemes(doc);  } catch (e) { dbg("bindSchemes err: " + e); }
+            try { bindTabs(doc);     } catch (e) { dbg("bindTabs err: " + e); }
             dbg("bound on retry=" + (60 - retries));
             return;
         }

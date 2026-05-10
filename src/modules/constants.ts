@@ -1314,8 +1314,11 @@ export const PLUGIN_CSS = [
     "  position: relative;",
     "}",
     // Trim the input on the right so the funnel button sits OUTSIDE
-    // it (not floating on top of the input background).
-    "#zotero-tabs-menu-panel #zotero-tabs-menu-filter {",
+    // it (not floating on top of the input background). Gated on
+    // :has(#wv-tabs-menu-filetype-btn) so the margin only applies
+    // while the funnel is actually present — without this, toggling
+    // the Filters master off leaves the input narrower than native.
+    "#zotero-tabs-menu-panel:has(#wv-tabs-menu-filetype-btn) #zotero-tabs-menu-filter {",
     "  margin-inline-end: 38px !important;",
     "}",
     // Transparent at rest, hover/active fills from the same
@@ -1413,7 +1416,10 @@ export const PLUGIN_CSS = [
     // Gear (settings) button mirroring the funnel — sits OUTSIDE
     // the search input on the LEFT. Same visual rules as the
     // funnel: no permanent box, hover fill from `--fill-quinary`.
-    "#zotero-tabs-menu-panel #zotero-tabs-menu-filter {",
+    // Gated on :has(#wv-tabs-menu-settings-btn) so the left margin
+    // only applies while the gear button is present (mirror of the
+    // funnel-side gate above).
+    "#zotero-tabs-menu-panel:has(#wv-tabs-menu-settings-btn) #zotero-tabs-menu-filter {",
     "  margin-inline-start: 38px !important;",
     "}",
     "#wv-tabs-menu-settings-btn {",

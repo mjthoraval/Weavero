@@ -32,7 +32,162 @@ class _ReaderMixin {
 
     // ---- Popup panel -------------------------------------------------------
 
+    /** Resolve the outer window the popup should render into.
+     *
+     *  The annotation icons live in three different DOM contexts: the
+     *  reader's PDF iframe, the reader sidebar, and the main-window
+     *  items-tree / right-pane. When the reader is opened in a SEPARATE
+     *  window, the iframe and sidebar live inside that standalone
+     *  reader window — Zotero.getMainWindow() returns the LIBRARY
+     *  window, so naively using it as the popup host renders the popup
+     *  off-screen (on the wrong window).
+     *
+     *  Resolution order: explicit opts.win → derive from anchorNode's
+     *  ownerDocument.defaultView.top → fall back to main window. The
+     *  `.top` walk handles iframe-nested anchors (PDF viewer, snapshot
+     *  reader); the .defaultView guard handles dead documents. */
+    /** Build an <img> for any chrome:// SVG icon, with a data: URL
+     *  fallback so it displays inside resource:// documents (the
+     *  reader's `reader.html` blocks <img src="chrome://...">
+     *  loads — only privileged JS can fetch those URLs).
+     *
+     *  Sets the chrome URL as the initial src so the main-window
+     *  case stays synchronous; on first call from a resource doc the
+     *  cached data: URL takes over once fetched. The `_iconDataUriCache`
+     *  lives on `this` and is GC'd at plugin unload. */
+    _makeChromeIcon(doc, chromeUrl, className) {
+        const ns = "http://www.w3.org/1999/xhtml";
+        const img = doc.createElementNS(ns, "img");
+        img.className = className;
+        if (!this._iconDataUriCache) this._iconDataUriCache = Object.create(null);
+        const cached = this._iconDataUriCache[chromeUrl];
+        img.setAttribute("src", cached || chromeUrl);
+        if (cached) return img;
+        (async () => {
+            try {
+                const res = await fetch(chromeUrl);
+                if (!res.ok) return;
+                const svg = await res.text();
+                const dataUri = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+                this._iconDataUriCache[chromeUrl] = dataUri;
+                try { img.setAttribute("src", dataUri); } catch (e) {}
+            } catch (e) {
+                Zotero.debug("[Weavero] icon fetch err: " + chromeUrl + " " + e);
+            }
+        })();
+        return img;
+    }
+
+    /** Item-type icon (`chrome://zotero/skin/item-type/16/{theme}/{kebab}.svg`).
+     *  Theme via prefers-color-scheme on the target window; kebab name
+     *  from data-item-type camelCase, preserving PDF / EPUB acronyms
+     *  intact (mirrors scss/components/_item-tree.scss line 380). */
+    _makeItemTypeIcon(doc, win, name) {
+        const isDark = !!(win && win.matchMedia
+            && win.matchMedia("(prefers-color-scheme: dark)").matches);
+        const theme = isDark ? "dark" : "light";
+        const kebab = (name || "document")
+            .replace(/([a-z\d])([A-Z])/g, "$1-$2")
+            .replace(/([A-Z])([A-Z][a-z])/g, "$1-$2")
+            .toLowerCase();
+        const chromeUrl = "chrome://zotero/skin/item-type/16/" + theme + "/" + kebab + ".svg";
+        return this._makeChromeIcon(doc, chromeUrl, "wv-rel-icon");
+    }
+
+    /** Attach a mousedown listener to every document reachable from
+     *  the popup's host window — its own doc, every parent doc up
+     *  to top, and every nested iframe doc. Without this the popup
+     *  doesn't dismiss when the user clicks the PDF iframe (one
+     *  level INSIDE reader.html) or the main Zotero pane (one level
+     *  ABOVE reader.html), because mousedown events don't cross
+     *  document boundaries.
+     *
+     *  Returns a teardown function that removes every listener.
+     *  Defers attachment one tick so the click that opened the popup
+     *  doesn't immediately match. */
+    _attachOutsideClickDismiss(panel, hostDoc, hostWin, onOutside) {
+        const docs: Set<any> = new Set();
+        const visited: Set<any> = new Set();
+        const collectDown = (doc) => {
+            if (!doc || visited.has(doc)) return;
+            visited.add(doc);
+            docs.add(doc);
+            try {
+                for (const f of doc.querySelectorAll("iframe, browser")) {
+                    let cd = null;
+                    try { cd = f.contentDocument; } catch (e) {}
+                    if (cd) collectDown(cd);
+                }
+            } catch (e) {}
+        };
+        // In Zotero 10's reader, the iframe's window has parent === self
+        // (process-isolated), so we can't walk UP from hostWin. Use the
+        // window-mediator instead to enumerate all top-level chrome
+        // windows, then recurse into their iframes from the top.
+        try {
+            const wm = Components.classes[
+                "@mozilla.org/appshell/window-mediator;1"]
+                .getService(Components.interfaces.nsIWindowMediator);
+            const en = wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try { if (w.document) collectDown(w.document); } catch (e) {}
+            }
+        } catch (e) {}
+        // Belt-and-braces: also walk down from the host doc directly
+        // in case the mediator missed it (e.g., a pref-pane subdoc).
+        collectDown(hostDoc);
+
+        const handler = (e) => {
+            if (panel.style.display === "none") return;
+            try {
+                if (e.target && (e.target === panel || panel.contains(e.target))) return;
+                // Don't dismiss when the mousedown is on the SAME anchor
+                // that opened this popup — the anchor's own click handler
+                // will run next and toggle the popup closed. Without this
+                // skip, dismiss-on-mousedown closes the popup, then the
+                // click event re-opens it (net effect: nothing happens).
+                const opener = panel._wvOpenedFor;
+                if (opener && (e.target === opener
+                        || (opener.contains && opener.contains(e.target)))) {
+                    return;
+                }
+            } catch (er) {}
+            onOutside(e);
+        };
+        const teardown = () => {
+            for (const d of docs) {
+                try { d.removeEventListener("mousedown", handler, true); } catch (e) {}
+            }
+        };
+        hostWin.setTimeout(() => {
+            for (const d of docs) {
+                try { d.addEventListener("mousedown", handler, true); } catch (e) {}
+            }
+        }, 0);
+        return teardown;
+    }
+
+    _resolvePopupWin(opts) {
+        try {
+            if (opts && opts.win) return opts.win;
+            const anchor = opts && opts.anchorNode;
+            if (anchor && anchor.ownerDocument) {
+                const v = anchor.ownerDocument.defaultView;
+                if (v) return v.top || v;
+            }
+        } catch (e) {}
+        return Zotero.getMainWindow();
+    }
+
     _getOrCreatePanel(doc) {
+        // Standalone reader windows don't get a Weavero stylesheet
+        // injection (no onMainWindowLoad hook fires for them), so the
+        // popup falls back to default chrome colors and zero padding.
+        // Lazy-inject here — first popup-open in a given window pulls
+        // in PLUGIN_CSS so the wv-popup-* / wv-link / wv-separator
+        // classes resolve.
+        try { this.ensureStylesIn(doc); } catch (e) {}
         let panel = doc.getElementById(PANEL_ID);
         if (panel && panel.tagName && panel.tagName.toLowerCase() === "panel") {
             // Old XUL panel from a previous version — replace it.
@@ -234,13 +389,26 @@ class _ReaderMixin {
 
     openCommentPopup(comment, opts: any = {}) {
         if (!comment && !(opts.extraURLs && opts.extraURLs.length)) return;
-        const win  = Zotero.getMainWindow();
+        const win  = this._resolvePopupWin(opts);
         const doc  = win.document;
         const ns   = "http://www.w3.org/1999/xhtml";
         const norm = this.normalize(String(comment || ""));
 
+        // Toggle: a click on the same anchor that opened the current
+        // popup closes it instead of re-opening (matches stock
+        // dropdown / popover behaviour).
+        const existing = doc.getElementById(PANEL_ID);
+        if (existing && existing.style.display === "block"
+                && opts.anchorNode
+                && existing._wvOpenedFor === opts.anchorNode) {
+            try { existing.hidePopup(); }
+            catch (e) { existing.style.display = "none"; }
+            return;
+        }
+
         const panel = this._getOrCreatePanel(doc);
         while (panel.firstChild) panel.removeChild(panel.firstChild);
+        panel._wvOpenedFor = opts.anchorNode || null;
 
         const container = doc.createElementNS(ns, "div");
         container.className = "wv-popup-container";
@@ -324,21 +492,13 @@ class _ReaderMixin {
                     ? (opts.anchorNode.tagName || "?") + "." + (opts.anchorNode.className || "")
                     : (opts.anchorScreen ? "screen" : "fallback")));
 
-            // Click outside to dismiss. Defer attachment one tick so the
-            // mousedown that opened the popup doesn't immediately match.
+            // Click outside to dismiss — covers all reachable docs
+            // (parent windows + nested iframes) so PDF-iframe clicks
+            // and main-pane clicks both close the popup.
             try {
-                const dismissOnOutsideClick = (e) => {
-                    if (panel.style.display === "none") {
-                        doc.removeEventListener("mousedown", dismissOnOutsideClick, true);
-                        return;
-                    }
-                    if (e.target && (e.target === panel || panel.contains(e.target))) return;
-                    panel.hidePopup();
-                    doc.removeEventListener("mousedown", dismissOnOutsideClick, true);
-                };
-                win.setTimeout(() => {
-                    doc.addEventListener("mousedown", dismissOnOutsideClick, true);
-                }, 0);
+                const teardown = this._attachOutsideClickDismiss(
+                    panel, doc, win, () => { panel.hidePopup(); teardown(); }
+                );
             } catch(err) {
                 Zotero.debug("[Weavero] outside-click bind err: " + err);
             }
@@ -449,14 +609,25 @@ class _ReaderMixin {
      *  markdown. */
     openRelationsPopup(annotationItem, opts: any = {}) {
         if (!annotationItem) return;
-        const win  = Zotero.getMainWindow();
+        const win  = this._resolvePopupWin(opts);
         const doc  = win.document;
         const ns   = "http://www.w3.org/1999/xhtml";
+
+        // Toggle on re-click of the same anchor (mirror of openCommentPopup).
+        const existing = doc.getElementById(PANEL_ID);
+        if (existing && existing.style.display === "block"
+                && opts.anchorNode
+                && existing._wvOpenedFor === opts.anchorNode) {
+            try { existing.hidePopup(); }
+            catch (e) { existing.style.display = "none"; }
+            return;
+        }
 
         const items = this._getAnnotationRelatedItems(annotationItem);
 
         const panel = this._getOrCreatePanel(doc);
         while (panel.firstChild) panel.removeChild(panel.firstChild);
+        panel._wvOpenedFor = opts.anchorNode || null;
 
         const container = doc.createElementNS(ns, "div");
         container.className = "wv-popup-container";
@@ -478,26 +649,28 @@ class _ReaderMixin {
             row.title = "Open in library";
 
             // Type icon. Zotero stores annotation icons in the
-            // `universal` colour folder (`chrome://zotero/skin/16/
-            // universal/annotate-<type>.svg`) — those resolve fine via
-            // <img src>. Item-type icons, by contrast, live at
-            // `chrome://zotero/skin/item-type/16/<light|dark>/<kebab>.svg`
-            // and Zotero drives them via CSS keyed on
-            // `[data-item-type="<camelCase>"]` so the right theme +
-            // hidpi variant is picked automatically. We reuse that
-            // mechanism rather than constructing URLs ourselves —
-            // the popup lives in the main Zotero document which
-            // already has those rules loaded.
+            // `universal` colour folder
+            // (`chrome://zotero/skin/16/universal/annotate-<type>.svg`),
+            // and item-type icons under
+            // `chrome://zotero/skin/item-type/16/<light|dark>/<kebab>.svg`.
+            // Use <img src=...> directly rather than Zotero's
+            // CSS-driven `.icon-css.icon-item-type[data-item-type=...]`
+            // pattern — those rules live in zotero.css inside a
+            // `.focus-states-target .row` scope (item-tree contexts),
+            // so they don't apply inside our popup. Worse, in a
+            // STANDALONE reader window, zotero.css isn't loaded at all,
+            // so the icon would be invisible. Direct <img src> works
+            // in any chrome window with no dependency on stylesheet
+            // load order.
             let iconEl;
             try {
                 if (item.isAnnotation && item.isAnnotation()) {
                     const t = item.annotationType || "highlight";
                     const aType = (t === "image") ? "area" : t;
-                    iconEl = doc.createElementNS(ns, "img");
-                    iconEl.setAttribute("src",
-                        "chrome://zotero/skin/16/universal/annotate-"
-                        + aType + ".svg");
-                    iconEl.className = "annotation-icon wv-rel-icon";
+                    const url = "chrome://zotero/skin/16/universal/annotate-"
+                        + aType + ".svg";
+                    iconEl = this._makeChromeIcon(doc, url,
+                        "annotation-icon wv-rel-icon");
                     if (item.annotationColor) {
                         iconEl.style.fill = item.annotationColor;
                     }
@@ -505,14 +678,10 @@ class _ReaderMixin {
                     const name = (typeof item.getItemTypeIconName === "function")
                         ? item.getItemTypeIconName(true)
                         : "document";
-                    iconEl = doc.createElementNS(ns, "span");
-                    iconEl.className = "icon icon-css icon-item-type wv-rel-icon";
-                    iconEl.setAttribute("data-item-type", name);
+                    iconEl = this._makeItemTypeIcon(doc, win, name);
                 }
             } catch (e) {
-                iconEl = doc.createElementNS(ns, "span");
-                iconEl.className = "icon icon-css icon-item-type wv-rel-icon";
-                iconEl.setAttribute("data-item-type", "document");
+                iconEl = this._makeItemTypeIcon(doc, win, "document");
             }
 
             const titleEl = doc.createElementNS(ns, "span");
@@ -588,20 +757,12 @@ class _ReaderMixin {
             panel.style.left = Math.round(left) + "px";
             panel.style.top  = Math.round(top)  + "px";
 
-            // Click-outside dismiss — same idiom as openCommentPopup.
-            const dismissOnOutsideClick = (e) => {
-                if (panel.style.display === "none") {
-                    doc.removeEventListener("mousedown", dismissOnOutsideClick, true);
-                    return;
-                }
-                if (!panel.contains(e.target)) {
-                    panel.style.display = "none";
-                    doc.removeEventListener("mousedown", dismissOnOutsideClick, true);
-                }
-            };
-            win.setTimeout(() => {
-                doc.addEventListener("mousedown", dismissOnOutsideClick, true);
-            }, 0);
+            // Click-outside dismiss — same multi-doc helper as
+            // openCommentPopup, so PDF-iframe and main-pane clicks
+            // both close the relations popup.
+            const teardown = this._attachOutsideClickDismiss(
+                panel, doc, win, () => { panel.style.display = "none"; teardown(); }
+            );
         } catch (err) {
             Zotero.debug("[Weavero] openRelationsPopup open err: " + err);
         }

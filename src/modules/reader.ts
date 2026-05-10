@@ -2066,32 +2066,96 @@ class _ReaderMixin {
             const have = [];
             for (const s of existing) have.push((s.textContent || "").trim());
             if (want.length !== have.length) {
-                this._dbg("[Weavero] _markTextLinks skip: span count mismatch (have=" + have.length + " want=" + want.length + ") — leaving DOM alone");
-                return false;
-            }
+                // The URL_REGEX-vs-textContent count comparison is
+                // unreliable in two cases:
+                //   1. Cell has wv-md spans (markdown rendering in
+                //      play — `**bold**` text is not in textContent).
+                //   2. Any wv-url-span is a MARKDOWN LINK, where
+                //      span.textContent (label) != span.data-href
+                //      (URL). textContent has the label, so URL_REGEX
+                //      finds nothing but we legitimately have spans.
+                // In either case, defer to the cache check below +
+                // recovery path which uses cachedRaw to compute the
+                // right wantMode without false-positives.
+                let hasMdLinkSpan = false;
+                for (const s of existing) {
+                    const href = s.getAttribute("data-href") || "";
+                    const label = s.textContent || "";
+                    if (href && href !== label) {
+                        hasMdLinkSpan = true;
+                        break;
+                    }
+                }
+                if (el.querySelector(".wv-md") || hasMdLinkSpan) {
+                    this._dbg("[Weavero] _markTextLinks: count mismatch but markdown content present — deferring to cache path");
+                } else {
+                    // Pure URL-only render that drifted from current
+                    // URL_REGEX: a scheme toggle was flipped, leaving
+                    // stale styled URLs the regex no longer matches.
+                    // Unwrap so the cell falls back to plain text.
+                    this._dbg("[Weavero] _markTextLinks: span count mismatch (have="
+                        + have.length + " want=" + want.length
+                        + ") — unwrapping stale spans");
+                    for (const s of existing) {
+                        s.replaceWith(doc.createTextNode(s.textContent || ""));
+                    }
+                }
+                // Fall through to the rebuild path below.
+            } else {
             let same = true;
             for (let i = 0; i < want.length; i++) {
                 if (want[i] !== have[i]) { same = false; break; }
             }
             if (same) {
-                // Patch hover-tooltip title onto existing URL spans
-                // that were created by an earlier plugin version
-                // (pre-0.1.47) which didn't set the attribute.
-                for (const sp of existing) {
-                    if (!sp.hasAttribute("title")) {
-                        const u = sp.getAttribute("data-href")
-                            || sp.textContent || "";
-                        if (u) sp.setAttribute("title", u);
+                // URL spans are correct. But the cell may ALSO have
+                // stale wv-md spans from a prior render when the
+                // markdown toggle was on — toggling off doesn't
+                // change URL_REGEX so this branch was firing
+                // "cache hit" and bailing without noticing. Verify
+                // markdown state matches what the current pref +
+                // text content would produce. Critically: only
+                // require a rebuild if the TEXT has markdown
+                // markers — for plain-URL-only text, the markdown
+                // toggle has no effect on output and we shouldn't
+                // unwrap (doing so triggers a rebuild blocked by
+                // the 250ms rate limit, leaving the cell stale).
+                const liveHasMd = !!el.querySelector(".wv-md");
+                const useMdNow = isTreeMode && this._getEnableCommentMarkdown();
+                const sourceForMd = el.getAttribute("data-wv-raw") || el.textContent || "";
+                const textHasMdMarkers = this.MD_REGEX.test(this.normalize(sourceForMd));
+                const expectedMdSpan = textHasMdMarkers && useMdNow;
+                const wantMdRebuild = liveHasMd !== expectedMdSpan;
+                if (!wantMdRebuild) {
+                    // Patch hover-tooltip title onto existing URL spans
+                    // that were created by an earlier plugin version
+                    // (pre-0.1.47) which didn't set the attribute.
+                    for (const sp of existing) {
+                        if (!sp.hasAttribute("title")) {
+                            const u = sp.getAttribute("data-href")
+                                || sp.textContent || "";
+                            if (u) sp.setAttribute("title", u);
+                        }
                     }
+                    this._dbg("[Weavero] _markTextLinks skip: spans match current URLs (" + want.length + ")");
+                    return false;
                 }
-                this._dbg("[Weavero] _markTextLinks skip: spans match current URLs (" + want.length + ")");
-                return false;
+                this._dbg("[Weavero] _markTextLinks: URLs match but markdown-state stale (liveHasMd="
+                    + liveHasMd + " useMdNow=" + useMdNow + ") — unwrapping for rebuild");
+                for (const s of existing) {
+                    s.replaceWith(doc.createTextNode(s.textContent || ""));
+                }
+                // Also strip any wv-md spans so the rebuild starts clean.
+                for (const sp of el.querySelectorAll(".wv-md")) {
+                    sp.replaceWith(doc.createTextNode(sp.textContent || ""));
+                }
+                // Fall through to rebuild from cachedRaw.
             }
             this._dbg("[Weavero] _markTextLinks: in-URL edit detected, unwrapping " + have.length + " spans and rebuilding");
             for (const s of existing) {
                 s.replaceWith(doc.createTextNode(s.textContent || ""));
             }
             // Fall through to full rebuild below.
+            }
         }
 
         // Source-text recovery. Once we've rebuilt this element, our
@@ -2125,7 +2189,35 @@ class _ReaderMixin {
         // through _renderPreviewPanel and _renderPaneCommentInline now.
         const useMd = isTreeMode && this._getEnableCommentMarkdown();
         const hasMd = useMd && this.MD_REGEX.test(this.normalize(text));
-        if (!this.hasURI(text) && !hasMd) return false;
+        if (!this.hasURI(text) && !hasMd) {
+            // No renderable content according to `text`. Two cases:
+            //
+            //   (a) text === cachedRaw: the source genuinely has no
+            //       URL/markdown (e.g. a scheme toggle made the only
+            //       URL un-renderable). Strip stale spans so the
+            //       cell falls back to plain text matching the new
+            //       pref state.
+            //
+            //   (b) text === liveText (recovery's stripped fallback,
+            //       used when data-wv-raw was missing). Stripping
+            //       here would destroy a VALID rendering we have no
+            //       way to reconstruct. Bail and wait for the next
+            //       cycle (e.g. when Zotero re-renders the row from
+            //       its model and gives us fresh source text).
+            const ranFromRaw = !!cachedRaw && text === cachedRaw;
+            if (!ranFromRaw) return false;
+            try {
+                const stale = el.querySelectorAll(".wv-url-span, .wv-md");
+                if (stale.length) {
+                    const flat = (el.textContent || "").replace(/[\s ]+$/, "");
+                    el.textContent = flat;
+                    el.removeAttribute("data-wv-source");
+                    el.removeAttribute("data-wv-rendered");
+                    el.removeAttribute("data-wv-last-rebuild");
+                }
+            } catch (e) {}
+            return false;
+        }
 
         const norm = this.normalize(text);
 
@@ -2147,7 +2239,14 @@ class _ReaderMixin {
         //      stripped textContent equals the unstripped textContent, so
         //      check (2) is a no-op — without (3) we'd skip rebuild even
         //      though the .wv-url-span was reaped.
-        const cacheKey = (isTreeMode ? "t:" : "") + (useMd ? "m:" : ":") + norm;
+        // Cache key encodes mode + markdown toggle + URL_SCHEME_ALT
+        // (so a URL/Zotero/App Links toggle invalidates the cache —
+        // without this segment, flipping the App Links toggle leaves
+        // mailto:/obsidian:// spans rendered from the previous scheme set).
+        const cacheKey = (isTreeMode ? "t:" : "")
+            + (useMd ? "m:" : ":")
+            + this.URL_SCHEME_ALT + ":"
+            + norm;
         const expectsURLSpan = this.hasURI(text);
         const expectsMdSpan = hasMd;
         const liveURLSpan = expectsURLSpan
@@ -2232,14 +2331,30 @@ class _ReaderMixin {
                 const linkUrl   = useMd ? m[6] : m[2];
                 if (linkLabel !== undefined && linkUrl !== undefined) {
                     const url = linkUrl.replace(this.TRAILING_RE, "");
-                    // Tree mode (items-list note/text rows) strips markers
-                    // so only the label is visible. Sidebar / popup keep the
-                    // markers as text nodes so the comment textContent is
-                    // round-trippable for in-place edits — the user can
-                    // still see the raw [label](url) when they click in.
-                    if (!isTreeMode) frag.appendChild(doc.createTextNode("["));
-                    emitUrlSpan(linkLabel, url);
-                    if (!isTreeMode) frag.appendChild(doc.createTextNode("](" + linkUrl + ")"));
+                    // Render as styled link only if the URL's scheme is
+                    // currently enabled (URLs / Zotero Links / App Links
+                    // each remove their alternation from URL_SCHEME_ALT
+                    // when off — `hasURI` checks via URL_REGEX). Else
+                    // render the markdown markers and label as plain
+                    // text so the user sees what was authored without
+                    // a clickable affordance for a disabled scheme.
+                    if (this.hasURI(url)) {
+                        // Tree mode (items-list note/text rows) strips markers
+                        // so only the label is visible. Sidebar / popup keep the
+                        // markers as text nodes so the comment textContent is
+                        // round-trippable for in-place edits — the user can
+                        // still see the raw [label](url) when they click in.
+                        if (!isTreeMode) frag.appendChild(doc.createTextNode("["));
+                        emitUrlSpan(linkLabel, url);
+                        if (!isTreeMode) frag.appendChild(doc.createTextNode("](" + linkUrl + ")"));
+                    } else {
+                        if (isTreeMode) {
+                            frag.appendChild(doc.createTextNode(linkLabel));
+                        } else {
+                            frag.appendChild(doc.createTextNode(
+                                "[" + linkLabel + "](" + linkUrl + ")"));
+                        }
+                    }
                 } else {
                     // Bare URL — useMd group 7, non-useMd group 3.
                     const raw = useMd ? m[7] : m[3];

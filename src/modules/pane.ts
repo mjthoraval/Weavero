@@ -563,9 +563,32 @@ class _PaneMixin {
                           .replace(/[\s\u00A0]*🔗\s*$/, "")
                 ).trim();
                 if (!this._commentHasIconableContent(text)) {
-                    cell.removeAttribute("data-has-rich");
+                    // No URL/markdown content. But the comment may
+                    // still overflow visually — wrap the plain text
+                    // in .wv-text-wrap and keep a wv-tree-icon
+                    // element so _updateTruncationFlags can detect
+                    // overflow and show the icon as a "click to see
+                    // full text" affordance via the
+                    // [data-truncated="true"] CSS rule. Without
+                    // this the icon disappears entirely when (e.g.)
+                    // the URLs toggle hides the only URL in a long
+                    // comment that was previously the icon's reason
+                    // to exist.
+                    cell.setAttribute("data-has-rich", "true");
                     cell.removeAttribute("data-icon-wanted");
                     cell.removeAttribute("data-has-url");
+                    cell.setAttribute("data-comment-text", text);
+                    const plainWrap = doc.createElement("span");
+                    plainWrap.className = "wv-text-wrap";
+                    plainWrap.setAttribute("data-render-mode", "plain");
+                    plainWrap.textContent = text;
+                    const plainIcon = doc.createElement("span");
+                    plainIcon.className = "wv-tree-icon";
+                    this._applyIconState(plainIcon, text);
+                    while (cell.firstChild) cell.removeChild(cell.firstChild);
+                    cell.appendChild(plainWrap);
+                    cell.appendChild(plainIcon);
+                    cell.setAttribute("data-wv-last-rebuild", String(Date.now()));
                     continue;
                 }
                 cell.setAttribute("data-has-rich", "true");
@@ -633,12 +656,16 @@ class _PaneMixin {
                             // `code` (single backtick).
                             wrapMd("wv-md-code", m[5]);
                         } else if (useMd && m[6] !== undefined && m[7] !== undefined) {
-                            // Markdown link [label](url). With URLs sub-toggle
-                            // off, drop the URL part and render just the label
-                            // as plain text — the user can still see what was
-                            // linked, just without the colour/click affordance.
-                            if (inlineUrls) {
-                                const url = m[7];
+                            // Markdown link [label](url). Render as styled
+                            // link only if the URL's scheme is currently
+                            // enabled (URLs / Zotero Links / App Links each
+                            // remove their alternation from URL_SCHEME_ALT
+                            // when off — `hasURI` checks via URL_REGEX).
+                            // Else render the label as plain text so the
+                            // user sees what was authored without a
+                            // clickable affordance for a disabled scheme.
+                            const url = m[7];
+                            if (inlineUrls && this.hasURI(url)) {
                                 const cls = this._urlLinkClass(url);
                                 const span = doc.createElement("span");
                                 span.className = "wv-url-span " + cls;

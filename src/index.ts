@@ -1194,8 +1194,19 @@ class WeaveroPlugin {
         } catch(e) { Zotero.debug("[Weavero] _applyTreeIconPref error: " + e); }
     }
 
-    _registerPrefPane() {
+    async _registerPrefPane() {
         try {
+            // De-dupe: dev iterations and hot-reloads can call
+            // init() repeatedly without a clean shutdown; without
+            // this guard, each call adds another "Weavero" entry
+            // to the prefs sidebar.
+            try {
+                const existing = (Zotero.PreferencePanes as any).pluginPanes
+                    .filter((p) => p.pluginID === "weavero@mjthoraval");
+                for (const p of existing) {
+                    Zotero.PreferencePanes.unregister(p.id);
+                }
+            } catch (e) {}
             // Theme-aware icon: pick the dark variant if Zotero's
             // UI is currently dark. Theme is detected once at
             // registration; switching theme mid-session won't swap
@@ -1203,7 +1214,11 @@ class WeaveroPlugin {
             // no live-update path), but startup is the dominant
             // case anyway.
             const theme = this._detectUIDark() ? "dark" : "light";
-            Zotero.PreferencePanes.register({
+            // Zotero.PreferencePanes.register is async — without
+            // await, callers that immediately rely on the pane
+            // existing (e.g. the post-init "navigate to Weavero"
+            // path) race against the pane actually appearing.
+            await Zotero.PreferencePanes.register({
                 pluginID : "weavero@mjthoraval",
                 src      : _rootURI + "prefs.html",
                 scripts  : [_rootURI + "prefs.js"],
@@ -1849,7 +1864,7 @@ class WeaveroPlugin {
         }
 
         // 8. Preferences pane + apply saved icon pref
-        this._registerPrefPane();
+        await this._registerPrefPane();
 
         // 8b. If Settings was on the Weavero pane before this re-init
         //     (set in destroy()), navigate it back now that our pane is
@@ -2248,6 +2263,56 @@ class WeaveroPlugin {
                         catch(e) { Zotero.debug("[Weavero] note-css refresh err: " + e); }
                         this._urlRegexCache     = null;
                         this._urlSchemeAltCache = null;
+                        // Hard-reset every items-tree comment cell so
+                        // the next _markCellLinks pass rebuilds from
+                        // scratch with the new URL_SCHEME_ALT.
+                        //
+                        // Two reasons cache invalidation isn't enough:
+                        // 1. data-wv-last-rebuild rate-limit: cells
+                        //    rebuilt within 300 ms hit the cache HIT
+                        //    path on the observer's re-paint and keep
+                        //    their stale wrap. (Reset the timestamp.)
+                        // 2. data-render-mode encodes only "url"/
+                        //    "md"/"url+md"/"plain" — NOT which
+                        //    schemes were active. Mixed-content cells
+                        //    (e.g. "see https://... and zotero://...")
+                        //    keep cachedMode="url" before AND after
+                        //    a Zotero-Links toggle, so cacheValid
+                        //    stays true and only the http span is
+                        //    re-rendered while the zotero one stays
+                        //    stale. (Force a full rebuild by
+                        //    flattening the cell here.)
+                        try {
+                            const tdoc = Zotero.getMainWindow()?.document;
+                            if (tdoc) {
+                                for (const c of tdoc.querySelectorAll(
+                                        ".annotation-row.tight .cell.annotation-comment"
+                                        + "[data-has-rich]") as any) {
+                                    const stash = c.getAttribute("data-comment-text")
+                                        || (c.textContent || "")
+                                            .replace(/[\s ]*🔗\s*$/, "").trim();
+                                    c.textContent = stash;
+                                    c.setAttribute("data-comment-text", stash);
+                                    c.removeAttribute("data-wv-last-rebuild");
+                                    c.removeAttribute("data-has-rich");
+                                    c.removeAttribute("data-icon-wanted");
+                                    c.removeAttribute("data-has-url");
+                                    c.removeAttribute("data-truncated");
+                                }
+                                // Note / text annotation rows: text lives in
+                                // `.annotation-row .cell-text` and goes
+                                // through `_markTextLinks(.., {mode:"tree"})`.
+                                // Strip its cache attrs so the next pass
+                                // rebuilds with the new URL_SCHEME_ALT.
+                                for (const s of tdoc.querySelectorAll(
+                                        ".annotation-row .cell-text"
+                                        + "[data-wv-source]") as any) {
+                                    s.removeAttribute("data-wv-source");
+                                    s.removeAttribute("data-wv-rendered");
+                                    s.removeAttribute("data-wv-last-rebuild");
+                                }
+                            }
+                        } catch (e) {}
                         try { this._stripRightPane(); } catch(e) {}
                         for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
                             try {
@@ -2410,6 +2475,20 @@ class WeaveroPlugin {
             }
         } catch (e) {
             Zotero.debug("[Weavero] openPreferences un-patch err: " + e);
+        }
+
+        // 0c. Unregister Weavero pref pane(s). Without this, a
+        //     plugin reload (or any flow that calls destroy then
+        //     init) leaves the pane registered, and init's
+        //     register call adds a SECOND pane — Settings then
+        //     shows duplicate "Weavero" entries in the sidebar.
+        try {
+            const pp: any = Zotero.PreferencePanes;
+            const ours = pp.pluginPanes
+                .filter((p) => p.pluginID === "weavero@mjthoraval");
+            for (const p of ours) pp.unregister(p.id);
+        } catch (e) {
+            Zotero.debug("[Weavero] pref pane unregister err: " + e);
         }
 
         // 1. Tear down listeners / observers / timers.

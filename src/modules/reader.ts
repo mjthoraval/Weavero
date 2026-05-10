@@ -744,7 +744,12 @@ class _ReaderMixin {
         (doc.head || doc.documentElement).appendChild(s);
     }
 
-    _sidebarHandler = (event) => {
+    // Was `_sidebarHandler = (event) => { ... }` — an arrow-function
+    // class field. Moved into the WeaveroPlugin constructor as a
+    // bound shim that delegates here, since field initializers don't
+    // survive the prototype-mixin lift. Call sites still use
+    // `this._sidebarHandler` (the bound shim); body unchanged.
+    _sidebarHandlerImpl(event) {
         if (!this._getEnableReaderSidebar()) return;
         const { doc, append, params, reader } = event;
         const cmt = params.annotation.comment || "";
@@ -841,11 +846,12 @@ class _ReaderMixin {
         }
 
         if (appended) append(group);
-    };
+    }
 
     // ---- Reader context menu ----------------------------------------------
 
-    _contextHandler = (event) => {
+    // See _sidebarHandlerImpl — same arrow-field-to-method transform.
+    _contextHandlerImpl(event) {
         const { append, params, reader } = event;
         const ids = params.ids || [];
         const lib = this.libraryIDFromReader(reader);
@@ -944,7 +950,7 @@ class _ReaderMixin {
                     "[Weavero] _contextHandler add-related append err: " + e);
             }
         }
-    };
+    }
 
     /** Open Zotero's standard select-items dialog filtered to the
      *  annotation's library, then add a symmetric `dc:relation` triple

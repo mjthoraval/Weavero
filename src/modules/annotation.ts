@@ -13,6 +13,12 @@ declare const ZoteroPane: any;
 declare const Components: any;
 declare const ChromeUtils: any;
 
+// Module-level constants exposed to the host class via getters
+// on the mixin prototype (class field initializers don't survive
+// the prototype-mixin lift — see filter.ts for the same pattern).
+const _MD_REGEX_DATA =
+    /(\*\*[\s\S]+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|~~[\s\S]+?~~|`[^`\n]+?`|\[[^\]\n]+?\]\([^)\s]+\))/;
+
 class _AnnotationMixin {
     normalize(t) { return t ? String(t).replace(this.INVISIBLE_RE, "") : ""; }
     hasURI(t)    { return !!t && this.URL_REGEX.test(this.normalize(t)); }
@@ -42,8 +48,12 @@ class _AnnotationMixin {
         return false;
     }
     /** Markdown marks that the popup renders. Cheap regex; runs only on
-     * comments that already failed the hasURI fast path. */
-    MD_REGEX = /(\*\*[\s\S]+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|~~[\s\S]+?~~|`[^`\n]+?`|\[[^\]\n]+?\]\([^)\s]+\))/;
+     * comments that already failed the hasURI fast path.
+     * (Class field syntax wouldn't survive the prototype-mixin lift —
+     * field initializers don't appear on the prototype's descriptor
+     * set. Getter binds to a module-level constant, same identity
+     * every access.) */
+    get MD_REGEX() { return _MD_REGEX_DATA; }
     /** Layout / rendering predicate: does this comment have any URL or
      *  markdown content that the popup or inline renderer would format?
      *  NOT a mode-aware icon-show predicate — for that, see _iconWantedFor.

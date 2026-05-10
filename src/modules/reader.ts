@@ -1,11 +1,3 @@
-// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
-// is partial: the smaller modules (url, annotation, tabs,
-// note-editor, constants, prefs) are now fully type-checked,
-// but reader.ts has ~40 zotero-types signature-drift mismatches
-// (mostly arity differences on Zotero internal methods and
-// loose intersection types from anonymous record state) that
-// need per-call audit. Deferred.
-
 // Module: reader and popup rendering — the largest module by
 // line count.
 //
@@ -96,7 +88,7 @@ class _ReaderMixin {
         return panel;
     }
 
-    _makeLink(doc, url, panel, label) {
+    _makeLink(doc, url, panel, label?) {
         const ns = "http://www.w3.org/1999/xhtml";
         const a = doc.createElementNS(ns, "a");
         a.href = url;
@@ -240,7 +232,7 @@ class _ReaderMixin {
         return btn;
     }
 
-    openCommentPopup(comment, opts = {}) {
+    openCommentPopup(comment, opts: any = {}) {
         if (!comment && !(opts.extraURLs && opts.extraURLs.length)) return;
         const win  = Zotero.getMainWindow();
         const doc  = win.document;
@@ -455,7 +447,7 @@ class _ReaderMixin {
      *  Doesn't reuse openCommentPopup itself because the content is
      *  rendered as a list of clickable item rows, not parsed as
      *  markdown. */
-    openRelationsPopup(annotationItem, opts = {}) {
+    openRelationsPopup(annotationItem, opts: any = {}) {
         if (!annotationItem) return;
         const win  = Zotero.getMainWindow();
         const doc  = win.document;
@@ -986,7 +978,7 @@ class _ReaderMixin {
             await io.deferred.promise;
             if (!io.dataOut || !io.dataOut.length) return;
 
-            const targets = await Zotero.Items.getAsync(io.dataOut);
+            const targets: any = await Zotero.Items.getAsync(io.dataOut);
             if (!targets.length) return;
             // Cross-library relations aren't supported by Zotero's
             // relation predicate (URIs are library-scoped). Same alert
@@ -1392,7 +1384,7 @@ class _ReaderMixin {
             if (!iwin || !iwin.document) return;
             const idoc = iwin.document;
             if (!idoc.body) {
-                await new Promise(resolve => {
+                await new Promise<void>(resolve => {
                     if (idoc.readyState === "complete") return resolve();
                     iwin.addEventListener("load", resolve, { once: true });
                 });
@@ -2266,7 +2258,7 @@ class _ReaderMixin {
                 }
                 return 0.299 * r + 0.587 * g + 0.114 * b;
             };
-            const sample = (el, propName) => {
+            const sample = (el, propName?) => {
                 if (!el) return null;
                 const cs = win && win.getComputedStyle(el);
                 if (!cs) return null;
@@ -2427,7 +2419,7 @@ class _ReaderMixin {
     _refreshPrefPaneIcon(isDark) {
         try {
             const theme = isDark ? "dark" : "light";
-            const newURL = _rootURI + "icons/icon-" + theme + "-32.png";
+            const newURL = this._rootURI + "icons/icon-" + theme + "-32.png";
             const pluginID = "weavero@mjthoraval";
             const panes = (Zotero.PreferencePanes
                 && Zotero.PreferencePanes.pluginPanes) || [];
@@ -2441,7 +2433,7 @@ class _ReaderMixin {
             if (!ours.length) return;
             const wins = Services.wm.getEnumerator("zotero:pref");
             while (wins.hasMoreElements()) {
-                const w = wins.getNext();
+                const w = wins.getNext() as any;
                 try {
                     const wdoc = w.document;
                     for (const pane of ours) {
@@ -2789,7 +2781,7 @@ class _ReaderMixin {
             this._annotationDragTrackers = new WeakMap();
         }
         if (this._annotationDragTrackers.has(reader)) return;
-        const state = { active: false, raf: 0 };
+        const state: any = { active: false, raf: 0 };
         const readAction = () => {
             try {
                 const iwin = reader._iframeWindow;

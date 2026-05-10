@@ -1,11 +1,3 @@
-// @ts-nocheck — see note in src/index.ts. Phase 3 type cleanup
-// is partial: the smaller modules (url, annotation, tabs,
-// note-editor, constants, prefs) are now fully type-checked,
-// but filter.ts has ~27 zotero-types signature-drift mismatches
-// (mostly arity differences on Zotero internal methods and
-// `unknown` typing on .sort() comparators) that need per-call
-// audit. Deferred.
-
 // Module: items-tree filter pane — the largest module by line
 // count and by method count.
 //
@@ -234,10 +226,10 @@ class _FilterMixin {
             // wrapper. This way fresh-prop renders get re-patched.
             const vTable = itemsView.tree;
             if (vTable && vTable.props) {
-                const propOrig = vTable.props.isSelectable;
+                const propOrig = vTable.props.isSelectable as any;
                 if (typeof propOrig === "function" && !propOrig._wvWrapped) {
                     try {
-                        const wrapped = gateFn(propOrig);
+                        const wrapped: any = gateFn(propOrig);
                         wrapped._wvWrapped = true;
                         vTable.props.isSelectable = wrapped;
                     } catch (e) {
@@ -761,7 +753,7 @@ class _FilterMixin {
      *  `_rowSatisfiesTreeJoin`; "did this row hit on its own kind?"
      *  is handled by `_rowHasOwnKindMatch`. Universal filters (tag,
      *  author, addedBy with the row in scope) apply to every row. */
-    _rowPassesFilters(item, group, opts) {
+    _rowPassesFilters(item, group, opts?) {
         if (!item || !group) return false;
         opts = opts || {};
 
@@ -1485,7 +1477,7 @@ class _FilterMixin {
         // "type", "menu")` + `dropmarker.append(this.searchModePopup)`).
         // Inherits `.zotero-tb-button` styling and the universal
         // filter.svg icon (themed via context-fill).
-        const tbBtn = doc.createXULElement("toolbarbutton");
+        const tbBtn: any = doc.createXULElement("toolbarbutton");
         tbBtn.id = "wv-filter-tb-button";
         tbBtn.className = "zotero-tb-button";
         tbBtn.setAttribute("type", "menu");
@@ -1826,7 +1818,7 @@ class _FilterMixin {
                 if (bar) bar.remove();
                 const tbBtn = doc.getElementById("wv-filter-tb-button");
                 if (tbBtn) tbBtn.remove();
-                for (const row of doc.querySelectorAll(".row.wv-filter-hidden")) {
+                for (const row of doc.querySelectorAll(".row.wv-filter-hidden") as any) {
                     row.classList.remove("wv-filter-hidden");
                 }
                 const popup = doc.getElementById("wv-filter-popup");
@@ -2036,7 +2028,7 @@ class _FilterMixin {
         try { this._applySelectionTargetVisuals(); } catch (e) {}
         const win = Zotero.getMainWindow();
         const doc = win && win.document;
-        const popup = doc && doc.getElementById("wv-filter-popup");
+        const popup: any = doc && doc.getElementById("wv-filter-popup");
         if (popup
             && (popup.state === "open" || popup.state === "showing")) {
             const inner = popup.querySelector(".wv-filter-panel-inner");
@@ -2110,7 +2102,7 @@ class _FilterMixin {
         this._openFilterPanel();
     }
 
-    _buildColorChip(doc, group, gi, exclude) {
+    _buildColorChip(doc, group, gi, exclude?) {
         const colors = exclude ? group.annotationColorExclude : group.annotationColor;
         return this._buildFilterChip(doc, {
             field: "Annotation Color",
@@ -2140,7 +2132,7 @@ class _FilterMixin {
         });
     }
 
-    _buildTypeChip(doc, group, gi, exclude) {
+    _buildTypeChip(doc, group, gi, exclude?) {
         const types = exclude ? group.annotationTypeExclude : group.annotationType;
         return this._buildFilterChip(doc, {
             field: "Annotation Type",
@@ -2261,7 +2253,7 @@ class _FilterMixin {
         });
     }
 
-    _buildPublicationChip(doc, group, gi, exclude) {
+    _buildPublicationChip(doc, group, gi, exclude?) {
         const list = exclude ? group.publicationExclude : group.publication;
         return this._buildFilterChip(doc, {
             field: "Publication",
@@ -2278,7 +2270,7 @@ class _FilterMixin {
 
 
 
-    _buildTagChip(doc, group, gi, exclude) {
+    _buildTagChip(doc, group, gi, exclude?) {
         const tags = exclude ? group.annotationTagExclude : group.annotationTag;
         return this._buildFilterChip(doc, {
             field: "Tag",
@@ -2293,7 +2285,7 @@ class _FilterMixin {
         });
     }
 
-    _buildAuthorChip(doc, group, gi, exclude) {
+    _buildAuthorChip(doc, group, gi, exclude?) {
         const authors = exclude ? group.annotationAuthorExclude : group.annotationAuthor;
         return this._buildFilterChip(doc, {
             field: "Author",
@@ -2308,7 +2300,7 @@ class _FilterMixin {
         });
     }
 
-    _buildItemTypeChip(doc, group, gi, exclude) {
+    _buildItemTypeChip(doc, group, gi, exclude?) {
         const types = exclude ? group.itemTypeExclude : group.itemType;
         const NS_HTML = "http://www.w3.org/1999/xhtml";
         return this._buildFilterChip(doc, {
@@ -2340,7 +2332,7 @@ class _FilterMixin {
         });
     }
 
-    _buildAttachmentFileTypeChip(doc, group, gi, exclude) {
+    _buildAttachmentFileTypeChip(doc, group, gi, exclude?) {
         const kinds = exclude ? group.attachmentFileTypeExclude : group.attachmentFileType;
         const labelOf = (k) => {
             const def = this._ATTACHMENT_FILE_TYPES.find(x => x.value === k);
@@ -2361,7 +2353,7 @@ class _FilterMixin {
         });
     }
 
-    _buildAddedByChip(doc, group, gi, exclude) {
+    _buildAddedByChip(doc, group, gi, exclude?) {
         const users = exclude ? group.addedByExclude : group.addedBy;
         const colorOn = this._getEnableAddedByColors();
         const NS_HTML = "http://www.w3.org/1999/xhtml";
@@ -2615,7 +2607,7 @@ class _FilterMixin {
         // `rightSlot`, when provided, is appended on the right side
         // of the header (margin-left: auto); used by the first
         // header to host the Clear-filter × button.
-        const addGroupHeader = (label, todo, rightSlot) => {
+        const addGroupHeader = (label, todo?, rightSlot?) => {
             const hdr = doc.createElementNS(NS_HTML, "div");
             hdr.className = "wv-filter-group-header";
             const t = doc.createElementNS(NS_HTML, "span");
@@ -2772,7 +2764,7 @@ class _FilterMixin {
         const win = Zotero.getMainWindow();
         if (!win) return;
         const doc = win.document;
-        const tbBtn = doc.getElementById("wv-filter-tb-button");
+        const tbBtn: any = doc.getElementById("wv-filter-tb-button");
         if (!tbBtn) return;
         // `open` is the XUL menubutton API for programmatically
         // showing the child popup; mirrors a click on the button.
@@ -2853,7 +2845,7 @@ class _FilterMixin {
                 icon.src = "chrome://zotero/skin/16/universal/tag.svg";
                 let color = "var(--accent-orange)";
                 try {
-                    const c = Zotero.Tags.getColor(libraryID, id);
+                    const c: any = Zotero.Tags.getColor(libraryID, id);
                     if (c && c.color) color = c.color;
                 } catch (e) {}
                 icon.style.color = color;
@@ -2870,14 +2862,14 @@ class _FilterMixin {
             styleButton: (btn, id /*, selected */) => {
                 let color = null;
                 try {
-                    const c = Zotero.Tags.getColor(libraryID, id);
+                    const c: any = Zotero.Tags.getColor(libraryID, id);
                     if (c && c.color) color = c.color;
                 } catch (e) {}
                 let isEmoji = false;
                 try {
-                    isEmoji = !!(Zotero.Utilities.Internal
-                        && Zotero.Utilities.Internal.containsEmoji
-                        && Zotero.Utilities.Internal.containsEmoji(id));
+                    const internal: any = Zotero.Utilities.Internal;
+                    isEmoji = !!(internal && internal.containsEmoji
+                        && internal.containsEmoji(id));
                 } catch (e) {}
                 if (color) {
                     btn.classList.add("wv-filter-tag-colored");
@@ -3095,7 +3087,7 @@ class _FilterMixin {
             verticalList: true,
             getValues: async () => {
                 try {
-                    return (Zotero.Searches.getByLibrary(libraryID) || [])
+                    return ((Zotero.Searches as any).getByLibrary(libraryID) || [])
                         .map(s => ({ id: s.id, name: s.name }))
                         .sort((a, b) => a.name.localeCompare(b.name));
                 } catch (e) {
@@ -3684,11 +3676,11 @@ class _FilterMixin {
                         return { id: t.name, name: label };
                     });
                 const allById = new Map(all.map(v => [v.id, v]));
-                const wvMru = (Zotero.Prefs.get(
-                    "extensions.zotero.weavero.itemTypeFilterMRU", true) || "")
+                const wvMru = (String(Zotero.Prefs.get(
+                    "extensions.zotero.weavero.itemTypeFilterMRU", true)) || "")
                     .split(",").filter(Boolean);
-                const zMru = (Zotero.Prefs.get(
-                    "newItemTypeMRU") || "").split(",").filter(Boolean);
+                const zMru = (String(Zotero.Prefs.get(
+                    "newItemTypeMRU")) || "").split(",").filter(Boolean);
                 // Cap at 5 to match Zotero's "New Item" toolbar
                 // button (zoteroPane.js stores 5 in `newItemTypeMRU`).
                 // Higher caps were confusing — users expect the same
@@ -3718,7 +3710,7 @@ class _FilterMixin {
         const bumpMRU = (id) => {
             try {
                 const KEY = "extensions.zotero.weavero.itemTypeFilterMRU";
-                const cur = (Zotero.Prefs.get(KEY, true) || "")
+                const cur = (String(Zotero.Prefs.get(KEY, true)) || "")
                     .split(",").filter(Boolean);
                 const i = cur.indexOf(id);
                 if (i !== -1) cur.splice(i, 1);
@@ -4356,7 +4348,7 @@ class _FilterMixin {
         // Zotero's `$item-pane-sections` palette entries so the
         // Has-* tiles read as the same surface as their right-pane
         // section header.
-        const buildBtn = (key, label, iconSrc, tip, color) => {
+        const buildBtn = (key, label, iconSrc, tip, color?) => {
             const cur = g0 ? g0[key] : null;
             const btn = doc.createElementNS(NS_HTML, "button");
             btn.type = "button";
@@ -4822,7 +4814,7 @@ class _FilterMixin {
         } catch (e) {
             Zotero.debug("[Weavero][filter] annotation authors query err: " + e);
         }
-        return [...names].sort((a, b) => a.localeCompare(b));
+        return [...names].sort((a: any, b: any) => a.localeCompare(b));
     }
 
     _renderAuthorSection(doc, section, refreshAll) {
@@ -5083,11 +5075,11 @@ class _FilterMixin {
             const names = new Set();
             for (const uid of ids) {
                 if (uid != null && Zotero.Users && Zotero.Users.getName) {
-                    const n = Zotero.Users.getName(uid);
+                    const n = Zotero.Users.getName(uid as any);
                     if (n) names.add(n);
                 }
             }
-            return [...names].sort((a, b) => a.localeCompare(b));
+            return [...names].sort((a: any, b: any) => a.localeCompare(b));
         } catch (e) {
             Zotero.debug("[Weavero][filter] _collectAddedByUsers err: " + e);
             return [];
@@ -5222,7 +5214,7 @@ class _FilterMixin {
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
         let searches = [];
         try {
-            searches = (Zotero.Searches.getByLibrary(libraryID) || [])
+            searches = ((Zotero.Searches as any).getByLibrary(libraryID) || [])
                 .map(s => ({ id: s.id, name: s.name }))
                 .sort((a, b) => a.name.localeCompare(b.name));
         } catch (e) {
@@ -5549,7 +5541,7 @@ class _FilterMixin {
      *       count + row data.
      *
      *  On filter clear, restore the saved originals and re-invalidate. */
-    _applyItemsListFilter(opts) {
+    _applyItemsListFilter(opts?) {
         // Guard — `tree.invalidate()` re-renders rows, which fires the
         // tree mutation observer that calls us back. Without this we'd
         // recurse on every filter apply.
@@ -5565,7 +5557,7 @@ class _FilterMixin {
         }
     }
 
-    _applyItemsListFilterInner(opts) {
+    _applyItemsListFilterInner(opts?) {
         // Auto-expand cascade is opt-IN. The MutationObserver-fired
         // reapply must NOT cascade (it would re-open every parent the
         // user just collapsed via the twisty/`-` key). Only the
@@ -5981,7 +5973,7 @@ class _FilterMixin {
         // Materialise the deduped keep set as a sorted array. The
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
-        const keep = [...keepSet].sort((a, b) => a - b);
+        const keep = [...keepSet].sort((a: number, b: number) => a - b);
 
         Zotero.debug("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
@@ -6012,8 +6004,8 @@ class _FilterMixin {
         // itemSelected -> getRow(...).ref` would still throw on
         // `.ref`, but the fix below (sync reapply before listeners
         // fire) prevents that path from being reached.
-        const safeReal = function (idx) {
-            const r = keep[idx];
+        const safeReal = function (idx): number {
+            const r = keep[idx] as number;
             if (r === undefined) return -1;
             if (r >= rp._rows.length) return -1;
             return r;

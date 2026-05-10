@@ -1,14 +1,3 @@
-// @ts-nocheck — Phase 3 type cleanup deferred. pane.ts has ~70
-// errors clustered into a few patterns: many Node-vs-Element
-// narrowings on iteration variables (querySelector / getAttribute
-// / classList missing on Node), the items-tree column registration
-// signature drift (our handlers return number; zotero-types declares
-// string), the cell-click pointer-targets state record gaining extra
-// properties after the object literal is created, and a couple of
-// custom-DOM-property bags (_wvUrlTitleListener). Tractable, just
-// not a five-minute job. Other modules (url, annotation, tabs,
-// note-editor, constants, prefs) are now type-checked.
-
 // Module: right-pane processing + items-tree click + items-tree
 // columns + libraries box highlight + reader's annotation context
 // menu (decorateContextMenu).
@@ -399,7 +388,7 @@ class _PaneMixin {
         }
         try {
             const doc = Zotero.getMainWindow().document;
-            const allCells = doc.querySelectorAll(
+            const allCells: any = doc.querySelectorAll(
                     ".annotation-row.tight .cell.annotation-comment");
             this._dbg("[Weavero] _markCellLinks: found " + allCells.length + " annotation cells");
             let stamped = 0;
@@ -765,7 +754,7 @@ class _PaneMixin {
             // (See itemTreeRow.js — `.annotation-comment` is added
             // only for `["highlight", "underline"].includes(type)`
             // AND when `annotationComment` is set.)
-            const otherRows = doc.querySelectorAll(".annotation-row");
+            const otherRows: any = doc.querySelectorAll(".annotation-row");
             for (const row of otherRows) {
                 if (row.querySelector(":scope > .cell.annotation-comment")) {
                     continue; // handled in the loop above
@@ -820,7 +809,7 @@ class _PaneMixin {
                 + (exc.attachment ? 1 : 0)
                 + (exc.annotation ? 1 : 0);
             const noFilter = (incCount === 0 && excCount === 0);
-            const rows = tree.querySelectorAll(".row");
+            const rows: any = tree.querySelectorAll(".row");
             for (const row of rows) {
                 if (noFilter) {
                     row.classList.remove("wv-not-target");
@@ -863,7 +852,7 @@ class _PaneMixin {
             const itemsTree = doc.getElementById("item-tree-main")
                 || doc.getElementById("item-tree-main-default");
             if (!itemsTree) return;
-            const cells = itemsTree.querySelectorAll(
+            const cells: any = itemsTree.querySelectorAll(
                 ".row .cell.addedBy");
             const colorOn = this._getEnableAddedByColors();
             const NS_HTML = "http://www.w3.org/1999/xhtml";
@@ -927,7 +916,7 @@ class _PaneMixin {
             const zp = win && win.ZoteroPane;
             const view = zp && zp.itemsView;
             if (!view || typeof view.getRow !== "function") return null;
-            const r = view.getRow(index);
+            const r: any = view.getRow(index);
             return (r && r.ref) || null;
         } catch (e) { return null; }
     }
@@ -981,7 +970,7 @@ class _PaneMixin {
             // attachments when it's a regular item. Annotations
             // themselves and notes get 0 — Zotero only shows
             // annotations under attachment containers.
-            const annKey = Zotero.ItemTreeManager.registerColumn({
+            const annKey = (Zotero.ItemTreeManager as any).registerColumn({
                 dataKey: "weaveroAnnotations",
                 label: "Annotations",
                 pluginID: "weavero@mjthoraval",
@@ -1090,7 +1079,7 @@ class _PaneMixin {
                 return { manual: m, auto: a };
             };
 
-            const tagsKey = Zotero.ItemTreeManager.registerColumn({
+            const tagsKey = (Zotero.ItemTreeManager as any).registerColumn({
                 dataKey: "weaveroTags",
                 label: "Tags",
                 pluginID: "weavero@mjthoraval",
@@ -1124,7 +1113,7 @@ class _PaneMixin {
                         const itemsView = win && win.ZoteroPane
                             && win.ZoteroPane.itemsView;
                         if (itemsView) {
-                            const row = itemsView.getRow(index);
+                            const row: any = itemsView.getRow(index);
                             const item = row && row.ref;
                             if (item) {
                                 const isContainer = itemsView.isContainer(index);
@@ -1209,7 +1198,7 @@ class _PaneMixin {
                 return total;
             };
 
-            const relKey = Zotero.ItemTreeManager.registerColumn({
+            const relKey = (Zotero.ItemTreeManager as any).registerColumn({
                 dataKey: "weaveroRelated",
                 label: "Related",
                 pluginID: "weavero@mjthoraval",
@@ -1251,14 +1240,14 @@ class _PaneMixin {
                             const isOpen = isContainer
                                 && itemsView.isContainerOpen(index);
                             if (isOpen) {
-                                const row = itemsView.getRow(index);
+                                const row: any = itemsView.getRow(index);
                                 const item = row && row.ref;
                                 display = (item && item.relatedItems
                                     && item.relatedItems.length) || 0;
                             }
                         }
                     } catch (e) {}
-                    span.textContent = (display > 0) ? String(display) : "";
+                    span.textContent = (Number(display) > 0) ? String(display) : "";
                     return span;
                 },
             });
@@ -1380,7 +1369,7 @@ class _PaneMixin {
     /** Toggle data-truncated on cells whose text-wrap is overflowing. */
     _updateTruncationFlags() {
         const doc = Zotero.getMainWindow().document;
-        const cells = doc.querySelectorAll(
+        const cells: any = doc.querySelectorAll(
             ".annotation-row.tight .cell.annotation-comment[data-has-rich]");
         let n = 0;
         for (const cell of cells) {
@@ -1450,7 +1439,7 @@ class _PaneMixin {
         // strip but well before Mozilla's 500ms tooltip delay. The
         // handler re-sets `title` from the span's `data-href` (markdown
         // links) or its text content (bare URLs).
-        const treeXul = doc.getElementById("item-tree-main")
+        const treeXul: any = doc.getElementById("item-tree-main")
             || doc.getElementById("item-tree-main-default");
         if (treeXul && !treeXul._wvUrlTitleListener) {
             // React 17+ uses event delegation: its `onMouseOver`
@@ -1512,7 +1501,7 @@ class _PaneMixin {
         // or `.wv-link` element. Suppresses Zotero's own row context
         // menu so the user gets just the link-relevant action.
         if (!this._urlMenuState) {
-            const ms = { el: null, url: "" };
+            const ms: any = { el: null, url: "" };
             const ensureMenu = () => {
                 if (ms.el) return ms.el;
                 const m = doc.createElement("div");
@@ -1696,7 +1685,7 @@ class _PaneMixin {
             const collectPointerTargets = () => {
                 const targets = [doc];
                 try {
-                    for (const f of doc.querySelectorAll("iframe")) {
+                    for (const f of doc.querySelectorAll("iframe") as any) {
                         const fd = f.contentDocument;
                         if (fd) targets.push(fd);
                     }
@@ -2777,7 +2766,7 @@ class _PaneMixin {
             for (const it of selected) {
                 if (it) candidates.add(it);
             }
-            for (const owner of candidates) {
+            for (const owner of candidates as any) {
                 const keys = (owner && owner.relatedItems) || [];
                 for (const k of keys) {
                     let it;

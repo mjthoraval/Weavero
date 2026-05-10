@@ -1,14 +1,3 @@
-// @ts-nocheck — see note below.
-// Phase 3 type cleanup is partial: the smaller modules
-// (url, annotation, constants, prefs) are now fully type-checked.
-// This file (the WeaveroPlugin class shell + lifecycle + prefs
-// getters + handleZoteroURI) and the three large mixin modules
-// (reader, pane, filter, plus tabs and note-editor) keep
-// // @ts-nocheck for now. The mostly-DOM-narrowing errors don't
-// block runtime — they reflect zotero-types signature drift on
-// internal Zotero APIs. Tightening per-call is left as a
-// follow-up.
-//
 // Weavero — bundled main module.
 //
 // `bootstrap.js` (a thin plain-JS shim) loads this file via
@@ -20,15 +9,6 @@
 // is bundled here. Module-by-module split is layered on top in
 // later commits.
 //
-// `// @ts-check` was used during the v0.7 toolchain bring-up to
-// surface latent bugs — three real ones were caught and fixed.
-// It's `// @ts-nocheck` now: the remaining ~170 type errors on
-// this single 19k-line file are DOM Node-vs-Element narrowing
-// noise (querySelector returns Element, parentNode returns Node,
-// etc.) — not real bugs, but they pollute `npm run typecheck`
-// and would block CI from being a hard typecheck gate.
-// Phase 3 of the TS migration tackles them per-module.
-
 import {
     STYLE_ID, PANEL_ID,
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS,
@@ -52,6 +32,14 @@ let _rootURI = "";
 // ===========================================================================
 
 class WeaveroPlugin {
+    // The mixin pattern (Object.defineProperties + getOwnPropertyDescriptors
+    // applied below the class definition) means TS doesn't see any of the
+    // ~240 methods that get glued onto the prototype at module load. Same
+    // for instance fields set in the constructor \u2014 they're not declared
+    // here. The index signature lets cross-mixin `this.foo()` and
+    // `this._fieldName` access resolve to `any`, matching the runtime
+    // shape of the assembled plugin.
+    [k: string]: any;
 
     INVISIBLE_RE = /[\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/g;
     TRAILING_RE  = /[.,;:!?)\]\}>'"`]+$/;
@@ -122,9 +110,9 @@ class WeaveroPlugin {
         try {
             const u = new URL(url);
             const parts = u.pathname.split("/").filter(Boolean);
-            const getLib = () => {
+            const getLib = (): number => {
                 if (parts[0] === "groups")
-                    return Zotero.Groups.getLibraryIDFromGroupID(Number(parts[1]));
+                    return Zotero.Groups.getLibraryIDFromGroupID(Number(parts[1])) as number;
                 return Zotero.Libraries.userLibraryID;
             };
             const lastKey = parts[parts.length - 1];
@@ -191,7 +179,7 @@ class WeaveroPlugin {
             if (url.startsWith("zotero://open")) {
                 const item = Zotero.Items.getByLibraryAndKey(getLib(), lastKey);
                 if (!item) return;
-                const loc = {};
+                const loc: any = {};
                 const page = u.searchParams.get("page");
                 const ann  = u.searchParams.get("annotation");
                 if (page !== null) loc.pageIndex = Number(page) - 1;
@@ -424,7 +412,7 @@ class WeaveroPlugin {
             //    mutations that fire the tree observer in a tight loop and
             //    freeze Zotero.
             for (const cell of doc.querySelectorAll(
-                    ".annotation-row.tight .cell.annotation-comment")) {
+                    ".annotation-row.tight .cell.annotation-comment") as any) {
                 const isDirty =
                     cell.querySelector(".wv-text-wrap, .wv-tree-icon, .wv-tree-rel-icon, .wv-url-span")
                     || cell.hasAttribute("data-comment-text")
@@ -458,15 +446,15 @@ class WeaveroPlugin {
             //    `.annotation-row` is the items-tree class — the right-pane
             //    uses the `<annotation-row>` custom *element*, which is a
             //    different selector and won't match.
-            for (const span of doc.querySelectorAll(".annotation-row .wv-url-span")) {
+            for (const span of doc.querySelectorAll(".annotation-row .wv-url-span") as any) {
                 span.replaceWith(doc.createTextNode(span.textContent || ""));
             }
             // 3. Remove any leftover tree icons that escaped the cell flatten.
-            for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-icon")) {
+            for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-icon") as any) {
                 ic.remove();
             }
             // 3b. Same for the relations icon.
-            for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-rel-icon")) {
+            for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-rel-icon") as any) {
                 ic.remove();
             }
         } catch(e) {
@@ -480,29 +468,25 @@ class WeaveroPlugin {
     _stripRightPane() {
         try {
             const doc = Zotero.getMainWindow().document;
-            for (const span of doc.querySelectorAll(
-                    "annotation-row .wv-url-span")) {
+            for (const span of doc.querySelectorAll("annotation-row .wv-url-span") as any) {
                 span.replaceWith(doc.createTextNode(span.textContent || ""));
             }
             // Revert inline-md rendering: restore the comment text from the
             // cached raw source so disabling the feature gives the user back
             // the original (markered) text instead of a stripped view.
-            for (const cmt of doc.querySelectorAll(
-                    "annotation-row .comment[data-wv-raw]")) {
+            for (const cmt of doc.querySelectorAll("annotation-row .comment[data-wv-raw]") as any) {
                 const raw = cmt.getAttribute("data-wv-raw") || "";
                 while (cmt.firstChild) cmt.removeChild(cmt.firstChild);
                 cmt.appendChild(doc.createTextNode(raw));
                 cmt.removeAttribute("data-wv-raw");
                 cmt.removeAttribute("data-wv-source");
             }
-            for (const btn of doc.querySelectorAll(
-                    "annotation-row .wv-btn-pane")) {
+            for (const btn of doc.querySelectorAll("annotation-row .wv-btn-pane") as any) {
                 btn.remove();
             }
             // Related-box label rendering: replace decorated labels
             // with a flat textNode of the same text.
-            for (const label of doc.querySelectorAll(
-                    "related-box .body .row .label[data-wv-related-rendered]")) {
+            for (const label of doc.querySelectorAll("related-box .body .row .label[data-wv-related-rendered]") as any) {
                 const t = label.dataset.wvRelatedRendered || label.textContent || "";
                 while (label.firstChild) label.removeChild(label.firstChild);
                 label.appendChild(doc.createTextNode(t));
@@ -684,7 +668,7 @@ class WeaveroPlugin {
                 ".annotation .comment .wv-url-span",
             ];
             for (const sel of sels) {
-                for (const span of idoc.querySelectorAll(sel)) {
+                for (const span of idoc.querySelectorAll(sel) as any) {
                     if (span.closest(".annotation-popup")) continue;
                     span.replaceWith(idoc.createTextNode(span.textContent || ""));
                 }
@@ -696,7 +680,7 @@ class WeaveroPlugin {
             for (const cmt of idoc.querySelectorAll(
                     ".annotation-row .comment, .annotation .comment")) {
                 if (cmt.closest(".annotation-popup")) continue;
-                for (const p of cmt.querySelectorAll(".wv-md-preview")) p.remove();
+                for (const p of cmt.querySelectorAll(".wv-md-preview") as any) p.remove();
                 cmt.classList.remove("wv-comment-preview");
                 cmt.classList.remove("wv-editing");
                 // Clear the rebuild rate-limit timestamp so the next
@@ -711,7 +695,7 @@ class WeaveroPlugin {
                 if (span.closest(".annotation-popup")) continue;
                 span.replaceWith(idoc.createTextNode(span.textContent || ""));
             }
-            for (const btn of idoc.querySelectorAll("." + BTN_SIDEBAR_CLASS)) {
+            for (const btn of idoc.querySelectorAll("." + BTN_SIDEBAR_CLASS) as any) {
                 btn.remove();
             }
         } catch(e) { Zotero.debug("[Weavero] _stripReaderSidebar: " + e); }
@@ -731,13 +715,13 @@ class WeaveroPlugin {
             return;
         }
         try {
-            for (const b of idoc.querySelectorAll(".wv-marker-badge")) b.remove();
-            for (const b of idoc.querySelectorAll(".wv-text-annotation-btn")) b.remove();
-            for (const popup of idoc.querySelectorAll(".annotation-popup")) {
-                for (const span of popup.querySelectorAll(".wv-url-span")) {
+            for (const b of idoc.querySelectorAll(".wv-marker-badge") as any) b.remove();
+            for (const b of idoc.querySelectorAll(".wv-text-annotation-btn") as any) b.remove();
+            for (const popup of idoc.querySelectorAll(".annotation-popup") as any) {
+                for (const span of popup.querySelectorAll(".wv-url-span") as any) {
                     span.replaceWith(idoc.createTextNode(span.textContent || ""));
                 }
-                for (const btn of popup.querySelectorAll("." + BTN_POPUP_CLASS)) {
+                for (const btn of popup.querySelectorAll("." + BTN_POPUP_CLASS) as any) {
                     btn.remove();
                 }
             }
@@ -792,7 +776,7 @@ class WeaveroPlugin {
                         }
                     }
                     if (surface === "readerView") {
-                        for (const popup of outerDoc.querySelectorAll(".annotation-popup")) {
+                        for (const popup of outerDoc.querySelectorAll(".annotation-popup") as any) {
                             this._injectIconIntoPopup(popup, reader);
                         }
                     }
@@ -809,7 +793,7 @@ class WeaveroPlugin {
                         innerDoc = cached && cached.innerDoc;
                     } catch(e) {}
                     if (!innerDoc && outerDoc) {
-                        for (const f of outerDoc.querySelectorAll("iframe")) {
+                        for (const f of outerDoc.querySelectorAll("iframe") as any) {
                             try {
                                 const cd = f.contentDocument;
                                 if (cd && (cd.URL || "").includes("viewer.html")) {
@@ -851,7 +835,7 @@ class WeaveroPlugin {
             // .wv-text-wrap directly would wipe the cell content (the wrap
             // holds the text), leaving _markCellLinks nothing to rebuild.
             for (const cell of doc.querySelectorAll(
-                    ".annotation-row.tight .cell.annotation-comment")) {
+                    ".annotation-row.tight .cell.annotation-comment") as any) {
                 let text = cell.getAttribute("data-comment-text");
                 if (!text) {
                     const wrap = cell.querySelector(".wv-text-wrap");
@@ -885,8 +869,7 @@ class WeaveroPlugin {
             // each retry rebuilds at most once, then is blocked again
             // until the next retry's clear.
             const tryRecover = () => {
-                for (const cell of doc.querySelectorAll(
-                        ".annotation-row.tight .cell.annotation-comment")) {
+                for (const cell of doc.querySelectorAll(".annotation-row.tight .cell.annotation-comment") as any) {
                     cell.removeAttribute("data-wv-last-rebuild");
                 }
                 try { this._markCellLinks(); } catch(e) {}
@@ -914,7 +897,7 @@ class WeaveroPlugin {
             // would force the next rebuild to read textContent and
             // permanently lose the markdown markers, leaving bold
             // unrendered after a disable/re-enable cycle.
-            for (const span of doc.querySelectorAll(".wv-url-span")) {
+            for (const span of doc.querySelectorAll(".wv-url-span") as any) {
                 let p = span.parentNode;
                 while (p && p.nodeType === 1) {
                     if (p.hasAttribute("data-wv-source")
@@ -954,7 +937,7 @@ class WeaveroPlugin {
                     // also invalidating the preview's data-source cache
                     // would leave them un-restored on the next pass (the
                     // cache hit makes _renderPreviewPanel skip the rebuild).
-                    for (const span of idoc.querySelectorAll(".wv-url-span")) {
+                    for (const span of idoc.querySelectorAll(".wv-url-span") as any) {
                         if (span.closest(".wv-md-preview")) continue;
                         span.replaceWith(idoc.createTextNode(span.textContent || ""));
                     }
@@ -972,7 +955,7 @@ class WeaveroPlugin {
                             "[Weavero] sidebar reinject (inline-links) err: " + e); }
                     }
                     // Re-evaluate any open in-PDF popups too.
-                    for (const popup of idoc.querySelectorAll(".annotation-popup")) {
+                    for (const popup of idoc.querySelectorAll(".annotation-popup") as any) {
                         this._injectIconIntoPopup(popup, reader);
                     }
                 } catch(e) {}
@@ -1415,8 +1398,8 @@ class WeaveroPlugin {
                 // Bounded by visible rows (typically <50 per surface)
                 // and gated on each surface pref, so this is cheap to
                 // run on every item modification.
-                if (event === "modify" || event === "add"
-                    || event === "delete" || event === "trash") {
+                if (event === "modify" || (event as string) === "add"
+                    || (event as string) === "delete" || (event as string) === "trash") {
                     try { this._reinjectAllSidebars(); }
                     catch (e) { Zotero.debug(
                         "[Weavero] notifier sidebar reinject: " + e); }
@@ -1895,8 +1878,8 @@ class WeaveroPlugin {
             this._uiThemeObserver = null;
         }
 
-        try { Zotero.Reader.unregisterEventListener("renderSidebarAnnotationHeader", "weavero"); } catch(e) {}
-        try { Zotero.Reader.unregisterEventListener("createAnnotationContextMenu", "weavero"); } catch(e) {}
+        try { (Zotero.Reader as any).unregisterEventListener("renderSidebarAnnotationHeader", "weavero"); } catch(e) {}
+        try { (Zotero.Reader as any).unregisterEventListener("createAnnotationContextMenu", "weavero"); } catch(e) {}
         this._unregisterItemTreeColumns();
         try { this._unpatchAnnotationRow(); } catch (e) {}
 
@@ -1947,7 +1930,7 @@ class WeaveroPlugin {
             // DIAG: pre-unwrap snapshot of related-box labels so we can
             // see the live state at disable-time.
             try {
-                const relLabels = doc.querySelectorAll(
+                const relLabels: any = doc.querySelectorAll(
                     "related-box .body .row .box .label");
                 Zotero.debug("[Weavero][diag] destroy: "
                     + relLabels.length + " related-box label(s) before unwrap");
@@ -1979,7 +1962,7 @@ class WeaveroPlugin {
 
             // Restore items-tree annotation comment cells to their raw text.
             for (const cell of doc.querySelectorAll(
-                    ".annotation-row.tight .cell.annotation-comment")) {
+                    ".annotation-row.tight .cell.annotation-comment") as any) {
                 let text = cell.getAttribute("data-comment-text");
                 if (!text) {
                     const wrap = cell.querySelector(".wv-text-wrap");
@@ -2013,7 +1996,7 @@ class WeaveroPlugin {
             // it ends with the expected marker / bracket, we're in non-tree
             // mode (markers already preserved). Otherwise we're in tree mode
             // and need to re-emit them.
-            for (const span of doc.querySelectorAll(".wv-md")) {
+            for (const span of doc.querySelectorAll(".wv-md") as any) {
                 const cls = span.className || "";
                 let marker = "";
                 if (cls.includes("wv-md-bold"))         marker = "**";
@@ -2027,7 +2010,7 @@ class WeaveroPlugin {
                 const text = haveMarker ? inner : (marker + inner + marker);
                 span.replaceWith(doc.createTextNode(text));
             }
-            for (const span of doc.querySelectorAll(".wv-url-span")) {
+            for (const span of doc.querySelectorAll(".wv-url-span") as any) {
                 const inner = span.textContent || "";
                 const href = span.getAttribute("data-href") || "";
                 let text;
@@ -2052,7 +2035,7 @@ class WeaveroPlugin {
             // pass (e.g. injected outside .annotation-row.tight). Unwrap
             // `.wv-text-wrap` separately — it contains the host element's
             // text content, so removing it would erase the label / row.
-            for (const wrap of doc.querySelectorAll(".wv-text-wrap")) {
+            for (const wrap of doc.querySelectorAll(".wv-text-wrap") as any) {
                 const parent = wrap.parentNode;
                 if (!parent) continue;
                 while (wrap.firstChild) {
@@ -2060,14 +2043,13 @@ class WeaveroPlugin {
                 }
                 parent.removeChild(wrap);
             }
-            for (const el of doc.querySelectorAll(
-                    ".wv-btn, .wv-tree-icon")) {
+            for (const el of doc.querySelectorAll(".wv-btn, .wv-tree-icon") as any) {
                 el.remove();
             }
 
             // DIAG: post-unwrap snapshot of related-box labels.
             try {
-                const relLabels = doc.querySelectorAll(
+                const relLabels: any = doc.querySelectorAll(
                     "related-box .body .row .box .label");
                 let i = 0;
                 for (const l of relLabels) {
@@ -2088,7 +2070,7 @@ class WeaveroPlugin {
             for (const el of doc.querySelectorAll(
                     "[data-wv-source], [data-wv-rendered], [data-wv-raw],"
                     + " [data-wv-related-rendered], [data-wv-ctx-wired],"
-                    + " [data-wv-last-rebuild]")) {
+                    + " [data-wv-last-rebuild]") as any) {
                 el.removeAttribute("data-wv-source");
                 el.removeAttribute("data-wv-rendered");
                 el.removeAttribute("data-wv-raw");
@@ -2248,10 +2230,10 @@ class WeaveroPlugin {
                     // outside _stripReaderSidebar's targeted selectors
                     // (e.g. .wv-btn placed on rows that weren't part of
                     // .annotation-row / .annotation, or popup spans).
-                    for (const span of idoc.querySelectorAll(".wv-url-span")) {
+                    for (const span of idoc.querySelectorAll(".wv-url-span") as any) {
                         span.replaceWith(idoc.createTextNode(span.textContent || ""));
                     }
-                    for (const el of idoc.querySelectorAll(".wv-btn")) el.remove();
+                    for (const el of idoc.querySelectorAll(".wv-btn") as any) el.remove();
                     idoc.getElementById("weavero-reader-styles")?.remove();
                     // _ensureReaderOuterStyles also injects into idoc
                     // (preview-panel CSS for the reader sidebar). Without
@@ -2323,6 +2305,11 @@ Zotero.Weavero = {
             _rootURI = rootURI;
             try {
                 _Weavero = new WeaveroPlugin();
+                // Mirror onto the instance so extracted modules
+                // (e.g. modules/reader.ts's _refreshPrefPaneIcon)
+                // can read the absolute rootURI without needing to
+                // import the index.ts closure.
+                _Weavero._rootURI = rootURI;
                 Zotero.Weavero.plugin = _Weavero;
                 _Weavero.init().catch(e =>
                     Zotero.debug("[Weavero] init error: " + e)

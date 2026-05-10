@@ -441,8 +441,13 @@ class _PaneMixin {
                         const norm_t = this.normalize(t);
                         const wantMd = this._getEnableCommentMarkdown()
                             && this.MD_REGEX.test(norm_t);
-                        const wantUrl = this._getEnableInlineUrls()
-                            && this.URL_REGEX.test(norm_t);
+                        // URL_REGEX excludes schemes whose master is
+                        // off (URLs/Zotero/App Links each remove their
+                        // alternation from URL_SCHEME_ALT), so no
+                        // additional `_getEnableInlineUrls() && ...`
+                        // gate — that hid Zotero/app links when URLs
+                        // was off.
+                        const wantUrl = this.URL_REGEX.test(norm_t);
                         if (wantMd && wantUrl) wantMode = "url+md";
                         else if (wantMd) wantMode = "md";
                         else if (wantUrl) wantMode = "url";
@@ -584,7 +589,13 @@ class _PaneMixin {
                 const frag = doc.createDocumentFragment();
                 const inlineMode = this._getInlineLinks();
                 const useMd = inlineMode && this._getEnableCommentMarkdown();
-                const inlineUrls = inlineMode && this._getEnableInlineUrls();
+                // URL_REGEX already excludes schemes whose master is
+                // off (URLs / Zotero Links / App Links); inlineUrls
+                // just means "we're in inline mode so URL matches
+                // should render as styled spans". The earlier
+                // `_getEnableInlineUrls()` gate hid Zotero/app links
+                // whenever the URLs toggle was off.
+                const inlineUrls = inlineMode;
                 if (inlineMode) {
                     // Group order (when useMd):
                     //   1 bold, 2 italic, 3 strike, 4 code-double, 5 code-single,
@@ -2466,8 +2477,10 @@ class _PaneMixin {
         }
         const norm = this.normalize(raw);
         const useMd = this._getEnableCommentMarkdown();
-        const useUrls = this._getEnableInlineUrls();
-        const hasUrls = useUrls && this.hasURI(raw);
+        // URL_REGEX excludes schemes whose master is off — no extra
+        // `_getEnableInlineUrls() && ...` gate (that hid Zotero/app
+        // links when URLs was off).
+        const hasUrls = this.hasURI(raw);
         const hasMd   = useMd && this.MD_REGEX.test(norm);
         if (!hasUrls && !hasMd) return false;
 
@@ -2480,7 +2493,11 @@ class _PaneMixin {
         //   2. liveText still matches data-wv-rendered (no partial reap that
         //      preserved one span class but stripped the other).
         // If either fails, fall through and rebuild.
-        const cacheKey = (useMd ? "m" : "") + (useUrls ? "u" : "") + ":" + norm;
+        // Cache key encodes markdown + URL_SCHEME_ALT (which itself
+        // captures URLs / Zotero Links / App Links toggle state) so
+        // any link-related pref change invalidates the cache.
+        const cacheKey = (useMd ? "m" : "") + ":"
+            + this.URL_SCHEME_ALT + ":" + norm;
         const cacheHit = ourMarkers
             && commentEl.getAttribute("data-wv-source") === cacheKey
             && cachedRendered !== null
@@ -2529,9 +2546,11 @@ class _PaneMixin {
             } else if (useMd && m[5] !== undefined) {
                 wrapMd("wv-md-code", m[5]);
             } else if (useMd && m[6] !== undefined && m[7] !== undefined) {
-                // Markdown link [label](url). Drop the URL span when URLs
-                // sub-toggle is off — render just the label as plain text.
-                if (useUrls) {
+                // Markdown link [label](url). Render as styled link
+                // only when the URL's scheme is currently enabled
+                // (URL_REGEX gates by enabled schemes); else emit
+                // the label as plain text.
+                if (this.hasURI(m[7])) {
                     const url = m[7];
                     const span = doc.createElement("span");
                     span.className = "wv-url-span "
@@ -2544,10 +2563,13 @@ class _PaneMixin {
                     frag.appendChild(doc.createTextNode(m[6]));
                 }
             } else {
-                // Bare URL — group 8 in md regex, group 0 in URL-only regex.
+                // Bare URL — group 8 in md regex, group 0 in URL-only
+                // regex. The TOKEN's bare-URL alternation is built from
+                // URL_SCHEME_ALT, so any match is already an enabled
+                // scheme — always render.
                 const rawTok = useMd ? m[8] : m[0];
                 if (rawTok === undefined) { last = m.index + m[0].length; continue; }
-                if (useUrls) {
+                {
                     const url   = rawTok.replace(this.TRAILING_RE, "");
                     const trail = rawTok.slice(url.length);
                     const span = doc.createElement("span");
@@ -2557,8 +2579,6 @@ class _PaneMixin {
                     span.textContent = url;
                     frag.appendChild(span);
                     if (trail) frag.appendChild(doc.createTextNode(trail));
-                } else {
-                    frag.appendChild(doc.createTextNode(rawTok));
                 }
             }
             last = m.index + m[0].length;

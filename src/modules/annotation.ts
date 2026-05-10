@@ -103,19 +103,30 @@ class _AnnotationMixin {
         }
 
         // Icon & Popup mode: classify URL matches and gate per sub-toggle.
+        // URL_REGEX already excludes schemes whose master is off (the
+        // URLs / Zotero Links / App Links toggles each remove their
+        // alternation from URL_SCHEME_ALT), so any match here is a
+        // candidate. The per-mode sub-toggles below are an additional
+        // Icon-mode-specific filter — e.g. show URL icons but hide
+        // app-link icons.
         if (this.URL_REGEX.test(n)) {
-            // Mixed-content comments (e.g. http://… + mailto:…) should
-            // pass if EITHER sub-toggle is on. Iterate matches via
-            // matchAll to classify each one — a whole-string starts-with
-            // check would misclassify embedded URLs.
+            // Split http vs zotero vs app so each scheme gets its own
+            // gate. Coupling http and zotero (the previous behaviour)
+            // meant turning off "URLs" hid Zotero-link icons too.
             const re = new RegExp(this.URL_REGEX.source, "gi");
-            let hasHttpOrZotero = false, hasAppLink = false;
+            let hasHttp = false, hasZotero = false, hasAppLink = false;
             for (const m of n.matchAll(re)) {
-                if (/^(https?|zotero):/i.test(m[0])) hasHttpOrZotero = true;
+                if (/^https?:/i.test(m[0])) hasHttp = true;
+                else if (/^zotero:/i.test(m[0])) hasZotero = true;
                 else hasAppLink = true;
-                if (hasHttpOrZotero && hasAppLink) break;
+                if (hasHttp && hasZotero && hasAppLink) break;
             }
-            if (hasHttpOrZotero && this._getEnableIconUrls()) return true;
+            if (hasHttp && this._getEnableIconUrls()) return true;
+            // Zotero links have no Icon-mode-specific sub-toggle —
+            // their master (enableZoteroLinks) is already enforced
+            // by URL_SCHEME_ALT, so any match here means the user
+            // wants them rendered.
+            if (hasZotero) return true;
             if (hasAppLink && this._getEnableIconAppLinks()) return true;
         }
 
@@ -156,9 +167,12 @@ class _AnnotationMixin {
             && this.MD_REGEX.test(n)) {
             return true;
         }
-        // URL present but inline-URLs sub-toggle off: popup is the only
-        // path to a clickable URL.
-        if (!this._getEnableInlineUrls() && this.URL_REGEX.test(n)) {
+        // http/https URL present but URLs sub-toggle off: the popup is
+        // the only path to a clickable URL. Match http/https directly
+        // (NOT URL_REGEX, which now excludes those when the URLs
+        // toggle is off — so URL_REGEX.test would say "no URL" here
+        // and we'd skip the icon-needed branch).
+        if (!this._getEnableInlineUrls() && /https?:\/\//i.test(n)) {
             return true;
         }
         return false;

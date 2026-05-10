@@ -2234,7 +2234,9 @@ class WeaveroPlugin {
 
                     if (/^extensions\.zotero\.weavero\.enable\w+Scheme$/.test(data)
                         || data === "extensions.zotero.weavero.enableAppLinks"
-                        || data === "extensions.zotero.weavero.enableZoteroLinks") {
+                        || data === "extensions.zotero.weavero.enableZoteroLinks"
+                        || data === "extensions.zotero.weavero.enableInlineUrls"
+                        || data === "extensions.zotero.weavero.enableIconUrls") {
                         // Re-apply warn-external prefs too, since the
                         // set of "enabled schemes that should skip
                         // confirmation" depends on this pref.

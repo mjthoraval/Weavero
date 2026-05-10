@@ -66,7 +66,18 @@ export const urlMethods = {
      *  regex) can drop it in directly. */
     get URL_SCHEME_ALT() {
         if (this._urlSchemeAltCache) return this._urlSchemeAltCache;
-        const parts = ["https?:\\/\\/"];
+        const parts: string[] = [];
+        // URLs toggle (v0.8.2) — when off, http/https are excluded from
+        // the regex so plain web URLs render as text. The shared
+        // Display Mode "URLs" checkbox dual-writes to enableInlineUrls
+        // AND enableIconUrls; reading either is fine since they're
+        // always synced. Default ON.
+        let httpUrlsOn = true;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableInlineUrls");
+            httpUrlsOn = v === undefined ? true : !!v;
+        } catch (e) {}
+        if (httpUrlsOn) parts.push("https?:\\/\\/");
         // Zotero links toggle (v0.8.1) — when off, zotero:// is
         // excluded from the URL regex so deep links render as plain
         // text. Default ON. Mirrors the App Links pattern below.
@@ -94,7 +105,12 @@ export const urlMethods = {
                 } catch (e) {}
             }
         }
-        this._urlSchemeAltCache = parts.join("|");
+        // Sentinel for "all link types disabled" — `\b\B` always fails
+        // (word boundary + non-word-boundary at the same position is
+        // a contradiction), so URL_REGEX won't match anything. Without
+        // this guard, parts.join("|") = "" produces `()[^...]*` which
+        // matches every non-empty string.
+        this._urlSchemeAltCache = parts.length ? parts.join("|") : "\\b\\B";
         return this._urlSchemeAltCache;
     },
 

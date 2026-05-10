@@ -4468,8 +4468,12 @@ class _ReaderMixin {
         const text  = this._readCommentTextWithBreaks(contentEl);
         const norm  = this.normalize(text);
         const useMd = this._getEnableCommentMarkdown();
-        const useUrls = this._getEnableInlineUrls();
-        const hasUrls = useUrls && this.hasURI(text);
+        // hasURI uses URL_REGEX which only matches schemes whose
+        // master toggle is on (URLs / Zotero Links / App Links each
+        // remove their alternation from URL_SCHEME_ALT when off). No
+        // additional `useUrls && ...` gate — that previous coupling
+        // hid Zotero / app links whenever the URLs toggle was off.
+        const hasUrls = this.hasURI(text);
         const hasMd   = useMd && this.MD_REGEX.test(norm);
 
         // Defensive cleanup: if a previous bug or version left multiple
@@ -4490,9 +4494,11 @@ class _ReaderMixin {
             return false;
         }
 
-        // Cache key encodes both inline-mode sub-toggles so flipping
-        // either invalidates the cache and forces a rebuild.
-        const cacheKey = (useMd ? "m" : "") + (useUrls ? "u" : "") + ":" + norm;
+        // Cache key encodes the markdown toggle + the current set of
+        // enabled URL schemes (via URL_SCHEME_ALT) so flipping any
+        // link-related pref invalidates the cache and forces a rebuild.
+        const cacheKey = (useMd ? "m" : "") + ":"
+            + this.URL_SCHEME_ALT + ":" + norm;
         if (preview && preview.getAttribute("data-source") === cacheKey) return false;
 
         // Per-comment rebuild rate limit. When Zotero's React reconciliation
@@ -4587,9 +4593,12 @@ class _ReaderMixin {
                 // `code` (single backtick).
                 wrapMd("wv-md-code", m[5]);
             } else if (useMd && m[6] !== undefined && m[7] !== undefined) {
-                // Markdown link [label](url). When URLs sub-toggle is off,
-                // drop the URL part and emit the label as plain text.
-                if (useUrls) {
+                // Markdown link [label](url). Render as styled link
+                // only if the URL's scheme is currently enabled (the
+                // URLs / Zotero Links / App Links toggles each gate
+                // their schemes via URL_SCHEME_ALT). Otherwise emit
+                // the label as plain text.
+                if (this.hasURI(m[7])) {
                     const url = m[7];
                     const span = doc.createElement("span");
                     span.className = "wv-url-span "
@@ -4603,9 +4612,12 @@ class _ReaderMixin {
                 }
             } else {
                 // Bare URL (group 8 in md regex, group 0 in URL-only regex).
+                // The TOKEN regex's bare-URL alternative is built from
+                // URL_SCHEME_ALT, so any match here is already an
+                // enabled scheme — always render as a link.
                 const raw = useMd ? m[8] : m[0];
                 if (raw === undefined) { last = m.index + m[0].length; continue; }
-                if (useUrls) {
+                {
                     const url   = raw.replace(this.TRAILING_RE, "");
                     const trail = raw.slice(url.length);
                     const span = doc.createElement("span");
@@ -4615,8 +4627,6 @@ class _ReaderMixin {
                     span.textContent = url;
                     frag.appendChild(span);
                     if (trail) appendTextWithBreaks(trail);
-                } else {
-                    appendTextWithBreaks(raw);
                 }
             }
             last = m.index + m[0].length;

@@ -4,6 +4,7 @@
   "version": "0.8.5",
   "description": "A Zotero plugin to make clickable links and filter your library.",
   "author": "mjthoraval",
+  "homepage_url": "https://github.com/mjthoraval/Weavero",
   "applications": {
     "zotero": {
       "id": "weavero@mjthoraval",

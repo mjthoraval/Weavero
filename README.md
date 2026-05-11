@@ -88,12 +88,14 @@ Open `Tools → Plugins → Weavero → Preferences` to enable/disable individua
 
 ## Build
 
-Plugin source is in `src/`. A Zotero plugin is just a zip file with a `.xpi` extension. Two paths are supported:
+Plugin source is TypeScript under `src/`. A Zotero plugin ships as a zip with a `.xpi` extension, but the source has to be bundled first:
 
-- **Manual** (no Node toolchain required): zip the contents of `src/` (files at the archive root, no `src/` prefix) and name the result `weavero-v<version>.xpi`. The supplied `scripts/build.ps1` does this on Windows.
-- **Scripted**: `npm install` once, then `npm run build` produces `.scaffold/build/weavero.xpi` plus `update.json` (with the XPI's SHA512 hash baked in).
+```bash
+npm install        # one-time
+npm run build      # esbuild bundles src/ → .scaffold/build/weavero.xpi (+ update.json with the XPI's SHA512 hash)
+```
 
-Both paths produce a functionally-identical XPI.
+(Through the pre-TypeScript releases there was also a no-Node manual-zip path — `scripts/build.ps1` zipping `src/*` directly. That no longer applies now that `src/` is TypeScript and needs bundling; use `npm run build`.)
 
 ## Development
 
@@ -104,13 +106,15 @@ The Node toolchain (optional but recommended) provides:
 ```bash
 npm install              # one-time setup
 npm run typecheck        # tsc --noEmit, hard-gated to 0 errors
-npm test                 # Mocha + Chai inside a temp-profile Zotero (38 specs, ~8 s)
+npm test                 # Mocha + Chai inside a temp-profile Zotero (56 specs, ~10 s)
 npm run build            # build the XPI to .scaffold/build/
 npm start                # hot-reload dev loop (auto-reload on src/ changes)
 npm run release          # interactive: bump → tag → push (CI then publishes)
 ```
 
 Tests run inside a separate Zotero instance against a temp profile — your primary library is unaffected. CI runs the same suite headlessly on every PR and on every push to `main`.
+
+Build/test tooling is all `devDependencies` (nothing from npm ships in the XPI): `typescript` (the `typecheck` gate), `zotero-plugin-scaffold` (the esbuild-based bundler + XPI packer + temp-profile test runner behind `npm run build` / `test` / `start` / `release`), `zotero-types` (Zotero's TypeScript definitions), and `mocha` + `chai` (+ their `@types`).
 
 ## Compatibility
 

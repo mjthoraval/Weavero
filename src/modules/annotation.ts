@@ -336,6 +336,25 @@ class _AnnotationMixin {
         return svg;
     }
 
+    /** The "+" glyph from Zotero's chrome://zotero/skin/16/universal/plus.svg,
+     *  rebuilt inline with `fill="currentColor"` so it inherits the
+     *  surrounding CSS `color` — no chrome:// URL and no `context-fill`
+     *  keyword (that combination drew an invisible box in the reader-window
+     *  relations popup). Same path data as the icon Zotero shows on the
+     *  item pane's "Related" section add button, so the two match exactly. */
+    _makePlusSvg(doc) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS, "svg");
+        svg.setAttribute("class", "wv-plus-svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("aria-hidden", "true");
+        const p = doc.createElementNS(NS, "path");
+        p.setAttribute("fill", "currentColor");
+        p.setAttribute("d", "M14 8H9V3H8V8H3V9H8V14H9V9H14V8Z");
+        svg.appendChild(p);
+        return svg;
+    }
+
     /** Stamp data-has-url on an icon element and (re)populate it with
      *  the chain SVG when the comment has a URL. Markdown-only comments
      *  no longer get a dedicated icon — markdown formatting is still
@@ -543,13 +562,13 @@ class _AnnotationMixin {
      *  removes itself on `popuphidden`.
      *
      *  Options listed (filtered by type at build time):
-     *    Annotation        Open in Reader
-     *    Attachment        Open in Reader / Open in New Window / Show File
-     *    Note              Open Note
-     *    Regular Item      Open Primary Attachment
+     *    Annotation        Open in <PDF/EPUB/Snapshot> in New Tab / New Window
+     *    Attachment        Open <Type> in New Tab / New Window / Show File
+     *    Note              Open Note in New Tab / New Window
+     *    Regular Item      Open <best attachment type> in New Tab / New Window / View Online
      *    All               Show in Library (unless opts.skipShowInLibrary),
-     *                       Show Parent in Library (if has parent),
-     *                       Copy Item Link
+     *                       Copy Select Link, Copy Open Link (when one
+     *                       applies for this item type), Add Related…
      *
      *  `opts.skipShowInLibrary`: omit the "Show in Library" entry —
      *  used by the right-pane annotation-row wiring where the user
@@ -589,8 +608,14 @@ class _AnnotationMixin {
             });
             popup.appendChild(mi);
         };
+        // Add a separator — but never two in a row and never as the
+        // first element (so groups that turn out empty don't leave a
+        // dangling rule).
         const addSep = () => {
-            popup.appendChild(doc.createXULElement("menuseparator"));
+            const last = popup.lastElementChild as any;
+            if (last && last.localName !== "menuseparator") {
+                popup.appendChild(doc.createXULElement("menuseparator"));
+            }
         };
 
         const isAnnotation = !!(item.isAnnotation && item.isAnnotation());
@@ -742,8 +767,15 @@ class _AnnotationMixin {
                 }
             } catch (e) {}
             if (parentID) {
-                appendOpenPair(parentReaderType,
-                    readerTypeLabel(parentReaderType),
+                // Phrase it as "Open in PDF in New Tab" — opening an
+                // annotation means jumping to it *inside* its document,
+                // not opening the doc as an object. (Unknown parent
+                // type → "Open in Reader in New Tab".) The icon still
+                // uses the parent's type so it reads as a PDF / EPUB /
+                // snapshot.
+                const tLabel = readerTypeLabel(parentReaderType);
+                const openInLabel = "in " + (tLabel === "Attachment" ? "Reader" : tLabel);
+                appendOpenPair(parentReaderType, openInLabel,
                     (inWindow) => async () => {
                         try {
                             await Zotero.Reader.open(parentID,
@@ -845,61 +877,35 @@ class _AnnotationMixin {
 
         addSep();
 
-        // ---- Universal options ----------------------------------------------
+        // ---- Library navigation --------------------------------------------
         if (!opts.skipShowInLibrary) {
             append("Show in Library", () => this._navigateToItem(item),
                 { iconURL: ICON_LIBRARY });
         }
-        // "Show Parent in Library" is meaningful only when the
-        // parent is distinct from where "Show in Library" lands.
-        // For annotations, `selectItem` already routes to the
-        // parent attachment (annotations have no direct row in
-        // the items tree), so this row would duplicate the one
-        // above. Skip it for annotations.
-        if (item.parentItemID && !isAnnotation) {
-            append("Show Parent in Library", () => {
-                try {
-                    const zp = win.ZoteroPane;
-                    if (zp && typeof zp.selectItem === "function") {
-                        zp.selectItem(item.parentItemID);
-                    }
-                    if (win.Zotero_Tabs && typeof win.Zotero_Tabs.select === "function") {
-                        win.Zotero_Tabs.select("zotero-pane");
-                    }
-                    win.focus();
-                } catch (e) {
-                    Zotero.debug("[Weavero] show-parent err: " + e);
-                }
-            }, { iconURL: ICON_LIBRARY });
-        }
-        append("Copy Item Link", () => {
-            try {
-                const lib = item.libraryID;
-                let prefix = "library";
-                try {
-                    if (lib !== Zotero.Libraries.userLibraryID) {
-                        const gid = Zotero.Groups.getGroupIDFromLibraryID(lib);
-                        if (gid) prefix = "groups/" + gid;
-                    }
-                } catch (e) {}
-                const url = "zotero://select/" + prefix + "/items/" + item.key;
-                Zotero.Utilities.Internal.copyTextToClipboard(url);
-            } catch (e) {
-                Zotero.debug("[Weavero] copy-link err: " + e);
-            }
-            // Plugin's needle icon — distinguishes a Weavero-provided
-            // affordance ("copy a zotero:// URI for this item") from
-            // the chain icons that mean "related items".
-        }, { iconURL: this._menuItemIconURL });
 
         addSep();
 
+        // ---- Copy links + Add Related (one group, separator above) ---------
+        // The needle icon distinguishes the Weavero copy-link affordances
+        // ("copy a zotero:// URI for this item") from the chain icon that
+        // means "related items". "Copy Open Link" is only added when an
+        // open link applies (this item is a file attachment, has a best
+        // attachment, or — for an annotation — its parent attachment is
+        // openable).
+        append("Copy Select Link",
+            () => this._copyItemLinks([item], "select"),
+            { iconURL: this._menuItemIconURL });
+        if (this._buildOpenLink(item)) {
+            append("Copy Open Link"
+                + (this._isExternalOpenTarget(item) ? " (external app)" : ""),
+                () => this._copyItemLinks([item], "open"),
+                { iconURL: this._menuItemIconURL });
+        }
         // "Add Related…" — opens Zotero's select-items dialog and adds
-        // the chosen items as `dc:relation` peers of this one. Uses the
-        // chain icon for visual consistency with the rest of the
-        // related-item affordances (items-list `.wv-tree-rel-icon`,
-        // sidebar `.wv-btn-relations`, PDF reader marker badge, the
-        // "Add related item…" entry on the annotation context menu).
+        // the chosen items as `dc:relation` peers of this one. Chain icon
+        // for visual consistency with the rest of the related-item
+        // affordances (items-list `.wv-tree-rel-icon`, sidebar
+        // `.wv-btn-relations`, PDF reader marker badge).
         append("Add Related…", () => {
             try { this._addRelatedItemDialog([item]); }
             catch (e) {

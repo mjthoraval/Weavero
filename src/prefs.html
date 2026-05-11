@@ -123,6 +123,23 @@
       .wv-mark-url    { color: #8ab4f8; } /* dark theme — lighter blue */
       .wv-mark-app    { color: #c084fc; } /* dark theme — lighter violet */
     }
+    /* Small inline samples of the actual badges Weavero draws over
+       annotations in the reader Document view — the plugin logo (the
+       "link" badge) and the amber "related items" chain — so the
+       toggle's label shows what it controls. Chain colour matches the
+       plugin's reader relations badge (#7a4a00 light / #ffb84d dark);
+       the logo image swaps light/dark with the theme. */
+    .wv-icon-sample {
+      display: inline-flex;
+      align-items: center;
+      vertical-align: text-bottom;
+      margin: 0 1px;
+      line-height: 1;
+    }
+    .wv-icon-sample svg,
+    .wv-icon-sample img { display: block; width: 14px; height: 14px; }
+    .wv-icon-rel { color: #7a4a00; }
+    @media (prefers-color-scheme: dark) { .wv-icon-rel { color: #ffb84d; } }
 
     /* Group-level header — one above .wv-section-title in the visual
        hierarchy. Used for the three top-level feature groups
@@ -229,18 +246,27 @@
       font-size: 12px;
       opacity: 0.7;
     }
-    /* Tab "header card" — the per-tab intro paragraph + the master
-       toggle row form a single subtle card at the top of each tab.
-       Accent-blue tint + left border tie back to the active-tab
-       underline and make this area read as a meta-control distinct
-       from the per-feature toggles below. */
+    /* "Master card" — the accent-blue tint + left border marks a
+       master toggle as a meta-control, tying back to the active-tab
+       underline and setting it apart from the per-feature toggles
+       below. The card spans the section's description line + the
+       toggle row, mirroring the tab master (per-tab `.wv-group-intro`
+       description + toggle). Applied to EVERY .wv-master-block — the
+       one at the top of each tab AND the nested section masters (URI
+       utilities, Relations, …) — so a section's master is as visually
+       prominent as the tab's. The section TITLE stays above the card
+       as plain text — the same role the tab-bar label plays for a tab
+       master. */
     .wv-tab-panel > .wv-group-intro,
-    .wv-tab-panel > .wv-master-block > label.wv-surface-row {
+    .wv-master-block > .wv-section-hint,
+    .wv-master-block > label.wv-surface-row {
       background: rgba(64, 128, 255, 0.07);
       padding-left: 14px;
       padding-right: 14px;
       border-left: 3px solid rgb(64, 128, 255);
     }
+    /* Card top — the description line (a `.wv-group-intro` for a tab
+       master, a `.wv-section-hint` for a section master). */
     .wv-tab-panel > .wv-group-intro {
       padding-top: 12px;
       padding-bottom: 6px;
@@ -249,17 +275,37 @@
       opacity: 0.95;
       border-radius: 6px 6px 0 0;
     }
-    .wv-tab-panel > .wv-master-block > label.wv-surface-row {
+    .wv-master-block > .wv-section-hint {
+      margin: 0;
+      padding-top: 9px;
+      padding-bottom: 3px;
+      border-radius: 6px 6px 0 0;
+      /* Match `.wv-group-intro`'s 0.95 (not the general hint's 0.7) —
+         the lower value also dims the 3px accent border, making the
+         card's left strip look two-toned where the hint meets the
+         toggle row below it. */
+      opacity: 0.95;
+    }
+    /* Card bottom — the master toggle row itself (always preceded by a
+       description line above, which already rounds the card's top). */
+    .wv-master-block > label.wv-surface-row {
       padding-top: 4px;
       padding-bottom: 12px;
       margin: 0 0 18px;
       border-radius: 0 0 6px 6px;
     }
-    /* Master/child grey-out — when the .wv-master checkbox inside a
-       .wv-master-block is unchecked, the .wv-children container fades
+    /* Master/child grey-out — when the .wv-master checkbox of a
+       .wv-master-block is unchecked, that block's .wv-children fades
        and intercepts no clicks. Pure CSS via :has() (Firefox 121+,
-       Zotero 10's runtime is Firefox 140 so we're safe). */
-    .wv-master-block:has(input.wv-master:not(:checked)) .wv-children {
+       Zotero 10's runtime is Firefox 140 so we're safe).
+       The :has(> …) / > .wv-children parts are deliberately scoped to
+       DIRECT children: .wv-master-blocks nest (URI utilities and
+       Relations sit inside the Links-and-relations block), and a loose
+       `:has(input.wv-master:not(:checked)) .wv-children` would make an
+       OUTER block match whenever an INNER master is unchecked — then
+       pointer-events:none on the outer .wv-children would freeze the
+       inner master's own row, so it could never be re-checked. */
+    .wv-master-block:has(> label.wv-surface-row > input.wv-master:not(:checked)) > .wv-children {
       opacity: 0.4;
       pointer-events: none;
     }
@@ -472,7 +518,7 @@
     <label class="wv-radio-card" data-value="icon">
       <input type="radio" name="wv-mode" value="icon" />
       <div class="wv-card-body">
-        <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments and notes stay plain text. An icon next to each annotation opens a popup with the rendered view when needed.</span></p>
+        <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments and notes stay plain text. A link icon next to each annotation opens a popup with the rendered view when needed.</span></p>
         <p class="wv-card-rec">Light &#8212; If Inline mode is too slow.</p>
       </div>
     </label>
@@ -504,7 +550,7 @@
     <label class="wv-surface-row">
       <input type="checkbox" name="wv-feature" value="enableReaderViewIcons" />
       <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Icons over annotations in the Document view</span>&#160;<span class="wv-desc">&#8212; When checked, clickable icons appear on the page over annotations containing links or related to identify them quickly. Uncheck to keep the document page free of plugin overlays.</span></p>
+        <p class="wv-surface-text"><span class="wv-surface-name">Icons over annotations in the Document view</span>&#160;(<span class="wv-icon-sample wv-icon-rel" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M12.5 13H8.5C7.57174 13 6.6815 12.6313 6.02513 11.9749C5.36875 11.3185 5 10.4283 5 9.5C5 8.57174 5.36875 7.6815 6.02513 7.02513C6.6815 6.36875 7.57174 6 8.5 6H8.908C9.03111 6.32197 9.03111 6.67803 8.908 7H8.5C7.83696 7 7.20107 7.26339 6.73223 7.73223C6.26339 8.20107 6 8.83696 6 9.5C6 10.163 6.26339 10.7989 6.73223 11.2678C7.20107 11.7366 7.83696 12 8.5 12H12.5C13.163 12 13.7989 11.7366 14.2678 11.2678C14.7366 10.7989 15 10.163 15 9.5C15 8.83696 14.7366 8.20107 14.2678 7.73223C13.7989 7.26339 13.163 7 12.5 7H11.953C11.9778 6.83432 11.9935 6.6674 12 6.5C11.9935 6.3326 11.9778 6.16568 11.953 6H12.5C13.4283 6 14.3185 6.36875 14.9749 7.02513C15.6313 7.6815 16 8.57174 16 9.5C16 10.4283 15.6313 11.3185 14.9749 11.9749C14.3185 12.6313 13.4283 13 12.5 13ZM0 6.5C0 7.42826 0.368749 8.3185 1.02513 8.97487C1.6815 9.63125 2.57174 10 3.5 10H4.047C4.02219 9.83432 4.0065 9.6674 4 9.5C4.0065 9.3326 4.02219 9.16568 4.047 9H3.5C2.83696 9 2.20107 8.73661 1.73223 8.26777C1.26339 7.79893 1 7.16304 1 6.5C1 5.83696 1.26339 5.20107 1.73223 4.73223C2.20107 4.26339 2.83696 4 3.5 4H7.5C8.16304 4 8.79893 4.26339 9.26777 4.73223C9.73661 5.20107 10 5.83696 10 6.5C10 7.16304 9.73661 7.79893 9.26777 8.26777C8.79893 8.73661 8.16304 9 7.5 9H7.092C6.96889 9.32197 6.96889 9.67803 7.092 10H7.5C8.42826 10 9.3185 9.63125 9.97487 8.97487C10.6313 8.3185 11 7.42826 11 6.5C11 5.57174 10.6313 4.6815 9.97487 4.02513C9.3185 3.36875 8.42826 3 7.5 3H3.5C2.57174 3 1.6815 3.36875 1.02513 4.02513C0.368749 4.6815 0 5.57174 0 6.5Z"/></svg></span>,&#160;<span class="wv-icon-sample" aria-hidden="true"><img id="wv-doc-icon-link" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="" /></span>)&#160;<span class="wv-desc">&#8212; When checked, these icons appear on the page over annotations whose comment contains a link, or that have related items, so you can spot them at a glance. Uncheck to keep the document page free of plugin overlays.</span></p>
       </div>
     </label>
 
@@ -608,14 +654,14 @@
       <label class="wv-surface-row">
         <input type="checkbox" name="wv-feature" value="enableCopyItemLink" />
         <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Item Link&#8221; in the items list right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that copies <code>zotero://select/&#8230;/items/&lt;key&gt;</code> for each selected item (multi-select joins with newlines).</span></p>
+          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Select Link&#8221; / &#8220;Copy Open Link&#8221; in the right-click menus</span>&#160;<span class="wv-desc">&#8212; Adds <code>Copy Select Link</code> (<code>zotero://select/&#8230;</code>) to navigate to the item in the Items List.</span></p>
         </div>
       </label>
 
       <label class="wv-surface-row">
         <input type="checkbox" name="wv-feature" value="enableCopyCollectionLink" />
         <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Collection Link&#8221; in the collections tree right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that copies <code>zotero://select/&#8230;/collections/&lt;key&gt;</code> for the right-clicked collection.</span></p>
+          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Collection Link&#8221; / &#8220;Copy Saved Search Link&#8221; in the collections tree right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that copies <code>zotero://select/&#8230;/collections/&lt;key&gt;</code> on a collection row, or <code>zotero://select/&#8230;/searches/&lt;key&gt;</code> on a saved-search row.</span></p>
         </div>
       </label>
 
@@ -740,7 +786,7 @@
     <label class="wv-surface-row">
       <input type="checkbox" name="wv-feature" value="enableTagsCountAuto" />
       <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Show automatic tag count in the Tags column</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
+        <p class="wv-surface-text"><span class="wv-surface-name">Add count for automatic tags in the Tags column</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
       </div>
     </label>
 

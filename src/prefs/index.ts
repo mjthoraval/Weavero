@@ -492,6 +492,130 @@
         return true;
     }
 
+    /** Give the pane a right-click → "Copy" (+ "Select All") menu for
+     *  selected text. Zotero's preferences window doesn't supply a
+     *  content context menu, so without this a right-click on text in
+     *  our pane does nothing. The pane iframe is an HTML document, but
+     *  a XUL <menupopup> needs a XUL host — so the popup is created in
+     *  the (XUL) prefs window that owns the iframe; `openPopupAtScreen`
+     *  positions it by screen coords regardless of where it lives.
+     *  Editable fields (none here, but defensive) keep their own
+     *  native editing menu. */
+    const XULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+    function bindContextMenu(doc) {
+        const win = doc.defaultView;
+        if (!win) return false;
+        if (doc.documentElement && (doc.documentElement as any).dataset
+            && (doc.documentElement as any).dataset.wvCtxBound) return true;
+        // Walk up to a window whose root element is XUL (the prefs window).
+        let xulWin: any = null;
+        try {
+            let w: any = win;
+            for (let i = 0; i < 6 && w; i++) {
+                const root = w.document && w.document.documentElement;
+                if (root && root.namespaceURI === XULNS) { xulWin = w; break; }
+                if (w.parent === w) break;
+                w = w.parent;
+            }
+        } catch (e) {}
+        if (!xulWin) xulWin = win;   // fallback — may not render, but won't throw
+        const xdoc = xulWin.document;
+        const makeXul = (tag) => {
+            try { return (xdoc as any).createXULElement
+                ? (xdoc as any).createXULElement(tag)
+                : xdoc.createElementNS(XULNS, tag); }
+            catch (e) { return xdoc.createElementNS(XULNS, tag); }
+        };
+        let popup: any = null;
+        const ensurePopup = () => {
+            if (popup && popup.isConnected) return popup;
+            try {
+                popup = makeXul("menupopup");
+                popup.id = "wv-prefs-ctxmenu";
+                const copy = makeXul("menuitem");
+                copy.setAttribute("label", "Copy");
+                copy.addEventListener("command", () => {
+                    try {
+                        const sel = win.getSelection ? String(win.getSelection()) : "";
+                        if (sel) Zotero.Utilities.Internal.copyTextToClipboard(sel);
+                    } catch (e) { dbg("ctxmenu copy err: " + e); }
+                });
+                popup.appendChild(copy);
+                const all = makeXul("menuitem");
+                all.setAttribute("label", "Select All");
+                all.addEventListener("command", () => {
+                    try {
+                        const s = win.getSelection && win.getSelection();
+                        if (s && s.selectAllChildren && doc.body) s.selectAllChildren(doc.body);
+                    } catch (e) { dbg("ctxmenu selectall err: " + e); }
+                });
+                popup.appendChild(all);
+                const host = (xdoc.querySelector && xdoc.querySelector("popupset"))
+                    || xdoc.documentElement;
+                host.appendChild(popup);
+            } catch (e) { dbg("ctxmenu build err: " + e); popup = null; }
+            return popup;
+        };
+        doc.addEventListener("contextmenu", (e: any) => {
+            try {
+                const t = e.target;
+                const editable = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA"
+                    || (typeof t.isContentEditable === "boolean" && t.isContentEditable));
+                if (editable) return;   // let native editing menu handle it
+                const sel = win.getSelection ? String(win.getSelection()).trim() : "";
+                if (!sel) return;       // nothing selected → no menu
+                const p = ensurePopup();
+                if (!p || typeof p.openPopupAtScreen !== "function") return;
+                // Disable "Copy" when (somehow) there's no selection.
+                try {
+                    const copyMi = p.firstChild;
+                    if (copyMi) copyMi.setAttribute("disabled", sel ? "false" : "true");
+                } catch (_) {}
+                e.preventDefault();
+                e.stopPropagation();
+                p.openPopupAtScreen(e.screenX, e.screenY, true);
+            } catch (e2) { dbg("ctxmenu err: " + e2); }
+        }, true);
+        if (doc.documentElement && (doc.documentElement as any).dataset) {
+            (doc.documentElement as any).dataset.wvCtxBound = "1";
+        }
+        return true;
+    }
+
+    /** Point the in-pane icon-sample <img> at the plugin's bundled
+     *  logo PNG. A relative `src` doesn't work here — the pane HTML is
+     *  injected into the prefs window, so its base URL isn't ours — so
+     *  we derive the addon root from the registered pane `src`
+     *  (`<rootURI>prefs.html`) and set an absolute URL. Swaps the
+     *  light/dark logo with the colour scheme. */
+    function bindIconSamples(doc) {
+        const img: any = doc.getElementById("wv-doc-icon-link");
+        if (!img) return false;
+        let src = "";
+        try {
+            const pane = (Zotero.PreferencePanes.pluginPanes || [])
+                .find((p) => p.pluginID === "weavero@mjthoraval");
+            src = String((pane && pane.src) || "");
+        } catch (e) {}
+        // Strip the trailing "prefs.html" (with any query/fragment) to
+        // get the addon root; bail if it didn't look as expected.
+        const rootURI = src.replace(/prefs\.html(?:[?#].*)?$/, "");
+        if (!rootURI || rootURI === src) return false;
+        const win = doc.defaultView;
+        const setSrc = (dark) => {
+            img.src = rootURI + "icons/icon-" + (dark ? "dark" : "light") + "-16.png";
+        };
+        let mql: any = null;
+        try { mql = win && win.matchMedia && win.matchMedia("(prefers-color-scheme: dark)"); }
+        catch (e) {}
+        setSrc(!!(mql && mql.matches));
+        if (mql && !img.dataset.wvThemeBound) {
+            img.dataset.wvThemeBound = "1";
+            try { mql.addEventListener("change", (ev) => setSrc(!!ev.matches)); } catch (e) {}
+        }
+        return true;
+    }
+
     /** Poll for the pane document — the iframe may not be fully ready when
      *  the script first runs, even though Zotero awaits a delay() before
      *  loading us. We retry up to ~3 s. */
@@ -502,6 +626,8 @@
             try { bindFeatures(doc); } catch (e) { dbg("bindFeatures err: " + e); }
             try { bindSchemes(doc);  } catch (e) { dbg("bindSchemes err: " + e); }
             try { bindTabs(doc);     } catch (e) { dbg("bindTabs err: " + e); }
+            try { bindContextMenu(doc); } catch (e) { dbg("bindContextMenu err: " + e); }
+            try { bindIconSamples(doc); } catch (e) { dbg("bindIconSamples err: " + e); }
             dbg("bound on retry=" + (60 - retries));
             return;
         }

@@ -139,6 +139,238 @@ export const urlMethods = {
         return "wv-link-app";
     },
 
+    // ---- zotero:// item-link builders -------------------------------------
+    // Shared by every "Copy … Link" affordance (items-list right-click
+    // menu, related-item / right-pane menus, reader annotation menu,
+    // reader-tab menu). Two link kinds:
+    //   • SELECT — `zotero://select/<lib>/items/<key>` — works for any
+    //     item type (regular, attachment, note, annotation); just
+    //     selects the item in the library.
+    //   • OPEN   — `zotero://open/<lib>/items/<key>[?annotation=…]`
+    //     — for a *stored file* attachment (any type), the annotation's
+    //     parent attachment, or a regular item's best attachment.
+    //     Clicking it does exactly what Zotero's own `zotero://open`
+    //     handler does (`Zotero.FileHandlers.open`): PDF / EPUB / HTML-
+    //     snapshot files open in Zotero's reader (or the user's
+    //     configured external reader), every other file type opens with
+    //     the OS default app — same as double-clicking the attachment.
+    //     Returns null for notes, linked-URL attachments (no file), and
+    //     items with no attachment. A `zotero://note/…` link is
+    //     Better-Notes-specific; see TODO. Zotero registers both
+    //     `zotero://open` and `zotero://open-pdf` for this; we emit the
+    //     shorter modern `zotero://open` form.
+
+    /** "library" for the user library, "groups/<gid>" for a group. */
+    _zoteroLibPrefix(libraryID) {
+        try {
+            if (libraryID !== Zotero.Libraries.userLibraryID) {
+                const gid = Zotero.Groups.getGroupIDFromLibraryID(libraryID);
+                if (gid) return "groups/" + gid;
+            }
+        } catch (e) {}
+        return "library";
+    },
+
+    /** The collection currently selected in the library pane's left
+     *  tree, as a `zotero://select` scope segment, or null when the
+     *  selected row isn't a real collection (library root, a saved
+     *  search, My Publications, Trash, …) or no main window is open.
+     *  Used so "Copy Select Link" from inside a collection produces
+     *  `zotero://select/<lib>/collections/<collKey>/items/<itemKey>` —
+     *  Zotero navigates to that collection (expanding its ancestors)
+     *  before selecting the item. Only the leaf collection key fits in
+     *  the URL; the full path is reconstructed on click. */
+    _currentCollectionScope(win?) {
+        try {
+            const zp = (win || Zotero.getMainWindow())?.ZoteroPane;
+            if (!zp || typeof zp.getSelectedCollection !== "function") return null;
+            const col = zp.getSelectedCollection();
+            if (!col || !col.key) return null;
+            return {
+                scope: this._zoteroLibPrefix(col.libraryID) + "/collections/" + col.key,
+                libraryID: col.libraryID,
+            };
+        } catch (e) { return null; }
+    },
+
+    /** `zotero://select/…/items/<key>` for any item, or null.
+     *  When `collScope` (from `_currentCollectionScope`) is given and
+     *  the item lives in that same library, the link is scoped to that
+     *  collection so clicking it navigates there first. */
+    _buildSelectLink(item, collScope?) {
+        if (!item || !item.key) return null;
+        if (collScope && collScope.scope && collScope.libraryID === item.libraryID) {
+            return "zotero://select/" + collScope.scope + "/items/" + item.key;
+        }
+        return "zotero://select/" + this._zoteroLibPrefix(item.libraryID)
+            + "/items/" + item.key;
+    },
+
+    /** ONE `zotero://select` link that selects every item in `items`:
+     *    1 item   → the plain path form (`…/items/<key>`)
+     *    2+ items → the multi-key query form (`…/items?itemKey=K1,K2,…`)
+     *  — which Zotero's own select handler accepts (it splits `itemKey`
+     *  on commas). `collScope` (from `_currentCollectionScope`) scopes
+     *  the link to that collection when all items live there. Returns
+     *  null if `items` is empty or spans multiple libraries (no single
+     *  link can express that — the caller should fall back to one link
+     *  per item). */
+    _buildCombinedSelectLink(items, collScope?) {
+        const arr = (Array.isArray(items) ? items : [items]).filter((i) => i && i.key);
+        if (!arr.length) return null;
+        if (arr.length === 1) return this._buildSelectLink(arr[0], collScope);
+        const lib = arr[0].libraryID;
+        if (!arr.every((i) => i.libraryID === lib)) return null;
+        const useScope = collScope && collScope.scope && collScope.libraryID === lib;
+        const base = useScope ? collScope.scope : this._zoteroLibPrefix(lib);
+        return "zotero://select/" + base + "/items?itemKey=" + arr.map((i) => i.key).join(",");
+    },
+
+    /** Copy the single combined Select link for `items` to the
+     *  clipboard. Falls back to newline-joined per-item links if a
+     *  single link can't express the selection (items span libraries).
+     *  Returns the number of links copied (1 for the combined form). */
+    _copyCombinedSelectLink(items, opts?) {
+        const arr = (Array.isArray(items) ? items : [items]).filter((i) => i && i.key);
+        if (!arr.length) return 0;
+        const collScope = opts && opts.collScope;
+        const combined = this._buildCombinedSelectLink(arr, collScope);
+        const text = combined
+            || arr.map((i) => this._buildSelectLink(i, collScope)).filter(Boolean).join("\n");
+        if (!text) return 0;
+        try {
+            Zotero.Utilities.Internal.copyTextToClipboard(text);
+        } catch (e) {
+            Zotero.debug("[Weavero] _copyCombinedSelectLink err: " + e);
+            return 0;
+        }
+        return combined ? 1 : arr.length;
+    },
+
+    /** True when `att` is a stored (not linked-URL) file attachment —
+     *  i.e. it has an on-disk file `zotero://open` can hand to the
+     *  reader or the OS default app. Excludes linked-URL "attachments"
+     *  (web links, which have no file) and notes. */
+    _isOpenableFileAttachment(att) {
+        try {
+            if (!att || !att.isAttachment || !att.isAttachment()) return false;
+            if (att.attachmentLinkMode === Zotero.Attachments.LINK_MODE_LINKED_URL) {
+                return false;
+            }
+            return !!(att.isFileAttachment && att.isFileAttachment());
+        } catch (e) { return false; }
+    },
+
+    /** For a regular item, pick the attachment an "Open" link should
+     *  target — preferring PDF, then EPUB, then HTML snapshot, then any
+     *  other stored file attachment (which `zotero://open` opens with
+     *  the OS default app). Linked-URL attachments are skipped (no
+     *  file). Returns the attachment Zotero.Item or null. Sync — relies
+     *  on the item's attachments already being loaded (true for items
+     *  shown in any UI surface). Mirrors the spirit of
+     *  `getBestAttachment()` without the async DB round-trip. */
+    _openableAttachmentFor(item) {
+        try {
+            if (!item || !item.isRegularItem || !item.isRegularItem()) return null;
+            const ids = (item.getAttachments && item.getAttachments()) || [];
+            const rank = (t) => (t === "pdf" ? 0 : t === "epub" ? 1 : t === "snapshot" ? 2 : 3);
+            let best = null, bestRank = 99;
+            for (const id of ids) {
+                const att = Zotero.Items.get(id);
+                if (!this._isOpenableFileAttachment(att)) continue;
+                const r = rank(att.attachmentReaderType);
+                if (r < bestRank) { best = att; bestRank = r; }
+            }
+            return best;
+        } catch (e) { return null; }
+    },
+
+    /** `zotero://open/…` link for an item, or null when no openable
+     *  file applies:
+     *    stored file attachment → …/items/<key>
+     *    annotation             → …/items/<parentAttachmentKey>?annotation=<key>
+     *    regular item           → …/items/<bestAttachmentKey>  (see above)
+     *    note / linked-URL / no-attachment / other → null */
+    _buildOpenLink(item) {
+        if (!item) return null;
+        try {
+            if (item.isAnnotation && item.isAnnotation()) {
+                const parent = item.parentItem
+                    || (item.parentItemID && Zotero.Items.get(item.parentItemID));
+                if (!this._isOpenableFileAttachment(parent)) return null;
+                return "zotero://open/" + this._zoteroLibPrefix(parent.libraryID)
+                    + "/items/" + parent.key + "?annotation=" + item.key;
+            }
+            if (item.isAttachment && item.isAttachment()) {
+                if (!this._isOpenableFileAttachment(item)) return null;
+                return "zotero://open/" + this._zoteroLibPrefix(item.libraryID)
+                    + "/items/" + item.key;
+            }
+            if (item.isRegularItem && item.isRegularItem()) {
+                const att = this._openableAttachmentFor(item);
+                if (!att) return null;
+                return "zotero://open/" + this._zoteroLibPrefix(att.libraryID)
+                    + "/items/" + att.key;
+            }
+        } catch (e) {}
+        return null;
+    },
+
+    /** True when at least one of `items` has an open link. */
+    _anyHasOpenLink(items) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        return arr.some((it) => !!this._buildOpenLink(it));
+    },
+
+    /** Whether `item`'s open link (if any) opens in an *external* app
+     *  rather than Zotero's reader — i.e. the file it points at is not
+     *  a PDF / EPUB / HTML snapshot. Used to suffix the "Copy Open
+     *  Link" menu label with "(external app)" so the user knows the
+     *  link won't open inside Zotero. Returns false when there's no
+     *  open link at all (the menu entry is hidden in that case). */
+    _isExternalOpenTarget(item) {
+        try {
+            if (!item) return false;
+            let att = null;
+            if (item.isAnnotation && item.isAnnotation()) {
+                att = item.parentItem
+                    || (item.parentItemID && Zotero.Items.get(item.parentItemID));
+            } else if (item.isAttachment && item.isAttachment()) {
+                att = item;
+            } else if (item.isRegularItem && item.isRegularItem()) {
+                att = this._openableAttachmentFor(item);
+            }
+            if (!this._isOpenableFileAttachment(att)) return false;
+            const t = att.attachmentReaderType;
+            return !(t === "pdf" || t === "epub" || t === "snapshot");
+        } catch (e) { return false; }
+    },
+
+    /** Copy `items`' links to the clipboard, one per line.
+     *  kind="select" → one line per item; `opts.collScope` (from
+     *    `_currentCollectionScope`) scopes the links to that collection.
+     *  kind="open"   → only items that have an open link contribute.
+     *  Returns the number of links copied (0 = nothing copied). */
+    _copyItemLinks(items, kind, opts?) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        const collScope = opts && opts.collScope;
+        const links: string[] = [];
+        for (const it of arr) {
+            const link = kind === "open"
+                ? this._buildOpenLink(it)
+                : this._buildSelectLink(it, collScope);
+            if (link) links.push(link);
+        }
+        if (!links.length) return 0;
+        try {
+            Zotero.Utilities.Internal.copyTextToClipboard(links.join("\n"));
+        } catch (e) {
+            Zotero.debug("[Weavero] _copyItemLinks err: " + e);
+            return 0;
+        }
+        return links.length;
+    },
+
     /** Launch a URL the way Zotero would — with a fast no-prompt path
      *  for app-link schemes (mailto:, obsidian://, slack://, …) gated
      *  on the user's `enableAppLinksSkipConfirm` preference.

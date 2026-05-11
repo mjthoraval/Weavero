@@ -55,8 +55,11 @@ class _PaneMixin {
             if (!menu) return;
             this._teardownItemsListContextMenu();
             const ADD_REL_ID = "wv-itemmenu-add-related";
-            const COPY_LINK_ID = "wv-itemmenu-copy-link";
+            const COPY_SELECT_ID = "wv-itemmenu-copy-select";          // single combined Select link
+            const COPY_SELECT_SEP_ID = "wv-itemmenu-copy-select-sep";  // multi: separate Select links
+            const COPY_OPEN_ID = "wv-itemmenu-copy-open";              // Open link(s)
             const SEP_ID = "wv-itemmenu-separator";
+            const ALL_IDS = [ADD_REL_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID, SEP_ID];
             // Include any item type that has an `addRelatedItem`
             // method — annotations, attachments, regular items, and
             // notes all support the dc:relation predicate. Excludes
@@ -69,24 +72,10 @@ class _PaneMixin {
                 || (it.isRegularItem && it.isRegularItem())
                 || (it.isNote && it.isNote())
             );
-            // Build a `zotero://select/...` URI for an item, picking
-            // the right library prefix (`library` vs `groups/<gid>`)
-            // so the link works for both personal and group items.
-            const buildSelectURI = (item) => {
-                let prefix = "library";
-                try {
-                    if (item.libraryID !== Zotero.Libraries.userLibraryID) {
-                        const gid = Zotero.Groups.getGroupIDFromLibraryID(
-                            item.libraryID);
-                        if (gid) prefix = "groups/" + gid;
-                    }
-                } catch (e) {}
-                return "zotero://select/" + prefix + "/items/" + item.key;
-            };
             const onShowing = () => {
                 try {
                     // Remove any prior entries before re-adding.
-                    for (const id of [ADD_REL_ID, COPY_LINK_ID, SEP_ID]) {
+                    for (const id of ALL_IDS) {
                         const stale = doc.getElementById(id);
                         if (stale) stale.remove();
                     }
@@ -98,68 +87,100 @@ class _PaneMixin {
                     const isDark = doc.documentElement
                         && doc.documentElement.classList.contains("wv-ui-dark");
 
-                    // Order mirrors _buildAnnotationContextMenu
-                    // exactly: Copy Item Link → separator → Add
-                    // Related…. Keeps the same affordance ordering
-                    // across both context-menu surfaces (annotation
-                    // popup vs items-list).
-                    //
-                    // Each entry is gated by its own pref (see prefs
-                    // pane → URI utilities / Relations groups). The
-                    // separator is only added when BOTH entries are
-                    // about to render, otherwise it'd float alone.
+                    // All of Weavero's items-menu entries form one
+                    // block at the bottom of the native menu: a single
+                    // separator above, then the Copy Select/Open Link
+                    // entries, then "Add Related…" — no separators
+                    // inside the block. Each entry is still gated by its
+                    // own pref (URI utilities / Relations groups).
 
                     const wantCopy = this._getEnableCopyItemLink();
                     const wantAdd = this._getEnableAddRelatedMenu();
                     if (!wantCopy && !wantAdd) return;
 
-                    // --- Copy Item Link --------------------------
-                    // Mirrors the entry on the annotation context
-                    // menu (_buildAnnotationContextMenu). Zotero
-                    // doesn't expose this in the items-tree menu by
-                    // default, so we add it for parity with the
-                    // annotation surface. Multi-selection: copy
-                    // newline-separated URIs so the user gets one
-                    // link per selected item.
-                    if (wantCopy) {
-                    const cl = doc.createXULElement("menuitem");
-                    cl.id = COPY_LINK_ID;
-                    cl.setAttribute("label", targets.length > 1
-                        ? "Copy Item Links  (" + targets.length + " items)"
-                        : "Copy Item Link");
-                    const linkIconURL = this._menuItemIconURL;
-                    if (linkIconURL) {
-                        cl.classList.add("menuitem-iconic");
-                        cl.setAttribute("image", linkIconURL);
-                    }
-                    cl.addEventListener("command", () => {
-                        try {
-                            const zp2 = win.ZoteroPane;
-                            const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
-                                ? zp2.getSelectedItems() : [];
-                            const fresh = sel2.filter(isRelatable);
-                            if (!fresh.length) return;
-                            const uris = fresh.map(buildSelectURI).join("\n");
-                            Zotero.Utilities.Internal.copyTextToClipboard(uris);
-                        } catch (cmdErr) {
-                            Zotero.debug(
-                                "[Weavero] itemmenu copy-link cmd err: " + cmdErr);
+                    // Separator above the whole block (skip if the
+                    // native menu already ends with one).
+                    {
+                        const last = menu.lastElementChild as any;
+                        if (!last || last.localName !== "menuseparator") {
+                            const sep = doc.createXULElement("menuseparator");
+                            sep.id = SEP_ID;
+                            menu.appendChild(sep);
                         }
-                    });
-                    menu.appendChild(cl);
+                    }
+
+                    // --- Copy Select / Open Link entries ---------
+                    // Zotero exposes none of these in the items-tree
+                    // menu by default. Single selection: "Copy Select
+                    // Link" (+ "Copy Open Link" when the item has an
+                    // openable file). Multi selection:
+                    //   • Copy Select Link — ONE link selecting all of
+                    //     them (`…/items?itemKey=K1,K2,…`)
+                    //   • Copy Select Links (Separate Links per Item) —
+                    //     one `…/items/<key>` link per line
+                    //   • Copy Open Links (Separate Links per Item) —
+                    //     one `…/items/<key>` open link per line, for
+                    //     the selected items that have one (others
+                    //     skipped). `zotero://open` can't take a list,
+                    //     so there's no combined Open link.
+                    // Select links are scoped to the collection shown
+                    // in the left tree (if any) so they navigate there.
+                    if (wantCopy) {
+                    const menuIcon = this._menuItemIconURL;
+                    const addEntry = (id, label, action) => {
+                        const cl = doc.createXULElement("menuitem");
+                        cl.id = id;
+                        cl.setAttribute("label", label);
+                        if (menuIcon) {
+                            cl.classList.add("menuitem-iconic");
+                            cl.setAttribute("image", menuIcon);
+                        }
+                        cl.addEventListener("command", () => {
+                            try {
+                                const zp2 = win.ZoteroPane;
+                                const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
+                                    ? zp2.getSelectedItems() : [];
+                                const fresh = sel2.filter(isRelatable);
+                                if (!fresh.length) return;
+                                action(fresh);
+                            } catch (cmdErr) {
+                                Zotero.debug("[Weavero] itemmenu copy-link cmd err: " + cmdErr);
+                            }
+                        });
+                        menu.appendChild(cl);
+                    };
+                    const collScopeNow = () => ({ collScope: this._currentCollectionScope(win) });
+                    // When the left tree has a real collection selected,
+                    // the Select link(s) are scoped to it — flag that in
+                    // the label so the user knows the collection rides
+                    // along. (Resolved at popupshowing time; right-
+                    // clicking an item doesn't change the collection
+                    // selection.) Open links never carry a collection.
+                    const collSuffix = this._currentCollectionScope(win)
+                        ? " (include Collection)" : "";
+                    const multi = targets.length > 1;
+                    const openTargets = targets.filter((it) => !!this._buildOpenLink(it));
+                    const openExtSuffix = openTargets.length === 1
+                        && this._isExternalOpenTarget(openTargets[0]) ? " (external app)" : "";
+
+                    addEntry(COPY_SELECT_ID, "Copy Select Link" + collSuffix,
+                        (fresh) => this._copyCombinedSelectLink(fresh, collScopeNow()));
+                    if (multi) {
+                        addEntry(COPY_SELECT_SEP_ID,
+                            "Copy Select Links (Separate Links per Item)" + collSuffix,
+                            (fresh) => this._copyItemLinks(fresh, "select", collScopeNow()));
+                        if (openTargets.length) {
+                            addEntry(COPY_OPEN_ID, "Copy Open Links (Separate Links per Item)",
+                                (fresh) => this._copyItemLinks(fresh, "open"));
+                        }
+                    } else if (openTargets.length) {
+                        addEntry(COPY_OPEN_ID, "Copy Open Link" + openExtSuffix,
+                            (fresh) => this._copyItemLinks(fresh, "open"));
+                    }
                     }   // /wantCopy
 
-                    // Separator between the two Weavero entries —
-                    // matches the addSep() in
-                    // _buildAnnotationContextMenu between Copy Item
-                    // Link and Add Related….
-                    if (wantCopy && wantAdd) {
-                    const sep = doc.createXULElement("menuseparator");
-                    sep.id = SEP_ID;
-                    menu.appendChild(sep);
-                    }
-
-                    // --- Add Related… ----------------------------
+                    // --- Add Related… ---------------------------- (same
+                    // block as the copy entries — no separator between)
                     if (wantAdd) {
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ADD_REL_ID;
@@ -202,7 +223,7 @@ class _PaneMixin {
             };
             const onHidden = () => {
                 try {
-                    for (const id of [ADD_REL_ID, COPY_LINK_ID, SEP_ID]) {
+                    for (const id of ALL_IDS) {
                         const el = doc.getElementById(id);
                         if (el) el.remove();
                     }
@@ -223,7 +244,7 @@ class _PaneMixin {
             try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
             try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
             try {
-                for (const id of ["wv-itemmenu-add-related", "wv-itemmenu-copy-link", "wv-itemmenu-separator"]) {
+                for (const id of ["wv-itemmenu-add-related", "wv-itemmenu-copy-select", "wv-itemmenu-copy-select-sep", "wv-itemmenu-copy-open", "wv-itemmenu-separator"]) {
                     const stale = menu.ownerDocument.getElementById(id);
                     if (stale) stale.remove();
                 }
@@ -232,12 +253,93 @@ class _PaneMixin {
         this._itemMenuHandlers = null;
     }
 
+    /** Register the reader-tab right-click menu entries via Zotero's
+     *  MenuManager plugin API (`target: "main/tab"`). Two entries, both
+     *  acting on the tab's own item (the file attachment being read):
+     *    Copy Select Link — `zotero://select/…/items/<key>` (selects
+     *                       the attachment row in the library)
+     *    Copy Open Link   — `zotero://open/…/items/<key>` (re-opens
+     *                       that document in the reader)
+     *  Each is hidden (`onShowing` → `setVisible(false)`) when the
+     *  Copy-Item-Link pref is off or the link doesn't apply (e.g. a
+     *  linked-URL attachment with no file). No-op on Zotero builds
+     *  without `MenuManager.registerMenu`. */
+    _registerTabContextMenu() {
+        try {
+            if (!((Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.registerMenu === "function")) {
+                this._dbg("[Weavero] MenuManager unavailable; skip tab-menu register");
+                return;
+            }
+            this._teardownTabContextMenu();
+            const self = this;
+            const makeEntry = (kind) => ({
+                menuType: "menuitem",
+                icon: self._menuItemIconURLLight,
+                darkIcon: self._menuItemIconURLDark,
+                onShowing: (_ev, ctx) => {
+                    try {
+                        if (!self._getEnableCopyItemLink()) { ctx.setVisible(false); return; }
+                        const item = ctx.items && ctx.items[0];
+                        if (!item) { ctx.setVisible(false); return; }
+                        const link = kind === "open"
+                            ? self._buildOpenLink(item)
+                            : self._buildSelectLink(item);
+                        if (!link) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        let label = kind === "open" ? "Copy Open Link" : "Copy Select Link";
+                        if (kind === "open" && self._isExternalOpenTarget(item)) {
+                            label += " (external app)";
+                        }
+                        ctx.menuElem.setAttribute("label", label);
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tab-menu onShowing err: " + e);
+                        try { ctx.setVisible(false); } catch (e2) {}
+                    }
+                },
+                onCommand: (_ev, ctx) => {
+                    try {
+                        const item = ctx.items && ctx.items[0];
+                        if (item) self._copyItemLinks([item], kind);
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tab-menu onCommand err: " + e);
+                    }
+                },
+            });
+            const id = (Zotero as any).MenuManager.registerMenu({
+                menuID: "weavero-tab-copy-links",
+                pluginID: "weavero@mjthoraval",
+                target: "main/tab",
+                menus: [
+                    makeEntry("select"),
+                    makeEntry("open"),
+                ],
+            });
+            if (id) this._tabMenuID = id;
+            this._dbg("[Weavero] tab-menu registered: " + id);
+        } catch (e) {
+            Zotero.debug("[Weavero] _registerTabContextMenu err: " + e);
+        }
+    }
+
+    _teardownTabContextMenu() {
+        try {
+            if (this._tabMenuID && (Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.unregisterMenu === "function") {
+                (Zotero as any).MenuManager.unregisterMenu(this._tabMenuID);
+            }
+        } catch (e) {}
+        this._tabMenuID = null;
+    }
+
     /** Hook the collections-tree right-click menu
-     *  (`#zotero-collectionmenu`) and insert "Copy Collection Link"
-     *  when the right-clicked row is a regular collection. Zotero
-     *  doesn't expose a copy-link affordance for collections by
-     *  default; this matches the items-list copy-link entry so users
-     *  have a consistent way to drop `zotero://select/...` URIs.
+     *  (`#zotero-collectionmenu`) and insert "Copy Collection Link" on
+     *  a collection row, or "Copy Saved Search Link" on a saved-search
+     *  row (`zotero://select/<lib>/collections/<key>` resp.
+     *  `…/searches/<key>`). Zotero doesn't expose a copy-link
+     *  affordance for either by default; this matches the items-list
+     *  copy-link entry so users have a consistent way to drop
+     *  `zotero://select/...` URIs.
      *
      *  Same lifecycle as `_setupItemsListContextMenu`: bind once,
      *  rebuild the entry on each open, strip on `popuphidden` so we
@@ -257,59 +359,66 @@ class _PaneMixin {
             const menu = doc.getElementById("zotero-collectionmenu");
             if (!menu) return;
             this._teardownCollectionsContextMenu();
-            const COPY_LINK_ID = "wv-collectionmenu-copy-link";
-            // Build a `zotero://select/<lib-prefix>/collections/<key>`
-            // URI for a collection. Same library-prefix logic as the
-            // items-list copy-link.
-            const buildCollectionURI = (col) => {
-                let prefix = "library";
-                try {
-                    if (col.libraryID !== Zotero.Libraries.userLibraryID) {
-                        const gid = Zotero.Groups.getGroupIDFromLibraryID(
-                            col.libraryID);
-                        if (gid) prefix = "groups/" + gid;
+            const COPY_COLL_ID   = "wv-collectionmenu-copy-link";
+            const COPY_SEARCH_ID = "wv-collectionmenu-copy-search-link";
+            const ALL_IDS = [COPY_COLL_ID, COPY_SEARCH_ID];
+            // `zotero://select/<lib-prefix>/<collections|searches>/<key>`.
+            const buildCollectionURI = (col) =>
+                "zotero://select/" + this._zoteroLibPrefix(col.libraryID)
+                + "/collections/" + col.key;
+            const buildSearchURI = (s) =>
+                "zotero://select/" + this._zoteroLibPrefix(s.libraryID)
+                + "/searches/" + s.key;
+            // Append a copy-link menuitem. `resolve()` re-reads the
+            // selected object at click time (the selection may move
+            // between popupshowing and the actual click).
+            const addEntry = (id, label, resolve, buildURI) => {
+                const cl = doc.createXULElement("menuitem");
+                cl.id = id;
+                cl.setAttribute("label", label);
+                const linkIconURL = this._menuItemIconURL;
+                if (linkIconURL) {
+                    cl.classList.add("menuitem-iconic");
+                    cl.setAttribute("image", linkIconURL);
+                }
+                cl.addEventListener("command", () => {
+                    try {
+                        const obj = resolve();
+                        if (!obj || !obj.key) return;
+                        Zotero.Utilities.Internal.copyTextToClipboard(buildURI(obj));
+                    } catch (cmdErr) {
+                        Zotero.debug("[Weavero] collectionmenu copy-link cmd err: " + cmdErr);
                     }
-                } catch (e) {}
-                return "zotero://select/" + prefix + "/collections/" + col.key;
+                });
+                menu.appendChild(cl);
             };
             const onShowing = () => {
                 try {
-                    const stale = doc.getElementById(COPY_LINK_ID);
-                    if (stale) stale.remove();
+                    for (const id of ALL_IDS) {
+                        const stale = doc.getElementById(id);
+                        if (stale) stale.remove();
+                    }
                     const zp = win.ZoteroPane;
-                    // Skip when the right-clicked row isn't a real
-                    // collection (could be a library root, saved
-                    // search, feed, or trash). `getSelectedCollection`
-                    // returns the Collection object for a collection
-                    // row; everything else returns null/false.
+                    // `getSelectedCollection` returns the Collection for
+                    // a collection row, false otherwise; `getSelected
+                    // SavedSearch` returns the Search for a saved-search
+                    // row. Library roots, feeds, trash, etc. give false
+                    // for both → no entry.
                     const col = (zp && typeof zp.getSelectedCollection === "function")
                         ? zp.getSelectedCollection() : null;
-                    if (!col || !col.key) return;
-                    const cl = doc.createXULElement("menuitem");
-                    cl.id = COPY_LINK_ID;
-                    cl.setAttribute("label", "Copy Collection Link");
-                    const linkIconURL = this._menuItemIconURL;
-                    if (linkIconURL) {
-                        cl.classList.add("menuitem-iconic");
-                        cl.setAttribute("image", linkIconURL);
+                    if (col && col.key) {
+                        addEntry(COPY_COLL_ID, "Copy Collection Link",
+                            () => win.ZoteroPane.getSelectedCollection(),
+                            buildCollectionURI);
+                        return;
                     }
-                    cl.addEventListener("command", () => {
-                        try {
-                            // Re-resolve at click time in case the
-                            // selection moved between popupshowing
-                            // and the user actually clicking.
-                            const zp2 = win.ZoteroPane;
-                            const col2 = (zp2 && typeof zp2.getSelectedCollection === "function")
-                                ? zp2.getSelectedCollection() : null;
-                            if (!col2 || !col2.key) return;
-                            const uri = buildCollectionURI(col2);
-                            Zotero.Utilities.Internal.copyTextToClipboard(uri);
-                        } catch (cmdErr) {
-                            Zotero.debug(
-                                "[Weavero] collectionmenu copy-link cmd err: " + cmdErr);
-                        }
-                    });
-                    menu.appendChild(cl);
+                    const search = (zp && typeof zp.getSelectedSavedSearch === "function")
+                        ? zp.getSelectedSavedSearch() : null;
+                    if (search && search.key) {
+                        addEntry(COPY_SEARCH_ID, "Copy Saved Search Link",
+                            () => win.ZoteroPane.getSelectedSavedSearch(),
+                            buildSearchURI);
+                    }
                 } catch (showErr) {
                     Zotero.debug(
                         "[Weavero] collectionmenu popupshowing err: " + showErr);
@@ -317,8 +426,10 @@ class _PaneMixin {
             };
             const onHidden = () => {
                 try {
-                    const el = doc.getElementById(COPY_LINK_ID);
-                    if (el) el.remove();
+                    for (const id of ALL_IDS) {
+                        const el = doc.getElementById(id);
+                        if (el) el.remove();
+                    }
                 } catch (e) {}
             };
             menu.addEventListener("popupshowing", onShowing);
@@ -336,8 +447,10 @@ class _PaneMixin {
             try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
             try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
             try {
-                const stale = menu.ownerDocument.getElementById("wv-collectionmenu-copy-link");
-                if (stale) stale.remove();
+                for (const id of ["wv-collectionmenu-copy-link", "wv-collectionmenu-copy-search-link"]) {
+                    const stale = menu.ownerDocument.getElementById(id);
+                    if (stale) stale.remove();
+                }
             } catch (e) {}
         } catch (e) {}
         this._collectionMenuHandlers = null;
@@ -1076,8 +1189,13 @@ class _PaneMixin {
                 label: "Tags",
                 pluginID: "weavero@mjthoraval",
                 iconPath: "chrome://zotero/skin/16/universal/tag.svg",
-                width: "44",
-                minWidth: 30,
+                // Wide enough for "manual|auto" when the auto count is
+                // on; otherwise the same 30px the Annotations column
+                // uses. Persisted width (from a later toggle) overrides
+                // this on subsequent loads — see the toggle handler in
+                // index.ts which updates the live column + the pref.
+                width: String(this._tagsColumnWidth()),
+                minWidth: this._getEnableTagsCountAuto() ? 30 : 26,
                 staticWidth: true,
                 fixedWidth: true,
                 showInColumnPicker: true,
@@ -2081,13 +2199,26 @@ class _PaneMixin {
     decorateContextMenu(idoc) {
         if (!idoc || !idoc.querySelectorAll) return 0;
         // Per-prefix icon factory:
-        //   "Add Related" → inline <svg> chain via _makeRelationsSvg
-        //                    (uses fill="currentColor" — inherits the
-        //                     menu's theme text color, so it reads on
-        //                     both light AND dark menu backgrounds).
+        //   "Add Related"            → inline <svg> chain via
+        //                              _makeRelationsSvg (fill=
+        //                              currentColor → reads on light AND
+        //                              dark menu backgrounds).
+        //   "Copy Select/Open Link"  → the plugin's needle <img>, same
+        //                              icon the items-list / related-
+        //                              item "Copy … Link" entries use.
         const buildIconNode = (text) => {
             if (text.startsWith("Add Related")) {
                 return this._makeRelationsSvg(idoc);
+            }
+            if (text.startsWith("Copy Select Link") || text.startsWith("Copy Open Link")) {
+                const iconURL = this._menuItemIconURL;
+                if (!iconURL) return null;
+                const img: any = idoc.createElement("img");
+                img.src = iconURL;
+                img.setAttribute("width", "16");
+                img.setAttribute("height", "16");
+                img.style.display = "block";
+                return img;
             }
             return null;
         };

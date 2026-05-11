@@ -834,8 +834,57 @@ class _ReaderMixin {
         panel._wvOpenedFor = opts.anchorNode || null;
 
         const container = doc.createElementNS(ns, "div");
-        container.className = "wv-popup-container";
+        // `wv-relations-popup` modifier — gives this popup the look of
+        // the item pane's "Related" section (count header + a "+" add
+        // button + a tight list of icon-titled rows) rather than the
+        // comment / link popup's prose-card look, so the two are easy
+        // to tell apart. No collapse caret (it's a popup, not a
+        // collapsible pane section).
+        container.className = "wv-popup-container wv-relations-popup";
         container.setAttribute("tabindex", "-1");
+
+        // Header: [related icon]  "<N> Related"  +  "+" (add related item).
+        const header = doc.createElementNS(ns, "div") as any;
+        header.className = "wv-relations-header";
+        let headIcon: any = null;
+        try {
+            headIcon = this._makeRelationsSvg(doc);
+            headIcon.classList.add("wv-relations-header-icon");
+            headIcon.setAttribute("aria-hidden", "true");
+            header.appendChild(headIcon);
+        } catch (e) {}
+        const headTitle = doc.createElementNS(ns, "span") as any;
+        headTitle.className = "wv-relations-header-title";
+        headTitle.textContent = items.length + " Related";
+        header.appendChild(headTitle);
+        const addBtn = doc.createElementNS(ns, "span") as any;
+        addBtn.className = "wv-relations-add";
+        addBtn.setAttribute("role", "button");
+        addBtn.setAttribute("tabindex", "0");
+        addBtn.setAttribute("aria-label", "Add related item");
+        addBtn.title = "Add related item…";
+        // Inline plus.svg (same glyph as the item-pane "Related" add button).
+        // Fall back to a text "+" only if the SVG build throws.
+        try { addBtn.appendChild(this._makePlusSvg(doc)); }
+        catch (e) { addBtn.textContent = "+"; }
+        const doAdd = (e) => {
+            try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+            try { panel.style.display = "none"; } catch (er) {}
+            const w = Zotero.getMainWindow();
+            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => {
+                try {
+                    this._addRelatedItemDialog([annotationItem])
+                        .catch((err) => Zotero.debug("[Weavero] rel-popup add err: " + err));
+                } catch (er) { Zotero.debug("[Weavero] rel-popup add err: " + er); }
+            }, 0);
+        };
+        addBtn.addEventListener("click", doAdd);
+        addBtn.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") doAdd(e);
+        });
+        header.appendChild(addBtn);
+        container.appendChild(header);
 
         const list = doc.createElementNS(ns, "div");
         list.className = "wv-relations-list";
@@ -1292,58 +1341,110 @@ class _ReaderMixin {
             const capturedLib  = lib;
             const capturedKeys = annKeys.slice();
             // Capture `self` instead of relying on `this` inside the
-            // closure: upstream Zotero clones our menu item object via
+            // closures: upstream Zotero clones our menu item objects via
             // `Components.utils.cloneInto(..., { cloneFunctions: true })`
             // when forwarding into the reader iframe, and although the
             // cloned function still executes in chrome when invoked,
             // resolving `this` through the cloned reflector has been
             // observed to crash the process. A direct named binding
-            // sidesteps that path entirely.
+            // sidesteps that path entirely. The captured env of every
+            // `onCommand` must otherwise be primitives (the `params.ids`
+            // → keys + libraryID), re-resolved to live items at click
+            // time — capturing a Zotero.Item array here trips a
+            // "Permission denied" check inside `appendCustomItemGroups`.
             const self = this;
-            try {
-                append({
-                    label: annKeys.length > 1
-                        ? "Add Related…  (" + annKeys.length + " annotations)"
-                        : "Add Related…",
+
+            // Build all the Weavero entries up front, then `append` them
+            // in ONE call: the reader's `append(...items)` pushes a
+            // single item group, so they render as one section (with a
+            // separator above, none inside) — the same layout as the
+            // items-list right-click menu. Order matches it too:
+            // Copy Select Link → Copy Open Link → Add Related….
+            // The `createAnnotationContextMenu` event fires for both an
+            // in-PDF right-click and the sidebar 3-dots ("more") button,
+            // so this covers both reader surfaces, and (like the
+            // items-list menu) it operates on every selected annotation.
+            const items: any[] = [];
+            if (self._getEnableCopyItemLink()) {
+                items.push({
+                    label: capturedKeys.length > 1
+                        ? "Copy Select Links  (" + capturedKeys.length + " annotations)"
+                        : "Copy Select Link",
                     onCommand: () => {
-                        // Defer to next tick so the context menu fully
-                        // closes / unwinds in the reader iframe before
-                        // we open a new chrome dialog. Opening a modal-
-                        // ish dialog while the menu is still tearing
-                        // down has been the trigger of native crashes
-                        // when chrome/iframe lifetimes overlap.
-                        const win = Zotero.getMainWindow();
-                        const setTimeoutFn = win && win.setTimeout
-                            ? win.setTimeout.bind(win)
-                            : setTimeout;
-                        setTimeoutFn(() => {
-                            try {
-                                const fresh = capturedKeys
-                                    .map(k => self._getAnnotationItem(
-                                        capturedLib, k))
-                                    .filter(Boolean);
-                                Zotero.debug(
-                                    "[Weavero] add-related onCommand: "
-                                    + "resolved " + fresh.length + "/"
-                                    + capturedKeys.length
-                                    + " item(s) at click time");
-                                if (!fresh.length) return;
-                                self._addRelatedItemDialog(fresh)
-                                    .catch(err => Zotero.debug(
-                                        "[Weavero] _addRelatedItemDialog"
-                                        + " rejected: " + err));
-                            } catch (innerErr) {
-                                Zotero.debug(
-                                    "[Weavero] add-related onCommand "
-                                    + "deferred err: " + innerErr);
-                            }
-                        }, 0);
+                        try {
+                            const fresh = capturedKeys
+                                .map(k => self._getAnnotationItem(capturedLib, k))
+                                .filter(Boolean);
+                            if (fresh.length) self._copyItemLinks(fresh, "select");
+                        } catch (e) {
+                            Zotero.debug("[Weavero] reader copy-select err: " + e);
+                        }
                     },
                 });
-            } catch (e) {
-                Zotero.debug(
-                    "[Weavero] _contextHandler add-related append err: " + e);
+                // An annotation always lives on a file attachment, so an
+                // open link normally applies — but verify per item so a
+                // detached / orphaned annotation can't break the entry.
+                let openCount = 0;
+                try {
+                    openCount = capturedKeys
+                        .map(k => self._getAnnotationItem(capturedLib, k))
+                        .filter(a => a && self._buildOpenLink(a)).length;
+                } catch (e) {}
+                if (openCount > 0) {
+                    items.push({
+                        label: openCount > 1
+                            ? "Copy Open Links  (" + openCount + " annotations)"
+                            : "Copy Open Link",
+                        onCommand: () => {
+                            try {
+                                const fresh = capturedKeys
+                                    .map(k => self._getAnnotationItem(capturedLib, k))
+                                    .filter(Boolean);
+                                if (fresh.length) self._copyItemLinks(fresh, "open");
+                            } catch (e) {
+                                Zotero.debug("[Weavero] reader copy-open err: " + e);
+                            }
+                        },
+                    });
+                }
             }
+            items.push({
+                label: annKeys.length > 1
+                    ? "Add Related…  (" + annKeys.length + " annotations)"
+                    : "Add Related…",
+                onCommand: () => {
+                    // Defer to next tick so the context menu fully
+                    // closes / unwinds in the reader iframe before we
+                    // open a new chrome dialog. Opening a modal-ish
+                    // dialog while the menu is still tearing down has
+                    // been the trigger of native crashes when
+                    // chrome/iframe lifetimes overlap.
+                    const win = Zotero.getMainWindow();
+                    const setTimeoutFn = win && win.setTimeout
+                        ? win.setTimeout.bind(win)
+                        : setTimeout;
+                    setTimeoutFn(() => {
+                        try {
+                            const fresh = capturedKeys
+                                .map(k => self._getAnnotationItem(capturedLib, k))
+                                .filter(Boolean);
+                            Zotero.debug(
+                                "[Weavero] add-related onCommand: resolved "
+                                + fresh.length + "/" + capturedKeys.length
+                                + " item(s) at click time");
+                            if (!fresh.length) return;
+                            self._addRelatedItemDialog(fresh)
+                                .catch(err => Zotero.debug(
+                                    "[Weavero] _addRelatedItemDialog rejected: " + err));
+                        } catch (innerErr) {
+                            Zotero.debug(
+                                "[Weavero] add-related onCommand deferred err: " + innerErr);
+                        }
+                    }, 0);
+                },
+            });
+            try { append(...items); }
+            catch (e) { Zotero.debug("[Weavero] _contextHandler append err: " + e); }
         }
     }
 
@@ -1477,11 +1578,59 @@ class _ReaderMixin {
             if (!preview) return;
             const header = preview.querySelector("header");
             if (!header) return;
+            const doc    = popup.ownerDocument;
+            const target = header.querySelector(".end") || header;
+            // The reader-outer CSS carries the .wv-btn / .wv-btn-relations
+            // rules — make sure it's present in this popup's document before
+            // we append icons (idempotent; mirrors the sidebar path).
+            try { this._ensureReaderOuterStyles(doc); } catch (e) {}
+
+            const lib = this.libraryIDFromReader(reader);
+            const key = this._findAnnotationKey(popup, reader);
+
+            // --- Relations icon (independent of comment content) ------------
+            // Mirrors the sidebar row: an annotation with related items gets a
+            // chain icon next to the native kebab (⋯) button that opens the
+            // relations popup. Runs first so the comment-icon early returns
+            // below can't skip it; an area annotation with no comment can
+            // still carry relations.
+            try {
+                const ann     = key ? this._getAnnotationItem(lib, key) : null;
+                const related = ann ? this._getAnnotationRelatedItems(ann) : [];
+                const existingRel = target.querySelector(".wv-btn-relations");
+                if (related.length && !existingRel) {
+                    const relBtn = doc.createElement("button");
+                    relBtn.className = BTN_CLASS + " " + BTN_POPUP_CLASS
+                        + " wv-btn-relations";
+                    relBtn.setAttribute("tabindex", "-1");
+                    relBtn.title = related.length + " Related";
+                    relBtn.appendChild(this._makeRelationsSvg(doc));
+                    relBtn.addEventListener("click", e => {
+                        e.stopPropagation(); e.preventDefault();
+                        const freshKey = this._findAnnotationKey(popup, reader);
+                        const freshAnn = (freshKey
+                            && this._getAnnotationItem(lib, freshKey)) || ann;
+                        const sc = this._screenCoords(relBtn);
+                        this.openRelationsPopup(freshAnn,
+                            sc ? { anchorScreen: sc } : { anchorNode: relBtn });
+                    });
+                    const moreBtn = target.querySelector("button.more");
+                    if (moreBtn) target.insertBefore(relBtn, moreBtn);
+                    else target.appendChild(relBtn);
+                } else if (!related.length && existingRel) {
+                    existingRel.remove();
+                }
+            } catch (e) {
+                Zotero.debug("[Weavero] popup relations icon err: " + e.message);
+            }
+
             const commentEl = preview.querySelector(".comment");
 
             if (!commentEl) {
-                // Popup lost its comment — remove stale button
-                preview.querySelector("." + BTN_POPUP_CLASS)?.remove();
+                // Popup lost its comment — remove the stale comment button
+                // (leave the relations button: it doesn't need a comment).
+                preview.querySelector("." + BTN_POPUP_CLASS
+                    + ":not(.wv-btn-relations)")?.remove();
                 return;
             }
 
@@ -1494,11 +1643,9 @@ class _ReaderMixin {
             // could only colourise URLs and missed every other markdown form.
             this._renderPreviewPanel(commentEl);
 
-            const target = header.querySelector(".end") || header;
-            const existingBtn = target.querySelector("." + BTN_POPUP_CLASS);
+            const existingBtn = target.querySelector("." + BTN_POPUP_CLASS
+                + ":not(.wv-btn-relations)");
 
-            const lib     = this.libraryIDFromReader(reader);
-            const key     = this._findAnnotationKey(popup, reader);
             const comment = this.getModelComment(lib, key) ?? (commentEl.textContent || "");
             const anchors = this.collectAnchorURLs(commentEl);
             const hasURIs = this._iconWantedFor(comment) || anchors.length > 0;
@@ -1530,7 +1677,6 @@ class _ReaderMixin {
             }
             if (existingBtn) return;
 
-            const doc = popup.ownerDocument;
             const btn = doc.createElement("button");
             btn.className = BTN_CLASS + " " + BTN_POPUP_CLASS;
             btn.setAttribute("tabindex", "-1");
@@ -1546,8 +1692,11 @@ class _ReaderMixin {
                     ...(sc ? { anchorScreen: sc } : { anchorNode: btn })
                 });
             });
-            const moreBtn = target.querySelector("button.more");
-            if (moreBtn) target.insertBefore(btn, moreBtn); else target.appendChild(btn);
+            // Order: [comment][relations][more] — keep relations adjacent to
+            // the native kebab, matching the sidebar's icon-group policy.
+            const before = target.querySelector(".wv-btn-relations")
+                || target.querySelector("button.more");
+            if (before) target.insertBefore(btn, before); else target.appendChild(btn);
         } catch (err) {
             Zotero.debug("[Weavero] _injectIconIntoPopup error: " + err.message);
         }

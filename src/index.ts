@@ -127,39 +127,123 @@ class WeaveroPlugin {
 
     // ---- zotero:// URI dispatch --------------------------------------------
 
+    /** Notify the user when a clicked `zotero://` link can't fully
+     *  resolve — a missing item / collection / saved search, an item or
+     *  collection that's in the Trash (still recoverable, distinct from
+     *  permanently deleted), or a group library they aren't a member of.
+     *  Always logged to the debug console; also shown as a transient
+     *  in-window toast.
+     *
+     *  Deliberately loud/verbose for now — it fires on EVERY stale
+     *  reference, including partial multi-selects (4 of 5 items found).
+     *  This is the "test it broadly first" stage; once we know how
+     *  often it actually fires in practice, a later version can quiet
+     *  it down (a non-blocking toast, a pref, only-when-nothing-
+     *  resolved, …). Only fires for links clicked inside Weavero-
+     *  decorated surfaces — links clicked elsewhere go through Zotero's
+     *  native handler, which stays silent. */
+    _showLinkWarning(messages) {
+        const arr = (Array.isArray(messages) ? messages : [messages])
+            .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
+        if (!arr.length) return;
+        Zotero.debug("[Weavero] link warning — " + arr.join(" | "));
+        try {
+            const win = Zotero.getMainWindow();
+            const doc = win && win.document;
+            if (!doc) return;
+            // Self-contained DOM toast injected into the main window —
+            // avoids `Zotero.ProgressWindow` / `Services.prompt.alert`
+            // (the former renders blank and the latter is suppressed
+            // when DevTools is attached, e.g. the dev MCP bridge). Amber
+            // colours read on both the light and dark Zotero themes.
+            const HTMLNS = "http://www.w3.org/1999/xhtml";
+            const old = doc.getElementById("wv-link-toast");
+            if (old) { try { old.remove(); } catch (e) {} }
+            // Force the HTML namespace — the main window's root element
+            // is a XUL `<window>`, so a bare `createElement("div")` can
+            // come out as a non-rendering XUL element on some builds.
+            const box: any = doc.createElementNS(HTMLNS, "div");
+            box.id = "wv-link-toast";
+            box.style.cssText = [
+                "position:fixed", "bottom:14px", "right:14px", "z-index:2147483647",
+                "max-width:420px", "padding:11px 13px", "border-radius:7px",
+                "background:#5a3d00", "color:#ffe9b3", "border:1px solid #8a6500",
+                "box-shadow:0 4px 18px rgba(0,0,0,.45)",
+                "font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+                "cursor:pointer", "user-select:text",
+            ].join(";");
+            const head: any = doc.createElementNS(HTMLNS, "div");
+            head.style.cssText = "font-weight:600;margin-bottom:3px";
+            head.textContent = "Weavero — broken link";
+            box.appendChild(head);
+            for (const m of arr) {
+                const line: any = doc.createElementNS(HTMLNS, "div");
+                line.style.cssText = "margin-top:2px";
+                line.textContent = m;
+                box.appendChild(line);
+            }
+            box.title = "Click to dismiss";
+            box.addEventListener("click", () => { try { box.remove(); } catch (e) {} });
+            (doc.documentElement || doc).appendChild(box);
+            try { win.setTimeout(() => { try { box.remove(); } catch (e) {} }, 11000); }
+            catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _showLinkWarning err: " + e);
+        }
+    }
+
     async handleZoteroURI(url) {
         try {
             const u = new URL(url);
             const parts = u.pathname.split("/").filter(Boolean);
             const getLib = (): number => {
-                if (parts[0] === "groups")
+                if (parts[0] === "groups" || parts[0] === "g")
                     return Zotero.Groups.getLibraryIDFromGroupID(Number(parts[1])) as number;
                 return Zotero.Libraries.userLibraryID;
             };
             const lastKey = parts[parts.length - 1];
 
+            // Group-library access guard — for any select/open/note link
+            // that names a `groups/<gid>` (or `g/<gid>`) library, bail
+            // early with a notification if the user isn't a member of
+            // that group (or the group ID is bogus). Without this the
+            // key lookups below would just silently fail.
+            if ((parts[0] === "groups" || parts[0] === "g")
+                && /^zotero:\/\/(select|open|open-pdf|note)\b/.test(url)) {
+                const gid = Number(parts[1]);
+                const groupLib = Zotero.Groups.getLibraryIDFromGroupID(gid);
+                if (!groupLib) {
+                    this._showLinkWarning(Number.isFinite(gid)
+                        ? "This link points to a group library you don't have access to (group #" + gid + ")."
+                        : "This link points to a group library that couldn't be resolved.");
+                    return;
+                }
+            }
+
             if (url.startsWith("zotero://select/")) {
-                // Path shapes Zotero accepts:
-                //   .../items/<key>            (user-library item)
-                //   .../collections/<key>      (user-library collection)
-                //   .../searches/<key>         (user-library saved search)
-                //   .../groups/<gid>/items/<key>
-                //   .../groups/<gid>/collections/<key>
-                //   .../groups/<gid>/searches/<key>
-                // The selector keyword is the second-to-last segment;
-                // the key is always last. Falling back to "items"
-                // preserves behavior for the legacy bare form.
+                // Path shapes (after an optional leading `library` or
+                // `groups/<gid>`):
+                //   items/<itemKey>
+                //   items?itemKey=<k1>,<k2>,…              ← multi-select
+                //   collections/<collKey>
+                //   searches/<searchKey>
+                //   collections/<collKey>/items/<itemKey>            ← scoped:
+                //   collections/<collKey>/items?itemKey=<k1>,<k2>      navigate
+                //   searches/<searchKey>/items/<itemKey>               to the
+                //   searches/<searchKey>/items?itemKey=<k1>,<k2>       coll /
+                //                                                      search,
+                //                                                      then
+                //                                                      select
+                //                                                      item(s)
+                //   items/<libID>_<key>  (legacy bare form — best effort)
                 const lib = getLib();
-                const kind = parts[parts.length - 2] || "items";
                 const win  = Zotero.getMainWindow();
                 const pane = Zotero.getActiveZoteroPane();
                 // When the link is clicked from a note tab (or any
                 // non-library tab), `selectItem` / `selectCollection`
                 // affect the library tab in the background but the
                 // user keeps seeing the note. Switch to the library
-                // tab first so the result is visible. Mirrors the
-                // "Show in Library" affordance on the annotation
-                // context menu.
+                // tab first so the result is visible.
                 const switchToLibrary = () => {
                     try {
                         if (win.Zotero_Tabs
@@ -168,55 +252,210 @@ class WeaveroPlugin {
                         }
                     } catch (e) {}
                 };
-                if (kind === "collections") {
-                    const col = Zotero.Collections.getByLibraryAndKey(lib, lastKey);
-                    if (col && pane.collectionsView
-                        && typeof pane.collectionsView.selectCollection === "function") {
+                // ?itemKey=K1,K2,… — comma-separated keys (mirrors the
+                // Zotero Web API form; this is how Zotero's own select
+                // handler accepts multiple items).
+                const itemKeyParam = u.searchParams.get("itemKey");
+                const queryItemKeys = itemKeyParam
+                    ? itemKeyParam.split(",").map(s => s.trim()).filter(Boolean)
+                    : [];
+                // Strip the library segment to get the object-spec part.
+                let rest = parts.slice();
+                if (rest[0] === "groups") rest = rest.slice(2);
+                else if (rest[0] === "library") rest = rest.slice(1);
+                const kind = rest[0];   // items | collections | searches
+                let scopeKind: string | null = null;
+                let scopeKey:  string | null = null;
+                let pathItemKey: string | null = null;
+                if ((kind === "collections" || kind === "searches") && rest[2] === "items") {
+                    // scoped form (item key optional — may be in ?itemKey=)
+                    scopeKind = kind; scopeKey = rest[1] || null; pathItemKey = rest[3] || null;
+                } else if (kind === "items") {
+                    pathItemKey = rest[1] || null;
+                } else if (kind === "collections" && rest[1]) {
+                    const col = Zotero.Collections.getByLibraryAndKey(lib, rest[1]);
+                    if (!col) {
+                        this._showLinkWarning("The linked collection no longer exists (key " + rest[1] + ").");
+                    } else {
+                        let trashed = false;
+                        try { trashed = !!(col as any).deleted; } catch (e) {}
                         switchToLibrary();
-                        await pane.collectionsView.selectCollection(col.id);
+                        try {
+                            if (pane.collectionsView
+                                && typeof pane.collectionsView.selectCollection === "function") {
+                                await pane.collectionsView.selectCollection(col.id);
+                            }
+                        } catch (e) { Zotero.debug("[Weavero] select collection err: " + e); }
                         win.focus();
+                        if (trashed) {
+                            this._showLinkWarning("The linked collection is in the Trash (key " + rest[1] + ").");
+                        }
                     }
                     return;
-                }
-                if (kind === "searches") {
-                    const search = Zotero.Searches.getByLibraryAndKey(lib, lastKey);
+                } else if (kind === "searches" && rest[1]) {
+                    const search = Zotero.Searches.getByLibraryAndKey(lib, rest[1]);
                     if (search && pane.collectionsView
                         && typeof pane.collectionsView.selectSearch === "function") {
                         switchToLibrary();
                         await pane.collectionsView.selectSearch(search.id);
                         win.focus();
+                    } else if (!search) {
+                        this._showLinkWarning("The linked saved search no longer exists (key " + rest[1] + ").");
                     }
                     return;
+                } else {
+                    // legacy bare form — the item key is the last segment
+                    pathItemKey = lastKey;
                 }
-                // Default: items
-                const item = Zotero.Items.getByLibraryAndKey(lib, lastKey);
-                if (item) {
-                    switchToLibrary();
-                    await pane.selectItem(item.id);
+                const warnings: string[] = [];
+                // Resolve the target item key(s): a ?itemKey= list takes
+                // precedence (multi-select), else the single path key.
+                const itemKeys = queryItemKeys.length
+                    ? queryItemKeys
+                    : (pathItemKey ? [pathItemKey] : []);
+                // Navigate to the collection / search scope first if one
+                // was given AND it still exists. A DELETED collection
+                // doesn't break the link — we just skip the navigate
+                // step and select the item(s) from wherever they land.
+                switchToLibrary();
+                if (scopeKind === "collections" && scopeKey) {
+                    try {
+                        const col = Zotero.Collections.getByLibraryAndKey(lib, scopeKey);
+                        let colTrashed = false;
+                        try { colTrashed = !!(col && (col as any).deleted); } catch (e) {}
+                        if (col && !colTrashed && pane.collectionsView
+                            && typeof pane.collectionsView.selectCollection === "function") {
+                            await pane.collectionsView.selectCollection(col.id);
+                        } else if (!col) {
+                            warnings.push("The collection in this link no longer exists (key "
+                                + scopeKey + ") — selecting the item(s) without it.");
+                        } else if (colTrashed) {
+                            warnings.push("The collection in this link is in the Trash (key "
+                                + scopeKey + ") — selecting the item(s) without it.");
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] select scope-collection err: " + e); }
+                } else if (scopeKind === "searches" && scopeKey) {
+                    try {
+                        const search = Zotero.Searches.getByLibraryAndKey(lib, scopeKey);
+                        if (search && pane.collectionsView
+                            && typeof pane.collectionsView.selectSearch === "function") {
+                            await pane.collectionsView.selectSearch(search.id);
+                        } else if (!search) {
+                            warnings.push("The saved search in this link no longer exists (key "
+                                + scopeKey + ") — selecting the item(s) without it.");
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] select scope-search err: " + e); }
+                }
+                const ids: number[] = [];
+                const missingKeys: string[] = [];
+                const trashedKeys: string[] = [];
+                for (const k of itemKeys) {
+                    const it = Zotero.Items.getByLibraryAndKey(lib, k);
+                    if (!it) { missingKeys.push(k); continue; }
+                    let trashed = false;
+                    try { trashed = !!(it as any).deleted; } catch (e) {}
+                    if (trashed) trashedKeys.push(k);
+                    ids.push(it.id);
+                }
+                if (missingKeys.length) {
+                    const list = missingKeys.join(", ");
+                    if (!ids.length) {
+                        warnings.push(missingKeys.length > 1
+                            ? "None of the " + missingKeys.length + " linked items exist anymore (" + list + ")."
+                            : "The linked item no longer exists (key " + list + ").");
+                    } else {
+                        warnings.push(missingKeys.length + " of " + itemKeys.length
+                            + " linked items no longer exist (" + list + ") — selected the rest.");
+                    }
+                }
+                if (trashedKeys.length) {
+                    const list = trashedKeys.join(", ");
+                    warnings.push(trashedKeys.length > 1
+                        ? trashedKeys.length + " of the linked items are in the Trash (" + list + ")."
+                        : "The linked item is in the Trash (key " + list + ").");
+                }
+                // If a scope was navigated to, leave the view there; the
+                // (possibly trashed) item still gets selected within it
+                // if Zotero can. Otherwise: if EVERY resolved item is
+                // trashed, switch to the Trash view so the selection
+                // below actually highlights them (the library/collection
+                // views hide trashed items).
+                if (!scopeKind && trashedKeys.length && trashedKeys.length === ids.length
+                    && pane.collectionsView) {
+                    try {
+                        if (typeof pane.collectionsView.selectTrash === "function") {
+                            await pane.collectionsView.selectTrash(lib);
+                        } else if (typeof pane.collectionsView.selectByID === "function") {
+                            await pane.collectionsView.selectByID("T" + lib);
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] select-trash err: " + e); }
+                }
+                if (ids.length > 1 && typeof pane.selectItems === "function") {
+                    await pane.selectItems(ids);
+                    win.focus();
+                } else if (ids.length >= 1 && typeof pane.selectItem === "function") {
+                    await pane.selectItem(ids[0]);
                     win.focus();
                 }
+                if (warnings.length) this._showLinkWarning(warnings);
                 return;
             }
             if (url.startsWith("zotero://open")) {
                 const item = Zotero.Items.getByLibraryAndKey(getLib(), lastKey);
-                if (!item) return;
+                if (!item) {
+                    this._showLinkWarning("The file this link points to no longer exists (key " + lastKey + ").");
+                    return;
+                }
+                let openTrashed = false;
+                try { openTrashed = !!(item as any).deleted; } catch (e) {}
                 const loc: any = {};
                 const page = u.searchParams.get("page");
                 const ann  = u.searchParams.get("annotation");
                 if (page !== null) loc.pageIndex = Number(page) - 1;
                 if (ann) loc.annotationID = ann;
-                await Zotero.Reader.open(item.id, loc);
+                const location = Object.keys(loc).length ? loc : null;
+                // Mirror Zotero's own zotero://open / zotero://open-pdf
+                // handler (ZoteroProtocolHandler `OpenExtension` →
+                // `Zotero.FileHandlers.open`): PDF / EPUB / HTML-snapshot
+                // attachments open in Zotero's reader (or the user's
+                // configured external reader), and every other file type
+                // (images, .docx, .zip, …) opens with the OS default
+                // app — exactly like double-clicking the attachment.
+                // Before v0.8.5 this branch always called Reader.open,
+                // which silently no-op'd for non-reader files. Fall back
+                // to Reader.open on builds without `FileHandlers`.
+                try {
+                    if ((Zotero as any).FileHandlers
+                        && typeof (Zotero as any).FileHandlers.open === "function") {
+                        await (Zotero as any).FileHandlers.open(item, { location });
+                    } else {
+                        await Zotero.Reader.open(item.id, location as any);
+                    }
+                } catch (e) {
+                    Zotero.debug("[Weavero] zotero://open dispatch err: " + e);
+                    try { await Zotero.Reader.open(item.id, location as any); } catch (e2) {}
+                }
+                if (openTrashed) {
+                    this._showLinkWarning("The linked file's attachment is in the Trash (key "
+                        + lastKey + ") — opened anyway.");
+                }
                 return;
             }
             if (url.startsWith("zotero://note/")) {
                 let key, lib;
                 if (parts[0] === "u")      { lib = Zotero.Libraries.userLibraryID; key = parts[1]; }
                 else if (parts[0] === "g" || parts[0] === "groups")
-                                           { lib = getLib(); key = lastKey; }
+                                           { lib = Zotero.Groups.getLibraryIDFromGroupID(Number(parts[1]))
+                                               || Zotero.Libraries.userLibraryID; key = lastKey; }
                 else                       { lib = Zotero.Libraries.userLibraryID; key = lastKey; }
                 if (!key) return;
                 const note = Zotero.Items.getByLibraryAndKey(lib, key);
-                if (!note) return;
+                if (!note) {
+                    this._showLinkWarning("The note this link points to no longer exists (key " + key + ").");
+                    return;
+                }
+                let noteTrashed = false;
+                try { noteTrashed = !!(note as any).deleted; } catch (e) {}
                 const win  = Zotero.getMainWindow();
                 const pane = win.ZoteroPane;
                 try {
@@ -225,6 +464,9 @@ class WeaveroPlugin {
                     else await pane.selectItem(note.id);
                     win.focus();
                 } catch { await pane.selectItem(note.id); win.focus(); }
+                if (noteTrashed) {
+                    this._showLinkWarning("The linked note is in the Trash (key " + key + ") — opened anyway.");
+                }
                 return;
             }
             Zotero.launchURL(url);
@@ -573,6 +815,25 @@ class WeaveroPlugin {
             const v = Zotero.Prefs.get("weavero.enableGroupLibraryGlyph");
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
+    }
+    /** Whether the Tags column shows the automatic-tag count as a
+     *  second number. Default true. Not gated by the Visual extras
+     *  master — the Tags column itself isn't gated either, and the
+     *  renderCell reads this same pref directly (it can't see `this`).
+     *  When false, the column renders a single number and should be
+     *  as narrow as the other single-number columns (see the width
+     *  picked in `_registerItemTreeColumns`). */
+    _getEnableTagsCountAuto() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableTagsCountAuto");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    /** Tags column width in px — wide enough for "manual|auto" when the
+     *  auto count is on, otherwise the same 30px the Annotations column
+     *  uses for a single number. */
+    _tagsColumnWidth() {
+        return this._getEnableTagsCountAuto() ? 44 : 30;
     }
 
     /** Hidden debug pref. When true, every routine sidebar/render pass
@@ -1846,6 +2107,10 @@ class WeaveroPlugin {
         // 7b-bis. Collections-tree right-click menu — adds
         // "Copy Collection Link" on collection rows.
         this._setupCollectionsContextMenu();
+        // 7b-ter. Reader-tab right-click menu — adds Copy Select Link /
+        // Copy Open Link for the tab's attachment (via Zotero.MenuManager;
+        // no-op on builds without that API).
+        this._registerTabContextMenu();
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
         // see them, so wire a Window Mediator listener that catches
@@ -2002,14 +2267,39 @@ class WeaveroPlugin {
                     if (data === "extensions.zotero.weavero.enableReaderViewIcons") {
                         this._applySurfacePref("readerView");
                     }
-                    // Tags column auto-count toggle — re-render the
-                    // items view so already-painted Tags cells pick
-                    // up the new pref. Without this the change only
+                    // Tags column auto-count toggle — (1) resize the
+                    // column to fit one or two numbers, (2) re-render
+                    // the items view so already-painted Tags cells pick
+                    // up the new pref. Without (2) the change only
                     // shows after scrolling or selection moves.
                     if (data === "extensions.zotero.weavero.enableTagsCountAuto") {
                         try {
                             const w = Zotero.getMainWindow();
                             const iv = w && w.ZoteroPane && w.ZoteroPane.itemsView;
+                            // Adjust the live column width. Plugin column
+                            // dataKeys are auto-prefixed with the plugin
+                            // ID, so match on the `weaveroTags` suffix.
+                            // onResize(..., true) also persists the new
+                            // width so it survives a restart.
+                            try {
+                                const want = this._tagsColumnWidth();
+                                const colMgr: any = iv && iv.tree && (iv.tree as any)._columns;
+                                const arr: any[] = colMgr
+                                    ? (colMgr.getAsArray ? colMgr.getAsArray() : colMgr._columns)
+                                    : null;
+                                const col = arr && arr.find((c: any) =>
+                                    c && typeof c.dataKey === "string"
+                                    && /(^|[-_])weaveroTags$/.test(c.dataKey));
+                                if (col && colMgr) {
+                                    col.width = want;
+                                    col.minWidth = this._getEnableTagsCountAuto() ? 30 : 26;
+                                    if (typeof colMgr.onResize === "function") {
+                                        colMgr.onResize({ [col.dataKey]: want }, true);
+                                    }
+                                }
+                            } catch(e) {
+                                Zotero.debug("[Weavero] tags-col width err: " + e);
+                            }
                             if (iv && iv.tree && iv.tree.invalidate) {
                                 iv.tree.invalidate();
                             }
@@ -2525,6 +2815,7 @@ class WeaveroPlugin {
         this._teardownTreeClickDelegate();
         this._teardownItemsListContextMenu();
         this._teardownCollectionsContextMenu();
+        this._teardownTabContextMenu();
         this._teardownNoteWindowListener();
         this._teardownItemsListFilter();
         try {

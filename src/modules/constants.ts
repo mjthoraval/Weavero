@@ -79,8 +79,11 @@ export const SCHEME_SVG_TEMPLATE =
 // destroy-time pref cleanup).
 
 export const MENU_LABEL_PREFIXES = [
-    "Add Related",  // covers both single ("Add Related…") and multi-select
-                    // ("Add Related…  (N annotations)") label variants
+    // Each prefix covers the single + multi-select label variants
+    // ("Copy Select Link" / "Copy Select Links  (N annotations)" etc.).
+    "Add Related",
+    "Copy Select Link",
+    "Copy Open Link",
 ];
 
 export const PLUGIN_CSS = [
@@ -117,26 +120,69 @@ export const PLUGIN_CSS = [
     "  width: 14px; height: 14px; display: block; flex-shrink: 0;",
     "}",
     ":root.wv-ui-dark .wv-btn-relations { color: #ffb84d; }",
-    // Relations popup — flat list of related items. Each row is a
-    // type-icon + title that's clickable to navigate into the
-    // library. No separator above the list (it's the only content
-    // in this popup variant).
-    ".wv-relations-list { display: flex; flex-direction: column; gap: 2px; }",
+    // Relations popup — laid out like the item pane's "Related"
+    // section (scss/elements/_collapsibleSection.scss +
+    // _notesBox.scss): a header [related icon] "<N> Related" + "+" add
+    // button, then a 12px-indented list of type-icon-titled rows that
+    // navigate into the library on click. Row titles WRAP (multi-line)
+    // like the item pane's; header text + "+" use --fill-secondary
+    // (Zotero's muted-grey UI colour); the "+" is the same 20px box /
+    // 16px plus.svg as the item pane's section add button. No collapse
+    // caret (it's a popup).
+    ".wv-relations-popup {",
+    "  padding: 5px 6px 6px; line-height: 1.4; white-space: normal;",
+    "}",
+    ".wv-relations-header {",
+    "  display: flex; align-items: center; gap: 6px; padding: 3px 6px 5px;",
+    "  border-bottom: 1px solid rgba(127, 127, 127, 0.28);",
+    "  margin-bottom: 4px;",
+    "}",
+    ".wv-relations-header-icon {",
+    "  width: 16px; height: 16px; flex-shrink: 0;",
+    "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+    "  fill: currentColor; color: #7a4a00;",
+    "}",
+    ":root.wv-ui-dark .wv-relations-header-icon { color: #ffb84d; }",
+    // "<N> Related" — Zotero's section-header look: --fill-secondary
+    // (a muted grey) at the inherited size, semibold.
+    ".wv-relations-header-title {",
+    "  flex: 1; min-width: 0; font-weight: 600;",
+    "  color: var(--fill-secondary, #5a5a5a);",
+    "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+    "}",
+    ":root.wv-ui-dark .wv-relations-header-title { color: var(--fill-secondary, #bdbdbd); }",
+    // "+" — exactly the item-pane "Related" section add button: a 20px box
+    // with 2px padding (16px icon area), border-radius 2px, --fill-secondary
+    // tint. The glyph is an inline plus.svg with fill="currentColor" (see
+    // _makePlusSvg) — the chrome:// background-image + context-fill approach
+    // drew an invisible box in the reader-window popup (dev.34 regression).
+    ".wv-relations-add {",
+    "  flex-shrink: 0; cursor: pointer; user-select: none; box-sizing: border-box;",
+    "  width: 20px; height: 20px; padding: 2px; border-radius: 2px;",
+    "  color: var(--fill-secondary, #5a5a5a);",
+    "}",
+    ".wv-relations-add svg { display: block; width: 100%; height: 100%; }",
+    ":root.wv-ui-dark .wv-relations-add { color: var(--fill-secondary, #bdbdbd); }",
+    ".wv-relations-add:hover { background-color: rgba(127, 127, 127, 0.2); }",
+    ".wv-relations-list {",
+    "  display: flex; flex-direction: column; gap: 2px;",
+    "  padding-inline-start: 12px;",   // matches related-box .body's 12px indent
+    "}",
     ".wv-rel-row {",
-    "  display: flex; align-items: center; gap: 6px;",
-    "  padding: 4px 6px; border-radius: 3px;",
+    "  display: flex; align-items: flex-start; gap: 4px;",
+    "  padding: 3px 4px; border-radius: 3px;",
     "  cursor: pointer; user-select: none;",
     "}",
     ".wv-rel-row:hover { background: rgba(0, 0, 0, 0.07); }",
     ":root.wv-ui-dark .wv-rel-row:hover { background: rgba(255, 255, 255, 0.08); }",
     ".wv-rel-icon {",
-    "  width: 16px; height: 16px; flex-shrink: 0;",
+    "  width: 16px; height: 16px; flex-shrink: 0; margin-top: 1px;",
     "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
     "  fill: currentColor;",
     "}",
     ".wv-rel-title {",
     "  flex: 1; min-width: 0;",
-    "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+    "  white-space: normal; overflow-wrap: anywhere; word-break: break-word;",
     "}",
     ".wv-rel-empty {",
     "  padding: 4px 6px; opacity: 0.6; font-style: italic;",

@@ -27,7 +27,7 @@ Out of the box, `https://`, `http://`, and `zotero://` links are recognised ever
 - **App-link skip-confirm** — optional opt-in that bypasses Firefox's *"Allow this site to open the … link?"* prompt.
 - **Right-click "Copy Link"** on any rendered URL.
 
-<img src="docs/screenshots/08-annotation-links.png" width="320" alt="Reader sidebar with annotation comments containing clickable links">
+<img src="docs/screenshots/08-annotation-links.png" width="420" alt="Reader sidebar with annotation comments containing clickable links, beside the PDF page with in-document annotation badges">
 
 **Filter popup** — a toolbar `▼` next to the search box opens a compact filter panel. Click to include, Alt+click to exclude.
 

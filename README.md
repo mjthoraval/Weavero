@@ -11,7 +11,7 @@
 [![Downloads](https://img.shields.io/github/downloads/mjthoraval/Weavero/total?label=Downloads&color=brightgreen)](https://github.com/mjthoraval/Weavero/releases)
 [![License](https://img.shields.io/github/license/mjthoraval/Weavero?label=License&color=lightgrey)](LICENSE)
 
-A Zotero 7+ plugin that turns URLs in annotation comments into clickable links and adds a fast filter pane, related-item plumbing, and items-tree columns on top of the standard library view.
+A Zotero plugin to make clickable links and filter your library — it turns URLs in annotation comments and notes into clickable links, and adds a fast filter pane, related-item plumbing, and items-tree columns on top of the standard library view.
 
 Out of the box, `https://`, `http://`, and `zotero://` links are recognised everywhere a comment is shown. Sixteen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
 

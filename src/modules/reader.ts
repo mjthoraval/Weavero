@@ -168,6 +168,210 @@ class _ReaderMixin {
         return teardown;
     }
 
+    /** Single source of truth for rendering "annotation comment text"
+     *  to a DocumentFragment. All five surfaces (items-list highlight
+     *  rows, items-list note rows, right pane, reader sidebar, reader
+     *  popup) delegate the actual span-building to this function so a
+     *  per-scheme toggle (URLs / Zotero Links / App Links / Markdown)
+     *  added in the future only needs gating in ONE place.
+     *
+     *  Caller responsibilities (the wrapper in each surface):
+     *    - cache key + cache hit detection (data-wv-source / data-render-mode)
+     *    - replacing the target element's children with the returned frag
+     *    - stamping cache attributes (data-wv-source, data-wv-rendered,
+     *      data-wv-last-rebuild, data-wv-raw)
+     *    - any surface-specific decoration (wv-tree-icon, etc.)
+     *
+     *  This helper does NOT touch any element other than building the
+     *  fragment. It does not check enabled prefs other than via
+     *  URL_REGEX (which already encodes URLs / Zotero Links / App Links
+     *  state via URL_SCHEME_ALT).
+     *
+     *  ctx fields:
+     *    doc         — Document for createElement (must support HTML namespace)
+     *    useMd       — render markdown formatting? (false = bare URLs only)
+     *    isTreeMode  — true: items-list mode strips markdown markers from
+     *                  output, label-only for markdown links;
+     *                  false: keeps markers and `[label](url)` literal
+     *                  around the inner span (needed for in-place edits
+     *                  in popup/sidebar where textContent must round-trip)
+     *    lineBreaks  — true: split plain-text segments on \n and emit
+     *                  <br> elements (right pane / sidebar preview).
+     *                  false (default): keep \n as text characters
+     *                  (items-list cells are single-line)
+     *    stripMarkers — when isTreeMode is false but you want stripped-
+     *                  marker output (the sidebar preview's behaviour:
+     *                  "view shows formatted, edit shows source"). If
+     *                  unset, defaults to isTreeMode.
+     */
+    _buildCommentFragment(text, ctx) {
+        const doc = ctx.doc;
+        const useMd = !!ctx.useMd;
+        const isTreeMode = !!ctx.isTreeMode;
+        const lineBreaks = !!ctx.lineBreaks;
+        const stripMarkers = ctx.stripMarkers !== undefined
+            ? !!ctx.stripMarkers : isTreeMode;
+        const norm = this.normalize(text);
+        const frag = doc.createDocumentFragment();
+
+        // Plain-text emit. Splits on \n and emits <br> when ctx.lineBreaks
+        // is set; otherwise just a text node.
+        const emitText = (s) => {
+            if (!s) return;
+            if (!lineBreaks) {
+                frag.appendChild(doc.createTextNode(s));
+                return;
+            }
+            const parts = s.split("\n");
+            for (let i = 0; i < parts.length; i++) {
+                if (parts[i]) frag.appendChild(doc.createTextNode(parts[i]));
+                if (i < parts.length - 1) frag.appendChild(doc.createElement("br"));
+            }
+        };
+
+        // TOKEN regex group indices:
+        //   useMd:    1 bold, 2 italic, 3 strike, 4 code-double,
+        //             5 code-single, 6 link label, 7 link url,
+        //             8 bare URL
+        //   non-useMd: 1 link label, 2 link url, 3 bare URL
+        // Markdown links work in BOTH modes — only the bold/italic/
+        // strike/code alternations are gated on useMd. Double backtick
+        // (group 4) must come before single backtick (group 5) so the
+        // longer marker wins on consecutive backticks.
+        const TOKEN = useMd ? new RegExp(
+            "\\*\\*([\\s\\S]+?)\\*\\*"
+            + "|\\*(?!\\s)([^*\\n]+?)(?<!\\s)\\*"
+            + "|~~([\\s\\S]+?)~~"
+            + "|``([\\s\\S]+?)``"
+            + "|`([^`\\n]+?)`"
+            + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
+            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
+            "g"
+        ) : new RegExp(
+            "\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
+            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
+            "g"
+        );
+
+        const wrapMd = (cls, marker, inner) => {
+            if (!stripMarkers) frag.appendChild(doc.createTextNode(marker));
+            const span = doc.createElement("span");
+            span.className = "wv-md " + cls;
+            span.textContent = inner;
+            frag.appendChild(span);
+            if (!stripMarkers) frag.appendChild(doc.createTextNode(marker));
+        };
+        const emitUrlSpan = (label, url) => {
+            const span = doc.createElement("span");
+            span.className = "wv-url-span " + this._urlLinkClass(url);
+            span.title = url;
+            span.textContent = label;
+            span.setAttribute("data-href", url);
+            frag.appendChild(span);
+        };
+
+        let last = 0, m;
+        while ((m = TOKEN.exec(norm)) !== null) {
+            if (m.index > last) {
+                emitText(norm.slice(last, m.index));
+            }
+            if (useMd && m[1] !== undefined) {
+                wrapMd("wv-md-bold", "**", m[1]);
+            } else if (useMd && m[2] !== undefined) {
+                wrapMd("wv-md-italic", "*", m[2]);
+            } else if (useMd && m[3] !== undefined) {
+                wrapMd("wv-md-strike", "~~", m[3]);
+            } else if (useMd && m[4] !== undefined) {
+                wrapMd("wv-md-code", "``", m[4]);
+            } else if (useMd && m[5] !== undefined) {
+                wrapMd("wv-md-code", "`", m[5]);
+            } else {
+                // Markdown link [label](url) — useMd groups 6/7, non-useMd 1/2.
+                const linkLabel = useMd ? m[6] : m[1];
+                const linkUrl   = useMd ? m[7] : m[2];
+                if (linkLabel !== undefined && linkUrl !== undefined) {
+                    const url = linkUrl.replace(this.TRAILING_RE, "");
+                    // Render as styled link only if the URL's scheme is
+                    // currently enabled (URLs / Zotero Links / App Links
+                    // each remove their alternation from URL_SCHEME_ALT
+                    // when off — `hasURI` checks via URL_REGEX). Else
+                    // render as plain text.
+                    if (this.hasURI(url)) {
+                        if (!stripMarkers) frag.appendChild(doc.createTextNode("["));
+                        emitUrlSpan(linkLabel, url);
+                        if (!stripMarkers) frag.appendChild(doc.createTextNode("](" + linkUrl + ")"));
+                    } else if (stripMarkers) {
+                        emitText(linkLabel);
+                    } else {
+                        emitText("[" + linkLabel + "](" + linkUrl + ")");
+                    }
+                } else {
+                    // Bare URL — useMd group 8, non-useMd group 3. The
+                    // bare-URL alternative in TOKEN is built from
+                    // URL_SCHEME_ALT, so any match here is already an
+                    // enabled scheme — always render as a link.
+                    const raw = useMd ? m[8] : m[3];
+                    if (raw === undefined) {
+                        last = m.index + m[0].length;
+                        continue;
+                    }
+                    const url   = raw.replace(this.TRAILING_RE, "");
+                    const trail = raw.slice(url.length);
+                    emitUrlSpan(url, url);
+                    if (trail) emitText(trail);
+                }
+            }
+            last = m.index + m[0].length;
+        }
+        if (last < norm.length) {
+            emitText(norm.slice(last));
+        }
+        return frag;
+    }
+
+    /** Reconstruct the markdown source text of a comment element by
+     *  walking its rendered children — used as a fallback when
+     *  `data-wv-raw` was lost (Zotero's React reconciliation can wipe
+     *  our data-* attributes while keeping the span children). Without
+     *  this, the recovery path falls back to `el.textContent` — the
+     *  STRIPPED form, where `**bold**` is just "bold" — and a
+     *  subsequent rebuild can't re-render the formatting, then
+     *  permanently overwrites data-wv-raw with the stripped text.
+     *
+     *  Best-effort: double-backtick code can't be distinguished from
+     *  single-backtick after rendering (both produce wv-md-code), so
+     *  it's reconstructed as single-backtick. That's harmless — a
+     *  rebuild from `` `code` `` produces the same output as from
+     *  `` ``code`` ``. */
+    _reconstructSourceFromSpans(el) {
+        let out = "";
+        const walk = (node) => {
+            if (!node) return;
+            if (node.nodeType === 3) { out += node.nodeValue || ""; return; }
+            if (node.nodeType !== 1) return;
+            const tag = (node.tagName || "").toUpperCase();
+            if (tag === "BR") { out += "\n"; return; }
+            const cls = node.className || "";
+            const txt = node.textContent || "";
+            if (cls.indexOf("wv-md-bold") !== -1)   { out += "**" + txt + "**"; return; }
+            if (cls.indexOf("wv-md-italic") !== -1) { out += "*"  + txt + "*";  return; }
+            if (cls.indexOf("wv-md-strike") !== -1) { out += "~~" + txt + "~~"; return; }
+            if (cls.indexOf("wv-md-code") !== -1)   { out += "`"  + txt + "`";  return; }
+            if (cls.indexOf("wv-url-span") !== -1) {
+                const href = node.getAttribute("data-href") || txt;
+                // data-href differs from the visible text → it was a
+                // markdown link [label](url); equal → bare URL.
+                if (href && href !== txt) { out += "[" + txt + "](" + href + ")"; return; }
+                out += href || txt;
+                return;
+            }
+            // Some other element (e.g. a wrapping span) — recurse.
+            for (const c of node.childNodes) walk(c);
+        };
+        for (const c of el.childNodes) walk(c);
+        return out;
+    }
+
     _resolvePopupWin(opts) {
         try {
             if (opts && opts.win) return opts.win;
@@ -686,13 +890,47 @@ class _ReaderMixin {
 
             const titleEl = doc.createElementNS(ns, "span");
             titleEl.className = "wv-rel-title";
-            try { titleEl.textContent = item.getDisplayTitle() || "(untitled)"; }
-            catch (e) { titleEl.textContent = "(untitled)"; }
+            let titleText = "(untitled)";
+            try { titleText = item.getDisplayTitle() || "(untitled)"; }
+            catch (e) {}
+            // Render URLs / markdown inside the related-item title (a
+            // related annotation's title IS its comment text, which may
+            // contain links). Uses the same unified renderer as every
+            // other surface so a URL there gets styled. Tree mode
+            // (markdown markers stripped). Wrapped in try/catch so a
+            // render hiccup degrades to plain text rather than aborting
+            // the whole popup build.
+            try {
+                const useMdTitle = this._getEnableCommentMarkdown();
+                titleEl.appendChild(this._buildCommentFragment(titleText, {
+                    doc, useMd: useMdTitle, isTreeMode: true,
+                }));
+            } catch (e) {
+                titleEl.textContent = titleText;
+            }
 
             row.appendChild(iconEl);
             row.appendChild(titleEl);
 
             const onActivate = async (e) => {
+                // Click inside a url-span in the title: open that URL
+                // instead of navigating to the related item.
+                try {
+                    const sp = e.target && e.target.closest
+                        && e.target.closest(".wv-url-span");
+                    if (sp) {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        const u = sp.getAttribute("data-href")
+                            || sp.textContent || "";
+                        if (u) {
+                            if (u.startsWith("zotero://")) this.handleZoteroURI(u);
+                            else this._launchURL(u);
+                        }
+                        try { panel.style.display = "none"; } catch (er) {}
+                        return;
+                    }
+                } catch (er) {}
                 e.stopPropagation();
                 e.preventDefault();
                 let opened = false;
@@ -2172,7 +2410,11 @@ class _ReaderMixin {
         const hasOurMarkers = !!el.querySelector(".wv-md, .wv-url-span");
         let text;
         if (hasOurMarkers) {
-            text = cachedRaw || liveText;
+            // Spans still present. Prefer cachedRaw; if it was lost
+            // (React wiped data-wv-raw), reconstruct from the spans —
+            // NOT from liveText, which is the stripped form (`**bold**`
+            // → "bold") and would permanently lose the markers.
+            text = cachedRaw || this._reconstructSourceFromSpans(el);
         } else if (cachedRaw && cachedRendered !== null
                    && liveText === cachedRendered) {
             // Spans were reaped after our last rebuild; raw cache is the
@@ -2273,102 +2515,12 @@ class _ReaderMixin {
             return false;
         }
 
-        const frag = doc.createDocumentFragment();
-        // TOKEN regex group indices:
-        //   useMd:    1 bold, 2 italic, 3 strike, 4 code,
-        //             5 link label, 6 link url, 7 bare URL
-        //   non-useMd: 1 link label, 2 link url, 3 bare URL
-        // Markdown links work in BOTH modes — only the bold/italic/strike/code
-        // alternations are gated on useMd. This is what fixes the in-PDF
-        // popup case where useMd=false (no experimental sidebar markdown
-        // pref) was previously falling through to URL_REGEX only, leaving
-        // [label](url) as raw text with the URL inside () colourised.
-        const TOKEN = useMd ? new RegExp(
-            "\\*\\*([\\s\\S]+?)\\*\\*"
-            + "|\\*(?!\\s)([^*\\n]+?)(?<!\\s)\\*"
-            + "|~~([\\s\\S]+?)~~"
-            + "|`([^`\\n]+?)`"
-            + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
-            "g"
-        ) : new RegExp(
-            "\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
-            "g"
-        );
-        const wrapMd = (cls, marker, inner) => {
-            if (!isTreeMode) frag.appendChild(doc.createTextNode(marker));
-            const span = doc.createElement("span");
-            span.className = "wv-md " + cls;
-            span.textContent = inner;
-            frag.appendChild(span);
-            if (!isTreeMode) frag.appendChild(doc.createTextNode(marker));
-        };
-        const emitUrlSpan = (label, url) => {
-            const span = doc.createElement("span");
-            span.className = "wv-url-span "
-                + this._urlLinkClass(url);
-            span.title = url;
-            span.textContent = label;
-            span.setAttribute("data-href", url);
-            frag.appendChild(span);
-        };
-        let last = 0, m;
-        while ((m = TOKEN.exec(norm)) !== null) {
-            if (m.index > last)
-                frag.appendChild(doc.createTextNode(norm.slice(last, m.index)));
-            if (useMd && m[1] !== undefined) {
-                wrapMd("wv-md-bold", "**", m[1]);
-            } else if (useMd && m[2] !== undefined) {
-                wrapMd("wv-md-italic", "*", m[2]);
-            } else if (useMd && m[3] !== undefined) {
-                wrapMd("wv-md-strike", "~~", m[3]);
-            } else if (useMd && m[4] !== undefined) {
-                wrapMd("wv-md-code", "`", m[4]);
-            } else {
-                // Markdown link [label](url) — useMd groups 5/6, non-useMd 1/2.
-                const linkLabel = useMd ? m[5] : m[1];
-                const linkUrl   = useMd ? m[6] : m[2];
-                if (linkLabel !== undefined && linkUrl !== undefined) {
-                    const url = linkUrl.replace(this.TRAILING_RE, "");
-                    // Render as styled link only if the URL's scheme is
-                    // currently enabled (URLs / Zotero Links / App Links
-                    // each remove their alternation from URL_SCHEME_ALT
-                    // when off — `hasURI` checks via URL_REGEX). Else
-                    // render the markdown markers and label as plain
-                    // text so the user sees what was authored without
-                    // a clickable affordance for a disabled scheme.
-                    if (this.hasURI(url)) {
-                        // Tree mode (items-list note/text rows) strips markers
-                        // so only the label is visible. Sidebar / popup keep the
-                        // markers as text nodes so the comment textContent is
-                        // round-trippable for in-place edits — the user can
-                        // still see the raw [label](url) when they click in.
-                        if (!isTreeMode) frag.appendChild(doc.createTextNode("["));
-                        emitUrlSpan(linkLabel, url);
-                        if (!isTreeMode) frag.appendChild(doc.createTextNode("](" + linkUrl + ")"));
-                    } else {
-                        if (isTreeMode) {
-                            frag.appendChild(doc.createTextNode(linkLabel));
-                        } else {
-                            frag.appendChild(doc.createTextNode(
-                                "[" + linkLabel + "](" + linkUrl + ")"));
-                        }
-                    }
-                } else {
-                    // Bare URL — useMd group 7, non-useMd group 3.
-                    const raw = useMd ? m[7] : m[3];
-                    if (raw === undefined) { last = m.index + m[0].length; continue; }
-                    const url   = raw.replace(this.TRAILING_RE, "");
-                    const trail = raw.slice(url.length);
-                    emitUrlSpan(url, url);
-                    if (trail) frag.appendChild(doc.createTextNode(trail));
-                }
-            }
-            last = m.index + m[0].length;
-        }
-        if (last < norm.length)
-            frag.appendChild(doc.createTextNode(norm.slice(last)));
+        // Delegate fragment-building to the unified renderer so any
+        // future per-scheme / per-content-type toggle gates in one
+        // place across all five surfaces.
+        const frag = this._buildCommentFragment(text, {
+            doc, useMd, isTreeMode,
+        });
 
         // Stash raw source BEFORE replacing children — afterwards textContent
         // reflects the stripped/formatted view, not the source markdown.
@@ -4651,103 +4803,15 @@ class _ReaderMixin {
             }
         } catch(e) {}
 
-        // Build the formatted fragment. Markers (** * ~~ ` and the [ ]( )
-        // around markdown links) are NOT included in the preview — that's
-        // the whole point of having a separate rendered view. The raw
-        // markers stay visible inside .content during edit mode.
-        const frag = doc.createDocumentFragment();
-
-        // Helper: split text on "\n" and emit <br> elements at each break
-        // so multi-line comments keep their visual line structure. The
-        // URL regex terminates at \s (which includes \n), so any <br>
-        // here always sits BETWEEN tokens.
-        const appendTextWithBreaks = (s) => {
-            if (!s) return;
-            const parts = s.split("\n");
-            for (let i = 0; i < parts.length; i++) {
-                if (parts[i]) frag.appendChild(doc.createTextNode(parts[i]));
-                if (i < parts.length - 1) frag.appendChild(doc.createElement("br"));
-            }
-        };
-
-        // Group order (when useMd):
-        //   1 bold, 2 italic, 3 strike, 4 code-double, 5 code-single,
-        //   6 link label, 7 link url, 8 bare URL.
-        const TOKEN = useMd ? new RegExp(
-            "\\*\\*([\\s\\S]+?)\\*\\*"
-            + "|\\*(?!\\s)([^*\\n]+?)(?<!\\s)\\*"
-            + "|~~([\\s\\S]+?)~~"
-            + "|``([\\s\\S]+?)``"
-            + "|`([^`\\n]+?)`"
-            + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
-            "g"
-        ) : new RegExp(this.URL_REGEX.source, "g");
-
-        const wrapMd = (cls, inner) => {
-            const span = doc.createElement("span");
-            span.className = "wv-md " + cls;
-            span.textContent = inner;
-            frag.appendChild(span);
-        };
-
-        let last = 0, m;
-        while ((m = TOKEN.exec(norm)) !== null) {
-            if (m.index > last)
-                appendTextWithBreaks(norm.slice(last, m.index));
-            if (useMd && m[1] !== undefined) {
-                wrapMd("wv-md-bold", m[1]);
-            } else if (useMd && m[2] !== undefined) {
-                wrapMd("wv-md-italic", m[2]);
-            } else if (useMd && m[3] !== undefined) {
-                wrapMd("wv-md-strike", m[3]);
-            } else if (useMd && m[4] !== undefined) {
-                // ``code`` (double backtick).
-                wrapMd("wv-md-code", m[4]);
-            } else if (useMd && m[5] !== undefined) {
-                // `code` (single backtick).
-                wrapMd("wv-md-code", m[5]);
-            } else if (useMd && m[6] !== undefined && m[7] !== undefined) {
-                // Markdown link [label](url). Render as styled link
-                // only if the URL's scheme is currently enabled (the
-                // URLs / Zotero Links / App Links toggles each gate
-                // their schemes via URL_SCHEME_ALT). Otherwise emit
-                // the label as plain text.
-                if (this.hasURI(m[7])) {
-                    const url = m[7];
-                    const span = doc.createElement("span");
-                    span.className = "wv-url-span "
-                        + this._urlLinkClass(url);
-                    span.title = url;
-                    span.textContent = m[6];
-                    span.setAttribute("data-href", url);
-                    frag.appendChild(span);
-                } else {
-                    appendTextWithBreaks(m[6]);
-                }
-            } else {
-                // Bare URL (group 8 in md regex, group 0 in URL-only regex).
-                // The TOKEN regex's bare-URL alternative is built from
-                // URL_SCHEME_ALT, so any match here is already an
-                // enabled scheme — always render as a link.
-                const raw = useMd ? m[8] : m[0];
-                if (raw === undefined) { last = m.index + m[0].length; continue; }
-                {
-                    const url   = raw.replace(this.TRAILING_RE, "");
-                    const trail = raw.slice(url.length);
-                    const span = doc.createElement("span");
-                    span.className = "wv-url-span "
-                        + this._urlLinkClass(url);
-                    span.title = url;
-                    span.textContent = url;
-                    frag.appendChild(span);
-                    if (trail) appendTextWithBreaks(trail);
-                }
-            }
-            last = m.index + m[0].length;
-        }
-        if (last < norm.length)
-            appendTextWithBreaks(norm.slice(last));
+        // Build the formatted fragment via the unified renderer.
+        // Sidebar preview shows STRIPPED markers (formatted view; raw
+        // stays visible in .content during edit mode) and supports
+        // multi-line comments via \n → <br> in plain-text segments.
+        const frag = this._buildCommentFragment(text, {
+            doc, useMd, isTreeMode: false,
+            stripMarkers: true,
+            lineBreaks: true,
+        });
 
         while (preview.firstChild) preview.removeChild(preview.firstChild);
         preview.appendChild(frag);

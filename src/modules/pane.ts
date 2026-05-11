@@ -605,121 +605,35 @@ class _PaneMixin {
                 stamped++;
 
                 // Rebuild cell content. In inline mode we render URLs and
-                // (if comment-markdown is on) markdown formatting directly.
-                // Cells aren't editable, so we can format inline without
-                // the preview-panel architecture used in the PDF reader.
+                // (if comment-markdown is on) markdown formatting via the
+                // unified `_buildCommentFragment` helper (see reader.ts) —
+                // single source of truth for span emission so any future
+                // per-scheme toggle gates in one place.
                 const norm = this.normalize(text);
-                const frag = doc.createDocumentFragment();
                 const inlineMode = this._getInlineLinks();
                 const useMd = inlineMode && this._getEnableCommentMarkdown();
-                // URL_REGEX already excludes schemes whose master is
-                // off (URLs / Zotero Links / App Links); inlineUrls
-                // just means "we're in inline mode so URL matches
-                // should render as styled spans". The earlier
-                // `_getEnableInlineUrls()` gate hid Zotero/app links
-                // whenever the URLs toggle was off.
-                const inlineUrls = inlineMode;
+                let frag;
                 if (inlineMode) {
-                    // Group order (when useMd):
-                    //   1 bold, 2 italic, 3 strike, 4 code-double, 5 code-single,
-                    //   6 link label, 7 link url, 8 bare URL.
-                    const TOKEN = useMd ? new RegExp(
-                        "\\*\\*([\\s\\S]+?)\\*\\*"
-                        + "|\\*(?!\\s)([^*\\n]+?)(?<!\\s)\\*"
-                        + "|~~([\\s\\S]+?)~~"
-                        + "|``([\\s\\S]+?)``"
-                        + "|`([^`\\n]+?)`"
-                        + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-                        + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
-                        "g"
-                    ) : new RegExp(this.URL_REGEX.source, "g");
-                    const wrapMd = (cls, inner) => {
-                        const span = doc.createElement("span");
-                        span.className = "wv-md " + cls;
-                        span.textContent = inner;
-                        frag.appendChild(span);
-                    };
-                    let last = 0, m;
-                    while ((m = TOKEN.exec(norm)) !== null) {
-                        if (m.index > last)
-                            frag.appendChild(doc.createTextNode(norm.slice(last, m.index)));
-                        if (useMd && m[1] !== undefined) {
-                            wrapMd("wv-md-bold", m[1]);
-                        } else if (useMd && m[2] !== undefined) {
-                            wrapMd("wv-md-italic", m[2]);
-                        } else if (useMd && m[3] !== undefined) {
-                            wrapMd("wv-md-strike", m[3]);
-                        } else if (useMd && m[4] !== undefined) {
-                            // ``code`` (double backtick).
-                            wrapMd("wv-md-code", m[4]);
-                        } else if (useMd && m[5] !== undefined) {
-                            // `code` (single backtick).
-                            wrapMd("wv-md-code", m[5]);
-                        } else if (useMd && m[6] !== undefined && m[7] !== undefined) {
-                            // Markdown link [label](url). Render as styled
-                            // link only if the URL's scheme is currently
-                            // enabled (URLs / Zotero Links / App Links each
-                            // remove their alternation from URL_SCHEME_ALT
-                            // when off — `hasURI` checks via URL_REGEX).
-                            // Else render the label as plain text so the
-                            // user sees what was authored without a
-                            // clickable affordance for a disabled scheme.
-                            const url = m[7];
-                            if (inlineUrls && this.hasURI(url)) {
-                                const cls = this._urlLinkClass(url);
-                                const span = doc.createElement("span");
-                                span.className = "wv-url-span " + cls;
-                                span.title = url;
-                                span.textContent = m[6];
-                                span.setAttribute("data-href", url);
-                                // Inline `color` references the same CSS
-                                // variable as the class rule, so theme
-                                // toggles propagate without re-rendering
-                                // (and so app-link spans get the violet
-                                // colour, which the old hard-coded
-                                // "zotero ? orange : blue" branch missed).
-                                span.style.setProperty("color",
-                                    "var(--" + cls + ")", "important");
-                                // Cursor is set via stylesheet so our
-                                // :root.wv-context-menu-open suppress rule
-                                // can override it to default while the
-                                // right-click menu is open. Inline
-                                // cursor:pointer !important would beat the
-                                // stylesheet rule by specificity.
-                                frag.appendChild(span);
-                            } else {
-                                frag.appendChild(doc.createTextNode(m[6]));
-                            }
-                        } else {
-                            // Bare URL (group 8 in md regex, group 0 in URL-only regex).
-                            const raw = useMd ? m[8] : m[0];
-                            if (raw === undefined) { last = m.index + m[0].length; continue; }
-                            if (inlineUrls) {
-                                const url   = raw.replace(this.TRAILING_RE, "");
-                                const trail = raw.slice(url.length);
-                                const cls = this._urlLinkClass(url);
-                                const span = doc.createElement("span");
-                                span.className = "wv-url-span " + cls;
-                                span.title = url;
-                                span.textContent = url;
-                                span.style.setProperty("color",
-                                    "var(--" + cls + ")", "important");
-                                // (See comment above re: stylesheet cursor.)
-                                frag.appendChild(span);
-                                if (trail) frag.appendChild(doc.createTextNode(trail));
-                            } else {
-                                // URLs sub-toggle off — emit raw URL as plain text.
-                                frag.appendChild(doc.createTextNode(raw));
-                            }
-                        }
-                        last = m.index + m[0].length;
+                    frag = this._buildCommentFragment(text, {
+                        doc, useMd, isTreeMode: true,
+                    });
+                    // Cell-renderer-specific styling: inline `color` on
+                    // each url-span so the active theme's CSS variable
+                    // propagates without a re-render. The unified helper
+                    // doesn't add this (popup/sidebar don't need it).
+                    for (const sp of (frag as any).querySelectorAll(".wv-url-span")) {
+                        const cls = this._urlLinkClass(sp.getAttribute("data-href") || sp.textContent || "");
+                        sp.style.setProperty("color", "var(--" + cls + ")", "important");
                     }
-                    if (last < norm.length)
-                        frag.appendChild(doc.createTextNode(norm.slice(last)));
                 } else {
                     // Icons-only mode: plain text only.
+                    frag = doc.createDocumentFragment();
                     frag.appendChild(doc.createTextNode(norm));
                 }
+                // inlineUrls retained for the cache-key / renderMode
+                // computation below — it's just inlineMode now (URL
+                // gating moved into URL_SCHEME_ALT).
+                const inlineUrls = inlineMode;
 
                 // Wrap text/url-spans in .wv-text-wrap so flex ellipsis
                 // clips them without touching the icon's slot.
@@ -2275,7 +2189,9 @@ class _PaneMixin {
         const liveText = commentEl.textContent || "";
         let plainText;
         if (ourMarkers) {
-            plainText = cachedRaw || liveText;
+            // Reconstruct from spans if data-wv-raw was lost — liveText
+            // is the stripped form and would lose markdown markers.
+            plainText = cachedRaw || this._reconstructSourceFromSpans(commentEl);
         } else if (cachedRaw && cachedRendered !== null && liveText === cachedRendered) {
             plainText = cachedRaw;
         } else {
@@ -2496,7 +2412,9 @@ class _PaneMixin {
         const liveText = commentEl.textContent || "";
         let raw;
         if (ourMarkers) {
-            raw = cachedRaw || liveText;
+            // Reconstruct from spans if data-wv-raw was lost — liveText
+            // is the stripped form and would lose markdown markers.
+            raw = cachedRaw || this._reconstructSourceFromSpans(commentEl);
         } else if (cachedRaw && cachedRendered !== null && liveText === cachedRendered) {
             raw = cachedRaw;
         } else {
@@ -2536,82 +2454,12 @@ class _PaneMixin {
             commentEl.removeAttribute("data-wv-source");
         }
 
-        const frag = doc.createDocumentFragment();
-        // Group order (when useMd):
-        //   1 bold, 2 italic, 3 strike, 4 code-double, 5 code-single,
-        //   6 link label, 7 link url, 8 bare URL.
-        const TOKEN = useMd ? new RegExp(
-            "\\*\\*([\\s\\S]+?)\\*\\*"
-            + "|\\*(?!\\s)([^*\\n]+?)(?<!\\s)\\*"
-            + "|~~([\\s\\S]+?)~~"
-            + "|``([\\s\\S]+?)``"
-            + "|`([^`\\n]+?)`"
-            + "|\\[([^\\]\\n]+?)\\]\\(([^)\\s]+)\\)"
-            + "|((?:" + this.URL_SCHEME_ALT + ")[^\\s<>\"\')\\]]*)",
-            "g"
-        ) : new RegExp(this.URL_REGEX.source, "g");
-
-        const wrapMd = (cls, inner) => {
-            const span = doc.createElement("span");
-            span.className = "wv-md " + cls;
-            span.textContent = inner;
-            frag.appendChild(span);
-        };
-
-        let last = 0, m;
-        while ((m = TOKEN.exec(norm)) !== null) {
-            if (m.index > last)
-                frag.appendChild(doc.createTextNode(norm.slice(last, m.index)));
-            if (useMd && m[1] !== undefined) {
-                wrapMd("wv-md-bold", m[1]);
-            } else if (useMd && m[2] !== undefined) {
-                wrapMd("wv-md-italic", m[2]);
-            } else if (useMd && m[3] !== undefined) {
-                wrapMd("wv-md-strike", m[3]);
-            } else if (useMd && m[4] !== undefined) {
-                wrapMd("wv-md-code", m[4]);
-            } else if (useMd && m[5] !== undefined) {
-                wrapMd("wv-md-code", m[5]);
-            } else if (useMd && m[6] !== undefined && m[7] !== undefined) {
-                // Markdown link [label](url). Render as styled link
-                // only when the URL's scheme is currently enabled
-                // (URL_REGEX gates by enabled schemes); else emit
-                // the label as plain text.
-                if (this.hasURI(m[7])) {
-                    const url = m[7];
-                    const span = doc.createElement("span");
-                    span.className = "wv-url-span "
-                        + this._urlLinkClass(url);
-                    span.title = url;
-                    span.textContent = m[6];
-                    span.setAttribute("data-href", url);
-                    frag.appendChild(span);
-                } else {
-                    frag.appendChild(doc.createTextNode(m[6]));
-                }
-            } else {
-                // Bare URL — group 8 in md regex, group 0 in URL-only
-                // regex. The TOKEN's bare-URL alternation is built from
-                // URL_SCHEME_ALT, so any match is already an enabled
-                // scheme — always render.
-                const rawTok = useMd ? m[8] : m[0];
-                if (rawTok === undefined) { last = m.index + m[0].length; continue; }
-                {
-                    const url   = rawTok.replace(this.TRAILING_RE, "");
-                    const trail = rawTok.slice(url.length);
-                    const span = doc.createElement("span");
-                    span.className = "wv-url-span "
-                        + this._urlLinkClass(url);
-                    span.title = url;
-                    span.textContent = url;
-                    frag.appendChild(span);
-                    if (trail) frag.appendChild(doc.createTextNode(trail));
-                }
-            }
-            last = m.index + m[0].length;
-        }
-        if (last < norm.length)
-            frag.appendChild(doc.createTextNode(norm.slice(last)));
+        // Build the formatted fragment via the unified renderer
+        // (single source of truth across all 4 surfaces — see
+        // reader.ts `_buildCommentFragment`).
+        const frag = this._buildCommentFragment(raw, {
+            doc, useMd, isTreeMode: true,
+        });
 
         // Stash the raw source BEFORE replacing children — afterwards
         // commentEl.textContent reflects the stripped/formatted view.

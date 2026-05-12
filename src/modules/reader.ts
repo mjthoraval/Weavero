@@ -1448,6 +1448,261 @@ class _ReaderMixin {
         }
     }
 
+    /** `createViewContextMenu` listener — right-click anywhere in the
+     *  reader's view. Adds a single copy-link entry whose target depends
+     *  on the reader type:
+     *
+     *  - **PDF** → "Copy Link to This Page" →
+     *    `zotero://open/<lib>/items/<key>?page=<N>`, N = the 1-based
+     *    number of the page that was *clicked*, resolved in order from:
+     *    `params.position.pageIndex` (set when the click landed on text —
+     *    works in spread / continuous-scroll layouts), the `.page:hover`
+     *    element in the PDF.js viewer (clicks on a figure / blank margin
+     *    of a non-topmost page), and finally `primaryViewStats.pageIndex`
+     *    (the viewport-top page). The handler does `pageIndex = N - 1`.
+     *  - **EPUB / snapshot** (DOM-based readers) →
+     *    `zotero://open/<lib>/items/<key>?cfi=<cfi>` (EPUB) or
+     *    `?sel=<cssSelector>` (snapshot), from `params.position`:
+     *      • text selected → "Copy Link to Selected Text", a range CFI
+     *        covering exactly the selection (following it flashes just
+     *        that passage);
+     *      • no selection → "Copy Link to This Location" — the clicked
+     *        element's position, with a range CFI **collapsed to its
+     *        start point** (`_collapseEpubCfiToStart`) so the link just
+     *        scrolls there rather than flashing the whole element;
+     *      • EPUB with no usable clicked position → the view's current
+     *        reading-position CFI (`primaryViewState.cfi`, already a
+     *        point).
+     *    (A PDF can't carry a sub-page selection in the URL — there's no
+     *    `?rects=` param yet, zotero/zotero#4508 — so on PDF the entry
+     *    stays page-level even with text selected.) Unsupported reader
+     *    types are skipped.
+     *
+     *  Gated on the same Copy-Item-Link pref as Weavero's other copy-link
+     *  affordances (the tab menu, the items list, the annotation context
+     *  menu).
+     *
+     *  Compartment caveat (same as `_contextHandlerImpl`): the
+     *  `onCommand` closure may be `Components.utils.cloneInto`'d into
+     *  the reader iframe with `cloneFunctions: true`, so it captures
+     *  only the finished link string — a primitive — and no XPCOM
+     *  object. (The context menu closes on click, so the visible page
+     *  can't change between menu-open and command, hence pre-computing
+     *  the link is fine.)
+     *
+     *  The Weavero glyph in front of the entry is added DOM-side:
+     *  Zotero's reader context-menu renderer (`Reader._openContextMenu`)
+     *  only honours a `color` swatch on appended items, not an arbitrary
+     *  icon — so we attach a one-shot `popupshowing` listener to the
+     *  reader window's popupset, find our menuitem by label when the
+     *  menu renders, and turn it `menuitem-iconic` with the Weavero
+     *  icon. Self-cleaning (removed once stamped, or after a backstop
+     *  timeout); a no-op on anything unexpected.
+     *
+     *  See `_sidebarHandlerImpl` for why this is a plain method invoked
+     *  through a bound shim (`this._viewContextHandler`, set in the
+     *  constructor) rather than an arrow-function class field. */
+    _viewContextHandlerImpl(event) {
+        try {
+            const { append, reader } = event || {};
+            if (typeof append !== "function") return;
+            if (!this._getEnableCopyItemLink()) return;
+            if (!reader) return;
+            const att = (reader.itemID && Zotero.Items.get(reader.itemID)) || null;
+            if (!this._isOpenableFileAttachment(att)) return;
+            const linkBase = "zotero://open/" + this._zoteroLibPrefix(att.libraryID)
+                + "/items/" + att.key;
+
+            let MENU_LABEL: string;
+            let capturedLink: string;
+
+            if (reader.type === "pdf") {
+                // Which page did the user actually right-click on?
+                //   1. params.position.pageIndex — the reader resolves the
+                //      word (or selectable overlay) under the cursor; works
+                //      in spread / continuous-scroll layouts. Most clicks in
+                //      a typical document land on text, so this is the usual
+                //      path.
+                //   2. The .page:hover element in the PDF.js viewer — when
+                //      the menu opens the pointer stops moving, so the page
+                //      under the cursor is still in :hover. Covers clicks on
+                //      a figure / blank margin of a non-topmost page.
+                //   3. Fallback: the reader's "current" page (viewport top).
+                let pageIndex: number | null = null;
+                try {
+                    const p = event && event.params;
+                    const pos = p && (p.position || (p.overlay && p.overlay.position));
+                    if (pos && Number.isInteger(pos.pageIndex) && pos.pageIndex >= 0) {
+                        pageIndex = pos.pageIndex;
+                    }
+                } catch (e) {}
+                if (pageIndex == null) {
+                    try {
+                        const cached = this._readerObservers && this._readerObservers.get(reader);
+                        const innerDoc = (cached && cached.innerDoc)
+                            || (reader._iframeWindow && reader._iframeWindow.document);
+                        const hovered = innerDoc && innerDoc.querySelector
+                            && innerDoc.querySelector(".page:hover");
+                        const pageDiv = hovered
+                            && (hovered.matches && hovered.matches(".page")
+                                ? hovered
+                                : (hovered.closest && hovered.closest(".page")));
+                        const n = pageDiv && parseInt(pageDiv.getAttribute("data-page-number"), 10);
+                        if (Number.isInteger(n) && n >= 1) pageIndex = n - 1;
+                    } catch (e) {}
+                }
+                if (pageIndex == null) {
+                    try {
+                        const stats = reader._internalReader
+                            && reader._internalReader._state
+                            && reader._internalReader._state.primaryViewStats;
+                        if (stats && Number.isInteger(stats.pageIndex) && stats.pageIndex >= 0) {
+                            pageIndex = stats.pageIndex;
+                        }
+                    } catch (e) {}
+                }
+                if (pageIndex == null) pageIndex = 0;
+                MENU_LABEL = "Copy Link to This Page";
+                capturedLink = linkBase + "?page=" + (pageIndex + 1);
+            }
+            else if (reader.type === "epub" || reader.type === "snapshot") {
+                // DOM-based readers: params.position describes the
+                // right-clicked element — or, when text is selected, the
+                // *selection's* range. It's a FragmentSelector (EPUB → an
+                // `epubcfi(...)` value; a range CFI for a selection) or a
+                // CssSelector (snapshots). The `zotero://open` handler
+                // accepts `?cfi=` / `?sel=` respectively.
+                //
+                // Following such a link makes the reader flash whatever the
+                // CFI/selector resolves to. For a *selection* link we want
+                // that — it highlights exactly what you selected (no more).
+                // For a *"this location"* link (no selection) the position
+                // is the whole clicked element's contents, which on a
+                // coarsely-marked-up EPUB can be a big block — so we
+                // collapse a "this location" range CFI to its **start
+                // point**, so the link just scrolls there with no big flash.
+                let rawVal: string | null = null;
+                let kind: "cfi" | "sel" | null = null;
+                let fromClickedPosition = false;
+                try {
+                    const pos = event && event.params && event.params.position;
+                    const val = (pos && typeof pos.value === "string" && pos.value) ? pos.value : null;
+                    if (val) {
+                        if (pos.type === "FragmentSelector") { rawVal = val; kind = "cfi"; fromClickedPosition = true; }
+                        else if (pos.type === "CssSelector") { rawVal = val; kind = "sel"; fromClickedPosition = true; }
+                    }
+                } catch (e) {}
+                let hasSelection = false;
+                try {
+                    const sst = reader._internalReader && reader._internalReader._state;
+                    hasSelection = !!(sst && (sst.primaryViewSelectionPopup || sst.secondaryViewSelectionPopup));
+                } catch (e) {}
+                const isSelectionLink = hasSelection && fromClickedPosition;
+                if (!rawVal && reader.type === "epub") {
+                    // No usable clicked position → the view's current
+                    // reading-position CFI (already a point, not a range).
+                    try {
+                        const cfi0 = reader._internalReader
+                            && reader._internalReader._state
+                            && reader._internalReader._state.primaryViewState
+                            && reader._internalReader._state.primaryViewState.cfi;
+                        if (typeof cfi0 === "string" && cfi0) {
+                            rawVal = /^epubcfi\(/.test(cfi0) ? cfi0 : ("epubcfi(" + cfi0 + ")");
+                            kind = "cfi";
+                            // fromClickedPosition stays false → not a selection link
+                        }
+                    } catch (e) {}
+                }
+                if (!rawVal || !kind) return;   // nothing concrete to point at
+                if (!isSelectionLink && kind === "cfi") {
+                    rawVal = this._collapseEpubCfiToStart(rawVal);
+                }
+                const q = (kind === "cfi" ? "?cfi=" : "?sel=") + encodeURIComponent(rawVal);
+                MENU_LABEL = isSelectionLink ? "Copy Link to Selected Text" : "Copy Link to This Location";
+                capturedLink = linkBase + q;
+            }
+            else {
+                return;   // unsupported reader type
+            }
+
+            try {
+                append({
+                    label: MENU_LABEL,
+                    onCommand: () => {
+                        try { Zotero.Utilities.Internal.copyTextToClipboard(capturedLink); }
+                        catch (e) { Zotero.debug("[Weavero] copy reader-location link err: " + e); }
+                    },
+                });
+            } catch (e) {
+                Zotero.debug("[Weavero] _viewContextHandler append err: " + e);
+            }
+
+            // Stamp the Weavero glyph onto the entry once the popup renders.
+            try {
+                const win = reader._window;
+                const ps  = reader._popupset;
+                const iconURL = this._menuItemIconURL;
+                if (win && ps && typeof ps.addEventListener === "function" && iconURL) {
+                    const st = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                    const ct = (win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
+                    let timer: any = null;
+                    const onShow = (ev) => {
+                        let stamped = false;
+                        try {
+                            const popup = ev && ev.target;
+                            const mi = popup && popup.querySelector
+                                && popup.querySelector('menuitem[label="' + MENU_LABEL + '"]');
+                            if (mi) {
+                                mi.classList.add("menuitem-iconic");
+                                mi.setAttribute("image", iconURL);
+                                stamped = true;
+                            }
+                            // not ours — leave the listener for the next popup
+                        } catch (e) { stamped = true; }   // on error, stop rather than retry
+                        if (stamped) {
+                            try { ps.removeEventListener("popupshowing", onShow, true); } catch (e) {}
+                            if (timer != null) { try { ct(timer); } catch (e) {} timer = null; }
+                        }
+                    };
+                    ps.addEventListener("popupshowing", onShow, true);
+                    timer = st(() => {
+                        try { ps.removeEventListener("popupshowing", onShow, true); } catch (e) {}
+                        timer = null;
+                    }, 3000);
+                }
+            } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _viewContextHandler err: " + e);
+        }
+    }
+
+    /** Collapse an EPUB *range* CFI `epubcfi(A,B,C)` (common-parent path A,
+     *  start subpath B, end subpath C) to a *point* CFI `epubcfi(AB)` — the
+     *  start of the range. Used so a "Copy Link to This Location" link
+     *  (which derives from the whole clicked element's contents) just
+     *  scrolls to that spot instead of making the reader flash the entire
+     *  element. Splits on top-level commas only (commas inside `[…]` text
+     *  assertions are left alone). A non-range CFI (no top-level commas, or
+     *  anything unparseable) is returned unchanged. */
+    _collapseEpubCfiToStart(cfi) {
+        try {
+            const s = String(cfi);
+            const m = /^epubcfi\((.*)\)$/.exec(s);
+            if (!m) return s;
+            const parts: string[] = [];
+            let depth = 0, cur = "";
+            for (const ch of m[1]) {
+                if (ch === "[") { depth++; cur += ch; }
+                else if (ch === "]") { depth = Math.max(0, depth - 1); cur += ch; }
+                else if (ch === "," && depth === 0) { parts.push(cur); cur = ""; }
+                else cur += ch;
+            }
+            parts.push(cur);
+            if (parts.length !== 3) return s;   // not a range CFI — leave it
+            return "epubcfi(" + parts[0] + parts[1] + ")";
+        } catch (e) { return cfi; }
+    }
+
     /** Open Zotero's standard select-items dialog filtered to the
      *  annotation's library, then add a symmetric `dc:relation` triple
      *  between every picked item and every annotation in `annotations`.

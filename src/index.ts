@@ -70,6 +70,7 @@ class WeaveroPlugin {
         // unhook in destroy() finds them by reference equality.
         this._sidebarHandler = (event) => this._sidebarHandlerImpl(event);
         this._contextHandler = (event) => this._contextHandlerImpl(event);
+        this._viewContextHandler = (event) => this._viewContextHandlerImpl(event);
     }
 
     // ---- Utilities --------------------------------------------------------
@@ -411,8 +412,25 @@ class WeaveroPlugin {
                 const loc: any = {};
                 const page = u.searchParams.get("page");
                 const ann  = u.searchParams.get("annotation");
+                // `cfi` (EPUB) / `sel` (snapshot) → a `position` of the
+                // same shape Zotero's `OpenExtension` builds. `searchParams`
+                // already URL-decodes the value, so don't decodeURIComponent
+                // it again (OpenExtension does because it parses the query
+                // string by hand). When both `page` and a position are
+                // present we keep both (the reader prefers the position).
+                const cfi = u.searchParams.get("cfi");
+                const sel = u.searchParams.get("sel");
                 if (page !== null) loc.pageIndex = Number(page) - 1;
                 if (ann) loc.annotationID = ann;
+                if (cfi) {
+                    loc.position = {
+                        type: "FragmentSelector",
+                        conformsTo: "http://www.idpf.org/epub/linking/cfi/epub-cfi.html",
+                        value: cfi,
+                    };
+                } else if (sel) {
+                    loc.position = { type: "CssSelector", value: sel };
+                }
                 const location = Object.keys(loc).length ? loc : null;
                 // Mirror Zotero's own zotero://open / zotero://open-pdf
                 // handler (ZoteroProtocolHandler `OpenExtension` →
@@ -1717,6 +1735,8 @@ class WeaveroPlugin {
             "renderSidebarAnnotationHeader", this._sidebarHandler, "weavero");
         Zotero.Reader.registerEventListener(
             "createAnnotationContextMenu", this._contextHandler, "weavero");
+        Zotero.Reader.registerEventListener(
+            "createViewContextMenu", this._viewContextHandler, "weavero");
 
         // 3. Notifier: new reader tabs
         this._notifierIDs.push(Zotero.Notifier.registerObserver({
@@ -2803,6 +2823,7 @@ class WeaveroPlugin {
 
         try { (Zotero.Reader as any).unregisterEventListener("renderSidebarAnnotationHeader", "weavero"); } catch(e) {}
         try { (Zotero.Reader as any).unregisterEventListener("createAnnotationContextMenu", "weavero"); } catch(e) {}
+        try { (Zotero.Reader as any).unregisterEventListener("createViewContextMenu", "weavero"); } catch(e) {}
         this._unregisterItemTreeColumns();
         try { this._unpatchAnnotationRow(); } catch (e) {}
 

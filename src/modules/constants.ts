@@ -752,9 +752,44 @@ export const PLUGIN_CSS = [
     "  font-size: 12px;",
     "}",
     ".wv-filter-opt:hover { background: rgba(127,127,127,0.08); }",
+    // Included (plain click). Solid-ish accent fill + a bright border
+    // reinforced by an inset ring, so an active chip clearly stands out
+    // from the idle ones (the old 18%-opacity wash read as barely-there,
+    // especially on the dark popup background).
     ".wv-filter-opt[data-selected=\"true\"] {",
-    "  background: rgba(94,106,210,0.18);",
-    "  border-color: rgba(94,106,210,0.6);",
+    "  background: rgba(94,106,210,0.34);",
+    "  border-color: rgba(94,106,210,0.95);",
+    "  box-shadow: inset 0 0 0 1px rgba(94,106,210,0.55);",
+    "}",
+    ":root.wv-ui-dark .wv-filter-opt[data-selected=\"true\"] {",
+    "  background: rgba(120,134,255,0.40);",
+    "  border-color: rgba(150,162,255,1);",
+    "  box-shadow: inset 0 0 0 1px rgba(150,162,255,0.6);",
+    "}",
+    ".wv-filter-opt[data-selected=\"true\"]:hover {",
+    "  background: rgba(94,106,210,0.45);",
+    "}",
+    ":root.wv-ui-dark .wv-filter-opt[data-selected=\"true\"]:hover {",
+    "  background: rgba(120,134,255,0.52);",
+    "}",
+    // Inferred-default state (Selection Target chips only): no chip was
+    // explicitly clicked, but the active filters pin one kind, so that's
+    // what Ctrl+A targets — see _effectiveSelectionTargetKinds. Dashed
+    // accent border + a faint fill, so it reads as \"this is the default\"
+    // rather than \"a setting you made\" (which gets the solid fill + ring).
+    ".wv-filter-opt[data-auto=\"true\"] {",
+    "  background: rgba(94,106,210,0.14);",
+    "  border: 1px dashed rgba(94,106,210,0.9);",
+    "}",
+    ":root.wv-ui-dark .wv-filter-opt[data-auto=\"true\"] {",
+    "  background: rgba(120,134,255,0.18);",
+    "  border-color: rgba(150,162,255,1);",
+    "}",
+    ".wv-filter-opt[data-auto=\"true\"]:hover {",
+    "  background: rgba(94,106,210,0.22);",
+    "}",
+    ":root.wv-ui-dark .wv-filter-opt[data-auto=\"true\"]:hover {",
+    "  background: rgba(120,134,255,0.26);",
     "}",
     // Alt+click negative-selection state. Red border, faint red
     // wash, and a diagonal slash overlay (universal "prohibited"

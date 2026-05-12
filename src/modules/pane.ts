@@ -899,21 +899,27 @@ class _PaneMixin {
             const win = Zotero.getMainWindow();
             const doc = win && win.document;
             if (!doc) return;
+            // Keep the Selection Target chip cue in an open filter popup in
+            // sync with whatever the resolved target currently is.
+            try {
+                const popup: any = doc.getElementById("wv-filter-popup");
+                if (popup && (popup.state === "open" || popup.state === "showing")) {
+                    this._updateSelectionTargetAutoCues(popup);
+                }
+            } catch (e) {}
             const tree = doc.getElementById("item-tree-main")
                 || doc.getElementById("item-tree-main-default");
             if (!tree) return;
-            const tgt = (this._filterState && this._filterState.selectionTarget) || {};
-            const exc = (this._filterState && this._filterState.selectionTargetExclude) || {};
-            const incCount = (tgt.parent ? 1 : 0)
-                + (tgt.attachment ? 1 : 0)
-                + (tgt.annotation ? 1 : 0);
-            const excCount = (exc.parent ? 1 : 0)
-                + (exc.attachment ? 1 : 0)
-                + (exc.annotation ? 1 : 0);
-            const noFilter = (incCount === 0 && excCount === 0);
+            // Resolved Selection Target — explicit chips, or the smart
+            // default inferred from the active filters (e.g. annotation
+            // filters → annotations). Shared with the Ctrl+A gate
+            // (`_patchIsSelectable`), so the dimmed rows match what
+            // select-all will actually pick.
+            const eff = this._effectiveSelectionTargetKinds();
+            const allOn = !!(eff.parent && eff.attachment && eff.annotation);
             const rows: any = tree.querySelectorAll(".row");
             for (const row of rows) {
-                if (noFilter) {
+                if (allOn) {
                     row.classList.remove("wv-not-target");
                     continue;
                 }
@@ -925,13 +931,8 @@ class _PaneMixin {
                 const isAnn = !!(item.isAnnotation && item.isAnnotation());
                 const isAtt = !isAnn
                     && !!(item.isAttachment && item.isAttachment());
-                const isParent = !isAnn && !isAtt;
                 const kind = isAnn ? "annotation" : isAtt ? "attachment" : "parent";
-                // Empty include set → all kinds pass the include test.
-                const passesInc = (incCount === 0) || !!tgt[kind];
-                const passesExc = !exc[kind];
-                const inTarget = passesInc && passesExc;
-                row.classList.toggle("wv-not-target", !inTarget);
+                row.classList.toggle("wv-not-target", !eff[kind]);
             }
         } catch (e) {
             Zotero.debug("[Weavero] _applySelectionTargetVisuals err: " + e);

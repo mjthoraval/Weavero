@@ -180,9 +180,14 @@ class _FilterMixin {
      *  rows. The instance-method patch is the durable fallback
      *  that keeps things working across React re-renders.
      *
-     *  Returns `false` from the wrapper only when `selectAll` is
-     *  true AND the row's kind is unticked — individual clicks
-     *  still go through `orig`. Idempotent. */
+     *  Returns `false` from the wrapper only when `selectAll` is true
+     *  AND the row's kind is out of the *resolved* Selection Target
+     *  (`_effectiveSelectionTargetKinds` — explicit chips, or the smart
+     *  default inferred from the active filters). When that resolves to
+     *  all three kinds the wrapper is a no-op. Same source the items
+     *  tree dims rows from (`_applySelectionTargetVisuals`), so Ctrl+A
+     *  and the dimmed rows agree. Individual clicks always go through
+     *  `orig`. Idempotent. */
     _patchIsSelectable() {
         try {
             const win = Zotero.getMainWindow();
@@ -190,12 +195,16 @@ class _FilterMixin {
             if (!itemsView) return;
             const self = this;
             const gateFn = (orig) => function (index, selectAll) {
-                if (selectAll) {
-                    const tgt = self._filterState
-                        && self._filterState.selectionTarget;
-                    const allOn = !tgt
-                        || (tgt.parent && tgt.attachment && tgt.annotation);
-                    if (!allOn) {
+                // Use the resolved Selection Target (explicit chips, or the
+                // smart default derived from the active filters — see
+                // `_effectiveSelectionTargetKinds`). Same source the items
+                // tree uses for dimming (`_applySelectionTargetVisuals`),
+                // so Ctrl+A and the dimmed rows always agree.
+                if (selectAll && (self._getEnableSelectionTarget
+                        ? self._getEnableSelectionTarget() : true)) {
+                    let eff: any = null;
+                    try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
+                    if (eff && !(eff.parent && eff.attachment && eff.annotation)) {
                         let row = null;
                         try { row = itemsView.getRow(index); } catch (e) {}
                         const item = row && row.ref;
@@ -203,11 +212,8 @@ class _FilterMixin {
                             const isAnn = !!(item.isAnnotation && item.isAnnotation());
                             const isAtt = !isAnn
                                 && !!(item.isAttachment && item.isAttachment());
-                            const isParent = !isAnn && !isAtt;
-                            const inTarget = (isAnn && tgt.annotation)
-                                || (isAtt && tgt.attachment)
-                                || (isParent && tgt.parent);
-                            if (!inTarget) return false;
+                            const kind = isAnn ? "annotation" : isAtt ? "attachment" : "parent";
+                            if (!eff[kind]) return false;
                         }
                     }
                 }
@@ -434,6 +440,121 @@ class _FilterMixin {
         if (state.savedSearchesExclude && state.savedSearchesExclude.length) return true;
         if (!state.groups) return false;
         return state.groups.some(g => this._isGroupActive(g));
+    }
+
+    /** Resolve which row kinds Ctrl+A should select (and which the
+     *  items tree should dim). Returns `{parent, attachment, annotation}`
+     *  booleans.
+     *
+     *  Precedence:
+     *   1. If the user has explicitly set the Selection Target chips
+     *      (some kind included or excluded) → honour that (included
+     *      kinds, or all-but-excluded when only excludes are set).
+     *   2. Otherwise — the *smart default* — collect which level each
+     *      active *category-specific* filter pins:
+     *        - annotation ← annotation colour / type / has-comment /
+     *          annotation-tag / annotation-author
+     *        - attachment ← the attachment file-type filter
+     *        - parent     ← item-type / has-abstract / has-DOI /
+     *          has-URL / has-attachment / publication
+     *      Target = the union of those levels (one filter category → one
+     *      level; two categories → both; three → all). With no
+     *      category-specific filters, or any *cross-level* filter active
+     *      (added-by, has-related, has-links, has-tag, item-note,
+     *      standalone-note, has-annotations, collection, saved-search)
+     *      → all kinds.
+     *
+     *  This is what most people want: filter by annotation colour →
+     *  Ctrl+A grabs the annotations, not the ancestor rows the tree
+     *  keeps around for shape; filter by annotation colour AND item type
+     *  → it grabs both. The chips still override it. */
+    _effectiveSelectionTargetKinds() {
+        const ALL = { parent: true, attachment: true, annotation: true };
+        const fs = this._filterState || {};
+        const tgt = fs.selectionTarget || {};
+        const exc = fs.selectionTargetExclude || {};
+        if (tgt.parent || tgt.attachment || tgt.annotation) {
+            return { parent: !!tgt.parent, attachment: !!tgt.attachment, annotation: !!tgt.annotation };
+        }
+        if (exc.parent || exc.attachment || exc.annotation) {
+            return { parent: !exc.parent, attachment: !exc.attachment, annotation: !exc.annotation };
+        }
+        // --- smart default ---
+        if (!this._isFilterActive(fs)) return { ...ALL };
+        // Global (state-level) filters are cross-level → don't narrow.
+        if ((fs.collections && fs.collections.length)
+            || (fs.collectionsExclude && fs.collectionsExclude.length)
+            || (fs.savedSearches && fs.savedSearches.length)
+            || (fs.savedSearchesExclude && fs.savedSearchesExclude.length)) {
+            return { ...ALL };
+        }
+        // Per-group filter fields, grouped by which row kind they pin.
+        // CAT ∪ NEUTRAL == exactly the fields _isGroupActive checks.
+        const CAT: Record<string, string[]> = {
+            annotation: ["annotationColor", "annotationColorExclude", "annotationType",
+                "annotationTypeExclude", "annotationHasComment", "annotationTag",
+                "annotationTagExclude", "annotationAuthor", "annotationAuthorExclude"],
+            attachment: ["attachmentFileType", "attachmentFileTypeExclude"],
+            parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI", "hasURL",
+                "hasAttachment", "publication", "publicationExclude"],
+        };
+        const NEUTRAL = ["addedBy", "addedByExclude", "hasRelated", "hasLink", "hasTag",
+            "itemNote", "standaloneNote", "hasAnnotations"];
+        const isSet = (g, f) => {
+            const v = g[f];
+            if (v == null) return false;
+            return Array.isArray(v) ? v.length > 0 : true;
+        };
+        const cats = new Set<string>();
+        for (const g of (fs.groups || [])) {
+            if (!g || !this._isGroupActive(g)) continue;
+            if (NEUTRAL.some(f => isSet(g, f))) return { ...ALL };
+            for (const cat of ["annotation", "attachment", "parent"]) {
+                if (CAT[cat].some(f => isSet(g, f))) cats.add(cat);
+            }
+        }
+        // 1 category → just that kind; 2 categories → both kinds; 3 (or 0,
+        // which shouldn't happen given _isFilterActive) → all kinds.
+        if (cats.size === 1 || cats.size === 2) {
+            return { parent: cats.has("parent"), attachment: cats.has("attachment"), annotation: cats.has("annotation") };
+        }
+        return { ...ALL };
+    }
+
+    /** Re-sync the `data-auto` cue on the Selection Target chips of an
+     *  open filter popup to whatever `_effectiveSelectionTargetKinds`
+     *  currently resolves to (when no chip is explicitly set and the
+     *  active filters pin one kind). Cheap; safe to call on every items-
+     *  tree paint and after any filter change. No-op if `panel` doesn't
+     *  contain a Selection Target bar. */
+    _updateSelectionTargetAutoCues(panel) {
+        try {
+            const bar = panel && panel.querySelector
+                && panel.querySelector(".wv-filter-seltarget-bar");
+            if (!bar) return;
+            const fs = this._filterState || {};
+            const ti = fs.selectionTarget || {}, te = fs.selectionTargetExclude || {};
+            const noExplicit = !(ti.parent || ti.attachment || ti.annotation
+                || te.parent || te.attachment || te.annotation);
+            const eff = this._effectiveSelectionTargetKinds();
+            const narrowed = noExplicit && !(eff.parent && eff.attachment && eff.annotation);
+            for (const btn of bar.querySelectorAll(".wv-filter-scope-toggle") as any) {
+                const key = btn.dataset && btn.dataset.key;
+                if (!key) continue;
+                const explicit = !!(ti[key] || te[key]);
+                if (!explicit && narrowed && eff[key]) {
+                    if (btn.dataset.auto !== "true") {
+                        btn.dataset.auto = "true";
+                        const baseTip = btn.title.split("  •  Auto:")[0];
+                        btn.title = baseTip
+                            + "  •  Auto: your active filters only target this kind, so that's what Ctrl+A selects. Click any kind to set it manually.";
+                    }
+                } else if (btn.dataset.auto) {
+                    delete btn.dataset.auto;
+                    btn.title = btn.title.split("  •  Auto:")[0];
+                }
+            }
+        } catch (e) {}
     }
 
     /** True iff the row passes the GLOBAL filters at the bottom of
@@ -2690,7 +2811,7 @@ class _FilterMixin {
             { key: "annotation", label: "Annotation",
               tip: "Annotation rows will be selectable in Ctrl+A." },
         ];
-        const buildToggleBar = (label, labelTip, stateInc, stateExc, choices, onToggle, extraClass) => {
+        const buildToggleBar = (label, labelTip, stateInc, stateExc, choices, onToggle, extraClass, autoState?) => {
             const bar = doc.createElementNS(NS_HTML, "div");
             bar.className = "wv-filter-scope-bar"
                 + (extraClass ? " " + extraClass : "");
@@ -2705,8 +2826,17 @@ class _FilterMixin {
                 btn.className = "wv-filter-opt wv-filter-scope-toggle";
                 btn.textContent = t.label;
                 btn.title = t.tip || t.label;
-                if (stateInc[t.key]) btn.dataset.selected = "true";
-                if (stateExc[t.key]) btn.dataset.excluded = "true";
+                btn.dataset.key = t.key;   // so _updateSelectionTargetAutoCues can find chips later
+                const isInc = !!stateInc[t.key], isExc = !!stateExc[t.key];
+                if (isInc) btn.dataset.selected = "true";
+                if (isExc) btn.dataset.excluded = "true";
+                // Inferred-default cue: no explicit chip, but the active
+                // filters pin this kind (autoState[key] truthy).
+                if (!isInc && !isExc && autoState && autoState[t.key]) {
+                    btn.dataset.auto = "true";
+                    btn.title = (t.tip || t.label)
+                        + "  •  Auto: your active filters only target this kind, so that's what Ctrl+A selects. Click any kind to set it manually.";
+                }
                 btn.addEventListener("click", (e) => {
                     e.stopPropagation();
                     onToggle(t.key, !!e.altKey);
@@ -2732,16 +2862,27 @@ class _FilterMixin {
                 if (!wasInc) inc[key] = true;
             }
         };
+        // The inferred-default cue (`data-auto` on a chip): only when no
+        // chip is explicitly set AND `_effectiveSelectionTargetKinds`
+        // narrows to one kind. Pass that narrowed set to buildToggleBar.
+        const _noExplicitSelTarget = !(selTarget.parent || selTarget.attachment || selTarget.annotation
+            || selTargetExc.parent || selTargetExc.attachment || selTargetExc.annotation);
+        let _selTargetAuto: any = null;
+        if (_noExplicitSelTarget) {
+            const eff = this._effectiveSelectionTargetKinds();
+            if (!(eff.parent && eff.attachment && eff.annotation)) _selTargetAuto = eff;
+        }
         const selBar = buildToggleBar(
             "Selection Target:",
-            "Pick which row kinds Ctrl+A selects in the items list. Empty = all kinds. Click a kind to narrow, Alt+click to exclude. Excluded kinds are dimmed and skipped by select-all.",
+            "Which row kinds Ctrl+A selects (out-of-scope rows are dimmed). Leave empty for the smart default: all kinds — or just the kind(s) your active filters target (annotation filters → annotations; item-type filters → items; both → both). Click a kind to override that, Alt+click to exclude.",
             selTarget, selTargetExc, selChoices,
             (key, altKey) => {
                 toggleObjTriState(selTarget, selTargetExc, key, altKey);
                 this._renderFilterPanelContents(panel, inner);
                 this._applySelectionTargetVisuals();
             },
-            "wv-filter-seltarget-bar wv-filter-bottom-bar"
+            "wv-filter-seltarget-bar wv-filter-bottom-bar",
+            _selTargetAuto
         );
         inner.appendChild(selBar);
 
@@ -2757,6 +2898,9 @@ class _FilterMixin {
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
             renderHeader();
+            // Filters changed → the smart Selection Target may have changed
+            // too; re-sync the chip cue (the bar itself isn't re-rendered).
+            try { this._updateSelectionTargetAutoCues(panel); } catch (e) {}
         };
         refreshAll();
     }

@@ -1703,6 +1703,389 @@ class _ReaderMixin {
         } catch (e) { return cfi; }
     }
 
+    /** `renderToolbar` listener — adds a "Move to Tab" button to the
+     *  reader's top toolbar, but **only when the reader is a standalone
+     *  window** (Zotero has no built-in way to dock such a window back
+     *  into the main window's tab strip; the reverse — "Move Tab to New
+     *  Window" — already exists in the reader-tab context menu, so we
+     *  don't add a button for tabs). Clicking it closes the standalone
+     *  window and opens the same item as a *new* tab in the main window
+     *  (always a new one, even if a tab for the item is already open —
+     *  Zotero allows duplicate readers, and "move this window to a tab"
+     *  reads most naturally as moving *this* view rather than collapsing
+     *  it onto another). Zotero persists the reader's view state, so the
+     *  new tab picks up roughly where the window was.
+     *
+     *  Goes through the reader's `CustomSections type="Toolbar"` slot
+     *  (the `.end` group, left of the find icon). The button gets
+     *  `class="toolbar-button"` so it inherits the reader UI's own
+     *  button styling; the click closure captures only `itemID` (a
+     *  number — safe across the chrome↔iframe boundary the `append`
+     *  shim cloneInto's through). The reader app re-fires this event on
+     *  every re-render, so re-injection is automatic. */
+    _toolbarHandlerImpl(event) {
+        try {
+            const { reader, doc, append } = event || {};
+            if (typeof append !== "function" || !doc) return;
+            // Standalone reader windows have no `tabID` (ReaderTab does).
+            if (!reader || reader.tabID) return;
+            const itemID = reader.itemID;
+            if (!itemID) return;
+
+            // Standalone reader windows also get a minimal one-tab strip
+            // along the top (Firefox-ish), so the window reads as a tabbed
+            // window rather than a chrome-less reader.
+            try { this._ensureReaderWindowTabStrip(reader); } catch (e) {}
+
+            // If the user enabled "Hide title bar" in prefs, also hide the
+            // reader window's menubar (File / Edit / View / Go) and let
+            // Alt summon it. Caveat: we can't remove the OS-drawn title
+            // bar above (Windows commits chromemargin at window-create
+            // time; setting it from a plugin runs too late). The menubar
+            // row is the only thing under our control to collapse.
+            try { if (this._getCompactTitleBar?.()) this._applyReaderCompactMenubar(reader); } catch (e) {}
+
+            const NS_HTML = "http://www.w3.org/1999/xhtml";
+            const btn = doc.createElementNS(NS_HTML, "button");
+            btn.className = "toolbar-button wv-reader-to-tab";
+            btn.setAttribute("tabindex", "-1");
+            btn.title = "Move this reader into a tab in the main Zotero window";
+            // Tabbed-window glyph: an outlined window body with a tab strip
+            // (one full-height active tab merging into the body, plus a
+            // shorter faded tab behind it). fill="currentColor" — not
+            // context-fill — so it inherits the toolbar button's text
+            // colour and reads correctly in both themes (the built-in
+            // icons' context-fill wasn't being applied to a custom-section
+            // child, so the old glyph came out near-black on the dark
+            // toolbar — and also read as a folder rather than tabs).
+            btn.innerHTML =
+                '<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">'
+                + '<rect x="1" y="5" width="14" height="9.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.3"/>'
+                + '<path d="M2.4 5.7V3.7c0-0.39 0.31-0.7 0.7-0.7h3.2c0.39 0 0.7 0.31 0.7 0.7v2z"/>'
+                + '<path d="M8.2 5.7V4.3c0-0.39 0.31-0.7 0.7-0.7h2.4c0.39 0 0.7 0.31 0.7 0.7v1.4z" fill-opacity="0.45"/>'
+                + '</svg>';
+            const self = this;
+            const capturedItemID = itemID;
+            btn.addEventListener("click", (e) => {
+                try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                self._moveReaderToTab(capturedItemID);
+            });
+            try { append(btn); }
+            catch (e) { Zotero.debug("[Weavero] _toolbarHandler append err: " + e); }
+        } catch (e) {
+            Zotero.debug("[Weavero] _toolbarHandler err: " + e);
+        }
+    }
+
+    /** Inject (once) a minimal one-tab strip across the top of a
+     *  standalone reader window — a thin Firefox-ish tab bar showing the
+     *  item title and an "×" that closes the window. It's inserted above
+     *  the menubar, as the topmost rendered child of `<window>` (like
+     *  Firefox, where the tab strip is at the very top), falling back to
+     *  inside the reader's `<vbox>` above the `<browser>` if the window's
+     *  shape isn't what we expect. So the window stacks: [OS title bar] /
+     *  tab strip / menubar / reader toolbar / page. Idempotent: built
+     *  once, the title re-set on each call (so it tracks `document.title`,
+     *  which Zotero keeps current). No-op on anything that isn't a
+     *  `zotero:reader` window. */
+    _ensureReaderWindowTabStrip(reader) {
+        try {
+            const win = reader && reader._window;
+            if (!win || !win.document) return;
+            const doc = win.document;
+            try {
+                if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
+            } catch (e) { return; }
+
+            const title = (() => {
+                try {
+                    if (doc.title) return doc.title;
+                    const it = reader.itemID && Zotero.Items.get(reader.itemID);
+                    return it ? it.getDisplayTitle() : "";
+                } catch (e) { return ""; }
+            })();
+
+            // What kind of attachment is this? Used to pick an icon that
+            // matches Zotero's items-tree convention (PDF / EPUB / snapshot).
+            const readerType: string = (() => {
+                try {
+                    if (reader._type) return String(reader._type);
+                    const it = reader.itemID && Zotero.Items.get(reader.itemID);
+                    const ct = it?.attachmentContentType || "";
+                    if (ct === "application/pdf") return "pdf";
+                    if (ct === "application/epub+zip") return "epub";
+                    if (ct === "text/html") return "snapshot";
+                    return "";
+                } catch (e) { return ""; }
+            })();
+
+            const HTML = "http://www.w3.org/1999/xhtml";
+            let strip = doc.querySelector(".wv-window-tabstrip");
+            if (!strip) {
+                this._ensureReaderWindowTabStripStyles(doc);
+                // Insert AFTER the menubar (not before it) so that when
+                // the user summons the menubar via Alt, it appears ABOVE
+                // the tab strip — Firefox layout. With the tab strip as
+                // the first child of <window>, the menubar would slide
+                // in below it, which is the wrong order.
+                const winEl = doc.documentElement;
+                const menubar = winEl && winEl.querySelector("menubar");
+                const vbox = doc.getElementById("zotero-reader");
+                const browserEl = doc.getElementById("reader");
+                let anchor: any = null, anchorParent: any = null;
+                if (menubar && menubar.parentNode === winEl) {
+                    anchor = menubar.nextSibling;   // insert AFTER menubar
+                    anchorParent = winEl;
+                } else if (vbox && browserEl && browserEl.parentNode === vbox) {
+                    anchor = browserEl; anchorParent = vbox;
+                }
+                if (!anchorParent) return;
+                strip = doc.createElementNS(HTML, "div");
+                strip.className = "wv-window-tabstrip";
+                const tab = doc.createElementNS(HTML, "div");
+                tab.className = "wv-window-tab";
+                // File-type icon (PDF/EPUB/snapshot) on the left, matching
+                // the items-tree / main-window tab convention.
+                const iconEl = doc.createElementNS(HTML, "span");
+                iconEl.className = "wv-window-tab-icon";
+                if (readerType) iconEl.setAttribute("data-type", readerType);
+                const titleEl = doc.createElementNS(HTML, "span");
+                titleEl.className = "wv-window-tab-title";
+                const closeBtn = doc.createElementNS(HTML, "button");
+                closeBtn.className = "wv-window-tab-close";
+                closeBtn.setAttribute("title", "Close");
+                closeBtn.setAttribute("tabindex", "-1");
+                closeBtn.textContent = "×";   // ×
+                closeBtn.addEventListener("click", (e) => {
+                    try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                    try { if (typeof reader.close === "function") reader.close(); else win.close(); }
+                    catch (er) { try { win.close(); } catch (er2) {} }
+                });
+                tab.appendChild(iconEl);
+                tab.appendChild(titleEl);
+                tab.appendChild(closeBtn);
+                strip.appendChild(tab);
+                if (anchor) anchorParent.insertBefore(strip, anchor);
+                else anchorParent.appendChild(strip);
+
+                // Mount the library-aware tooltip and the right-click
+                // context menu so the reader window's tab behaves like
+                // a main-window tab on hover and right-click.
+                try { this._ensureReaderWindowTabTooltip(reader, tab); } catch (e) {}
+                try { this._ensureReaderWindowTabContextMenu(reader, tab); } catch (e) {}
+            }
+            try {
+                const titleEl = strip.querySelector(".wv-window-tab-title");
+                if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
+                // Do NOT set the HTML `title` attribute — that would show
+                // the browser's default tooltip, which would race with
+                // (and visually override) our custom XUL tooltip wired
+                // by `_ensureReaderWindowTabTooltip`.
+                // Keep the icon's type in sync (in case reader type changes).
+                const iconEl = strip.querySelector(".wv-window-tab-icon");
+                if (iconEl && readerType) iconEl.setAttribute("data-type", readerType);
+            } catch (e) {}
+
+            // If compact mode is already active on this window (apply ran
+            // before the strip existed, e.g. via init() before the
+            // toolbar event), add the window controls now that the strip
+            // is in place. Idempotent — early-returns if already added.
+            try {
+                if (win._wvCompactMenubar) this._ensureReaderWindowControls(win);
+            } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderWindowTabStrip err: " + e);
+        }
+    }
+
+    /** One-time CSS for the standalone-reader-window tab strip, injected
+     *  as a `<style>` in the reader window's document. Themed off
+     *  Zotero's design tokens with solid fallbacks. */
+    _ensureReaderWindowTabStripStyles(doc) {
+        try {
+            if (doc.getElementById("wv-window-tabstrip-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-window-tabstrip-styles";
+            style.textContent = [
+                /* Tab strip — matches main-window #zotero-title-bar in
+                   height (36px) and styling so a reader window reads
+                   visually like a Zotero tab. The whole strip is window-
+                   draggable; the tab and close button opt out via
+                   no-drag so they're clickable. */
+                /* Strip background — matches the main window's
+                   #zotero-title-bar (rgb(30,30,30) in dark, light
+                   parchment in light). The tab itself sits brighter on
+                   top, same raised-on-bar relationship as Zotero's
+                   own tab bar. */
+                ".wv-window-tabstrip {",
+                "  display: flex; align-items: stretch; box-sizing: border-box;",
+                "  height: 36px; padding: 4px 4px 0 4px;",
+                "  background: rgb(245, 245, 245);",
+                "  border-bottom: 1px solid rgba(0,0,0,0.12);",
+                "  -moz-window-dragging: drag;",
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-window-tabstrip { background: rgb(30, 30, 30); border-bottom-color: rgba(0,0,0,0.4); }",
+                "}",
+                /* Tab: rounded top corners, file-type icon + title +
+                   close. Brighter than the strip — matches main
+                   window's selected-tab styling (rgb(64,64,64) on dark,
+                   nearly-white on light) so the tab visually pops out
+                   of the bar. Font color + size + family mirrors the
+                   main window's .tab-name exactly. */
+                ".wv-window-tab {",
+                "  display: flex; align-items: center; gap: 6px;",
+                "  max-width: 360px; min-width: 0;",
+                "  height: 32px;",
+                "  padding: 0 4px 0 8px;",
+                "  border-radius: 5px 5px 0 0;",
+                "  background: rgb(255, 255, 255);",
+                "  color: rgba(0, 0, 0, 0.898);",
+                "  font: caption; font-size: 13px;",
+                "  font-family: system-ui, -apple-system, sans-serif;",
+                "  text-rendering: optimizelegibility;",
+                "  -moz-window-dragging: no-drag;",
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-window-tab { background: rgb(64, 64, 64); color: rgba(255, 255, 255, 0.898); }",
+                "}",
+                /* File-type icon: 16×16, pulled from Zotero's chrome
+                   skin via data-type. PDF / EPUB / snapshot covered;
+                   anything else falls through to attachment-link.svg. */
+                /* File-type icon paths mirror what Zotero's main-window
+                   tab uses (item-type/16/<theme>/attachment-<type>.svg).
+                   Pick light vs. dark variant via prefers-color-scheme
+                   so the icon stays visible in both themes. */
+                ".wv-window-tab-icon {",
+                "  flex-shrink: 0;",
+                "  width: 16px; height: 16px;",
+                "  background-size: contain;",
+                "  background-repeat: no-repeat;",
+                "  background-position: center;",
+                "}",
+                ".wv-window-tab-icon[data-type='pdf'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-pdf.svg'); }",
+                ".wv-window-tab-icon[data-type='epub'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-epub.svg'); }",
+                ".wv-window-tab-icon[data-type='snapshot'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-snapshot.svg'); }",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-window-tab-icon[data-type='pdf'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-pdf.svg'); }",
+                "  .wv-window-tab-icon[data-type='epub'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-epub.svg'); }",
+                "  .wv-window-tab-icon[data-type='snapshot'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-snapshot.svg'); }",
+                "}",
+                ".wv-window-tab-title {",
+                "  flex: 1; min-width: 0;",
+                "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                "}",
+                ".wv-window-tab-close {",
+                "  flex-shrink: 0; appearance: none; -moz-appearance: none;",
+                "  width: 18px; height: 18px; padding: 0; margin: 0;",
+                "  border: none; border-radius: 3px; background: transparent;",
+                "  color: inherit; cursor: pointer;",
+                "  font: inherit; font-size: 15px; line-height: 16px; text-align: center;",
+                "}",
+                ".wv-window-tab-close:hover { background: rgba(127,127,127,0.28); }",
+                ".wv-window-tab-close:active { background: rgba(127,127,127,0.4); }",
+                /* Window controls — matches the main-window
+                   `.titlebar-button` design: 46x36 buttons using
+                   chrome://browser/skin/window-controls/*.svg icons,
+                   themed via -moz-context-properties so the stroke
+                   inherits currentColor. Same hover colors as Win11
+                   title bar — neutral grey for min/max, red for close. */
+                ".wv-window-controls {",
+                "  display: flex; align-items: stretch;",
+                "  margin-left: auto; height: 100%;",
+                "  -moz-window-dragging: no-drag;",
+                "}",
+                ".wv-window-control {",
+                "  display: block;",
+                "  width: 46px; height: 100%; padding: 0; margin: 0;",
+                "  border: none; appearance: none; -moz-appearance: none;",
+                "  background-color: transparent;",
+                "  background-position: center;",
+                "  background-repeat: no-repeat;",
+                "  background-size: 12px 12px;",   /* matches main-window's .toolbarbutton-icon 12px */
+                "  -moz-context-properties: stroke; stroke: currentColor;",
+                "  color: rgba(0, 0, 0, 0.55);",
+                "  cursor: pointer;",
+                "  font-size: 0;",   /* hide any fallback text */
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-window-control { color: rgba(255, 255, 255, 0.55); }",
+                "}",
+                ".wv-window-control.wv-window-min { background-image: url('chrome://browser/skin/window-controls/minimize.svg'); }",
+                ".wv-window-control.wv-window-max { background-image: url('chrome://browser/skin/window-controls/maximize.svg'); }",
+                ".wv-window-control.wv-window-max[data-state='maximized'] { background-image: url('chrome://browser/skin/window-controls/restore.svg'); }",
+                ".wv-window-control.wv-window-close { background-image: url('chrome://browser/skin/window-controls/close.svg'); }",
+                ".wv-window-control:hover { background-color: rgba(127,127,127,0.18); }",
+                ".wv-window-control:active { background-color: rgba(127,127,127,0.30); }",
+                ".wv-window-control.wv-window-close:hover { background-color: #e81123; color: #fff; }",
+                ".wv-window-control.wv-window-close:active { background-color: #c50f1f; color: #fff; }",
+                /* Library-aware tab tooltip — same visual rules as the
+                   main-window tooltip from constants.ts PLUGIN_CSS,
+                   scoped to our reader-window tooltip ID. */
+                "#wv-window-tab-tooltip .wv-tab-tooltip-wrap {",
+                "  padding: 6px 8px;",
+                "  min-width: 200px;",
+                "  max-width: 480px;",
+                "}",
+                "#wv-window-tab-tooltip .wv-tab-tooltip-title {",
+                "  font-weight: 600;",
+                "  margin: 0 0 2px 0 !important;",
+                "  white-space: normal;",
+                "}",
+                "#wv-window-tab-tooltip .wv-tab-tooltip-sep {",
+                "  height: 1px;",
+                "  margin: 2px 0;",
+                "  background: rgba(127,127,127,0.3);",
+                "}",
+                "#wv-window-tab-tooltip .wv-tab-tooltip-header {",
+                "  margin-top: 2px;",
+                "  gap: 6px;",
+                "}",
+                "#wv-window-tab-tooltip .wv-tab-tooltip-icon {",
+                "  width: 16px;",
+                "  height: 16px;",
+                "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
+                "  fill: #59ADC4;",
+                "}",
+                "#wv-window-tab-tooltip .wv-tab-tooltip-libname {",
+                "  margin: 0 !important;",
+                "  font-weight: 600;",
+                "}",
+            ].join("\n");
+            (doc.documentElement || doc).appendChild(style);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderWindowTabStripStyles err: " + e);
+        }
+    }
+
+    /** Close the standalone reader window showing `itemID` and open the
+     *  item as a *new* tab in the main Zotero window. `allowDuplicate`
+     *  forces a fresh `ReaderTab` even if a tab for the item is already
+     *  open (so the window's view becomes its own tab rather than
+     *  collapsing onto the existing one). The window's view state is
+     *  flushed on close (and Zotero auto-saves it continuously anyway),
+     *  so the new tab restores roughly where the window was. */
+    _moveReaderToTab(itemID) {
+        try {
+            const win = Zotero.getMainWindow();
+            const readers = (Zotero.Reader as any)._readers || [];
+            // The standalone-window instance for this item (no tabID).
+            const wReader = readers.find((r) => r && r.itemID === itemID && !r.tabID);
+            try { if (wReader && typeof wReader.close === "function") wReader.close(); } catch (e) {}
+            const open = () => {
+                try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); }
+                catch (e) { Zotero.debug("[Weavero] _moveReaderToTab open err: " + e); }
+                try { if (win && win.focus) win.focus(); } catch (e) {}
+            };
+            // Defer a tick so the closing window's final state write lands
+            // before the new tab reads it back.
+            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            st(open, 120);
+        } catch (e) {
+            Zotero.debug("[Weavero] _moveReaderToTab err: " + e);
+        }
+    }
+
     /** Open Zotero's standard select-items dialog filtered to the
      *  annotation's library, then add a symmetric `dc:relation` triple
      *  between every picked item and every annotation in `annotations`.
@@ -5415,6 +5798,824 @@ class _ReaderMixin {
                 } catch(e) { shouldShow = false; }
             }
             btn.style.display = shouldShow ? "" : "none";
+        }
+    }
+
+    // ---- Compact title bar for reader windows -----------------------------
+    /** Hide the reader window's menubar row (File / Edit / View / Go) and
+     *  let Alt summon it — same mechanism as the main window's compact
+     *  title bar, but adapted to the reader's simpler structure: a bare
+     *  XUL `<menubar>` directly inside `<window>`, no `#titlebar` vbox,
+     *  no icon container, no buttonbox to move.
+     *
+     *  Caveat: we can't also remove the OS-drawn title bar above the
+     *  menubar — Windows commits chromemargin at window-create time and
+     *  reader.xhtml doesn't set it. Net visual win is ~21px (the
+     *  menubar row); the OS title bar (~30px) stays.
+     *
+     *  Idempotent — applying twice is a no-op. Per-window state stashed
+     *  on `win._wvCompactMenubar`. Mac is excluded (matches main-window
+     *  apply path). */
+    _applyReaderCompactMenubar(reader) {
+        try {
+            if (!reader || reader.tabID) return;   // window-mode only
+            const win = reader._window;
+            if (!win || !win.document) return;
+            if ((Zotero as any).isMac) return;
+            if (win._wvCompactMenubar) return;
+            const doc = win.document;
+            const menubar = doc.querySelector("menubar");
+            if (!menubar) return;
+
+            const stash: any = {};
+
+            // Also try to remove the OS-drawn title bar above the menubar
+            // by setting `customtitlebar="true"` on the <window> element —
+            // the modern Mozilla attribute Zotero's main window uses. The
+            // user accepted this is an unstable approach: Mozilla docs
+            // imply this attribute is consumed at widget-creation time,
+            // but in practice setting it dynamically on a reader window
+            // DOES collapse the OS title bar from ~39px to ~8px (just
+            // the resize border) on Windows. If a future Firefox/Zotero
+            // update tightens this behavior, the OS title bar will come
+            // back — the rest of the compact-menubar logic will still
+            // function regardless.
+            const winEl = doc.documentElement;
+            stash.customtitlebarOrig = winEl.getAttribute("customtitlebar");
+            stash.drawtitleOrig = winEl.getAttribute("drawtitle");
+            try {
+                winEl.setAttribute("customtitlebar", "true");
+                winEl.toggleAttribute("drawtitle", false);
+            } catch (e) {}
+
+            // Mark menubar hidden via the same custom attribute the main
+            // window uses (different doc, so no conflict).
+            menubar.setAttribute("wv-compact-hidden", "true");
+
+            // Inject a Zotero "Z" icon as the first visual element of the
+            // menubar — mirrors the main window's `.titlebar-icon-
+            // container`, which sits to the left of the File / Edit /
+            // View / ... menus. Uses Zotero's official `z.svg` chrome
+            // resource. The icon is positioned absolutely so XUL's
+            // menubar machinery (which iterates `<menu>` children for
+            // accesskey activation) doesn't see it as a navigation
+            // target. The menubar gets a left-pad to leave room for it.
+            try {
+                if (!menubar.querySelector(".wv-reader-menubar-icon")) {
+                    const HTML = "http://www.w3.org/1999/xhtml";
+                    const iconEl = doc.createElementNS(HTML, "span");
+                    iconEl.className = "wv-reader-menubar-icon";
+                    iconEl.setAttribute("aria-hidden", "true");
+                    menubar.insertBefore(iconEl, menubar.firstChild);
+                    stash.menubarIcon = iconEl;
+                }
+            } catch (e) {}
+
+            // Add window controls to the tab strip (if it exists yet).
+            // `_ensureReaderWindowControls` is also called from
+            // `_ensureReaderWindowTabStrip` so that if the strip is
+            // created AFTER compact mode was applied (e.g. apply ran in
+            // init() before the toolbar event fired), the controls
+            // still get added once the strip materializes.
+            try { this._ensureReaderWindowControls(win, stash); } catch (e) {}
+
+            // Inject collapsing CSS into this reader window's document.
+            this._ensureReaderCompactMenubarStyles(doc);
+
+            // Same listener logic as the main-window apply: reveal on
+            // Alt-DOWN so Mozilla's native Alt-UP handler activates the
+            // menubar (focuses first menu, underlines accesskeys);
+            // toggle off on second Alt; Esc collapses only when no menu
+            // is open; mousedown outside collapses.
+            let altAlone = false;
+            let menubarWasVisibleAtAltDown = false;
+            const isDead = () => {
+                try { return !win || win.closed; } catch (e) { return true; }
+            };
+            const isCollapsed = () => menubar.getAttribute("wv-compact-hidden") === "true";
+            const collapse = () => {
+                try { if (!isDead()) menubar.setAttribute("wv-compact-hidden", "true"); }
+                catch (e) {}
+            };
+            const keyDown = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    if (e.key === "Alt" && !e.repeat) {
+                        altAlone = true;
+                        const wasCollapsed = isCollapsed();
+                        menubarWasVisibleAtAltDown = !wasCollapsed;
+                        if (wasCollapsed) menubar.removeAttribute("wv-compact-hidden");
+                    } else if (e.altKey) {
+                        altAlone = false;
+                    }
+                } catch (er) {}
+            };
+            const keyUp = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    if (e.key !== "Alt") return;
+                    if (!altAlone) return;
+                    altAlone = false;
+                    if (menubarWasVisibleAtAltDown) collapse();
+                } catch (er) {}
+            };
+            const escapeKey = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    if (e.key !== "Escape" || isCollapsed()) return;
+                    const openMenu = menubar.querySelector("menu[open='true'], menupopup[state='open']");
+                    if (openMenu) return;
+                    collapse();
+                } catch (er) {}
+            };
+            const docMouseDown = (e: any) => {
+                try {
+                    if (isDead() || isCollapsed()) return;
+                    const t = e.target;
+                    if (!t || typeof t.closest !== "function") return;
+                    if (t.closest("menubar")) return;
+                    if (t.closest("menupopup")) return;
+                    collapse();
+                } catch (er) {}
+            };
+            // When a menu item is activated (Tools → Plugins, File →
+            // Print, etc.), retract the menubar — Firefox behaviour.
+            // The action still runs; we listen on the bubble phase so
+            // the menuitem's own oncommand handler executes first.
+            const menuCommand = (e: any) => {
+                try {
+                    if (isDead() || isCollapsed()) return;
+                    if (!menubar.contains(e.target)) return;
+                    collapse();
+                } catch (er) {}
+            };
+
+            win.addEventListener("keydown", keyDown, true);
+            win.addEventListener("keyup", keyUp, true);
+            win.addEventListener("keydown", escapeKey, true);
+            win.addEventListener("mousedown", docMouseDown, true);
+            menubar.addEventListener("command", menuCommand);
+            stash.keyDown = keyDown;
+            stash.keyUp = keyUp;
+            stash.escapeKey = escapeKey;
+            stash.docMouseDown = docMouseDown;
+            stash.menuCommand = menuCommand;
+            stash.menubar = menubar;
+
+            // The reader window's "toolbar" (page nav, annotation tools,
+            // sidebar buttons) lives inside an <iframe> that hosts
+            // Zotero's reader app, NOT in this chrome doc. Mousedowns
+            // there don't bubble to our chrome-doc listener — so we
+            // also wire a mousedown listener INTO the iframe's content
+            // document. Any click there collapses the menubar (the user
+            // moved on from menu navigation).
+            const wireIframe = () => {
+                try {
+                    const ifWin = reader._iframeWindow;
+                    const ifDoc = ifWin && ifWin.document;
+                    if (!ifDoc) {
+                        Zotero.debug("[Weavero compact-dbg] wireIframe: ifDoc null, retry later");
+                        return false;
+                    }
+                    if ((stash as any).iframeMouseDown) {
+                        Zotero.debug("[Weavero compact-dbg] wireIframe: already wired, skip");
+                        return true;
+                    }
+
+                    // Override `-moz-window-dragging: drag` on the reader
+                    // toolbar's empty areas so mouse events actually fire
+                    // there. Without this override, Mozilla intercepts
+                    // every mouse/pointer/focus event on the drag region
+                    // for window-drag handling, so a click on an empty
+                    // toolbar area generates NO JS event at all — and our
+                    // "click outside to dismiss" can't see it. Trade-off:
+                    // the user can no longer window-drag by clicking the
+                    // reader toolbar's empty area, but the tab strip
+                    // above remains draggable for the same purpose.
+                    try {
+                        if (!ifDoc.getElementById("wv-reader-iframe-nodrag")) {
+                            const style = ifDoc.createElement("style");
+                            style.id = "wv-reader-iframe-nodrag";
+                            style.textContent =
+                                ".toolbar { -moz-window-dragging: no-drag !important; }";
+                            (ifDoc.head || ifDoc.documentElement).appendChild(style);
+                            stash.iframeNoDragStyle = style;
+                        }
+                    } catch (e) {}
+                    const onEvt = (label: string) => (e: any) => {
+                        try {
+                            Zotero.debug("[Weavero compact-dbg] " + label
+                                + " fired; isCollapsed=" + isCollapsed()
+                                + " isDead=" + isDead()
+                                + " target=" + (e.target?.tagName || "?")
+                                + "." + ((e.target?.className || "") + "").slice(0, 30));
+                            if (isDead() || isCollapsed()) return;
+                            Zotero.debug("[Weavero compact-dbg] " + label + " -> collapse()");
+                            collapse();
+                        } catch (er) {
+                            Zotero.debug("[Weavero compact-dbg] " + label + " err: " + er);
+                        }
+                    };
+                    const mdH = onEvt("ifDoc.mousedown");
+                    const muH = onEvt("ifDoc.mouseup");
+                    const blurH = onEvt("win.blur");
+                    const focusoutH = onEvt("win.focusout");
+                    ifDoc.addEventListener("mousedown", mdH, true);
+                    ifDoc.addEventListener("mouseup", muH, true);
+                    win.addEventListener("blur", blurH, true);
+                    win.addEventListener("focusout", focusoutH, true);
+
+                    // Also forward the chrome window's Alt-toggle to the
+                    // iframe doc. When focus is inside the reader app
+                    // (PDF/EPUB viewer), the Alt keystroke is captured
+                    // by the iframe and never reaches our chrome-window
+                    // keydown/keyup listeners — so the menubar would
+                    // never reveal. We re-attach those handlers here on
+                    // the iframe doc as well; they manipulate the
+                    // chrome-doc menubar element either way.
+                    const kdInIframe = (e: any) => { try { stash.keyDown(e); } catch (er) {} };
+                    const kuInIframe = (e: any) => { try { stash.keyUp(e); } catch (er) {} };
+                    const escInIframe = (e: any) => { try { stash.escapeKey(e); } catch (er) {} };
+                    ifDoc.addEventListener("keydown", kdInIframe, true);
+                    ifDoc.addEventListener("keyup", kuInIframe, true);
+                    ifDoc.addEventListener("keydown", escInIframe, true);
+                    stash.ifKeyDown = kdInIframe;
+                    stash.ifKeyUp = kuInIframe;
+                    stash.ifEscape = escInIframe;
+
+                    stash.iframeWin = ifWin;
+                    stash.iframeMouseDown = mdH;
+                    stash.iframeMouseUp = muH;
+                    stash.winBlur = blurH;
+                    stash.winFocusOut = focusoutH;
+                    Zotero.debug("[Weavero compact-dbg] wireIframe: all listeners attached");
+                    return true;
+                } catch (e) {
+                    Zotero.debug("[Weavero compact-dbg] wireIframe err: " + e);
+                    return false;
+                }
+            };
+            // Attach now if the iframe is ready; otherwise wait briefly
+            // (the reader app finishes loading shortly after the chrome
+            // doc). Bounded retry — bail after ~3s.
+            if (!wireIframe()) {
+                let retries = 30;
+                const retry = () => {
+                    if (isDead() || retries-- <= 0) return;
+                    if (!wireIframe()) win.setTimeout(retry, 100);
+                };
+                win.setTimeout(retry, 100);
+            }
+
+            // Clean up our listeners + stash + iframe-doc references the
+            // moment this reader window starts unloading. Without this,
+            // the inner iframe doc (resource://zotero/reader/reader.html)
+            // keeps our closures alive briefly past chrome-window close,
+            // and those closures hold references to the dying chrome
+            // window. That cross-document keepalive was preventing
+            // Zotero's `ReaderWindow` from being spliced out of
+            // `Zotero.Reader._readers`, leaving a dead entry that broke
+            // subsequent `Zotero.Reader.open` calls.
+            //
+            // CRITICAL: bubble phase only, and require the event target
+            // to be the chrome window's own document. With capture phase
+            // (or without the target check), the listener also fires on
+            // nested-iframe unloads — including the about:blank → reader.
+            // html transition during initial load — which would run the
+            // revert immediately and undo the apply.
+            const onUnload = (e: any) => {
+                if (e.target !== win.document) return;
+                try { this._revertReaderCompactMenubar(reader); } catch (er) {}
+                // Defensively splice this reader out of Zotero.Reader._readers.
+                // Zotero's `<window onclose="reader.close()">` is supposed
+                // to do this, but in compact-mode the close path runs
+                // through our injected × button → `win.close()` and
+                // sometimes Zotero's onClose splice doesn't fire — the
+                // dead ReaderWindow stays in `_readers`, then the next
+                // `Session.save()` captures it via `getWindowStates()`
+                // and on restart that dead entry restores as a ghost
+                // reader window. Splicing here makes the cleanup
+                // deterministic.
+                try {
+                    const readersArr = (Zotero as any).Reader?._readers;
+                    if (Array.isArray(readersArr)) {
+                        const idx = readersArr.indexOf(reader);
+                        if (idx >= 0) readersArr.splice(idx, 1);
+                    }
+                } catch (er) {}
+                // Trigger a session save so Zotero's session.json no
+                // longer references this just-closed reader. Without it,
+                // the previous save snapshot may keep the reader listed
+                // until the debounced save fires later.
+                try {
+                    if ((Zotero as any).Session?.debounceSave) {
+                        (Zotero as any).Session.debounceSave();
+                    }
+                } catch (er) {}
+            };
+            win.addEventListener("unload", onUnload, { once: true });
+            stash.onUnload = onUnload;
+
+            win._wvCompactMenubar = stash;
+        } catch (e) {
+            Zotero.debug("[Weavero] _applyReaderCompactMenubar err: " + e);
+            try { this._revertReaderCompactMenubar(reader); } catch (er) {}
+        }
+    }
+
+    /** Undo `_applyReaderCompactMenubar`. Idempotent. */
+    _revertReaderCompactMenubar(reader) {
+        try {
+            if (!reader) return;
+            const win = reader._window;
+            if (!win || !win.document) return;
+            try { if (win.closed) return; } catch (e) { return; }
+            const doc = win.document;
+            const menubar = doc.querySelector("menubar");
+            const stash = win._wvCompactMenubar || {};
+
+            try { if (menubar) menubar.removeAttribute("wv-compact-hidden"); } catch (e) {}
+            try { stash.menubarIcon?.remove(); } catch (e) {}
+
+            // Remove the window controls we added to the tab strip, plus
+            // the sizemodechange/resize listeners that kept the max icon
+            // synced.
+            try { stash.controls?.remove(); } catch (e) {}
+            try {
+                if (stash.syncMaxIcon) {
+                    win.removeEventListener("sizemodechange", stash.syncMaxIcon);
+                    win.removeEventListener("resize", stash.syncMaxIcon);
+                }
+            } catch (e) {}
+
+            // Restore customtitlebar / drawtitle on the <window> root. If
+            // they weren't set originally (typical case — reader.xhtml
+            // has neither), remove our additions entirely so the OS
+            // title bar comes back as Zotero ships it.
+            try {
+                const winEl = doc.documentElement;
+                if (stash.customtitlebarOrig == null) winEl.removeAttribute("customtitlebar");
+                else winEl.setAttribute("customtitlebar", stash.customtitlebarOrig);
+                if (stash.drawtitleOrig == null) winEl.removeAttribute("drawtitle");
+                else winEl.setAttribute("drawtitle", stash.drawtitleOrig);
+            } catch (e) {}
+
+            try { if (stash.keyDown) win.removeEventListener("keydown", stash.keyDown, true); } catch (e) {}
+            try { if (stash.keyUp) win.removeEventListener("keyup", stash.keyUp, true); } catch (e) {}
+            try { if (stash.escapeKey) win.removeEventListener("keydown", stash.escapeKey, true); } catch (e) {}
+            try { if (stash.docMouseDown) win.removeEventListener("mousedown", stash.docMouseDown, true); } catch (e) {}
+            try { if (stash.menuCommand && menubar) menubar.removeEventListener("command", stash.menuCommand); } catch (e) {}
+            try { if (stash.onUnload) win.removeEventListener("unload", stash.onUnload); } catch (e) {}
+            try {
+                if (stash.iframeWin && stash.iframeWin.document) {
+                    const ifD = stash.iframeWin.document;
+                    if (stash.iframeMouseDown) ifD.removeEventListener("mousedown", stash.iframeMouseDown, true);
+                    if (stash.iframeMouseUp) ifD.removeEventListener("mouseup", stash.iframeMouseUp, true);
+                    if (stash.ifKeyDown) ifD.removeEventListener("keydown", stash.ifKeyDown, true);
+                    if (stash.ifKeyUp) ifD.removeEventListener("keyup", stash.ifKeyUp, true);
+                    if (stash.ifEscape) ifD.removeEventListener("keydown", stash.ifEscape, true);
+                    try { stash.iframeNoDragStyle?.remove(); } catch (e) {}
+                }
+            } catch (e) {}
+            try { if (stash.winBlur) win.removeEventListener("blur", stash.winBlur, true); } catch (e) {}
+            try { if (stash.winFocusOut) win.removeEventListener("focusout", stash.winFocusOut, true); } catch (e) {}
+            try { doc.getElementById("wv-reader-compact-menubar-styles")?.remove(); } catch (e) {}
+            try { delete win._wvCompactMenubar; } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _revertReaderCompactMenubar err: " + e);
+        }
+    }
+
+    /** Add Win11-style window controls (min / max-or-restore / close)
+     *  to the right edge of the reader window's tab strip. Idempotent.
+     *  Stash references on the existing `win._wvCompactMenubar` so
+     *  revert can remove them and unhook listeners. Called from both
+     *  `_applyReaderCompactMenubar` (when strip exists at apply time)
+     *  AND `_ensureReaderWindowTabStrip` (when strip is created after
+     *  apply, e.g. via init→apply→toolbar-render ordering). The order-
+     *  agnostic design means controls always appear once both compact
+     *  mode and the strip are present. */
+    _ensureReaderWindowControls(win, stashOverride?: any) {
+        try {
+            if (!win || !win.document || win.closed) return;
+            const stash = stashOverride || win._wvCompactMenubar;
+            if (!stash) return;                  // compact mode not applied
+            const doc = win.document;
+            const strip = doc.querySelector(".wv-window-tabstrip");
+            if (!strip) return;                  // tab strip not created yet
+            if (strip.querySelector(".wv-window-controls")) return;   // already added
+
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const controls = doc.createElementNS(HTML, "div");
+            controls.className = "wv-window-controls";
+
+            const mkCtl = (cls: string, label: string, handler: () => void) => {
+                const btn = doc.createElementNS(HTML, "button");
+                btn.className = "wv-window-control " + cls;
+                btn.setAttribute("title", label);
+                btn.setAttribute("tabindex", "-1");
+                btn.setAttribute("aria-label", label);
+                btn.addEventListener("click", (e: any) => {
+                    try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                    try { handler(); } catch (er) {}
+                });
+                return btn;
+            };
+
+            const minBtn = mkCtl("wv-window-min", "Minimize", () => win.minimize());
+            const maxBtn = mkCtl("wv-window-max", "Maximize", () => {
+                if (win.windowState === win.STATE_MAXIMIZED) win.restore();
+                else win.maximize();
+            });
+            const closeBtn = mkCtl("wv-window-close", "Close", () => win.close());
+
+            // Keep the max/restore icon in sync via a data-state attribute.
+            // The CSS rule `.wv-window-max[data-state='maximized']` swaps
+            // the bg image from maximize.svg to restore.svg.
+            const syncMaxIcon = () => {
+                try {
+                    if (win.windowState === win.STATE_MAXIMIZED) {
+                        maxBtn.setAttribute("data-state", "maximized");
+                        maxBtn.setAttribute("title", "Restore");
+                        maxBtn.setAttribute("aria-label", "Restore");
+                    } else {
+                        maxBtn.removeAttribute("data-state");
+                        maxBtn.setAttribute("title", "Maximize");
+                        maxBtn.setAttribute("aria-label", "Maximize");
+                    }
+                } catch (e) {}
+            };
+            try {
+                win.addEventListener("sizemodechange", syncMaxIcon);
+                win.addEventListener("resize", syncMaxIcon);
+            } catch (e) {}
+            syncMaxIcon();
+
+            controls.appendChild(minBtn);
+            controls.appendChild(maxBtn);
+            controls.appendChild(closeBtn);
+            strip.appendChild(controls);
+
+            stash.controls = controls;
+            stash.syncMaxIcon = syncMaxIcon;
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderWindowControls err: " + e);
+        }
+    }
+
+    /** Mount a library-aware tooltip on the reader window's tab —
+     *  mirrors the main-window's `#wv-tab-library-tooltip`. For an item
+     *  in a group library, shows the title + library-group icon + name.
+     *  For My Library items, falls back to a plain-text tooltip of the
+     *  title. The tooltip element is created once per reader window
+     *  document and wired via the XUL `tooltip="..."` attribute on the
+     *  custom `.wv-window-tab` div. */
+    _ensureReaderWindowTabTooltip(reader, tab) {
+        try {
+            if (!reader || !tab) return;
+            const win = reader._window;
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const TOOLTIP_ID = "wv-window-tab-tooltip";
+            let tooltip: any = doc.getElementById(TOOLTIP_ID);
+            if (!tooltip) {
+                tooltip = doc.createXULElement("tooltip");
+                tooltip.id = TOOLTIP_ID;
+                tooltip.addEventListener("popupshowing", (e: any) => {
+                    try {
+                        const ok = this._populateReaderTabTooltip(reader, tooltip);
+                        if (!ok) e.preventDefault();
+                    } catch (er) {
+                        Zotero.debug("[Weavero] reader tab tooltip err: " + er);
+                        e.preventDefault();
+                    }
+                });
+                // Mount in any popupset, or fall back to documentElement.
+                const popupset = doc.querySelector("popupset") || doc.documentElement;
+                popupset.appendChild(tooltip);
+            }
+            // The XUL `tooltip="..."` attribute only auto-fires on XUL
+            // elements; our tab is an HTML <div>, so the tooltip never
+            // opens by itself. Wire mouseenter/mouseleave to open and
+            // close the XUL tooltip element manually at the mouse
+            // position, matching what XUL would do automatically on a
+            // XUL element. ~500ms delay matches Mozilla's default
+            // tooltip show timing.
+            if (!(tab as any)._wvTtBound) {
+                (tab as any)._wvTtBound = true;
+                let showTimer: any = null;
+                let lastScreenX = 0, lastScreenY = 0;
+                let openX = 0, openY = 0;
+                let isOpen = false;
+                // Stash the trigger reader on the tooltip element so the
+                // popupshowing populator can read it. We attach to the
+                // tooltip object once.
+                (tooltip as any)._wvReader = reader;
+                const hideTip = () => {
+                    try {
+                        if (showTimer) { win.clearTimeout(showTimer); showTimer = null; }
+                        const tt = doc.getElementById(TOOLTIP_ID);
+                        if (tt && typeof tt.hidePopup === "function") tt.hidePopup();
+                        isOpen = false;
+                    } catch (er) {}
+                };
+                tab.addEventListener("mouseenter", (e: any) => {
+                    try {
+                        lastScreenX = e.screenX; lastScreenY = e.screenY;
+                        if (showTimer) win.clearTimeout(showTimer);
+                        showTimer = win.setTimeout(() => {
+                            try {
+                                const tt = doc.getElementById(TOOLTIP_ID);
+                                if (tt && typeof tt.openPopupAtScreen === "function") {
+                                    openX = lastScreenX; openY = lastScreenY;
+                                    isOpen = true;
+                                    tt.openPopupAtScreen(lastScreenX, lastScreenY, false);
+                                }
+                            } catch (er) {}
+                        }, 500);
+                    } catch (er) {}
+                });
+                // Every mousemove updates the tracked position. If the
+                // tooltip is currently open and the cursor has moved
+                // more than a few pixels from where the tooltip opened,
+                // hide it — matches native tooltip behaviour (tooltip
+                // follows you to a place, hides on cursor motion). The
+                // small threshold avoids flickering from sub-pixel
+                // mouse jitter.
+                tab.addEventListener("mousemove", (e: any) => {
+                    lastScreenX = e.screenX; lastScreenY = e.screenY;
+                    if (isOpen) {
+                        const dx = e.screenX - openX, dy = e.screenY - openY;
+                        if (dx * dx + dy * dy > 25) hideTip();
+                    }
+                });
+                tab.addEventListener("mouseleave", hideTip);
+                tab.addEventListener("mousedown", hideTip);
+                tab.addEventListener("contextmenu", hideTip);
+            }
+            // Keep the attribute for documentation purposes.
+            tab.setAttribute("tooltip", TOOLTIP_ID);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderWindowTabTooltip err: " + e);
+        }
+    }
+
+    /** popupshowing populator for the reader-window tab tooltip. Decides
+     *  between rich (group library) and plain (My Library / no item)
+     *  rendering — same dispatch the main-window tooltip uses. */
+    _populateReaderTabTooltip(reader, tooltip) {
+        try {
+            const win = reader._window;
+            const doc = win.document;
+            while (tooltip.firstChild) tooltip.removeChild(tooltip.firstChild);
+            tooltip.removeAttribute("label");
+
+            const renderPlainLabel = (text) => {
+                tooltip.setAttribute("label", text);
+                const desc = doc.createXULElement("description");
+                desc.setAttribute("class", "tooltip-label");
+                desc.textContent = text;
+                tooltip.appendChild(desc);
+            };
+
+            const item = (() => {
+                try { return reader.itemID ? Zotero.Items.get(reader.itemID) : null; }
+                catch (e) { return null; }
+            })();
+            // Use the reader's own `_title` (or the chrome window's
+            // document.title — same value) for tooltip text. The
+            // attachment item's `getDisplayTitle()` returns just the
+            // content-type label (e.g. "PDF") for PDF/EPUB attachments,
+            // which is NOT what the user wants to see — they want the
+            // same title shown in the tab strip, which is the parent
+            // document's title.
+            const title = reader._title || doc.title
+                || (item ? item.getDisplayTitle() : "");
+
+            let lib = null;
+            try { lib = item ? Zotero.Libraries.get(item.libraryID) : null; }
+            catch (e) {}
+
+            // Non-group library or no item: plain title tooltip.
+            if (!lib || lib.libraryType !== "group") {
+                if (title) { renderPlainLabel(title); return true; }
+                return false;
+            }
+
+            // Group library: rich card with title + library header. Same
+            // visual structure as the main-window tooltip (wv-tab-tooltip-
+            // wrap > title + sep + header-row[icon + libname]).
+            const wrap = doc.createXULElement("vbox");
+            wrap.setAttribute("class", "wv-tab-tooltip-wrap");
+
+            const titleEl = doc.createXULElement("description");
+            titleEl.setAttribute("class", "wv-tab-tooltip-title");
+            titleEl.textContent = title;
+            wrap.appendChild(titleEl);
+
+            const sep = doc.createXULElement("box");
+            sep.setAttribute("class", "wv-tab-tooltip-sep");
+            wrap.appendChild(sep);
+
+            const headerRow = doc.createXULElement("hbox");
+            headerRow.setAttribute("class", "wv-tab-tooltip-header");
+            headerRow.setAttribute("align", "center");
+            const iconEl = doc.createXULElement("image");
+            iconEl.setAttribute("class", "wv-tab-tooltip-icon");
+            iconEl.setAttribute("src",
+                "chrome://zotero/skin/collection-tree/16/light/library-group.svg");
+            headerRow.appendChild(iconEl);
+            const nameEl = doc.createXULElement("description");
+            nameEl.setAttribute("class", "wv-tab-tooltip-libname");
+            nameEl.textContent = lib.name;
+            headerRow.appendChild(nameEl);
+            wrap.appendChild(headerRow);
+
+            tooltip.appendChild(wrap);
+            return true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _populateReaderTabTooltip err: " + e);
+            return false;
+        }
+    }
+
+    /** Mount a right-click context menu on the reader window's tab —
+     *  mirrors the main-window tab menu's most-used items. The standalone
+     *  reader window can't host every item from Zotero's tab context menu
+     *  (e.g. "Close Other Tabs" makes no sense in a one-tab window), so
+     *  this provides the actionable subset:
+     *    - Show in Library    — selects the reader's item in the main window
+     *    - Move to Tab        — convert this window back into a tab
+     *    - Copy Select Link   — `zotero://select/…/items/<key>`
+     *    - Copy Open Link     — `zotero://open/…/items/<key>`
+     *    - Close              — close the reader window
+     *  Copy-link entries inherit the same enable-state from prefs as the
+     *  main-window menu (gated by `_getEnableCopyItemLink`). */
+    _ensureReaderWindowTabContextMenu(reader, tab) {
+        try {
+            if (!reader || !tab) return;
+            const win = reader._window;
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const MENU_ID = "wv-window-tab-context-menu";
+            let menu: any = doc.getElementById(MENU_ID);
+            if (!menu) {
+                menu = doc.createXULElement("menupopup");
+                menu.id = MENU_ID;
+
+                const mkItem = (label: string, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
+                    const it = doc.createXULElement("menuitem");
+                    it.setAttribute("label", label);
+                    if (opts?.icon) {
+                        // XUL renders `image="..."` on a menuitem only when
+                        // the item carries class="menuitem-iconic". Add
+                        // both — the icon shows as a 16x16 sprite to the
+                        // left of the label, matching the main-window tab
+                        // context menu's iconic items.
+                        it.setAttribute("class", "menuitem-iconic");
+                        it.setAttribute("image", opts.icon);
+                    }
+                    it.addEventListener("command", (e: any) => {
+                        try { e.stopPropagation(); } catch (er) {}
+                        try { onClick(); } catch (er) {
+                            Zotero.debug("[Weavero] reader tab menu err: " + er);
+                        }
+                    });
+                    if (opts?.getVisible) (it as any)._wvGetVisible = opts.getVisible;
+                    return it;
+                };
+
+                // Pick the right icon for the reader window's current
+                // theme. The reader chrome uses the system theme,
+                // matching what the main window picks (via
+                // `_detectUIDark`). Same fallback chain that the main-
+                // window tab menu uses.
+                const wvIcon = (this as any)._detectUIDark?.()
+                    ? (this as any)._menuItemIconURLDark
+                    : (this as any)._menuItemIconURLLight;
+
+                const showInLibrary = mkItem("Show in Library", () => {
+                    try { reader.showInLibrary?.(); } catch (e) {}
+                });
+                const moveToTab = mkItem("Move Tab to Main Window", () => {
+                    try { this._moveReaderToTab(reader.itemID); } catch (e) {}
+                });
+                const sep = doc.createXULElement("menuseparator");
+                // Copy Select/Open Link — these are Weavero-added items
+                // (the same two that appear in the main-window tab
+                // context menu), so they get the Weavero icon to make
+                // their provenance obvious.
+                const copySelect = mkItem("Copy Select Link", () => {
+                    try {
+                        const item = Zotero.Items.get(reader.itemID);
+                        if (item) this._copyItemLinks([item], "select");
+                    } catch (e) {}
+                }, { icon: wvIcon, getVisible: () => this._getEnableCopyItemLink?.() ?? false });
+                const copyOpen = mkItem("Copy Open Link", () => {
+                    try {
+                        const item = Zotero.Items.get(reader.itemID);
+                        if (item) this._copyItemLinks([item], "open");
+                    } catch (e) {}
+                }, { icon: wvIcon, getVisible: () => this._getEnableCopyItemLink?.() ?? false });
+                const sep2 = doc.createXULElement("menuseparator");
+                const closeItem = mkItem("Close", () => {
+                    try { reader.close?.() ?? win.close(); } catch (e) {}
+                });
+
+                menu.appendChild(showInLibrary);
+                menu.appendChild(moveToTab);
+                menu.appendChild(sep);
+                menu.appendChild(copySelect);
+                menu.appendChild(copyOpen);
+                menu.appendChild(sep2);
+                menu.appendChild(closeItem);
+
+                // popupshowing handler updates visibility of pref-gated items.
+                menu.addEventListener("popupshowing", () => {
+                    try {
+                        for (const child of Array.from(menu.children) as any[]) {
+                            if (typeof child._wvGetVisible === "function") {
+                                const vis = child._wvGetVisible();
+                                child.hidden = !vis;
+                            }
+                        }
+                    } catch (e) {}
+                });
+
+                const popupset = doc.querySelector("popupset") || doc.documentElement;
+                popupset.appendChild(menu);
+            }
+            // XUL's `context="..."` attribute only fires on XUL elements;
+            // our tab is an HTML <div>, so it gets ignored. Wire an
+            // explicit contextmenu listener that opens the menupopup
+            // at the cursor position. preventDefault on the event so
+            // the OS context menu doesn't also appear.
+            if (!(tab as any)._wvCtxBound) {
+                (tab as any)._wvCtxBound = true;
+                tab.addEventListener("contextmenu", (e: any) => {
+                    try {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const m = doc.getElementById(MENU_ID);
+                        if (m && typeof (m as any).openPopupAtScreen === "function") {
+                            (m as any).openPopupAtScreen(e.screenX, e.screenY, true);
+                        }
+                    } catch (er) {
+                        Zotero.debug("[Weavero] reader tab contextmenu err: " + er);
+                    }
+                });
+            }
+            // Keep the `context` attribute too — harmless on HTML elements
+            // and matches what XUL elements would have.
+            tab.setAttribute("context", MENU_ID);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderWindowTabContextMenu err: " + e);
+        }
+    }
+
+    /** One-time CSS for the reader-window compact menubar: collapse the
+     *  XUL `<menubar>` via height-0 (NOT visibility:collapse — keeps the
+     *  menus in Mozilla's focusable tree so Alt-activation works). */
+    _ensureReaderCompactMenubarStyles(doc) {
+        try {
+            if (doc.getElementById("wv-reader-compact-menubar-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-reader-compact-menubar-styles";
+            style.textContent = [
+                /* Hidden state — height-only collapse so menus stay
+                   focusable for Alt-activation. */
+                "menubar[wv-compact-hidden='true'] {",
+                "  height: 0 !important; min-height: 0 !important;",
+                "  overflow: hidden !important;",
+                "}",
+                /* Visible state — match the main window's titlebar row
+                   height (36px) and add a left-pad for our injected Z
+                   icon to occupy. */
+                "menubar {",
+                "  min-height: 36px;",
+                "  padding-left: 40px;",
+                "  align-items: center;",
+                "  position: relative;",
+                "}",
+                /* The injected Z icon — absolute-positioned so XUL
+                   menubar nav doesn't include it. Sized + placed to
+                   match the main-window's .titlebar-icon (16px, 12px
+                   from left edge, vertically centered). */
+                ".wv-reader-menubar-icon {",
+                "  position: absolute;",
+                "  left: 12px; top: 50%;",
+                "  transform: translateY(-50%);",
+                "  width: 16px; height: 16px;",
+                "  background-image: url('chrome://zotero/skin/z.svg');",
+                "  background-size: contain;",
+                "  background-repeat: no-repeat;",
+                "  background-position: center;",
+                "  pointer-events: none;",
+                "}",
+            ].join("\n");
+            (doc.documentElement || doc).appendChild(style);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderCompactMenubarStyles err: " + e);
         }
     }
 }

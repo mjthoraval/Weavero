@@ -189,6 +189,8 @@
         // v0.8.1 — Visual extras
         "enableAnnotationsCountColumn",
         "enableGroupLibraryGlyph",
+        // v0.8.8 — Window chrome
+        "compactTitleBar",
     ];
 
     // === Per-surface enable checkboxes ====================================
@@ -234,6 +236,7 @@
         "debug",
         "enableAppLinks", "enableAppLinksSkipConfirm",
         "enableNotes",
+        "compactTitleBar",
         ...SCHEMES,
     ]);
     function readSurface(name) {

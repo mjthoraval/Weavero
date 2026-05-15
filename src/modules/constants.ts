@@ -579,6 +579,11 @@ export const PLUGIN_CSS = [
     ".wv-tags-count-manual {",
     "  color: var(--accent-blue, #2ea8e5); font-weight: 600;",
     "}",
+    // On a selected row the accent-blue clashes with the selection
+    // background (blue-on-blue) — fall back to the row's own (light)
+    // text colour there, keeping the bold weight so the manual count
+    // still reads as the emphasised one.
+    ".selected .wv-tags-count-manual { color: inherit; }",
     ".wv-tags-count-auto {",
     "  color: currentColor; opacity: 0.85;",
     "}",

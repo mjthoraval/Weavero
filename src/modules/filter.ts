@@ -57,6 +57,11 @@ import {
 // so these live as module-private consts and are exposed via
 // getters on the mixin prototype.
 
+// The same 8 highlight-and-friends colours Zotero ships in
+// `ANNOTATION_COLORS` (reader/src/common/defines.js), plus
+// Black from `EXTRA_INK_AND_TEXT_COLORS` — upstream restricts
+// Black to ink/text annotations, but those exist in the wild,
+// so we need to be able to filter on it.
 const _ANNOTATION_COLORS_DATA = [
     { value: "#ffd400", label: "Yellow" },
     { value: "#ff6666", label: "Red" },
@@ -66,6 +71,7 @@ const _ANNOTATION_COLORS_DATA = [
     { value: "#e56eee", label: "Magenta" },
     { value: "#f19837", label: "Orange" },
     { value: "#aaaaaa", label: "Gray" },
+    { value: "#000000", label: "Black" },
 ];
 
 const _ANNOTATION_TYPES_DATA = [

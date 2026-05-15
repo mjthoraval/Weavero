@@ -71,6 +71,7 @@ class WeaveroPlugin {
         this._sidebarHandler = (event) => this._sidebarHandlerImpl(event);
         this._contextHandler = (event) => this._contextHandlerImpl(event);
         this._viewContextHandler = (event) => this._viewContextHandlerImpl(event);
+        this._toolbarHandler = (event) => this._toolbarHandlerImpl(event);
     }
 
     // ---- Utilities --------------------------------------------------------
@@ -670,6 +671,24 @@ class WeaveroPlugin {
      *  format them, the marks are just text. */
     _anyMarkdownEnabled() {
         return this._getEnableMarkdown() || this._getEnableCommentMarkdown();
+    }
+
+    /** Compact title bar — hide the menubar row in the main window and move
+     *  the window controls into the tab strip (Firefox-style "tabs in
+     *  titlebar"). Default OFF: existing users keep the standard menubar
+     *  unless they explicitly opt in. Mac-excluded by the apply method.
+     *
+     *  Reads tolerate the pref being stored as either a bool (Prefs.set
+     *  with a boolean — the normal path) OR a string (some external tools
+     *  write `"true"` / `"false"`). Without the string check, `!!"false"`
+     *  evaluates to `true` and the feature silently stays on. */
+    _getCompactTitleBar() {
+        try {
+            const v = Zotero.Prefs.get("weavero.compactTitleBar");
+            if (v === undefined) return false;
+            if (typeof v === "string") return v.toLowerCase() === "true";
+            return !!v;
+        } catch (e) { return false; }
     }
 
     // ====================================================================
@@ -1730,13 +1749,23 @@ class WeaveroPlugin {
             this._resetStaleMarkers(win && win.document);
         } catch(e) {}
 
-        // 2. Reader event listeners
+        // 2. Reader event listeners.
+        // The pluginID MUST be the full addon ID ("weavero@mjthoraval"),
+        // not a short slug. Zotero's `Plugins.addObserver({shutdown})`
+        // hook calls `_unregisterEventListenerByPluginID(id)` with the
+        // addon ID, filtering listeners by `pluginID !== id`. A short
+        // slug never matches, so prior-version listeners survive plugin
+        // upgrades and a second registration in the new init() leaves
+        // TWO live listeners — visible to the user as duplicate toolbar
+        // buttons in standalone reader windows.
         Zotero.Reader.registerEventListener(
-            "renderSidebarAnnotationHeader", this._sidebarHandler, "weavero");
+            "renderSidebarAnnotationHeader", this._sidebarHandler, "weavero@mjthoraval");
         Zotero.Reader.registerEventListener(
-            "createAnnotationContextMenu", this._contextHandler, "weavero");
+            "createAnnotationContextMenu", this._contextHandler, "weavero@mjthoraval");
         Zotero.Reader.registerEventListener(
-            "createViewContextMenu", this._viewContextHandler, "weavero");
+            "createViewContextMenu", this._viewContextHandler, "weavero@mjthoraval");
+        Zotero.Reader.registerEventListener(
+            "renderToolbar", this._toolbarHandler, "weavero@mjthoraval");
 
         // 3. Notifier: new reader tabs
         this._notifierIDs.push(Zotero.Notifier.registerObserver({
@@ -2201,6 +2230,50 @@ class WeaveroPlugin {
         this._applyTreeIconPref(this._getShowTreeIcon());
         this._applyInlineLinksPref(this._getInlineLinks());
         this._applyCommentMarkdownPref();
+        // Defensive: prune dead entries from `Zotero.Reader._readers`.
+        // Earlier dev builds occasionally left a ReaderWindow in the list
+        // after its chrome window was destroyed; the dead entry then
+        // broke the next `Zotero.Reader.open` call ("can't access dead
+        // object" at reader.js:73). Even with the unload-cleanup we
+        // added in `_applyReaderCompactMenubar`, this self-heal at every
+        // init keeps the user unblocked if a leak slips through.
+        try {
+            const readers = (Zotero as any).Reader?._readers;
+            if (Array.isArray(readers)) {
+                let pruned = 0;
+                for (let i = readers.length - 1; i >= 0; i--) {
+                    try {
+                        const _ = readers[i].tabID;   // throws if dead
+                    } catch (e) {
+                        readers.splice(i, 1);
+                        pruned++;
+                    }
+                }
+                if (pruned) Zotero.debug("[Weavero] init: pruned " + pruned + " dead reader(s) from Zotero.Reader._readers");
+            }
+        } catch (e) {}
+
+        // Compact title bar — apply to any already-open main windows.
+        // `onMainWindowLoad` only fires for NEW windows, so on Zotero
+        // restart the existing window won't trigger it; we apply here
+        // from init() too. Idempotent: `_applyCompactTitleBar` early-
+        // returns when a stash already exists, so onMainWindowLoad's
+        // call later (for fresh windows) doesn't double-apply.
+        try {
+            if (this._getCompactTitleBar()) {
+                const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of wins) {
+                    try { this._applyCompactTitleBar(w); } catch (e) {}
+                }
+                // Same for any already-open standalone reader windows.
+                // Newly opened readers are handled by the renderToolbar
+                // event path in `_toolbarHandlerImpl`.
+                const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
+                for (const r of readers) {
+                    try { this._applyReaderCompactMenubar(r); } catch (e) {}
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] init compactTitleBar err: " + e); }
         this._applyUIThemeClass();
         // Sync per-scheme `network.protocol-handler.warn-external.<x>`
         // prefs with the user's "Open without confirmation" choice.
@@ -2286,6 +2359,27 @@ class WeaveroPlugin {
                     }
                     if (data === "extensions.zotero.weavero.enableReaderViewIcons") {
                         this._applySurfacePref("readerView");
+                    }
+                    // Compact title bar — apply or revert across every main
+                    // window AND every standalone reader window so the
+                    // change is visible without a restart.
+                    if (data === "extensions.zotero.weavero.compactTitleBar") {
+                        try {
+                            const on = this._getCompactTitleBar();
+                            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                            for (const w of wins) {
+                                if (on) this._applyCompactTitleBar(w);
+                                else this._revertCompactTitleBar(w);
+                            }
+                            // Reader windows — iterate every window-mode
+                            // ReaderInstance and apply/revert the menubar
+                            // collapse.
+                            const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
+                            for (const r of readers) {
+                                if (on) this._applyReaderCompactMenubar(r);
+                                else this._revertReaderCompactMenubar(r);
+                            }
+                        } catch (e) { Zotero.debug("[Weavero] compactTitleBar toggle err: " + e); }
                     }
                     // Tags column auto-count toggle — (1) resize the
                     // column to fit one or two numbers, (2) re-render
@@ -2713,6 +2807,12 @@ class WeaveroPlugin {
             this._applyInlineLinksPref(this._getInlineLinks());
             this._applyCommentMarkdownPref();
             this._applyUIThemeClass();
+            // Apply compact-title-bar mode if the pref is on (default off).
+            // Runs after the window is fully laid out so the buttonbox move
+            // doesn't race against Zotero's own titlebar init.
+            try {
+                if (this._getCompactTitleBar()) this._applyCompactTitleBar(_window);
+            } catch (e) { Zotero.debug("[Weavero] _applyCompactTitleBar onLoad err: " + e); }
             // Refresh sidebar icons across any open readers. The
             // renderSidebarAnnotationHeader event won't re-fire for rows
             // that were already mounted before the plugin (re-)started,
@@ -2821,9 +2921,43 @@ class WeaveroPlugin {
             this._uiThemeObserver = null;
         }
 
-        try { (Zotero.Reader as any).unregisterEventListener("renderSidebarAnnotationHeader", "weavero"); } catch(e) {}
-        try { (Zotero.Reader as any).unregisterEventListener("createAnnotationContextMenu", "weavero"); } catch(e) {}
-        try { (Zotero.Reader as any).unregisterEventListener("createViewContextMenu", "weavero"); } catch(e) {}
+        // Reader event listeners are cleaned up by Zotero's plugin-
+        // shutdown observer (`_unregisterEventListenerByPluginID`,
+        // wired in xpcom/reader.js), which fires on plugin disable /
+        // upgrade and filters listeners by pluginID. We DON'T call
+        // `unregisterEventListener(type, handler)` manually because
+        // Zotero's implementation is inverted — it does
+        // `filter(x => x.type === type && x.handler === handler)`,
+        // which KEEPS the matching listener and discards all others,
+        // i.e. it would wipe other plugins' listeners on any actual
+        // match (and our prior code passed a string where a handler
+        // was expected, so the predicate never matched and it merely
+        // wiped everything). Registering with the correct full plugin
+        // ID is enough — the shutdown observer handles teardown.
+        // Revert compact-title-bar across every main window AND every
+        // standalone reader window so unloading the plugin doesn't leave
+        // the DOM mutilated (buttonbox moved, icon hidden, menubar
+        // collapsed). SKIPPED during app shutdown — the windows are
+        // about to be destroyed anyway, and reverting here was found
+        // to interfere with Zotero's session save (Session.save reads
+        // `Zotero.getZoteroPanes()` from `quit-application-granted`;
+        // if our long synchronous DOM revert delays things, the panes
+        // are gone by save time and the old tab state gets restored,
+        // making closed tabs reappear on next startup).
+        try {
+            if (!Services.startup.shuttingDown) {
+                const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of wins) {
+                    try { this._revertCompactTitleBar(w); } catch(e) {}
+                }
+                const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
+                for (const r of readers) {
+                    try { this._revertReaderCompactMenubar(r); } catch(e) {}
+                }
+            } else {
+                Zotero.debug("[Weavero] destroy: app shutting down, skipping compact-title-bar revert");
+            }
+        } catch (e) {}
         this._unregisterItemTreeColumns();
         try { this._unpatchAnnotationRow(); } catch (e) {}
 

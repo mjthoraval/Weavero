@@ -3019,6 +3019,375 @@ class _PaneMixin {
             doc.addEventListener("focusout", this._paneFocusOutHandler, true);
         }
     }
+
+    // ---- Compact title bar (main window) -----------------------------------
+    /** Hide the menubar row (#titlebar) and move the window controls into the
+     *  tab strip — Firefox-style "tabs in titlebar." The menubar collapses
+     *  to 0 via CSS keyed off `[autohide][inactive]`; an Alt-up keystroke
+     *  toggles `inactive` so the menubar can still be summoned.
+     *
+     *  Per-window state is stashed on `win._wvCompactTitleBar` so revert can
+     *  restore the original DOM structure cleanly. Idempotent — applying
+     *  twice is a no-op. Gated by `_getCompactTitleBar()` upstream.
+     *
+     *  Mac is excluded — macOS draws traffic-light controls itself, and
+     *  `.titlebar-buttonbox` is empty there. Same exclusion the windingwind
+     *  community script uses. */
+    _applyCompactTitleBar(win) {
+        try {
+            if (!win || !win.document) return;
+            if ((Zotero as any).isMac) return;
+            const doc = win.document;
+            if (win._wvCompactTitleBar) return;   // already applied
+            const titlebar = doc.getElementById("titlebar");
+            const zoteroTitleBar = doc.getElementById("zotero-title-bar");
+            const menubar = doc.getElementById("toolbar-menubar");
+            if (!titlebar || !zoteroTitleBar || !menubar) return;
+            const buttonbox = titlebar.querySelector(".titlebar-buttonbox");
+            const iconContainer = titlebar.querySelector(".titlebar-icon-container");
+            if (!buttonbox) return;
+
+            // Stash for revert.
+            const stash: any = {
+                buttonboxOrigParent: buttonbox.parentNode,
+                buttonboxOrigNext: buttonbox.nextSibling,
+            };
+
+            // 1) Move window-controls buttonbox to right end of the tab strip.
+            zoteroTitleBar.appendChild(buttonbox);
+
+            // 2) Leave the icon container alone — it lives inside `#titlebar`,
+            //    so it collapses naturally when our :has() CSS rule hides
+            //    the row, and reappears together with the menubar when
+            //    Alt is pressed. Matches Firefox-on-Windows where the
+            //    app icon is part of the title-bar row.
+
+            // 3) Mark menubar as hidden via a custom data attribute we own.
+            //    Earlier versions used Mozilla's `autohide="true"` +
+            //    `inactive="true"` pair, but that activates Mozilla's
+            //    built-in autohide manager — which re-collapses the
+            //    menubar moments after our Alt-down reveals it (the
+            //    user-reported "underlines flicker then disappear"
+            //    symptom). A custom attribute keeps the collapse state
+            //    entirely in our hands.
+            menubar.setAttribute("wv-compact-hidden", "true");
+
+            // 4) Inject the CSS rule that collapses the menubar via our
+            //    custom attribute, AND its parent #titlebar.
+            this._ensureCompactTitleBarStyles(doc);
+
+            // 5) Wire Alt-up to toggle `inactive`. Press-and-release-alone
+            //    toggles the menubar; Alt+other-key (combos like Alt+F for
+            //    accesskey) only shows the menubar without re-toggling.
+            //    Escape / focusout collapses it back.
+            //
+            //    Every listener early-returns if `win.closed` is true. The
+            //    first crash this code caused was an Alt+F → Close flow:
+            //    the window started tearing down, then a deferred
+            //    setTimeout fired with a dead reference to the menubar
+            //    ("can't access dead object" → uncaught exception →
+            //    crash). The popup-hide handler now runs synchronously
+            //    (no setTimeout) and bails on a closed window.
+            let altAlone = false;
+            let menubarWasVisibleAtAltDown = false;
+            const isDead = () => {
+                try { return !win || win.closed; } catch (e) { return true; }
+            };
+            const isCollapsed = () => menubar.getAttribute("wv-compact-hidden") === "true";
+            const collapse = () => {
+                try {
+                    if (isDead()) return;
+                    menubar.setAttribute("wv-compact-hidden", "true");
+                } catch (er) {}
+            };
+            // True when the Weavero filter popup (or any of its
+            // child popups, e.g. the per-section pickers) is currently
+            // showing. We use this to suppress menubar reveal/toggle
+            // on Alt — users hold Alt inside the filter popup to do
+            // alt-click "exclude" toggles, and an Alt-tap also hides
+            // any open popup as a Mozilla side effect. The filter
+            // panel installs its own Alt-swallowing keydown/keyup
+            // listeners in capture, but those fire AFTER this
+            // window-level capture listener (window is the outermost
+            // node, so its capture handlers run first). So the panel
+            // can't stop us; we have to check the popup state here.
+            const isFilterPopupOpen = () => {
+                try {
+                    if (isDead()) return false;
+                    const doc = win.document;
+                    if (!doc) return false;
+                    const panel: any = doc.getElementById("wv-filter-popup");
+                    if (panel && (panel.state === "open" || panel.state === "showing")) {
+                        return true;
+                    }
+                    // Section-picker / chip-edit sub-popups built by
+                    // _openFilterPanelForGroup live elsewhere in the
+                    // doc but share the `wv-filter-` class prefix.
+                    const open = doc.querySelector(
+                        "panel[id^='wv-filter-'], menupopup[id^='wv-filter-']"
+                    );
+                    if (open && (open.state === "open" || open.state === "showing")) {
+                        return true;
+                    }
+                } catch (er) {}
+                return false;
+            };
+            // Alt-DOWN — if the menubar is currently collapsed, reveal it
+            // synchronously. By the time Mozilla's native Alt-UP handler
+            // fires, the menubar is visible and focusable, so Mozilla can
+            // activate it the usual way: focus the first menu, underline
+            // accesskey letters, arm letter-key shortcuts. JS can't trigger
+            // that activation directly (the menubar is a plain HTMLDivElement
+            // with no MozMenuBarController — activation is in C++ widget
+            // code), but it does happen automatically when Mozilla sees an
+            // Alt keystroke on a visible-and-focusable menubar.
+            const keyDown = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    // When the Weavero filter popup is open, Alt is part
+                    // of an alt-click "exclude" gesture, not a menubar
+                    // request — bail before touching menubar state so
+                    // we don't reveal the menubar AND so menubarWasVisibleAtAltDown
+                    // stays in the right state for the next real Alt.
+                    if (isFilterPopupOpen()) {
+                        altAlone = false;
+                        return;
+                    }
+                    if (e.key === "Alt" && !e.repeat) {
+                        altAlone = true;
+                        const wasCollapsed = isCollapsed();
+                        menubarWasVisibleAtAltDown = !wasCollapsed;
+                        if (wasCollapsed) menubar.removeAttribute("wv-compact-hidden");
+                    } else if (e.altKey) {
+                        altAlone = false;   // Alt+other-key combo
+                    }
+                } catch (er) {}
+            };
+            // Alt-UP — handle the "Alt as a toggle" case (press Alt again to
+            // dismiss). If the menubar was already visible when Alt went
+            // down, this is the user toggling off → collapse. Otherwise the
+            // keydown already revealed it and Mozilla activates it; we do
+            // nothing here.
+            const keyUp = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    if (e.key !== "Alt") return;
+                    // Same suppression as keyDown — keep alt-release inside
+                    // the filter popup a non-event for the menubar.
+                    if (isFilterPopupOpen()) {
+                        altAlone = false;
+                        return;
+                    }
+                    if (!altAlone) return;
+                    altAlone = false;
+                    if (menubarWasVisibleAtAltDown) collapse();
+                } catch (er) {}
+            };
+            // Esc behaviour matches Firefox: if a menu (File/Edit/...) is
+            // currently open, Mozilla's own Esc handler closes that menu
+            // and leaves the menubar active for keyboard navigation —
+            // we don't collapse in that case. Only collapse when the
+            // menubar is visible but no menu is open (a second Esc, or
+            // Esc-while-just-activated).
+            const escapeKey = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    if (e.key !== "Escape" || isCollapsed()) return;
+                    const openMenu = menubar.querySelector("menu[open='true'], menupopup[state='open']");
+                    if (openMenu) return;   // let Mozilla close the menu
+                    collapse();
+                } catch (er) {}
+            };
+            // Mousedown anywhere outside the menubar (and outside any open
+            // menu popup) collapses the menubar — Firefox-style. Use
+            // mousedown rather than click so a normal interaction (e.g.
+            // tab-click) collapses the bar before the click target's own
+            // handler runs.
+            const docMouseDown = (e: any) => {
+                try {
+                    if (isDead()) return;
+                    if (isCollapsed()) return;
+                    const t = e.target;
+                    if (!t || typeof t.closest !== "function") return;
+                    if (t.closest("#toolbar-menubar")) return;
+                    if (t.closest("menupopup")) return;
+                    collapse();
+                } catch (er) {}
+            };
+            // popupHidden — intentionally left empty (and the listener
+            // isn't registered below). Earlier versions auto-collapsed
+            // the menubar when a menu closed, but that doesn't match
+            // Firefox: Firefox keeps the menubar active after Esc (the
+            // user can press F/E/V/... again, or arrow to a sibling
+            // menu). The auto-collapse also desynced Mozilla's
+            // internal menubar-active state, causing the next Alt to
+            // flicker-toggle-deactivate instead of activating fresh.
+            // Now: menubar stays visible after a menu closes, and the
+            // user dismisses it via Esc-with-no-open-menu, Alt-toggle,
+            // or clicking outside.
+
+            // Menu-item activation: when the user clicks an item
+            // (Tools → Plugins, Edit → Copy, etc.) the menubar should
+            // retract — Firefox behaviour. Mozilla fires `command` on
+            // the clicked menuitem; it bubbles up to the menubar. We
+            // listen there and collapse. The action runs regardless
+            // (the menuitem's own oncommand handler executes first
+            // because we listen on the bubble phase, not capture).
+            const menuCommand = (e: any) => {
+                try {
+                    if (isDead() || isCollapsed()) return;
+                    if (!menubar.contains(e.target)) return;
+                    collapse();
+                } catch (er) {}
+            };
+            win.addEventListener("keydown", keyDown, true);
+            win.addEventListener("keyup", keyUp, true);
+            win.addEventListener("keydown", escapeKey, true);
+            win.addEventListener("mousedown", docMouseDown, true);
+            menubar.addEventListener("command", menuCommand);
+            stash.keyDown = keyDown;
+            stash.keyUp = keyUp;
+            stash.escapeKey = escapeKey;
+            stash.docMouseDown = docMouseDown;
+            stash.menuCommand = menuCommand;
+            stash.menubar = menubar;
+
+            win._wvCompactTitleBar = stash;
+        } catch (e) {
+            Zotero.debug("[Weavero] _applyCompactTitleBar err: " + e);
+            // Auto-revert any partial mutations from this apply attempt
+            // and disable the pref so the next startup doesn't retry.
+            // Without this, a crash here can leave the window in a
+            // half-mutated state that breaks subsequent operations.
+            try { this._revertCompactTitleBar(win); } catch (er) {}
+            try { Zotero.Prefs.set("weavero.compactTitleBar", false); } catch (er) {}
+        }
+    }
+
+    /** Undo `_applyCompactTitleBar`. Idempotent and tolerant of partial
+     *  state: cleans up CSS, listeners, buttonbox position, menubar
+     *  attributes, and icon-container display whether or not a complete
+     *  stash exists. Each step is independently try/catch'd so a single
+     *  failed step doesn't abort the rest of the cleanup. */
+    _revertCompactTitleBar(win) {
+        try {
+            if (!win || !win.document) return;
+            try { if (win.closed) return; } catch (e) { return; }
+            const doc = win.document;
+            const titlebar = doc.getElementById("titlebar");
+            const menubar = doc.getElementById("toolbar-menubar");
+            const iconContainer = titlebar ? titlebar.querySelector(".titlebar-icon-container") : null;
+            const buttonbox = doc.querySelector(".titlebar-buttonbox");
+            const stash = win._wvCompactTitleBar || {};
+
+            // 1. Move buttonbox back. If we have an original anchor, use
+            //    it; otherwise force it back into #titlebar (the canonical
+            //    home) so manual reverts after a stash loss still recover.
+            try {
+                if (buttonbox) {
+                    const anchorParent = stash.buttonboxOrigParent || titlebar;
+                    const anchorNext = stash.buttonboxOrigNext;
+                    if (anchorParent) {
+                        if (anchorNext && anchorNext.parentNode === anchorParent) {
+                            anchorParent.insertBefore(buttonbox, anchorNext);
+                        } else {
+                            anchorParent.appendChild(buttonbox);
+                        }
+                    }
+                }
+            } catch (e) {}
+
+            // 2. Restore icon container display. Newer code (post-v0.8.8-
+            //    dev.20) doesn't touch the icon container — but older
+            //    stashes may have an iconDisplay value, so we still
+            //    honour it for users upgrading mid-session.
+            try { if (iconContainer && "iconDisplay" in stash) iconContainer.style.display = stash.iconDisplay || ""; } catch (e) {}
+
+            // 3. Restore menubar: just strip our custom hide-attribute.
+            //    Earlier builds also poked Mozilla's `autohide` /
+            //    `inactive` attrs, but we no longer set them (that was
+            //    causing Mozilla's autohide system to fight us). Removing
+            //    them unconditionally is still safe — they default to
+            //    absent on the stock Zotero menubar — and keeps revert
+            //    robust against partial state from older versions.
+            try {
+                if (menubar) {
+                    menubar.removeAttribute("wv-compact-hidden");
+                    menubar.removeAttribute("autohide");
+                    menubar.removeAttribute("inactive");
+                }
+            } catch (e) {}
+
+            // 4. Remove listeners we attached. Each handler is its own
+            //    try because removeEventListener with undefined handler is
+            //    fine, but `win` may be in an odd state.
+            try { if (stash.keyDown) win.removeEventListener("keydown", stash.keyDown, true); } catch (e) {}
+            try { if (stash.keyUp) win.removeEventListener("keyup", stash.keyUp, true); } catch (e) {}
+            try { if (stash.escapeKey) win.removeEventListener("keydown", stash.escapeKey, true); } catch (e) {}
+            try { if (stash.docMouseDown) win.removeEventListener("mousedown", stash.docMouseDown, true); } catch (e) {}
+            try { if (stash.menuCommand && menubar) menubar.removeEventListener("command", stash.menuCommand); } catch (e) {}
+            try { if (stash.popupHidden && menubar) menubar.removeEventListener("popuphidden", stash.popupHidden, true); } catch (e) {}   // legacy: older stashes set this
+
+            // 5. Remove injected CSS.
+            try { doc.getElementById("wv-compact-titlebar-styles")?.remove(); } catch (e) {}
+
+            // 6. Clear the stash so future apply() runs fresh.
+            try { delete win._wvCompactTitleBar; } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _revertCompactTitleBar err: " + e);
+        }
+    }
+
+    /** One-time CSS for the compact-title-bar mode. Collapses
+     *  `#toolbar-menubar[autohide][inactive]` and the parent `#titlebar`
+     *  to zero height; positions the moved buttonbox flush right in the
+     *  tab strip. */
+    _ensureCompactTitleBarStyles(doc) {
+        try {
+            if (doc.getElementById("wv-compact-titlebar-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-compact-titlebar-styles";
+            style.textContent = [
+                /* Collapse via height-only — NOT visibility:collapse — so
+                   the menubar stays in the focusable element tree.
+                   Mozilla's Alt-handler synchronously tries to focus the
+                   first menu; if the menubar is visibility:collapse'd,
+                   that focus fails and Mozilla only shows the brief
+                   "Alt-held" accesskey hint instead of full activation.
+                   height:0 + overflow:hidden visually collapses while
+                   keeping menus focusable. */
+                "#toolbar-menubar[wv-compact-hidden='true'] {",
+                "  height: 0 !important; min-height: 0 !important;",
+                "  overflow: hidden !important;",
+                "}",
+                "#titlebar:has(#toolbar-menubar[wv-compact-hidden='true']) {",
+                "  height: 0 !important; min-height: 0 !important;",
+                "  overflow: hidden !important;",
+                "}",
+                /* Buttonbox: absolute-positioned over the right edge of the
+                   tab strip. Flex layout fights us (tab-bar-container is
+                   sized to its content width and won't shrink even with
+                   min-width:0 in this XUL context), so step out of the flex
+                   flow entirely. */
+                "#zotero-title-bar { position: relative; }",
+                "#zotero-title-bar > .titlebar-buttonbox {",
+                "  position: absolute;",
+                "  top: 0; right: 0; height: 100%;",
+                "  z-index: 5;",
+                "  -moz-window-dragging: no-drag;",
+                "}",
+                /* Reserve right-edge space inside the tab strip so tabs and
+                   the zotero-tabs-toolbar don't slide under the buttonbox.
+                   138px = buttonbox width (46 × 3). */
+                "#zotero-title-bar:has(> .titlebar-buttonbox) {",
+                "  padding-right: 138px;",
+                "}",
+            ].join("\n");
+            (doc.documentElement || doc).appendChild(style);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureCompactTitleBarStyles err: " + e);
+        }
+    }
 }
 
 const _paneDescriptors = Object.getOwnPropertyDescriptors(_PaneMixin.prototype);

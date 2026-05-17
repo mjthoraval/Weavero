@@ -1574,24 +1574,82 @@ class _FilterMixin {
             if (k) {
                 // Out-of-scope kinds: drop entirely.
                 if (group.quickSearchScope[k] === false) return false;
-                // In-scope kinds must ALSO match the search per-row.
-                // "In scope = auto-pass" was too loose — it counted a
-                // web-link sibling of a matched PDF as primary even
-                // though the search "Test" didn't hit the web link.
-                // The search chip is just another chip in the AND
-                // group: the row must actually match it (be in
-                // Zotero's search-item set or its search-parent set).
+                // Vertical-spine search check — same logic as
+                // cross-level chips (Rule 3): the row, or any of its
+                // ancestors / descendants whose kind is also in
+                // scope, must be in Zotero's strict match set
+                // (`searchItemIDs`). Siblings don't count. So a web
+                // link under a search-matched parent passes when
+                // parent scope is on (parent in spine, parent in
+                // scope, parent matched), but fails when parent
+                // scope is off (parent in spine, but parent
+                // out-of-scope, so doesn't count).
                 try {
                     const win = Zotero.getMainWindow();
                     const ivRp = win && win.ZoteroPane
                         && win.ZoteroPane.itemsView
                         && win.ZoteroPane.itemsView.rowProvider;
                     const sids = ivRp && ivRp.searchItemIDs;
-                    const pids = ivRp && ivRp.searchParentIDs;
-                    if (sids
-                        && !sids.has(item.id)
-                        && !(pids && pids.has(item.id))) {
-                        return false;
+                    if (sids) {
+                        const scope = group.quickSearchScope;
+                        const matchesInScope = (it) => {
+                            if (!it) return false;
+                            const ik = this._rowKindOf(it);
+                            if (!ik) return false;
+                            if (scope[ik] === false) return false;
+                            return sids.has(it.id);
+                        };
+                        let found = matchesInScope(item);
+                        // Ancestors.
+                        if (!found) {
+                            for (let p = item.parentItem;
+                                p && !found; p = p.parentItem) {
+                                if (matchesInScope(p)) found = true;
+                            }
+                        }
+                        // Descendants.
+                        if (!found) {
+                            try {
+                                const walkDesc = (it) => {
+                                    if (it && it.isRegularItem
+                                        && it.isRegularItem()) {
+                                        const attIds = (it.getAttachments
+                                            && it.getAttachments()) || [];
+                                        for (const aid of attIds) {
+                                            const a = Zotero.Items.get(aid);
+                                            if (matchesInScope(a)) {
+                                                found = true; return;
+                                            }
+                                            if (a && a.isFileAttachment
+                                                && a.isFileAttachment()) {
+                                                for (const ann of (a.getAnnotations() || [])) {
+                                                    if (matchesInScope(ann)) {
+                                                        found = true; return;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        const noteIds = (it.getNotes
+                                            && it.getNotes()) || [];
+                                        for (const nid of noteIds) {
+                                            if (matchesInScope(
+                                                Zotero.Items.get(nid))) {
+                                                found = true; return;
+                                            }
+                                        }
+                                    } else if (it && it.isFileAttachment
+                                        && it.isFileAttachment()) {
+                                        for (const ann of (it.getAnnotations() || [])) {
+                                            if (matchesInScope(ann)) {
+                                                found = true; return;
+                                            }
+                                        }
+                                    }
+                                };
+                                walkDesc(item);
+                            } catch (e) {}
+                        }
+                        if (!found) return false;
                     }
                 } catch (e) {}
             }
@@ -7354,10 +7412,15 @@ class _FilterMixin {
         // run one more after the timeout if so.
         if (this._filterApplying) {
             this._filterApplyDirty = true;
+            // Remember whether the bounced caller wanted cascade —
+            // dirty retry should preserve it so a search flow that
+            // started with cascade=true gets cascade=true on retry.
+            if (opts && opts.cascade) this._filterApplyDirtyCascade = true;
             return;
         }
         this._filterApplying = true;
         this._filterApplyDirty = false;
+        this._filterApplyDirtyCascade = !!(opts && opts.cascade);
         try { this._applyItemsListFilterInner(opts); }
         finally {
             const win = Zotero.getMainWindow();
@@ -7368,8 +7431,12 @@ class _FilterMixin {
                 this._filterApplying = false;
                 if (this._filterApplyDirty) {
                     this._filterApplyDirty = false;
-                    try { this._applyItemsListFilter(); }
-                    catch (e) {
+                    const cascade = !!this._filterApplyDirtyCascade;
+                    this._filterApplyDirtyCascade = false;
+                    try {
+                        this._applyItemsListFilter(
+                            cascade ? { cascade: true } : undefined);
+                    } catch (e) {
                         Zotero.debug(
                             "[Weavero][filter] dirty reapply err: " + e);
                     }

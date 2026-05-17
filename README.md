@@ -39,6 +39,8 @@ Out of the box, `https://`, `http://`, and `zotero://` links are recognised ever
 - **Selection Target**: Parent / Attachment / Annotation tri-state — controls Ctrl+A scope and dims out-of-scope rows.
 - Strict per-row matching: filtering keeps only items that match; ancestors are kept for tree shape, descendants are not auto-pulled.
 
+See [Filtering rules](docs/filter-rules.md) for the full logic — what counts as a real match, how cross-level chips scope, how the quick search and chip filter combine, and how Selection Target picks rows.
+
 <img src="docs/screenshots/06-items-filter.png" width="500" alt="Items-tree filter popup">
 
 **Tabs menu.** The "List all tabs" dropdown gets a structured layout:

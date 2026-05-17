@@ -917,22 +917,58 @@ class _PaneMixin {
             // select-all will actually pick.
             const eff = this._effectiveSelectionTargetKinds();
             const allOn = !!(eff.parent && eff.attachment && eff.annotation);
+            const state = this._filterState;
+            const filterActive = !!state && this._isFilterActive(state);
+            const qsValue = this._currentQuickSearchValue;
             const rows: any = tree.querySelectorAll(".row");
             for (const row of rows) {
-                if (allOn) {
-                    row.classList.remove("wv-not-target");
-                    continue;
-                }
                 const item = this._getItemFromTreeRow(row);
                 if (!item) {
                     row.classList.remove("wv-not-target");
+                    row.classList.remove("wv-primary");
                     continue;
                 }
-                const isAnn = !!(item.isAnnotation && item.isAnnotation());
-                const isAtt = !isAnn
-                    && !!(item.isAttachment && item.isAttachment());
-                const kind = isAnn ? "annotation" : isAtt ? "attachment" : "parent";
-                row.classList.toggle("wv-not-target", !eff[kind]);
+                // Use the canonical `_rowKindOf` mapping rather
+                // than re-deriving here — that helper correctly
+                // classifies **child notes** (item notes) as
+                // `attachment` (they sit at the attachment tree
+                // level) and **standalone notes** as `parent`.
+                // Re-deriving naively (`!isAnnotation && !isAttachment
+                // → parent`) would lump child notes into the
+                // `parent` bucket and incorrectly leave them white
+                // when Selection Target is restricted to Parent.
+                const kind = this._rowKindOf(item) || "parent";
+                const kindOK = !!eff[kind];
+                let primary = true;
+                if (filterActive) {
+                    try { primary = this._rowIsPrimary(item, state); }
+                    catch (e) { primary = true; }
+                }
+                // Demote primary when Zotero tagged this as a
+                // `context-row` (parent-promoted by the quick-
+                // search, its own data didn't match) AND it would
+                // ONLY be primary via the quick-search kind-match.
+                // Re-evaluate without the search to see if some
+                // other chip independently picks the row — if not,
+                // it's an ancestor of a search match, not a real
+                // match itself. Without this demotion, every
+                // parent of a search-matched attachment would
+                // render white even when its own title doesn't
+                // match the query.
+                let realPrimary = primary;
+                if (filterActive && primary && qsValue
+                    && row.classList && row.classList.contains("context-row")) {
+                    const saved = this._currentQuickSearchValue;
+                    try {
+                        this._currentQuickSearchValue = "";
+                        const primNoQS = this._rowIsPrimary(item, state);
+                        if (!primNoQS) realPrimary = false;
+                    } catch (e) {}
+                    this._currentQuickSearchValue = saved;
+                }
+                row.classList.toggle("wv-not-target",
+                    (!allOn && !kindOK) || (filterActive && !realPrimary));
+                row.classList.toggle("wv-primary", filterActive && realPrimary);
             }
         } catch (e) {
             Zotero.debug("[Weavero] _applySelectionTargetVisuals err: " + e);

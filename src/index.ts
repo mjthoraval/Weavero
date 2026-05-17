@@ -1846,10 +1846,22 @@ class WeaveroPlugin {
                 // 'add' early-return below, otherwise the items-list
                 // filter never recomputes after item creation.
                 if (event === "add" && ids && ids.length) {
-                    if (!this._wvRecentlyAddedItemIDs) {
-                        this._wvRecentlyAddedItemIDs = new Set();
+                    // Switched from `Set<id>` to `Map<id, timestamp>`
+                    // so the apply loop can expire entries. The
+                    // original `Set` was session-lifetime — items
+                    // created during a session stayed force-included
+                    // forever, defeating the filter for the user's
+                    // own test items. With a timestamp the force-
+                    // include window only covers the brief moment
+                    // after creation where Zotero's auto-select +
+                    // itemBox lookup would otherwise fail.
+                    if (!this._wvRecentlyAddedItemIDs
+                        || typeof (this._wvRecentlyAddedItemIDs as any).set !== "function") {
+                        // Migrate any pre-fix Set instance.
+                        this._wvRecentlyAddedItemIDs = new Map();
                     }
-                    for (const id of ids) this._wvRecentlyAddedItemIDs.add(id);
+                    const now = Date.now();
+                    for (const id of ids) (this._wvRecentlyAddedItemIDs as any).set(id, now);
                 }
                 if (event === "add" || event === "modify"
                     || event === "delete" || event === "trash") {

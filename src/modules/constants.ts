@@ -644,13 +644,48 @@ export const PLUGIN_CSS = [
     "}",
     ".wv-filter-color-row:hover { background: rgba(127,127,127,0.12); }",
     // Wide unified-panel layout (one section per filter type).
+    // Top padding kept to 0 so the popup's top edge sits flush
+    // against the (visually-framed) quick-search box above —
+    // making the "Restrict to:" row read as the search's own
+    // settings. Other sides retain a small gutter.
     ".wv-filter-panel-inner {",
     "  display: flex; flex-direction: column;",
-    "  gap: 3px; padding: 4px 6px;",
+    "  gap: 3px; padding: 0 6px 4px;",
     // Anchor for absolutely-positioned children — currently used
     // by the per-cross-level-filter scope popup.
     "  position: relative;",
+    // XUL `<panel>` chrome inherits `-moz-user-select: none` by
+    // default, so the user can't drag-select or copy any text
+    // inside the popup (filter labels, the Alt+Click hint, the
+    // search text they just typed). Re-enable text selection at
+    // the panel root; interactive bits (chips, buttons, the
+    // display-option labels) keep their per-element
+    // `user-select: none` from their own rules, which is more
+    // specific and wins.
+    "  user-select: text;",
+    "  -moz-user-select: text;",
     "}",
+    // Bottom row — just the Alt+Click hint, centered. The Clear /
+    // × buttons moved up to the right end of the cross-level row,
+    // so the hint can be alone here without competing controls.
+    ".wv-filter-bottom-controls {",
+    "  display: flex; justify-content: center; align-items: center;",
+    "  margin-top: 4px;",
+    "}",
+    ".wv-filter-bottom-controls .wv-filter-bottom-hint {",
+    "  text-align: center; padding: 0;",
+    "}",
+    // Display-option checkbox row (e.g. "Show non-matching
+    // annotations of matched files") at the very bottom of the
+    // popup. Small font + dimmed text so it reads as an option,
+    // not a primary control.
+    ".wv-filter-display-opt {",
+    "  display: flex; align-items: center; gap: 4px;",
+    "  font-size: 11px; opacity: 0.85;",
+    "  padding: 4px 4px 0;",
+    "  cursor: pointer; user-select: none;",
+    "}",
+    ".wv-filter-display-opt input { margin: 0; }",
     ".wv-filter-section {",
     "  display: flex; flex-direction: row; align-items: center; gap: 4px;",
     "}",
@@ -672,6 +707,96 @@ export const PLUGIN_CSS = [
     "  padding: 6px 0 8px;",
     "  border-bottom: 1px solid rgba(127,127,127,0.35);",
     "  margin-bottom: 4px;",
+    "}",
+    // Quick Search scope variant — sits just under the (toolbar)
+    // quick search visually, so we drop the bottom padding /
+    // margin / border to remove the perceived gap between the
+    // search input above and the rest of the popup below.
+    ".wv-filter-qs-scope-bar {",
+    "  padding: 0;",
+    "  margin: 0;",
+    "  border-bottom: none;",
+    "}",
+    // ── Quick-search "framed" appearance when the filter popup is
+    // open. The popup itself drops its top edge + top-corner
+    // radius (rules below), so the search box's borders read as
+    // the popup's first row even though the two elements stay in
+    // their original DOM positions. Class is added on
+    // popupshown and removed on popuphidden.
+    //
+    // `padding-bottom: 3px` extends the framed area down by the
+    // same amount the popup is shifted (`#wv-filter-popup`
+    // transform), so the left/right borders bridge the small gap
+    // between the search box and the popup — when the search
+    // takes focus, Zotero's blue underline draws inside this gap
+    // and remains visible.
+    "#zotero-tb-search.wv-filter-search-framed {",
+    "  border-top: 1px solid var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
+    "  border-left: 1px solid var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
+    "  border-right: 1px solid var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
+    "  border-top-left-radius: 6px;",
+    "  border-top-right-radius: 6px;",
+    "  border-bottom-left-radius: 0;",
+    "  border-bottom-right-radius: 0;",
+    "  padding-bottom: 3px;",
+    "}",
+    // Injected scope dropdown inside the framed quick-search box.
+    // Lives as a sibling of `<search-textbox>` in
+    // `#zotero-tb-search > #search-wrapper`. Sits to the right of
+    // the × clear button; visible only when the search has text.
+    // Compact glyph-only button styled to match the cross-level
+    // filter scope arrows (`.wv-filter-cross-scope-arrow`) — same
+    // font size / opacity / padding / border-radius / hover and
+    // modified states so it reads as part of the same family.
+    // `align-self: stretch` makes it match the search-textbox's
+    // height so the button doesn't read as a smaller floating
+    // chip inside a taller box.
+    ".wv-qs-scope-btn {",
+    "  display: inline-flex; align-items: center; justify-content: center;",
+    "  align-self: stretch;",
+    "  font: inherit; font-size: 9px; line-height: 1;",
+    "  color: inherit; cursor: pointer;",
+    // Left margin is 3 px larger than right so the button sits a
+    // bit further away from the × clear icon on its left.
+    "  padding: 0 4px; margin: 0 4px 0 7px;",
+    "  border: 1px solid rgba(127,127,127,0.4);",
+    "  border-radius: 4px;",
+    "  background: transparent;",
+    "  opacity: 0.7;",
+    "  -moz-window-dragging: no-drag;",
+    "}",
+    ".wv-qs-scope-btn:hover {",
+    "  opacity: 1; background: rgba(127,127,127,0.12);",
+    "}",
+    // Same accent treatment the other cross-level scope arrows
+    // use when the scope is narrowed below the all-on default.
+    ".wv-qs-scope-btn[data-modified=\"true\"] {",
+    "  color: var(--accent-orange, #cc8400);",
+    "  border-color: var(--accent-orange, rgba(204,132,0,0.6));",
+    "  opacity: 1;",
+    "}",
+    ".wv-qs-scope-btn-arrow { font-size: inherit; line-height: 1; }",
+    // Strip the popup's top edge so it visually connects to the
+    // framed quick-search above. Bottom corners keep their normal
+    // rounding; top corners go square. The frame color is shared
+    // (via `--wv-popup-frame-color`) so the search frame and the
+    // popup border match.
+    //
+    // `transform: translateY(3px)` shifts the popup down by a few
+    // pixels so Zotero's focus underline on the quick-search box
+    // (drawn at the very bottom of the search element when it
+    // takes focus) remains visible instead of being covered.
+    // Mozilla's panel positioning runs first; the CSS transform
+    // applies after, so the popup ends up just below the
+    // underline. Search-frame side borders are extended downward
+    // by the matching `wv-filter-search-framed` padding-bottom
+    // so they bridge the gap visually.
+    "#wv-filter-popup {",
+    "  --wv-popup-frame-color: rgba(127,127,127,0.55);",
+    "  border-top: none;",
+    "  border-top-left-radius: 0;",
+    "  border-top-right-radius: 0;",
+    "  transform: translateY(3px);",
     "}",
     ".wv-filter-scope-bar-label {",
     "  flex: 0 0 var(--wv-title-col, 150px);",
@@ -698,6 +823,16 @@ export const PLUGIN_CSS = [
     // unselectable rows still read but stay subdued.
     ".wv-not-target:not(.selected) {",
     "  color: var(--fill-secondary) !important;",
+    "}",
+    // Un-grey Weavero-primary rows that Zotero's quick-search has
+    // tagged as `.context-row` (parent-promoted into the result
+    // set). When OUR filter considers them real matches
+    // (e.g. a Web Link attachment under a parent whose title
+    // matched the search), they should read as primary, not as
+    // greyed context. Targets only rows we marked `.wv-primary`
+    // and are NOT also `.wv-not-target` (those still dim).
+    ".row.context-row.wv-primary:not(.wv-not-target) {",
+    "  color: inherit !important;",
     "}",
     // Divider between kind-specific (top) and scope-applicable
     // (bottom) filter groups in the panel. Visual marker that the
@@ -1131,6 +1266,23 @@ export const PLUGIN_CSS = [
     ".wv-filter-selected-pill-x:hover {",
     "  opacity: 1; background: rgba(127,127,127,0.18);",
     "}",
+    // "Apply to" scope arrow that sits on each tag pill (between
+    // the label and the ×). Opens a row-kind picker scoped to the
+    // active group's `tagScope`. Same modified-state cue as the
+    // cross-level filter arrows.
+    ".wv-filter-selected-pill-scope {",
+    "  cursor: pointer; opacity: 0.65;",
+    "  font: inherit; font-size: 9px; line-height: 1;",
+    "  background: transparent; border: none;",
+    "  padding: 0 3px; margin: 0 1px; border-radius: 2px;",
+    "  color: inherit;",
+    "}",
+    ".wv-filter-selected-pill-scope:hover {",
+    "  opacity: 1; background: rgba(127,127,127,0.18);",
+    "}",
+    ".wv-filter-selected-pill-scope[data-modified=\"true\"] {",
+    "  opacity: 1; color: var(--accent-orange, #cc8400);",
+    "}",
     // Cross-level filter slot — the main icon button + a small ▾
     // scope arrow share the same border-rounding so they read as
     // one widget. The arrow opens a per-filter row-kind scope
@@ -1176,7 +1328,10 @@ export const PLUGIN_CSS = [
     "  padding: 4px 6px;",
     "  box-shadow: 0 2px 6px rgba(0,0,0,0.25);",
     "  font-size: 12px;",
-    "  min-width: 160px;",
+    // No min-width — size to content. The 160-px floor that used
+    // to live here made every scope popup oversized for short
+    // labels (Parent / Attachment / Annotation); longer labels
+    // (Annotation Comment etc.) still grow the popup naturally.
     "}",
     ".wv-filter-scope-popup-head {",
     "  font-size: 10px; opacity: 0.6;",
@@ -1188,6 +1343,17 @@ export const PLUGIN_CSS = [
     "  padding: 2px 0; cursor: pointer;",
     "}",
     ".wv-filter-scope-popup-row input { margin: 0; }",
+    // QS scope-panel chrome reset — the panel hosts our own
+    // styled HTML, so suppress Mozilla's default panel
+    // background/padding (we paint our own via
+    // `.wv-filter-scope-popup`).
+    "panel.wv-qs-scope-panel {",
+    "  --panel-padding: 0;",
+    "  --panel-background: transparent;",
+    "  --panel-border-color: transparent;",
+    "  --panel-shadow: none;",
+    "  background: transparent;",
+    "}",
     // Subtle text-button used for "Clear all" both in the chip bar
     // and in the panel footer.
     ".wv-filter-clear {",
@@ -1220,6 +1386,12 @@ export const PLUGIN_CSS = [
     "}",
     ".wv-filter-top-hint {",
     "  font-size: 10px; opacity: 0.5;",
+    "}",
+    // Same visual weight as the old top hint, just docked to the
+    // bottom of the popup. Centered so it reads as a footer.
+    ".wv-filter-bottom-hint {",
+    "  font-size: 10px; opacity: 0.5;",
+    "  text-align: center; padding: 4px 0 2px;",
     "}",
     // Text-style "Clear" button — sits between the hint and the
     // red × in the top bar. Margin-auto pushes it (and the × that

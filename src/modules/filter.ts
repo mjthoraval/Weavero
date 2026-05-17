@@ -89,25 +89,91 @@ const _ANNOTATION_TYPES_DATA = [
       icon: "chrome://zotero/skin/16/universal/annotate-text.svg" },
 ];
 
+// `attachmentLinkedFile` is a pseudo-kind: it doesn't come from
+// `getItemTypeIconName(true)` (which collapses link-mode); it's
+// matched by `_attachmentMatchesFileTypeList` via
+// `attachmentLinkMode === LINK_MODE_LINKED_FILE`. Orthogonal to
+// the content-type entries — picking it shows linked files of
+// any content type (linked PDF, linked EPUB, linked generic, …).
 const _ATTACHMENT_FILE_TYPES_DATA = [
-    { value: "attachmentPDF",      label: "PDF",
+    { value: "attachmentPDF",        label: "PDF",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-pdf.svg" },
-    { value: "attachmentEPUB",     label: "EPUB",
+    { value: "attachmentEPUB",       label: "EPUB",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-epub.svg" },
-    { value: "attachmentSnapshot", label: "Snapshot",
+    { value: "attachmentSnapshot",   label: "Snapshot",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-snapshot.svg" },
-    { value: "attachmentImage",    label: "Image",
+    { value: "attachmentImage",      label: "Image",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-image.svg" },
-    { value: "attachmentVideo",    label: "Video",
+    { value: "attachmentVideo",      label: "Video",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-video.svg" },
-    { value: "attachmentWebLink",  label: "Web Link",
+    { value: "attachmentWebLink",    label: "Web Link",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-web-link.svg" },
-    { value: "attachmentFile",     label: "Other File",
-      icon: "chrome://zotero/skin/item-type/16/light/attachment-link.svg" },
+    // Inline SVG (two overlapping horizontal rounded-rect "chain"
+    // links) so the icon reads as a horizontal chain and visually
+    // distinguishes "Linked File" from "Web Link" and the content-
+    // type entries. `stroke="context-stroke"` resolves through
+    // `.wv-filter-svg`'s `-moz-context-properties` rule to
+    // currentColor, so the icon themes with the surrounding text.
+    { value: "attachmentLinkedFile", label: "Linked File",
+      icon: "data:image/svg+xml;utf8,"
+        + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
+        + " fill='none' stroke='context-stroke' stroke-width='1.3'>"
+        + "<rect x='0.85' y='5.65' width='7.3' height='4.7' rx='2.35'/>"
+        + "<rect x='7.85' y='5.65' width='7.3' height='4.7' rx='2.35'/>"
+        + "</svg>" },
+    { value: "attachmentFile",       label: "Other File",
+      icon: "chrome://zotero/skin/16/universal/attachment.svg" },
 ];
 
 class _FilterMixin {
     [k: string]: any;
+
+    /** Does `item` (assumed to be an attachment) match the given
+     *  attachment-file-type list?
+     *
+     *  Two axes of selection coexist in this one list:
+     *   - Content-type entries (`attachmentPDF`, `attachmentEPUB`,
+     *     …) — OR'd among themselves; multiselect on this axis
+     *     widens the result.
+     *   - The pseudo-kind `attachmentLinkedFile` — AND'd against
+     *     the content-type axis; toggling it narrows whatever
+     *     content types are selected to *linked* files only.
+     *
+     *  So "PDF + Linked File" returns only linked PDFs, "PDF +
+     *  EPUB" returns PDFs and EPUBs of any link mode, "PDF + EPUB
+     *  + Linked File" returns linked PDFs and linked EPUBs. The
+     *  pseudo-kind is pseudo because Zotero's
+     *  `getItemTypeIconName(skipLinkMode=true)` collapses link-
+     *  mode (a linked PDF still reports `attachmentPDF`); we
+     *  check `attachmentLinkMode === LINK_MODE_LINKED_FILE`
+     *  directly. With nothing on the content-type axis but
+     *  `attachmentLinkedFile` selected, the list matches every
+     *  linked file regardless of content type. */
+    _attachmentMatchesFileTypeList(item, list) {
+        if (!item || !list || !list.length) return false;
+        const wantsLinked = list.includes("attachmentLinkedFile");
+        const contentList = wantsLinked
+            ? list.filter(v => v !== "attachmentLinkedFile")
+            : list;
+        const kind = (item.getItemTypeIconName
+            && item.getItemTypeIconName(true)) || "";
+        // Content-type axis: pass if either no content type is
+        // selected (only the linked-file constraint matters) or
+        // the item's kind is among the selected ones.
+        const contentOK = !contentList.length || contentList.includes(kind);
+        if (!contentOK) return false;
+        // Link-mode axis: only enforced when the pseudo-kind is
+        // selected. AND'd with the content-type axis above.
+        if (wantsLinked) {
+            try {
+                const LINKED_FILE = Zotero.Attachments
+                    && Zotero.Attachments.LINK_MODE_LINKED_FILE;
+                if (LINKED_FILE == null) return false;
+                if (item.attachmentLinkMode !== LINKED_FILE) return false;
+            } catch (e) { return false; }
+        }
+        return true;
+    }
 
     /** Temporarily un-patch the items-tree rowProvider so Zotero's
      *  internal load / refresh logic sees the live `_rows` instead
@@ -194,6 +260,60 @@ class _FilterMixin {
      *  tree dims rows from (`_applySelectionTargetVisuals`), so Ctrl+A
      *  and the dimmed rows agree. Individual clicks always go through
      *  `orig`. Idempotent. */
+    /** Monkey-patch upstream Zotero's
+     *  `CollectionViewItemTreeRowProvider._expandMatchParents` to
+     *  apply the fix from zotero/zotero@8d59331 — quick search not
+     *  expanding attachments containing matched annotations after
+     *  the item-tree refactor (5ca1fbb16). The broken version
+     *  builds a `rowsToOpen` array and calls `_expandRows()` once
+     *  at the end; we replace it with a per-row
+     *  `_toggleOpenState(i, true)` loop + a single `refreshRowMap`
+     *  at the end. Self-disables once Zotero ships the upstream
+     *  fix — detected by checking that the live function's source
+     *  no longer references `rowsToOpen`.
+     *
+     *  REMOVAL: delete this method, its two call sites
+     *  (`_patchIsSelectable` neighbours in init + post-swap +
+     *  post-setFilter), and the `_wvExpandMatchParentsPatched`
+     *  marker once 10.0-beta.5 or later is the minimum supported
+     *  Zotero version (manifest's `strict_min_version`). */
+    _patchExpandMatchParents() {
+        try {
+            const win = Zotero.getMainWindow();
+            const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            const rp: any = itemsView && itemsView.rowProvider;
+            if (!rp || typeof rp._expandMatchParents !== "function") return;
+            if (rp._wvExpandMatchParentsPatched) return;
+            const orig = rp._expandMatchParents;
+            const src = String(orig);
+            // Upstream fix already landed → mark and bail.
+            if (!src.includes("rowsToOpen")) {
+                rp._wvExpandMatchParentsPatched = "upstream-fixed";
+                return;
+            }
+            rp._expandMatchParents = function _wvFixedExpandMatchParents() {
+                const searchParentIDs = this.searchParentIDs;
+                if (!this._searchMode || this.itemTree.props.regularOnly) return;
+                for (let i = 0; i < this.rowCount; i++) {
+                    if (!this.isContainer(i) || this.isContainerOpen(i)) continue;
+                    const item = this.getRow(i).ref;
+                    const attachments = item.isRegularItem()
+                        ? item.getAttachments() : [];
+                    const shouldBeOpened = searchParentIDs.has(item.id)
+                        || attachments.some(id => searchParentIDs.has(id));
+                    if (shouldBeOpened) {
+                        this._toggleOpenState(i, true);
+                    }
+                }
+                this.refreshRowMap();
+            };
+            rp._wvExpandMatchParentsPatched = "weavero-patched";
+            Zotero.debug("[Weavero] Patched broken _expandMatchParents (zotero forum #131294, fixed upstream in 8d59331)");
+        } catch (e) {
+            Zotero.debug("[Weavero] _patchExpandMatchParents err: " + e);
+        }
+    }
+
     _patchIsSelectable() {
         try {
             const win = Zotero.getMainWindow();
@@ -208,18 +328,34 @@ class _FilterMixin {
                 // so Ctrl+A and the dimmed rows always agree.
                 if (selectAll && (self._getEnableSelectionTarget
                         ? self._getEnableSelectionTarget() : true)) {
-                    let eff: any = null;
-                    try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
-                    if (eff && !(eff.parent && eff.attachment && eff.annotation)) {
-                        let row = null;
-                        try { row = itemsView.getRow(index); } catch (e) {}
-                        const item = row && row.ref;
-                        if (item) {
-                            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-                            const isAtt = !isAnn
-                                && !!(item.isAttachment && item.isAttachment());
-                            const kind = isAnn ? "annotation" : isAtt ? "attachment" : "parent";
+                    let row = null;
+                    try { row = itemsView.getRow(index); } catch (e) {}
+                    const item = row && row.ref;
+                    if (item) {
+                        // Canonical kind mapping (`_rowKindOf` —
+                        // child notes → attachment, standalone
+                        // notes → parent). Re-deriving here would
+                        // mis-classify item notes as parent and
+                        // wrongly let Ctrl+A pick them when
+                        // Selection Target is restricted to Parent.
+                        const kind = self._rowKindOf(item) || "parent";
+                        // Kind gate — only selectable if the row's
+                        // kind is in the resolved target.
+                        let eff: any = null;
+                        try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
+                        if (eff && !(eff.parent && eff.attachment && eff.annotation)) {
                             if (!eff[kind]) return false;
+                        }
+                        // Primary gate — when the filter is active,
+                        // only ACTUAL primary matches are selectable.
+                        // Ancestor rows (kept for tree shape) are
+                        // excluded so Ctrl+A picks exactly what the
+                        // filter targets, not their containers.
+                        const state = self._filterState;
+                        if (state && self._isFilterActive(state)) {
+                            try {
+                                if (!self._rowIsPrimary(item, state)) return false;
+                            } catch (e) {}
                         }
                     }
                 }
@@ -252,6 +388,183 @@ class _FilterMixin {
             }
         } catch (e) {
             Zotero.debug("[Weavero] _patchIsSelectable err: " + e);
+        }
+    }
+
+    /** Mirror Zotero's built-in `hideContextAnnotationRows` behaviour
+     *  for ATTACHMENTS — Zotero only filters non-matching annotations
+     *  inside matched files at search time (`FileItemTreeRow.
+     *  getChildItems`), leaving non-matching attachments visible
+     *  under matched parents as "context". This patch extends the
+     *  same filtering to attachment children of regular items when
+     *  the Weavero pref `weavero.showContextAttachmentRows` is off
+     *  (default). Notes are NOT filtered — only file attachments —
+     *  because notes are a deliberately separate content stream and
+     *  the user-facing toggle is scoped to attachments. */
+    _patchHideContextAttachments() {
+        try {
+            // We want `ZoteroItemTreeRow.prototype` — but the
+            // bundled IIFE can't reach `globalThis.require` (esbuild
+            // / Firefox interaction: the symbol exists at the
+            // top-level console but resolves to undefined in the
+            // bundle's lexical scope). Pull the prototype out of a
+            // live regular-item row instead. Any item the items
+            // view has built a row for will do; walk `_rows` and
+            // take the prototype of the first row whose class is
+            // NOT FileItemTreeRow or AnnotationItemTreeRow (those
+            // both extend ZoteroItemTreeRow but already override
+            // getChildItems or aren't containers).
+            const win = Zotero.getMainWindow();
+            const rp: any = win && win.ZoteroPane
+                && win.ZoteroPane.itemsView
+                && win.ZoteroPane.itemsView.rowProvider;
+            if (!rp || !rp._rows || !rp._rows.length) return;
+            let ZIRProto: any = null;
+            for (const r of rp._rows) {
+                const it = r && r.ref;
+                if (!it) continue;
+                // A regular item is the canonical ZoteroItemTreeRow.
+                if (it.isRegularItem && it.isRegularItem()) {
+                    ZIRProto = Object.getPrototypeOf(r);
+                    break;
+                }
+            }
+            if (!ZIRProto
+                || typeof ZIRProto.getChildItems !== "function") {
+                return;
+            }
+            // Recognise our own wrapper to avoid double-wrapping
+            // across plugin reloads. The flag may have been cleared
+            // (manual reset, dev iteration) but our wrapper is
+            // still on the prototype — re-saving it as "the
+            // original" would chain N wrappers and the saved
+            // "original" would already filter, hiding the bug.
+            // Two-tier detection: explicit marker property (set
+            // by new builds), plus a source-string fallback for
+            // wrappers from earlier dev iterations that didn't
+            // carry the marker. If we find one of ours, unwrap it
+            // back to the true original instead of wrapping again.
+            // Peel off any of our own previously-installed wrappers
+            // (one or more, stacked across dev reloads) so the
+            // wrapper we install below wraps Zotero's TRUE original
+            // and not a chain of our older versions. Iterate until
+            // the current `getChildItems` no longer looks like ours
+            // — explicit marker or source-string check (the regex
+            // catches old wrappers from before the marker existed).
+            let guard = 0;
+            while (guard++ < 8) {
+                const cur: any = ZIRProto.getChildItems;
+                const isOurs = cur && (cur._wvWeaveroWrapper
+                    || /weavero\.showContextAttachmentRows/.test(
+                        String(cur)));
+                if (!isOurs) break;
+                if (!ZIRProto._wvOrigGetChildItems) {
+                    // Marker says it's ours but we have no stored
+                    // original — we're stuck. Bail without
+                    // wrapping; restart Zotero to clear.
+                    ZIRProto._wvHideCtxAttPatched = true;
+                    return;
+                }
+                ZIRProto.getChildItems = ZIRProto._wvOrigGetChildItems;
+                delete ZIRProto._wvOrigGetChildItems;
+            }
+            delete ZIRProto._wvHideCtxAttPatched;
+            const ZIR: any = { prototype: ZIRProto };
+            const orig = ZIR.prototype.getChildItems;
+            ZIR.prototype._wvOrigGetChildItems = orig;
+            const wrapper: any = function (opts: any) {
+                const items = orig.call(this, opts);
+                try {
+                    const showCtxAtt = !!Zotero.Prefs.get(
+                        "weavero.showContextAttachmentRows");
+                    if (showCtxAtt) return items;
+                    // Read the live search state from the items
+                    // view's rowProvider rather than `opts`. Zotero
+                    // calls `getChildItems` during `_refreshContainer`
+                    // BEFORE updating `_searchMode/_searchItemIDs`
+                    // on the rowProvider — so `opts` here can be
+                    // stale (`searchMode: false`) on the very call
+                    // we most need to filter. The rowProvider's
+                    // live `searchMode/searchItemIDs/searchParentIDs`
+                    // are always the canonical truth, regardless of
+                    // who triggered the call.
+                    let liveSM = false;
+                    let liveSIDs: any = null;
+                    let liveParents: any = null;
+                    try {
+                        const w = Zotero.getMainWindow();
+                        const ivRp = w && w.ZoteroPane
+                            && w.ZoteroPane.itemsView
+                            && w.ZoteroPane.itemsView.rowProvider;
+                        if (ivRp) {
+                            liveSM = !!ivRp.searchMode;
+                            liveSIDs = ivRp.searchItemIDs;
+                            liveParents = ivRp.searchParentIDs;
+                        }
+                    } catch (e) {}
+                    // Fall back to a search-box check so we still
+                    // filter when the user types but the rowProvider
+                    // hasn't yet been told (transient state during
+                    // an in-flight setFilter).
+                    if (!liveSM) {
+                        try {
+                            const w = Zotero.getMainWindow();
+                            const sb: any = w
+                                && w.document.getElementById("zotero-tb-search");
+                            if (sb && sb.value
+                                && String(sb.value).trim()) {
+                                liveSM = true;
+                            }
+                        } catch (e) {}
+                    }
+                    if (!liveSM || !liveSIDs) return items;
+                    // Treat child notes the same as attachments —
+                    // the user's mental model puts both under
+                    // "Non-Matching Attachments" (anything sitting
+                    // as a child of a regular item that doesn't
+                    // itself match should hide when the toggle is
+                    // off). Standalone notes never go through this
+                    // path; they're top-level rows handled by
+                    // Zotero's own `_refresh` row-pruning loop.
+                    // Also let through any attachment that the
+                    // active Weavero filter would mark as primary —
+                    // otherwise an attachment-level chip like
+                    // `attachmentFileType = Web Link` would still
+                    // drop matching attachments here just because
+                    // they didn't directly match the quick search.
+                    // The filter's per-row check is the source of
+                    // truth for what should be visible at the
+                    // attachment level.
+                    const self = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    const fs = self && self._filterState;
+                    return items.filter((it: any) => {
+                        if (!it) return false;
+                        if (liveSIDs.has(it.id)) return true;
+                        if (liveParents && liveParents.has(it.id)) return true;
+                        if (fs && self._isFilterActive(fs)) {
+                            try {
+                                if (self._rowIsPrimary(it, fs)) return true;
+                            } catch (e) {}
+                        }
+                        return false;
+                    });
+                } catch (e) {
+                    Zotero.debug(
+                        "[Weavero] hide-ctx-att filter err: " + e);
+                    return items;
+                }
+            };
+            // Marker so future patch passes recognise this wrapper
+            // and refuse to double-wrap.
+            wrapper._wvWeaveroWrapper = true;
+            ZIR.prototype.getChildItems = wrapper;
+            ZIR.prototype._wvHideCtxAttPatched = true;
+            Zotero.debug(
+                "[Weavero] Patched ZoteroItemTreeRow.getChildItems "
+                + "for showContextAttachmentRows");
+        } catch (e) {
+            Zotero.debug("[Weavero] _patchHideContextAttachments err: " + e);
         }
     }
 
@@ -375,7 +688,26 @@ class _FilterMixin {
                 itemNoteText: true,
                 standaloneText: true,
             },
+            // Shared scope for BOTH the Has Tag (presence) filter
+            // and the Tag (specific value) filter. They're two
+            // facets of the same concept — splitting their scope
+            // confuses users (setting "no parent" on one would not
+            // affect the other). One field, one picker, applied to
+            // both filters in `_rowIsPrimary`, `_rowHasOwnKindMatch`,
+            // and `_treeSatisfiesCrossLevelScoped`.
             hasTagScope: { annotation: true, attachment: true, parent: true },
+            // Quick-search scope: restricts which row kinds the
+            // popup-integrated quick search may surface. Default is
+            // all-on (no restriction → Zotero's native whole-tree
+            // match + cascade survives). Toggling a kind off drops
+            // rows of that kind from the result set after Zotero's
+            // search produces it; ancestors of kept rows are
+            // preserved by the existing cascade. The actual search
+            // query lives in Zotero's `#zotero-tb-search` box (the
+            // popup input synchronises with it bidirectionally) —
+            // we don't duplicate it into group state to avoid two
+            // sources of truth.
+            quickSearchScope: { annotation: true, attachment: true, parent: true },
             // Note-kind defining tri-states. Strict per-row.
             // (Zotero's UI calls notes attached to a regular item
             // "Item Notes" — `itemNote=true` matches those.)
@@ -433,6 +765,14 @@ class _FilterMixin {
         if (group.hasAnnotations != null) return true;
         if (group.publication && group.publication.length) return true;
         if (group.publicationExclude && group.publicationExclude.length) return true;
+        // Quick-search scope only counts as active when at least
+        // one kind is excluded — an all-on scope is the default
+        // no-op and wouldn't justify installing our patches by
+        // itself.
+        if (group.quickSearchScope
+            && (group.quickSearchScope.annotation === false
+                || group.quickSearchScope.attachment === false
+                || group.quickSearchScope.parent === false)) return true;
         return false;
     }
 
@@ -495,32 +835,98 @@ class _FilterMixin {
             return { ...ALL };
         }
         // Per-group filter fields, grouped by which row kind they pin.
-        // CAT ∪ NEUTRAL == exactly the fields _isGroupActive checks.
+        // `annotationTag` is NOT in here — despite the name (historical;
+        // the field was introduced for annotations), its check in
+        // `_rowIsPrimary` runs against `item.getTags()` which works for
+        // every item kind. Treat it as cross-level so the Selection
+        // Target smart-default picks all three kinds (parent +
+        // attachment + annotation), matching the user's expectation
+        // when filtering by a tag that may sit on any row.
         const CAT: Record<string, string[]> = {
             annotation: ["annotationColor", "annotationColorExclude", "annotationType",
-                "annotationTypeExclude", "annotationHasComment", "annotationTag",
-                "annotationTagExclude", "annotationAuthor", "annotationAuthorExclude"],
+                "annotationTypeExclude", "annotationHasComment",
+                "annotationAuthor", "annotationAuthorExclude"],
             attachment: ["attachmentFileType", "attachmentFileTypeExclude"],
             parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI", "hasURL",
                 "hasAttachment", "publication", "publicationExclude"],
         };
-        const NEUTRAL = ["addedBy", "addedByExclude", "hasRelated", "hasLink", "hasTag",
-            "itemNote", "standaloneNote", "hasAnnotations"];
         const isSet = (g, f) => {
             const v = g[f];
             if (v == null) return false;
             return Array.isArray(v) ? v.length > 0 : true;
         };
+        // Mapping from a multi-scope (cross-level) filter's scope
+        // object to the row-kind categories it actually targets.
+        // Multi-scope filters used to be uniformly NEUTRAL and
+        // forced the selection target back to ALL — but the user
+        // wants the target narrowed to the row kinds the filter's
+        // scope actually allows (e.g. Has Tag scoped to "Annotation"
+        // only should leave Ctrl+A selecting annotations only).
+        const addScopedKinds = (g) => {
+            // Generic row-kind scope (Has Related / Has Tag).
+            const rowScopedFields = [
+                { f: "hasRelated", s: "hasRelatedScope" },
+                { f: "hasTag",     s: "hasTagScope" },
+            ];
+            for (const { f, s } of rowScopedFields) {
+                if (!isSet(g, f)) continue;
+                const sc = g[s] || { annotation: true, attachment: true, parent: true };
+                for (const k of ["annotation", "attachment", "parent"]) {
+                    if (sc[k] !== false) cats.add(k);
+                }
+            }
+            // Has Link — text-source-specific scope keys mapped to
+            // their natural row-kind buckets.
+            if (isSet(g, "hasLink")) {
+                const sc = g.hasLinkScope || { annotationComment: true, itemNoteText: true, standaloneText: true };
+                if (sc.annotationComment !== false) cats.add("annotation");
+                if (sc.itemNoteText !== false) cats.add("attachment");
+                if (sc.standaloneText !== false) cats.add("parent");
+            }
+            // Added By — topLevel→parent, attachments→attachment,
+            // annotations→annotation.
+            if (isSet(g, "addedBy") || isSet(g, "addedByExclude")) {
+                const sc = g.addedByScope || { topLevel: true, attachments: true, annotations: true };
+                if (sc.topLevel !== false) cats.add("parent");
+                if (sc.attachments !== false) cats.add("attachment");
+                if (sc.annotations !== false) cats.add("annotation");
+            }
+            // Single-kind neutrals — they only apply to one row
+            // kind, so they contribute exactly that kind.
+            if (isSet(g, "itemNote")) cats.add("attachment");
+            if (isSet(g, "standaloneNote")) cats.add("parent");
+            if (isSet(g, "hasAnnotations")) cats.add("attachment");
+            // Tag filter (annotationTag) — cross-level: matches any
+            // row whose own tags contain the chosen tag. Shares the
+            // `hasTagScope` with Has Tag (both are tag concepts;
+            // their scopes are unified for simpler UX).
+            if (isSet(g, "annotationTag") || isSet(g, "annotationTagExclude")) {
+                const sc = g.hasTagScope
+                    || { annotation: true, attachment: true, parent: true };
+                for (const k of ["annotation", "attachment", "parent"]) {
+                    if (sc[k] !== false) cats.add(k);
+                }
+            }
+            // Quick-search scope is also row-kind-scoped — include
+            // its allowed kinds when an actual search is typed.
+            if (this._currentQuickSearchValue && g.quickSearchScope) {
+                const sc = g.quickSearchScope;
+                for (const k of ["annotation", "attachment", "parent"]) {
+                    if (sc[k] !== false) cats.add(k);
+                }
+            }
+        };
         const cats = new Set<string>();
         for (const g of (fs.groups || [])) {
             if (!g || !this._isGroupActive(g)) continue;
-            if (NEUTRAL.some(f => isSet(g, f))) return { ...ALL };
             for (const cat of ["annotation", "attachment", "parent"]) {
                 if (CAT[cat].some(f => isSet(g, f))) cats.add(cat);
             }
+            addScopedKinds(g);
         }
-        // 1 category → just that kind; 2 categories → both kinds; 3 (or 0,
-        // which shouldn't happen given _isFilterActive) → all kinds.
+        // 1 category → just that kind; 2 categories → those kinds;
+        // 3 (or 0, which shouldn't happen given _isFilterActive) →
+        // all kinds.
         if (cats.size === 1 || cats.size === 2) {
             return { parent: cats.has("parent"), attachment: cats.has("attachment"), annotation: cats.has("annotation") };
         }
@@ -908,17 +1314,15 @@ class _FilterMixin {
         if (group.attachmentFileType && group.attachmentFileType.length) {
             const isAtt = !!(item.isAttachment && item.isAttachment());
             if (isAtt) {
-                const kind = (item.getItemTypeIconName
-                    && item.getItemTypeIconName(true)) || "";
-                if (!group.attachmentFileType.includes(kind)) return false;
+                if (!this._attachmentMatchesFileTypeList(
+                    item, group.attachmentFileType)) return false;
             }
         }
         if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length) {
             const isAtt = !!(item.isAttachment && item.isAttachment());
             if (isAtt) {
-                const kind = (item.getItemTypeIconName
-                    && item.getItemTypeIconName(true)) || "";
-                if (group.attachmentFileTypeExclude.includes(kind)) return false;
+                if (this._attachmentMatchesFileTypeList(
+                    item, group.attachmentFileTypeExclude)) return false;
             }
         }
         if (group.annotationColor && group.annotationColor.length) {
@@ -962,42 +1366,18 @@ class _FilterMixin {
         // for tree shape happens via `_hasMatchingAnnotation` in
         // the apply loop, which is what brings the parent in when
         // a descendant matches.
-        // Cross-level filters honour their per-kind scope: a row
-        // whose kind has its scope flag OFF relaxes through (the
-        // filter doesn't apply at that level). `_rowKindOf` maps
-        // every row to one of {annotation, attachment, parent};
-        // anything else (e.g. unknown kinds) trivially in scope.
-        const inScope = (scopeObj, kind) =>
-            !scopeObj || !kind || scopeObj[kind] !== false;
-        if (group.hasRelated != null) {
-            const k = this._rowKindOf(item);
-            if (inScope(group.hasRelatedScope, k)) {
-                const rels = (item.relatedItems && item.relatedItems.length) || 0;
-                if ((rels > 0) !== group.hasRelated) return false;
-            }
-        }
-        if (group.hasLink != null) {
-            // Has Link's scope keys are text-source-specific
-            // (annotationComment / itemNoteText / standaloneText).
-            // Rows that aren't one of those text sources fall
-            // outside Has Link's universe entirely → trivially pass.
-            const sk = this._hasLinkScopeKeyOf(item);
-            if (sk) {
-                const sc = group.hasLinkScope;
-                if (!sc || sc[sk] !== false) {
-                    const has = this._itemHasLinks(item);
-                    if (has !== group.hasLink) return false;
-                }
-            }
-        }
-        if (group.hasTag != null) {
-            const k = this._rowKindOf(item);
-            if (inScope(group.hasTagScope, k)) {
-                const tags = (item.getTags && item.getTags()) || [];
-                const has = tags.length > 0;
-                if (has !== group.hasTag) return false;
-            }
-        }
+        // Cross-level scoped chips (Has Related, Has Link, Has
+        // Tag) are TREE-LEVEL constraints per Rule 4 — handled
+        // by `_treeSatisfiesCrossLevelScoped` in
+        // `_rowSatisfiesTreeJoin`, not per-row here. If we
+        // rejected per-row, a Web Link with no tag would fail
+        // when the parent IS tagged, even though the tree
+        // satisfies the chip. The row may still become primary
+        // VIA the chip (see `_rowHasOwnKindMatch`) when it
+        // carries the property itself; if it doesn't, it can
+        // still be primary via OTHER chips (e.g.
+        // attachmentFileType), and the tree-level check ensures
+        // the chip is satisfied somewhere in its scoped kinds.
         // Note-kind defining filters. Strict per-row check: when
         // include is set, ONLY note items of the requested sub-kind
         // pass; everything else fails. Exclude rejects the matching
@@ -1005,15 +1385,26 @@ class _FilterMixin {
         // notes that match (item notes pull in their parent regular
         // item) because `_hasMatchingAnnotation` walks `item.getNotes`
         // and returns true for any primary descendant.
+        // Note-kind filters — RELAX on non-notes (they're a
+        // different row kind, so the chip doesn't apply to them).
+        // This gives OR semantics with other kind-targeting chips
+        // in the same group: itemType=book + itemNote=true keeps
+        // both books AND item notes, because a row is never
+        // simultaneously a regular item AND a note; AND'ing the
+        // two makes the group empty by definition.
         if (group.itemNote != null) {
             const isNote = !!(item.isNote && item.isNote());
-            const isChild = isNote && !!item.parentItem;
-            if (isChild !== group.itemNote) return false;
+            if (isNote) {
+                const isChild = !!item.parentItem;
+                if (isChild !== group.itemNote) return false;
+            }
         }
         if (group.standaloneNote != null) {
             const isNote = !!(item.isNote && item.isNote());
-            const isStandalone = isNote && !item.parentItem;
-            if (isStandalone !== group.standaloneNote) return false;
+            if (isNote) {
+                const isStandalone = !item.parentItem;
+                if (isStandalone !== group.standaloneNote) return false;
+            }
         }
         // Parent-targeting "Has *" tri-states. Each one only fails
         // when the item IS a regular item and doesn't satisfy the
@@ -1078,12 +1469,33 @@ class _FilterMixin {
         const wantedTagsX = group.annotationTagExclude;
         if ((wantedTags && wantedTags.length)
             || (wantedTagsX && wantedTagsX.length)) {
-            const tags = (item.getTags && item.getTags()) || [];
-            const names = tags.map(t => t && t.tag).filter(Boolean);
-            if (wantedTags && wantedTags.length
-                && !wantedTags.some(t => names.includes(t))) return false;
-            if (wantedTagsX && wantedTagsX.length
-                && wantedTagsX.some(t => names.includes(t))) return false;
+            // Per-kind scope. Out-of-scope rows fail by default
+            // (mirrors `addedBy` — only in-scope rows can be primary
+            // by tag alone; ancestors of matches are still kept by
+            // the cascade). Subtree-keep walks set
+            // `opts.relaxOutOfScopeAddedBy` so out-of-scope rows
+            // auto-pass during those probes. Shares `hasTagScope`
+            // with the Has Tag filter — one scope, both filters.
+            const tagSc = group.hasTagScope
+                || { annotation: true, attachment: true, parent: true };
+            const isAnn = !!(item.isAnnotation && item.isAnnotation());
+            const isAtt = !isAnn
+                && !!(item.isAttachment && item.isAttachment());
+            const isPar = !isAnn && !isAtt;
+            const inScope = (isAnn && tagSc.annotation !== false)
+                || (isAtt && tagSc.attachment !== false)
+                || (isPar && tagSc.parent !== false);
+            if (!inScope) {
+                if (!opts.relaxOutOfScopeAddedBy) return false;
+                // else: skip the tag check entirely (subtree-keep).
+            } else {
+                const tags = (item.getTags && item.getTags()) || [];
+                const names = tags.map(t => t && t.tag).filter(Boolean);
+                if (wantedTags && wantedTags.length
+                    && !wantedTags.some(t => names.includes(t))) return false;
+                if (wantedTagsX && wantedTagsX.length
+                    && wantedTagsX.some(t => names.includes(t))) return false;
+            }
         }
         const wantedAuthors = group.annotationAuthor;
         const wantedAuthorsX = group.annotationAuthorExclude;
@@ -1146,6 +1558,44 @@ class _FilterMixin {
                 if (addedBy && wantedAddedByX.includes(addedBy)) return false;
             }
         }
+        // Quick-search scope: only takes effect when the native
+        // quick-search box has a non-empty value (the search itself
+        // is owned by Zotero — Zotero produces the parent-promoted
+        // `_rows` set, we just drop result rows whose kind is opted
+        // out of this group's scope). Out-of-scope rows fail their
+        // primary check; ancestors of in-scope matches are still
+        // kept by the existing cascade. Bypassed by
+        // `relaxOutOfScopeAddedBy` so the subtree-keep walks aren't
+        // blocked by the same rule.
+        if (this._currentQuickSearchValue
+            && group.quickSearchScope
+            && !opts.relaxOutOfScopeAddedBy) {
+            const k = this._rowKindOf(item);
+            if (k) {
+                // Out-of-scope kinds: drop entirely.
+                if (group.quickSearchScope[k] === false) return false;
+                // In-scope kinds must ALSO match the search per-row.
+                // "In scope = auto-pass" was too loose — it counted a
+                // web-link sibling of a matched PDF as primary even
+                // though the search "Test" didn't hit the web link.
+                // The search chip is just another chip in the AND
+                // group: the row must actually match it (be in
+                // Zotero's search-item set or its search-parent set).
+                try {
+                    const win = Zotero.getMainWindow();
+                    const ivRp = win && win.ZoteroPane
+                        && win.ZoteroPane.itemsView
+                        && win.ZoteroPane.itemsView.rowProvider;
+                    const sids = ivRp && ivRp.searchItemIDs;
+                    const pids = ivRp && ivRp.searchParentIDs;
+                    if (sids
+                        && !sids.has(item.id)
+                        && !(pids && pids.has(item.id))) {
+                        return false;
+                    }
+                } catch (e) {}
+            }
+        }
         return true;
     }
 
@@ -1196,6 +1646,15 @@ class _FilterMixin {
      *  - +itemType=book   → adds reg's filter to every level's check. */
     _rowSatisfiesTreeJoin(item, group) {
         if (!item || !group) return false;
+        // Cross-level scoped chips (Has Related, Has Link, Has Tag)
+        // contribute a TREE-LEVEL constraint: the item-tree must
+        // contain at least one row of the chip's scoped kinds that
+        // satisfies the chip's predicate. Without this, e.g.
+        // `attachmentFileType=WebLink + Has Related (annotation only)`
+        // would wrongly keep Web Link attachments — Web Links have
+        // no annotations, so no annotation in the tree could have
+        // related items.
+        if (!this._treeSatisfiesCrossLevelScoped(item, group)) return false;
         const annActive = (group.annotationColor && group.annotationColor.length)
             || (group.annotationColorExclude && group.annotationColorExclude.length)
             || (group.annotationType && group.annotationType.length)
@@ -1247,28 +1706,66 @@ class _FilterMixin {
             return true;
         }
         if (isReg) {
-            if (attActive || annActive) {
+            const noteActive = group.itemNote != null;
+            // Attachment-LEVEL constraint: same-level OR between
+            // `attachmentFileType` and `itemNote` (Rule 1, both at
+            // the attachment tree level). The reg's tree satisfies
+            // this level if it has EITHER a matching attachment
+            // OR a matching item note.
+            const attLevelActive = attActive || noteActive;
+            if (attLevelActive) {
+                let attLevelOK = false;
+                if (attActive) {
+                    const attIds = (typeof item.getAttachments === "function")
+                        ? (item.getAttachments() || []) : [];
+                    for (const aId of attIds) {
+                        const att = Zotero.Items.get(aId);
+                        if (att && this._kindOK(att, group, "attachment")) {
+                            attLevelOK = true;
+                            break;
+                        }
+                    }
+                }
+                if (!attLevelOK && noteActive) {
+                    // itemNote is set — look for a matching note
+                    // child (item note = child note of a regular).
+                    const noteIds = (typeof item.getNotes === "function")
+                        ? (item.getNotes() || []) : [];
+                    for (const nId of noteIds) {
+                        const n = Zotero.Items.get(nId);
+                        if (!n) continue;
+                        const isChild = !!n.parentItem;
+                        if (isChild === group.itemNote) {
+                            attLevelOK = true;
+                            break;
+                        }
+                    }
+                }
+                if (!attLevelOK) return false;
+            }
+            // Annotation-LEVEL constraint: AND with attachment-
+            // level (Rule 2, cross-level). Annotations only exist
+            // under file attachments, so the check walks the same
+            // attachment children; item notes are irrelevant here.
+            // When `attActive` is set, the annotation must be
+            // under an attachment that also satisfies
+            // `attachmentFileType`.
+            if (annActive) {
                 const attIds = (typeof item.getAttachments === "function")
                     ? (item.getAttachments() || []) : [];
-                let hasOK = false;
+                let annLevelOK = false;
                 for (const aId of attIds) {
                     const att = Zotero.Items.get(aId);
                     if (!att) continue;
                     if (attActive && !this._kindOK(att, group, "attachment")) continue;
-                    if (annActive) {
-                        // Same `isFileAttachment` gate as the isAtt
-                        // branch above — non-file attachments throw
-                        // from getAnnotations.
-                        const anns = (att.isFileAttachment && att.isFileAttachment())
-                            ? (att.getAnnotations() || []) : [];
-                        const someAnnOK = anns.some(
-                            a => this._kindOK(a, group, "annotation"));
-                        if (!someAnnOK) continue;
+                    const anns = (att.isFileAttachment && att.isFileAttachment())
+                        ? (att.getAnnotations() || []) : [];
+                    if (anns.some(a => this._kindOK(a, group, "annotation"))) {
+                        annLevelOK = true;
+                        break;
                     }
-                    hasOK = true;
-                    break;
                 }
-                if (!hasOK) return false;
+                if (!annLevelOK) return false;
             }
             return true;
         }
@@ -1282,12 +1779,298 @@ class _FilterMixin {
         // true` ignored the unsatisfiable kind constraint.
         const isNote = !!(item.isNote && item.isNote());
         if (isNote) {
-            if (annActive || attActive) return false;
-            if (regActive) {
+            const isChild = !!item.parentItem;
+            const isStandalone = !isChild;
+            // Per-level OR: a note-kind chip ORs with other chips
+            // at the SAME tree level. Item notes sit at the
+            // attachment level → an `itemNote`-self-matched note
+            // skips `attActive` (e.g. attachmentFileType=PDF +
+            // itemNote=true → both PDFs and item notes show). It
+            // does NOT skip cross-level constraints (parent-level
+            // regActive, annotation-level annActive) — those still
+            // AND via tree-join per the rules.
+            const itemNoteSelfMatched = group.itemNote != null
+                && (isChild === group.itemNote);
+            // Standalone notes sit at the parent level → a
+            // `standaloneNote`-self-matched note skips `regActive`
+            // (e.g. itemType=Book + standaloneNote=true → both
+            // books and standalone notes show). It does not skip
+            // attActive / annActive (cross-level).
+            const standaloneNoteSelfMatched = group.standaloneNote != null
+                && (isStandalone === group.standaloneNote);
+
+            // Notes have no annotations of their own → annotation-
+            // targeting filters can never be satisfied at the note
+            // row; reject.
+            if (annActive) return false;
+            // Same-level OR: skip attActive only when this row is
+            // an item note AND itemNote chip matches it.
+            if (attActive && !itemNoteSelfMatched) return false;
+            // Same-level OR: skip regActive only when this row is
+            // a standalone note AND standaloneNote chip matches it.
+            if (regActive && !standaloneNoteSelfMatched) {
                 const reg = item.parentItem;
                 if (!reg || !this._kindOK(reg, group, "regular")) return false;
             }
             return true;
+        }
+        return true;
+    }
+
+    /** Tree-level enforcement of cross-level scoped chips
+     *  (Has Related, Has Link, Has Tag, Item Note, Standalone
+     *  Note, Has Annotations, Quick Search scope). For each chip
+     *  that's set, walk the item's tree (root regular item +
+     *  attachments + their annotations + notes) and verify that
+     *  at least one row in the chip's scoped kinds satisfies the
+     *  predicate. Returns false on the first chip that fails. */
+    _treeSatisfiesCrossLevelScoped(item, group) {
+        if (!item || !group) return true;
+        // Helpers for predicate-per-kind checks.
+        const checkRelated = (it) => {
+            if (group.hasRelated == null) return true;
+            const rels = (it.relatedItems && it.relatedItems.length) || 0;
+            return (rels > 0) === group.hasRelated;
+        };
+        const checkLink = (it, sk) => {
+            if (group.hasLink == null) return true;
+            if (!sk) return true; // not a text-source kind
+            const sc = group.hasLinkScope;
+            if (sc && sc[sk] === false) return true; // out of scope
+            const has = this._itemHasLinks(it);
+            return has === group.hasLink;
+        };
+        const checkTag = (it) => {
+            if (group.hasTag == null) return true;
+            const tags = (it.getTags && it.getTags()) || [];
+            return (tags.length > 0) === group.hasTag;
+        };
+        // True iff `row` of kind `k` satisfies ALL scoped chips
+        // whose scope INCLUDES `k`. Chips whose scope EXCLUDES
+        // `k` are no-ops for this row.
+        const rowSatisfiesAt = (row, kindStr) => {
+            if (group.hasRelated != null) {
+                const sc = group.hasRelatedScope
+                    || { annotation: true, attachment: true, parent: true };
+                if (sc[kindStr] !== false && !checkRelated(row)) return false;
+            }
+            if (group.hasTag != null) {
+                const sc = group.hasTagScope
+                    || { annotation: true, attachment: true, parent: true };
+                if (sc[kindStr] !== false && !checkTag(row)) return false;
+            }
+            return true;
+        };
+
+        // Find the root regular item / standalone note of the
+        // tree this row belongs to. Kept for the kind-specific
+        // checks lower down (standaloneNote, itemNote,
+        // hasAnnotations, hasAbstract, hasDOI, …) which all
+        // evaluate the root, not the cross-level candidates set.
+        let root = item;
+        while (root.parentItem) root = root.parentItem;
+        const isReg = !!(root.isRegularItem && root.isRegularItem());
+
+        // Cross-level chips look only along the VERTICAL spine of
+        // the queried row — its own ancestors + descendants, plus
+        // the row itself. Siblings (same-level rows under a common
+        // ancestor) DO NOT contribute. A PDF attachment with a
+        // related-item link doesn't make its sibling Web Link
+        // "pass" Has Related; an annotation only sees its parent
+        // attachment and grandparent regular item, not the other
+        // attachments under the same root or their annotations.
+        const candidates = { parent: [] as any[], attachment: [] as any[], annotation: [] as any[] };
+        const pushByKind = (it) => {
+            if (!it) return;
+            const k = this._rowKindOf(it);
+            if (k && candidates[k]) candidates[k].push(it);
+        };
+        pushByKind(item);
+        // Ancestors (strict — excludes item itself).
+        for (let p = item.parentItem; p; p = p.parentItem) {
+            pushByKind(p);
+        }
+        // Descendants (strict — excludes item itself).
+        const collectDesc = (it) => {
+            try {
+                if (it.isRegularItem && it.isRegularItem()) {
+                    const attIds = (it.getAttachments
+                        && it.getAttachments()) || [];
+                    for (const aId of attIds) {
+                        const a = Zotero.Items.get(aId);
+                        if (!a) continue;
+                        pushByKind(a);
+                        collectDesc(a);
+                    }
+                    const noteIds = (it.getNotes && it.getNotes()) || [];
+                    for (const nId of noteIds) {
+                        const n = Zotero.Items.get(nId);
+                        if (n) pushByKind(n);
+                    }
+                } else if (it.isFileAttachment && it.isFileAttachment()) {
+                    const anns = it.getAnnotations() || [];
+                    for (const ann of anns) pushByKind(ann);
+                }
+            } catch (e) {}
+        };
+        collectDesc(item);
+
+        // For each cross-level scoped chip, require at least one
+        // row in the scoped kinds to satisfy the predicate (with
+        // proper handling of exclude/include).
+        const checkChipAcrossTree = (predicate, scope, kindKeys) => {
+            for (const k of kindKeys) {
+                if (scope && scope[k] === false) continue;
+                for (const row of candidates[k]) {
+                    if (predicate(row)) return true;
+                }
+            }
+            return false;
+        };
+
+        if (group.hasRelated != null) {
+            const sc = group.hasRelatedScope
+                || { annotation: true, attachment: true, parent: true };
+            if (!checkChipAcrossTree(
+                checkRelated, sc,
+                ["annotation", "attachment", "parent"])) return false;
+        }
+        if (group.hasTag != null) {
+            const sc = group.hasTagScope
+                || { annotation: true, attachment: true, parent: true };
+            if (!checkChipAcrossTree(
+                checkTag, sc,
+                ["annotation", "attachment", "parent"])) return false;
+        }
+        if (group.hasLink != null) {
+            // Has Link scope keys are text-source-specific
+            // (annotationComment / itemNoteText / standaloneText).
+            // Map them onto the same candidate buckets.
+            const sc = group.hasLinkScope || { annotationComment: true, itemNoteText: true, standaloneText: true };
+            let found = false;
+            if (sc.annotationComment !== false) {
+                for (const ann of candidates.annotation) {
+                    if (this._itemHasLinks(ann) === group.hasLink) { found = true; break; }
+                }
+            }
+            if (!found && sc.itemNoteText !== false) {
+                for (const att of candidates.attachment) {
+                    if (!att.isNote || !att.isNote()) continue;
+                    if (!att.parentItem) continue; // standalone — not item note
+                    if (this._itemHasLinks(att) === group.hasLink) { found = true; break; }
+                }
+            }
+            if (!found && sc.standaloneText !== false) {
+                // Standalone notes are roots themselves.
+                if (root.isNote && root.isNote() && !root.parentItem) {
+                    if (this._itemHasLinks(root) === group.hasLink) found = true;
+                }
+            }
+            if (!found) return false;
+        }
+        // ── Kind-specific tri-state chips also enforce tree-level
+        // constraints per Rule 2. We only enforce the INCLUDE
+        // direction here ("=true"); EXCLUDE ("=false") behaves as
+        // a per-row filter in `_rowPassesFilters` (just drop the
+        // matching rows from results — no tree-level requirement).
+        if (group.standaloneNote === true) {
+            // Tree's root must itself be a standalone note. For any
+            // non-standalone tree (regular item / its descendants),
+            // this fails — e.g. Web Link + standaloneNote=true
+            // yields no matches because Web Link trees aren't
+            // rooted at standalone notes.
+            const rootIsStandalone = !!(root.isNote
+                && root.isNote() && !root.parentItem);
+            if (!rootIsStandalone) return false;
+        }
+        if (group.itemNote === true) {
+            // OR-pair with `attachmentFileType` (Rule 1): when both
+            // are set, the attachment level is satisfied by EITHER
+            // a matching attachment OR an item note. Don't enforce
+            // the structural item-note requirement here — the
+            // regular-item branch of `_rowSatisfiesTreeJoin` already
+            // runs the OR check, and enforcing again would drop
+            // PDFs whose spine has no item note even though they
+            // satisfy the file-type half of the OR.
+            const attFTActive = !!(
+                (group.attachmentFileType && group.attachmentFileType.length)
+                || (group.attachmentFileTypeExclude
+                    && group.attachmentFileTypeExclude.length));
+            if (!attFTActive) {
+                // Vertical-only: the row's spine must contain an
+                // item note. `candidates.attachment` was built from
+                // the spine and already includes item notes (their
+                // `_rowKindOf` is "attachment" — same level).
+                let hasItemNote = false;
+                for (const cand of candidates.attachment) {
+                    if (cand && cand.isNote && cand.isNote()
+                        && !!cand.parentItem) {
+                        hasItemNote = true; break;
+                    }
+                }
+                if (!hasItemNote) return false;
+            }
+        }
+        if (group.hasAnnotations === true) {
+            // Vertical-only: spine must include an annotated file
+            // attachment. A web-link sibling of an annotated PDF
+            // doesn't get to pass via the PDF; only its own spine
+            // (link → parent) is consulted.
+            let hasAnnotated = false;
+            for (const cand of candidates.attachment) {
+                if (!cand || !cand.isFileAttachment
+                    || !cand.isFileAttachment()) continue;
+                const anns = cand.getAnnotations() || [];
+                if (anns.length > 0) { hasAnnotated = true; break; }
+            }
+            if (!hasAnnotated) return false;
+        }
+        // ── Parent-LEVEL chips also enforce tree-level
+        // constraints per Rule 2. Without this, an attachment
+        // (Web Link) under a parent without an abstract would
+        // wrongly pass when `hasAbstract=true` is also set —
+        // the per-row check rejects the parent but not the
+        // attachment, so the attachment leaked through.
+        // Each check evaluates the root regular item; non-regular
+        // roots (standalone notes) trivially fail include
+        // directions on parent-only chips, which matches per-row
+        // semantics.
+        if (group.hasAbstract != null) {
+            const v = isReg && !!(root.getField
+                && String(root.getField("abstractNote") || "").trim().length);
+            if (v !== group.hasAbstract) return false;
+        }
+        if (group.hasDOI != null) {
+            const v = isReg && !!(root.getField
+                && String(root.getField("DOI") || "").trim().length);
+            if (v !== group.hasDOI) return false;
+        }
+        if (group.hasURL != null) {
+            const v = isReg && !!(root.getField
+                && String(root.getField("url") || "").trim().length);
+            if (v !== group.hasURL) return false;
+        }
+        if (group.hasAttachment != null) {
+            const ids = isReg && (root.getAttachments
+                && root.getAttachments()) || [];
+            const v = isReg && ids.length > 0;
+            if (v !== group.hasAttachment) return false;
+        }
+        if ((group.publication && group.publication.length)
+            || (group.publicationExclude && group.publicationExclude.length)) {
+            const pub = isReg && root.getField
+                && root.getField("publicationTitle") || "";
+            if (group.publication && group.publication.length
+                && !group.publication.includes(pub)) return false;
+            if (group.publicationExclude && group.publicationExclude.length
+                && group.publicationExclude.includes(pub)) return false;
+        }
+        if (group.itemType && group.itemType.length) {
+            if (!isReg) return false;
+            if (!group.itemType.includes(root.itemType)) return false;
+        }
+        if (group.itemTypeExclude && group.itemTypeExclude.length) {
+            if (isReg && group.itemTypeExclude.includes(root.itemType)) return false;
         }
         return true;
     }
@@ -1336,12 +2119,12 @@ class _FilterMixin {
         }
         if (kind === "attachment") {
             if (!(item.isAttachment && item.isAttachment())) return false;
-            const k = (item.getItemTypeIconName
-                && item.getItemTypeIconName(true)) || "";
             if (group.attachmentFileType && group.attachmentFileType.length
-                && !group.attachmentFileType.includes(k)) return false;
+                && !this._attachmentMatchesFileTypeList(
+                    item, group.attachmentFileType)) return false;
             if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length
-                && group.attachmentFileTypeExclude.includes(k)) return false;
+                && this._attachmentMatchesFileTypeList(
+                    item, group.attachmentFileTypeExclude)) return false;
             return true;
         }
         if (kind === "regular") {
@@ -1401,14 +2184,14 @@ class _FilterMixin {
 
         // Attachment-targeting filter
         if (isAtt) {
-            const kind = (item.getItemTypeIconName
-                && item.getItemTypeIconName(true)) || "";
             if (group.attachmentFileType && group.attachmentFileType.length
-                && group.attachmentFileType.includes(kind)) {
+                && this._attachmentMatchesFileTypeList(
+                    item, group.attachmentFileType)) {
                 return true;
             }
             if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length
-                && !group.attachmentFileTypeExclude.includes(kind)) {
+                && !this._attachmentMatchesFileTypeList(
+                    item, group.attachmentFileTypeExclude)) {
                 return true;
             }
         }
@@ -1429,17 +2212,26 @@ class _FilterMixin {
         // "kind match" when they pass. Both include AND exclude can
         // satisfy: "exclude tag X" alone makes every non-X-tagged row
         // primary, mirroring the icon-grid Alt+click behaviour.
+        // `hasTagScope` narrows which row kinds can be primary by tag
+        // — out-of-scope rows skip this kind-match entirely (mirrors
+        // the `_rowIsPrimary` check above). The scope is shared with
+        // the Has Tag filter.
         if ((group.annotationTag && group.annotationTag.length)
             || (group.annotationTagExclude && group.annotationTagExclude.length)) {
-            const tags = (item.getTags && item.getTags()) || [];
-            const names = tags.map(t => t && t.tag).filter(Boolean);
-            if (group.annotationTag && group.annotationTag.length
-                && group.annotationTag.some(t => names.includes(t))) {
-                return true;
-            }
-            if (group.annotationTagExclude && group.annotationTagExclude.length
-                && !group.annotationTagExclude.some(t => names.includes(t))) {
-                return true;
+            const k = this._rowKindOf(item);
+            const tagSc = group.hasTagScope
+                || { annotation: true, attachment: true, parent: true };
+            if (k && tagSc[k] !== false) {
+                const tags = (item.getTags && item.getTags()) || [];
+                const names = tags.map(t => t && t.tag).filter(Boolean);
+                if (group.annotationTag && group.annotationTag.length
+                    && group.annotationTag.some(t => names.includes(t))) {
+                    return true;
+                }
+                if (group.annotationTagExclude && group.annotationTagExclude.length
+                    && !group.annotationTagExclude.some(t => names.includes(t))) {
+                    return true;
+                }
             }
         }
         if ((group.annotationAuthor && group.annotationAuthor.length)
@@ -1560,6 +2352,19 @@ class _FilterMixin {
                 if (v === group.hasAnnotations) return true;
             }
         }
+        // Quick search — universal across kinds, counted as a
+        // kind-match whenever the row's kind is in the
+        // quickSearchScope. Zotero's quick-search engine has
+        // already filtered `_rows` so we only see rows whose
+        // tree matched the query; if the row's kind is allowed by
+        // the scope, mark it primary. Without this, a search on a
+        // parent's title (e.g. "Test3") wouldn't surface that
+        // parent unless some OTHER kind-specific filter happened
+        // to target parents — exactly the case the user hit.
+        if (this._currentQuickSearchValue && group.quickSearchScope) {
+            const k = this._rowKindOf(item);
+            if (k && group.quickSearchScope[k] !== false) return true;
+        }
         return false;
     }
 
@@ -1641,7 +2446,10 @@ class _FilterMixin {
         // selection state always reflects the current `_filterState`.
         const panel = doc.createXULElement("panel");
         panel.id = "wv-filter-popup";
-        panel.setAttribute("type", "arrow");
+        // No arrow — the popup is positioned to overlap the toolbar
+        // (so the quick-search box reads as the popup's first row)
+        // and an arrow pointing at the filter button would look
+        // weird above the visually-included search.
         // Skip the default Mozilla XUL panel fade-in animation so
         // the filter window appears at full opacity in one step
         // instead of fading from 0 → 1 over ~150 ms (which reads
@@ -1650,10 +2458,24 @@ class _FilterMixin {
         // Same flag Zotero's own tabs-menu / sync-error / lookup
         // panels use (zoteroPane.xhtml).
         panel.setAttribute("animate", "false");
+        // `noautohide="true"` keeps the popup open when the user
+        // clicks the quick-search box (now visually integrated as
+        // the popup's top row). We provide our own dismissal via:
+        //   • the toolbar filter button (re-toggle to close)
+        //   • the × ("Clear and Close") in the popup
+        //   • Esc keypress while popup is focused
+        //   • outside-click handler below (whitelisted to allow
+        //     clicks on the toolbar search area)
+        panel.setAttribute("noautohide", "true");
+        // `consumeoutsideclicks="false"` lets clicks outside the
+        // popup hit the target normally rather than being swallowed
+        // by the popup's dismiss handler.
+        panel.setAttribute("consumeoutsideclicks", "false");
         // `position` controls anchoring relative to the parent menu
-        // button; "after_end" right-aligns the popup to the button so
-        // the wide popup body extends LEFTWARD into the items-pane
-        // area instead of off-screen to the right.
+        // button. We use openPopup with explicit coordinates at
+        // open time (see toolbar-button click handler) so this is
+        // a fallback. `before_start` aligns the popup's bottom-left
+        // with the trigger's top-left, but we'll override.
         panel.setAttribute("position", "after_end");
         // Delegate HTML `title` tooltips to Zotero's own page-mode
         // tooltip element (declared in `zoteroPane.xhtml` as
@@ -1667,6 +2489,29 @@ class _FilterMixin {
         inner.className = "wv-filter-popup-inner wv-filter-panel-inner";
         panel.appendChild(inner);
         panel.addEventListener("popupshowing", () => {
+            // Frame the toolbar quick-search BEFORE width is
+            // measured below — adding the 1-px left border shifts
+            // its `getBoundingClientRect().left` 1 px outward, and
+            // the popup-width calculation (in
+            // `_renderFilterPanelContents`) needs the framed
+            // measurement so the popup's left edge lines up with
+            // the framed search's left edge.
+            try {
+                const sbEl: any = doc.getElementById("zotero-tb-search");
+                if (sbEl) sbEl.classList.add("wv-filter-search-framed");
+            } catch (e) {}
+            // Inject the "Restrict Quick Search to:" dropdown into
+            // the toolbar search box (right of the × clear icon).
+            // Visibility is bound to whether the search has text.
+            try {
+                const refreshAllProxy = () => {
+                    const btn = doc.querySelector(".wv-qs-scope-btn");
+                    if (btn) this._refreshQuickSearchScopeButtonState(btn);
+                    try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+                    try { this._renderFilterBar(); } catch (e) {}
+                };
+                this._installQuickSearchScopeButton(doc, refreshAllProxy);
+            } catch (e) {}
             // Drop any in-memory caches so dynamic-list pickers
             // (tags, authors) re-fetch from SQL on each fresh open
             // and search inputs reset to empty.
@@ -1680,6 +2525,105 @@ class _FilterMixin {
             this._addedBySearchQuery = "";
             this._publicationSearchQuery = "";
             this._renderFilterPanelContents(panel, inner);
+        });
+        // Manual outside-click dismissal — `noautohide="true"` on
+        // the panel turns off Mozilla's own auto-hide so a click in
+        // the quick-search box doesn't close the popup (the search
+        // is now visually part of the filter window). We install a
+        // doc-level capture handler on popupshown that hides the
+        // popup only when the click lands outside both the popup
+        // AND the whitelisted "extended" areas (the toolbar quick
+        // search and the filter button itself).
+        let dismissHandler = null;
+        panel.addEventListener("popupshown", () => {
+            const docTop = panel.ownerDocument;
+            const panelAny = panel as any;
+            // Visual integration: dress the toolbar quick-search box
+            // with the popup's frame (top + sides) so it reads as the
+            // popup's top row. Combined with the panel's missing top
+            // edge (CSS in constants.ts targets `#wv-filter-popup`),
+            // the user perceives one continuous frame.
+            try {
+                const sb: any = docTop.getElementById("zotero-tb-search");
+                if (sb) sb.classList.add("wv-filter-search-framed");
+            } catch (e) {}
+            // Pixel-perfect left alignment: Mozilla's panel chrome
+            // adds asymmetric padding so anchoring `after_end` of
+            // the filter button doesn't put the popup's outer-left
+            // exactly at the search-box outer-left. Measure both
+            // and apply the residual delta via `transform`. Same
+            // transform carries the +3 px vertical offset that
+            // exposes the search's focus underline.
+            //
+            // Defer via setTimeout — when `popupshown` fires,
+            // Mozilla's panel positioning isn't always settled yet
+            // and `getBoundingClientRect()` can return the pre-
+            // layout placement. A 0-ms timeout pushes the
+            // measurement to after layout completes.
+            const win = panel.ownerDocument.defaultView;
+            // Left-edge alignment via transform-X. Width is already
+            // tuned in `_renderFilterPanelContents` via the fixed
+            // chrome-delta, so the right edge lands on the filter-
+            // button right automatically. Deferred via setTimeout
+            // so Mozilla's panel positioning is settled before
+            // we measure.
+            const alignPanel = () => {
+                try {
+                    const sb: any = docTop.getElementById("zotero-tb-search");
+                    if (!sb) return;
+                    const panelAny2 = panel as any;
+                    // Reset transform so we measure the natural
+                    // unshifted position.
+                    panelAny2.style.transform = "translateY(3px)";
+                    void panel.getBoundingClientRect();
+                    const pRect = panel.getBoundingClientRect();
+                    const sRect = sb.getBoundingClientRect();
+                    // Shift 3 px LEFT of the search box's outer
+                    // edge — paired with the +6 px width bump in
+                    // `_renderFilterPanelContents` so the popup
+                    // extends 3 px past each side of the search /
+                    // filter-button row.
+                    const dx = Math.round(sRect.left - pRect.left - 3);
+                    panelAny2.style.transform =
+                        "translate(" + dx + "px, 3px)";
+                } catch (er) {}
+            };
+            if (win && win.setTimeout) win.setTimeout(alignPanel, 0);
+            else alignPanel();
+            dismissHandler = (e) => {
+                try {
+                    if (panelAny.state !== "open" && panelAny.state !== "showing") return;
+                    const t = e.target;
+                    if (!t) return;
+                    if (panel.contains(t)) return;
+                    if (tbBtn && tbBtn.contains(t)) return;
+                    const sb = docTop.getElementById("zotero-tb-search");
+                    if (sb && sb.contains(t)) return;
+                    // Also let clicks on Zotero's quick-search popups
+                    // (mode selector dropdown) pass through.
+                    if (t.closest && t.closest("menupopup")) return;
+                    panelAny.hidePopup();
+                } catch (er) {}
+            };
+            docTop.addEventListener("mousedown", dismissHandler, true);
+        });
+        panel.addEventListener("popuphidden", () => {
+            try {
+                const docTop = panel.ownerDocument;
+                const sb = docTop.getElementById("zotero-tb-search");
+                if (sb) sb.classList.remove("wv-filter-search-framed");
+                // Don't remove the QS scope button — it should
+                // persist whenever a filter is active so the user
+                // can still adjust the search scope after closing
+                // the popup. Visibility is re-checked here in
+                // case the filter went inactive while the popup
+                // was open.
+                this._refreshQuickSearchScopeButtonVisibility();
+            } catch (e) {}
+            if (dismissHandler) {
+                try { panel.ownerDocument.removeEventListener("mousedown", dismissHandler, true); } catch (e) {}
+                dismissHandler = null;
+            }
         });
 
         // Swallow lone-Alt key events. On Windows, tapping Alt
@@ -1700,6 +2644,25 @@ class _FilterMixin {
         panel.addEventListener("keyup", swallowLoneAlt, true);
         tbBtn.appendChild(panel);
         searchBox.parentNode.insertBefore(tbBtn, searchBox.nextSibling);
+
+        // Install the "Restrict Quick Search to:" scope dropdown
+        // inside the toolbar search box, persistent across popup
+        // open/close. Visibility is decided by
+        // `_updateQuickSearchScopeButtonVisibility`: shown only
+        // when the search has text AND (a filter is active OR the
+        // filter popup is open). Click → opens the kind-scope
+        // checkbox popup; modifying scope re-applies filter +
+        // refreshes the chip bar.
+        try {
+            this._installQuickSearchScopeButton(doc, () => {
+                try { this._renderFilterBar(); } catch (e) {}
+                try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+                try {
+                    const btn = doc.querySelector(".wv-qs-scope-btn");
+                    if (btn) this._refreshQuickSearchScopeButtonState(btn);
+                } catch (e) {}
+            });
+        } catch (e) {}
 
         // Chips bar — sits between the toolbar and the items tree.
         // Hidden when no filters are active so the items tree gets its
@@ -1737,6 +2700,8 @@ class _FilterMixin {
         this._filterTbBtn = tbBtn;
         this._renderFilterBar();
         this._patchIsSelectable();
+        this._patchExpandMatchParents();
+        this._patchHideContextAttachments();
 
         // Re-apply filter when scroll / data-change brings new rows into
         // the virtualized window. We watch the inner tree element for
@@ -1755,6 +2720,11 @@ class _FilterMixin {
                 // — re-checks on every tree mutation but only
                 // installs once.
                 try { this._ensureAnnotationRowPatched(); } catch (e) {}
+                // Same story for the regular-item row class: the
+                // initial init call may run before any rows exist,
+                // so retry on every tree mutation. Self-bails once
+                // the prototype is patched.
+                try { this._patchHideContextAttachments(); } catch (e) {}
             });
             this._filterTreeObserver.observe(treeInner,
                 { childList: true, subtree: true });
@@ -1772,6 +2742,95 @@ class _FilterMixin {
         // Patch the method to re-apply the filter once the swap
         // resolves. Idempotent — a flag on the instance prevents
         // double-wrapping across plugin reloads.
+        // Wrap `setFilter` (quick-search / tag-selector entry point —
+        // see collectionViewItemTree.jsx:setFilter). When the search
+        // changes — most importantly when it's CLEARED — Zotero
+        // tears down `_rows` and rebuilds it from scratch via the
+        // collection-tree-row's `getItems()`. The new `_rows` has
+        // every container closed (Zotero's default rebuild state),
+        // so our MutationObserver-driven reapply lands on a tree
+        // where the filter's "cascade open parents of deeper
+        // matches" pass never runs (the observer reapply is non-
+        // cascading by design — it must NOT undo user-driven
+        // twisty toggles). Without an explicit cascade hook, the
+        // user sees: results appear, but every parent stays
+        // collapsed, hiding the actual filter matches one level
+        // down. Treat the search swap like the collection swap:
+        // pause patches, await the refresh, then cascade.
+        try {
+            const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            if (itemsView && typeof itemsView.setFilter === "function"
+                && !itemsView._wvSetFilterWrapped) {
+                const origSetFilter = itemsView.setFilter.bind(itemsView);
+                itemsView._wvSetFilterWrapped = true;
+                itemsView.setFilter = async (type, data) => {
+                    this._collectionSwapping = true;
+                    this._pauseFilterPatches();
+                    let result;
+                    try { result = await origSetFilter(type, data); }
+                    finally {
+                        Promise.resolve().then(() => {
+                            try {
+                                this._collectionSwapping = false;
+                                this._filterApplying = false;
+                                this._applyItemsListFilter({ cascade: true });
+                                this._patchIsSelectable();
+                                this._patchExpandMatchParents();
+                                this._patchHideContextAttachments();
+                                // Zotero's `_refresh` refreshes every
+                                // open container BEFORE updating
+                                // `_searchMode` / `_searchItemIDs`, so
+                                // any container that survived the
+                                // setFilter is rebuilt against the
+                                // PREVIOUS search state — which means
+                                // our `getChildItems` patch sees stale
+                                // (or unset) `searchItemIDs` and waves
+                                // every attachment through. Re-refresh
+                                // those containers now that the new
+                                // search state is in place.
+                                try {
+                                    const rp2: any = itemsView
+                                        && itemsView.rowProvider;
+                                    if (rp2 && rp2._rows
+                                        && typeof rp2._refreshContainer === "function") {
+                                        for (let i = rp2._rows.length - 1; i >= 0; i--) {
+                                            const r = rp2._rows[i];
+                                            if (r && r.isOpen
+                                                && r.ref
+                                                && r.ref.isRegularItem
+                                                && r.ref.isRegularItem()) {
+                                                try { rp2._refreshContainer(i, true); }
+                                                catch (e) {}
+                                            }
+                                        }
+                                        try { rp2.refreshRowMap(); } catch (e) {}
+                                        // Refreshing a parent collapses every
+                                        // descendant — so any attachment that
+                                        // Zotero's `_expandMatchParents` had
+                                        // opened (to reveal matching annotation
+                                        // children) is now closed again. Re-run
+                                        // the expansion now to restore them.
+                                        try {
+                                            if (typeof rp2._expandMatchParents === "function"
+                                                && rp2.searchParentIDs) {
+                                                rp2._expandMatchParents(rp2.searchParentIDs);
+                                            }
+                                        } catch (e) {}
+                                        try { rp2.refreshRowMap(); } catch (e) {}
+                                    }
+                                } catch (e) {}
+                            } catch (e) {
+                                Zotero.debug(
+                                    "[Weavero][filter] post-setFilter reapply err: " + e);
+                            }
+                        });
+                    }
+                    return result;
+                };
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero][filter] setFilter wrap err: " + e);
+        }
         try {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (itemsView && typeof itemsView.changeCollectionTreeRow === "function"
@@ -1816,6 +2875,7 @@ class _FilterMixin {
                                 this._filterApplying = false;
                                 this._applyItemsListFilter({ cascade: true });
                                 this._patchIsSelectable();
+                                this._patchExpandMatchParents();
                             } catch (e) {
                                 Zotero.debug(
                                     "[Weavero][filter] post-swap reapply err: " + e);
@@ -1966,6 +3026,10 @@ class _FilterMixin {
      *  is hidden when no filters are active — the toolbar "+" button is
      *  the entry point in that state. */
     _renderFilterBar() {
+        // Chip-bar state changed → re-evaluate whether the QS
+        // scope dropdown should be visible (active filter is a
+        // visibility precondition).
+        try { this._refreshQuickSearchScopeButtonVisibility(); } catch (e) {}
         const bar = this._filterBar;
         if (!bar) return;
         const doc = bar.ownerDocument;
@@ -2630,9 +3694,34 @@ class _FilterMixin {
         if (tbSearch && itemsPane) {
             try {
                 const sRect = tbSearch.getBoundingClientRect();
-                const pRect = itemsPane.getBoundingClientRect();
-                const span = Math.round(pRect.right - sRect.left) - 8;
-                const w = Math.min(280, Math.max(200, span));
+                const tbBtnEl = doc.getElementById("wv-filter-tb-button");
+                const fbRect = tbBtnEl
+                    ? tbBtnEl.getBoundingClientRect()
+                    : itemsPane.getBoundingClientRect();
+                // Span the popup the full distance from the search-
+                // box left edge to the filter-button right edge so
+                // the popup's left edge stays aligned with the
+                // (framed) search-box left edge.
+                //
+                // The panel's OUTER width is `inner.contentWidth +
+                // inner.padding(12) + panel.chrome(10)` ≈ inner +
+                // 22 px. To make panel.outerRight land exactly at
+                // filter-button.right after the alignment shift,
+                // subtract 22 from the span target. Measured
+                // empirically with content-box inner + 6 px each
+                // horizontal padding + Mozilla's 5 px each panel
+                // chrome.
+                //
+                // Then add 6 px (3 each side) so the popup extends
+                // slightly past the search-box and filter-button
+                // outer edges — gives a small visual breathing
+                // margin so the framed search reads as nested
+                // inside the popup rather than flush at its edge.
+                const span = Math.round(fbRect.right - sRect.left);
+                const POPUP_CHROME_DELTA = 22;
+                const POPUP_EXTEND_EACH_SIDE = 3;
+                const w = Math.max(220,
+                    span - POPUP_CHROME_DELTA + POPUP_EXTEND_EACH_SIDE * 2);
                 inner.style.minWidth = w + "px";
                 inner.style.maxWidth = w + "px";
                 inner.style.setProperty("--wv-title-col", "0px");
@@ -2685,17 +3774,12 @@ class _FilterMixin {
         if (!this._filterState.savedSearches) this._filterState.savedSearches = [];
         if (!this._filterState.savedSearchesExclude) this._filterState.savedSearchesExclude = [];
 
-        // Top bar — Alt+click hint on the left, then a text "Clear"
-        // button and the red × ("Clear and Close") on the right.
-        // Lives at the very top of the popup so the × ends up roughly
-        // above the rightmost Annotation Color swatch instead of
-        // pushing the popup wider on a separate header row.
-        const topBar = doc.createElementNS(NS_HTML, "div");
-        topBar.className = "wv-filter-top-bar";
-        const hint = doc.createElementNS(NS_HTML, "span");
-        hint.className = "wv-filter-top-hint";
-        hint.textContent = "Alt+click to exclude";
-        topBar.appendChild(hint);
+        // Clear / Clear-and-Close actions live in the BOTTOM bar
+        // now (alongside the Alt+Click hint) — we don't put them
+        // at the top of the popup any more. This keeps the popup's
+        // top edge flush against the (visually-framed) quick-search
+        // box, so the "Restrict to:" row reads as the search's own
+        // settings rather than as a second section below a header.
         // "Clear" — text button, clears all filters but keeps the
         // popup open so the user can rebuild from scratch without
         // re-opening the panel.
@@ -2709,7 +3793,6 @@ class _FilterMixin {
             e.stopPropagation();
             this._clearAllFilters();
         });
-        topBar.appendChild(clearTextBtn);
         const clearBtn = doc.createElementNS(NS_HTML, "button");
         clearBtn.type = "button";
         clearBtn.className = "wv-filter-clear-icon";
@@ -2725,8 +3808,10 @@ class _FilterMixin {
             // interact with once every filter is cleared.
             try { panel.hidePopup(); } catch (err) {}
         });
-        topBar.appendChild(clearBtn);
-        inner.appendChild(topBar);
+        // Both buttons appended to the bottom bar later (after
+        // Selection Target). `renderHeader` (called by refreshAll)
+        // toggles their visibility based on whether any filter is
+        // actually set.
         const renderHeader = () => {
             const active = this._isFilterActive(this._filterState);
             clearTextBtn.style.visibility = active ? "" : "hidden";
@@ -2774,29 +3859,21 @@ class _FilterMixin {
             !== Zotero.Libraries.userLibraryID;
 
         // Section order, top → bottom:
-        //   Annotation  — color / type / comment
-        //   Attachment  — file-type / item-note / has-annotations
-        //   Parent      — Item Type / standalone note / has-fields
-        //   Cross-level — has-* + multi-select search
+        //   Quick Search — re-parented native `#zotero-tb-search`
+        //                  + Restrict-scope toggle bar. Sits at
+        //                  the top because it's *the* search input
+        //                  for the whole library — once the popup
+        //                  is open, the toolbar input is moved here
+        //                  so there's only one search field visible.
+        //   Cross-level  — has-* + multi-select search (apply across
+        //                  all row kinds; second-broadest after the
+        //                  quick search).
+        //   Parent       — Item Type / standalone note / has-fields
+        //   Attachment   — file-type / item-note / has-annotations
+        //   Annotation   — color / type / comment
         //   Selection Target — Ctrl+A target picker (bottom bar)
-        addGroupHeader("Annotation");
-        inner.appendChild(colorSection);
-        inner.appendChild(typeSection);
-        inner.appendChild(commentSection);
-
-        addGroupHeader("Attachment");
-        // attachmentFileTypeSection now also renders the Item Note
-        // tile inline (right of the file-type icons, after a thin
-        // vertical separator).
-        inner.appendChild(attachmentFileTypeSection);
-        inner.appendChild(hasAnnotationsSection);
-
-        addGroupHeader("Parent");
-        inner.appendChild(itemTypeRowSection);
-        // Item Type row already hosts the Standalone Note tile at
-        // its right end (after a vertical separator), so the only
-        // section to append here is the Has-fields row.
-        inner.appendChild(parentHasFieldsSection);
+        const quickSearchSection = doc.createElementNS(NS_HTML, "div");
+        inner.appendChild(quickSearchSection);
 
         addGroupHeader("Cross-level");
         inner.appendChild(crossLevelSection);
@@ -2806,6 +3883,25 @@ class _FilterMixin {
         // since these searches all match across row kinds the same
         // way the icon triggers do.
         inner.appendChild(searchSection);
+
+        addGroupHeader("Parent");
+        inner.appendChild(itemTypeRowSection);
+        // Item Type row already hosts the Standalone Note tile at
+        // its right end (after a vertical separator), so the only
+        // section to append here is the Has-fields row.
+        inner.appendChild(parentHasFieldsSection);
+
+        addGroupHeader("Attachment");
+        // attachmentFileTypeSection now also renders the Item Note
+        // tile inline (right of the file-type icons, after a thin
+        // vertical separator).
+        inner.appendChild(attachmentFileTypeSection);
+        inner.appendChild(hasAnnotationsSection);
+
+        addGroupHeader("Annotation");
+        inner.appendChild(colorSection);
+        inner.appendChild(typeSection);
+        inner.appendChild(commentSection);
 
         // Bottom: Selection Target bar (controls Ctrl+A scope only,
         // doesn't affect filtering itself).
@@ -2892,6 +3988,118 @@ class _FilterMixin {
         );
         inner.appendChild(selBar);
 
+        // Bottom row — just the Alt+Click hint, centered. Clear /
+        // × moved up to the right end of the cross-level row (see
+        // refreshAll below) so they don't push the hint off-center.
+        const bottomBar = doc.createElementNS(NS_HTML, "div");
+        bottomBar.className = "wv-filter-bottom-controls";
+        const hint = doc.createElementNS(NS_HTML, "span");
+        hint.className = "wv-filter-bottom-hint";
+        hint.textContent = "Alt+Click to exclude";
+        bottomBar.appendChild(hint);
+        inner.appendChild(bottomBar);
+
+        // Display-option toggles — sit just below the Alt+Click
+        // hint. Both default OFF (= hide). The annotation toggle
+        // mirrors Zotero's `hideContextAnnotationRows` pref so it
+        // can also be flipped from the View menu; the attachment
+        // toggle is a Weavero pref enforced by the apply pass
+        // below (Zotero has no built-in equivalent).
+        const annOpt = doc.createElementNS(NS_HTML, "label");
+        annOpt.className = "wv-filter-display-opt";
+        const annCb: any = doc.createElementNS(NS_HTML, "input");
+        annCb.type = "checkbox";
+        try {
+            annCb.checked = !Zotero.Prefs.get("hideContextAnnotationRows");
+        } catch (e) { annCb.checked = false; }
+        annCb.addEventListener("change", () => {
+            try {
+                Zotero.Prefs.set(
+                    "hideContextAnnotationRows", !annCb.checked);
+            } catch (e) {}
+            try {
+                const win = Zotero.getMainWindow();
+                const iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+                if (iv && typeof iv.refresh === "function") {
+                    iv.refresh({ restoreSelection: true });
+                }
+            } catch (e) {}
+        });
+        annOpt.appendChild(annCb);
+        const annLbl = doc.createElementNS(NS_HTML, "span");
+        annLbl.textContent = " Show Non-Matching Annotations";
+        annOpt.appendChild(annLbl);
+        annOpt.title = "Mirrors Zotero's 'Hide Non-Matching Annotations' (View menu). When off, only annotations matching the current search/filter appear under matched files.";
+
+        const attOpt = doc.createElementNS(NS_HTML, "label");
+        attOpt.className = "wv-filter-display-opt";
+        const attCb: any = doc.createElementNS(NS_HTML, "input");
+        attCb.type = "checkbox";
+        try {
+            // Weavero pref — default false (= hide). The apply
+            // pass keeps non-primary attachment rows only when
+            // this is true.
+            attCb.checked = !!Zotero.Prefs.get(
+                "weavero.showContextAttachmentRows");
+        } catch (e) { attCb.checked = false; }
+        attCb.addEventListener("change", () => {
+            try {
+                Zotero.Prefs.set(
+                    "weavero.showContextAttachmentRows", attCb.checked);
+            } catch (e) {}
+            // Make sure the prototype patch is installed — in case
+            // the user opens the filter popup before any tree
+            // mutation has triggered the deferred install.
+            try { this._patchHideContextAttachments(); } catch (e) {}
+            // The prototype patch on `getChildItems` is consulted
+            // only when a container OPENS — already-expanded
+            // containers retain their pre-toggle child rows. Walk
+            // `_rows` and refresh every open container so the
+            // change takes effect immediately. Iterate from the end
+            // so removal of trailing children doesn't shift the
+            // indices of containers we've yet to visit.
+            try {
+                const win = Zotero.getMainWindow();
+                const iv: any = win && win.ZoteroPane
+                    && win.ZoteroPane.itemsView;
+                const rp: any = iv && iv.rowProvider;
+                if (rp && rp._rows && typeof rp._refreshContainer === "function") {
+                    for (let i = rp._rows.length - 1; i >= 0; i--) {
+                        const row = rp._rows[i];
+                        if (!row || !row.isOpen) continue;
+                        try { rp._refreshContainer(i, true); }
+                        catch (e) {}
+                    }
+                    try { rp.refreshRowMap(); } catch (e) {}
+                    // Refreshing a parent collapses every descendant
+                    // — re-run Zotero's match-parent expansion so any
+                    // attachment that was open to reveal matching
+                    // annotation children gets re-opened.
+                    try {
+                        if (typeof rp._expandMatchParents === "function"
+                            && rp.searchParentIDs) {
+                            rp._expandMatchParents(rp.searchParentIDs);
+                            try { rp.refreshRowMap(); } catch (e) {}
+                        }
+                    } catch (e) {}
+                    try {
+                        rp.runListeners("update", true,
+                            { restoreSelection: true });
+                    } catch (e) {}
+                }
+            } catch (e) {}
+        });
+        attOpt.appendChild(attCb);
+        const attLbl = doc.createElementNS(NS_HTML, "span");
+        attLbl.textContent = " Show Non-Matching Attachments";
+        attOpt.appendChild(attLbl);
+        attOpt.title = "When off, only attachments matching the current search/filter appear under matched parents. Hidden attachments take their annotation children with them.";
+        // Attachment first (higher in the tree), annotation second
+        // — matches the convention used by the Selection Target row
+        // and other higher-level-on-top groupings in this popup.
+        inner.appendChild(attOpt);
+        inner.appendChild(annOpt);
+
         const searchCtx = { libraryID: activeLibraryID, isGroupLibrary, panel };
         const refreshAll = () => {
             this._renderColorSection(doc, colorSection, refreshAll);
@@ -2903,6 +4111,27 @@ class _FilterMixin {
             this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll);
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
+            // Re-append the Clear and × buttons to the right end of
+            // the cross-level row each refresh. `_renderCrossLevelSection`
+            // wipes its container, so we have to re-mount the
+            // buttons here after it runs. `margin-left: auto` on
+            // the wrapper pushes them flush right inside the flex
+            // row of cross-level filter icons.
+            try {
+                const xlOpts = crossLevelSection.querySelector(".wv-filter-options");
+                if (xlOpts) {
+                    const wrap = doc.createElementNS(NS_HTML, "div");
+                    wrap.className = "wv-filter-xl-clear-slot";
+                    wrap.style.marginLeft = "auto";
+                    wrap.style.display = "flex";
+                    wrap.style.alignItems = "center";
+                    wrap.style.gap = "4px";
+                    wrap.appendChild(clearTextBtn);
+                    wrap.appendChild(clearBtn);
+                    xlOpts.appendChild(wrap);
+                }
+            } catch (e) {}
+            this._renderQuickSearchSection(doc, quickSearchSection, refreshAll);
             renderHeader();
             // Filters changed → the smart Selection Target may have changed
             // too; re-sync the chip cue (the bar itself isn't re-rendered).
@@ -2964,7 +4193,7 @@ class _FilterMixin {
             label: "Tag",
             placeholder: "Search tags…",
             queryField: "_tagSearchQuery",
-            emptyAll: "No annotation tags in this library",
+            emptyAll: "No tags in this library",
             emptyFiltered: "No matching tags",
             ranked: true,
             getValues: async () => {
@@ -3454,6 +4683,39 @@ class _FilterMixin {
                     lbl.textContent = label;
                     pill.appendChild(lbl);
                 }
+                // Tag pills get an "Apply to" scope arrow — the Tag
+                // filter is cross-level. Shares `hasTagScope` with
+                // the Has Tag chip, so adjusting one place affects
+                // both filters (and the modified-state cue stays in
+                // sync). Clicking any pill's arrow opens the same
+                // group-scoped picker.
+                if (m.key === "tag") {
+                    const g = this._activeGroup();
+                    const tagScope = (g && g.hasTagScope)
+                        || { annotation: true, attachment: true, parent: true };
+                    const KINDS_ROW_TAG = [
+                        { key: "parent",     label: "Parent" },
+                        { key: "attachment", label: "Attachment" },
+                        { key: "annotation", label: "Annotation" },
+                    ];
+                    const arrow = doc.createElementNS(NS_HTML, "button");
+                    arrow.type = "button";
+                    arrow.className = "wv-filter-selected-pill-scope";
+                    arrow.textContent = "▾";
+                    arrow.title = "Choose which row kinds the Tag filter applies to (shared with Has Tag).";
+                    const allOn = KINDS_ROW_TAG.every(
+                        k => tagScope[k.key] !== false);
+                    if (!allOn) arrow.dataset.modified = "true";
+                    arrow.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        this._openCrossLevelScopePopup(
+                            arrow, "hasTagScope", KINDS_ROW_TAG,
+                            () => { renderSelectedList(); refreshAll(); });
+                    });
+                    pill.appendChild(arrow);
+                }
+
                 const x = doc.createElementNS(NS_HTML, "button");
                 x.type = "button";
                 x.className = "wv-filter-selected-pill-x";
@@ -4004,23 +5266,30 @@ class _FilterMixin {
             box.style.display = "";
             if (!onDocMouseDown) {
                 onDocMouseDown = (e) => {
-                    // Trigger toggles the list itself.
-                    if (trigger.contains(e.target)) return;
-                    // Clicks inside the open list (picking a type)
-                    // are handled by the menuitem listener below.
-                    if (box.contains(e.target)) return;
-                    // Clicks on an actual chip remove that chip —
-                    // keep the list open so the user can keep
-                    // pruning. Use a chip-class check rather than
-                    // `selectedRow.contains` so empty space inside
-                    // selectedRow (visible once it has chips and
-                    // grows in height) doesn't accidentally count
-                    // as a chip click and trap the dropdown open.
-                    if (e.target.closest
-                        && e.target.closest(".wv-filter-itype-chip")) return;
-                    // Anywhere else (including empty space on the
-                    // trigger row, or anywhere outside the section)
-                    // collapses the list.
+                    const t = e.target;
+                    // SHADOW-DOM-SAFE membership checks. Mozilla's
+                    // `Element.contains()` returns FALSE for the
+                    // trigger menulist itself when its shadow host
+                    // sits inside an HTML <slot> — verified by
+                    // instrumentation showing `target === trigger`
+                    // and `composedPath().includes(trigger)` both
+                    // true while `trigger.contains(target)` was
+                    // false. Result was a double-toggle: doc-level
+                    // capture mistakenly saw "outside", ran
+                    // `hideList`, then `popupshowing` re-fired
+                    // `showList`. `composedPath().includes()`
+                    // correctly walks across shadow boundaries.
+                    const path = (e.composedPath && e.composedPath()) || [];
+                    const inTrigger = t === trigger
+                        || path.indexOf(trigger) >= 0;
+                    const inBox = t === box
+                        || path.indexOf(box) >= 0;
+                    const onChip = path.some((n: any) =>
+                        n && n.classList
+                        && n.classList.contains("wv-filter-itype-chip"));
+                    if (inTrigger) return;
+                    if (inBox) return;
+                    if (onChip) return;
                     hideList();
                 };
                 doc.addEventListener("mousedown", onDocMouseDown, true);
@@ -4082,6 +5351,18 @@ class _FilterMixin {
         const selected = new Set((g0 && g0.annotationColor) || []);
         const excluded = new Set((g0 && g0.annotationColorExclude) || []);
         for (const def of this._ANNOTATION_COLORS) {
+            // Black sits apart from the standard 8-colour palette
+            // (upstream Zotero treats it as `EXTRA_INK_AND_TEXT_COLORS`
+            // — only valid for ink/text annotations). Push it to
+            // the right edge after a thin vertical separator so its
+            // distinct status reads visually. Same `margin-left: auto`
+            // pattern Item Note / Has Comment / Has Annotations use.
+            if (def.value === "#000000") {
+                const sep = doc.createElementNS(NS_HTML, "div");
+                sep.className = "wv-filter-vertical-separator";
+                sep.style.marginLeft = "auto";
+                opts.appendChild(sep);
+            }
             const btn = doc.createElementNS(NS_HTML, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
@@ -4164,6 +5445,20 @@ class _FilterMixin {
             });
             opts.appendChild(btn);
         }
+
+        // Has Comment tile sits at the FAR RIGHT of this row —
+        // mirrors the Item Note / Standalone Note right-aligned
+        // placement in their respective rows. Thin vertical
+        // separator with `margin-left: auto` pushes the tile to
+        // the right edge of the flex container; an empty
+        // wv-filter-section row for the standalone Has Comment
+        // section continues to render below but produces no
+        // visible content (see `_renderHasCommentSection` no-op).
+        const sep = doc.createElementNS(NS_HTML, "div");
+        sep.className = "wv-filter-vertical-separator";
+        sep.style.marginLeft = "auto";
+        opts.appendChild(sep);
+        opts.appendChild(this._makeHasCommentTile(doc, refreshAll));
     }
 
     /** True iff `item` is one of the three text sources Has Link
@@ -4201,6 +5496,231 @@ class _FilterMixin {
         return null;
     }
 
+    /** Quick Search section — placeholder. The actual "Restrict
+     *  Quick Search to:" dropdown is now injected INSIDE the
+     *  toolbar's `#zotero-tb-search` element (see
+     *  `_installQuickSearchScopeButton`) so it sits on the right
+     *  side of the search box, visible only when the search has
+     *  text. The popup section itself stays in the layout as a
+     *  named anchor but renders nothing. */
+    _renderQuickSearchSection(_doc, section, _refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "";
+    }
+
+    /** Inject the "Restrict Quick Search to: ▾" dropdown as a
+     *  child of `#zotero-tb-search`, positioned to the right of
+     *  the search-textbox's × clear button (visually inside the
+     *  framed search box). Visibility is bound to whether the
+     *  search has text. Called from `popupshowing`; the inverse
+     *  `_uninstallQuickSearchScopeButton` runs on `popuphidden`. */
+    _installQuickSearchScopeButton(doc, refreshAll) {
+        const sb: any = doc.getElementById("zotero-tb-search");
+        if (!sb) return;
+        const wrapper = sb.querySelector("#search-wrapper") || sb;
+        // Idempotent — re-call during refreshAll is safe.
+        let btn: any = wrapper.querySelector(".wv-qs-scope-btn");
+        if (btn) {
+            this._refreshQuickSearchScopeButtonState(btn);
+            this._updateQuickSearchScopeButtonVisibility(sb, btn);
+            return;
+        }
+
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        btn = doc.createElementNS(NS_HTML, "button");
+        btn.type = "button";
+        btn.className = "wv-qs-scope-btn";
+        // Label moved entirely to tooltip — the button now shows
+        // only the ▾ glyph to keep it compact inside the search
+        // box (the visible "Restrict Quick Search to:" text was
+        // wrapping and crowding the input).
+        btn.title = "Restrict Quick Search to: — choose which row kinds the toolbar quick-search may surface in the results. All-on (default) means no restriction.";
+        btn.setAttribute("aria-label", "Restrict Quick Search to");
+        const arrow = doc.createElementNS(NS_HTML, "span");
+        arrow.className = "wv-qs-scope-btn-arrow";
+        arrow.textContent = "▾";
+        btn.appendChild(arrow);
+
+        const KINDS_QS = [
+            { key: "parent",     label: "Parent" },
+            { key: "attachment", label: "Attachment" },
+            { key: "annotation", label: "Annotation" },
+        ];
+        btn.__wvKinds = KINDS_QS;
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            // Open a real XUL menupopup (top-level overlay) rather
+            // than the cross-level filters' inline HTML popup —
+            // the anchor here is the toolbar search box, OUTSIDE
+            // the filter popup's container, so an inline absolute-
+            // positioned popup would land inside the filter popup
+            // and get clipped by its bounds.
+            this._openQuickSearchScopeMenupopup(btn, KINDS_QS, refreshAll);
+        });
+        wrapper.appendChild(btn);
+
+        this._refreshQuickSearchScopeButtonState(btn);
+        this._updateQuickSearchScopeButtonVisibility(sb, btn);
+
+        // Live-update visibility as the user types.
+        const onSearchInput = () => {
+            this._updateQuickSearchScopeButtonVisibility(sb, btn);
+        };
+        btn.__wvInputHandler = onSearchInput;
+        sb.addEventListener("input", onSearchInput, true);
+        sb.addEventListener("command", onSearchInput);
+    }
+
+    /** Refresh the scope-button's "modified" marker — set when any
+     *  scope key is `false` so the user knows the dropdown is
+     *  currently narrowing results. */
+    _refreshQuickSearchScopeButtonState(btn) {
+        try {
+            const g = this._activeGroup();
+            const scope = (g && g.quickSearchScope) || {};
+            const kinds = btn.__wvKinds || [];
+            const allOn = kinds.every(k => scope[k.key] !== false);
+            if (allOn) btn.removeAttribute("data-modified");
+            else btn.setAttribute("data-modified", "true");
+        } catch (e) {}
+    }
+
+    /** Show the button whenever the quick-search has text — same
+     *  persistence as the × clear button. The scope dropdown only
+     *  takes effect when a Weavero filter is also active (Zotero's
+     *  native search has no per-kind scope), but keeping it visible
+     *  lets the user prepare the scope before opening the filter
+     *  popup and matches the × button's lifecycle. */
+    _updateQuickSearchScopeButtonVisibility(sb, btn) {
+        try {
+            const v = (sb.value || "").trim();
+            btn.style.display = v ? "" : "none";
+        } catch (e) {}
+    }
+
+    /** Re-evaluate the QS scope button's visibility. Cheap; safe
+     *  to call after any filter-state mutation. */
+    _refreshQuickSearchScopeButtonVisibility() {
+        try {
+            const win = Zotero.getMainWindow();
+            const doc = win && win.document;
+            if (!doc) return;
+            const sb = doc.getElementById("zotero-tb-search");
+            const btn = doc.querySelector(".wv-qs-scope-btn");
+            if (sb && btn) this._updateQuickSearchScopeButtonVisibility(sb, btn);
+        } catch (e) {}
+    }
+
+    /** Open a XUL `<panel>` hosting the same HTML content
+     *  (`APPLY TO` header + per-kind HTML checkboxes) the inline
+     *  cross-level scope popup uses, so both dropdowns render
+     *  identically. A `<panel>` (rather than a `<menupopup>`) is
+     *  used because (a) it floats as a top-level overlay — the
+     *  anchor here is the toolbar search box, outside the filter
+     *  popup's container — and (b) it accepts arbitrary HTML
+     *  content, so the same styling rules
+     *  (`.wv-filter-scope-popup`, `.wv-filter-scope-popup-head`,
+     *  `.wv-filter-scope-popup-row`) apply unchanged. */
+    _openQuickSearchScopeMenupopup(anchor, kinds, refreshAll) {
+        const doc = anchor.ownerDocument;
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        // Drop any stale popup from a previous click before opening
+        // a new one.
+        const stale = doc.querySelectorAll("panel.wv-qs-scope-panel");
+        for (const s of stale) {
+            try { (s as any).hidePopup(); } catch (e) {}
+            try { s.remove(); } catch (e) {}
+        }
+        const g = this._activeGroup();
+        if (!g) return;
+        if (!g.quickSearchScope) {
+            g.quickSearchScope = {};
+            for (const k of kinds) g.quickSearchScope[k.key] = true;
+        }
+        const scope = g.quickSearchScope;
+
+        const pop: any = doc.createXULElement("panel");
+        pop.className = "wv-qs-scope-panel";
+        // No platform-default fade — match the filter popup's
+        // instant-open behaviour.
+        pop.setAttribute("animate", "false");
+        // `level="top"` raises the panel above every other XUL
+        // panel in the same window. Without this, the QS scope
+        // dropdown rendered BEHIND the filter popup (which has
+        // `noautohide="true"`), making the checkboxes nearly
+        // invisible — the filter popup covered them.
+        pop.setAttribute("level", "top");
+
+        // HTML content — identical structure to the inline cross-
+        // level scope popup so the shared CSS rules apply.
+        const inner = doc.createElementNS(NS_HTML, "div");
+        inner.className = "wv-filter-scope-popup wv-qs-scope-popup-inner";
+        // Override the `position: absolute` from .wv-filter-scope-popup
+        // since here we're inside a XUL panel that positions itself.
+        inner.style.position = "static";
+
+        const heading = doc.createElementNS(NS_HTML, "div");
+        heading.className = "wv-filter-scope-popup-head";
+        heading.textContent = "Apply to";
+        inner.appendChild(heading);
+
+        for (const k of kinds) {
+            const lbl = doc.createElementNS(NS_HTML, "label");
+            lbl.className = "wv-filter-scope-popup-row";
+            const cb: any = doc.createElementNS(NS_HTML, "input");
+            cb.type = "checkbox";
+            cb.checked = scope[k.key] !== false;
+            cb.addEventListener("change", () => {
+                scope[k.key] = !!cb.checked;
+                try {
+                    // Sync the modified-state cue on the search-box button.
+                    const btn = doc.querySelector(".wv-qs-scope-btn");
+                    if (btn) this._refreshQuickSearchScopeButtonState(btn);
+                } catch (e) {}
+                try { this._renderFilterBar(); } catch (e) {}
+                try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+                try { refreshAll(); } catch (e) {}
+            });
+            lbl.appendChild(cb);
+            const txt = doc.createElementNS(NS_HTML, "span");
+            txt.textContent = k.label;
+            lbl.appendChild(txt);
+            inner.appendChild(lbl);
+        }
+
+        pop.appendChild(inner);
+        // XUL panels must be in the document tree.
+        doc.documentElement.appendChild(pop);
+        try {
+            pop.openPopup(anchor, "after_start", 0, 0, false, false);
+        } catch (e) {
+            Zotero.debug("[Weavero] QS scope panel open err: " + e);
+        }
+        // Self-remove on hide so the document doesn't accumulate
+        // stale popup nodes.
+        pop.addEventListener("popuphidden", () => {
+            try { pop.remove(); } catch (e) {}
+        });
+    }
+
+    /** Remove the injected scope button from the toolbar search.
+     *  Called from `popuphidden`. Safe to call when not installed. */
+    _uninstallQuickSearchScopeButton(doc) {
+        try {
+            const sb: any = doc.getElementById("zotero-tb-search");
+            if (!sb) return;
+            const btn: any = sb.querySelector(".wv-qs-scope-btn");
+            if (!btn) return;
+            if (btn.__wvInputHandler) {
+                sb.removeEventListener("input", btn.__wvInputHandler, true);
+                sb.removeEventListener("command", btn.__wvInputHandler);
+            }
+            btn.remove();
+        } catch (e) {}
+    }
+
+
     /** Cross-level section — three icon-only tri-state buttons that
      *  apply to every row kind:
      *    - Has Related: item has at least one related-item link
@@ -4228,19 +5748,25 @@ class _FilterMixin {
         // covers both attachment files AND item notes; non-note
         // attachments are referred to as "Attachment Files"
         // elsewhere in the UI.
+        // Ordered Parent → Attachment → Annotation (higher tree
+        // level first) so every "Apply to" dropdown in the popup
+        // reads consistently.
         const KINDS_ROW = [
-            { key: "annotation", label: "Annotation" },
-            { key: "attachment", label: "Attachment" },
             { key: "parent",     label: "Parent" },
+            { key: "attachment", label: "Attachment" },
+            { key: "annotation", label: "Annotation" },
         ];
         // Has Link's kind list — text-source-specific buckets
         // (URL detection only fires on annotation comments and
         // note bodies; attachment URL fields and regular-item URL
-        // fields don't count).
+        // fields don't count). Ordered high → low: standalone
+        // notes are top-level (parent tier), item notes sit at the
+        // attachment tier, annotation comments at the annotation
+        // tier.
         const KINDS_HAS_LINK = [
-            { key: "annotationComment", label: "Annotation Comment" },
-            { key: "itemNoteText",      label: "Item Note Text" },
             { key: "standaloneText",    label: "Standalone Note Text" },
+            { key: "itemNoteText",      label: "Item Note Text" },
+            { key: "annotationComment", label: "Annotation Comment" },
         ];
 
         // Each cross-level filter renders as a slot containing the
@@ -4563,51 +6089,118 @@ class _FilterMixin {
             "var(--accent-green)");
     }
 
-    /** Single-tile "Has Annotations" tri-state for the Attachment
-     *  group. */
+    /** Row hosting two tiles in the Attachment group:
+     *  - Linked File (leftmost) — multi-select chip alongside the
+     *    other attachment file kinds; matched via the pseudo-kind
+     *    `attachmentLinkedFile` (any attachment with
+     *    `attachmentLinkMode === LINK_MODE_LINKED_FILE`).
+     *  - Has Annotations — tri-state; the original sole tile here.
+     *  Section title stays "Has Annotations" — labels the second
+     *  tile, the first is identified by its tooltip. */
     _renderHasAnnotationsSection(doc, section, refreshAll) {
-        const NS_HTML = "http://www.w3.org/1999/xhtml";
-        this._renderBoolKindIconSection(doc, section, refreshAll, {
-            key: "hasAnnotations",
-            title: "Has Annotations",
-            tip: "Has Annotations — file attachments with at least "
-                + "one annotation. Alt+click to exclude.",
-            iconBuilder: (d) => {
-                const icon = d.createElementNS(NS_HTML, "img");
-                icon.className = "wv-filter-svg";
-                icon.src = "chrome://zotero/skin/16/universal/attachment-annotations.svg";
-                icon.alt = "Has Annotations";
-                // Zotero maps `attachment-annotations` to
-                // `--tag-purple` in the item-pane sections palette
-                // — same icon, same colour.
-                icon.style.color = "var(--tag-purple)";
-                return icon;
-            },
-        });
-    }
-
-    _renderHasCommentSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
-
         const NS_HTML = "http://www.w3.org/1999/xhtml";
+
         const title = doc.createElementNS(NS_HTML, "div");
         title.className = "wv-filter-section-title";
-        title.textContent = "Has Comment";
-        title.title = "Has Comment";
+        title.textContent = "Has Annotations";
         section.appendChild(title);
 
-        const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
-        section.appendChild(opts);
+        const optsBox = doc.createElementNS(NS_HTML, "div");
+        optsBox.className = "wv-filter-options";
+        section.appendChild(optsBox);
 
-        // Single button labelled "Has Comment" with three states:
-        //   null  → no filter (idle)
-        //   true  → include (annotations WITH a comment) — selected
-        //   false → exclude (annotations WITHOUT a comment) — slashed
-        // Click toggles include; Alt+click toggles exclude. Mutually
-        // exclusive: switching to one clears the other, mirroring the
-        // icon-grid Alt+click idiom.
+        const g0 = this._activeGroup();
+
+        // ── Linked File tile (leftmost) ─────────────────────────
+        // Multi-select alongside the other attachment file-type
+        // tiles — toggles inclusion / exclusion of the pseudo-kind
+        // `attachmentLinkedFile` in `attachmentFileType` /
+        // `attachmentFileTypeExclude`. Uses the same icon as the
+        // file-type strip would (looked up from
+        // `_ATTACHMENT_FILE_TYPES_DATA` so the icon stays defined
+        // in one place).
+        const linkedDef = this._ATTACHMENT_FILE_TYPES.find(
+            x => x.value === "attachmentLinkedFile");
+        if (linkedDef) {
+            const selected = new Set((g0 && g0.attachmentFileType) || []);
+            const excluded = new Set((g0 && g0.attachmentFileTypeExclude) || []);
+            const lfBtn = doc.createElementNS(NS_HTML, "button");
+            lfBtn.type = "button";
+            lfBtn.className = "wv-filter-opt wv-filter-opt-icon";
+            lfBtn.title = "Linked File — attachments stored as links to "
+                + "external files (any content type). Alt+click to exclude.";
+            if (selected.has("attachmentLinkedFile")) lfBtn.dataset.selected = "true";
+            if (excluded.has("attachmentLinkedFile")) lfBtn.dataset.excluded = "true";
+            const lfIcon = doc.createElementNS(NS_HTML, "img");
+            lfIcon.className = "wv-filter-svg";
+            lfIcon.src = linkedDef.icon;
+            lfIcon.alt = "Linked File";
+            lfBtn.appendChild(lfIcon);
+            lfBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const next = this._toggleIncludeExclude(
+                    "attachmentLinkedFile",
+                    [...selected], [...excluded], e.altKey);
+                const g = this._activeGroup();
+                if (g) {
+                    g.attachmentFileType = next.include;
+                    g.attachmentFileTypeExclude = next.exclude;
+                }
+                this._renderFilterBar();
+                this._applyItemsListFilter({ cascade: true });
+                refreshAll();
+            });
+            optsBox.appendChild(lfBtn);
+        }
+
+        // Separator pushes Has Annotations to the right edge —
+        // same `margin-left: auto` trick the Item Note row uses.
+        const haSep = doc.createElementNS(NS_HTML, "div");
+        haSep.className = "wv-filter-vertical-separator";
+        haSep.style.marginLeft = "auto";
+        optsBox.appendChild(haSep);
+
+        // ── Has Annotations tile (tri-state) ────────────────────
+        const cur = g0 ? g0.hasAnnotations : null;
+        const haBtn = doc.createElementNS(NS_HTML, "button");
+        haBtn.type = "button";
+        haBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        haBtn.title = "Has Annotations — file attachments with at least "
+            + "one annotation. Alt+click to exclude.";
+        if (cur === true) haBtn.dataset.selected = "true";
+        else if (cur === false) haBtn.dataset.excluded = "true";
+        const haIcon = doc.createElementNS(NS_HTML, "img");
+        haIcon.className = "wv-filter-svg";
+        haIcon.src = "chrome://zotero/skin/16/universal/attachment-annotations.svg";
+        haIcon.alt = "Has Annotations";
+        // Zotero maps `attachment-annotations` to `--tag-purple`
+        // in the item-pane sections palette — same icon, same colour.
+        haIcon.style.color = "var(--tag-purple)";
+        haBtn.appendChild(haIcon);
+        haBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.hasAnnotations === false) ? null : false;
+            else          next = (g.hasAnnotations === true) ? null : true;
+            g.hasAnnotations = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        optsBox.appendChild(haBtn);
+    }
+
+    /** Build the Has Comment tile as a standalone button element so
+     *  it can be appended inline at the right end of the Annotation
+     *  Type row (see `_renderTypeSection`). The standalone-section
+     *  renderer below is now a no-op — the tile lives on the type
+     *  row instead of its own row. */
+    _makeHasCommentTile(doc, refreshAll) {
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
         const g0 = this._activeGroup();
         const cur = g0 ? g0.annotationHasComment : null;
         const btn = doc.createElementNS(NS_HTML, "button");
@@ -4617,10 +6210,6 @@ class _FilterMixin {
         else if (cur === false) btn.dataset.excluded = "true";
         btn.title = "Has Comment — annotations with non-empty "
             + "comment text. Alt+click to exclude.";
-        // Speech-bubble + capital C, painted in `--tag-purple`
-        // (Zotero's annotation-pane accent). Inline SVG rather than
-        // a chrome:// URL since this is a Weavero-specific glyph
-        // not shipped with Zotero.
         btn.appendChild(this._makeHasCommentSvg(doc));
         btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -4628,10 +6217,8 @@ class _FilterMixin {
             if (!g) return;
             let next;
             if (e.altKey) {
-                // Alt+click toggles exclude.
                 next = (g.annotationHasComment === false) ? null : false;
             } else {
-                // Plain click toggles include.
                 next = (g.annotationHasComment === true) ? null : true;
             }
             g.annotationHasComment = next;
@@ -4639,7 +6226,18 @@ class _FilterMixin {
             this._applyItemsListFilter({ cascade: true });
             refreshAll();
         });
-        opts.appendChild(btn);
+        return btn;
+    }
+
+    /** Has Comment now sits inline at the right end of the
+     *  Annotation Type row (see `_renderTypeSection`). This
+     *  renderer is kept as a no-op shim so the standalone section
+     *  div stays empty and collapses out of the layout — keeps the
+     *  outer panel `appendChild(commentSection)` call working
+     *  without it producing a visible row. */
+    _renderHasCommentSection(_doc, section, _refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "";
     }
 
     /** Build the Has Comment glyph — a rounded speech bubble with a
@@ -5113,6 +6711,12 @@ class _FilterMixin {
         const selected = new Set((g0 && g0.attachmentFileType) || []);
         const excluded = new Set((g0 && g0.attachmentFileTypeExclude) || []);
         for (const def of this._ATTACHMENT_FILE_TYPES) {
+            // `attachmentLinkedFile` is a pseudo-kind rendered as
+            // its own tile in the Has Annotations row (see
+            // `_renderHasAnnotationsSection`), not in this file-type
+            // strip — keeps the file-type strip aligned on content-
+            // type kinds only.
+            if (def.value === "attachmentLinkedFile") continue;
             const btn = doc.createElementNS(NS_HTML, "button");
             btn.type = "button";
             btn.className = "wv-filter-opt wv-filter-opt-icon";
@@ -5145,14 +6749,20 @@ class _FilterMixin {
             opts.appendChild(btn);
         }
 
-        // Item Note tile sits to the right of the file-type icons,
-        // after a thin vertical separator. Item notes are
-        // attachment-level rows (same tree depth as attachments)
-        // — the file-type tiles target attachment-files, the Item
-        // Note tile targets the OTHER kind of attachment-level
-        // row, hence the visual grouping.
+        // Item Note tile sits at the FAR RIGHT of the file-type
+        // row — mirrors the Standalone Note tile's placement at the
+        // right end of the Item Type row (where the selected-chips
+        // container's `flex: 1 1 auto` does the same job
+        // implicitly). Here the file-type tiles are fixed-size flex
+        // items, so we push everything-after-the-separator to the
+        // right with `margin-left: auto` on the separator itself.
+        // Item notes are attachment-level rows (same tree depth as
+        // attachments); the file-type tiles target attachment-files,
+        // the Item Note tile targets the OTHER kind of attachment-
+        // level row, hence the visual grouping.
         const sep = doc.createElementNS(NS_HTML, "div");
         sep.className = "wv-filter-vertical-separator";
+        sep.style.marginLeft = "auto";
         opts.appendChild(sep);
 
         const inCur = g0 ? g0.itemNote : null;
@@ -5165,7 +6775,41 @@ class _FilterMixin {
         else if (inCur === false) inBtn.dataset.excluded = "true";
         const inIcon = doc.createElementNS(NS_HTML, "img");
         inIcon.className = "wv-filter-svg";
-        inIcon.src = "chrome://zotero/skin/16/universal/note.svg";
+        // Custom Item Note icon — Zotero's note glyph (rectangle
+        // with a folded bottom-right corner) plus a small L-shaped
+        // tree-branch on the left signalling "child of a parent
+        // item". Distinguishes visually from Standalone Note,
+        // which uses the plain note glyph. `stroke="context-stroke"`
+        // resolves through `.wv-filter-svg`'s
+        // `-moz-context-properties` rule to currentColor, which is
+        // overridden below to `--accent-yellow` for parity with
+        // Zotero's note-section colour.
+        inIcon.src = "data:image/svg+xml;utf8,"
+            + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
+            // stroke-width=1 matches Zotero's 1-pixel outline
+            // weight (their stock icons are filled paths simulating
+            // a 1-px border — see note.svg's outer/inner rect
+            // pattern). Paths are anchored on .5-pixel offsets so a
+            // 1-px stroke centered there paints exactly one pixel
+            // row/column for every horizontal and vertical segment.
+            + " fill='none' stroke='context-stroke' stroke-width='1'"
+            + " shape-rendering='geometricPrecision'>"
+            // L-branch: vertical at column 1 from row 0 to row 7,
+            // then horizontal across row 7 to the note's left edge.
+            + "<path d='M1.5 0.5 V7.5 H4.5'/>"
+            // Note outline: cols 4..14, rows 1..14, with a 4-px
+            // folded-corner diagonal at bottom-right.
+            + "<path d='M4.5 1.5 H14.5 V10.5 L10.5 14.5 H4.5 Z'/>"
+            // Inner horizontal line just below the top edge —
+            // mirrors the "title bar" hairline in Zotero's stock
+            // note.svg (the small `M3 1 H14 V2 H3 V1` subpath).
+            // Sits in the inner area (1-px inset from the outline)
+            // at row y=3, with a 1-px gap to the top outline at
+            // row y=1.
+            + "<path d='M5.5 3.5 H13.5'/>"
+            // Folded bottom-right corner (inner L of the cut).
+            + "<path d='M14.5 10.5 H10.5 V14.5'/>"
+            + "</svg>";
         inIcon.alt = "Item Note";
         // Same `--accent-yellow` Zotero uses for the notes section.
         inIcon.style.color = "var(--accent-yellow)";
@@ -5700,15 +7344,37 @@ class _FilterMixin {
         // Guard — `tree.invalidate()` re-renders rows, which fires the
         // tree mutation observer that calls us back. Without this we'd
         // recurse on every filter apply.
-        if (this._filterApplying) return;
+        //
+        // Catch the missed reapply: when search is active the cascade
+        // can take ~600ms, and observer fires during that window all
+        // bail. If the LAST mutation arrived while we were still
+        // running, the keep[] we just built may already be stale —
+        // _rows kept growing after our Pass 2 snapshot. Mark "dirty"
+        // when a reapply is requested but bounced by the guard, and
+        // run one more after the timeout if so.
+        if (this._filterApplying) {
+            this._filterApplyDirty = true;
+            return;
+        }
         this._filterApplying = true;
+        this._filterApplyDirty = false;
         try { this._applyItemsListFilterInner(opts); }
         finally {
             const win = Zotero.getMainWindow();
             const setT = (win && win.setTimeout) || setTimeout;
             // Defer clearing so observer fires that are queued from our
             // own mutations get filtered out too.
-            setT(() => { this._filterApplying = false; }, 80);
+            setT(() => {
+                this._filterApplying = false;
+                if (this._filterApplyDirty) {
+                    this._filterApplyDirty = false;
+                    try { this._applyItemsListFilter(); }
+                    catch (e) {
+                        Zotero.debug(
+                            "[Weavero][filter] dirty reapply err: " + e);
+                    }
+                }
+            }, 80);
         }
     }
 
@@ -5722,6 +7388,17 @@ class _FilterMixin {
         if (!win) return;
         const itemsView = win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!itemsView || !itemsView.tree) return;
+
+        // Snapshot the native quick-search value once per apply so
+        // `_rowPassesFilters` can cheaply consult it inside the
+        // per-row loop without repeatedly touching the DOM. Used
+        // exclusively by the quickSearchScope check — when empty,
+        // scope is a no-op regardless of how it's set.
+        try {
+            const sb = win.document.getElementById("zotero-tb-search") as any;
+            this._currentQuickSearchValue = (sb && sb.value
+                ? String(sb.value).trim() : "");
+        } catch (e) { this._currentQuickSearchValue = ""; }
 
         // Library-change detection. Collection IDs and saved-search
         // IDs are library-scoped — a filter set in library A makes
@@ -6081,18 +7758,47 @@ class _FilterMixin {
         // the behaviour the user expects from each filter trigger
         // (e.g. picking `itemType=book` shows books, not their
         // attachments / notes / annotations as well).
+        // Two-pass keep build. First pass collects primary indices.
+        // Second pass walks UP from each primary row through `_rows`
+        // (not the DB) to add ancestor-keep entries. This matters
+        // when Zotero's quick-search adds a parent to `_rows` because
+        // its own title matched, but doesn't include the parent's
+        // children — under the old DB-walking `hasMatch`, the parent
+        // would be ancestor-kept because some DB-descendant is
+        // primary, even though that descendant isn't in `_rows` and
+        // never renders. The user just sees an empty parent.
+        //
+        // Now: an ancestor only gets kept if a primary row literally
+        // sits below it in `_rows` at a deeper level. If Zotero
+        // didn't promote the child into the tree, the parent doesn't
+        // get the ancestor-keep treatment either.
+        const primaryIdxs: number[] = [];
         for (let j = 0; j < total; j++) {
             let row;
             try { row = origGetRow(j); } catch (e) { continue; }
             if (!row || !row.ref) continue;
-            const item = row.ref;
-            if (isPrimary(item)) {
+            if (isPrimary(row.ref)) {
                 pushKeep(j);
-            } else if (hasMatch(item)) {
-                // Ancestor-keep — `hasMatch` is true when some
-                // descendant is primary, so this row needs to stay
-                // visible to preserve the path down to the match.
-                pushKeep(j);
+                primaryIdxs.push(j);
+            }
+        }
+        // Walk UP through `_rows` from each primary index, adding
+        // each ancestor row (level strictly less than the current).
+        // Stops when level reaches 0 (top-level row reached).
+        for (const j of primaryIdxs) {
+            let row;
+            try { row = origGetRow(j); } catch (e) { continue; }
+            if (!row) continue;
+            let lvl = row.level || 0;
+            for (let k = j - 1; k >= 0 && lvl > 0; k--) {
+                let kr;
+                try { kr = origGetRow(k); } catch (e) { continue; }
+                if (!kr) continue;
+                const kLvl = kr.level || 0;
+                if (kLvl < lvl) {
+                    pushKeep(k);
+                    lvl = kLvl;
+                }
             }
         }
         // Force-include rows whose underlying item the user just
@@ -6104,23 +7810,49 @@ class _FilterMixin {
         // state — Zotero selects the new item but our filter has
         // dropped its row, so itemBox can't find it. We also walk up
         // and keep ancestor rows so the tree path stays valid.
-        const recentIDs = this._wvRecentlyAddedItemIDs;
+        // Force-include items added in the last RECENT_WINDOW_MS.
+        // Was a session-lifetime `Set` — items the user created at
+        // any point during the session stayed visible regardless of
+        // filter match, which confused testing of newly-built items
+        // (e.g. a "Has Related" filter showing items with zero
+        // related items, because the items had been created earlier
+        // in the same session). A short timestamped window covers
+        // the original "itemBox can't find a just-created item"
+        // race without lingering past the user's attention.
+        const recentIDs: any = this._wvRecentlyAddedItemIDs;
+        const RECENT_WINDOW_MS = 10000;
+        const isRecentMap = recentIDs && typeof recentIDs.get === "function";
         if (recentIDs && recentIDs.size) {
-            for (let j = 0; j < total; j++) {
-                let row;
-                try { row = origGetRow(j); } catch (e) { continue; }
-                if (!row || !row.ref) continue;
-                if (!recentIDs.has(row.ref.id)) continue;
-                pushKeep(j);
-                let lvl = row.level || 0;
-                for (let k = j - 1; k >= 0 && lvl > 0; k--) {
-                    let kr;
-                    try { kr = origGetRow(k); } catch (e) { continue; }
-                    if (!kr) continue;
-                    const kLvl = kr.level || 0;
-                    if (kLvl < lvl) {
-                        pushKeep(k);
-                        lvl = kLvl;
+            const cutoff = Date.now() - RECENT_WINDOW_MS;
+            // Drop expired entries up-front so the set doesn't grow
+            // unboundedly across long sessions.
+            if (isRecentMap) {
+                for (const [id, ts] of recentIDs) {
+                    if (ts < cutoff) recentIDs.delete(id);
+                }
+            }
+            const isFresh = (id) => {
+                if (!isRecentMap) return recentIDs.has(id);
+                const ts = recentIDs.get(id);
+                return ts !== undefined && ts >= cutoff;
+            };
+            if (recentIDs.size) {
+                for (let j = 0; j < total; j++) {
+                    let row;
+                    try { row = origGetRow(j); } catch (e) { continue; }
+                    if (!row || !row.ref) continue;
+                    if (!isFresh(row.ref.id)) continue;
+                    pushKeep(j);
+                    let lvl = row.level || 0;
+                    for (let k = j - 1; k >= 0 && lvl > 0; k--) {
+                        let kr;
+                        try { kr = origGetRow(k); } catch (e) { continue; }
+                        if (!kr) continue;
+                        const kLvl = kr.level || 0;
+                        if (kLvl < lvl) {
+                            pushKeep(k);
+                            lvl = kLvl;
+                        }
                     }
                 }
             }
@@ -6129,6 +7861,21 @@ class _FilterMixin {
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
         const keep = [...keepSet].sort((a: number, b: number) => a - b);
+        // Snapshot of `_rows.length` at the moment we built keep.
+        // Used by the patched accessors to detect "Zotero rebuilt
+        // _rows behind our back" — typically a quick-search refresh
+        // (Zotero's `setFilter` empties + re-fills `_rows` via the
+        // collection-tree-row's `getItems()`). When that happens our
+        // keep[] is stale: its indices point into the OLD `_rows`,
+        // so `keep[i]` may either be past the new tail (→ getRow
+        // returns undefined → upstream `_sort` does `.ref` → crash,
+        // surfaced as "Error loading items list") or land on a
+        // DIFFERENT row than before (→ duplicate-looking results in
+        // the items pane). Falling through to the original methods
+        // until the next reapply rebuilds keep is the safe move —
+        // the MutationObserver fires on the tree DOM repaint that
+        // follows and re-installs a fresh translation.
+        const keepRowsLen = rp._rows.length;
 
         Zotero.debug("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
@@ -6166,19 +7913,29 @@ class _FilterMixin {
             return r;
         };
 
+        // Helper: keep is stale whenever `_rows.length` no longer
+        // matches what we measured at apply time. Translating through
+        // a stale keep is what produced the search-clear crash AND
+        // the duplicate-row glitch. We fall through to the unfiltered
+        // original until the MutationObserver-driven reapply runs.
+        const stale = () => rp._rows.length !== keepRowsLen;
+
         rp.getRow = function (idx) {
             if (this[SELF]) return rp._wvOrigGetRow(idx);
+            if (stale()) return rp._wvOrigGetRow(idx);
             const r = safeReal(idx);
             if (r < 0) return undefined;
             return rp._wvOrigGetRow(r);
         };
         rp.getRowCount = function () {
             if (this[SELF]) return rp._wvOrigGetRowCount();
+            if (stale()) return rp._wvOrigGetRowCount();
             return keep.length;
         };
         if (rp._wvOrigGetLevel) {
             rp.getLevel = function (idx) {
                 if (this[SELF]) return rp._wvOrigGetLevel(idx);
+                if (stale()) return rp._wvOrigGetLevel(idx);
                 const r = safeReal(idx);
                 if (r < 0) return 0;
                 return rp._wvOrigGetLevel(r);
@@ -6195,6 +7952,7 @@ class _FilterMixin {
         const wrapProbe = function (origFn, fallback) {
             return function (idx) {
                 if (this[SELF]) return origFn.call(this, idx);
+                if (stale()) return origFn.call(this, idx);
                 const realIdx = safeReal(idx);
                 if (realIdx < 0) return fallback;
                 const wasFlag = this[SELF];
@@ -6234,6 +7992,9 @@ class _FilterMixin {
                 if (this[SELF]) {
                     return origFn.call(this, filteredIdx, skipRowMapRefresh);
                 }
+                if (stale()) {
+                    return origFn.call(this, filteredIdx, skipRowMapRefresh);
+                }
                 const realIdx = keep[filteredIdx];
                 if (realIdx === undefined) return;
                 const wasFlag = this[SELF];
@@ -6259,6 +8020,7 @@ class _FilterMixin {
         const wrapMulti = function (origFn) {
             return function (indices) {
                 if (this[SELF]) return origFn.call(this, indices);
+                if (stale()) return origFn.call(this, indices);
                 const real = (indices || []).map(i => keep[i])
                     .filter(x => x !== undefined);
                 const wasFlag = this[SELF];
@@ -6363,31 +8125,37 @@ class _FilterMixin {
      *  cascade — a parent the user had manually expanded before
      *  applying the filter is left alone. */
     _partialCollapseOnFilterClear(rp, itemsView) {
-        const opened = this._filterOpenedIDs;
+        // Drop the filter-opened tracker (no longer needed).
         this._filterOpenedIDs = null;
-        if (!opened || !opened.size) return;
         if (!rp || !rp._rows) return;
-        // `_toggleOpenState` is the low-level mutate-only path —
-        // doesn't fire `runListeners('update', ...)`, so no selection
-        // restore storms during teardown. `refreshRowMap` syncs the
-        // id→idx lookup once at the end.
+        // Skip the collapse pass entirely when Zotero's native
+        // quick-search is still active: a query like "NewTest"
+        // populated `_rows` with matches that the user wants to
+        // SEE, and collapsing their parents would hide them. The
+        // collapse should only fire when the tree is truly going
+        // back to its default unfiltered/unsearched view.
+        try {
+            const win = Zotero.getMainWindow();
+            const sb: any = win && win.document.getElementById("zotero-tb-search");
+            const qs = (sb && sb.value ? String(sb.value).trim() : "");
+            if (qs) return;
+        } catch (e) {}
         const toggle = rp._toggleOpenState
             && rp._toggleOpenState.bind(rp);
         if (!toggle) return;
-        // Iterate from the bottom so closing one doesn't shift the
-        // indices of those still to check.
+        // Fully collapse: close every open container regardless of
+        // who opened it (filter or user) or which level it sits
+        // at. Iterating from the bottom keeps indices stable as
+        // containers close.
         for (let i = rp._rows.length - 1; i >= 0; i--) {
             const row = rp._rows[i];
-            if (!row || !row.ref) continue;
-            if (!opened.has(row.ref.id)) continue;
-            // Z9 keeps level-0 parents open after clear; we match that.
-            if ((row.level || 0) < 1) continue;
+            if (!row) continue;
             const isOpenContainer = row.isContainer && row.isContainer()
                 && row.isContainerOpen && row.isContainerOpen();
             if (!isOpenContainer) continue;
             try { toggle(i, true); }
             catch (e) {
-                Zotero.debug("[Weavero][filter] partial-collapse err: " + e);
+                Zotero.debug("[Weavero][filter] collapse-on-clear err: " + e);
             }
         }
         try { rp.refreshRowMap && rp.refreshRowMap(); } catch (e) {}

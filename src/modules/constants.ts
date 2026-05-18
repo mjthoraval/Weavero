@@ -686,6 +686,22 @@ export const PLUGIN_CSS = [
     "  cursor: pointer; user-select: none;",
     "}",
     ".wv-filter-display-opt input { margin: 0; }",
+    // "+N hidden" / "-N revealing" badge appended to a container row's
+    // primary cell. Indicates how many DB direct children are
+    // currently filtered out and exposes a click-to-reveal action
+    // for that single container.
+    ".wv-hidden-badge {",
+    "  display: inline-flex; align-items: center;",
+    "  margin: 0 4px; padding: 0 5px;",
+    "  font: inherit; font-size: 10px; line-height: 1.4;",
+    "  border-radius: 6px; cursor: pointer;",
+    "  background: var(--accent-orange, #cc8400); color: white;",
+    "  opacity: 0.85; user-select: none;",
+    "}",
+    ".wv-hidden-badge:hover { opacity: 1; }",
+    ".wv-hidden-badge.wv-revealed {",
+    "  background: var(--accent-blue, #5e6ad2);",
+    "}",
     ".wv-filter-section {",
     "  display: flex; flex-direction: row; align-items: center; gap: 4px;",
     "}",

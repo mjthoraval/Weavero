@@ -281,22 +281,44 @@ class _FilterMixin {
         try {
             const win = Zotero.getMainWindow();
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
-            const rp: any = itemsView && itemsView.rowProvider;
-            if (!rp || typeof rp._expandMatchParents !== "function") return;
+            if (!itemsView) return;
+            // V9-COMPAT: Zotero 10 has `rowProvider._expandMatchParents`;
+            // Zotero 9 has `itemsView.expandMatchParents` (no underscore,
+            // no rowProvider). Find whichever exists.
+            const rp: any = itemsView.rowProvider || itemsView;
+            const methodName = (typeof rp._expandMatchParents === "function")
+                ? "_expandMatchParents"
+                : (typeof rp.expandMatchParents === "function"
+                    ? "expandMatchParents"
+                    : null);
+            if (!methodName) return;
             if (rp._wvExpandMatchParentsPatched) return;
-            const orig = rp._expandMatchParents;
+            const orig = rp[methodName];
             const src = String(orig);
-            // Upstream fix already landed → mark and bail.
-            if (!src.includes("rowsToOpen")) {
+            // V9-COMPAT: Zotero 9's expandMatchParents takes
+            // searchParentIDs as an argument (no `rowsToOpen` bug);
+            // bail without patching — the user-closed-respect feature
+            // is a v10 nicety scoped out of basic v9 filter support.
+            if (methodName === "expandMatchParents"
+                || !src.includes("rowsToOpen")) {
                 rp._wvExpandMatchParentsPatched = "upstream-fixed";
                 return;
             }
-            rp._expandMatchParents = function _wvFixedExpandMatchParents() {
+            const self = this;
+            rp[methodName] = function _wvFixedExpandMatchParents() {
                 const searchParentIDs = this.searchParentIDs;
                 if (!this._searchMode || this.itemTree.props.regularOnly) return;
+                const userClosed: Set<number> = (self as any)._userClosedIDs;
                 for (let i = 0; i < this.rowCount; i++) {
                     if (!this.isContainer(i) || this.isContainerOpen(i)) continue;
                     const item = this.getRow(i).ref;
+                    // Respect a user's explicit collapse — don't
+                    // re-open a container the user just closed,
+                    // even if it sits on a match path. They can
+                    // re-open it manually if they want.
+                    if (userClosed && item && userClosed.has(item.id)) {
+                        continue;
+                    }
                     const attachments = item.isRegularItem()
                         ? item.getAttachments() : [];
                     const shouldBeOpened = searchParentIDs.has(item.id)
@@ -311,6 +333,217 @@ class _FilterMixin {
             Zotero.debug("[Weavero] Patched broken _expandMatchParents (zotero forum #131294, fixed upstream in 8d59331)");
         } catch (e) {
             Zotero.debug("[Weavero] _patchExpandMatchParents err: " + e);
+        }
+    }
+
+    /** Permanent wrap on the rowProvider's `toggleOpenState` that
+     *  keeps `_userOpenedIDs` / `_userClosedIDs` updated regardless
+     *  of whether the Weavero filter is active. Without this, the
+     *  filter-aware `wrapToggle` (installed only when a filter
+     *  chip is set) is the only path that maintains the sets, so
+     *  manually expanding an attachment when no chip is set fails
+     *  to register — and the `FileItemTreeRow.getChildItems` patch
+     *  doesn't unmask the non-matching annotations. */
+    /** Event-delegate handler for clicks on `.wv-hidden-badge`.
+     *  Toggles the badged container's id in `_userRevealedAllIDs`
+     *  and re-applies the filter. Idempotent install — bails if
+     *  the handler is already wired to the items-tree element. */
+    _installHiddenBadgeClickHandler() {
+        try {
+            const win = Zotero.getMainWindow();
+            const doc = win && win.document;
+            const treeInner: any = doc && (doc.getElementById("item-tree-main")
+                || doc.getElementById("zotero-items-tree"));
+            if (!treeInner) return;
+            if (treeInner._wvHiddenBadgeHandlerInstalled) return;
+            const self = this;
+            // Use `mousedown` in the capture phase, not `click` —
+            // Zotero's virtualized-table row handler calls
+            // `preventDefault()` on mousedown (to avoid text
+            // selection while handling row selection), which
+            // suppresses the synthesised `click` event entirely.
+            // mousedown still fires; we own it before the row
+            // handler runs, stop propagation, and skip selection.
+            const onBadgeDown = (e: any) => {
+                const t: any = e.target;
+                const badge = t && t.closest
+                    && t.closest(".wv-hidden-badge");
+                if (!badge) return;
+                e.stopPropagation();
+                e.preventDefault();
+                const id = parseInt(
+                    badge.getAttribute("data-wv-item-id") || "0", 10);
+                if (!id) return;
+                if (!self._userRevealedAllIDs) {
+                    self._userRevealedAllIDs = new Set();
+                }
+                if (self._userRevealedAllIDs.has(id)) {
+                    self._userRevealedAllIDs.delete(id);
+                } else {
+                    self._userRevealedAllIDs.add(id);
+                }
+                // Re-apply so the keep[] and the rendered badges
+                // reflect the new state.
+                try {
+                    self._applyItemsListFilter();
+                } catch (err) {}
+                // Force the tree to re-render so the badge labels
+                // (+N vs −N) flip immediately.
+                try {
+                    const iv: any = win.ZoteroPane.itemsView;
+                    iv && iv.tree && iv.tree.invalidate();
+                } catch (err) {}
+            };
+            treeInner.addEventListener("mousedown", onBadgeDown, true);
+            // Also swallow the mouseup so it doesn't trigger any
+            // row-level handler waiting for it.
+            treeInner.addEventListener("mouseup", (e: any) => {
+                const t: any = e.target;
+                const badge = t && t.closest
+                    && t.closest(".wv-hidden-badge");
+                if (!badge) return;
+                e.stopPropagation();
+                e.preventDefault();
+            }, true);
+            treeInner._wvHiddenBadgeHandlerInstalled = true;
+        } catch (e) {
+            Zotero.debug(
+                "[Weavero] _installHiddenBadgeClickHandler err: " + e);
+        }
+    }
+
+    _patchUserOpenTracking() {
+        try {
+            const win = Zotero.getMainWindow();
+            const itemsView = win && win.ZoteroPane
+                && win.ZoteroPane.itemsView;
+            if (!itemsView) return;
+            // V9-COMPAT: Zotero 10 puts `toggleOpenState` on
+            // `rowProvider`; Zotero 9 keeps it on the itemsView
+            // itself (as an async arrow-function class field).
+            const rp: any = itemsView.rowProvider || itemsView;
+            if (!rp || typeof rp.toggleOpenState !== "function") return;
+            // Version-aware marker — bump when the wrapper logic
+            // changes so a plugin reload picks up the new behaviour
+            // instead of keeping the old wrapper stuck on the
+            // persistent `itemsView` object.
+            const WRAPPER_VERSION = "v2-splice";
+            if (rp._wvUserOpenTrackingPatched === WRAPPER_VERSION) return;
+            // Peel off any previous wrappers we installed (older
+            // version markers, no marker, or plain "true" from
+            // pre-versioned builds) so we wrap the TRUE Zotero
+            // original instead of stacking wrappers.
+            if (rp._wvUserOpenTrackingPatched && rp._wvUserOpenTrackingOrig) {
+                rp.toggleOpenState = rp._wvUserOpenTrackingOrig;
+                delete rp._wvUserOpenTrackingOrig;
+            }
+            const orig = rp.toggleOpenState.bind(rp);
+            rp._wvUserOpenTrackingOrig = rp.toggleOpenState;
+            const self = this;
+            // V9-COMPAT: detect whether this is an itemsView (v9, no
+            // rowProvider) so the post-toggle splice below only runs
+            // there. On v10 the equivalent filtering is done upstream
+            // via `_patchHideContextAttachments` on row classes.
+            const isV9Toggle = !itemsView.rowProvider;
+            rp.toggleOpenState = function (idx, skipRowMapRefresh) {
+                let wasOpenBeforeOrig = false;
+                let parentLevel = 0;
+                try {
+                    // V9-COMPAT: skip tracking when the toggle is
+                    // invoked from Zotero's own auto-expand-on-search
+                    // path. On v9, `expandMatchParents` calls
+                    // `this.toggleOpenState(i, true)` for each parent
+                    // of a search match — that lands in our wrapper
+                    // and would otherwise be recorded as a "user open",
+                    // accumulating forever across search cycles and
+                    // turning the manual-expand-reveals-children rule
+                    // into "every search-touched parent reveals
+                    // everything." Heuristic: track only calls with
+                    // `skipRowMapRefresh=false` (== arity 1, manual
+                    // twisty/keyboard) and skip internal `(i, true)`.
+                    if (!skipRowMapRefresh) {
+                        const row = rp._rows[idx];
+                        const wasOpen = row && row.isOpen;
+                        const id = row && row.ref && row.ref.id;
+                        if (id != null) {
+                            if (!self._userOpenedIDs) {
+                                self._userOpenedIDs = new Set();
+                            }
+                            if (!self._userClosedIDs) {
+                                self._userClosedIDs = new Set();
+                            }
+                            if (wasOpen) {
+                                self._userOpenedIDs.delete(id);
+                                self._userClosedIDs.add(id);
+                            } else {
+                                self._userOpenedIDs.add(id);
+                                self._userClosedIDs.delete(id);
+                            }
+                        }
+                    }
+                    if (isV9Toggle) {
+                        const r = rp._rows[idx];
+                        wasOpenBeforeOrig = !!(r && r.isOpen);
+                        parentLevel = (r && r.level) || 0;
+                    }
+                } catch (e) {}
+                const result = orig(idx, skipRowMapRefresh);
+                // V9-COMPAT: replicate v10's `_patchHideContextAttachments`
+                // by post-splicing non-matching attachment/note rows
+                // out of `_rows`. Only when:
+                // - we're on v9 (the patch on row classes doesn't apply)
+                // - the toggle was an OPEN (added rows)
+                // - the call came from Zotero's internal search-expand
+                //   (`skipRowMapRefresh=true`) OR our cascade
+                // - the user has the pref off
+                // - Zotero's quick-search is active
+                try {
+                    if (isV9Toggle && skipRowMapRefresh && !wasOpenBeforeOrig
+                        && !Zotero.Prefs.get(
+                            "weavero.showContextAttachmentRows")
+                        && rp._searchMode && rp._searchItemIDs) {
+                        const sIDs = rp._searchItemIDs;
+                        const sParents = rp._searchParentIDs;
+                        const toSplice: number[] = [];
+                        for (let k = idx + 1; k < rp._rows.length; k++) {
+                            const kr = rp._rows[k];
+                            if (!kr) break;
+                            const kLvl = kr.level || 0;
+                            if (kLvl <= parentLevel) break;
+                            if (kLvl !== parentLevel + 1) continue;
+                            const cItem = kr.ref;
+                            if (!cItem) continue;
+                            // Only target attachments + notes — leave
+                            // annotations alone (Zotero already
+                            // handles those via its own pref).
+                            const isAtt = cItem.isAttachment
+                                && cItem.isAttachment();
+                            const isNote = cItem.isNote
+                                && cItem.isNote();
+                            if (!isAtt && !isNote) continue;
+                            // Keep if it's a direct match or has a
+                            // match in its subtree (annotation under
+                            // a file attachment, for instance).
+                            if (sIDs.has(cItem.id)) continue;
+                            if (sParents && sParents.has(cItem.id)) {
+                                continue;
+                            }
+                            toSplice.push(k);
+                        }
+                        // Splice in reverse to keep earlier indices valid.
+                        for (let i = toSplice.length - 1; i >= 0; i--) {
+                            rp._rows.splice(toSplice[i], 1);
+                        }
+                    }
+                } catch (e) {
+                    Zotero.debug(
+                        "[Weavero] post-toggle context-hide err: " + e);
+                }
+                return result;
+            };
+            rp._wvUserOpenTrackingPatched = "v2-splice";
+        } catch (e) {
+            Zotero.debug("[Weavero] _patchUserOpenTracking err: " + e);
         }
     }
 
@@ -498,8 +731,15 @@ class _FilterMixin {
                             && w.ZoteroPane.itemsView.rowProvider;
                         if (ivRp) {
                             liveSM = !!ivRp.searchMode;
-                            liveSIDs = ivRp.searchItemIDs;
-                            liveParents = ivRp.searchParentIDs;
+                            // V9-COMPAT: Zotero 10 exposes these as
+                            // public on the rowProvider; Zotero 9
+                            // keeps them private (`_searchItemIDs`)
+                            // on itemsView. Fall back when the public
+                            // name is undefined.
+                            liveSIDs = ivRp.searchItemIDs
+                                || ivRp._searchItemIDs;
+                            liveParents = ivRp.searchParentIDs
+                                || ivRp._searchParentIDs;
                         }
                     } catch (e) {}
                     // Fall back to a search-box check so we still
@@ -518,6 +758,19 @@ class _FilterMixin {
                         } catch (e) {}
                     }
                     if (!liveSM || !liveSIDs) return items;
+                    // User-override: if THIS container was just
+                    // opened manually (in `_userOpenedIDs`), return
+                    // every child untouched. Manual expand has
+                    // priority over the hide-context rule — the user
+                    // explicitly asked to see this subtree.
+                    try {
+                        const wvPlugin = (Zotero as any).Weavero
+                            && (Zotero as any).Weavero.plugin;
+                        const opened = wvPlugin && wvPlugin._userOpenedIDs;
+                        if (this.ref && opened && opened.has(this.ref.id)) {
+                            return items;
+                        }
+                    } catch (e) {}
                     // Treat child notes the same as attachments —
                     // the user's mental model puts both under
                     // "Non-Matching Attachments" (anything sitting
@@ -563,9 +816,144 @@ class _FilterMixin {
             Zotero.debug(
                 "[Weavero] Patched ZoteroItemTreeRow.getChildItems "
                 + "for showContextAttachmentRows");
+
+            // PARKED: +N hidden badge — disabled while the rest of
+            // the dev cycle stabilises. Re-enable by uncommenting
+            // this call (and the `_installHiddenBadgeClickHandler`
+            // call in `_setupItemsListFilterIntegration` /
+            // `_onMainWindowLoad`). The implementation
+            // (`_patchRenderPrimaryCell`, `_installHiddenBadgeClickHandler`,
+            // the `_wvHiddenCounts` Pass-2 builder, and the
+            // `.wv-hidden-badge` CSS) is intact below. See
+            // work/TODO.md for the feature description.
+            // this._patchRenderPrimaryCell(ZIRProto);
+
+            // Pair patches on FileItemTreeRow.prototype — same
+            // bundle-can't-call-`require` workaround: pull the
+            // prototype out of a live file-attachment row.
+            let FIRProto: any = null;
+            for (const r of rp._rows) {
+                const it = r && r.ref;
+                if (!it) continue;
+                if (it.isFileAttachment && it.isFileAttachment()) {
+                    FIRProto = Object.getPrototypeOf(r);
+                    break;
+                }
+            }
+            if (FIRProto) {
+                this._patchFileItemTreeRow(FIRProto);
+            }
         } catch (e) {
             Zotero.debug("[Weavero] _patchHideContextAttachments err: " + e);
         }
+    }
+
+    /** Append a `+N hidden` / `−N revealing` badge to each
+     *  container's primary cell. The badge reads from the live
+     *  `_wvHiddenCounts` map (populated by the apply pass) and the
+     *  `_userRevealedAllIDs` set. Click handling is wired
+     *  separately via event delegation on the items-tree DOM. */
+    _patchRenderPrimaryCell(ZIRProto) {
+        if (!ZIRProto || typeof ZIRProto.renderPrimaryCell !== "function") return;
+        if (ZIRProto._wvRenderPrimaryWrapped) return;
+        const orig = ZIRProto.renderPrimaryCell;
+        ZIRProto._wvOrig_renderPrimaryCell = orig;
+        const self = this;
+        ZIRProto.renderPrimaryCell = function (index, data, column) {
+            const span = orig.call(this, index, data, column);
+            try {
+                const counts = self._wvHiddenCounts;
+                if (!counts || !this.ref) return span;
+                const n = counts.get(this.ref.id);
+                if (!n) return span;
+                const revealed = !!(self._userRevealedAllIDs
+                    && self._userRevealedAllIDs.has(this.ref.id));
+                const badge = span.ownerDocument.createElement("span");
+                badge.className = "wv-hidden-badge"
+                    + (revealed ? " wv-revealed" : "");
+                badge.textContent = (revealed ? "−" : "+") + n;
+                badge.setAttribute("data-wv-item-id", String(this.ref.id));
+                badge.title = revealed
+                    ? "Showing all children of this container. Click to re-apply the filter."
+                    : `${n} hidden by the filter. Click to reveal them in this container.`;
+                span.appendChild(badge);
+            } catch (e) {}
+            return span;
+        };
+        ZIRProto._wvRenderPrimaryWrapped = true;
+    }
+
+    /** Two patches on FileItemTreeRow.prototype:
+     *
+     *  1. `isContainerEmpty` — return false whenever the attachment
+     *     has annotations in the database, regardless of how many
+     *     match the current search. Without this, Zotero's default
+     *     hides the twisty on attachments whose annotations all fail
+     *     the search → the row reads as a leaf, and the user has no
+     *     way to discover that there's content behind it.
+     *
+     *  2. `getChildItems` — when the attachment is in
+     *     `_userOpenedIDs` (manually expanded by the user), return
+     *     EVERY annotation (bypass `hideContextAnnotationRows`). The
+     *     manual expand is the user's explicit "show me everything
+     *     here" signal — the global toggle stays as a separate way
+     *     to turn this on for all attachments at once. */
+    _patchFileItemTreeRow(FIRProto) {
+        const self = this;
+        // (1) isContainerEmpty
+        const peelOurs = (key, marker) => {
+            let guard = 0;
+            while (guard++ < 8) {
+                const cur: any = FIRProto[key];
+                if (!cur || !cur[marker]) break;
+                if (!FIRProto["_wvOrig_" + key]) break;
+                FIRProto[key] = FIRProto["_wvOrig_" + key];
+                delete FIRProto["_wvOrig_" + key];
+            }
+        };
+        if (typeof FIRProto.isContainerEmpty === "function") {
+            peelOurs("isContainerEmpty", "_wvFIRWrapperEmpty");
+            const origIsEmpty = FIRProto.isContainerEmpty;
+            FIRProto._wvOrig_isContainerEmpty = origIsEmpty;
+            const wEmpty: any = function () {
+                try {
+                    const anns = (this.ref && this.ref.getAnnotations)
+                        ? (this.ref.getAnnotations() || []) : [];
+                    return anns.length === 0;
+                } catch (e) {
+                    return origIsEmpty.apply(this, arguments);
+                }
+            };
+            wEmpty._wvFIRWrapperEmpty = true;
+            FIRProto.isContainerEmpty = wEmpty;
+        }
+        // (2) getChildItems
+        if (typeof FIRProto.getChildItems === "function") {
+            peelOurs("getChildItems", "_wvFIRWrapperGCI");
+            const origGCI = FIRProto.getChildItems;
+            FIRProto._wvOrig_getChildItems = origGCI;
+            const wGCI: any = function (opts) {
+                try {
+                    const opened = self._userOpenedIDs;
+                    const revealed = self._userRevealedAllIDs;
+                    const id = this.ref && this.ref.id;
+                    if (id != null
+                        && ((opened && opened.has(id))
+                            || (revealed && revealed.has(id)))) {
+                        // Bypass the search filter for THIS
+                        // attachment — return every annotation.
+                        return (this.ref.getAnnotations
+                            && this.ref.getAnnotations()) || [];
+                    }
+                } catch (e) {}
+                return origGCI.apply(this, arguments);
+            };
+            wGCI._wvFIRWrapperGCI = true;
+            FIRProto.getChildItems = wGCI;
+        }
+        Zotero.debug(
+            "[Weavero] Patched FileItemTreeRow.isContainerEmpty + "
+            + "getChildItems (show twisty + per-item expand)");
     }
 
     // =====================================================================
@@ -1589,7 +1977,9 @@ class _FilterMixin {
                     const ivRp = win && win.ZoteroPane
                         && win.ZoteroPane.itemsView
                         && win.ZoteroPane.itemsView.rowProvider;
-                    const sids = ivRp && ivRp.searchItemIDs;
+                    // V9-COMPAT: private fallback.
+                    const sids = ivRp
+                        && (ivRp.searchItemIDs || ivRp._searchItemIDs);
                     if (sids) {
                         const scope = group.quickSearchScope;
                         const matchesInScope = (it) => {
@@ -2760,6 +3150,10 @@ class _FilterMixin {
         this._patchIsSelectable();
         this._patchExpandMatchParents();
         this._patchHideContextAttachments();
+        this._patchUserOpenTracking();
+        // PARKED: +N hidden badge click handler — paired with the
+        // disabled `_patchRenderPrimaryCell` call. See work/TODO.md.
+        // this._installHiddenBadgeClickHandler();
 
         // Re-apply filter when scroll / data-change brings new rows into
         // the virtualized window. We watch the inner tree element for
@@ -2772,6 +3166,17 @@ class _FilterMixin {
                 // `changeCollectionTreeRow` wrap will re-apply
                 // exactly once after `_rows` has fully reloaded.
                 if (this._collectionSwapping) return;
+                // Skip when an explicit caller (the Show Non-Matching
+                // Attachments toggle handler is the load-bearing case)
+                // has set a suppression window — its own `tree.invalidate()`
+                // plus the `_refreshContainer` loop produce a storm of
+                // DOM mutations which, without this guard, each trigger
+                // a fresh `_applyItemsListFilter`, producing visible
+                // flicker (~80 reapplies observed in dev.20 logs).
+                if ((this as any)._suppressTreeObserverUntil
+                    && Date.now() < (this as any)._suppressTreeObserverUntil) {
+                    return;
+                }
                 this._applyItemsListFilter();
                 // Patch the annotation row class as soon as the
                 // first annotation row exists in `_rows`. Idempotent
@@ -2783,6 +3188,9 @@ class _FilterMixin {
                 // so retry on every tree mutation. Self-bails once
                 // the prototype is patched.
                 try { this._patchHideContextAttachments(); } catch (e) {}
+                try { this._patchUserOpenTracking(); } catch (e) {}
+                // PARKED: +N hidden badge click handler. See work/TODO.md.
+                // try { this._installHiddenBadgeClickHandler(); } catch (e) {}
             });
             this._filterTreeObserver.observe(treeInner,
                 { childList: true, subtree: true });
@@ -2868,10 +3276,16 @@ class _FilterMixin {
                                         // opened (to reveal matching annotation
                                         // children) is now closed again. Re-run
                                         // the expansion now to restore them.
+                                        // V9-COMPAT: method name and
+                                        // public-prop both differ.
                                         try {
-                                            if (typeof rp2._expandMatchParents === "function"
-                                                && rp2.searchParentIDs) {
-                                                rp2._expandMatchParents(rp2.searchParentIDs);
+                                            const empFn = rp2._expandMatchParents
+                                                || rp2.expandMatchParents;
+                                            const pids = rp2.searchParentIDs
+                                                || rp2._searchParentIDs;
+                                            if (typeof empFn === "function"
+                                                && pids) {
+                                                empFn.call(rp2, pids);
                                             }
                                         } catch (e) {}
                                         try { rp2.refreshRowMap(); } catch (e) {}
@@ -4075,13 +4489,46 @@ class _FilterMixin {
                 Zotero.Prefs.set(
                     "hideContextAnnotationRows", !annCb.checked);
             } catch (e) {}
-            try {
-                const win = Zotero.getMainWindow();
-                const iv = win && win.ZoteroPane && win.ZoteroPane.itemsView;
-                if (iv && typeof iv.refresh === "function") {
-                    iv.refresh({ restoreSelection: true });
+            // Same suppression-window + refresh pattern as the
+            // attachment toggle below — without it the refresh's
+            // DOM mutations cascade into ~80 redundant
+            // `_applyItemsListFilter` calls via our
+            // MutationObserver, producing the visible flicker.
+            (this as any)._suppressTreeObserverUntil =
+                Date.now() + 1500;
+            (async () => {
+                // Hide the items-tree visually during the refresh +
+                // reapply so the user doesn't see the brief
+                // unfiltered intermediate state. See the matching
+                // comment in the attachment toggle below.
+                const winT = Zotero.getMainWindow();
+                const treeEl = winT && winT.document.getElementById(
+                    "item-tree-main");
+                let prevVis = "";
+                if (treeEl) {
+                    prevVis = treeEl.style.visibility;
+                    treeEl.style.visibility = "hidden";
                 }
-            } catch (e) {}
+                try {
+                    const iv: any = winT && winT.ZoteroPane
+                        && winT.ZoteroPane.itemsView;
+                    const rp: any = iv && iv.rowProvider;
+                    if (rp && typeof rp.refresh === "function") {
+                        await rp.refresh({ restoreSelection: true });
+                    } else if (iv && typeof iv.refresh === "function") {
+                        await iv.refresh({ restoreSelection: true });
+                    }
+                    (this as any)._suppressTreeObserverUntil = 0;
+                    this._filterApplying = false;
+                    try { this._applyItemsListFilter({ cascade: true }); }
+                    catch (e) {}
+                } catch (e) {
+                    Zotero.debug(
+                        "[Weavero] ann-toggle refresh err: " + e);
+                } finally {
+                    if (treeEl) treeEl.style.visibility = prevVis;
+                }
+            })();
         });
         annOpt.appendChild(annCb);
         const annLbl = doc.createElementNS(NS_HTML, "span");
@@ -4101,51 +4548,63 @@ class _FilterMixin {
                 "weavero.showContextAttachmentRows");
         } catch (e) { attCb.checked = false; }
         attCb.addEventListener("change", () => {
+            const dbg = (msg) => Zotero.debug(
+                "[Weavero][att-toggle] " + msg);
+            const t0 = Date.now();
+            const ts = () => (Date.now() - t0) + "ms";
+            dbg(`${ts()} click → setting pref=${attCb.checked}`);
             try {
                 Zotero.Prefs.set(
                     "weavero.showContextAttachmentRows", attCb.checked);
             } catch (e) {}
-            // Make sure the prototype patch is installed — in case
-            // the user opens the filter popup before any tree
-            // mutation has triggered the deferred install.
             try { this._patchHideContextAttachments(); } catch (e) {}
-            // The prototype patch on `getChildItems` is consulted
-            // only when a container OPENS — already-expanded
-            // containers retain their pre-toggle child rows. Walk
-            // `_rows` and refresh every open container so the
-            // change takes effect immediately. Iterate from the end
-            // so removal of trailing children doesn't shift the
-            // indices of containers we've yet to visit.
-            try {
-                const win = Zotero.getMainWindow();
-                const iv: any = win && win.ZoteroPane
-                    && win.ZoteroPane.itemsView;
-                const rp: any = iv && iv.rowProvider;
-                if (rp && rp._rows && typeof rp._refreshContainer === "function") {
-                    for (let i = rp._rows.length - 1; i >= 0; i--) {
-                        const row = rp._rows[i];
-                        if (!row || !row.isOpen) continue;
-                        try { rp._refreshContainer(i, true); }
-                        catch (e) {}
-                    }
-                    try { rp.refreshRowMap(); } catch (e) {}
-                    // Refreshing a parent collapses every descendant
-                    // — re-run Zotero's match-parent expansion so any
-                    // attachment that was open to reveal matching
-                    // annotation children gets re-opened.
-                    try {
-                        if (typeof rp._expandMatchParents === "function"
-                            && rp.searchParentIDs) {
-                            rp._expandMatchParents(rp.searchParentIDs);
-                            try { rp.refreshRowMap(); } catch (e) {}
-                        }
-                    } catch (e) {}
-                    try {
-                        rp.runListeners("update", true,
-                            { restoreSelection: true });
-                    } catch (e) {}
+            dbg(`${ts()} after pref set + patch reinstall`);
+            // Suppress the MutationObserver reapply window during the
+            // refresh — without this our observer fires for every DOM
+            // mutation produced by Zotero's refresh and triggers a
+            // cascade of `_applyItemsListFilter` calls (~80 in dev.20
+            // logs).
+            (this as any)._suppressTreeObserverUntil =
+                Date.now() + 1500;
+            (async () => {
+                // Hide the items-tree DOM during the refresh + reapply
+                // sequence so the user doesn't see the brief
+                // unfiltered state between `rp.refresh()` rebuilding
+                // `_rows` from scratch and our trailing apply
+                // rebuilding `keep[]`. Restored in `finally` so a
+                // thrown error never leaves the tree invisible.
+                const winT = Zotero.getMainWindow();
+                const treeEl = winT && winT.document.getElementById(
+                    "item-tree-main");
+                let prevVis = "";
+                if (treeEl) {
+                    prevVis = treeEl.style.visibility;
+                    treeEl.style.visibility = "hidden";
                 }
-            } catch (e) {}
+                try {
+                    const iv: any = winT && winT.ZoteroPane
+                        && winT.ZoteroPane.itemsView;
+                    const rp: any = iv && iv.rowProvider;
+                    if (rp && typeof rp.refresh === "function") {
+                        await rp.refresh({ restoreSelection: true });
+                        dbg(`${ts()} rp.refresh() complete`);
+                    } else if (iv && typeof iv.refresh === "function") {
+                        await iv.refresh({ restoreSelection: true });
+                        dbg(`${ts()} iv.refresh() complete`);
+                    } else {
+                        dbg(`${ts()} no refresh() available`);
+                    }
+                    (this as any)._suppressTreeObserverUntil = 0;
+                    this._filterApplying = false;
+                    try { this._applyItemsListFilter({ cascade: true }); }
+                    catch (e) {}
+                    dbg(`${ts()} handler complete`);
+                } catch (e) {
+                    dbg(`${ts()} refresh err: ${e}`);
+                } finally {
+                    if (treeEl) treeEl.style.visibility = prevVis;
+                }
+            })();
         });
         attOpt.appendChild(attCb);
         const attLbl = doc.createElementNS(NS_HTML, "span");
@@ -7399,6 +7858,19 @@ class _FilterMixin {
      *
      *  On filter clear, restore the saved originals and re-invalidate. */
     _applyItemsListFilter(opts?) {
+        // Toggle-in-progress: when the Show Non-Matching * toggle
+        // handler is running its async `rp.refresh()`, Zotero's own
+        // pref-observer + refresh path triggers multiple setFilter
+        // callbacks, each of which would normally call us with
+        // `cascade: true` via the setFilter wrap. Those redundant
+        // applies produce the visible flicker even though their
+        // result is identical (same keep[]). Skip the apply while
+        // the toggle is in flight; the toggle's own trailing
+        // `_applyItemsListFilter()` is what rebuilds keep[] once.
+        if ((this as any)._suppressTreeObserverUntil
+            && Date.now() < (this as any)._suppressTreeObserverUntil) {
+            return;
+        }
         // Guard — `tree.invalidate()` re-renders rows, which fires the
         // tree mutation observer that calls us back. Without this we'd
         // recurse on every filter apply.
@@ -7411,11 +7883,18 @@ class _FilterMixin {
         // when a reapply is requested but bounced by the guard, and
         // run one more after the timeout if so.
         if (this._filterApplying) {
-            this._filterApplyDirty = true;
-            // Remember whether the bounced caller wanted cascade —
-            // dirty retry should preserve it so a search flow that
-            // started with cascade=true gets cascade=true on retry.
-            if (opts && opts.cascade) this._filterApplyDirtyCascade = true;
+            // Don't mark dirty while our own apply is running. The
+            // dirty mechanism was originally intended to catch
+            // "Zotero added rows during our apply" — but in practice
+            // our own `tree.invalidate()` produces DOM mutations
+            // that the MutationObserver picks up as childList
+            // changes, and those would mark dirty and trigger a
+            // retry, whose `tree.invalidate()` produces more
+            // mutations, etc. — a runaway loop (122 reapplies
+            // observed in dev.24 logs). If Zotero genuinely adds
+            // rows during apply, the next observer fire (after
+            // _filterApplying clears + the 80ms quiet) will catch
+            // them.
             return;
         }
         this._filterApplying = true;
@@ -7425,22 +7904,26 @@ class _FilterMixin {
         finally {
             const win = Zotero.getMainWindow();
             const setT = (win && win.setTimeout) || setTimeout;
-            // Defer clearing so observer fires that are queued from our
-            // own mutations get filtered out too.
+            // Set a post-apply observer-suppression window. The
+            // `tree.invalidate()` call inside the inner apply produces
+            // DOM mutations that arrive ASYNCHRONOUSLY over the next
+            // ~100-200ms. Without this window each batch of mutations
+            // would trigger another apply, whose own invalidate would
+            // produce more mutations, etc. — a runaway loop. The
+            // window covers the tail-end mutations so the observer
+            // ignores them; the next genuine user-initiated mutation
+            // (a click, a search) lands after the window and fires
+            // a fresh apply normally.
+            //
+            // Skipped if a toggle handler set a longer window (we
+            // preserve whichever is later).
+            const post = Date.now() + 300;
+            if (!(this as any)._suppressTreeObserverUntil
+                || (this as any)._suppressTreeObserverUntil < post) {
+                (this as any)._suppressTreeObserverUntil = post;
+            }
             setT(() => {
                 this._filterApplying = false;
-                if (this._filterApplyDirty) {
-                    this._filterApplyDirty = false;
-                    const cascade = !!this._filterApplyDirtyCascade;
-                    this._filterApplyDirtyCascade = false;
-                    try {
-                        this._applyItemsListFilter(
-                            cascade ? { cascade: true } : undefined);
-                    } catch (e) {
-                        Zotero.debug(
-                            "[Weavero][filter] dirty reapply err: " + e);
-                    }
-                }
             }, 80);
         }
     }
@@ -7494,22 +7977,37 @@ class _FilterMixin {
             Zotero.debug("[Weavero][filter] library-change check err: " + e);
         }
 
-        // The virtualized table reads `getRowCount` directly off
-        // `itemsView.rowProvider` (see itemTree.jsx:1362) — patching the
-        // wrapper on `itemsView` is bypassed. The wrapper just delegates,
-        // so the rowProvider is the real source of truth. Patch both for
-        // safety: the wrapper is used by `_renderItem`, the rowProvider
-        // is used by `getRowCount` and many other callers.
-        const rp = itemsView.rowProvider;
+        // V9-COMPAT: Zotero 10 beta added a `rowProvider`
+        // abstraction; Zotero 9 keeps the row methods directly on
+        // `itemsView`. Resolve once so the patch code below is
+        // version-agnostic. `rp` means "row source".
+        //
+        // Other v9 differences (each tagged at its callsite):
+        // - `_rows.length` instead of `getRowCount()`.
+        // - `_searchItemIDs` / `_searchParentIDs` (underscored,
+        //   private) instead of public `searchItemIDs` /
+        //   `searchParentIDs`.
+        // - `toggleOpenState` is async (no `_toggleOpenState`).
+        // - No `expandRows` / `collapseRows` / `_refreshContainer`
+        //   / `_openContainer` — single-row async operations only.
+        const rp: any = itemsView.rowProvider || itemsView;
         if (!rp) return;
+        const isV9 = !itemsView.rowProvider;
 
         const state = this._filterState;
         const active = this._isFilterActive(state);
 
         // Filter cleared: restore originals by deleting the
         // own-property patches so prototype methods show through.
+        // V9-COMPAT: for methods that were originally OWN-property
+        // arrow-function fields on the itemsView (not prototype
+        // methods), `delete` would remove the original too. Reassign
+        // from the saved `_wvOrig*` instead.
         if (!active) {
             if (rp._wvOrigGetRow) {
+                // getRow / getLevel / getRowCount / *expand* /
+                // *collapse* live on the prototype on v10 and on
+                // v9's LibraryTree prototype too — safe to delete.
                 delete rp.getRow;
                 delete rp.getRowCount;
                 delete rp._wvOrigGetRow;
@@ -7518,22 +8016,22 @@ class _FilterMixin {
                     delete rp.getLevel;
                     delete rp._wvOrigGetLevel;
                 }
-                if (rp._wvOrigIsContainer) {
-                    delete rp.isContainer;
-                    delete rp._wvOrigIsContainer;
-                }
-                if (rp._wvOrigIsContainerOpen) {
-                    delete rp.isContainerOpen;
-                    delete rp._wvOrigIsContainerOpen;
-                }
-                if (rp._wvOrigIsContainerEmpty) {
-                    delete rp.isContainerEmpty;
-                    delete rp._wvOrigIsContainerEmpty;
-                }
-                if (rp._wvOrigToggleOpenState) {
-                    delete rp.toggleOpenState;
-                    delete rp._wvOrigToggleOpenState;
-                }
+                // The container probes + toggleOpenState are
+                // OWN-property arrow fields on v9 — restore via
+                // assignment so the original is preserved.
+                const restoreField = (name, origKey) => {
+                    if (rp[origKey]) {
+                        if (isV9) rp[name] = rp[origKey];
+                        else delete rp[name];
+                        delete rp[origKey];
+                    }
+                };
+                restoreField("isContainer", "_wvOrigIsContainer");
+                restoreField("isContainerOpen", "_wvOrigIsContainerOpen");
+                restoreField("isContainerEmpty", "_wvOrigIsContainerEmpty");
+                restoreField("toggleOpenState", "_wvOrigToggleOpenState");
+                // expandRows / collapseRows don't exist on v9 — we
+                // only patched them on v10 (prototype methods).
                 if (rp._wvOrigExpandRows) {
                     delete rp.expandRows;
                     delete rp._wvOrigExpandRows;
@@ -7549,6 +8047,32 @@ class _FilterMixin {
                 if (rp._wvOrigCollapseAllRows) {
                     delete rp.collapseAllRows;
                     delete rp._wvOrigCollapseAllRows;
+                }
+                // V9-COMPAT: restore the React props we rebound
+                // to live patches on v9.
+                if (isV9 && itemsView.tree && itemsView.tree.props
+                    && itemsView.tree.props._wvV9PropsPatched) {
+                    const tp: any = itemsView.tree.props;
+                    if (tp._wvOrigGetRowCount) tp.getRowCount = tp._wvOrigGetRowCount;
+                    if (tp._wvOrigIsContainer) tp.isContainer = tp._wvOrigIsContainer;
+                    if (tp._wvOrigIsContainerOpen) tp.isContainerOpen = tp._wvOrigIsContainerOpen;
+                    if (tp._wvOrigIsContainerEmpty) tp.isContainerEmpty = tp._wvOrigIsContainerEmpty;
+                    if (tp._wvOrigToggleOpenState) tp.toggleOpenState = tp._wvOrigToggleOpenState;
+                    delete tp._wvOrigGetRowCount;
+                    delete tp._wvOrigIsContainer;
+                    delete tp._wvOrigIsContainerOpen;
+                    delete tp._wvOrigIsContainerEmpty;
+                    delete tp._wvOrigToggleOpenState;
+                    delete tp._wvV9PropsPatched;
+                    // Restore WindowedList's captured getItemCount too.
+                    const jsWin: any = itemsView.tree._jsWindow;
+                    if (jsWin && jsWin._wvOrigGetItemCount) {
+                        jsWin.getItemCount = jsWin._wvOrigGetItemCount;
+                        delete jsWin._wvOrigGetItemCount;
+                        if (typeof jsWin._getItemCount === "function") {
+                            try { jsWin._getItemCount(); } catch (e) {}
+                        }
+                    }
                 }
                 delete rp._wvFilterSelfCall;
                 this._partialCollapseOnFilterClear(rp, itemsView);
@@ -7570,7 +8094,16 @@ class _FilterMixin {
         // whose closures hold stale `keep` arrays from the previous
         // plugin module — saving those as "the original" and then
         // re-patching produces a chain with mismatched indices.
+        //
+        // V9-COMPAT: Zotero 9 defines `isContainer` / `getRow` / etc.
+        // as arrow-function class fields, which live as OWN properties
+        // on the instance rather than the prototype. We accept those
+        // (and trust our own marker checks below to detect our own
+        // installed wrappers) so v9 has originals to wrap.
         const findProtoMethod = (obj, name) => {
+            // Skip own props that ARE our wrappers — checking the
+            // chain below still finds the real prototype original.
+            // For v9 (no proto method), accept the own prop.
             let p = Object.getPrototypeOf(obj);
             while (p) {
                 if (Object.prototype.hasOwnProperty.call(p, name)
@@ -7578,6 +8111,12 @@ class _FilterMixin {
                     return p[name];
                 }
                 p = Object.getPrototypeOf(p);
+            }
+            // V9-COMPAT: fall back to the instance's own property
+            // when no prototype method exists.
+            if (Object.prototype.hasOwnProperty.call(obj, name)
+                && typeof obj[name] === "function") {
+                return obj[name];
             }
             return null;
         };
@@ -7601,7 +8140,18 @@ class _FilterMixin {
             const rpExpandAll = findProtoMethod(rp, "expandAllRows");
             const rpCollapseAll = findProtoMethod(rp, "collapseAllRows");
             rp._wvOrigGetRow = (rpGetRow || rp.getRow).bind(rp);
-            rp._wvOrigGetRowCount = (rpGetRowCount || rp.getRowCount).bind(rp);
+            // Zotero 9 has no `getRowCount` method — the count comes
+            // from `_rows.length`. Synthesise one so the rest of the
+            // patch code is uniform.
+            if (rpGetRowCount) {
+                rp._wvOrigGetRowCount = rpGetRowCount.bind(rp);
+            } else if (typeof rp.getRowCount === "function") {
+                rp._wvOrigGetRowCount = rp.getRowCount.bind(rp);
+            } else {
+                rp._wvOrigGetRowCount = function () {
+                    return (rp._rows && rp._rows.length) || 0;
+                };
+            }
             if (rpGetLevel) rp._wvOrigGetLevel = rpGetLevel.bind(rp);
             if (rpIsContainer) rp._wvOrigIsContainer = rpIsContainer.bind(rp);
             if (rpIsContainerOpen) rp._wvOrigIsContainerOpen = rpIsContainerOpen.bind(rp);
@@ -7745,6 +8295,34 @@ class _FilterMixin {
         // activation or color-set change). The MutationObserver and
         // toggle-triggered reapplies skip the cascade — otherwise it
         // would re-open every parent the user just collapsed.
+        // V9-COMPAT: Zotero 10's row objects (`ZoteroItemTreeRow`)
+        // expose `isContainer()` / `isContainerOpen()` as methods.
+        // Zotero 9's row objects are plain `ItemTreeRow` instances
+        // (`{ref, level, isOpen}`) with no such methods — those checks
+        // live on the itemsView itself, indexed by row position. Use a
+        // helper so both shapes work.
+        const rowIsContainer = (idx, row) => {
+            if (row && typeof row.isContainer === "function") {
+                return !!row.isContainer();
+            }
+            if (typeof rp._wvOrigIsContainer === "function") {
+                return !!rp._wvOrigIsContainer(idx);
+            }
+            return false;
+        };
+        const rowIsContainerOpen = (idx, row) => {
+            if (row && typeof row.isContainerOpen === "function") {
+                return !!row.isContainerOpen();
+            }
+            // V9-COMPAT: ItemTreeRow exposes `isOpen` directly.
+            if (row && typeof row.isOpen === "boolean") {
+                return row.isOpen;
+            }
+            if (typeof rp._wvOrigIsContainerOpen === "function") {
+                return !!rp._wvOrigIsContainerOpen(idx);
+            }
+            return false;
+        };
         if (cascade) {
             const wasFlag = rp._wvFilterSelfCall;
             rp._wvFilterSelfCall = true;
@@ -7759,12 +8337,16 @@ class _FilterMixin {
                         try { row = origGetRow(i); } catch (e) { row = null; }
                         if (!row || !row.ref) continue;
                         const item = row.ref;
-                        const isContainer = typeof row.isContainer === "function"
-                            && row.isContainer();
-                        if (!isContainer) continue;
-                        const isOpen = typeof row.isContainerOpen === "function"
-                            && row.isContainerOpen();
-                        if (isOpen) continue;
+                        if (!rowIsContainer(i, row)) continue;
+                        if (rowIsContainerOpen(i, row)) continue;
+                        // Skip containers the user explicitly
+                        // collapsed — they take priority over the
+                        // cascade-open's "always reveal a primary
+                        // descendant" rule.
+                        if (this._userClosedIDs
+                            && this._userClosedIDs.has(item.id)) {
+                            continue;
+                        }
                         if (!hasPrimaryDescendant(item)) continue;
                         toOpen.push(i);
                         if (item.id != null) {
@@ -7780,9 +8362,18 @@ class _FilterMixin {
                         catch (e) {
                             Zotero.debug("[Weavero][filter] expandRows err: " + e);
                         }
+                    } else if (typeof rp._wvOrigToggleOpenState === "function") {
+                        // V9-COMPAT: Zotero 9 has no batched
+                        // `expandRows` — fall back to single
+                        // toggleOpenState calls. Slower (each call
+                        // triggers a tree refresh) but functional.
+                        for (const i of toOpen) {
+                            try { rp._wvOrigToggleOpenState(i, true); }
+                            catch (e) {}
+                        }
                     } else {
-                        // Fallback — should never hit since we always
-                        // capture expandRows during patch install.
+                        // Last resort — should never hit since we
+                        // always capture some open method.
                         for (const i of toOpen) {
                             try { itemsView.openContainer(i); } catch (e) {}
                         }
@@ -7825,46 +8416,215 @@ class _FilterMixin {
         // the behaviour the user expects from each filter trigger
         // (e.g. picking `itemType=book` shows books, not their
         // attachments / notes / annotations as well).
-        // Two-pass keep build. First pass collects primary indices.
-        // Second pass walks UP from each primary row through `_rows`
-        // (not the DB) to add ancestor-keep entries. This matters
-        // when Zotero's quick-search adds a parent to `_rows` because
-        // its own title matched, but doesn't include the parent's
-        // children — under the old DB-walking `hasMatch`, the parent
-        // would be ancestor-kept because some DB-descendant is
-        // primary, even though that descendant isn't in `_rows` and
-        // never renders. The user just sees an empty parent.
-        //
-        // Now: an ancestor only gets kept if a primary row literally
-        // sits below it in `_rows` at a deeper level. If Zotero
-        // didn't promote the child into the tree, the parent doesn't
-        // get the ancestor-keep treatment either.
-        const primaryIdxs: number[] = [];
+        // Keep a row if it's primary OR if any DESCENDANT (anywhere
+        // in the database subtree, not just currently in `_rows`)
+        // is primary. The latter case — DB-based ancestor-keep — is
+        // what makes closing a container leave it visible (closed,
+        // ready to be re-opened) instead of dropping it entirely
+        // once Zotero removes the children from `_rows`.
+        // Orphan-row guard: under certain conditions (corrupt
+        // saved state, prior `_refreshContainer` bugs leaving stale
+        // entries) `_rows` contains rows whose parent item isn't
+        // actually present at level-1 above them. Example: an
+        // annotation row at lvl=2 with `parent=7` (Ebook), but no
+        // Ebook row at lvl=1 directly above it — the annotation is
+        // an "orphan" and will render visually nested under whatever
+        // lvl=1 row happens to sit above it, producing the visible
+        // duplicate-annotation bug.
+        const isOrphanRow = (j) => {
+            let row;
+            try { row = origGetRow(j); } catch (e) { return false; }
+            if (!row || !row.ref) return false;
+            const parentID = row.ref.parentItemID;
+            if (!parentID) return false;
+            const lvl = row.level || 0;
+            if (lvl <= 0) return false;
+            for (let k = j - 1; k >= 0; k--) {
+                let kr;
+                try { kr = origGetRow(k); } catch (e) { continue; }
+                if (!kr || !kr.ref) continue;
+                const kLvl = kr.level || 0;
+                if (kLvl >= lvl) continue;
+                if (kLvl === lvl - 1) {
+                    return kr.ref.id !== parentID;
+                }
+                return true;
+            }
+            return true;
+        };
         for (let j = 0; j < total; j++) {
             let row;
             try { row = origGetRow(j); } catch (e) { continue; }
             if (!row || !row.ref) continue;
-            if (isPrimary(row.ref)) {
+            if (isOrphanRow(j)) continue;
+            const item = row.ref;
+            if (isPrimary(item)) {
                 pushKeep(j);
-                primaryIdxs.push(j);
+            } else if (hasMatch(item)) {
+                pushKeep(j);
             }
         }
-        // Walk UP through `_rows` from each primary index, adding
-        // each ancestor row (level strictly less than the current).
-        // Stops when level reaches 0 (top-level row reached).
-        for (const j of primaryIdxs) {
-            let row;
-            try { row = origGetRow(j); } catch (e) { continue; }
-            if (!row) continue;
-            let lvl = row.level || 0;
-            for (let k = j - 1; k >= 0 && lvl > 0; k--) {
-                let kr;
-                try { kr = origGetRow(k); } catch (e) { continue; }
-                if (!kr) continue;
-                const kLvl = kr.level || 0;
-                if (kLvl < lvl) {
+        // "Show Non-Matching Attachments" (pref ON): keep the
+        // attachment / note children of any kept regular-item parent
+        // even when those children don't themselves match the filter.
+        // Without this the toggle has no visible effect — Zotero
+        // loads the children into _rows (our getChildItems patch
+        // returns all of them when the pref is on), but Pass 2 above
+        // drops the non-matching siblings of the matched attachment.
+        // The user's WV-DEMO-B test case: parent has one matched PDF
+        // and one non-matching Web Link; the Web Link should appear
+        // under the parent when the toggle is on.
+        if (Zotero.Prefs.get("weavero.showContextAttachmentRows")) {
+            for (let j = 0; j < total; j++) {
+                let row;
+                try { row = origGetRow(j); } catch (e) { continue; }
+                if (!row || !row.ref) continue;
+                if (!keepSet.has(j)) continue;
+                const item = row.ref;
+                if (!(item.isRegularItem && item.isRegularItem())) continue;
+                const lvl = row.level || 0;
+                for (let k = j + 1; k < total; k++) {
+                    let kr;
+                    try { kr = origGetRow(k); } catch (e) { break; }
+                    if (!kr || !kr.ref) break;
+                    const kLvl = kr.level || 0;
+                    if (kLvl <= lvl) break;
+                    if (kLvl !== lvl + 1) continue;
+                    const cItem = kr.ref;
+                    const isAtt = cItem.isAttachment
+                        && cItem.isAttachment();
+                    const isNote = cItem.isNote
+                        && cItem.isNote();
+                    if (isAtt || isNote) pushKeep(k);
+                }
+            }
+        }
+        // "Show Non-Matching Annotations" (pref ON, i.e.
+        // `hideContextAnnotationRows = false`): keep the annotation
+        // children of any kept file-attachment parent even when those
+        // annotations don't themselves match the chip. Same shape
+        // as the attachment rule above, just one level deeper. Test
+        // case: file attachment with a matched-color annotation and
+        // a different-color annotation as a sibling — the sibling
+        // annotation should appear when the toggle is on.
+        if (!Zotero.Prefs.get("hideContextAnnotationRows")) {
+            for (let j = 0; j < total; j++) {
+                let row;
+                try { row = origGetRow(j); } catch (e) { continue; }
+                if (!row || !row.ref) continue;
+                if (!keepSet.has(j)) continue;
+                const item = row.ref;
+                if (!(item.isFileAttachment
+                    && item.isFileAttachment())) continue;
+                const lvl = row.level || 0;
+                for (let k = j + 1; k < total; k++) {
+                    let kr;
+                    try { kr = origGetRow(k); } catch (e) { break; }
+                    if (!kr || !kr.ref) break;
+                    const kLvl = kr.level || 0;
+                    if (kLvl <= lvl) break;
+                    if (kLvl !== lvl + 1) continue;
+                    const cItem = kr.ref;
+                    const isAnn = cItem.isAnnotation
+                        && cItem.isAnnotation();
+                    if (isAnn) pushKeep(k);
+                }
+            }
+        }
+        // User-revealed containers (badge clicked): force-keep ALL
+        // direct children regardless of whether they pass the
+        // filter. This is the explicit "show me what's hidden here"
+        // opt-in, separate from the dimmer "manual expand reveals
+        // filter-passing children" rule below.
+        if (this._userRevealedAllIDs && this._userRevealedAllIDs.size) {
+            for (let j = 0; j < total; j++) {
+                let row;
+                try { row = origGetRow(j); } catch (e) { continue; }
+                if (!row || !row.ref) continue;
+                if (!this._userRevealedAllIDs.has(row.ref.id)) continue;
+                const lvl = row.level || 0;
+                for (let k = j + 1; k < total; k++) {
+                    let kr;
+                    try { kr = origGetRow(k); } catch (e) { break; }
+                    if (!kr) break;
+                    const kLvl = kr.level || 0;
+                    if (kLvl <= lvl) break;
+                    if (kLvl === lvl + 1) pushKeep(k);
+                }
+            }
+        }
+        // User-opened containers: keep the direct children that
+        // PASS the filter's per-row check (`_rowPassesFilters`).
+        // Two distinct outcomes here:
+        //
+        //   - Neutral children — kinds that no chip in the group
+        //     actively targets (e.g. annotations under a File Type
+        //     = PDF filter). The chip relaxes for them so they pass
+        //     `_rowPassesFilters`, but they don't get a kind-match
+        //     so they're never primary. Manual expand should still
+        //     reveal them, so we force-keep here.
+        //
+        //   - Actively-failing children — a row that violates a
+        //     chip (e.g. a Snapshot under File Type = PDF, kind is
+        //     targeted by File Type but value mismatches). These
+        //     fail `_rowPassesFilters` and stay hidden even when
+        //     the parent is manually expanded.
+        if (this._userOpenedIDs && this._userOpenedIDs.size) {
+            const activeGroups = (state.groups || [])
+                .filter(g => this._isGroupActive(g));
+            // V9-COMPAT: on v10, non-matching attachments / notes are
+            // hidden upstream by our `_patchHideContextAttachments`
+            // patch on FileItemTreeRow/ZoteroItemTreeRow. On v9 those
+            // row classes don't exist, so neutral attachment children
+            // pass through and become visible — defeating the user's
+            // "Show Non-Matching Attachments" toggle. Mirror the
+            // behaviour here: when the pref is off and we're on v9,
+            // require the child to actively match (`hasMatch`), not
+            // just be neutral under `_rowPassesFilters`.
+            const hideContext = isV9
+                && !Zotero.Prefs.get("weavero.showContextAttachmentRows");
+            for (let j = 0; j < total; j++) {
+                let row;
+                try { row = origGetRow(j); } catch (e) { continue; }
+                if (!row || !row.ref) continue;
+                if (!this._userOpenedIDs.has(row.ref.id)) continue;
+                const lvl = row.level || 0;
+                for (let k = j + 1; k < total; k++) {
+                    let kr;
+                    try { kr = origGetRow(k); } catch (e) { break; }
+                    if (!kr) break;
+                    const kLvl = kr.level || 0;
+                    if (kLvl <= lvl) break;
+                    // Direct children only — deeper descendants get
+                    // visited on a separate iteration of this outer
+                    // loop if their parent is also user-opened.
+                    if (kLvl !== lvl + 1) continue;
+                    const cItem = kr.ref;
+                    if (!cItem) continue;
+                    // OR across active groups: keep if it passes
+                    // ANY group's per-row check.
+                    const ok = activeGroups.some(g =>
+                        this._rowPassesFilters(cItem, g));
+                    if (!ok) continue;
+                    // V9-COMPAT context-hide gate — scoped to
+                    // ATTACHMENTS / NOTES only. The "Show Non-
+                    // Matching Attachments" toggle must not affect
+                    // annotations (those are governed by Zotero's
+                    // own `hideContextAnnotationRows` pref via the
+                    // separate "Show Non-Matching Annotations"
+                    // toggle). Without this kind-gate, an annotation
+                    // that passes the per-row check but doesn't have
+                    // hasMatch=true would be dropped just because
+                    // the attachment toggle is off.
+                    if (hideContext) {
+                        const isAtt = cItem.isAttachment
+                            && cItem.isAttachment();
+                        const isNote = cItem.isNote
+                            && cItem.isNote();
+                        if ((isAtt || isNote)
+                            && !hasMatch(cItem)) continue;
+                    }
                     pushKeep(k);
-                    lvl = kLvl;
                 }
             }
         }
@@ -7928,6 +8688,42 @@ class _FilterMixin {
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
         const keep = [...keepSet].sort((a: number, b: number) => a - b);
+        // Per-container hidden-children count. For each container row
+        // in keep, count the DB direct children that WOULDN'T survive
+        // the current filter — i.e. wouldn't be primary themselves
+        // and wouldn't have a primary descendant. Stored for the
+        // (future) badge renderer to consume. Only containers with
+        // hidden > 0 are recorded.
+        const hiddenCounts = new Map<number, number>();
+        for (const j of keep) {
+            let row;
+            try { row = origGetRow(j); } catch (e) { continue; }
+            if (!row || !row.ref) continue;
+            const it = row.ref;
+            let childIds: number[] = [];
+            if (it.isRegularItem && it.isRegularItem()) {
+                childIds = [
+                    ...((it.getAttachments && it.getAttachments()) || []),
+                    ...((it.getNotes && it.getNotes()) || []),
+                ];
+            } else if (it.isFileAttachment && it.isFileAttachment()) {
+                childIds = ((it.getAnnotations && it.getAnnotations()) || [])
+                    .map(a => a.id);
+            } else {
+                continue;
+            }
+            if (!childIds.length) continue;
+            let hidden = 0;
+            for (const cid of childIds) {
+                const cit = Zotero.Items.get(cid);
+                if (!cit) continue;
+                // "Would survive" = primary itself or has a primary
+                // descendant (= the existing `hasMatch` cache).
+                if (!hasMatch(cit)) hidden++;
+            }
+            if (hidden > 0) hiddenCounts.set(it.id, hidden);
+        }
+        this._wvHiddenCounts = hiddenCounts;
         // Snapshot of `_rows.length` at the moment we built keep.
         // Used by the patched accessors to detect "Zotero rebuilt
         // _rows behind our back" — typically a quick-search refresh
@@ -7991,7 +8787,19 @@ class _FilterMixin {
             if (this[SELF]) return rp._wvOrigGetRow(idx);
             if (stale()) return rp._wvOrigGetRow(idx);
             const r = safeReal(idx);
-            if (r < 0) return undefined;
+            // V9-COMPAT: Zotero 9's `_getRowData(idx)` throws when
+            // `getRow(idx)` returns undefined, which crashes the
+            // window via `Zotero.crash()`. Fall through to the raw
+            // row at the same logical position rather than returning
+            // undefined — produces a brief visual mismatch but
+            // doesn't crash. v10 callers tolerated undefined cleanly
+            // but v9 doesn't, so the safer fallback is now universal.
+            if (r < 0) {
+                const fallback = (idx >= 0 && idx < rp._rows.length)
+                    ? rp._wvOrigGetRow(idx)
+                    : rp._wvOrigGetRow(0);
+                return fallback;
+            }
             return rp._wvOrigGetRow(r);
         };
         rp.getRowCount = function () {
@@ -8064,6 +8872,38 @@ class _FilterMixin {
                 }
                 const realIdx = keep[filteredIdx];
                 if (realIdx === undefined) return;
+                // Track manual user opens / closes so the next keep
+                // rebuild force-keeps the children of containers the
+                // user just expanded. Without this, opening a non-
+                // matching container reveals its children for one
+                // frame and the reapply immediately drops them again
+                // because they don't satisfy the filter.
+                try {
+                    const row = rp._rows[realIdx as number];
+                    const wasOpen = row && row.isOpen;
+                    const id = row && row.ref && row.ref.id;
+                    if (id != null) {
+                        if (!self._userOpenedIDs) {
+                            self._userOpenedIDs = new Set();
+                        }
+                        if (!self._userClosedIDs) {
+                            self._userClosedIDs = new Set();
+                        }
+                        if (wasOpen) {
+                            // User is collapsing → record so the
+                            // cascade and `_expandMatchParents` skip
+                            // it on subsequent reapplies.
+                            self._userOpenedIDs.delete(id);
+                            self._userClosedIDs.add(id);
+                        } else {
+                            // User is expanding → record so reapply
+                            // force-keeps the children even if they
+                            // don't satisfy the filter.
+                            self._userOpenedIDs.add(id);
+                            self._userClosedIDs.delete(id);
+                        }
+                    }
+                } catch (e) {}
                 const wasFlag = this[SELF];
                 this[SELF] = true;
                 const queued = [];
@@ -8158,6 +8998,61 @@ class _FilterMixin {
             rp.collapseAllRows = wrapAll(rp._wvOrigCollapseAllRows);
         }
 
+        // V9-COMPAT: Zotero 9's virtualized-table React props are
+        // captured at render time as bound closures. `getRowCount` is
+        // hardwired to `() => this._rows.length` and bypasses our
+        // `iv.getRowCount` patch entirely. Rebind the live prop so the
+        // table reads our filtered count. We do the same for the
+        // toggle / probe props — they were captured by VALUE so the
+        // table still calls the original arrow-function fields, not
+        // our wrapped own-property versions on the itemsView.
+        //
+        // CRITICAL: the underlying WindowedList ALSO captures
+        // `getItemCount` at its construction time (virtualized-table
+        // line 1114). That capture happens at Zotero startup before
+        // our plugin loads, so `_jsWindow.getItemCount` always points
+        // at the original `() => this._rows.length`. Patching the
+        // React prop alone is insufficient — the windowed list never
+        // re-reads the prop. We also overwrite `_jsWindow.getItemCount`.
+        if (isV9 && itemsView.tree && itemsView.tree.props) {
+            const tp: any = itemsView.tree.props;
+            if (!tp._wvV9PropsPatched) {
+                tp._wvOrigGetRowCount = tp.getRowCount;
+                tp.getRowCount = () => (rp.getRowCount
+                    ? rp.getRowCount()
+                    : rp._rows.length);
+                // Re-bind data-layer probes to whatever's currently on
+                // the itemsView (= our wrapped versions). These need to
+                // stay live — Zotero's setFilter may rebuild props, in
+                // which case we re-patch on the next apply pass.
+                tp._wvOrigIsContainer = tp.isContainer;
+                tp.isContainer = (idx) => rp.isContainer(idx);
+                tp._wvOrigIsContainerOpen = tp.isContainerOpen;
+                tp.isContainerOpen = (idx) => rp.isContainerOpen(idx);
+                tp._wvOrigIsContainerEmpty = tp.isContainerEmpty;
+                tp.isContainerEmpty = (idx) => rp.isContainerEmpty(idx);
+                tp._wvOrigToggleOpenState = tp.toggleOpenState;
+                tp.toggleOpenState = (idx, skip) => rp.toggleOpenState(idx, skip);
+                tp._wvV9PropsPatched = true;
+            }
+            // Always update the WindowedList's captured reference —
+            // it's the actual source-of-truth for row-count rendering.
+            // Doing this on every apply (not just first install) keeps
+            // us robust to WindowedList re-construction.
+            const jsWin: any = itemsView.tree._jsWindow;
+            if (jsWin && jsWin.getItemCount !== tp.getRowCount) {
+                jsWin._wvOrigGetItemCount = jsWin._wvOrigGetItemCount
+                    || jsWin.getItemCount;
+                jsWin.getItemCount = tp.getRowCount;
+                // Force a re-read so `_lastItemCount` updates against
+                // the fresh count and the table re-renders to the new
+                // size on the next paint.
+                if (typeof jsWin._getItemCount === "function") {
+                    try { jsWin._getItemCount(); } catch (e) {}
+                }
+            }
+        }
+
         try { itemsView.tree.invalidate(); } catch (e) {}
     }
 
@@ -8207,9 +9102,39 @@ class _FilterMixin {
             const qs = (sb && sb.value ? String(sb.value).trim() : "");
             if (qs) return;
         } catch (e) {}
-        const toggle = rp._toggleOpenState
-            && rp._toggleOpenState.bind(rp);
+        // V9-COMPAT: Zotero 10 names the unbatched toggle
+        // `_toggleOpenState`; Zotero 9 exposes it as `toggleOpenState`
+        // (no underscore, async arrow field on itemsView). Prefer
+        // whichever exists.
+        const toggle = (rp._toggleOpenState
+                ? rp._toggleOpenState.bind(rp)
+                : (rp.toggleOpenState
+                    ? rp.toggleOpenState.bind(rp)
+                    : null));
         if (!toggle) return;
+        // V9-COMPAT: row.isContainer() / isContainerOpen() are
+        // v10-only methods on row instances; v9 rows are plain
+        // {ref, level, isOpen} objects. Use rp.isContainer(i) and
+        // row.isOpen as fallbacks.
+        const isContainerAt = (i, row) => {
+            if (row && typeof row.isContainer === "function") {
+                return !!row.isContainer();
+            }
+            if (typeof rp.isContainer === "function") {
+                return !!rp.isContainer(i);
+            }
+            return false;
+        };
+        const isOpenAt = (i, row) => {
+            if (row && typeof row.isContainerOpen === "function") {
+                return !!row.isContainerOpen();
+            }
+            if (row && typeof row.isOpen === "boolean") return row.isOpen;
+            if (typeof rp.isContainerOpen === "function") {
+                return !!rp.isContainerOpen(i);
+            }
+            return false;
+        };
         // Fully collapse: close every open container regardless of
         // who opened it (filter or user) or which level it sits
         // at. Iterating from the bottom keeps indices stable as
@@ -8217,15 +9142,20 @@ class _FilterMixin {
         for (let i = rp._rows.length - 1; i >= 0; i--) {
             const row = rp._rows[i];
             if (!row) continue;
-            const isOpenContainer = row.isContainer && row.isContainer()
-                && row.isContainerOpen && row.isContainerOpen();
-            if (!isOpenContainer) continue;
+            if (!isContainerAt(i, row) || !isOpenAt(i, row)) continue;
             try { toggle(i, true); }
             catch (e) {
                 Zotero.debug("[Weavero][filter] collapse-on-clear err: " + e);
             }
         }
-        try { rp.refreshRowMap && rp.refreshRowMap(); } catch (e) {}
+        // V9-COMPAT: Zotero 10 renamed `_refreshRowMap` → `refreshRowMap`.
+        try {
+            if (typeof rp.refreshRowMap === "function") {
+                rp.refreshRowMap();
+            } else if (typeof rp._refreshRowMap === "function") {
+                rp._refreshRowMap();
+            }
+        } catch (e) {}
         try { rp.runListeners && rp.runListeners("update", true, {
             restoreSelection: true,
         }); } catch (e) {}

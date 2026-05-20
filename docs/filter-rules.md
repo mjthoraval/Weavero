@@ -83,6 +83,8 @@ For each cross-level chip and each row:
 
 This is what keeps the tree from flooding when you set an annotation-only chip: parents pass it (it relaxes for them) but no annotation-level chip targets parents, so parents stay dimmed (ancestor-keep), not white.
 
+**The quick search is the exception.** A row the quick search matched **directly** at its own level — and whose kind is in the search's scope — is a real match (white, Ctrl+A-selectable) even when no chip targets its kind. So with `Item Type = journalArticle` only, plus a quick search, a *standalone note* whose text matched the search is white on its own merit (the search is the only thing targeting the parent level, and it matched). See *The quick search box* below.
+
 ---
 
 ## The quick search box
@@ -119,3 +121,4 @@ Two extra rules on top of the kind check:
 - **Just-created items** stay visible for 10 seconds even if they don't yet match the filter — prevents a brand-new item from disappearing under the cursor as you finish entering it.
 - **Containers auto-expand** when a deep descendant is a real match, so the match is always reachable.
 - **Item-tree shape is preserved** — ancestors of any real match stay visible (dimmed), so the tree path down to the match is intact.
+- **Filtering deselects what no longer matches.** When you change the filter, a selected row that's no longer a **real match** is deselected; if nothing in the new result is a real match, the selection clears entirely — the same way the quick search drops the selection when its target disappears. A dimmed ancestor-keep counts as "not a real match" here, so selecting one and then filtering deselects it.

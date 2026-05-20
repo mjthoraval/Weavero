@@ -59,6 +59,18 @@ export default defineConfig({
     // `waitForPlugin: () => Zotero._weaveroReady`.
     startupDelay: 8_000,
     abortOnFail: false,
+    // One-shot run: exit after a single pass instead of staying in
+    // watch mode (the scaffold's local default). This is the
+    // detectable-completion contract — `npm test` STOPS when the
+    // suite finishes, so its process exit (and exit code) is the
+    // signal that it's done. In watch mode the runner never exits,
+    // so a finished OR a stalled run looked identical (it just sat
+    // there) — which is exactly the "is it done or hung?" ambiguity
+    // we hit. With watch off: clean exit = done; no exit past a
+    // sensible wall-clock timeout = stalled (kill the temp-profile
+    // Zotero — the one launched with `-profile .scaffold/test/profile`
+    // — and retry). CI already runs with watch off.
+    watch: false,
   },
 
   release: {

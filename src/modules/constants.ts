@@ -686,21 +686,70 @@ export const PLUGIN_CSS = [
     "  cursor: pointer; user-select: none;",
     "}",
     ".wv-filter-display-opt input { margin: 0; }",
-    // "+N hidden" / "-N revealing" badge appended to a container row's
-    // primary cell. Indicates how many DB direct children are
-    // currently filtered out and exposes a click-to-reveal action
-    // for that single container.
-    ".wv-hidden-badge {",
-    "  display: inline-flex; align-items: center;",
-    "  margin: 0 4px; padding: 0 5px;",
-    "  font: inherit; font-size: 10px; line-height: 1.4;",
-    "  border-radius: 6px; cursor: pointer;",
-    "  background: var(--accent-orange, #cc8400); color: white;",
-    "  opacity: 0.85; user-select: none;",
+    // "Hidden children" indicator. Reuses Zotero's own `.icon-twisty`
+    // glyph (the same one that renders the row's own expand/collapse
+    // triangle) so the affordance is visually consistent with the
+    // rest of the items tree.
+    //
+    // Position: absolute, anchored at the column of the PARENT row's
+    // twisty — visually it appears directly below the parent's
+    // twisty in the indent area of the current row. The cell is
+    // already `position: relative` (Zotero default), so the
+    // chevron's absolute coordinates resolve against it.
+    //
+    // Default state (something hidden): the inner `.icon-twisty`
+    // has no `.open` class → points right (▷).
+    // Revealed state: `.open` rotates the same glyph 90° → points
+    // down (▽). Matches the affordance the user already knows from
+    // expanding a regular container row.
+    ".wv-hidden-chevron {",
+    "  position: absolute;",
+    "  top: 50%; transform: translateY(-50%);",
+    "  width: 16px; height: 16px;",
+    "  display: inline-flex; align-items: center; justify-content: center;",
+    "  cursor: pointer; user-select: none;",
+    // Match Zotero's twisty exactly. `--fill-secondary` is what
+    // `chrome://zotero/skin/8/universal/chevron-8.svg` fills with
+    // (rgba(255,255,255,~0.55) in dark mode, rgba(0,0,0,~0.55) in
+    // light mode), so this auto-adapts to theme.
+    "  color: var(--fill-secondary);",
+    "  z-index: 1;",
     "}",
-    ".wv-hidden-badge:hover { opacity: 1; }",
-    ".wv-hidden-badge.wv-revealed {",
-    "  background: var(--accent-blue, #5e6ad2);",
+    ".wv-hidden-chevron svg {",
+    "  display: block; width: 14px; height: 14px;",
+    "  pointer-events: none;",
+    "}",
+    // Dim non-matching children that surfaced only because the user
+    // clicked the chevron to reveal them. Mirrors Zotero's native
+    // dim for `.context-row` (see _virtualized-table.scss): the text
+    // color drops to `--fill-secondary`. We additionally dim the
+    // cell icons (annotation / attachment markers) — Zotero's native
+    // styling leaves them at full brightness, but the user prefers
+    // them to fade alongside the text so the search hit reads
+    // unambiguously against its now-visible siblings.
+    ".row:has(.cell.wv-nonmatch-revealed) .cell {",
+    "  color: var(--fill-secondary);",
+    "}",
+    // Dim icons in LOCKSTEP with text — the icon and text dimming
+    // verdict must always agree (a white row must keep a full-bright
+    // icon, a dimmed row a dimmed icon). Text is dimmed for:
+    //   - `.wv-not-target` rows (Weavero non-matches), and
+    //   - Zotero's own `.context-row` quick-search non-matches,
+    //     EXCEPT those Weavero promoted to `.wv-primary` (a row whose
+    //     own level matches the filter/search — its text is forced
+    //     back to `inherit` by the rule above, so its icon must stay
+    //     full-bright too).
+    // The earlier `.context-row:not(.selected) .cell-icon` rule dimmed
+    // EVERY context-row icon, including `.wv-primary` ones — that left
+    // matches like a green annotation under a Test-matching PDF with a
+    // white label but a greyed icon. The `:not(.wv-primary)` clause
+    // fixes that mismatch. `.cell-icon` covers the annotation colored-A
+    // marker, attachment type icons, item icons, etc. The chevron is an
+    // inline `<span>` SVG (not `.cell-icon`), so it's untouched.
+    ".row:has(.cell.wv-nonmatch-revealed) .cell .cell-icon,",
+    ".row.wv-not-target:not(.selected) .cell-icon,",
+    ".row.context-row:not(.selected):not(.wv-primary) .cell-icon {",
+    "  opacity: 0.55;",
     "}",
     ".wv-filter-section {",
     "  display: flex; flex-direction: row; align-items: center; gap: 4px;",

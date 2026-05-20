@@ -2928,7 +2928,12 @@ class _FilterMixin {
                 const it: any = Zotero.Items.get(id as any);
                 let pid: any = it && it.parentItemID;
                 let guard = 0;
-                while (pid != null && guard++ < 8) {
+                // `parentItemID` is `false` (not null) for a top-level
+                // item, and `false != null` is true — so guard on
+                // truthiness, not `!= null`, or a top-level row adds a
+                // spurious `false` to the set. Real item ids are
+                // positive integers, so a truthy check is exact.
+                while (pid && guard++ < 8) {
                     set.add(pid);
                     const p: any = Zotero.Items.get(pid);
                     pid = p && p.parentItemID;
@@ -3003,7 +3008,10 @@ class _FilterMixin {
                     if (!pathHasSearchMatch) {
                         let pid = item.parentItemID;
                         let guard = 0;
-                        while (pid != null && guard++ < 8) {
+                        // Truthy guard, not `!= null`: `parentItemID`
+                        // is `false` at the top level (and `false !=
+                        // null` is true). Real ids are positive ints.
+                        while (pid && guard++ < 8) {
                             if (sIDs.has(pid)) {
                                 pathHasSearchMatch = true;
                                 break;

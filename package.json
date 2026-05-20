@@ -13,6 +13,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "zotero-plugin test",
+    "test:local": "node scripts/test-local.mjs",
     "build": "zotero-plugin build",
     "start": "zotero-plugin serve",
     "prebuild": "npm run typecheck",

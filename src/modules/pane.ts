@@ -2914,11 +2914,19 @@ class _PaneMixin {
         let scanTimer = null;
         const scheduleScan = () => {
             if (scanTimer) win.clearTimeout(scanTimer);
+            // Short debounce: just enough to coalesce a burst of
+            // mutations into one scan, while leaving as little
+            // visible plain-text "flash" window as possible between
+            // Zotero rendering the related-box label and Weavero
+            // rewriting it as a clickable URL/markdown span. The
+            // previous 80ms value was long enough that switching
+            // between item notes flickered noticeably; 8ms lands in
+            // the next animation frame.
             scanTimer = win.setTimeout(() => {
                 scanTimer = null;
                 try { this._scanPaneRows(); }
                 catch(e) { Zotero.debug("[Weavero] pane scan error: " + e); }
-            }, 80);
+            }, 8);
         };
 
         this._paneObserver = new win.MutationObserver(mutations => {

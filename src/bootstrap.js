@@ -16,7 +16,13 @@ function uninstall() {}
 async function startup({ id, version, rootURI }) {
     await Zotero.initializationPromise;
     try {
-        Services.scriptloader.loadSubScript(rootURI + "index.js");
+        // `ignoreCache: true` so a fresh install of the same version
+        // path (e.g. during dev) actually picks up the new bundled
+        // index.js. Without this the bytecode cache happily serves
+        // the previous content from the same URL — silent regression.
+        Services.scriptloader.loadSubScriptWithOptions(
+            rootURI + "index.js",
+            { ignoreCache: true });
     } catch (e) {
         Zotero.debug("[Weavero] failed to load index.js: " + e);
         return;

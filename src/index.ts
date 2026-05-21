@@ -22,6 +22,7 @@ import { noteEditorMethods } from "./modules/note-editor";
 import { readerMethods } from "./modules/reader";
 import { paneMethods } from "./modules/pane";
 import { filterMethods } from "./modules/filter";
+import { bookmarksMethods } from "./modules/bookmarks";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -1535,6 +1536,10 @@ class WeaveroPlugin {
     // ---- Init / Destroy ---------------------------------------------------
 
     async init() {
+        // Warm the bookmarks store (file read) early so the dropdown is
+        // populated by the time the user opens it. Fire-and-forget; the
+        // cached promise dedupes with later callers.
+        try { this._bmInit(); } catch (e) { Zotero.debug("[Weavero] _bmInit err: " + e); }
         // 0a. Patch Zotero.Utilities.Internal.openPreferences so EVERY
         //     Settings-window open (Edit -> Settings, Ctrl+,, plugin-
         //     triggered) uses a features string that gives the user
@@ -2168,6 +2173,10 @@ class WeaveroPlugin {
         // 7b-bis. Collections-tree right-click menu — adds
         // "Copy Collection Link" on collection rows.
         this._setupCollectionsContextMenu();
+        // 7b-quater. Bookmark icon in the collections-pane toolbar
+        // (Obsidian-style). Retries internally if the toolbar isn't
+        // in the DOM yet on a cold start.
+        this._setupBookmarksToolbarButton();
         // 7b-ter. Reader-tab right-click menu — adds Copy Select Link /
         // Copy Open Link for the tab's attachment (via Zotero.MenuManager;
         // no-op on builds without that API).
@@ -2810,6 +2819,7 @@ class WeaveroPlugin {
             this._setupTreeClickDelegate();
             this._setupItemsListContextMenu();
             this._setupCollectionsContextMenu();
+            this._setupBookmarksToolbarButton(_window);
             this._setupPaneObserver();
             this._setupItemsListFilter();
             this._setupTabsMenuLibrarySort(_window);
@@ -2846,6 +2856,7 @@ class WeaveroPlugin {
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();
+            this._teardownBookmarksToolbarButton(_window);
             this._paneObserver?.disconnect();
             this._paneObserver = null;
             this._treeMarkObserver?.disconnect();
@@ -3381,6 +3392,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     filterMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    bookmarksMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================

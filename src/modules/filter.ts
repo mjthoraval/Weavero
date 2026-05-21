@@ -5313,9 +5313,17 @@ class _FilterMixin {
         // `rightSlot`, when provided, is appended on the right side
         // of the header (margin-left: auto); used by the first
         // header to host the Clear-filter × button.
+        let _wvFirstGroupHeader = true;
         const addGroupHeader = (label, todo?, rightSlot?) => {
             const hdr = doc.createElementNS(NS_HTML, "div");
             hdr.className = "wv-filter-group-header";
+            // The first header sits at the top of the panel — drop its
+            // divider line (an empty quick-search anchor div precedes
+            // it, so the CSS `:first-child` rule can't catch it).
+            if (_wvFirstGroupHeader) {
+                hdr.classList.add("wv-filter-group-header-top");
+                _wvFirstGroupHeader = false;
+            }
             const t = doc.createElementNS(NS_HTML, "span");
             t.className = "wv-filter-group-header-title";
             t.textContent = label;
@@ -5560,6 +5568,19 @@ class _FilterMixin {
             this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
             this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
             this._renderItemTypeRow(doc, itemTypeRowSection, refreshAll, searchCtx);
+            // Tint the Rule 1 same-level OR groups so "pick any of
+            // these" reads at a glance. Item Type, Attachment File Type
+            // and Colour tint the whole row (their right-edge tile —
+            // Standalone Note / Item Note — is the OR partner, so it
+            // belongs inside). The Annotation Type row is handled inside
+            // `_renderTypeSection` instead: its right-edge Has Comment
+            // tile is NOT part of the OR set, so only the type icons get
+            // a tinted pill there. These render fns reset className, so
+            // the class is re-added on every refresh.
+            for (const s of [itemTypeRowSection, attachmentFileTypeSection,
+                             colorSection]) {
+                s.classList.add("wv-filter-or-group");
+            }
             this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll);
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
@@ -6860,6 +6881,13 @@ class _FilterMixin {
         opts.className = "wv-filter-options";
         section.appendChild(opts);
 
+        // The type icons are the Rule 1 OR set — wrap them in a tinted
+        // pill. Has Comment (appended after, outside this pill) is a
+        // separate filter, so it stays untinted.
+        const grp = doc.createElementNS(NS_HTML, "div");
+        grp.className = "wv-filter-or-inline";
+        opts.appendChild(grp);
+
         const g0 = this._activeGroup();
         const selected = new Set((g0 && g0.annotationType) || []);
         const excluded = new Set((g0 && g0.annotationTypeExclude) || []);
@@ -6895,7 +6923,7 @@ class _FilterMixin {
                 this._applyItemsListFilter({ cascade: true });
                 refreshAll();
             });
-            opts.appendChild(btn);
+            grp.appendChild(btn);
         }
 
         // Has Comment tile sits at the FAR RIGHT of this row —

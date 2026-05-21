@@ -754,6 +754,25 @@ export const PLUGIN_CSS = [
     ".wv-filter-section {",
     "  display: flex; flex-direction: row; align-items: center; gap: 4px;",
     "}",
+    // Rule 1 same-level OR groups (Item Type ↔ Standalone Note,
+    // Attachment File Type ↔ Item Note, Annotation Colour, Annotation
+    // Type): a subtle card tint marks each as one "pick any of these"
+    // set. Theme-agnostic grey-alpha so it works in light and dark.
+    ".wv-filter-or-group {",
+    "  background: rgba(127,127,127,0.18);",
+    "  border-radius: 6px;",
+    "  padding: 5px 6px;",
+    "  margin: 1px 0;",
+    "}",
+    // Inline variant: tints just a cluster of option icons (used by
+    // the Annotation Type row, whose right-edge Has Comment tile must
+    // stay outside the OR-group tint).
+    ".wv-filter-or-inline {",
+    "  display: flex; align-items: center; gap: 3px;",
+    "  background: rgba(127,127,127,0.18);",
+    "  border-radius: 6px;",
+    "  padding: 3px 6px;",
+    "}",
     // Section titles (e.g. "Annotation Color", "Has Comment", …)
     // are hidden — the icon swatches and the search-input placeholder
     // identify each filter on their own. The element stays in the
@@ -905,11 +924,18 @@ export const PLUGIN_CSS = [
     ".wv-filter-group-header {",
     "  display: flex; align-items: center; gap: 8px;",
     "  margin: 2px 0 0; padding: 2px 0 0;",
-    "  border-top: 1px dashed rgba(127,127,127,0.35);",
+    // Dashed, same theme-aware grey as the Selection Target divider
+    // (`.wv-filter-bottom-bar`, alpha 0.35) but a bit brighter so the
+    // group separators read clearly.
+    "  border-top: 1px dashed rgba(127,127,127,0.5);",
     "}",
     // First group's header sits at the top of the panel — no
-    // divider line needed above it.
-    ".wv-filter-group-header:first-child {",
+    // divider line needed above it. `:first-child` covers the case
+    // with no preceding anchor; `-top` is set in JS on whichever
+    // header is rendered first (an empty quick-search anchor div can
+    // precede it, so `:first-child` alone doesn't catch it).
+    ".wv-filter-group-header:first-child,",
+    ".wv-filter-group-header-top {",
     "  border-top: none; margin-top: 0; padding-top: 0;",
     "}",
     // Group-header label and TBD tag are also hidden — the dashed

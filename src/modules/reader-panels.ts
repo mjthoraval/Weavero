@@ -181,7 +181,7 @@ const RP_BM_CSS = [
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     ".wv-bm-reader-add svg{width:15px;height:15px;fill:currentColor;}",
     ".wv-bm-reader-list{flex:1 1 auto;overflow:auto;min-height:0;padding:4px;}",
-    ".wv-bm-reader-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;}",
+    ".wv-bm-reader-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
     ".wv-bm-reader-row:hover{background:rgba(127,127,127,.14);}",
     ".wv-bm-reader-row .wv-bm-reader-ic{flex:0 0 auto;width:14px;height:14px;opacity:.85;}",
     ".wv-bm-reader-row .wv-bm-reader-ic svg{width:14px;height:14px;}",
@@ -1562,72 +1562,79 @@ class _ReaderPanelsMixin {
         return row;
     }
 
-    /** Shared drag wiring for bookmark + folder rows. The dragged node id is
-     *  carried via a distinct reorder MIME (so pane/tab targets ignore it);
-     *  drop zones are before/after on every row plus a middle "into" zone on
-     *  folders. Moves stay within the row's own section. A center-pane
-     *  bookmarkable drop onto a LOCAL row files it there; onto a GLOBAL row
-     *  it's refused (annotations/selections belong to the open document). */
-    _wvReaderWireRowDrag(reader: any, idoc: any, att: any, row: any, node: any, section: "local" | "global", isFolder: boolean) {
-        row.setAttribute("draggable", "true");
-        const clearDrop = () => row.classList.remove("wv-bm-drop-before", "wv-bm-drop-after", "wv-bm-drop-into");
-        const modeAt = (e: any) => {
-            const r = row.getBoundingClientRect();
-            const y = e.clientY - r.top;
-            if (isFolder) {
-                if (y < r.height * 0.28) return "before";
-                if (y > r.height * 0.72) return "after";
-                return "into";
-            }
-            return (y > r.height / 2) ? "after" : "before";
-        };
-        const isReorder = (dt: any) => {
+    /** Reorder/nest wiring for bookmark + folder rows. POINTER-based (HTML5
+     *  `draggable` doesn't initiate a drag in the reader sidebar — verified: no
+     *  dragstart ever fires). A small movement threshold separates a click
+     *  (navigate / toggle folder) from a drag. Drop zones: before/after on
+     *  every row plus a middle "into" zone on folders; moves stay within the
+     *  row's own section (target rows in another section are ignored). Rows
+     *  carry `data-wv-bm-id`/`data-wv-bm-section` so the row under the cursor is
+     *  resolvable via elementFromPoint. */
+    _wvReaderWireRowDrag(reader: any, idoc: any, att: any, row: any, node: any, section: "local" | "global", _isFolder: boolean) {
+        row.setAttribute("data-wv-bm-id", node.id);
+        row.setAttribute("data-wv-bm-section", section);
+        const win = idoc.defaultView;
+        const clearIndicators = () => {
             try {
-                const t = dt && dt.types;
-                if (!t) return false;
-                return (typeof t.includes === "function") ? t.includes("application/x-weavero-bm-reorder")
-                    : Array.prototype.indexOf.call(t, "application/x-weavero-bm-reorder") >= 0;
-            } catch (_) { return false; }
-        };
-        row.addEventListener("dragstart", (e: any) => {
-            try {
-                e.dataTransfer.setData("application/x-weavero-bm-reorder", node.id);
-                e.dataTransfer.setData("text/plain", "wvbm:" + node.id);
-                e.dataTransfer.effectAllowed = "move";
+                const els = idoc.querySelectorAll(".wv-bm-drop-before,.wv-bm-drop-after,.wv-bm-drop-into");
+                for (let i = 0; i < els.length; i++) els[i].classList.remove("wv-bm-drop-before", "wv-bm-drop-after", "wv-bm-drop-into");
             } catch (_) {}
-            e.stopPropagation();
-            row.classList.add("wv-bm-dragging");
-        });
-        row.addEventListener("dragend", () => row.classList.remove("wv-bm-dragging"));
-        row.addEventListener("dragover", (e: any) => {
-            if (!isReorder(e.dataTransfer) && section === "global"
-                && this._wvReaderDragHasBookmarkable(e.dataTransfer)) {
-                e.stopPropagation();
-                try { e.dataTransfer.dropEffect = "none"; } catch (_) {}
-                return;
-            }
-            e.preventDefault();
-            const m = modeAt(e);
-            clearDrop();
-            row.classList.add(m === "before" ? "wv-bm-drop-before" : m === "after" ? "wv-bm-drop-after" : "wv-bm-drop-into");
-        });
-        row.addEventListener("dragleave", clearDrop);
-        row.addEventListener("drop", (e: any) => {
-            clearDrop();
-            if (!isReorder(e.dataTransfer) && section === "global"
-                && this._wvReaderDragHasBookmarkable(e.dataTransfer)) {
-                e.stopPropagation(); e.preventDefault(); e._wvBmDropHandled = true; return;
-            }
-            if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
-            e.preventDefault(); e.stopPropagation();
-            const m = modeAt(e);
-            let reorderId = ""; try { reorderId = e.dataTransfer.getData("application/x-weavero-bm-reorder"); } catch (_) {}
-            if (reorderId) {
-                if (reorderId !== node.id) this._bmReaderMove(att.libraryID, att.itemKey, reorderId, node.id, m)
-                    .then(() => this._wvReaderRenderBmList(reader, idoc));
-            } else if (this._wvReaderDragHasBookmarkable(e.dataTransfer)) {
-                this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e));
-            }
+        };
+        const resolveTarget = (x: number, y: number) => {
+            try {
+                const el = idoc.elementFromPoint(x, y);
+                const tr = el && el.closest && el.closest(".wv-bm-reader-row");
+                if (!tr || tr === row) return null;
+                if (tr.getAttribute("data-wv-bm-section") !== section) return null;   // same section only
+                const r = tr.getBoundingClientRect();
+                const rel = y - r.top;
+                const folder = tr.classList.contains("wv-bm-reader-folder");
+                let mode = folder
+                    ? (rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into")
+                    : (rel > r.height / 2 ? "after" : "before");
+                return { el: tr, id: tr.getAttribute("data-wv-bm-id"), mode };
+            } catch (_) { return null; }
+        };
+        row.addEventListener("pointerdown", (e: any) => {
+            if (e.button !== 0) return;
+            const sx = e.clientX, sy = e.clientY;
+            let dragging = false, prevUS: any = null, cur: any = null;
+            const onMove = (ev: any) => {
+                if (!dragging) {
+                    if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 5) return;
+                    dragging = true;
+                    row.classList.add("wv-bm-dragging");
+                    prevUS = idoc.documentElement.style.userSelect;
+                    idoc.documentElement.style.userSelect = "none";
+                    try { idoc.documentElement.style.setProperty("-moz-user-select", "none"); } catch (_) {}
+                    try { row.setPointerCapture(ev.pointerId); } catch (_) {}
+                }
+                ev.preventDefault();
+                clearIndicators();
+                cur = resolveTarget(ev.clientX, ev.clientY);
+                if (cur) cur.el.classList.add(cur.mode === "before" ? "wv-bm-drop-before" : cur.mode === "after" ? "wv-bm-drop-after" : "wv-bm-drop-into");
+            };
+            const finish = (ev: any) => {
+                try { win.removeEventListener("pointermove", onMove, true); } catch (_) {}
+                try { win.removeEventListener("pointerup", finish, true); } catch (_) {}
+                try { win.removeEventListener("pointercancel", finish, true); } catch (_) {}
+                clearIndicators();
+                row.classList.remove("wv-bm-dragging");
+                if (prevUS !== null) { idoc.documentElement.style.userSelect = prevUS; try { idoc.documentElement.style.removeProperty("-moz-user-select"); } catch (_) {} }
+                if (!dragging) return;   // it was a click → row's click handler navigates/toggles
+                ev.preventDefault(); ev.stopPropagation();
+                // Swallow the click that fires after the drag (once).
+                const swallow = (ce: any) => { ce.preventDefault(); ce.stopPropagation(); try { idoc.removeEventListener("click", swallow, true); } catch (_) {} };
+                try { idoc.addEventListener("click", swallow, true); win.setTimeout(() => { try { idoc.removeEventListener("click", swallow, true); } catch (_) {} }, 400); } catch (_) {}
+                const t = cur || resolveTarget(ev.clientX, ev.clientY);
+                if (t && t.id && t.id !== node.id) {
+                    this._bmReaderMove(att.libraryID, att.itemKey, node.id, t.id, t.mode)
+                        .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
+                }
+            };
+            win.addEventListener("pointermove", onMove, true);
+            win.addEventListener("pointerup", finish, true);
+            win.addEventListener("pointercancel", finish, true);
         });
     }
 

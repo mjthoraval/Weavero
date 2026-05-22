@@ -23,6 +23,7 @@ import { readerMethods } from "./modules/reader";
 import { paneMethods } from "./modules/pane";
 import { filterMethods } from "./modules/filter";
 import { bookmarksMethods } from "./modules/bookmarks";
+import { readerPanelsMethods } from "./modules/reader-panels";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -3396,6 +3397,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     bookmarksMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    readerPanelsMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================

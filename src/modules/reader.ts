@@ -1506,6 +1506,9 @@ class _ReaderMixin {
         try {
             const { append, reader } = event || {};
             if (typeof append !== "function") return;
+            // Bookmark menu items (current position / selection) — independent
+            // of the copy-link pref.
+            try { this._wvReaderViewContextMenu(event); } catch (e) {}
             if (!this._getEnableCopyItemLink()) return;
             if (!reader) return;
             const att = (reader.itemID && Zotero.Items.get(reader.itemID)) || null;
@@ -5714,6 +5717,10 @@ class _ReaderMixin {
         } finally {
             this._processReaderSidebarBusy = false;
         }
+        // Reader-panels affordances (filter button, bookmarks tab) live in the
+        // same React-app document and re-inject idempotently on each scan.
+        try { this._wvProcessReaderPanels(idoc); }
+        catch (e) { Zotero.debug("[Weavero] _wvProcessReaderPanels err: " + e); }
     }
 
     _processReaderSidebarBody(idoc) {

@@ -147,7 +147,217 @@ class _BookmarksMixin {
             }
             return nodes;
         };
-        return { version: doc.version || 2, bookmarks: fix(doc.bookmarks) };
+        const readerBookmarks = (doc.readerBookmarks && typeof doc.readerBookmarks === "object")
+            ? doc.readerBookmarks : {};
+        return { version: doc.version || 2, bookmarks: fix(doc.bookmarks), readerBookmarks };
+    }
+
+    // ---- Reader (in-document) bookmarks -----------------------------------
+    // Per-attachment bookmarks shown in the reader's Bookmarks tab, split into
+    // two manually-ordered, foldered sections:
+    //   readerBookmarks[<libraryID>:<itemKey>] = { local: Node[], global: Node[] }
+    // `local` = "In this document" (positions/selected-text/this-doc
+    // annotations); `global` = "Elsewhere in Zotero" (items/collections/…).
+    // A Node is a bookmark record or a folder {id, type:"folder", name,
+    // expanded, children: Node[]}. Order within a section is the array order
+    // (user-draggable); folders may nest. Bookmark records keep their prior
+    // shape (location bookmarks: { id, type:"position"|"text", viewType,
+    // location, pageLabel, position?, label }; target bookmarks mirror the
+    // collections-pane shapes). A legacy flat array is migrated to
+    // {local, global} on first access (see _bmReaderDoc).
+
+    _bmReaderKey(libraryID: number, itemKey: string) {
+        return libraryID + ":" + itemKey;
+    }
+
+    _bmReaderStore() {
+        if (!this._bmDoc) return {};
+        if (!this._bmDoc.readerBookmarks || typeof this._bmDoc.readerBookmarks !== "object") {
+            this._bmDoc.readerBookmarks = {};
+        }
+        return this._bmDoc.readerBookmarks;
+    }
+
+    /** Which section a record belongs to, by type/identity (no reader needed —
+     *  mirrors _wvReaderBookmarkIsLocal but keyed off the attachment). */
+    _bmReaderEntrySection(attLibraryID: number, attItemKey: string, rec: any): "local" | "global" {
+        try {
+            if (!rec) return "global";
+            if (rec.type === "position" || rec.type === "text" || rec.type === "folder") {
+                // Folders carry their own section via _section; default local.
+                if (rec.type === "folder") return rec._section === "global" ? "global" : "local";
+                return "local";
+            }
+            if (rec.type === "item") {
+                if (rec.libraryID === attLibraryID && rec.itemKey === attItemKey) return "local";
+                const it: any = Zotero.Items.getByLibraryAndKey(rec.libraryID, rec.itemKey);
+                const att: any = Zotero.Items.getByLibraryAndKey(attLibraryID, attItemKey);
+                if (it && att && typeof it.isAnnotation === "function" && it.isAnnotation()
+                    && it.parentItemID === att.id) return "local";
+            }
+        } catch (_) {}
+        return "global";
+    }
+
+    /** The per-attachment store value as { local: Node[], global: Node[] },
+     *  migrating a legacy flat array (split by section) on first access. */
+    _bmReaderDoc(libraryID: number, itemKey: string): any {
+        const store = this._bmReaderStore();
+        const key = this._bmReaderKey(libraryID, itemKey);
+        let v = store[key];
+        if (Array.isArray(v)) {
+            const local: any[] = [], global: any[] = [];
+            for (const e of v) (this._bmReaderEntrySection(libraryID, itemKey, e) === "local" ? local : global).push(e);
+            v = { local, global };
+            store[key] = v;
+        } else if (!v || typeof v !== "object") {
+            v = { local: [], global: [] };
+            store[key] = v;
+        } else {
+            if (!Array.isArray(v.local)) v.local = [];
+            if (!Array.isArray(v.global)) v.global = [];
+        }
+        return v;
+    }
+
+    /** The tree array for one section. */
+    _bmReaderSection(libraryID: number, itemKey: string, section: "local" | "global"): any[] {
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        return section === "global" ? doc.global : doc.local;
+    }
+
+    /** Flattened bookmark records (folders excluded) across BOTH sections —
+     *  used for counts and identity checks. */
+    _bmReaderList(libraryID: number, itemKey: string): any[] {
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const out: any[] = [];
+        const walk = (nodes: any[]) => {
+            for (const n of nodes) {
+                if (n.type === "folder") walk(n.children || []);
+                else out.push(n);
+            }
+        };
+        walk(doc.local); walk(doc.global);
+        return out;
+    }
+
+    /** Add a bookmark to the appropriate section's root. `rec` carries the
+     *  type-specific fields (location bookmark or collections-pane-style
+     *  target). Target types are de-duped by identity across both sections;
+     *  locations may repeat. */
+    async _bmReaderAdd(libraryID: number, itemKey: string, rec: any) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        rec = rec || {};
+        const section = this._bmReaderEntrySection(libraryID, itemKey, rec);
+        if (rec.type && rec.type !== "position" && rec.type !== "text") {
+            const dupe = (e: any) => {
+                if (e.type !== rec.type) return false;
+                if (rec.type === "item") return e.libraryID === rec.libraryID && e.itemKey === rec.itemKey;
+                if (rec.type === "collection") return e.libraryID === rec.libraryID && e.collectionKey === rec.collectionKey;
+                if (rec.type === "library") return e.libraryID === rec.libraryID;
+                if (rec.type === "treerow") return e.rowID === rec.rowID;
+                return false;
+            };
+            if (this._bmReaderList(libraryID, itemKey).some(dupe)) return null;
+        }
+        const entry = Object.assign(
+            { id: "wv-" + Zotero.Utilities.randomString(8), type: "position", created: new Date().toISOString() },
+            rec);
+        doc[section].push(entry);
+        await this._bmPersist();
+        return entry;
+    }
+
+    /** Remove a node (bookmark or folder + its contents) from either section. */
+    async _bmReaderRemove(libraryID: number, itemKey: string, id: string) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc) return;
+        loc.parentArr.splice(loc.index, 1);
+        if (!doc.local.length && !doc.global.length) {
+            delete this._bmReaderStore()[this._bmReaderKey(libraryID, itemKey)];
+        }
+        await this._bmPersist();
+    }
+
+    /** Rename a bookmark (label) or folder (name) anywhere in either tree. */
+    async _bmReaderRename(libraryID: number, itemKey: string, id: string, label: string) {
+        await this._bmInit();
+        if (!label) return;
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc) return;
+        if (loc.entry.type === "folder") loc.entry.name = label; else loc.entry.label = label;
+        await this._bmPersist();
+    }
+
+    /** Reorder / nest `draggedId` relative to `targetId` (mode
+     *  before|after|into) WITHIN its section. Cross-section moves are refused
+     *  (a bookmark's section is intrinsic to its type). A null target drops at
+     *  the dragged item's section root. */
+    async _bmReaderMove(libraryID: number, itemKey: string, draggedId: string, targetId: string | null, mode: string) {
+        await this._bmInit();
+        if (draggedId === targetId) return;
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        let srcSection: any = null, src: any = null;
+        for (const s of ["local", "global"]) { const f = this._bmLocate(draggedId, doc[s]); if (f) { src = f; srcSection = s; break; } }
+        if (!src) return;
+        if (targetId) {
+            let tgtSection: any = null;
+            for (const s of ["local", "global"]) { if (this._bmLocate(targetId, doc[s])) { tgtSection = s; break; } }
+            if (tgtSection && tgtSection !== srcSection) return;   // no cross-section moves
+        }
+        if (src.entry.type === "folder" && targetId && this._bmIsDescendant(targetId, src.entry)) return;
+        const arr = doc[srcSection];
+        const moved = src.parentArr.splice(src.index, 1)[0];
+        if (mode === "into" && targetId) {
+            const t = this._bmLocate(targetId, arr);
+            if (t && t.entry.type === "folder") { t.entry.children = t.entry.children || []; t.entry.children.push(moved); t.entry.expanded = true; }
+            else arr.push(moved);
+        } else if (targetId) {
+            const t = this._bmLocate(targetId, arr);
+            if (!t) arr.push(moved);
+            else t.parentArr.splice(t.index + (mode === "after" ? 1 : 0), 0, moved);
+        } else {
+            arr.push(moved);
+        }
+        await this._bmPersist();
+    }
+
+    /** Create a folder at a section's root; returns its id. */
+    async _bmReaderAddFolder(libraryID: number, itemKey: string, section: "local" | "global", name: string) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const folder = {
+            id: "wv-" + Zotero.Utilities.randomString(8), type: "folder",
+            name: name || "New Folder", expanded: true, _section: section,
+            created: new Date().toISOString(), children: [] as any[],
+        };
+        (section === "global" ? doc.global : doc.local).push(folder);
+        await this._bmPersist();
+        return folder.id;
+    }
+
+    /** Merge updates (e.g. a moved `position` + new pageLabel/label) onto a
+     *  reader bookmark anywhere in either section tree. */
+    async _bmReaderUpdatePosition(libraryID: number, itemKey: string, id: string, updates: any) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc || loc.entry.type === "folder") return;
+        Object.assign(loc.entry, updates || {});
+        await this._bmPersist();
+    }
+
+    async _bmReaderToggleFolder(libraryID: number, itemKey: string, id: string) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc || loc.entry.type !== "folder") return;
+        loc.entry.expanded = !loc.entry.expanded;
+        await this._bmPersist();
     }
 
     /** Load the file into `_bmDoc` once (cached promise). Missing → fresh;

@@ -70,6 +70,17 @@ const BM_DELETE_ICON = "data:image/svg+xml," + encodeURIComponent(
     + '<path d="M4 4l8 8M12 4l-8 8" stroke="#e0483b" stroke-width="2" stroke-linecap="round"/>'
     + '</svg>');
 
+// Neutral-gray "+" and folder-with-+ for the context-menu "Add Bookmark" /
+// "New Folder" items. Baked colour (visible in both themes — a menuitem image
+// can't carry -moz-context-properties tinting).
+const BM_MENU_ADD_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+    + '<path fill="#888" d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>');
+const BM_MENU_NEWFOLDER_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 20 20" '
+    + 'fill="none" stroke="#888" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M18 11.5V6.5H8.5L7 5H2.5V15.5H10"/><path d="M14.5 12.5v5M12 15h5"/></svg>');
+
 // Folder glyph for bookmark folders — an outline (Lucide/Firefox-style)
 // folder, deliberately distinct from Zotero's filled blue collection
 // icon so bookmark folders aren't confused with bookmarked collections.
@@ -92,6 +103,16 @@ const BM_NEW_FOLDER_ICON = "data:image/svg+xml," + encodeURIComponent(
     + '<path d="M18.5 11V6.5H8L6.5 4.5H2.5V17.5H10"/>'
     + '<circle cx="14.5" cy="14.5" r="3.5"/>'
     + '<path d="M14.5 12.5v4M12.5 14.5h4"/></svg>');
+
+// Pencil for the menu's "Rename…" item (no native Zotero icon for this).
+// Baked #888 to sit alongside the gray Add/New-Folder icons; the reader menu
+// uses the same pencil path via currentColor (RP_RENAME_SVG). Open and
+// Show-in-Library use the native Zotero icons (attachment / library) instead.
+const BM_RENAME_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" '
+    + 'fill="none" stroke="#888" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M11.5 2.5l2 2"/>'
+    + '<path d="M12.2 1.8a1 1 0 0 1 1.4 0l.6.6a1 1 0 0 1 0 1.4L5.5 12.5 2.5 13.5 3.5 10.5z"/></svg>');
 
 // Bare-class selectors so the same styles apply in the main panel AND in
 // flyout sub-panels (each flyout is a separate <panel>, not nested in the
@@ -245,12 +266,15 @@ class _BookmarksMixin {
      *  type-specific fields (location bookmark or collections-pane-style
      *  target). Target types are de-duped by identity across both sections;
      *  locations may repeat. */
-    async _bmReaderAdd(libraryID: number, itemKey: string, rec: any) {
+    async _bmReaderAdd(libraryID: number, itemKey: string, rec: any, opts?: any) {
         await this._bmInit();
         const doc = this._bmReaderDoc(libraryID, itemKey);
         rec = rec || {};
         const section = this._bmReaderEntrySection(libraryID, itemKey, rec);
-        if (rec.type && rec.type !== "position" && rec.type !== "text") {
+        // Drag-to-bookmark passes allowDuplicate so the SAME annotation can be
+        // filed into several folders (user choice). The "+" picker leaves it off,
+        // so an accidental double-add there is still de-duplicated.
+        if (!(opts && opts.allowDuplicate) && rec.type && rec.type !== "position" && rec.type !== "text") {
             const dupe = (e: any) => {
                 if (e.type !== rec.type) return false;
                 if (rec.type === "item") return e.libraryID === rec.libraryID && e.itemKey === rec.itemKey;
@@ -264,6 +288,12 @@ class _BookmarksMixin {
         const entry = Object.assign(
             { id: "wv-" + Zotero.Utilities.randomString(8), type: "position", created: new Date().toISOString() },
             rec);
+        // Remember the auto-generated label immutably so a later rename (which
+        // overwrites `label` for DISPLAY only) never loses the original text.
+        // Bookmark-only: lives in our JSON store, never written to the Zotero item.
+        if (entry.type !== "folder" && entry.label && entry.originalLabel == null) {
+            entry.originalLabel = entry.label;
+        }
         doc[section].push(entry);
         await this._bmPersist();
         return entry;
@@ -282,15 +312,155 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
-    /** Rename a bookmark (label) or folder (name) anywhere in either tree. */
+    /** Rename a bookmark (label) or folder (name) anywhere in either tree. For a
+     *  bookmark this sets a CUSTOM display name and flags it `renamed` so the
+     *  live source sync no longer overwrites `label`. `originalLabel` is left
+     *  alone (it keeps tracking the source). Bookmark-record only — the Zotero
+     *  item is never touched. */
     async _bmReaderRename(libraryID: number, itemKey: string, id: string, label: string) {
         await this._bmInit();
         if (!label) return;
         const doc = this._bmReaderDoc(libraryID, itemKey);
         const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
         if (!loc) return;
-        if (loc.entry.type === "folder") loc.entry.name = label; else loc.entry.label = label;
+        if (loc.entry.type === "folder") loc.entry.name = label;
+        else { loc.entry.label = label; loc.entry.renamed = true; }
         await this._bmPersist();
+    }
+
+    /** The live source name for a bookmark's target — annotation text/comment,
+     *  item title, collection/library name, or page. Returns null for targets
+     *  with no derivable live source (text selections; deleted items). READ-ONLY:
+     *  never writes to the item. */
+    _bmReaderDeriveSourceLabel(bm: any): string | null {
+        try {
+            if (!bm) return null;
+            switch (bm.type) {
+                case "item": {
+                    const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                    if (!it) return null;
+                    if (it.isAnnotation && it.isAnnotation()) return this._wvReaderAnnLabel(it);
+                    let title = "";
+                    try { title = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : ""); } catch (_) {}
+                    return title ? String(title) : null;
+                }
+                case "collection": {
+                    const c: any = (bm.collectionKey && Zotero.Collections.getByLibraryAndKey)
+                        ? Zotero.Collections.getByLibraryAndKey(bm.libraryID, bm.collectionKey) : null;
+                    return (c && c.name) ? String(c.name) : null;
+                }
+                case "library": {
+                    const lib: any = Zotero.Libraries.get(bm.libraryID);
+                    return (lib && lib.name) ? String(lib.name) : null;
+                }
+                case "position":
+                    return bm.pageLabel ? ("Page " + bm.pageLabel) : null;
+                default:
+                    return null;   // text (no live source), treerow (not re-derived here)
+            }
+        } catch (_) { return null; }
+    }
+
+    /** Whether the user has given this bookmark a custom name. Uses the explicit
+     *  `renamed` flag; falls back (for pre-flag bookmarks) to comparing label vs
+     *  originalLabel. */
+    _bmReaderIsRenamed(bm: any): boolean {
+        if (!bm || bm.type === "folder") return false;
+        if (bm.renamed != null) return !!bm.renamed;
+        return bm.originalLabel != null && bm.label !== bm.originalLabel;
+    }
+
+    /** The bookmark's ORIGINAL (auto-generated) name — the live source name when
+     *  available, else the last stored `originalLabel`. Used for the tooltip on a
+     *  renamed bookmark and for "Reset to original name". READ-ONLY. */
+    _bmReaderOriginalLabel(bm: any): string | null {
+        if (!bm || bm.type === "folder") return null;
+        const live = this._bmReaderDeriveSourceLabel(bm);
+        if (live) return live;
+        return bm.originalLabel != null ? String(bm.originalLabel) : null;
+    }
+
+    /** The page label to show for a bookmark: the stored `pageLabel` (position /
+     *  text bookmarks capture it at creation), else — for an annotation item
+     *  bookmark — the annotation's live page. Empty string when there's no page.
+     *  READ-ONLY. */
+    _bmReaderPageLabel(bm: any): string {
+        try {
+            if (!bm) return "";
+            if (bm.pageLabel) return String(bm.pageLabel);
+            if (bm.type === "item") {
+                const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                if (it && it.isAnnotation && it.isAnnotation() && it.annotationPageLabel) {
+                    return String(it.annotationPageLabel);
+                }
+            }
+            return "";
+        } catch (_) { return ""; }
+    }
+
+    /** Keep `originalLabel` in sync with the live source for every bookmark of
+     *  this attachment, and (when NOT renamed) `label` too, so default names
+     *  track edits to the underlying annotation/item/collection/library. The
+     *  original data stays current even for renamed bookmarks where it isn't
+     *  displayed. Synchronous in-memory update + one debounced persist if
+     *  anything changed. Item never modified. */
+    _bmReaderSyncLabels(libraryID: number, itemKey: string) {
+        try {
+            if (!this._bmDoc) return;
+            const doc = this._bmReaderDoc(libraryID, itemKey);
+            let changed = false;
+            const walk = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") { walk(n.children || []); continue; }
+                    const renamed = this._bmReaderIsRenamed(n);
+                    if (n.renamed == null) { n.renamed = renamed; changed = true; }   // migrate old records
+                    const derived = this._bmReaderDeriveSourceLabel(n);
+                    if (derived == null) continue;                                    // no live source — keep stored
+                    if (n.originalLabel !== derived) { n.originalLabel = derived; changed = true; }
+                    if (!renamed && n.label !== derived) { n.label = derived; changed = true; }
+                }
+            };
+            walk(doc.local); walk(doc.global);
+            if (changed) this._bmPersist();
+        } catch (_) {}
+    }
+
+    /** Reset a bookmark's display name back to the original (live source) name
+     *  and clear its renamed flag, so it resumes tracking the source. Bookmark-
+     *  record only — the Zotero item is untouched. */
+    async _bmReaderResetLabel(libraryID: number, itemKey: string, id: string) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc || loc.entry.type === "folder") return;
+        const orig = this._bmReaderOriginalLabel(loc.entry);
+        if (!orig) return;
+        loc.entry.label = orig;
+        loc.entry.originalLabel = orig;
+        loc.entry.renamed = false;
+        await this._bmPersist();
+    }
+
+    /** Sets of the item + collection keys bookmarked for this attachment — for a
+     *  cheap test of whether a changed item/collection affects this pane.
+     *  READ-ONLY. */
+    _bmReaderBookmarkedKeys(libraryID: number, itemKey: string): { items: Set<string>; collections: Set<string> } {
+        const out = { items: new Set<string>(), collections: new Set<string>() };
+        try {
+            if (!this._bmDoc) return out;
+            const doc = this._bmReaderDoc(libraryID, itemKey);
+            const walk = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") { walk(n.children || []); continue; }
+                    if (n.type === "item" && n.itemKey) out.items.add(n.itemKey);
+                    else if (n.type === "collection" && n.collectionKey) out.collections.add(n.collectionKey);
+                }
+            };
+            walk(doc.local); walk(doc.global);
+        } catch (_) {}
+        return out;
     }
 
     /** Reorder / nest `draggedId` relative to `targetId` (mode
@@ -326,8 +496,9 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
-    /** Create a folder at a section's root; returns its id. */
-    async _bmReaderAddFolder(libraryID: number, itemKey: string, section: "local" | "global", name: string) {
+    /** Create a folder at a section's root, or inside `parentId` (a folder in
+     *  the same section) for a subfolder; returns its id. */
+    async _bmReaderAddFolder(libraryID: number, itemKey: string, section: "local" | "global", name: string, parentId?: string) {
         await this._bmInit();
         const doc = this._bmReaderDoc(libraryID, itemKey);
         const folder = {
@@ -335,7 +506,16 @@ class _BookmarksMixin {
             name: name || "New Folder", expanded: true, _section: section,
             created: new Date().toISOString(), children: [] as any[],
         };
-        (section === "global" ? doc.global : doc.local).push(folder);
+        let arr: any[] = (section === "global" ? doc.global : doc.local);
+        if (parentId) {
+            const loc = this._bmLocate(parentId, doc.local) || this._bmLocate(parentId, doc.global);
+            if (loc && loc.entry.type === "folder") {
+                loc.entry.children = loc.entry.children || [];
+                loc.entry.expanded = true;
+                arr = loc.entry.children;
+            }
+        }
+        arr.push(folder);
         await this._bmPersist();
         return folder.id;
     }
@@ -629,6 +809,15 @@ class _BookmarksMixin {
         const f = this._bmFindFolder(id);
         if (!f || !name) return;
         f.name = name;
+        await this._bmPersist();
+    }
+
+    /** Rename a bookmark's display label (non-folder entry, anywhere in tree). */
+    async _bmRenameBookmark(id: string, label: string) {
+        await this._bmInit();
+        const loc = this._bmLocate(id);
+        if (!loc || !loc.entry || loc.entry.type === "folder" || !label) return;
+        loc.entry.label = label;
         await this._bmPersist();
     }
 
@@ -1078,6 +1267,12 @@ class _BookmarksMixin {
         panel.setAttribute("tooltip", "html-tooltip");
         const inner = doc.createElementNS(NS_HTML, "div");
         inner.id = BM_INNER_ID;
+        // Right-click on empty areas (row menus stopPropagation) → Add
+        // Bookmark / New Folder, Firefox-bookmarks style.
+        inner.addEventListener("contextmenu", (e: any) => {
+            e.preventDefault();
+            this._bmEmptyContextMenu(win, e.screenX, e.screenY);
+        });
         panel.appendChild(inner);
         const host = doc.getElementById("mainPopupSet") || doc.documentElement;
         host.appendChild(panel);
@@ -1452,10 +1647,6 @@ class _BookmarksMixin {
                 if (fn) mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
-            add("Show in Library", () => {
-                this._bmShowInLibrary(bm);
-                this._bmHidePopup(win);
-            }, this._bmShowInLibraryIcon(bm, win));
             const target = await this._bmResolveOpenTarget(bm);
             if (target) {
                 let attIcon = "";
@@ -1469,10 +1660,25 @@ class _BookmarksMixin {
                     this._bmHidePopup(win);
                 }, attIcon);
             }
+            add("Show in Library", () => {
+                this._bmShowInLibrary(bm);
+                this._bmHidePopup(win);
+            }, this._bmShowInLibraryIcon(bm, win));
             menu.appendChild(doc.createXULElement("menuseparator"));
+            add("Rename…", () => {
+                const cur = bm.label || bm.itemKey || bm.collectionKey || "";
+                const name = this._bmPromptName(win, "Rename Bookmark", cur);
+                if (name) this._bmRenameBookmark(bm.id, name).then(() => this._bmRenderPopupList(win));
+            }, BM_RENAME_ICON);
             add("Delete Bookmark", () => {
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_DELETE_ICON);
+            menu.appendChild(doc.createXULElement("menuseparator"));
+            add("Add Bookmark…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_ADD_ICON);
+            add("New Folder…", () => {
+                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
+            }, BM_MENU_NEWFOLDER_ICON);
             const host = doc.getElementById("mainPopupSet") || doc.documentElement;
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
@@ -1503,11 +1709,11 @@ class _BookmarksMixin {
             add("Rename Folder…", () => {
                 const name = this._bmPromptName(win, "Rename Folder", bm.name || "");
                 if (name) this._bmRenameFolder(bm.id, name).then(() => this._bmRenderPopupList(win));
-            });
+            }, BM_RENAME_ICON);
             add("New Subfolder…", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name, bm.id).then(() => this._bmRenderPopupList(win));
-            });
+            }, BM_MENU_NEWFOLDER_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
             // Destructive (folder + contents), but confirm when non-empty —
             // the confirmation stands in for the undo we don't have.
@@ -1524,6 +1730,12 @@ class _BookmarksMixin {
                 }
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_DELETE_ICON);
+            menu.appendChild(doc.createXULElement("menuseparator"));
+            add("Add Bookmark…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_ADD_ICON);
+            add("New Folder…", () => {
+                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
+            }, BM_MENU_NEWFOLDER_ICON);
             const host = doc.getElementById("mainPopupSet") || doc.documentElement;
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
@@ -1531,6 +1743,35 @@ class _BookmarksMixin {
             menu.openPopupAtScreen(screenX, screenY, true);
         } catch (e) {
             Zotero.debug("[Weavero] _bmFolderContextMenu err: " + e);
+        }
+    }
+
+    /** Right-click on the dropdown's empty area → Add Bookmark / New Folder. */
+    _bmEmptyContextMenu(win: any, screenX: number, screenY: number) {
+        try {
+            const doc: any = win.document;
+            doc.getElementById(BM_ROW_MENU_ID)?.remove();
+            const menu = doc.createXULElement("menupopup");
+            menu.id = BM_ROW_MENU_ID;
+            const add = (label: string, fn: any, image?: string) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", label);
+                if (image) { mi.classList.add("menuitem-iconic"); mi.setAttribute("image", image); }
+                mi.addEventListener("command", fn);
+                menu.appendChild(mi);
+            };
+            add("Add Bookmark…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_ADD_ICON);
+            add("New Folder…", () => {
+                const name = this._bmPromptName(win, "New Folder", "New Folder");
+                if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
+            }, BM_MENU_NEWFOLDER_ICON);
+            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            host.appendChild(menu);
+            menu.addEventListener("popuphidden",
+                () => { try { menu.remove(); } catch (e) {} }, { once: true });
+            menu.openPopupAtScreen(screenX, screenY, true);
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmEmptyContextMenu err: " + e);
         }
     }
 

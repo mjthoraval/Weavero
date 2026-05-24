@@ -3072,7 +3072,7 @@ class _PaneMixin {
      *
      *  Per-window state is stashed on `win._wvCompactTitleBar` so revert can
      *  restore the original DOM structure cleanly. Idempotent — applying
-     *  twice is a no-op. Gated by `_getCompactTitleBar()` upstream.
+     *  twice is a no-op. Gated by `_getCompactTitleBarMain()` upstream.
      *
      *  Mac is excluded — macOS draws traffic-light controls itself, and
      *  `.titlebar-buttonbox` is empty there. Same exclusion the windingwind

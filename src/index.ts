@@ -684,6 +684,8 @@ class WeaveroPlugin {
      *  with a boolean — the normal path) OR a string (some external tools
      *  write `"true"` / `"false"`). Without the string check, `!!"false"`
      *  evaluates to `true` and the feature silently stays on. */
+    /** Master toggle for "Hide title bar (Firefox-style)". Default OFF —
+     *  opt-in. Scoped to a window type by the two child getters below. */
     _getCompactTitleBar() {
         try {
             const v = Zotero.Prefs.get("weavero.compactTitleBar");
@@ -692,6 +694,27 @@ class WeaveroPlugin {
             return !!v;
         } catch (e) { return false; }
     }
+
+    /** Child pref read: master must be on AND the named child not explicitly
+     *  unticked. Children default ON, so enabling the master applies to both
+     *  the main window and reader windows unless one is unchecked. */
+    _getCompactTitleBarChild(name: string) {
+        try {
+            if (!this._getCompactTitleBar()) return false;
+            const v = Zotero.Prefs.get("weavero." + name);
+            if (v === undefined) return true;                 // child defaults ON
+            if (typeof v === "string") return v.toLowerCase() !== "false";
+            return !!v;
+        } catch (e) { return false; }
+    }
+
+    /** Hide the title bar in the MAIN window (Firefox-style). */
+    _getCompactTitleBarMain() { return this._getCompactTitleBarChild("compactTitleBarMain"); }
+
+    /** Apply the Firefox-style to standalone READER windows: the title bar
+     *  becomes a tab strip (with the window buttons) and the menu bar is
+     *  hidden. */
+    _getCompactTitleBarReader() { return this._getCompactTitleBarChild("compactTitleBarReader"); }
 
     // ====================================================================
     // Per-feature toggles introduced in v0.8.1.
@@ -2282,18 +2305,19 @@ class WeaveroPlugin {
         // returns when a stash already exists, so onMainWindowLoad's
         // call later (for fresh windows) doesn't double-apply.
         try {
-            if (this._getCompactTitleBar()) {
+            if (this._getCompactTitleBarMain()) {
                 const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                 for (const w of wins) {
                     try { this._applyCompactTitleBar(w); } catch (e) {}
                 }
-                // Same for any already-open standalone reader windows.
-                // Newly opened readers are handled by the renderToolbar
-                // event path in `_toolbarHandlerImpl`.
-                const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
-                for (const r of readers) {
-                    try { this._applyReaderCompactMenubar(r); } catch (e) {}
-                }
+            }
+            // Standalone reader windows — apply the full Firefox-style (title
+            // bar → tab strip + menu hide). `_ensureReaderWindowTabStrip`
+            // self-gates on the reader child. Newly opened readers are handled
+            // by the renderToolbar event path in `_toolbarHandlerImpl`.
+            const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
+            for (const r of readers) {
+                try { this._ensureReaderWindowTabStrip(r); } catch (e) {}
             }
         } catch (e) { Zotero.debug("[Weavero] init compactTitleBar err: " + e); }
         this._applyUIThemeClass();
@@ -2382,24 +2406,26 @@ class WeaveroPlugin {
                     if (data === "extensions.zotero.weavero.enableReaderViewIcons") {
                         this._applySurfacePref("readerView");
                     }
-                    // Compact title bar — apply or revert across every main
-                    // window AND every standalone reader window so the
-                    // change is visible without a restart.
-                    if (data === "extensions.zotero.weavero.compactTitleBar") {
+                    // Hide title bar (Firefox-style) — master + the two child
+                    // scopes. Any of them changing re-evaluates BOTH window
+                    // types so the change shows without a restart:
+                    //  • main windows  → _getCompactTitleBarMain()
+                    //  • reader windows → _ensureReaderWindowTabStrip (self-gates
+                    //    on _getCompactTitleBarReader(); does the strip + menu
+                    //    hide, or tears both down).
+                    if (data === "extensions.zotero.weavero.compactTitleBar"
+                            || data === "extensions.zotero.weavero.compactTitleBarMain"
+                            || data === "extensions.zotero.weavero.compactTitleBarReader") {
                         try {
-                            const on = this._getCompactTitleBar();
+                            const onMain = this._getCompactTitleBarMain();
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                             for (const w of wins) {
-                                if (on) this._applyCompactTitleBar(w);
+                                if (onMain) this._applyCompactTitleBar(w);
                                 else this._revertCompactTitleBar(w);
                             }
-                            // Reader windows — iterate every window-mode
-                            // ReaderInstance and apply/revert the menubar
-                            // collapse.
                             const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
                             for (const r of readers) {
-                                if (on) this._applyReaderCompactMenubar(r);
-                                else this._revertReaderCompactMenubar(r);
+                                try { this._ensureReaderWindowTabStrip(r); } catch (e) {}
                             }
                         } catch (e) { Zotero.debug("[Weavero] compactTitleBar toggle err: " + e); }
                     }
@@ -2834,7 +2860,7 @@ class WeaveroPlugin {
             // Runs after the window is fully laid out so the buttonbox move
             // doesn't race against Zotero's own titlebar init.
             try {
-                if (this._getCompactTitleBar()) this._applyCompactTitleBar(_window);
+                if (this._getCompactTitleBarMain()) this._applyCompactTitleBar(_window);
             } catch (e) { Zotero.debug("[Weavero] _applyCompactTitleBar onLoad err: " + e); }
             // Refresh sidebar icons across any open readers. The
             // renderSidebarAnnotationHeader event won't re-fire for rows
@@ -2977,6 +3003,7 @@ class WeaveroPlugin {
                 const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
                 for (const r of readers) {
                     try { this._revertReaderCompactMenubar(r); } catch(e) {}
+                    try { this._removeReaderWindowTabStrip(r); } catch(e) {}
                 }
             } else {
                 Zotero.debug("[Weavero] destroy: app shutting down, skipping compact-title-bar revert");

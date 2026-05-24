@@ -189,8 +189,10 @@
         // v0.8.1 — Visual extras
         "enableAnnotationsCountColumn",
         "enableGroupLibraryGlyph",
-        // v0.8.8 — Window chrome
+        // v0.8.8 — Window bars
         "compactTitleBar",
+        "compactTitleBarMain",
+        "compactTitleBarReader",
     ];
 
     // === Per-surface enable checkboxes ====================================

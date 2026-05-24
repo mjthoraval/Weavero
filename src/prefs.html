@@ -312,6 +312,20 @@
     .wv-children {
       transition: opacity 0.12s;
     }
+    /* Plain master block — a normal master checkbox with lightly indented
+       sub-toggles, NOT the prominent blue card. Used where the children are
+       the point (Window bars → "Hide title bar"). Keeps the grey-out above. */
+    .wv-master-block.wv-master-plain > label.wv-surface-row {
+      background: none;
+      border-left: none;
+      padding-left: 0;
+      padding-right: 0;
+      margin: 0;
+      border-radius: 0;
+    }
+    .wv-master-block.wv-master-plain > .wv-children {
+      margin-left: 26px;
+    }
 
     /* ==== Tabs ====================================================
        Pure-CSS tabs via the radio + label trick. Three hidden
@@ -813,7 +827,7 @@
 
   </div>
 
-  <p class="wv-section-title">Tab strip</p>
+  <p class="wv-section-title">Window bars</p>
   <div class="wv-surface-list">
 
     <label class="wv-surface-row">
@@ -825,16 +839,29 @@
 
   </div>
 
-  <p class="wv-section-title">Window chrome</p>
-  <div class="wv-surface-list">
-
+  <div class="wv-master-block wv-master-plain">
     <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="compactTitleBar" />
+      <input type="checkbox" name="wv-feature" value="compactTitleBar" class="wv-master" />
       <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Hide title bar (Firefox-style)</span>&#160;<span class="wv-desc">&#8212; Hide the File / Edit / View menubar row in the main window and move the minimize / maximize / close buttons into the tab strip. Press <kbd>Alt</kbd> to summon the menubar; <kbd>Esc</kbd> or clicking outside hides it again. Windows / Linux only. Default off.</span></p>
+        <p class="wv-surface-text"><span class="wv-surface-name">Hide title bar (Firefox-style)</span>&#160;<span class="wv-desc">&#8212; Replace the title bar with a browser-style bar &#8212; menus move out of the way (press <kbd>Alt</kbd> to summon them) and the window buttons move into the tab bar / tab strip. Pick where it applies below. Windows / Linux only. Default off.</span></p>
       </div>
     </label>
-
+    <div class="wv-children">
+      <div class="wv-surface-list">
+        <label class="wv-surface-row">
+          <input type="checkbox" name="wv-feature" value="compactTitleBarMain" />
+          <div class="wv-surface-body">
+            <p class="wv-surface-text"><span class="wv-surface-name">Main window</span>&#160;<span class="wv-desc">&#8212; Remove the main window&#8217;s title bar (which holds the menus) and move the window buttons into the tab bar. Default on.</span></p>
+          </div>
+        </label>
+        <label class="wv-surface-row">
+          <input type="checkbox" name="wv-feature" value="compactTitleBarReader" />
+          <div class="wv-surface-body">
+            <p class="wv-surface-text"><span class="wv-surface-name">Separate reader window</span>&#160;<span class="wv-desc">&#8212; In a reader opened in its own window, turn the title bar into a tab strip carrying the document tab (title + close &#215;) and the window buttons, and hide the menu bar. Default on.</span></p>
+          </div>
+        </label>
+      </div>
+    </div>
   </div>
 
     </div>

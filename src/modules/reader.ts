@@ -1735,18 +1735,11 @@ class _ReaderMixin {
             const itemID = reader.itemID;
             if (!itemID) return;
 
-            // Standalone reader windows also get a minimal one-tab strip
-            // along the top (Firefox-ish), so the window reads as a tabbed
-            // window rather than a chrome-less reader.
+            // Apply (or tear down) the reader-window Firefox-style: the title
+            // bar becomes a tab strip carrying the document tab + window
+            // buttons, and the menu bar is hidden. Self-gates on the reader
+            // child of "Hide title bar (Firefox-style)".
             try { this._ensureReaderWindowTabStrip(reader); } catch (e) {}
-
-            // If the user enabled "Hide title bar" in prefs, also hide the
-            // reader window's menubar (File / Edit / View / Go) and let
-            // Alt summon it. Caveat: we can't remove the OS-drawn title
-            // bar above (Windows commits chromemargin at window-create
-            // time; setting it from a plugin runs too late). The menubar
-            // row is the only thing under our control to collapse.
-            try { if (this._getCompactTitleBar?.()) this._applyReaderCompactMenubar(reader); } catch (e) {}
 
             const NS_HTML = "http://www.w3.org/1999/xhtml";
             const btn = doc.createElementNS(NS_HTML, "button");
@@ -1799,6 +1792,14 @@ class _ReaderMixin {
             try {
                 if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
             } catch (e) { return; }
+            // Reader-window "Hide title bar (Firefox-style)": opt-in via the
+            // reader child, off by default. When off, tear down BOTH the strip
+            // (restoring the native OS title bar) and the menu-bar hide.
+            if (!this._getCompactTitleBarReader?.()) {
+                this._removeReaderWindowTabStrip(reader);
+                try { this._revertReaderCompactMenubar(reader); } catch (e) {}
+                return;
+            }
 
             const title = (() => {
                 try {
@@ -1889,16 +1890,61 @@ class _ReaderMixin {
                 if (iconEl && readerType) iconEl.setAttribute("data-type", readerType);
             } catch (e) {}
 
-            // If compact mode is already active on this window (apply ran
-            // before the strip existed, e.g. via init() before the
-            // toolbar event), add the window controls now that the strip
-            // is in place. Idempotent — early-returns if already added.
+            // Swap the title bar FOR the strip: collapse the native OS title
+            // bar (so we don't show both) and mount the min/max/close controls
+            // in the strip. State stashed on `win._wvTabStrip` so teardown can
+            // restore it. Idempotent — re-running just re-asserts the same.
+            const stash: any = win._wvTabStrip || (win._wvTabStrip = {});
             try {
-                if (win._wvCompactMenubar) this._ensureReaderWindowControls(win);
+                const winEl = doc.documentElement;
+                if (!("customtitlebarOrig" in stash)) {
+                    stash.customtitlebarOrig = winEl.getAttribute("customtitlebar");
+                    stash.drawtitleOrig = winEl.getAttribute("drawtitle");
+                }
+                winEl.setAttribute("customtitlebar", "true");
+                winEl.toggleAttribute("drawtitle", false);
             } catch (e) {}
+            try { this._ensureReaderWindowControls(win, stash); } catch (e) {}
+            // Hide the menu bar too — otherwise it sits as a stray row between
+            // the strip and the page. Alt summons it. (Idempotent.)
+            try { this._applyReaderCompactMenubar(reader); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowTabStrip err: " + e);
         }
+    }
+
+    /** Tear down the "Change Title Bar to Tab Strip" feature: remove the strip
+     *  + its styles + window controls, and restore the native OS title bar.
+     *  Used when the pref is turned off and on plugin shutdown/disable, so a
+     *  disabled Weavero leaves no chrome behind. */
+    _removeReaderWindowTabStrip(reader) {
+        try {
+            const win = reader && reader._window;
+            const doc = win && win.document;
+            if (!doc) return;
+            const stash: any = (win._wvTabStrip) || {};
+            // Window controls + their sizemode listeners.
+            try { stash.controls?.remove(); } catch (e) {}
+            try {
+                if (stash.syncMaxIcon) {
+                    win.removeEventListener("sizemodechange", stash.syncMaxIcon);
+                    win.removeEventListener("resize", stash.syncMaxIcon);
+                }
+            } catch (e) {}
+            // Restore the OS title bar (customtitlebar / drawtitle) we collapsed.
+            try {
+                const winEl = doc.documentElement;
+                if ("customtitlebarOrig" in stash) {
+                    if (stash.customtitlebarOrig == null) winEl.removeAttribute("customtitlebar");
+                    else winEl.setAttribute("customtitlebar", stash.customtitlebarOrig);
+                    if (stash.drawtitleOrig == null) winEl.removeAttribute("drawtitle");
+                    else winEl.setAttribute("drawtitle", stash.drawtitleOrig);
+                }
+            } catch (e) {}
+            try { const strip = doc.querySelector(".wv-window-tabstrip"); if (strip) strip.remove(); } catch (e) {}
+            try { const st = doc.getElementById("wv-window-tabstrip-styles"); if (st) st.remove(); } catch (e) {}
+            try { delete win._wvTabStrip; } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _removeReaderWindowTabStrip err: " + e); }
     }
 
     /** One-time CSS for the standalone-reader-window tab strip, injected
@@ -5836,24 +5882,10 @@ class _ReaderMixin {
 
             const stash: any = {};
 
-            // Also try to remove the OS-drawn title bar above the menubar
-            // by setting `customtitlebar="true"` on the <window> element —
-            // the modern Mozilla attribute Zotero's main window uses. The
-            // user accepted this is an unstable approach: Mozilla docs
-            // imply this attribute is consumed at widget-creation time,
-            // but in practice setting it dynamically on a reader window
-            // DOES collapse the OS title bar from ~39px to ~8px (just
-            // the resize border) on Windows. If a future Firefox/Zotero
-            // update tightens this behavior, the OS title bar will come
-            // back — the rest of the compact-menubar logic will still
-            // function regardless.
-            const winEl = doc.documentElement;
-            stash.customtitlebarOrig = winEl.getAttribute("customtitlebar");
-            stash.drawtitleOrig = winEl.getAttribute("drawtitle");
-            try {
-                winEl.setAttribute("customtitlebar", "true");
-                winEl.toggleAttribute("drawtitle", false);
-            } catch (e) {}
+            // This method ONLY hides the menu bar. The OS title bar collapse +
+            // window controls are owned by `_ensureReaderWindowTabStrip` (the
+            // reader child of "Hide title bar"), which calls this alongside the
+            // strip swap — so we deliberately don't touch `customtitlebar` here.
 
             // Mark menubar hidden via the same custom attribute the main
             // window uses (different doc, so no conflict).
@@ -5878,13 +5910,8 @@ class _ReaderMixin {
                 }
             } catch (e) {}
 
-            // Add window controls to the tab strip (if it exists yet).
-            // `_ensureReaderWindowControls` is also called from
-            // `_ensureReaderWindowTabStrip` so that if the strip is
-            // created AFTER compact mode was applied (e.g. apply ran in
-            // init() before the toolbar event fired), the controls
-            // still get added once the strip materializes.
-            try { this._ensureReaderWindowControls(win, stash); } catch (e) {}
+            // No tab-strip window controls: the native OS title bar (which we
+            // keep) already provides min/max/close.
 
             // Inject collapsing CSS into this reader window's document.
             this._ensureReaderCompactMenubarStyles(doc);
@@ -6144,28 +6171,11 @@ class _ReaderMixin {
             try { if (menubar) menubar.removeAttribute("wv-compact-hidden"); } catch (e) {}
             try { stash.menubarIcon?.remove(); } catch (e) {}
 
-            // Remove the window controls we added to the tab strip, plus
-            // the sizemodechange/resize listeners that kept the max icon
-            // synced.
-            try { stash.controls?.remove(); } catch (e) {}
-            try {
-                if (stash.syncMaxIcon) {
-                    win.removeEventListener("sizemodechange", stash.syncMaxIcon);
-                    win.removeEventListener("resize", stash.syncMaxIcon);
-                }
-            } catch (e) {}
-
-            // Restore customtitlebar / drawtitle on the <window> root. If
-            // they weren't set originally (typical case — reader.xhtml
-            // has neither), remove our additions entirely so the OS
-            // title bar comes back as Zotero ships it.
-            try {
-                const winEl = doc.documentElement;
-                if (stash.customtitlebarOrig == null) winEl.removeAttribute("customtitlebar");
-                else winEl.setAttribute("customtitlebar", stash.customtitlebarOrig);
-                if (stash.drawtitleOrig == null) winEl.removeAttribute("drawtitle");
-                else winEl.setAttribute("drawtitle", stash.drawtitleOrig);
-            } catch (e) {}
+            // NB: window controls and the OS title bar (customtitlebar) are
+            // owned by the "Change Title Bar to Tab Strip" feature
+            // (_ensureReaderWindowTabStrip / _removeReaderWindowTabStrip), NOT
+            // by menu-bar hiding — so we deliberately do NOT touch them here,
+            // or reverting the menu-bar hide would wipe the title-bar swap.
 
             try { if (stash.keyDown) win.removeEventListener("keydown", stash.keyDown, true); } catch (e) {}
             try { if (stash.keyUp) win.removeEventListener("keyup", stash.keyUp, true); } catch (e) {}

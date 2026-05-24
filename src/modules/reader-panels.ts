@@ -27,6 +27,7 @@ declare const Services: any;
 
 const RP_FILTER_BTN_CLASS = "wv-reader-filter-btn";
 const RP_FILTER_POPUP_ID = "wv-reader-filter-popup";
+const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 
@@ -141,6 +142,13 @@ const RP_POPUP_CSS = [
 const RP_BM_TAB_CLASS = "wv-bm-reader-tab";
 const RP_BM_VIEW_CLASS = "wv-bm-reader-view";
 const RP_BM_TAB_ON = "wv-bm-tab-on";
+// Sentinel reader sidebarView value used while our Bookmarks tab is active.
+// It's intentionally NOT "annotations": the reader only renders the in-document
+// annotation popup when `sidebarView !== 'annotations'` (else it assumes you'll
+// edit in the annotations sidebar — which our tab has replaced). It's also not
+// any native view name, so no native tab activates and the PDF/EPUB views no-op
+// on it (they only special-case "outline").
+const RP_BM_SIDEBAR_VIEW = "wv-bookmarks";
 
 // Outline-ribbon bookmark glyph (currentColor; themes with the toolbar).
 const RP_BM_RIBBON =
@@ -164,6 +172,21 @@ const RP_FOLDER_SVG =
 const RP_FOLDER_PLUS_SVG =
     '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
     + '<path d="M18 11.5V6.5H8.5L7 5H2.5V15.5H10"/><path d="M14.5 12.5v5M12 15h5"/></svg>';
+// Rename (pencil) + Delete (red cross) glyphs for the reader bookmark context
+// menu, themed via currentColor (pencil) / baked red (cross) to match the
+// library menu's BM_RENAME_ICON / BM_DELETE_ICON. The Open and Show-in-Library
+// items use the native Zotero icons instead, fetched + inlined by
+// `_wvChromeIconSvg` (the reader iframe can't load chrome:// images directly).
+const RP_RENAME_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M11.5 2.5l2 2"/><path d="M12.2 1.8a1 1 0 0 1 1.4 0l.6.6a1 1 0 0 1 0 1.4L5.5 12.5 2.5 13.5 3.5 10.5z"/></svg>';
+const RP_DELETE_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="#e0483b" stroke-width="2" stroke-linecap="round">'
+    + '<path d="M4 4l8 8M12 4l-8 8"/></svg>';
+// Revert/undo glyph (circular arrow) for "Reset to original name".
+const RP_REVERT_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M3.5 8a4.5 4.5 0 1 1 1.4 3.3"/><path d="M3.2 4.8v3h3"/></svg>';
 const RP_CHEV_RIGHT =
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>';
 const RP_CHEV_DOWN =
@@ -182,10 +205,19 @@ const RP_BM_CSS = [
     ".wv-bm-reader-add svg{width:15px;height:15px;fill:currentColor;}",
     ".wv-bm-reader-list{flex:1 1 auto;overflow:auto;min-height:0;padding:4px;}",
     ".wv-bm-reader-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
+    // The reader's own CSS sets user-select:auto/text on text-bearing children
+    // (the 📌 emoji, the label), so a press-drag on a row starts a text
+    // selection despite the row's none. Force none on every descendant with
+    // !important so dragging a bookmark — pins especially — never selects text.
+    ".wv-bm-reader-row, .wv-bm-reader-row *{-moz-user-select:none!important;user-select:none!important;}",
     ".wv-bm-reader-row:hover{background:rgba(127,127,127,.14);}",
-    ".wv-bm-reader-row .wv-bm-reader-ic{flex:0 0 auto;width:14px;height:14px;opacity:.85;}",
-    ".wv-bm-reader-row .wv-bm-reader-ic svg{width:14px;height:14px;}",
-    ".wv-bm-reader-row .wv-bm-reader-ic.wv-bm-emoji{display:flex;align-items:center;justify-content:center;font-size:12px;line-height:14px;opacity:1;}",
+    ".wv-bm-reader-row .wv-bm-reader-ic{flex:0 0 auto;width:16px;height:16px;display:flex;align-items:center;justify-content:center;}",
+    // Decorative monochrome glyphs (text quote / folder) stay subtle at 14px;
+    // native item-type icons (<img>) render at full size/opacity to match the
+    // library bookmark rows exactly.
+    ".wv-bm-reader-row .wv-bm-reader-ic svg{width:14px;height:14px;opacity:.85;}",
+    ".wv-bm-reader-row .wv-bm-reader-ic img{width:16px;height:16px;}",
+    ".wv-bm-reader-row .wv-bm-reader-ic.wv-bm-emoji{font-size:13px;line-height:16px;opacity:1;}",
     ".wv-bm-reader-row .wv-bm-reader-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
     ".wv-bm-reader-row .wv-bm-reader-page{flex:0 0 auto;opacity:.5;font-size:11px;}",
     ".wv-bm-reader-row .wv-bm-reader-actions{display:none;gap:1px;flex:0 0 auto;}",
@@ -193,20 +225,66 @@ const RP_BM_CSS = [
     ".wv-bm-reader-actbtn{border:none;background:none;cursor:pointer;opacity:.55;padding:1px 4px;border-radius:3px;color:inherit;font-size:12px;line-height:1;}",
     ".wv-bm-reader-actbtn:hover{opacity:1;background:rgba(127,127,127,.2);}",
     ".wv-bm-reader-empty{opacity:.5;padding:14px 10px;font-size:12px;text-align:center;line-height:1.5;}",
-    ".wv-bm-reader-grouphead{font-size:10px;opacity:.55;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px 2px;}",
+    ".wv-bm-reader-grouphead{font-size:10px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px 2px;display:flex;align-items:center;}",
+    ".wv-bm-reader-grouphead .wv-bm-gh-title{flex:1;opacity:.55;}",
+    ".wv-bm-reader-newfolder{display:flex;align-items:center;justify-content:center;width:18px;height:16px;border:none;background:none;cursor:pointer;border-radius:3px;color:inherit;opacity:.5;padding:0;flex:0 0 auto;}",
+    ".wv-bm-reader-newfolder:hover{opacity:.95;background:rgba(127,127,127,.2);}",
+    ".wv-bm-reader-newfolder svg{width:13px;height:13px;}",
     "." + RP_BM_TAB_CLASS + ".wv-bm-dropok{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;}",
     ".wv-bm-reader-row.wv-bm-dragging{opacity:.4;}",
     ".wv-bm-reader-row.wv-bm-drop-before{box-shadow:inset 0 2px 0 0 var(--color-accent,#5e6ad2);}",
-    ".wv-bm-reader-row.wv-bm-drop-after{box-shadow:inset 0 -2px 0 0 var(--color-accent,#5e6ad2);}",
-    // Group drop feedback: local accepts (accent ring), global rejects (faint).
+    // Outset (below the row) so "after A" lands at the SAME pixel as
+    // "before B" of the next row — the gap shows one stationary line instead
+    // of jumping across the boundary as the cursor crosses it.
+    ".wv-bm-reader-row.wv-bm-drop-after{box-shadow:0 2px 0 0 var(--color-accent,#5e6ad2);}",
+    // Group drop feedback: the local section shows NO box (the row-level
+    // target line is the only indicator); the global section dims to reject.
     ".wv-bm-reader-group{border-radius:6px;}",
-    ".wv-bm-reader-group.wv-bm-grp-dropok{box-shadow:inset 0 0 0 2px var(--color-accent,#5e6ad2);}",
     ".wv-bm-reader-group.wv-bm-grp-nodrop{opacity:.5;cursor:no-drop;}",
     // Folder rows: chevron + folder glyph; nested children indent via padding.
     ".wv-bm-reader-row .wv-bm-reader-chev{flex:0 0 auto;width:12px;height:12px;display:flex;align-items:center;justify-content:center;opacity:.6;}",
     ".wv-bm-reader-row .wv-bm-reader-chev svg{width:12px;height:12px;}",
     ".wv-bm-reader-row .wv-bm-reader-chev.wv-bm-reader-chev-spacer{visibility:hidden;}",
     ".wv-bm-reader-row.wv-bm-drop-into{box-shadow:inset 0 0 0 2px var(--color-accent,#5e6ad2);border-radius:4px;}",
+    // Right-click context menu (Add Bookmark / New Folder / row actions).
+    "#" + RP_BM_CTX_ID + "{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;font-size:13px;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-item:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-ic{flex:0 0 auto;width:14px;height:14px;display:flex;align-items:center;justify-content:center;opacity:.8;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-ic.wv-ctx-ic-native{opacity:1;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-ic svg{width:14px;height:14px;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-sep{height:1px;background:rgba(127,127,127,.3);margin:4px 2px;}",
+    // Rich hover card (details popup). Interactive (expandable), so it captures
+    // the pointer; it auto-hides when the cursor leaves BOTH the row and card.
+    ".wv-bm-hovercard{position:absolute;z-index:2147483647;max-width:340px;min-width:170px;",
+    "  background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.5);border-radius:6px;",
+    "  box-shadow:0 6px 24px rgba(0,0,0,.30);padding:8px 10px;font-size:12px;line-height:1.45;",
+    "  user-select:none;-moz-user-select:none;pointer-events:auto;}",
+    ".wv-bm-hovercard .wv-hc-head{display:flex;align-items:center;gap:6px;margin-bottom:3px;font-weight:600;}",
+    ".wv-bm-hovercard .wv-hc-sw{width:10px;height:10px;border-radius:50%;border:1px solid rgba(0,0,0,.2);flex:0 0 auto;}",
+    ".wv-bm-hovercard .wv-hc-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+    ".wv-bm-hovercard .wv-hc-page{flex:0 0 auto;margin-left:auto;opacity:.6;font-weight:400;white-space:nowrap;}",
+    // The row icon CSS is scoped to .wv-bm-reader-row, so size it here too.
+    ".wv-bm-hovercard .wv-bm-reader-ic{flex:0 0 auto;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;}",
+    ".wv-bm-hovercard .wv-bm-reader-ic svg{width:14px;height:14px;}",
+    ".wv-bm-hovercard .wv-bm-reader-ic img{width:16px;height:16px;}",
+    ".wv-bm-hovercard .wv-bm-reader-ic.wv-bm-emoji{font-size:14px;line-height:16px;}",
+    // Body holds the variable-length content: clamped by default, scrolls when expanded.
+    ".wv-bm-hovercard .wv-hc-body{position:relative;max-height:200px;overflow:hidden;}",
+    ".wv-bm-hovercard.wv-hc-expanded .wv-hc-body{max-height:65vh;overflow:auto;}",
+    ".wv-bm-hovercard .wv-hc-fade{position:absolute;left:0;right:0;bottom:0;height:26px;",
+    "  background:linear-gradient(to bottom,transparent,Canvas);pointer-events:none;}",
+    ".wv-bm-hovercard.wv-hc-expanded .wv-hc-fade{display:none;}",
+    ".wv-bm-hovercard .wv-hc-expand{display:block;margin-top:5px;font:inherit;font-size:11px;cursor:pointer;",
+    "  color:var(--color-accent,#5e6ad2);background:none;border:none;padding:2px 0;text-align:left;}",
+    ".wv-bm-hovercard .wv-hc-expand:hover{text-decoration:underline;}",
+    ".wv-bm-hovercard .wv-hc-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:2px 0;}",
+    ".wv-bm-hovercard .wv-hc-comment{margin:3px 0;padding:2px 7px;border-left:2px solid var(--color-accent,#5e6ad2);",
+    "  opacity:.92;white-space:pre-wrap;overflow-wrap:anywhere;}",
+    ".wv-bm-hovercard .wv-hc-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;}",
+    ".wv-bm-hovercard .wv-hc-tag{font-size:11px;padding:1px 6px;border-radius:8px;background:rgba(127,127,127,.18);}",
+    ".wv-bm-hovercard .wv-hc-src{margin-top:3px;font-size:11px;opacity:.7;overflow-wrap:anywhere;}",
+    ".wv-bm-hovercard .wv-hc-meta{margin-top:4px;font-size:11px;opacity:.55;}",
 ].join("");
 
 class _ReaderPanelsMixin {
@@ -225,9 +303,28 @@ class _ReaderPanelsMixin {
             this._wvReaderPrefetchIcons();
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvReaderEnsureBookmarksTab(reader, idoc);
+            this._wvEnsureSpringDragEnd(reader, idoc);
         } catch (e) {
             Zotero.debug("[Weavero] _wvProcessReaderPanels err: " + e);
         }
+    }
+
+    /** Wire a `dragend` on the PDF view's iframe document (once). An annotation
+     *  dragged from the document originates THERE, so its dragend never reaches
+     *  the reader-app doc — without this, a spring-opened folder wouldn't
+     *  re-collapse when the drag is cancelled or dropped back in the document. */
+    _wvEnsureSpringDragEnd(reader: any, idoc: any) {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const pdoc = pv && pv._iframeWindow && pv._iframeWindow.document;
+            if (!pdoc || pdoc._wvBmSpringDragEndWired) return;
+            pdoc._wvBmSpringDragEndWired = true;
+            pdoc.addEventListener("dragend", () => {
+                this._wvCancelBmSpring();
+                try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
+            }, true);
+        } catch (_) {}
     }
 
     /** The reader iframe blocks chrome:// resource loads (CSP), so its
@@ -400,7 +497,7 @@ class _ReaderPanelsMixin {
         if (this._wvReaderFilterDismiss) {
             try {
                 const { docs, wins, onDown, onKey } = this._wvReaderFilterDismiss;
-                for (const d of (docs || [])) { try { d.removeEventListener("mousedown", onDown, true); } catch (_) {} }
+                for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }
                 for (const w of (wins || [])) { try { w.removeEventListener("keydown", onKey, true); } catch (_) {} }
             } catch (_) {}
             this._wvReaderFilterDismiss = null;
@@ -469,7 +566,7 @@ class _ReaderPanelsMixin {
                 const vd = v && v._iframeWindow && v._iframeWindow.document;
                 if (vd && docs.indexOf(vd) < 0) docs.push(vd);
             } catch (_) {}
-            for (const d of docs) { try { d.addEventListener("mousedown", onDown, true); } catch (_) {} }
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvReaderFilterDismiss = { docs, wins, onDown, onKey };
         } catch (e) {
@@ -1112,6 +1209,65 @@ class _ReaderPanelsMixin {
         this._wvReaderApplyBmTabState(reader, idoc);
     }
 
+    /** Open readers whose Bookmarks pane is currently active (visible). */
+    _wvReaderVisibleBmReaders(): any[] {
+        const out: any[] = [];
+        try {
+            for (const r of ((Zotero.Reader && Zotero.Reader._readers) || [])) {
+                try {
+                    if (!this._wvReaderBmActive(r)) continue;
+                    const iw = r._iframeWindow || (r._iframe && r._iframe.contentWindow);
+                    if (iw && iw.document) out.push({ reader: r, idoc: iw.document });
+                } catch (_) {}
+            }
+        } catch (_) {}
+        return out;
+    }
+
+    /** Live-refresh handler for the bookmarks pane, wired to a Zotero.Notifier
+     *  observer in index.ts. Refreshes a VISIBLE Bookmarks pane when a bookmark's
+     *  underlying annotation/item/collection is modified, so default names track
+     *  edits in real time. Cheap on purpose: returns immediately unless a pane is
+     *  visible AND a changed id is actually bookmarked there; the re-render is
+     *  debounced to coalesce edit bursts. Never modifies the item. */
+    _wvReaderBmOnNotify(event: string, type: string, ids: any[]) {
+        if (event !== "modify" && event !== "add") return;
+        if (type !== "item" && type !== "collection") return;
+        const panes = this._wvReaderVisibleBmReaders();
+        if (!panes.length) return;   // nothing visible → nothing to refresh
+        // Resolve changed ids → keys (existing items/collections only).
+        const changed = new Set<string>();
+        try {
+            for (const id of (ids || [])) {
+                const obj = type === "item" ? Zotero.Items.get(id) : Zotero.Collections.get(id);
+                if (obj && obj.key) changed.add(obj.key);
+            }
+        } catch (_) {}
+        if (!changed.size) return;
+        // Does any changed key match a bookmark in a visible pane?
+        let hit = false;
+        for (const p of panes) {
+            const att = this._wvReaderAtt(p.reader); if (!att) continue;
+            const keys = this._bmReaderBookmarkedKeys(att.libraryID, att.itemKey);
+            const set = type === "item" ? keys.items : keys.collections;
+            for (const k of changed) { if (set.has(k)) { hit = true; break; } }
+            if (hit) break;
+        }
+        if (!hit) return;
+        // Debounce: coalesce a burst of edits into one re-render of visible panes.
+        try {
+            const win = Zotero.getMainWindow();
+            if (this._wvReaderBmNotifyTimer && win) win.clearTimeout(this._wvReaderBmNotifyTimer);
+            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            this._wvReaderBmNotifyTimer = st(() => {
+                this._wvReaderBmNotifyTimer = null;
+                for (const p of this._wvReaderVisibleBmReaders()) {
+                    try { this._wvReaderRenderBmList(p.reader, p.idoc); } catch (_) {}
+                }
+            }, 250);
+        } catch (_) {}
+    }
+
     /** Remember per-attachment whether the Bookmarks tab is the active reader
      *  sidebar tab, so it can be restored on reopen/restart (Zotero restores
      *  its own native tabs, but doesn't know about ours). Stored in a small
@@ -1183,6 +1339,24 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                 }, true);
             }
+            // Right-click in the Bookmarks pane → our context menu. The reader
+            // SUPPRESSES `contextmenu` (and mousedown/up) in its sidebar — a
+            // right-click only surfaces as pointer events / `auxclick` with
+            // button 2 (verified live). So we trigger on `auxclick`, capture
+            // phase on the window, one listener per window (survives re-renders).
+            const ctxWin: any = idoc.defaultView;
+            if (ctxWin && !ctxWin._wvBmCtxWired) {
+                ctxWin._wvBmCtxWired = true;
+                ctxWin.addEventListener("auxclick", (e: any) => {
+                    try {
+                        if (e.button !== 2) return;
+                        const t = e.target;
+                        if (!t || !t.closest || !t.closest(".wv-bm-reader-list")) return;
+                        e.preventDefault(); e.stopPropagation();
+                        this._wvReaderShowBmContextMenu(reader, idoc, e);
+                    } catch (_) {}
+                }, true);
+            }
             // Capture which annotation is being dragged from the sidebar so a
             // drop on our tab/view can bookmark it (MIME-independent).
             if (!idoc._wvBmAnnDragWired) {
@@ -1193,7 +1367,11 @@ class _ReaderPanelsMixin {
                         this._wvDraggedAnnKey = a ? a.getAttribute("data-sidebar-annotation-id") : null;
                     } catch (_) { this._wvDraggedAnnKey = null; }
                 }, true);
-                idoc.addEventListener("dragend", () => { this._wvDraggedAnnKey = null; }, true);
+                idoc.addEventListener("dragend", () => {
+                    this._wvDraggedAnnKey = null;
+                    this._wvCancelBmSpring();
+                    try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
+                }, true);
             }
 
             // View panel.
@@ -1210,24 +1388,10 @@ class _ReaderPanelsMixin {
                 add.className = "wv-bm-reader-add";
                 add.setAttribute("title", "Add a bookmark (anywhere in Zotero)…");
                 add.innerHTML = RP_PLUS_SVG;
+                add.setAttribute("title", "Add a bookmark — opens the picker focused on this file (expand it to bookmark its annotations)…");
                 add.addEventListener("click", () => this._wvReaderAddViaDialog(reader, idoc));
-                // New-folder button — always visible in the pane header (the
-                // per-section hover button caused the header to grow/shift).
-                // Folders organise the "In this document" section.
-                const newFolder = idoc.createElementNS(NS_HTML_RP, "button");
-                newFolder.className = "wv-bm-reader-add";
-                newFolder.setAttribute("title", "New folder");
-                newFolder.innerHTML = RP_FOLDER_PLUS_SVG;
-                newFolder.addEventListener("click", () => {
-                    const att2 = this._wvReaderAtt(reader);
-                    if (!att2) return;
-                    const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
-                    if (name) this._bmReaderAddFolder(att2.libraryID, att2.itemKey, "local", name)
-                        .then(() => this._wvReaderRenderBmList(reader, idoc));
-                });
                 head.appendChild(htitle);
                 head.appendChild(add);
-                head.appendChild(newFolder);
                 const list = idoc.createElementNS(NS_HTML_RP, "div");
                 list.className = "wv-bm-reader-list";
                 view.appendChild(head);
@@ -1241,6 +1405,9 @@ class _ReaderPanelsMixin {
                     if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
                     if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
                     e.preventDefault();
+                    // Reached here = dropped on empty pane area (rows claim their
+                    // own drops), so not inside any spring folder → re-collapse all.
+                    try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
                     this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e));
                 });
                 content.appendChild(view);
@@ -1280,6 +1447,26 @@ class _ReaderPanelsMixin {
                     if (t) { t.classList.remove("active"); t.setAttribute("aria-selected", "false"); }
                 }
             }
+            // Tell the reader its sidebar is NOT showing the annotations view, so
+            // it shows the in-document annotation popup on selection (it hides
+            // that popup while sidebarView === 'annotations'). Use a sentinel
+            // value that activates no native tab; restore the prior view when our
+            // tab is turned off. Guarded so we only call setSidebarView on change
+            // (no per-scan re-render spam).
+            try {
+                const ir = reader._internalReader;
+                if (ir && typeof ir.setSidebarView === "function" && ir._state) {
+                    const cur = ir._state.sidebarView;
+                    if (on) {
+                        if (cur !== RP_BM_SIDEBAR_VIEW) {
+                            if (cur && cur !== RP_BM_SIDEBAR_VIEW) reader._wvPrevSidebarView = cur;
+                            ir.setSidebarView(RP_BM_SIDEBAR_VIEW);
+                        }
+                    } else if (cur === RP_BM_SIDEBAR_VIEW) {
+                        ir.setSidebarView(reader._wvPrevSidebarView || "annotations");
+                    }
+                }
+            } catch (_) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderApplyBmTabState err: " + e);
         }
@@ -1305,6 +1492,11 @@ class _ReaderPanelsMixin {
                 this._bmInit().then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
                 return;
             }
+            // Refresh each bookmark's original (source) name from the live data
+            // before rendering, so default names track edits and the stored
+            // originalLabel stays current (even for renamed bookmarks).
+            this._bmReaderSyncLabels(att.libraryID, att.itemKey);
+            this._wvReaderHideBmHoverCard(idoc);   // rows are about to be rebuilt
             const NS = NS_HTML_RP;
             while (list.firstChild) list.firstChild.remove();
             const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
@@ -1321,7 +1513,20 @@ class _ReaderPanelsMixin {
                 gc.className = "wv-bm-reader-group " + (section === "local" ? "wv-bm-grp-local" : "wv-bm-grp-global");
                 const h = idoc.createElementNS(NS, "div");
                 h.className = "wv-bm-reader-grouphead";
-                h.textContent = heading;
+                const htitle = idoc.createElementNS(NS, "span");
+                htitle.className = "wv-bm-gh-title";
+                htitle.textContent = heading;
+                const nf = idoc.createElementNS(NS, "button");
+                nf.className = "wv-bm-reader-newfolder";
+                nf.setAttribute("title", "New folder in this section");
+                nf.innerHTML = RP_FOLDER_PLUS_SVG;
+                nf.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                    if (name) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, name)
+                        .then(() => this._wvReaderRenderBmList(reader, idoc));
+                });
+                h.appendChild(htitle); h.appendChild(nf);
                 gc.appendChild(h);
                 const treeWrap = idoc.createElementNS(NS, "div");
                 treeWrap.className = "wv-bm-reader-tree";
@@ -1410,15 +1615,12 @@ class _ReaderPanelsMixin {
     _wvReaderWireGroupDrop(reader: any, idoc: any, gc: any, isLocal: boolean) {
         if (isLocal) {
             gc.addEventListener("dragover", (e: any) => {
+                // Accept the drop (so empty-area drops append) but draw NO
+                // section box — the row-level target line is the only indicator.
                 if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
                 e.preventDefault();
-                gc.classList.add("wv-bm-grp-dropok");
-            });
-            gc.addEventListener("dragleave", (e: any) => {
-                if (!gc.contains(e.relatedTarget)) gc.classList.remove("wv-bm-grp-dropok");
             });
             gc.addEventListener("drop", (e: any) => {
-                gc.classList.remove("wv-bm-grp-dropok");
                 if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
                 if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
                 e.preventDefault();
@@ -1490,7 +1692,16 @@ class _ReaderPanelsMixin {
                     else if (bm.position) loc = { position: bm.position };
                     else if (bm.viewType === "pdf" && bm.location && Number.isInteger(bm.location.pageIndex)) loc = { pageIndex: bm.location.pageIndex };
                     else if (bm.location && bm.location.cfi) loc = { pageNumber: bm.location.cfi };
-                    try { Zotero.Reader.open(att.att.id, loc, { openInWindow: true }); } catch (_) {}
+                    try {
+                        const opened: any = Zotero.Reader.open(att.att.id, loc, { openInWindow: true });
+                        // A pinned location drops its 📌 marker in the new window
+                        // too — but only once that window's view has rendered.
+                        if (bm.type === "position" && bm.position) {
+                            Promise.resolve(opened).then((nr: any) => {
+                                if (nr) this._wvShowPinWhenReady(nr, bm.position, bm.id);
+                            }).catch(() => {});
+                        }
+                    } catch (_) {}
                 }
                 return;
             }
@@ -1499,6 +1710,34 @@ class _ReaderPanelsMixin {
             return;
         }
         this._bmActivateBookmark(bm, e);
+    }
+
+    /** Build the type icon for a bookmark — the same coloured glyph the row
+     *  uses: 📌 for positions, a quote glyph for text, else the item/annotation/
+     *  collection/library icon (annotations get their type glyph + colour).
+     *  Shared by the list row and the hover card so they look identical. */
+    _wvReaderBuildBmIcon(reader: any, idoc: any, bm: any) {
+        const NS = NS_HTML_RP;
+        const ic = idoc.createElementNS(NS, "span");
+        ic.className = "wv-bm-reader-ic";
+        if (bm.type === "position") { ic.classList.add("wv-bm-emoji"); ic.textContent = RP_PIN_EMOJI; }
+        else if (bm.type === "text") ic.innerHTML = RP_TEXT_SVG;
+        else {
+            let done = false;
+            try {
+                const info = this._bmIconInfo(bm, idoc.defaultView);
+                const src = info && this._wvReaderResolveRowIcon(reader, idoc, info.image);
+                if (src) {
+                    const img = idoc.createElementNS(NS, "img");
+                    img.setAttribute("src", src);
+                    img.setAttribute("width", "16"); img.setAttribute("height", "16");
+                    if (info.fill) img.setAttribute("style", "-moz-context-properties:fill;fill:" + info.fill + ";");
+                    ic.appendChild(img); done = true;
+                }
+            } catch (_) {}
+            if (!done) ic.innerHTML = RP_BM_RIBBON;
+        }
+        return ic;
     }
 
     /** Build one bookmark row (icon by type, label, page, rename/delete,
@@ -1513,32 +1752,23 @@ class _ReaderPanelsMixin {
         chevSpacer.className = "wv-bm-reader-chev wv-bm-reader-chev-spacer";
         chevSpacer.innerHTML = RP_CHEV_RIGHT;
         row.appendChild(chevSpacer);
-        const ic = idoc.createElementNS(NS, "span");
-        ic.className = "wv-bm-reader-ic";
-        if (bm.type === "position") { ic.classList.add("wv-bm-emoji"); ic.textContent = RP_PIN_EMOJI; }
-        else if (bm.type === "text") ic.innerHTML = RP_TEXT_SVG;
-        else {
-            let done = false;
-            try {
-                const info = this._bmIconInfo(bm, idoc.defaultView);
-                const src = info && this._wvReaderResolveRowIcon(reader, idoc, info.image);
-                if (src) {
-                    const img = idoc.createElementNS(NS, "img");
-                    img.setAttribute("src", src);
-                    img.setAttribute("width", "14"); img.setAttribute("height", "14");
-                    if (info.fill) img.setAttribute("style", "-moz-context-properties:fill;fill:" + info.fill + ";");
-                    ic.appendChild(img); done = true;
-                }
-            } catch (_) {}
-            if (!done) ic.innerHTML = RP_BM_RIBBON;
-        }
+        const ic = this._wvReaderBuildBmIcon(reader, idoc, bm);
         const label = idoc.createElementNS(NS, "span");
         label.className = "wv-bm-reader-label";
         label.textContent = bm.label || "Bookmark";
-        label.setAttribute("title", bm.label || "");
+        // Tooltip reveals the live original (source) name when the bookmark was
+        // renamed, so the original text stays reachable on hover; otherwise shows
+        // the full label (useful when truncated).
+        const origLbl = this._bmReaderIsRenamed(bm) ? this._bmReaderOriginalLabel(bm) : null;
+        label.setAttribute("title", (origLbl && origLbl !== bm.label)
+            ? ((bm.label || "") + "\nOriginal: " + origLbl)
+            : (bm.label || ""));
         const page = idoc.createElementNS(NS, "span");
         page.className = "wv-bm-reader-page";
-        page.textContent = bm.pageLabel ? ("p. " + bm.pageLabel) : "";
+        // Annotation bookmarks don't store a pageLabel; derive it live from the
+        // annotation so they show "p. N" like position/text bookmarks.
+        const pageLbl = this._bmReaderPageLabel(bm);
+        page.textContent = pageLbl ? ("p. " + pageLbl) : "";
         const actions = idoc.createElementNS(NS, "span");
         actions.className = "wv-bm-reader-actions";
         const renameBtn = idoc.createElementNS(NS, "button");
@@ -1559,7 +1789,177 @@ class _ReaderPanelsMixin {
         row.addEventListener("click", (e: any) => this._wvNavigateReaderBookmark(reader, bm, e));
         this._wvReaderWireRowDrag(reader, idoc, att, row, bm,
             section || (this._wvReaderBookmarkIsLocal(reader, bm) ? "local" : "global"), false);
+        this._wvReaderWireRowHover(reader, idoc, row, bm);
         return row;
+    }
+
+    /** Hover affordance: after a short delay over a bookmark row, show a rich
+     *  details card. Hide is DELAYED on leave so the cursor can travel onto the
+     *  (interactive) card to expand/scroll it without it vanishing. */
+    _wvReaderWireRowHover(reader: any, idoc: any, row: any, bm: any) {
+        const win = idoc.defaultView;
+        row.addEventListener("mouseenter", () => {
+            try { if (this._wvBmHoverHideTimer) { win.clearTimeout(this._wvBmHoverHideTimer); this._wvBmHoverHideTimer = null; } } catch (_) {}
+            try { if (this._wvBmHoverTimer) win.clearTimeout(this._wvBmHoverTimer); } catch (_) {}
+            this._wvBmHoverTimer = win.setTimeout(() => {
+                this._wvBmHoverTimer = null;
+                try { this._wvReaderShowBmHoverCard(reader, idoc, row, bm); } catch (_) {}
+            }, 450);
+        });
+        row.addEventListener("mouseleave", () => {
+            try { if (this._wvBmHoverTimer) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+            this._wvReaderScheduleHideBmHoverCard(idoc);
+        });
+    }
+
+    /** Hide the hover card after a short grace period, so moving the cursor from
+     *  the row onto the card (or vice-versa) doesn't dismiss it. */
+    _wvReaderScheduleHideBmHoverCard(idoc: any) {
+        try {
+            const win = idoc.defaultView;
+            if (this._wvBmHoverHideTimer) win.clearTimeout(this._wvBmHoverHideTimer);
+            this._wvBmHoverHideTimer = win.setTimeout(() => {
+                this._wvBmHoverHideTimer = null;
+                this._wvReaderHideBmHoverCard(idoc);
+            }, 200);
+        } catch (_) { this._wvReaderHideBmHoverCard(idoc); }
+    }
+
+    /** Position the card to the right of its row, flipping left / clamping to
+     *  stay on-screen. Re-run after expand/collapse changes its height. */
+    _wvReaderPositionBmHoverCard(card: any, rowEl: any, idoc: any) {
+        try {
+            const rr = rowEl.getBoundingClientRect();
+            const de = idoc.documentElement;
+            const vw = (de && de.clientWidth) || 9999, vh = (de && de.clientHeight) || 9999;
+            const cw = card.offsetWidth || 260, ch = card.offsetHeight || 120;
+            let left = rr.right + 8;
+            if (left + cw > vw - 6) left = Math.max(6, rr.left - cw - 8);
+            if (left < 6) left = 6;
+            let top = rr.top;
+            if (top + ch > vh - 6) top = Math.max(6, vh - ch - 6);
+            card.style.left = left + "px";
+            card.style.top = top + "px";
+        } catch (_) {}
+    }
+
+    /** Gather the rich info shown in the hover card for a bookmark. READ-ONLY —
+     *  reads the live target (annotation/item/collection/library); never writes. */
+    _wvReaderBmHoverInfo(reader: any, bm: any) {
+        const info: any = { kind: "", color: null, page: "", text: "", comment: "", tags: [], source: "", created: "", itemCreated: "", original: "" };
+        try {
+            info.page = this._bmReaderPageLabel(bm);
+            if (bm.created) { try { info.created = new Date(bm.created).toLocaleDateString(); } catch (_) {} }
+            if (this._bmReaderIsRenamed(bm)) info.original = this._bmReaderOriginalLabel(bm) || "";
+            const ANN: { [k: string]: string } = {
+                highlight: "Highlight", underline: "Underline", note: "Note",
+                text: "Text annotation", image: "Image annotation", ink: "Ink annotation",
+            };
+            if (bm.type === "position") { info.kind = "Location"; }
+            else if (bm.type === "text") { info.kind = "Selected text"; info.text = bm.label || ""; }
+            else if (bm.type === "collection") {
+                info.kind = "Collection";
+                try { const c: any = bm.collectionKey && Zotero.Collections.getByLibraryAndKey(bm.libraryID, bm.collectionKey); if (c) info.text = c.name; } catch (_) {}
+            }
+            else if (bm.type === "library") {
+                info.kind = "Library";
+                try { const l: any = Zotero.Libraries.get(bm.libraryID); if (l) info.text = l.name; } catch (_) {}
+            }
+            else if (bm.type === "treerow") { info.kind = "Saved search"; info.text = bm.label || ""; }
+            else if (bm.type === "item") {
+                const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                // The item's OWN creation time (distinct from when it was bookmarked).
+                try { if (it && it.dateAdded) { const d = Zotero.Date.sqlToDate(it.dateAdded, true); if (d) info.itemCreated = d.toLocaleDateString(); } } catch (_) {}
+                if (it && it.isAnnotation && it.isAnnotation()) {
+                    info.kind = ANN[it.annotationType] || "Annotation";
+                    try { info.color = it.annotationColor || null; } catch (_) {}
+                    try { info.text = String(it.annotationText || "").trim(); } catch (_) {}
+                    try { info.comment = String(it.annotationComment || "").trim(); } catch (_) {}
+                    try { for (const t of (it.getTags() || [])) if (t && t.tag) info.tags.push(t.tag); } catch (_) {}
+                    if (!info.page) { try { info.page = it.annotationPageLabel || ""; } catch (_) {} }
+                    try {
+                        if (it.parentItemID && it.parentItemID !== reader.itemID) {
+                            const a: any = it.parentItem;
+                            const top: any = a && (a.parentItem || a);
+                            const title = (top && top.getDisplayTitle) ? top.getDisplayTitle()
+                                : (a && a.getDisplayTitle ? a.getDisplayTitle() : "");
+                            if (title) info.source = "in: " + title;
+                        }
+                    } catch (_) {}
+                } else if (it) {
+                    try { info.kind = Zotero.ItemTypes.getLocalizedString(it.itemTypeID); } catch (_) { info.kind = "Item"; }
+                    try { info.text = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : ""); } catch (_) {}
+                    try { const d = it.getField && it.getField("date"); if (d) info.source = String(Zotero.Date.strToDate ? (Zotero.Date.strToDate(d).year || "") : String(d).slice(0, 4)); } catch (_) {}
+                } else { info.kind = "Item (not found)"; }
+            }
+        } catch (_) {}
+        return info;
+    }
+
+    _wvReaderShowBmHoverCard(reader: any, idoc: any, rowEl: any, bm: any) {
+        try {
+            this._wvReaderHideBmHoverCard(idoc);
+            const info = this._wvReaderBmHoverInfo(reader, bm);
+            const NS = NS_HTML_RP;
+            const mk = (cls: string, txt?: string) => { const e = idoc.createElementNS(NS, "div"); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+            const card = idoc.createElementNS(NS, "div");
+            card.className = "wv-bm-hovercard";
+            try { card.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
+            // Header: the SAME coloured type glyph as the row (clearer than a
+            // text label) + the name + page (all always visible).
+            const head = mk("wv-hc-head");
+            const hic = this._wvReaderBuildBmIcon(reader, idoc, bm);
+            try { hic.setAttribute("title", info.kind || ""); } catch (_) {}
+            head.appendChild(hic);
+            const nm = idoc.createElementNS(NS, "span"); nm.className = "wv-hc-name"; nm.textContent = bm.label || info.kind || "Bookmark"; head.appendChild(nm);
+            if (info.page) { const pg = idoc.createElementNS(NS, "span"); pg.className = "wv-hc-page"; pg.textContent = "p. " + info.page; head.appendChild(pg); }
+            card.appendChild(head);
+            // Body: the variable-length content — capped by default, scrolls when expanded.
+            const body = mk("wv-hc-body");
+            // Show the full text unless it's identical to the name already in the
+            // header (avoid repetition) — but always for text bookmarks, where the
+            // header name is the (possibly clamped) selection.
+            if (info.text && (info.text !== (bm.label || "") || bm.type === "text")) body.appendChild(mk("wv-hc-text", info.text));
+            if (info.comment) body.appendChild(mk("wv-hc-comment", info.comment));
+            if (info.tags && info.tags.length) {
+                const tg = mk("wv-hc-tags");
+                for (const t of info.tags) tg.appendChild(mk("wv-hc-tag", t));
+                body.appendChild(tg);
+            }
+            if (info.source) body.appendChild(mk("wv-hc-src", info.source));
+            card.appendChild(body);
+            // Append now so we can measure whether the body is clamped.
+            (idoc.body || idoc.documentElement).appendChild(card);
+            if (body.scrollHeight > body.clientHeight + 2) {
+                body.appendChild(mk("wv-hc-fade"));
+                const btn: any = idoc.createElementNS(NS, "button");
+                btn.className = "wv-hc-expand"; btn.type = "button"; btn.textContent = "Expand ▾";
+                btn.addEventListener("click", (e: any) => {
+                    try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                    const exp = card.classList.toggle("wv-hc-expanded");
+                    btn.textContent = exp ? "Collapse ▴" : "Expand ▾";
+                    this._wvReaderPositionBmHoverCard(card, rowEl, idoc);
+                });
+                card.appendChild(btn);
+            }
+            // Meta (always visible, below the body/expand).
+            const meta: string[] = [];
+            if (info.original) meta.push("original: " + info.original);
+            if (info.itemCreated) meta.push("created " + info.itemCreated);
+            if (info.created) meta.push("bookmarked " + info.created);
+            if (meta.length) card.appendChild(mk("wv-hc-meta", meta.join("  ·  ")));
+            // Keep the card alive while the cursor is over it (it's interactive).
+            const win = idoc.defaultView;
+            card.addEventListener("mouseenter", () => { try { if (this._wvBmHoverHideTimer) { win.clearTimeout(this._wvBmHoverHideTimer); this._wvBmHoverHideTimer = null; } } catch (_) {} });
+            card.addEventListener("mouseleave", () => this._wvReaderScheduleHideBmHoverCard(idoc));
+            this._wvReaderPositionBmHoverCard(card, rowEl, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderShowBmHoverCard err: " + e); }
+    }
+
+    _wvReaderHideBmHoverCard(idoc: any) {
+        try { if (this._wvBmHoverHideTimer && idoc.defaultView) idoc.defaultView.clearTimeout(this._wvBmHoverHideTimer); } catch (_) {}
+        this._wvBmHoverHideTimer = null;
+        try { const c = idoc.querySelector(".wv-bm-hovercard"); if (c) c.remove(); } catch (_) {}
     }
 
     /** Reorder/nest wiring for bookmark + folder rows. POINTER-based (HTML5
@@ -1595,18 +1995,26 @@ class _ReaderPanelsMixin {
                 return { el: tr, id: tr.getAttribute("data-wv-bm-id"), mode };
             } catch (_) { return null; }
         };
+        // Root-level fix for "dragging a pin selects text / drags the page":
+        // cancel the mousedown default. A mousedown whose default is prevented
+        // never sets a selection anchor, so NO drag can select text — on the 📌
+        // emoji, the label, or any element/document the cursor later crosses —
+        // and Gecko won't start a native element drag either. The reorder below
+        // uses pointer events (unaffected), and the navigating click still fires
+        // (preventDefault on mousedown does not cancel click). This supersedes
+        // the old user-select / selectstart / dragstart guards.
+        row.addEventListener("mousedown", (e: any) => { if (e.button === 0) { try { e.preventDefault(); } catch (_) {} } });
         row.addEventListener("pointerdown", (e: any) => {
             if (e.button !== 0) return;
             const sx = e.clientX, sy = e.clientY;
-            let dragging = false, prevUS: any = null, cur: any = null;
+            let dragging = false, cur: any = null;
             const onMove = (ev: any) => {
                 if (!dragging) {
                     if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 5) return;
                     dragging = true;
                     row.classList.add("wv-bm-dragging");
-                    prevUS = idoc.documentElement.style.userSelect;
-                    idoc.documentElement.style.userSelect = "none";
-                    try { idoc.documentElement.style.setProperty("-moz-user-select", "none"); } catch (_) {}
+                    try { if (this._wvBmHoverTimer) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+                    this._wvReaderHideBmHoverCard(idoc);
                     try { row.setPointerCapture(ev.pointerId); } catch (_) {}
                 }
                 ev.preventDefault();
@@ -1620,7 +2028,6 @@ class _ReaderPanelsMixin {
                 try { win.removeEventListener("pointercancel", finish, true); } catch (_) {}
                 clearIndicators();
                 row.classList.remove("wv-bm-dragging");
-                if (prevUS !== null) { idoc.documentElement.style.userSelect = prevUS; try { idoc.documentElement.style.removeProperty("-moz-user-select"); } catch (_) {} }
                 if (!dragging) return;   // it was a click → row's click handler navigates/toggles
                 ev.preventDefault(); ev.stopPropagation();
                 // Swallow the click that fires after the drag (once).
@@ -1636,6 +2043,131 @@ class _ReaderPanelsMixin {
             win.addEventListener("pointerup", finish, true);
             win.addEventListener("pointercancel", finish, true);
         });
+
+        // HTML5 drop target: an annotation (from the sidebar) or text selection
+        // (from the center pane) dragged in can be dropped ONTO this row to land
+        // at an exact spot — before/after it, or INTO it when it's a folder —
+        // instead of only at the section bottom. Claims the drop before the
+        // pane's append-handler via `_wvBmDropHandled`.
+        const dropModeAt = (clientY: number) => {
+            const r = row.getBoundingClientRect();
+            const rel = clientY - r.top;
+            return _isFolder
+                ? (rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into")
+                : (rel > r.height / 2 ? "after" : "before");
+        };
+        // Positioned drop only applies in the LOCAL ("In this document")
+        // section — a dragged reader annotation/selection is a local target, and
+        // _bmReaderMove refuses cross-section moves. So on global rows we show no
+        // indicator and don't claim the drop; it falls through to the pane's
+        // append handler (lands at the bottom of the local section).
+        row.addEventListener("dragover", (e: any) => {
+            if (section === "global") return;
+            if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+            e.preventDefault();
+            clearIndicators();
+            const m = dropModeAt(e.clientY);
+            row.classList.add(m === "before" ? "wv-bm-drop-before" : m === "after" ? "wv-bm-drop-after" : "wv-bm-drop-into");
+            // Spring-opened folders that no longer contain the cursor re-collapse
+            // (deepest first), keeping any ancestor still under the cursor — so a
+            // nested spring collapses its sub-folder AND its top folder on leave.
+            this._wvSpringRecollapseLeft(reader, idoc, att, node.id);
+            // Spring-load: pausing over a collapsed folder's "into" zone expands
+            // it so you can drop inside. (Safe to re-render here — the HTML5 drag
+            // is tied to the source, not a captured target element.)
+            if (_isFolder && node && node.type === "folder" && !node.expanded && m === "into") {
+                if (this._wvBmSpringFolderId !== node.id) {
+                    this._wvCancelBmSpring();
+                    this._wvBmSpringFolderId = node.id;
+                    this._wvBmSpringWin = win;
+                    this._wvBmSpringTimer = win.setTimeout(() => {
+                        this._wvBmSpringTimer = null; this._wvBmSpringFolderId = null; this._wvBmSpringWin = null;
+                        if (!this._wvBmSpringStack) this._wvBmSpringStack = [];
+                        if (this._wvBmSpringStack.indexOf(node.id) < 0) this._wvBmSpringStack.push(node.id);   // re-collapse if not dropped in
+                        this._bmReaderToggleFolder(att.libraryID, att.itemKey, node.id)
+                            .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
+                    }, 600);
+                }
+            } else {
+                this._wvCancelBmSpring();
+            }
+        });
+        row.addEventListener("dragleave", () => { clearIndicators(); this._wvCancelBmSpring(); });
+        row.addEventListener("drop", (e: any) => {
+            if (section === "global") return;
+            if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+            if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
+            e.preventDefault(); e.stopPropagation();
+            clearIndicators();
+            this._wvCancelBmSpring();
+            const m = dropModeAt(e.clientY);
+            // The drop is the terminal action, so it CONSUMES the spring stack:
+            // folders the drop landed inside (into the folder itself, or onto one
+            // of its descendants) stay open; the rest collapse. Clearing the stack
+            // here is essential — otherwise the dragend that fires next would run
+            // _wvRecollapseAllSprings and collapse the folder you just dropped into.
+            if (this._wvBmSpringStack && this._wvBmSpringStack.length) {
+                const insideOf = (sid: any) =>
+                    (sid === node.id) ? (m === "into") : this._wvNodeInsideFolder(att, sid, node.id);
+                const toClose = this._wvBmSpringStack.filter((sid: any) => !insideOf(sid));
+                this._wvBmSpringStack = [];
+                if (toClose.length) this._wvRecollapseSpringFolders(reader, idoc, att, toClose);
+            }
+            this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e), { id: node.id, mode: m });
+        });
+    }
+
+    /** Cancel a PENDING (not-yet-fired) spring-load timer. Leaves
+     *  already-spring-expanded folders alone (that's the recollapse helpers). */
+    _wvCancelBmSpring() {
+        try { if (this._wvBmSpringTimer && this._wvBmSpringWin) this._wvBmSpringWin.clearTimeout(this._wvBmSpringTimer); } catch (_) {}
+        this._wvBmSpringTimer = null;
+        this._wvBmSpringFolderId = null;
+        this._wvBmSpringWin = null;
+    }
+
+    /** True if `nodeId` is `folderId` itself or nested inside it. */
+    _wvNodeInsideFolder(att: any, folderId: any, nodeId: any) {
+        if (!folderId || !att) return false;
+        try {
+            const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+            const loc = this._bmLocate(folderId, doc.local) || this._bmLocate(folderId, doc.global);
+            return !!(loc && loc.entry && this._bmIsDescendant(nodeId, loc.entry));
+        } catch (_) { return false; }
+    }
+
+    /** Collapse the given spring-opened folders (they were collapsed before the
+     *  drag), re-rendering once. */
+    _wvRecollapseSpringFolders(reader: any, idoc: any, att: any, ids: any[]) {
+        if (!att || !ids || !ids.length) return;
+        (async () => {
+            for (const fid of ids) {
+                try { await this._bmReaderToggleFolder(att.libraryID, att.itemKey, fid); } catch (_) {}
+            }
+            try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+        })();
+    }
+
+    /** Collapse EVERY spring-opened folder (clears the whole stack). */
+    _wvRecollapseAllSprings(reader: any, idoc: any, att: any) {
+        const ids = (this._wvBmSpringStack || []).slice();
+        this._wvBmSpringStack = [];
+        this._wvRecollapseSpringFolders(reader, idoc, att, ids);
+    }
+
+    /** Hovering `nodeId` during a drag: collapse spring-opened folders that no
+     *  longer contain the cursor, popping from the DEEPEST outward and stopping
+     *  at the first ancestor still under the cursor (which keeps all shallower
+     *  ones, since they're its ancestors too). This is what makes a nested spring
+     *  collapse its sub-folder when you move out to a sibling, and collapse both
+     *  levels when you leave the top folder entirely. */
+    _wvSpringRecollapseLeft(reader: any, idoc: any, att: any, nodeId: any) {
+        const stack = this._wvBmSpringStack || [];
+        const toClose: any[] = [];
+        while (stack.length && !this._wvNodeInsideFolder(att, stack[stack.length - 1], nodeId)) {
+            toClose.push(stack.pop());
+        }
+        if (toClose.length) this._wvRecollapseSpringFolders(reader, idoc, att, toClose);
     }
 
     /** True if a drag carries something bookmarkable: an annotation being
@@ -1665,7 +2197,7 @@ class _ReaderPanelsMixin {
     /** Turn a drop payload into bookmark(s): annotation(s) → item bookmarks;
      *  otherwise a text selection → a location bookmark labelled with the text.
      *  Used by the Bookmarks tab button, the bookmarks pane, and rows. */
-    async _wvReaderDropPayload(reader: any, idoc: any, payload: any) {
+    async _wvReaderDropPayload(reader: any, idoc: any, payload: any, target?: any) {
         try {
             const att = this._wvReaderAtt(reader); if (!att) return;
             this._wvDraggedAnnKey = null;
@@ -1684,16 +2216,27 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
             }
             if (entries.length) {
-                let added = 0;
+                const addedIds: string[] = [];
                 for (const en of entries) {
                     let label = en.label;
                     if (!label) {
                         try { const it: any = Zotero.Items.getByLibraryAndKey(att.libraryID, en.key); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {}
                     }
                     label = (label || "Annotation").slice(0, 100);
-                    if (await this._bmReaderAdd(att.libraryID, att.itemKey, { type: "item", libraryID: att.libraryID, itemKey: en.key, label })) added++;
+                    // allowDuplicate: dragging the same annotation again files a
+                    // second copy (e.g. into a different folder) instead of no-op.
+                    const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey, { type: "item", libraryID: att.libraryID, itemKey: en.key, label }, { allowDuplicate: true });
+                    if (e2 && e2.id) addedIds.push(e2.id);
                 }
-                if (added) this._wvReaderRenderBmList(reader, idoc);
+                if (addedIds.length) {
+                    await this._wvReaderPlaceDropped(att, addedIds, target);
+                    this._wvReaderRenderBmList(reader, idoc);
+                }
+                // A drag closes the in-document annotation popup but leaves the
+                // annotation selected; with the Bookmarks tab active that popup
+                // is the only read/edit surface, so re-open it for the still-
+                // selected annotation.
+                this._wvReaderRecoverAnnotationPopup(reader);
                 return;
             }
             // Selected text → text bookmark, storing the selection's position
@@ -1706,11 +2249,45 @@ class _ReaderPanelsMixin {
                 let position: any = null;
                 if (selAnn && selAnn.position) { try { position = JSON.parse(JSON.stringify(selAnn.position)); } catch (_) {} }
                 const pageLabel = (selAnn && selAnn.pageLabel) || cap.pageLabel;
-                await this._bmReaderAdd(att.libraryID, att.itemKey,
+                const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
                     { type: "text", viewType: cap.viewType, location: cap.location, position, pageLabel, label: selText.slice(0, 160) });
+                if (e2 && e2.id) await this._wvReaderPlaceDropped(att, [e2.id], target);
                 this._wvReaderRenderBmList(reader, idoc);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderDropPayload err: " + e); }
+    }
+
+    /** Re-open the in-document annotation popup for the currently-selected
+     *  annotation (the PDF view closes it on the drag's select but leaves the
+     *  annotation selected). Only when the Bookmarks tab is active — that's when
+     *  the popup is the read/edit surface. PDF-only (`_openAnnotationPopup`);
+     *  deferred a beat so it runs after the reader finishes the drag. */
+    _wvReaderRecoverAnnotationPopup(reader: any) {
+        try {
+            if (!this._wvReaderBmActive(reader)) return;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv || typeof pv._openAnnotationPopup !== "function" || typeof pv.getSelectedAnnotations !== "function") return;
+            const run = () => { try { if (pv.getSelectedAnnotations().length === 1) pv._openAnnotationPopup(); } catch (_) {} };
+            const win = reader._iframeWindow;
+            if (win && win.setTimeout) win.setTimeout(run, 60); else run();
+        } catch (_) {}
+    }
+
+    /** After a positioned drop, move the freshly-added bookmark(s) to the exact
+     *  target (a row id + before/after/into), preserving drop order. With no
+     *  target they stay where `_bmReaderAdd` put them (section bottom). A
+     *  cross-section move is refused by `_bmReaderMove`, so they fall back to
+     *  the bottom of their natural section. */
+    async _wvReaderPlaceDropped(att: any, ids: string[], target: any) {
+        if (!target || !target.id || !ids || !ids.length) return;
+        let relId = target.id;
+        let mode = target.mode || "after";
+        for (const id of ids) {
+            if (id === target.id) continue;
+            try { await this._bmReaderMove(att.libraryID, att.itemKey, id, relId, mode); } catch (_) {}
+            relId = id; mode = "after";
+        }
     }
 
     /** + → Zotero's select-items picker; bookmark the chosen item / collection
@@ -1735,12 +2312,45 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                 }, true);
             } catch (_) {}
+            // Focus the file currently in the reader so its annotations are
+            // right there to pick — but only EXPAND it if it actually has
+            // annotations (no point opening an empty attachment).
+            try {
+                const attItem: any = att.att || Zotero.Items.get(reader.itemID);
+                let hasAnns = false;
+                try { hasAnns = !!(attItem && attItem.getAnnotations && attItem.getAnnotations().length); } catch (_) {}
+                (async () => {
+                    try {
+                        const sleep = (ms: number) => new Promise(res => win.setTimeout(res, ms));
+                        for (let n = 0; n < 80 && !(dlg.loaded && dlg.itemsView); n++) await sleep(75);
+                        const iv = dlg.itemsView;
+                        if (!iv || !attItem) return;
+                        try { await dlg.collectionsView.selectLibrary(att.libraryID); } catch (_) {}
+                        await sleep(400);
+                        try { await iv.selectItems([attItem.id]); } catch (_) {}
+                        await sleep(150);
+                        if (!hasAnns) return;   // nothing to expand into
+                        let row = -1;
+                        for (let i = 0; i < iv.rowCount; i++) { if (iv.getRow(i).ref.id === attItem.id) { row = i; break; } }
+                        if (row >= 0) {
+                            let open = false;
+                            try { open = iv.isContainerOpen ? iv.isContainerOpen(row) : false; } catch (_) {}
+                            if (!open) { try { await iv.toggleOpenState(row); } catch (_) {} }
+                            try { await iv.selectItems([attItem.id]); } catch (_) {}
+                        }
+                    } catch (_) {}
+                })();
+            } catch (_) {}
             await io.deferred.promise;
             const add = (rec: any) => this._bmReaderAdd(att.libraryID, att.itemKey, rec);
             if (io.dataOut && io.dataOut.length) {
                 const targets: any = await Zotero.Items.getAsync(io.dataOut);
                 for (const it of (targets || [])) {
-                    let label = ""; try { label = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : ""); } catch (_) {}
+                    let label = "";
+                    try {
+                        if (it.isAnnotation && it.isAnnotation()) label = this._wvReaderAnnLabel(it);
+                        else label = it.getDisplayTitle ? it.getDisplayTitle() : (it.getField ? it.getField("title") : "");
+                    } catch (_) {}
                     await add({ type: "item", libraryID: it.libraryID, itemKey: it.key, label: label || it.key });
                 }
             } else if (pickedCollection && pickedCollection.key) {
@@ -1753,6 +2363,186 @@ class _ReaderPanelsMixin {
             }
             this._wvReaderRenderBmList(reader, idoc);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderAddViaDialog err: " + e); }
+    }
+
+    /** Firefox-bookmarks-style right-click menu for the reader Bookmarks pane:
+     *  Add Bookmark / New Folder always; Open / Rename / Delete when the click
+     *  was on a row. New folders land in the section that was right-clicked. */
+    async _wvReaderShowBmContextMenu(reader: any, idoc: any, e: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const att = this._wvReaderAtt(reader); if (!att) return;
+            const rowEl = e.target && e.target.closest && e.target.closest(".wv-bm-reader-row");
+            const grp = e.target && e.target.closest && e.target.closest(".wv-bm-reader-group");
+            let section: "local" | "global" = "local";
+            if (grp && grp.classList.contains("wv-bm-grp-global")) section = "global";
+            else if (rowEl && rowEl.getAttribute("data-wv-bm-section") === "global") section = "global";
+            let entry: any = null;
+            const nodeId = rowEl && rowEl.getAttribute("data-wv-bm-id");
+            if (nodeId) {
+                const docv = this._bmReaderDoc(att.libraryID, att.itemKey);
+                const loc = this._bmLocate(nodeId, docv.local) || this._bmLocate(nodeId, docv.global);
+                entry = loc && loc.entry;
+            }
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            // `icon` is either inline SVG markup, or a chrome:// URL for a
+            // native Zotero icon — fetched + inlined async (the reader iframe
+            // can't load chrome:// images, so we read their SVG source).
+            const item = (label: string, icon: string, fn: any) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div"); it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span"); ic.className = "wv-ctx-ic";
+                if (icon && icon.indexOf("chrome://") === 0) {
+                    ic.classList.add("wv-ctx-ic-native");
+                    this._wvChromeIconSvg(icon).then((svg: string) => { try { ic.innerHTML = svg || ""; } catch (_) {} });
+                } else {
+                    ic.innerHTML = icon || "";
+                }
+                const lb = idoc.createElementNS(NS_HTML_RP, "span"); lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { this._wvCloseReaderBmContextMenu(idoc); fn(); });
+                menu.appendChild(it);
+            };
+            const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
+            const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
+            if (entry) {
+                if (entry.type === "folder") {
+                    item("Rename Folder…", RP_RENAME_SVG, () => {
+                        const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Folder", entry.name || "");
+                        if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
+                    });
+                    item("New Subfolder…", RP_FOLDER_PLUS_SVG, () => {
+                        const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                        if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n, entry.id).then(reRender);
+                    });
+                    sep();
+                    item("Delete Folder", RP_DELETE_SVG, () => {
+                        const c = (entry.children && entry.children.length) || 0;
+                        if (c > 0) { const ok = Services.prompt.confirm(Zotero.getMainWindow(), "Delete Folder", 'Delete "' + (entry.name || "") + '" and its ' + c + " item" + (c === 1 ? "" : "s") + "?"); if (!ok) return; }
+                        this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender);
+                    });
+                } else if (section === "local") {
+                    // In-document location: opens "here" in this reader (no
+                    // library equivalent). Plain/Shift/Ctrl mirror a row click.
+                    let openIcon = "";
+                    try { openIcon = att.att.getImageSrc(); } catch (_) {}
+                    item("Open", openIcon, () => this._wvNavigateReaderBookmark(reader, entry, {}));
+                    item("Open in New Window", openIcon, () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
+                    item("Show in Library", this._bmShowInLibraryIcon({ libraryID: att.libraryID }, Zotero.getMainWindow()),
+                        () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
+                    sep();
+                    item("Rename…", RP_RENAME_SVG, () => {
+                        const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Bookmark", entry.label || "");
+                        if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
+                    });
+                    {
+                        const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
+                        if (orig && orig !== entry.label) {
+                            item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                        }
+                    }
+                    item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
+                } else {
+                    // "Elsewhere in Zotero" item bookmark: same icons AND wording
+                    // as the library bookmark menu — the attachment file-type
+                    // icon + "Open <type> in New Tab/Window", shown only when
+                    // there's an openable file, then Show in Library.
+                    const t = await this._bmResolveOpenTarget(entry);
+                    if (t && t.attachment) {
+                        let attIcon = "";
+                        try { attIcon = t.attachment.getImageSrc(); } catch (_) {}
+                        item("Open " + t.typeLabel + " in New Tab", attIcon,
+                            () => this._wvNavigateReaderBookmark(reader, entry, {}));
+                        item("Open " + t.typeLabel + " in New Window", attIcon,
+                            () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
+                    }
+                    item("Show in Library",
+                        this._bmShowInLibraryIcon({ libraryID: entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
+                        () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
+                    sep();
+                    item("Rename…", RP_RENAME_SVG, () => {
+                        const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Bookmark", entry.label || "");
+                        if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
+                    });
+                    {
+                        const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
+                        if (orig && orig !== entry.label) {
+                            item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                        }
+                    }
+                    item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
+                }
+                sep();
+            }
+            item("Add Bookmark…", RP_PLUS_SVG, () => this._wvReaderAddViaDialog(reader, idoc));
+            item("New Folder…", RP_FOLDER_PLUS_SVG, () => {
+                const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n).then(reRender);
+            });
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
+            const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+            let x = e.clientX, y = e.clientY;
+            const mw = menu.offsetWidth || 170, mh = menu.offsetHeight || 90;
+            if (x + mw > vw - 6) x = Math.max(6, vw - mw - 6);
+            if (y + mh > vh - 6) y = Math.max(6, vh - mh - 6);
+            menu.style.left = x + "px"; menu.style.top = y + "px";
+            // Dismiss on click-outside / Escape across reachable docs.
+            const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; this._wvCloseReaderBmContextMenu(idoc); } catch (_) {} };
+            const onKey = (ev: any) => { if (ev.key === "Escape") this._wvCloseReaderBmContextMenu(idoc); };
+            const docs: any[] = [idoc]; const wins: any[] = [];
+            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
+            try { const ir = reader._internalReader; const v = ir && (ir._primaryView || ir._lastView); const vd = v && v._iframeWindow && v._iframeWindow.document; if (vd && docs.indexOf(vd) < 0) docs.push(vd); } catch (_) {}
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+        } catch (err) { Zotero.debug("[Weavero] _wvReaderShowBmContextMenu err: " + err); }
+    }
+
+    _wvCloseReaderBmContextMenu(idoc: any) {
+        try { const m = idoc.getElementById(RP_BM_CTX_ID); if (m) m.remove(); } catch (_) {}
+        if (this._wvReaderBmCtxDismiss) {
+            try {
+                const { docs, wins, onDown, onKey } = this._wvReaderBmCtxDismiss;
+                for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }
+                for (const w of (wins || [])) { try { w.removeEventListener("keydown", onKey, true); } catch (_) {} }
+            } catch (_) {}
+            this._wvReaderBmCtxDismiss = null;
+        }
+    }
+
+    /** Fetch a chrome:// icon's SVG source (cached) so it can be inlined into
+     *  the reader iframe, which can't load chrome:// images directly. */
+    async _wvChromeIconSvg(src: string): Promise<string> {
+        if (!src) return "";
+        this._wvChromeIconCache = this._wvChromeIconCache || {};
+        if (Object.prototype.hasOwnProperty.call(this._wvChromeIconCache, src)) {
+            return this._wvChromeIconCache[src];
+        }
+        let out = "";
+        try {
+            const win: any = Zotero.getMainWindow();
+            if (win && typeof win.fetch === "function") {
+                const r: any = await win.fetch(src);
+                out = await r.text();
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvChromeIconSvg err: " + e); }
+        this._wvChromeIconCache[src] = out;
+        return out;
+    }
+
+    /** A readable label for an annotation: its text/comment, else a type name. */
+    _wvReaderAnnLabel(ann: any) {
+        try {
+            const t = String(ann.annotationText || ann.annotationComment || "").trim();
+            if (t) return t;
+            const m: { [k: string]: string } = {
+                image: "Image annotation", ink: "Ink annotation", note: "Note",
+                highlight: "Highlight", underline: "Underline", text: "Text annotation",
+            };
+            return m[ann.annotationType] || "Annotation";
+        } catch (_) { return "Annotation"; }
     }
 
     /** Bookmark the current text selection (label = the selected text). Stores
@@ -1898,6 +2688,30 @@ class _ReaderPanelsMixin {
      *  hovered, and can be DRAGGED to move the bookmark: on drop the new precise
      *  point is written back (`_bmReaderUpdatePosition`) and the list refreshes.
      *  Lives in the PDF.js iframe. No-op for non-PDF or if the page isn't ready. */
+    /** Drop the pin once a (possibly just-opened) reader's primary view has
+     *  rendered the target page. Used after "Open in New Window" so the pin
+     *  shows in the new window too; polls briefly, then gives up. */
+    _wvShowPinWhenReady(reader: any, position: any, bmId?: string, tries?: number) {
+        const n = tries || 0;
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const app = win && win.PDFViewerApplication;
+            const pageIndex = (position && position.pageIndex) || 0;
+            const pageView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+            if (pageView && pageView.div && pageView.viewport) {
+                this._wvReaderShowPin(reader, position, bmId);
+                return;
+            }
+        } catch (_) {}
+        if (n < 40) {
+            const w: any = Zotero.getMainWindow();
+            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => this._wvShowPinWhenReady(reader, position, bmId, n + 1), 150);
+        }
+    }
+
     _wvReaderShowPin(reader: any, position: any, bmId?: string) {
         try {
             if (!position || !Array.isArray(position.rects) || !position.rects.length) return;
@@ -1952,20 +2766,29 @@ class _ReaderPanelsMixin {
                     e.preventDefault(); e.stopPropagation();
                     stopFade();
                     pin._wvDragging = true;
-                    // Suppress text selection for the whole drag — otherwise the
-                    // cursor sweeping the page selects text. user-select:none on
-                    // the root + a selectstart blocker + clearing live ranges,
-                    // and pointer capture so the text layer never sees the moves.
-                    const prevUS = rootEl.style.userSelect;
-                    rootEl.style.userSelect = "none";
-                    try { rootEl.style.setProperty("-moz-user-select", "none"); } catch (_) {}
+                    // The reader builds its PDF text selection in JS:
+                    // _handlePointerMove extends _selectionRanges while
+                    // this.action.type === 'selectText' (action + pointerDownPosition
+                    // are set by _handlePointerDown on the page mousedown). For a
+                    // single press Gecko fixes the mousedown target at press time,
+                    // so an overlay/shield created now is too late to retarget it,
+                    // and user-select / preventDefault can't touch a JS-driven
+                    // selection. So neutralise the reader's drag-selection at the
+                    // source: its mousedown handler runs on the window (capture),
+                    // BEFORE our document-capture handler, so right after it has set
+                    // action/pointerDownPosition we null them — then
+                    // _handlePointerMove returns early (no selectText branch; see
+                    // reader pdf-view.js ~L2724/L2902). Re-applied on each move for
+                    // safety. Our pin drag uses its own pointer handlers and is
+                    // unaffected.
+                    const killSel = () => { try { pv.action = null; pv.pointerDownPosition = null; } catch (_) {} };
+                    const onDocMouseDown = () => killSel();
+                    try { doc.addEventListener("mousedown", onDocMouseDown, true); } catch (_) {}
+                    killSel();
                     try { win.getSelection().removeAllRanges(); } catch (_) {}
-                    const onSelStart = (se: any) => { se.preventDefault(); };
-                    try { doc.addEventListener("selectstart", onSelStart, true); } catch (_) {}
                     const cleanup = () => {
-                        try { doc.removeEventListener("selectstart", onSelStart, true); } catch (_) {}
-                        rootEl.style.userSelect = prevUS;
-                        try { rootEl.style.removeProperty("-moz-user-select"); } catch (_) {}
+                        try { doc.removeEventListener("mousedown", onDocMouseDown, true); } catch (_) {}
+                        try { win.getSelection().removeAllRanges(); } catch (_) {}
                     };
                     pin.style.transition = "none"; pin.style.opacity = "1"; pin.style.cursor = "grabbing";
                     pin.style.position = "fixed";
@@ -1973,7 +2796,18 @@ class _ReaderPanelsMixin {
                     try { pin.setPointerCapture(e.pointerId); } catch (_) {}
                     const place = (cx: number, cy: number) => { pin.style.left = cx + "px"; pin.style.top = cy + "px"; pin.style.transform = "translate(-50%,-100%) scale(1)"; };
                     place(e.clientX, e.clientY);
-                    const onMove = (ev: any) => { ev.preventDefault(); try { win.getSelection().removeAllRanges(); } catch (_) {} place(ev.clientX, ev.clientY); };
+                    const PIN_SHADOW = "drop-shadow(0 2px 3px rgba(0,0,0,.45))";
+                    const onMove = (ev: any) => {
+                        killSel(); ev.preventDefault();
+                        try { win.getSelection().removeAllRanges(); } catch (_) {}
+                        place(ev.clientX, ev.clientY);
+                        // Visual clue: a drop is only accepted over a page. Off-page
+                        // greys the pin out + shows a no-drop cursor to say "not here".
+                        const onPage = !!this._wvReaderPdfPosFromPoint(pv, ev.clientX, ev.clientY);
+                        pin.style.cursor = onPage ? "grabbing" : "no-drop";
+                        pin.style.opacity = onPage ? "1" : "0.4";
+                        pin.style.filter = onPage ? PIN_SHADOW : ("grayscale(1) " + PIN_SHADOW);
+                    };
                     const onUp = (ev: any) => {
                         cleanup();
                         pin._wvDragging = false;
@@ -1991,6 +2825,11 @@ class _ReaderPanelsMixin {
                             }
                             // Re-drop the pin where it landed (then it fades).
                             this._wvReaderShowPin(reader, newPos, bmId);
+                        } else {
+                            // Off-page drop isn't allowed → cancel the move and
+                            // re-show the pin at its ORIGINAL position, so it's clear
+                            // the bookmark didn't change.
+                            this._wvReaderShowPin(reader, position, bmId);
                         }
                     };
                     const onCancel = () => { cleanup(); pin._wvDragging = false; try { pin.remove(); } catch (_) {} };

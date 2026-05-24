@@ -2099,6 +2099,17 @@ class WeaveroPlugin {
             }
         }, ["item"], "weavero-item"));
 
+        // 3c. Notifier: live-refresh reader bookmark names when a bookmarked
+        // annotation / item / collection changes while the Bookmarks pane is
+        // open. Cheap by design (see _wvReaderBmOnNotify): it no-ops unless a
+        // reader currently shows the pane AND a changed id is actually
+        // bookmarked there, and the re-render is debounced.
+        this._notifierIDs.push(Zotero.Notifier.registerObserver({
+            notify: (event, type, ids) => {
+                try { this._wvReaderBmOnNotify(event, type, ids); } catch (e) {}
+            }
+        }, ["item", "collection"], "weavero-reader-bm"));
+
         // 4. Polling fallback for readers
         this._pollInterval = setInterval(() => {
             for (const reader of Zotero.Reader._readers || [])

@@ -63,6 +63,14 @@ import {
 // Black from `EXTRA_INK_AND_TEXT_COLORS` — upstream restricts
 // Black to ink/text annotations, but those exist in the wild,
 // so we need to be able to filter on it.
+// Routine verbose log — only emitted when the `weavero.debug` pref is on
+// (the prefs "Debug" toggle). Module-scoped (not `this`-bound) so it works
+// inside patched row-provider methods / callbacks where `this` is not the
+// plugin. Error / `catch` paths keep Zotero.debug() so they always surface.
+function dbg(...args: any[]) {
+    try { if (Zotero.Prefs.get("weavero.debug")) (Zotero.debug as any)(...args); } catch (_) {}
+}
+
 const _ANNOTATION_COLORS_DATA = [
     { value: "#ffd400", label: "Yellow" },
     { value: "#ff6666", label: "Red" },
@@ -230,7 +238,7 @@ class _FilterMixin {
             }
             delete rp._wvFilterSelfCall;
         } catch (e) {
-            Zotero.debug("[Weavero][filter] _pauseFilterPatches err: " + e);
+            dbg("[Weavero][filter] _pauseFilterPatches err: " + e);
         }
     }
 
@@ -417,12 +425,10 @@ class _FilterMixin {
                 e.preventDefault();
                 const id = parseInt(
                     badge.getAttribute("data-wv-item-id") || "0", 10);
-                Zotero.debug("[Weavero][chev] click id=" + id);
                 if (!id) return;
                 const plugin: any = (Zotero as any).Weavero
                     && (Zotero as any).Weavero.plugin;
                 if (!plugin) {
-                    Zotero.debug("[Weavero][chev] no plugin");
                     return;
                 }
                 if (!plugin._userRevealedAllIDs) {
@@ -446,13 +452,6 @@ class _FilterMixin {
                 } else {
                     plugin._userRevealedAllIDs.add(id);
                 }
-                Zotero.debug("[Weavero][chev] toggle id=" + id
-                    + " action=" + (wasIn ? "remove" : "add")
-                    + " revealedNow=" + JSON.stringify(
-                        [...plugin._userRevealedAllIDs])
-                    + " openedNow=" + JSON.stringify(
-                        plugin._userOpenedIDs
-                            ? [...plugin._userOpenedIDs] : []));
                 // Flip the visual state of every chevron tagged with
                 // this id immediately. `iv.refresh()` rebuilds `_rows`
                 // but reuses existing primary-cell DOM where it can,
@@ -486,7 +485,6 @@ class _FilterMixin {
                 const wvActive = plugin._isFilterActive
                     && plugin._isFilterActive(plugin._filterState);
                 const iv: any = win.ZoteroPane.itemsView;
-                Zotero.debug("[Weavero][chev] wvActive=" + wvActive);
                 // Always trigger `iv.refresh()` — even with the
                 // Weavero filter active. Without the refresh,
                 // `_rows` only contains items that Zotero's own
@@ -549,8 +547,6 @@ class _FilterMixin {
                             }
                         }
                     } catch (err) {
-                        Zotero.debug(
-                            "[Weavero][chev] in-place toggle err: " + err);
                     }
                     // The in-place reopen records the container in
                     // `_userOpenedIDs` (the user-open-tracking wrap), a
@@ -568,12 +564,9 @@ class _FilterMixin {
                     plugin._suppressTreeObserverUntil = 0;
                     try { plugin._applyItemsListFilter({ cascade: true }); }
                     catch (err) {
-                        Zotero.debug(
-                            "[Weavero][chev] in-place apply err: " + err);
                     }
                     try { iv && iv.tree && iv.tree.invalidate(); }
                     catch (err) {}
-                    Zotero.debug("[Weavero][chev] in-place reveal done");
                     return;
                 }
 
@@ -617,26 +610,14 @@ class _FilterMixin {
                             plugin._wvBaseSearchIDs);
                     }
                 } catch (err) {}
-                Zotero.debug("[Weavero][chev] rows before refresh="
-                    + (rpBefore && rpBefore._rows
-                        ? rpBefore._rows.length : "?")
-                    + " sIDs.size="
-                    + (rpBefore && rpBefore._searchItemIDs
-                        ? rpBefore._searchItemIDs.size : "?"));
                 const p = (() => {
                     try { return iv && iv.refresh && iv.refresh(); }
                     catch (err) {
-                        Zotero.debug("[Weavero][chev] refresh err: " + err);
                         return null;
                     }
                 })();
-                Zotero.debug("[Weavero][chev] refresh returned, isPromise="
-                    + !!(p && typeof p.then === "function"));
                 if (p && typeof p.then === "function") {
                     p.then(() => {
-                        Zotero.debug("[Weavero][chev] refresh resolved, rows="
-                            + (rpBefore && rpBefore._rows
-                                ? rpBefore._rows.length : "?"));
                         // Run the apply pass FIRST so the Weavero-filter
                         // keep[] honours the reveal AND the cascade
                         // re-opens the revealed container itself. Doing
@@ -647,7 +628,6 @@ class _FilterMixin {
                         // the Has-Bookmarks match), making them vanish
                         // entirely. The cascade apply opens the container
                         // without that corruption.
-                        Zotero.debug("[Weavero][chev] then(): calling apply");
                         // Force apply to run even if the reentrancy guard
                         // OR the observer-suppression window is still set
                         // from the mid-refresh observer-driven pass —
@@ -661,9 +641,7 @@ class _FilterMixin {
                         try { plugin._applyItemsListFilter(
                             { cascade: true }); }
                         catch (e) {
-                            Zotero.debug("[Weavero][chev] then() apply err: " + e);
                         }
-                        Zotero.debug("[Weavero][chev] then(): apply done");
                         // Fallback re-open: ONLY if the cascade apply left
                         // the revealed container closed (it normally opens
                         // it). Skipping when already open avoids the
@@ -722,7 +700,6 @@ class _FilterMixin {
                         try { iv.tree && iv.tree.invalidate(); }
                         catch (e) {}
                     }).catch((err: any) => {
-                        Zotero.debug("[Weavero][chev] refresh rejected: " + err);
                     });
                 }
                 try {
@@ -783,11 +760,6 @@ class _FilterMixin {
                 try {
                     const plugin: any = (Zotero as any).Weavero
                         && (Zotero as any).Weavero.plugin;
-                    Zotero.debug("[Weavero][diag-getItems] called, baseLen="
-                        + baseItems.length
-                        + " revealed="
-                        + JSON.stringify(plugin
-                            ? [...(plugin._userRevealedAllIDs || [])] : []));
                     if (plugin) {
                         plugin._wvBaseSearchIDs = new Set(
                             baseItems.map((it: any) => it && it.id));
@@ -816,7 +788,7 @@ class _FilterMixin {
                     }
                     const revealed = plugin
                         && plugin._userRevealedAllIDs;
-                    Zotero.debug("[Weavero][getItems] baseLen="
+                    dbg("[Weavero][getItems] baseLen="
                         + baseItems.length
                         + " revealed=" + JSON.stringify(
                             revealed ? [...revealed] : []));
@@ -851,7 +823,7 @@ class _FilterMixin {
                             extra.push(ci);
                         }
                     }
-                    Zotero.debug("[Weavero][getItems] extraLen="
+                    dbg("[Weavero][getItems] extraLen="
                         + extra.length
                         + " → returning " + (extra.length
                             ? baseItems.length + extra.length
@@ -886,11 +858,6 @@ class _FilterMixin {
                         const lines = stk.split("\n").slice(1, 6);
                         callerHint = lines.join(" | ").substring(0, 200);
                     } catch (e) {}
-                    Zotero.debug("[Weavero][diag-refresh] START — _rows.length="
-                        + (this._rows ? this._rows.length : "?")
-                        + " getRowCount="
-                        + (this.getRowCount ? this.getRowCount() : "?")
-                        + " caller=" + callerHint);
                     // Drop reveal AND manual-expand state on any
                     // refresh that wasn't triggered by a chev click
                     // — search/filter change, collection switch,
@@ -905,7 +872,7 @@ class _FilterMixin {
                         if (plugin && !plugin._wvChevRefreshInFlight) {
                             if (plugin._userRevealedAllIDs
                                 && plugin._userRevealedAllIDs.size) {
-                                Zotero.debug(
+                                dbg(
                                     "[Weavero][_refresh] external"
                                     + " — clearing reveals "
                                     + JSON.stringify(
@@ -914,7 +881,7 @@ class _FilterMixin {
                             }
                             if (plugin._userOpenedIDs
                                 && plugin._userOpenedIDs.size) {
-                                Zotero.debug(
+                                dbg(
                                     "[Weavero][_refresh] external"
                                     + " — clearing opened "
                                     + JSON.stringify(
@@ -923,10 +890,10 @@ class _FilterMixin {
                             }
                         }
                     } catch (e) {}
-                    Zotero.debug("[Weavero][_refresh] start, rows="
+                    dbg("[Weavero][_refresh] start, rows="
                         + (this._rows ? this._rows.length : "?"));
                     const result = await origRefresh.apply(this, args);
-                    Zotero.debug("[Weavero][_refresh] orig done, rows="
+                    dbg("[Weavero][_refresh] orig done, rows="
                         + (this._rows ? this._rows.length : "?"));
                     // Defensive: Zotero's `_refresh` sometimes leaves
                     // `_rows` with rows whose tree position doesn't
@@ -998,14 +965,6 @@ class _FilterMixin {
                                 stack.push({id, level: lvl});
                             }
                             if (droppedDetails.length) {
-                                Zotero.debug(
-                                    "[Weavero][diag-refresh] cleanup"
-                                    + ": dropped="
-                                    + droppedDetails.length
-                                    + " before="
-                                    + beforeLen
-                                    + " after="
-                                    + kept.length);
                                 // Log each dropped row so we can see
                                 // exactly which got dropped and why.
                                 // First 20 only; if there are more
@@ -1015,21 +974,8 @@ class _FilterMixin {
                                     droppedDetails.length, 20);
                                 for (let k = 0; k < cap; k++) {
                                     const d = droppedDetails[k];
-                                    Zotero.debug(
-                                        "[Weavero][diag-refresh-drop]"
-                                        + " i=" + d.i + " id=" + d.id
-                                        + " lvl=" + (d.lvl ?? "-")
-                                        + " pid=" + (d.pid ?? "-")
-                                        + " expected="
-                                            + (d.expected ?? "-")
-                                        + " reason=" + d.reason);
                                 }
                                 if (droppedDetails.length > cap) {
-                                    Zotero.debug(
-                                        "[Weavero][diag-refresh-drop]"
-                                        + " ... and "
-                                        + (droppedDetails.length - cap)
-                                        + " more");
                                 }
                                 this._rows = kept;
                                 if (typeof this.refreshRowMap === "function") {
@@ -1582,7 +1528,7 @@ class _FilterMixin {
                         }
                         return false;
                     });
-                    Zotero.debug("[Weavero][ZIR.getChildItems] this.ref.id="
+                    dbg("[Weavero][ZIR.getChildItems] this.ref.id="
                         + (this.ref && this.ref.id)
                         + " orig=" + items.length
                         + " filtered=" + filteredOut.length);
@@ -4416,7 +4362,7 @@ class _FilterMixin {
                                     }
                                 } catch (e) {}
                             } catch (e) {
-                                Zotero.debug(
+                                dbg(
                                     "[Weavero][filter] post-setFilter reapply err: " + e);
                             }
                         });
@@ -4425,7 +4371,7 @@ class _FilterMixin {
                 };
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] setFilter wrap err: " + e);
+            dbg("[Weavero][filter] setFilter wrap err: " + e);
         }
         try {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
@@ -4473,7 +4419,7 @@ class _FilterMixin {
                                 this._patchIsSelectable();
                                 this._patchExpandMatchParents();
                             } catch (e) {
-                                Zotero.debug(
+                                dbg(
                                     "[Weavero][filter] post-swap reapply err: " + e);
                             }
                         });
@@ -4482,7 +4428,7 @@ class _FilterMixin {
                 };
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] changeCollectionTreeRow wrap err: " + e);
+            dbg("[Weavero][filter] changeCollectionTreeRow wrap err: " + e);
         }
 
         // Diagnostic wrapper around selectItems so we see exactly
@@ -4509,27 +4455,17 @@ class _FilterMixin {
                             info["rowMap[" + id + "]"] =
                                 itemsView._rowMap ? itemsView._rowMap[id] : "n/a";
                         }
-                        Zotero.debug(
-                            "[Weavero][add-debug] selectItems entry: "
-                            + JSON.stringify(info));
                     } catch (e) {}
                     let result;
                     try { result = await origSelect(ids, noRecurse, noScroll); }
                     catch (e) {
-                        Zotero.debug(
-                            "[Weavero][add-debug] selectItems threw: " + e);
                         throw e;
                     }
-                    Zotero.debug(
-                        "[Weavero][add-debug] selectItems returned: " + result
-                        + " selectionFocused="
-                        + (itemsView.selection
-                            ? itemsView.selection.focused : "n/a"));
                     return result;
                 };
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] selectItems wrap err: " + e);
+            dbg("[Weavero][filter] selectItems wrap err: " + e);
         }
     }
 
@@ -6085,7 +6021,7 @@ class _FilterMixin {
                         .map(c => ({ id: c.id, name: c.name }))
                         .sort((a, b) => a.name.localeCompare(b.name));
                 } catch (e) {
-                    Zotero.debug("[Weavero][filter] collections enum err: " + e);
+                    dbg("[Weavero][filter] collections enum err: " + e);
                     return [];
                 }
             },
@@ -6141,7 +6077,7 @@ class _FilterMixin {
                         .map(s => ({ id: s.id, name: s.name }))
                         .sort((a, b) => a.name.localeCompare(b.name));
                 } catch (e) {
-                    Zotero.debug("[Weavero][filter] saved searches enum err: " + e);
+                    dbg("[Weavero][filter] saved searches enum err: " + e);
                     return [];
                 }
             },
@@ -6568,7 +6504,7 @@ class _FilterMixin {
                 renderSelectedList();
                 renderButtons();
             } catch (e) {
-                Zotero.debug("[Weavero][filter] unified search load err: " + e);
+                dbg("[Weavero][filter] unified search load err: " + e);
             }
         };
 
@@ -6785,7 +6721,7 @@ class _FilterMixin {
                 }
                 return [...recent, ...rest];
             } catch (e) {
-                Zotero.debug("[Weavero][filter] item types enum err: " + e);
+                dbg("[Weavero][filter] item types enum err: " + e);
                 return [];
             }
         };
@@ -8157,7 +8093,7 @@ class _FilterMixin {
             if (!section.isConnected) return;
             renderButtons(tags);
         }).catch((e) => {
-            Zotero.debug("[Weavero][filter] tag fetch err: " + e);
+            dbg("[Weavero][filter] tag fetch err: " + e);
             if (!section.isConnected) return;
             while (tagBox.firstChild) tagBox.removeChild(tagBox.firstChild);
             const err = doc.createElementNS(NS_HTML, "span");
@@ -8216,7 +8152,7 @@ class _FilterMixin {
             }
             return names;
         } catch (e) {
-            Zotero.debug("[Weavero][filter] _collectAllTags err: " + e);
+            dbg("[Weavero][filter] _collectAllTags err: " + e);
             return [];
         }
     }
@@ -8244,7 +8180,7 @@ class _FilterMixin {
                 if (n) names.add(n);
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] creators query err: " + e);
+            dbg("[Weavero][filter] creators query err: " + e);
         }
         try {
             const annSql = "SELECT DISTINCT IFNULL(ia.authorName, '') AS authorName, "
@@ -8269,7 +8205,7 @@ class _FilterMixin {
                 }
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] annotation authors query err: " + e);
+            dbg("[Weavero][filter] annotation authors query err: " + e);
         }
         return [...names].sort((a: any, b: any) => a.localeCompare(b));
     }
@@ -8387,7 +8323,7 @@ class _FilterMixin {
             if (!section.isConnected) return;
             renderButtons(authors);
         }).catch((e) => {
-            Zotero.debug("[Weavero][filter] author fetch err: " + e);
+            dbg("[Weavero][filter] author fetch err: " + e);
         });
     }
 
@@ -8557,7 +8493,7 @@ class _FilterMixin {
             const rows = await Zotero.DB.columnQueryAsync(sql, [fieldRow, libraryID]);
             return (rows || []).sort((a, b) => String(a).localeCompare(String(b)));
         } catch (e) {
-            Zotero.debug("[Weavero][filter] _collectPublications err: " + e);
+            dbg("[Weavero][filter] _collectPublications err: " + e);
             return [];
         }
     }
@@ -8584,7 +8520,7 @@ class _FilterMixin {
             }
             return [...names].sort((a: any, b: any) => a.localeCompare(b));
         } catch (e) {
-            Zotero.debug("[Weavero][filter] _collectAddedByUsers err: " + e);
+            dbg("[Weavero][filter] _collectAddedByUsers err: " + e);
             return [];
         }
     }
@@ -8619,7 +8555,7 @@ class _FilterMixin {
                 .map(c => ({ id: c.id, name: c.name }))
                 .sort((a, b) => a.name.localeCompare(b.name));
         } catch (e) {
-            Zotero.debug("[Weavero][filter] collections enum err: " + e);
+            dbg("[Weavero][filter] collections enum err: " + e);
         }
         if (!cols.length) {
             const empty = doc.createElementNS(NS_HTML, "span");
@@ -8721,7 +8657,7 @@ class _FilterMixin {
                 .map(s => ({ id: s.id, name: s.name }))
                 .sort((a, b) => a.name.localeCompare(b.name));
         } catch (e) {
-            Zotero.debug("[Weavero][filter] saved searches enum err: " + e);
+            dbg("[Weavero][filter] saved searches enum err: " + e);
         }
         if (!searches.length) {
             const empty = doc.createElementNS(NS_HTML, "span");
@@ -8804,7 +8740,7 @@ class _FilterMixin {
                 if (!search) return [];
                 return (await search.search()) || [];
             } catch (e) {
-                Zotero.debug("[Weavero][filter] saved-search "
+                dbg("[Weavero][filter] saved-search "
                     + sid + " run err: " + e);
                 return [];
             }
@@ -8835,7 +8771,7 @@ class _FilterMixin {
                 this._savedSearchExcludeResults = all;
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] _refreshSavedSearchResults err: " + e);
+            dbg("[Weavero][filter] _refreshSavedSearchResults err: " + e);
             this._savedSearchResults = null;
             this._savedSearchExcludeResults = null;
         }
@@ -9021,7 +8957,7 @@ class _FilterMixin {
             if (!section.isConnected) return;
             renderButtons(users);
         }).catch((e) => {
-            Zotero.debug("[Weavero][filter] addedBy fetch err: " + e);
+            dbg("[Weavero][filter] addedBy fetch err: " + e);
         });
     }
 
@@ -9423,7 +9359,7 @@ class _FilterMixin {
             }
             this._lastLibraryID = curLib;
         } catch (e) {
-            Zotero.debug("[Weavero][filter] library-change check err: " + e);
+            dbg("[Weavero][filter] library-change check err: " + e);
         }
 
         // V9-COMPAT: Zotero 10 beta added a `rowProvider`
@@ -9749,7 +9685,7 @@ class _FilterMixin {
                     }
                 }
             } catch (e) {
-                Zotero.debug("[Weavero][filter] hasMatch err: " + e);
+                dbg("[Weavero][filter] hasMatch err: " + e);
             }
             if (id != null) hasMatchCache.set(id, v);
             return v;
@@ -9888,7 +9824,7 @@ class _FilterMixin {
                     if (typeof rp._wvOrigExpandRows === "function") {
                         try { rp._wvOrigExpandRows(toOpen); }
                         catch (e) {
-                            Zotero.debug("[Weavero][filter] expandRows err: " + e);
+                            dbg("[Weavero][filter] expandRows err: " + e);
                         }
                     } else if (typeof rp._wvOrigToggleOpenState === "function") {
                         // V9-COMPAT: Zotero 9 has no batched
@@ -9921,7 +9857,7 @@ class _FilterMixin {
             } finally {
                 rp._wvFilterSelfCall = wasFlag;
             }
-            Zotero.debug("[Weavero][filter] expanded; total rows now: "
+            dbg("[Weavero][filter] expanded; total rows now: "
                 + origGetRowCount());
         }
 
@@ -9945,7 +9881,7 @@ class _FilterMixin {
                     const rid = r && r.ref && r.ref.id;
                     const rlvl = r && r.level;
                     if (rid != null && (rlvl == null || rlvl >= 0)) {
-                        Zotero.debug("[Weavero][keep+] id=" + rid
+                        dbg("[Weavero][keep+] id=" + rid
                             + " lvl=" + rlvl);
                     }
                 } catch (e) {}
@@ -10008,7 +9944,7 @@ class _FilterMixin {
             }
             return true;
         };
-        Zotero.debug("[Weavero][keep-pass] === PRIMARIES + HAS-MATCH ===");
+        dbg("[Weavero][keep-pass] === PRIMARIES + HAS-MATCH ===");
         for (let j = 0; j < total; j++) {
             let row;
             try { row = origGetRow(j); } catch (e) { continue; }
@@ -10021,7 +9957,7 @@ class _FilterMixin {
                 pushKeep(j);
             }
         }
-        Zotero.debug("[Weavero][keep-pass] === NON-MATCH ATTACHMENTS ===");
+        dbg("[Weavero][keep-pass] === NON-MATCH ATTACHMENTS ===");
         // "Show Non-Matching Attachments" (pref ON): keep the
         // attachment / note children of any kept regular-item parent
         // even when those children don't themselves match the filter.
@@ -10065,9 +10001,9 @@ class _FilterMixin {
         // case: file attachment with a matched-color annotation and
         // a different-color annotation as a sibling — the sibling
         // annotation should appear when the toggle is on.
-        Zotero.debug("[Weavero][keep-pass] === NON-MATCH ANNOTATIONS (gated on pref) ===");
+        dbg("[Weavero][keep-pass] === NON-MATCH ANNOTATIONS (gated on pref) ===");
         if (!Zotero.Prefs.get("hideContextAnnotationRows")) {
-            Zotero.debug("[Weavero][keep-pass] PREF ALLOWS non-match annotations");
+            dbg("[Weavero][keep-pass] PREF ALLOWS non-match annotations");
             for (let j = 0; j < total; j++) {
                 let row;
                 try { row = origGetRow(j); } catch (e) { continue; }
@@ -10096,7 +10032,7 @@ class _FilterMixin {
         // filter. This is the explicit "show me what's hidden here"
         // opt-in, separate from the dimmer "manual expand reveals
         // filter-passing children" rule below.
-        Zotero.debug("[Weavero][keep-pass] === USER-REVEALED FORCE-KEEP ===");
+        dbg("[Weavero][keep-pass] === USER-REVEALED FORCE-KEEP ===");
         if (this._userRevealedAllIDs && this._userRevealedAllIDs.size) {
             for (let j = 0; j < total; j++) {
                 let row;
@@ -10104,7 +10040,7 @@ class _FilterMixin {
                 if (!row || !row.ref) continue;
                 if (!this._userRevealedAllIDs.has(row.ref.id)) continue;
                 const lvl = row.level || 0;
-                Zotero.debug("[Weavero][keep-pass] revealed root id="
+                dbg("[Weavero][keep-pass] revealed root id="
                     + row.ref.id + " lvl=" + lvl);
                 for (let k = j + 1; k < total; k++) {
                     let kr;
@@ -10132,7 +10068,7 @@ class _FilterMixin {
         //     targeted by File Type but value mismatches). These
         //     fail `_rowPassesFilters` and stay hidden even when
         //     the parent is manually expanded.
-        Zotero.debug("[Weavero][keep-pass] === USER-OPENED FORCE-KEEP === opened="
+        dbg("[Weavero][keep-pass] === USER-OPENED FORCE-KEEP === opened="
             + JSON.stringify(this._userOpenedIDs
                 ? [...this._userOpenedIDs] : [])
             + " anyGroupActive=" + anyGroupActive);
@@ -10377,7 +10313,7 @@ class _FilterMixin {
         // follows and re-installs a fresh translation.
         const keepRowsLen = rp._rows.length;
 
-        Zotero.debug("[Weavero][filter] kept " + keep.length
+        dbg("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
 
         // Patch the data layer on the rowProvider — the virtualized
@@ -10576,7 +10512,7 @@ class _FilterMixin {
                     for (const args of queued) {
                         try { rp.runListeners.apply(rp, args); }
                         catch (e) {
-                            Zotero.debug("[Weavero][filter] listener err: " + e);
+                            dbg("[Weavero][filter] listener err: " + e);
                         }
                     }
                 }
@@ -10602,7 +10538,7 @@ class _FilterMixin {
                     for (const args of queued) {
                         try { rp.runListeners.apply(rp, args); }
                         catch (e) {
-                            Zotero.debug("[Weavero][filter] listener err: " + e);
+                            dbg("[Weavero][filter] listener err: " + e);
                         }
                     }
                 }
@@ -10643,7 +10579,7 @@ class _FilterMixin {
                     for (const lArgs of queued) {
                         try { rp.runListeners.apply(rp, lArgs); }
                         catch (e) {
-                            Zotero.debug("[Weavero][filter] listener err: " + e);
+                            dbg("[Weavero][filter] listener err: " + e);
                         }
                     }
                 }
@@ -10732,7 +10668,7 @@ class _FilterMixin {
     _reapplyFilterSync() {
         try { this._applyItemsListFilterInner(); }
         catch (e) {
-            Zotero.debug("[Weavero][filter] sync reapply err: " + e);
+            dbg("[Weavero][filter] sync reapply err: " + e);
         }
     }
 
@@ -10803,7 +10739,7 @@ class _FilterMixin {
             if (!isContainerAt(i, row) || !isOpenAt(i, row)) continue;
             try { toggle(i, true); }
             catch (e) {
-                Zotero.debug("[Weavero][filter] collapse-on-clear err: " + e);
+                dbg("[Weavero][filter] collapse-on-clear err: " + e);
             }
         }
         // V9-COMPAT: Zotero 10 renamed `_refreshRowMap` → `refreshRowMap`.
@@ -10861,7 +10797,7 @@ class _FilterMixin {
                 }
             }
         } catch (e) {
-            Zotero.debug("[Weavero][filter] hasMatch err: " + e);
+            dbg("[Weavero][filter] hasMatch err: " + e);
         }
         return false;
     }

@@ -233,6 +233,13 @@ class _BookmarksMixin {
             if (rec.type === "position" || rec.type === "text" || rec.type === "folder") {
                 // Folders carry their own section via _section; default local.
                 if (rec.type === "folder") return rec._section === "global" ? "global" : "local";
+                // A location bookmark carrying a source ref to a DIFFERENT
+                // attachment (a text selection dragged from another document)
+                // is elsewhere, not in this document.
+                if (rec.srcItemKey
+                    && (rec.srcLibraryID !== attLibraryID || rec.srcItemKey !== attItemKey)) {
+                    return "global";
+                }
                 return "local";
             }
             if (rec.type === "item") {
@@ -508,9 +515,16 @@ class _BookmarksMixin {
         if (src.entry.type === "folder" && targetId && this._bmIsDescendant(targetId, src.entry)) return;
         const arr = doc[srcSection];
         const moved = src.parentArr.splice(src.index, 1)[0];
-        if (mode === "into" && targetId) {
+        if ((mode === "into" || mode === "intotop") && targetId) {
             const t = this._bmLocate(targetId, arr);
-            if (t && t.entry.type === "folder") { t.entry.children = t.entry.children || []; t.entry.children.push(moved); t.entry.expanded = true; }
+            if (t && t.entry.type === "folder") {
+                t.entry.children = t.entry.children || [];
+                // "intotop" inserts as the FIRST child (the slot just below an
+                // expanded folder's header); "into" appends to the end.
+                if (mode === "intotop") t.entry.children.unshift(moved);
+                else t.entry.children.push(moved);
+                t.entry.expanded = true;
+            }
             else arr.push(moved);
         } else if (targetId) {
             const t = this._bmLocate(targetId, arr);
@@ -1073,9 +1087,33 @@ class _BookmarksMixin {
                 }
                 return;
             }
-            let item: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+            // A cross-document location bookmark (text selection or pinned
+            // position) has no annotation item to reveal — show its source
+            // attachment FILE instead (the "parent" of the location).
+            if ((bm.type === "text" || bm.type === "position") && bm.srcItemKey) {
+                const _aid = Zotero.Items.getIDFromLibraryAndKey(bm.srcLibraryID, bm.srcItemKey);
+                if (!_aid) return;
+                let att: any = null;
+                try { att = await Zotero.Items.getAsync(_aid); } catch (_) { return; }
+                if (!att) return;
+                await zp.selectItem(att.id);
+                return;
+            }
+            // After a restart a cross-doc item may not be loaded — and
+            // getByLibraryAndKey THROWS for it. Resolve the id via the
+            // pure key→id lookup, then load it.
+            const _id = Zotero.Items.getIDFromLibraryAndKey(bm.libraryID, bm.itemKey);
+            if (!_id) return;
+            let item: any = null;
+            try { item = await Zotero.Items.getAsync(_id); } catch (_) { return; }
             if (!item) return;
-            while (item.parentItem) item = item.parentItem;
+            // For an annotation, reveal the annotation ITSELF in the items
+            // tree (Zotero expands its attachment + parent and selects it);
+            // for everything else walk up to the top-level so the regular
+            // item — not a child attachment/note — is what gets shown.
+            if (!(item.isAnnotation && item.isAnnotation())) {
+                while (item.parentItem) item = item.parentItem;
+            }
             await zp.selectItem(item.id);
         } catch (e) {
             Zotero.debug("[Weavero] _bmShowInLibrary err: " + e);
@@ -1088,8 +1126,28 @@ class _BookmarksMixin {
         try {
             if (!bm || bm.type === "collection" || bm.type === "folder"
                 || bm.type === "library" || bm.type === "treerow") return null;
-            const item: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+            // Cross-document location bookmark (text selection or pinned
+            // position dragged from another reader): open its SOURCE attachment
+            // at the stored position.
+            if ((bm.type === "text" || bm.type === "position") && bm.srcItemKey) {
+                const sid = Zotero.Items.getIDFromLibraryAndKey(bm.srcLibraryID, bm.srcItemKey);
+                if (!sid) return null;
+                let srcAtt: any = null;
+                try { srcAtt = await Zotero.Items.getAsync(sid); } catch (_) { return null; }
+                if (!srcAtt || !(srcAtt.isAttachment && srcAtt.isAttachment())) return null;
+                let tl: any = null;
+                if (srcAtt.isPDFAttachment && srcAtt.isPDFAttachment()) tl = "PDF";
+                else if (srcAtt.isEPUBAttachment && srcAtt.isEPUBAttachment()) tl = "EPUB";
+                else if (srcAtt.isSnapshotAttachment && srcAtt.isSnapshotAttachment()) tl = "Snapshot";
+                else return null;
+                return { attachment: srcAtt, location: bm.position ? { position: bm.position } : null, typeLabel: tl };
+            }
+            const iid = Zotero.Items.getIDFromLibraryAndKey(bm.libraryID, bm.itemKey);
+            if (!iid) return null;
+            let item: any = null;
+            try { item = await Zotero.Items.getAsync(iid); } catch (_) { return null; }
             if (!item) return null;
+            try { if (item.loadAllData) await item.loadAllData(); } catch (_) {}
             let attachment: any = null;
             let location: any = null;
             if (typeof item.isAnnotation === "function" && item.isAnnotation()) {

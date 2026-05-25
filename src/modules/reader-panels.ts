@@ -207,7 +207,7 @@ const RP_BM_CSS = [
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     ".wv-bm-reader-add svg{width:15px;height:15px;fill:currentColor;}",
     ".wv-bm-reader-list{flex:1 1 auto;overflow:auto;min-height:0;padding:4px;}",
-    ".wv-bm-reader-row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
+    ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
     // The reader's own CSS sets user-select:auto/text on text-bearing children
     // (the 📌 emoji, the label), so a press-drag on a row starts a text
     // selection despite the row's none. Force none on every descendant with
@@ -235,11 +235,15 @@ const RP_BM_CSS = [
     ".wv-bm-reader-newfolder svg{width:13px;height:13px;}",
     "." + RP_BM_TAB_CLASS + ".wv-bm-dropok{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;}",
     ".wv-bm-reader-row.wv-bm-dragging{opacity:.4;}",
-    ".wv-bm-reader-row.wv-bm-drop-before{box-shadow:inset 0 2px 0 0 var(--color-accent,#5e6ad2);}",
-    // Outset (below the row) so "after A" lands at the SAME pixel as
-    // "before B" of the next row — the gap shows one stationary line instead
-    // of jumping across the boundary as the cursor crosses it.
-    ".wv-bm-reader-row.wv-bm-drop-after{box-shadow:0 2px 0 0 var(--color-accent,#5e6ad2);}",
+    // Before/after indicators are INDENTED lines (a pseudo-element from
+    // `--wv-drop-indent` to the right edge), so the line's start — and thus its
+    // length — reflects the LEVEL the item will land at (top level = longest;
+    // inside a folder/sub-folder = progressively shorter). `--wv-drop-indent`
+    // is set per-drag from the resolved target depth.
+    ".wv-bm-reader-row.wv-bm-drop-before::after{content:'';position:absolute;left:var(--wv-drop-indent,8px);right:6px;top:-1px;height:2px;background:var(--color-accent,#5e6ad2);pointer-events:none;border-radius:1px;}",
+    // Below the row so "after A" lands at the SAME pixel as "before B" of the
+    // next row — one stationary line instead of jumping across the boundary.
+    ".wv-bm-reader-row.wv-bm-drop-after::after{content:'';position:absolute;left:var(--wv-drop-indent,8px);right:6px;bottom:-1px;height:2px;background:var(--color-accent,#5e6ad2);pointer-events:none;border-radius:1px;}",
     // Group drop feedback: the local section shows NO box (the row-level
     // target line is the only indicator); the global section dims to reject.
     ".wv-bm-reader-group{border-radius:6px;}",
@@ -1296,6 +1300,26 @@ class _ReaderPanelsMixin {
             const content = idoc.getElementById("sidebarContent");
             if (!tablist || !content) return;
 
+            // Record the SOURCE document of any drag that starts in this
+            // reader (center pane or sidebar share this iframe document).
+            // Stored on a plugin-global so a drop in ANOTHER reader window
+            // can tell whether the drag came from the same document — which
+            // drives the per-section "no drop" cursor (a same-doc item may
+            // only land in "In this document"; a cross-doc item only in
+            // "Elsewhere"). Idempotent per idoc; cleared on dragend.
+            if (!(idoc as any)._wvDragSrcHooked) {
+                (idoc as any)._wvDragSrcHooked = true;
+                idoc.addEventListener("dragstart", () => {
+                    try {
+                        const a = this._wvReaderAtt(reader);
+                        this._wvDragSourceAttId = (a && a.att) ? a.att.id : null;
+                    } catch (_) { this._wvDragSourceAttId = null; }
+                }, true);
+                idoc.addEventListener("dragend", () => {
+                    this._wvDragSourceAttId = null;
+                }, true);
+            }
+
             // Tab button.
             let tab = idoc.querySelector("." + RP_BM_TAB_CLASS);
             if (!tab) {
@@ -1322,6 +1346,7 @@ class _ReaderPanelsMixin {
                     e.preventDefault();
                     const payload = this._wvReaderReadDropPayload(e);
                     this._wvReaderSetBmActive(reader, idoc, true);
+                    if (this._wvBmRowDrag) { this._wvReaderDropBmRow(reader, idoc, null); return; }
                     this._wvReaderDropPayload(reader, idoc, payload);
                 });
                 const outlineTab = idoc.getElementById("viewOutline");
@@ -1373,6 +1398,7 @@ class _ReaderPanelsMixin {
                 }, true);
                 idoc.addEventListener("dragend", () => {
                     this._wvDraggedAnnKey = null;
+                    this._wvBmRowDrag = null;
                     this._wvCancelBmSpring();
                     try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
                 }, true);
@@ -1404,6 +1430,12 @@ class _ReaderPanelsMixin {
                 // pane) anywhere on the bookmarks pane to bookmark it.
                 view.addEventListener("dragover", (e: any) => {
                     if (this._wvReaderDragHasBookmarkable(e.dataTransfer)) e.preventDefault();
+                    // Over the pane but off any row → outside every folder; collapse springs.
+                    try { if (!(e.target && e.target.closest && e.target.closest(".wv-bm-reader-row"))) this._wvSpringRecollapseLeft(reader, idoc, this._wvReaderAtt(reader), null); } catch (_) {}
+                });
+                view.addEventListener("dragleave", (e: any) => {
+                    // Cursor left the bookmarks pane entirely → collapse all spring folders.
+                    try { if (!view.contains(e.relatedTarget)) { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } } catch (_) {}
                 });
                 view.addEventListener("drop", (e: any) => {
                     if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
@@ -1412,6 +1444,7 @@ class _ReaderPanelsMixin {
                     // Reached here = dropped on empty pane area (rows claim their
                     // own drops), so not inside any spring folder → re-collapse all.
                     try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
+                    if (this._wvBmRowDrag) { this._wvReaderDropBmRow(reader, idoc, null); return; }
                     this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e));
                 });
                 content.appendChild(view);
@@ -1504,6 +1537,47 @@ class _ReaderPanelsMixin {
             const NS = NS_HTML_RP;
             while (list.firstChild) list.firstChild.remove();
             const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+            // Pre-load data for item bookmarks whose item isn't loaded. After
+            // a restart, cross-document items aren't loaded at all — and even
+            // `Zotero.Items.get`/`getByLibraryAndKey` THROW for them, so the
+            // icon builder's `annotationType` / `getImageSrc` fail and it
+            // falls back to the generic ribbon glyph. Resolve ids via
+            // `getIDFromLibraryAndKey` (a pure key→id lookup that never
+            // touches unloaded data), load any missing items (primary via
+            // `getAsync`, then `loadAllData` for annotation type/colour),
+            // and re-render once so the real icons paint.
+            try {
+                const ids: number[] = [];
+                const collectIds = (nodes: any[]) => {
+                    for (const n of (nodes || [])) {
+                        if (!n) continue;
+                        if (n.type === "folder") { collectIds(n.children); continue; }
+                        if (n.type !== "item") continue;
+                        let id = 0;
+                        try { id = Zotero.Items.getIDFromLibraryAndKey(n.libraryID, n.itemKey) || 0; } catch (_) {}
+                        if (id) ids.push(id);
+                    }
+                };
+                collectIds(doc.local); collectIds(doc.global);
+                let anyUnloaded = false;
+                for (const id of ids) {
+                    try {
+                        const it: any = Zotero.Items.get(id);
+                        if (!it) { anyUnloaded = true; continue; }
+                        if (it.isAnnotation && it.isAnnotation()) void it.annotationType;
+                    } catch (_) { anyUnloaded = true; }
+                }
+                if (anyUnloaded && !this._wvBmIconLoadInFlight) {
+                    this._wvBmIconLoadInFlight = true;
+                    Promise.all(ids.map(async (id) => {
+                        try { await Zotero.Items.getAsync(id); } catch (_) {}
+                        try { const it: any = Zotero.Items.get(id); if (it && it.loadAllData) await it.loadAllData(); } catch (_) {}
+                    })).then(() => {
+                        this._wvBmIconLoadInFlight = false;
+                        try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+                    }).catch(() => { this._wvBmIconLoadInFlight = false; });
+                }
+            } catch (_) {}
             if (!doc.local.length && !doc.global.length) {
                 const empty = idoc.createElementNS(NS, "div");
                 empty.className = "wv-bm-reader-empty";
@@ -1569,6 +1643,7 @@ class _ReaderPanelsMixin {
         const row = idoc.createElementNS(NS, "div");
         row.className = "wv-bm-reader-row wv-bm-reader-folder";
         row.style.paddingLeft = (8 + depth * 14) + "px";
+        row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(depth) + "px");
         const chev = idoc.createElementNS(NS, "span");
         chev.className = "wv-bm-reader-chev";
         chev.innerHTML = folder.expanded ? RP_CHEV_DOWN : RP_CHEV_RIGHT;
@@ -1579,29 +1654,9 @@ class _ReaderPanelsMixin {
         label.className = "wv-bm-reader-label";
         label.textContent = folder.name || "Folder";
         label.setAttribute("title", folder.name || "");
-        const actions = idoc.createElementNS(NS, "span");
-        actions.className = "wv-bm-reader-actions";
-        const renameBtn = idoc.createElementNS(NS, "button");
-        renameBtn.className = "wv-bm-reader-actbtn"; renameBtn.textContent = "✎"; renameBtn.setAttribute("title", "Rename");
-        renameBtn.addEventListener("click", (e: any) => {
-            e.stopPropagation();
-            const name = this._bmPromptName(Zotero.getMainWindow(), "Rename Folder", folder.name || "");
-            if (name) this._bmReaderRename(att.libraryID, att.itemKey, folder.id, name).then(() => this._wvReaderRenderBmList(reader, idoc));
-        });
-        const delBtn = idoc.createElementNS(NS, "button");
-        delBtn.className = "wv-bm-reader-actbtn"; delBtn.textContent = "✕"; delBtn.setAttribute("title", "Delete folder");
-        delBtn.addEventListener("click", (e: any) => {
-            e.stopPropagation();
-            const n = (folder.children && folder.children.length) || 0;
-            if (n > 0) {
-                const ok = Services.prompt.confirm(Zotero.getMainWindow(), "Delete Folder",
-                    'Delete the folder "' + (folder.name || "") + '" and its ' + n + " item" + (n === 1 ? "" : "s") + "?");
-                if (!ok) return;
-            }
-            this._bmReaderRemove(att.libraryID, att.itemKey, folder.id).then(() => this._wvReaderRenderBmList(reader, idoc));
-        });
-        actions.appendChild(renameBtn); actions.appendChild(delBtn);
-        row.appendChild(chev); row.appendChild(ic); row.appendChild(label); row.appendChild(actions);
+        // No inline rename/delete buttons on hover (user preference) —
+        // both actions live in the folder's right-click context menu.
+        row.appendChild(chev); row.appendChild(ic); row.appendChild(label);
         row.addEventListener("click", (e: any) => {
             e.stopPropagation();
             this._bmReaderToggleFolder(att.libraryID, att.itemKey, folder.id).then(() => this._wvReaderRenderBmList(reader, idoc));
@@ -1610,45 +1665,63 @@ class _ReaderPanelsMixin {
         return row;
     }
 
-    /** Drop wiring for one bookmark group. The local ("In this document")
-     *  group accepts annotation/selection drops; the global ("Elsewhere")
-     *  group refuses them — annotations and selections always belong to the
-     *  open document, so they'd be confusing filed under Elsewhere. Internal
-     *  row-reorder drags (a distinct MIME) pass through to the row handlers in
-     *  both groups. */
+    /** Drop wiring for one bookmark group, matched to where the item will
+     *  actually file: an annotation/selection from the OPEN document belongs
+     *  in "In this document" (local); one dragged from ANOTHER document
+     *  belongs in "Elsewhere in Zotero" (global). The drag data can't be
+     *  read during dragover, but `_wvDragSourceAttId` (set at dragstart,
+     *  shared across windows) tells us the source document, so each group
+     *  shows a "no drop" cursor — and refuses the drop — for items that
+     *  belong in the OTHER section. When the source is unknown (e.g. a drag
+     *  from the library), both groups accept and classification decides.
+     *  Internal row-reorder drags (a distinct MIME) bypass this entirely. */
     _wvReaderWireGroupDrop(reader: any, idoc: any, gc: any, isLocal: boolean) {
-        if (isLocal) {
-            gc.addEventListener("dragover", (e: any) => {
-                // Accept the drop (so empty-area drops append) but draw NO
-                // section box — the row-level target line is the only indicator.
-                if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
-                e.preventDefault();
-            });
-            gc.addEventListener("drop", (e: any) => {
-                if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
-                if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
-                e.preventDefault();
-                this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e));
-            });
-        } else {
-            gc.addEventListener("dragover", (e: any) => {
-                if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
-                // Refuse here AND stop the pane-level handler from accepting,
-                // so the cursor reads "no drop" over Elsewhere.
+        // True iff THIS group must refuse the in-flight drag's source.
+        const forbids = () => {
+            // A bookmark-row drag has its own target-section rule (a same-doc
+            // reorder stays in its own section; a cross-doc copy goes to global).
+            const rowSec = this._wvBmRowDropTargetSection(reader);
+            if (rowSec != null) return rowSec !== (isLocal ? "local" : "global");
+            const src = this._wvDragSourceAttId;
+            if (src == null) return false;          // unknown source → allow
+            const a = this._wvReaderAtt(reader);
+            if (!a || !a.att) return false;
+            const sameDoc = src === a.att.id;
+            // local group refuses cross-doc items; global refuses same-doc.
+            return isLocal ? !sameDoc : sameDoc;
+        };
+        gc.addEventListener("dragover", (e: any) => {
+            if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+            // Cursor over the section but NOT over a row (empty area / header) =
+            // it has left every folder → collapse any spring-opened folders.
+            // (Row hovers are handled by the row's own _wvSpringRecollapseLeft.)
+            try { if (!(e.target && e.target.closest && e.target.closest(".wv-bm-reader-row"))) this._wvSpringRecollapseLeft(reader, idoc, this._wvReaderAtt(reader), null); } catch (_) {}
+            if (forbids()) {
+                // Claim the event (stop the pane-level accept) and show the
+                // "no drop" cursor over this section.
                 e.stopPropagation();
                 try { e.dataTransfer.dropEffect = "none"; } catch (_) {}
                 gc.classList.add("wv-bm-grp-nodrop");
-            });
-            gc.addEventListener("dragleave", (e: any) => {
-                if (!gc.contains(e.relatedTarget)) gc.classList.remove("wv-bm-grp-nodrop");
-            });
-            gc.addEventListener("drop", (e: any) => {
-                gc.classList.remove("wv-bm-grp-nodrop");
-                if (this._wvReaderDragHasBookmarkable(e.dataTransfer)) {
-                    e.stopPropagation(); e.preventDefault(); e._wvBmDropHandled = true;
-                }
-            });
-        }
+                return;
+            }
+            // Accept (so empty-area drops append) but draw NO section box —
+            // the row-level target line is the only indicator.
+            e.preventDefault();
+        });
+        gc.addEventListener("dragleave", (e: any) => {
+            if (!gc.contains(e.relatedTarget)) gc.classList.remove("wv-bm-grp-nodrop");
+        });
+        gc.addEventListener("drop", (e: any) => {
+            gc.classList.remove("wv-bm-grp-nodrop");
+            if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+            if (forbids()) { e.stopPropagation(); return; }   // refuse here
+            if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
+            e.preventDefault();
+            // A bookmark-row drop landing on the section (not a specific row) →
+            // reorder/copy to the section bottom.
+            if (this._wvBmRowDrag) { this._wvReaderDropBmRow(reader, idoc, null); return; }
+            this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e));
+        });
     }
 
     /** True for bookmarks that point INTO the currently-open document
@@ -1656,7 +1729,16 @@ class _ReaderPanelsMixin {
     _wvReaderBookmarkIsLocal(reader: any, bm: any) {
         try {
             if (!bm) return false;
-            if (bm.type === "position" || bm.type === "text") return true;
+            if (bm.type === "position" || bm.type === "text") {
+                // A location bookmark with a source ref to a DIFFERENT
+                // attachment (text selection dragged from another doc)
+                // points elsewhere, not into the open document.
+                if (bm.srcItemKey) {
+                    const a = this._wvReaderAtt(reader);
+                    if (a && (bm.srcLibraryID !== a.libraryID || bm.srcItemKey !== a.itemKey)) return false;
+                }
+                return true;
+            }
             if (bm.type === "item") {
                 const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
                 if (!it) return false;
@@ -1680,7 +1762,8 @@ class _ReaderPanelsMixin {
         if (!bm) return;
         const ctrl = !!(e && (e.ctrlKey || e.metaKey));
         const shift = !!(e && e.shiftKey);
-        const isLocalLoc = bm.type === "position" || bm.type === "text";
+        const isLocalLoc = (bm.type === "position" || bm.type === "text")
+            && this._wvReaderBookmarkIsLocal(reader, bm);
         const isLocalAnno = bm.type === "item" && this._wvReaderBookmarkIsLocal(reader, bm);
         if (isLocalLoc || isLocalAnno) {
             const att = this._wvReaderAtt(reader);
@@ -1752,6 +1835,10 @@ class _ReaderPanelsMixin {
         const row = idoc.createElementNS(NS, "div");
         row.className = "wv-bm-reader-row";
         row.style.paddingLeft = (8 + (depth || 0) * 14) + "px";
+        // Default the drop-line indent to THIS row's own depth, so the bar lands
+        // "indented inside" even if a (hot-reload-stale) dragover handler doesn't
+        // override it; dragover only adjusts it for pop-out / first-child cases.
+        row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(depth || 0) + "px");
         const chevSpacer = idoc.createElementNS(NS, "span");
         chevSpacer.className = "wv-bm-reader-chev wv-bm-reader-chev-spacer";
         chevSpacer.innerHTML = RP_CHEV_RIGHT;
@@ -1768,23 +1855,9 @@ class _ReaderPanelsMixin {
         // annotation so they show "p. N" like position/text bookmarks.
         const pageLbl = this._bmReaderPageLabel(bm);
         page.textContent = pageLbl ? ("p. " + pageLbl) : "";
-        const actions = idoc.createElementNS(NS, "span");
-        actions.className = "wv-bm-reader-actions";
-        const renameBtn = idoc.createElementNS(NS, "button");
-        renameBtn.className = "wv-bm-reader-actbtn"; renameBtn.textContent = "✎"; renameBtn.setAttribute("title", "Rename");
-        renameBtn.addEventListener("click", (e: any) => {
-            e.stopPropagation();
-            const name = this._bmPromptName(Zotero.getMainWindow(), "Rename Bookmark", bm.label || "");
-            if (name) this._bmReaderRename(att.libraryID, att.itemKey, bm.id, name).then(() => this._wvReaderRenderBmList(reader, idoc));
-        });
-        const delBtn = idoc.createElementNS(NS, "button");
-        delBtn.className = "wv-bm-reader-actbtn"; delBtn.textContent = "✕"; delBtn.setAttribute("title", "Delete");
-        delBtn.addEventListener("click", (e: any) => {
-            e.stopPropagation();
-            this._bmReaderRemove(att.libraryID, att.itemKey, bm.id).then(() => this._wvReaderRenderBmList(reader, idoc));
-        });
-        actions.appendChild(renameBtn); actions.appendChild(delBtn);
-        row.appendChild(ic); row.appendChild(label); row.appendChild(page); row.appendChild(actions);
+        // No inline rename/delete buttons on hover (user preference) —
+        // both actions live in the right-click context menu instead.
+        row.appendChild(ic); row.appendChild(label); row.appendChild(page);
         row.addEventListener("click", (e: any) => this._wvNavigateReaderBookmark(reader, bm, e));
         this._wvReaderWireRowDrag(reader, idoc, att, row, bm,
             section || (this._wvReaderBookmarkIsLocal(reader, bm) ? "local" : "global"), false);
@@ -1961,14 +2034,15 @@ class _ReaderPanelsMixin {
         try { const c = idoc.querySelector(".wv-bm-hovercard"); if (c) c.remove(); } catch (_) {}
     }
 
-    /** Reorder/nest wiring for bookmark + folder rows. POINTER-based (HTML5
-     *  `draggable` doesn't initiate a drag in the reader sidebar — verified: no
-     *  dragstart ever fires). A small movement threshold separates a click
-     *  (navigate / toggle folder) from a drag. Drop zones: before/after on
-     *  every row plus a middle "into" zone on folders; moves stay within the
-     *  row's own section (target rows in another section are ignored). Rows
-     *  carry `data-wv-bm-id`/`data-wv-bm-section` so the row under the cursor is
-     *  resolvable via elementFromPoint. */
+    /** Drag/drop wiring for bookmark + folder rows. The row is a NATIVE HTML5
+     *  drag source (the earlier "draggable never fires in the reader sidebar"
+     *  belief was wrong — Zotero's own annotation rows drag natively; ours were
+     *  blocked by a mousedown-preventDefault, now removed). Native drag is what
+     *  lets a bookmark be dragged BETWEEN reader windows. Drop zones: before/
+     *  after on every row plus a middle "into" zone on folders. A same-document
+     *  drag reorders within the dragged node's section; a different-document drag
+     *  copies into "Elsewhere in Zotero". Rows carry `data-wv-bm-id`/
+     *  `data-wv-bm-section` (also read by the context menu). */
     _wvReaderWireRowDrag(reader: any, idoc: any, att: any, row: any, node: any, section: "local" | "global", _isFolder: boolean) {
         row.setAttribute("data-wv-bm-id", node.id);
         row.setAttribute("data-wv-bm-section", section);
@@ -1979,68 +2053,41 @@ class _ReaderPanelsMixin {
                 for (let i = 0; i < els.length; i++) els[i].classList.remove("wv-bm-drop-before", "wv-bm-drop-after", "wv-bm-drop-into");
             } catch (_) {}
         };
-        const resolveTarget = (x: number, y: number) => {
+        // NATIVE HTML5 drag source. Native drag is the ONLY drag that crosses
+        // reader-window boundaries (pointer capture is window-local), so it's
+        // what lets a bookmark be dragged from a separate window's list into
+        // another reader's. Marking the row `draggable` also suppresses text
+        // selection on drag (same mechanism Zotero's own annotation rows use),
+        // which is why the old mousedown-preventDefault guard + pointer reorder
+        // are gone. The drag's source is carried on the shared plugin singleton
+        // (`_wvBmRowDrag`) because dataTransfer data is unreadable during
+        // dragover; that singleton is the same object in every window.
+        row.setAttribute("draggable", "true");
+        // The reader's focus-manager has a window-level pointerdown handler that
+        // calls preventDefault() for everything outside its whitelist
+        // (`.annotation`, `.thumbnails-view`, …) — and preventDefault on
+        // pointerdown blocks native drag from ever starting (this is what the
+        // old "draggable never fires in the sidebar" note really observed). Our
+        // rows aren't whitelisted, so we stop the event before it bubbles to
+        // that window handler; stopPropagation ONLY (we keep the default, which
+        // is what lets the drag — and the navigating click — happen). This is
+        // the same net effect the whitelisted annotation rows get.
+        row.addEventListener("pointerdown", (e: any) => { try { e.stopPropagation(); } catch (_) {} });
+        row.addEventListener("dragstart", (e: any) => {
+            this._wvBmRowDrag = { libraryID: att.libraryID, itemKey: att.itemKey, id: node.id, section, type: node.type };
             try {
-                const el = idoc.elementFromPoint(x, y);
-                const tr = el && el.closest && el.closest(".wv-bm-reader-row");
-                if (!tr || tr === row) return null;
-                if (tr.getAttribute("data-wv-bm-section") !== section) return null;   // same section only
-                const r = tr.getBoundingClientRect();
-                const rel = y - r.top;
-                const folder = tr.classList.contains("wv-bm-reader-folder");
-                let mode = folder
-                    ? (rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into")
-                    : (rel > r.height / 2 ? "after" : "before");
-                return { el: tr, id: tr.getAttribute("data-wv-bm-id"), mode };
-            } catch (_) { return null; }
-        };
-        // Root-level fix for "dragging a pin selects text / drags the page":
-        // cancel the mousedown default. A mousedown whose default is prevented
-        // never sets a selection anchor, so NO drag can select text — on the 📌
-        // emoji, the label, or any element/document the cursor later crosses —
-        // and Gecko won't start a native element drag either. The reorder below
-        // uses pointer events (unaffected), and the navigating click still fires
-        // (preventDefault on mousedown does not cancel click). This supersedes
-        // the old user-select / selectstart / dragstart guards.
-        row.addEventListener("mousedown", (e: any) => { if (e.button === 0) { try { e.preventDefault(); } catch (_) {} } });
-        row.addEventListener("pointerdown", (e: any) => {
-            if (e.button !== 0) return;
-            const sx = e.clientX, sy = e.clientY;
-            let dragging = false, cur: any = null;
-            const onMove = (ev: any) => {
-                if (!dragging) {
-                    if (Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 5) return;
-                    dragging = true;
-                    row.classList.add("wv-bm-dragging");
-                    try { if (this._wvBmHoverTimer) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
-                    this._wvReaderHideBmHoverCard(idoc);
-                    try { row.setPointerCapture(ev.pointerId); } catch (_) {}
-                }
-                ev.preventDefault();
-                clearIndicators();
-                cur = resolveTarget(ev.clientX, ev.clientY);
-                if (cur) cur.el.classList.add(cur.mode === "before" ? "wv-bm-drop-before" : cur.mode === "after" ? "wv-bm-drop-after" : "wv-bm-drop-into");
-            };
-            const finish = (ev: any) => {
-                try { win.removeEventListener("pointermove", onMove, true); } catch (_) {}
-                try { win.removeEventListener("pointerup", finish, true); } catch (_) {}
-                try { win.removeEventListener("pointercancel", finish, true); } catch (_) {}
-                clearIndicators();
-                row.classList.remove("wv-bm-dragging");
-                if (!dragging) return;   // it was a click → row's click handler navigates/toggles
-                ev.preventDefault(); ev.stopPropagation();
-                // Swallow the click that fires after the drag (once).
-                const swallow = (ce: any) => { ce.preventDefault(); ce.stopPropagation(); try { idoc.removeEventListener("click", swallow, true); } catch (_) {} };
-                try { idoc.addEventListener("click", swallow, true); win.setTimeout(() => { try { idoc.removeEventListener("click", swallow, true); } catch (_) {} }, 400); } catch (_) {}
-                const t = cur || resolveTarget(ev.clientX, ev.clientY);
-                if (t && t.id && t.id !== node.id) {
-                    this._bmReaderMove(att.libraryID, att.itemKey, node.id, t.id, t.mode)
-                        .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
-                }
-            };
-            win.addEventListener("pointermove", onMove, true);
-            win.addEventListener("pointerup", finish, true);
-            win.addEventListener("pointercancel", finish, true);
+                e.dataTransfer.effectAllowed = "copyMove";
+                e.dataTransfer.setData("application/x-weavero-bm-row",
+                    JSON.stringify({ libraryID: att.libraryID, itemKey: att.itemKey, id: node.id }));
+            } catch (_) {}
+            try { if (this._wvBmHoverTimer) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+            this._wvReaderHideBmHoverCard(idoc);
+            row.classList.add("wv-bm-dragging");
+        });
+        row.addEventListener("dragend", () => {
+            this._wvBmRowDrag = null;
+            row.classList.remove("wv-bm-dragging");
+            clearIndicators();
         });
 
         // HTML5 drop target: an annotation (from the sidebar) or text selection
@@ -2051,9 +2098,17 @@ class _ReaderPanelsMixin {
         const dropModeAt = (clientY: number) => {
             const r = row.getBoundingClientRect();
             const rel = clientY - r.top;
-            return _isFolder
-                ? (rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into")
-                : (rel > r.height / 2 ? "after" : "before");
+            if (_isFolder) {
+                // An EXPANDED folder's header has the first-child slot right
+                // below it, so its lower half means "insert as first child"
+                // (intotop) — matching where the indicator line shows. (A
+                // top-level sibling after an expanded folder would otherwise
+                // render below ALL its children, contradicting the line.) A
+                // COLLAPSED folder keeps before / into(append) / after.
+                if (node && node.expanded) return rel < r.height * 0.5 ? "before" : "intotop";
+                return rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into";
+            }
+            return rel > r.height / 2 ? "after" : "before";
         };
         // Positioned drop only applies in the LOCAL ("In this document")
         // section — a dragged reader annotation/selection is a local target, and
@@ -2061,12 +2116,40 @@ class _ReaderPanelsMixin {
         // indicator and don't claim the drop; it falls through to the pane's
         // append handler (lands at the bottom of the local section).
         row.addEventListener("dragover", (e: any) => {
-            if (section === "global") return;
-            if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
-            e.preventDefault();
+            const rowSec = this._wvBmRowDropTargetSection(reader);
+            if (rowSec != null) {
+                // A bookmark-row drag (reorder within this doc, or a cross-doc
+                // copy headed for "Elsewhere"): only rows in the allowed section
+                // are targets, and never the dragged row itself.
+                if (rowSec !== section) return;
+                const dr = this._wvBmRowDrag;
+                if (dr && dr.id === node.id) return;
+                e.preventDefault();
+                try { e.dataTransfer.dropEffect = (dr && dr.libraryID === att.libraryID && dr.itemKey === att.itemKey) ? "move" : "copy"; } catch (_) {}
+            } else {
+                if (section === "global") return;
+                if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+                e.preventDefault();
+            }
             clearIndicators();
             const m = dropModeAt(e.clientY);
-            row.classList.add(m === "before" ? "wv-bm-drop-before" : m === "after" ? "wv-bm-drop-after" : "wv-bm-drop-into");
+            // Resolve to a concrete target+depth: "after" can pop out to a
+            // shallower level by cursor X (drop OUT of a folder); the line is
+            // indented to the landing depth so its length shows the level.
+            const res = this._wvBmDropResolve(att, section, node.id, m, e.clientX, row.getBoundingClientRect());
+            if (res.mode === "into") {
+                // Dropping ONTO a (collapsed) folder to append inside it: the
+                // contents aren't visible, so box the folder rather than draw a
+                // bar at an unknown spot.
+                row.classList.add("wv-bm-drop-into");
+            } else {
+                // before / after / intotop → an indented bar at the LANDING
+                // depth (intotop = child level, drawn just below the folder
+                // header = the first-child slot), so its indent/length shows
+                // exactly where the item goes.
+                row.classList.add(res.mode === "before" ? "wv-bm-drop-before" : "wv-bm-drop-after");
+                row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(res.depth) + "px");
+            }
             // Spring-opened folders that no longer contain the cursor re-collapse
             // (deepest first), keeping any ancestor still under the cursor — so a
             // nested spring collapses its sub-folder AND its top folder on leave.
@@ -2074,25 +2157,26 @@ class _ReaderPanelsMixin {
             // Spring-load: pausing over a collapsed folder's "into" zone expands
             // it so you can drop inside. (Safe to re-render here — the HTML5 drag
             // is tied to the source, not a captured target element.)
-            if (_isFolder && node && node.type === "folder" && !node.expanded && m === "into") {
-                if (this._wvBmSpringFolderId !== node.id) {
-                    this._wvCancelBmSpring();
-                    this._wvBmSpringFolderId = node.id;
-                    this._wvBmSpringWin = win;
-                    this._wvBmSpringTimer = win.setTimeout(() => {
-                        this._wvBmSpringTimer = null; this._wvBmSpringFolderId = null; this._wvBmSpringWin = null;
-                        if (!this._wvBmSpringStack) this._wvBmSpringStack = [];
-                        if (this._wvBmSpringStack.indexOf(node.id) < 0) this._wvBmSpringStack.push(node.id);   // re-collapse if not dropped in
-                        this._bmReaderToggleFolder(att.libraryID, att.itemKey, node.id)
-                            .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
-                    }, 600);
-                }
-            } else {
-                this._wvCancelBmSpring();
-            }
+            this._wvMaybeSpringOpen(reader, idoc, att, win, node, _isFolder, m);
         });
         row.addEventListener("dragleave", () => { clearIndicators(); this._wvCancelBmSpring(); });
         row.addEventListener("drop", (e: any) => {
+            const rowSec = this._wvBmRowDropTargetSection(reader);
+            if (rowSec != null) {
+                if (rowSec !== section) return;
+                const dr = this._wvBmRowDrag;
+                if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
+                e.preventDefault(); e.stopPropagation();
+                clearIndicators();
+                this._wvCancelBmSpring();
+                const m = dropModeAt(e.clientY);
+                const res = this._wvBmDropResolve(att, section, node.id, m, e.clientX, row.getBoundingClientRect());
+                this._wvConsumeSpringStack(reader, idoc, att, node, m);
+                // No-op when dropped onto itself (before/after the same row).
+                if (dr && dr.id === res.targetId && (res.mode === "before" || res.mode === "after")) return;
+                this._wvReaderDropBmRow(reader, idoc, { id: res.targetId, mode: res.mode });
+                return;
+            }
             if (section === "global") return;
             if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
             if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
@@ -2100,20 +2184,116 @@ class _ReaderPanelsMixin {
             clearIndicators();
             this._wvCancelBmSpring();
             const m = dropModeAt(e.clientY);
-            // The drop is the terminal action, so it CONSUMES the spring stack:
-            // folders the drop landed inside (into the folder itself, or onto one
-            // of its descendants) stay open; the rest collapse. Clearing the stack
-            // here is essential — otherwise the dragend that fires next would run
-            // _wvRecollapseAllSprings and collapse the folder you just dropped into.
-            if (this._wvBmSpringStack && this._wvBmSpringStack.length) {
-                const insideOf = (sid: any) =>
-                    (sid === node.id) ? (m === "into") : this._wvNodeInsideFolder(att, sid, node.id);
-                const toClose = this._wvBmSpringStack.filter((sid: any) => !insideOf(sid));
-                this._wvBmSpringStack = [];
-                if (toClose.length) this._wvRecollapseSpringFolders(reader, idoc, att, toClose);
-            }
-            this._wvReaderDropPayload(reader, idoc, this._wvReaderReadDropPayload(e), { id: node.id, mode: m });
+            const res = this._wvBmDropResolve(att, section, node.id, m, e.clientX, row.getBoundingClientRect());
+            const payload = this._wvReaderReadDropPayload(e);
+            this._wvConsumeSpringStack(reader, idoc, att, node, m);
+            this._wvReaderDropPayload(reader, idoc, payload, { id: res.targetId, mode: res.mode });
         });
+    }
+
+    /** During a bookmark-row drag, the section THIS reader will accept the drop
+     *  into: a same-document drag reorders within the dragged node's own
+     *  section; a different-document drag always lands in "Elsewhere in Zotero"
+     *  (global). null when no row drag is in flight. Read from the shared
+     *  singleton, so it works across reader windows. */
+    _wvBmRowDropTargetSection(reader: any): "local" | "global" | null {
+        const src = this._wvBmRowDrag;
+        if (!src) return null;
+        const a = this._wvReaderAtt(reader);
+        if (!a) return null;
+        const sameDoc = src.libraryID === a.libraryID && src.itemKey === a.itemKey;
+        return sameDoc ? src.section : "global";
+    }
+
+    /** Spring-load: pausing over a collapsed folder's "into" zone expands it so
+     *  you can drop inside; the folder is pushed onto the spring stack so it
+     *  re-collapses if the drop doesn't land within it. (Shared by every drag
+     *  kind — annotation/text and bookmark-row.) */
+    _wvMaybeSpringOpen(reader: any, idoc: any, att: any, win: any, node: any, isFolder: boolean, m: string) {
+        if (isFolder && node && node.type === "folder" && !node.expanded && m === "into") {
+            if (this._wvBmSpringFolderId !== node.id) {
+                this._wvCancelBmSpring();
+                this._wvBmSpringFolderId = node.id;
+                this._wvBmSpringWin = win;
+                this._wvBmSpringTimer = win.setTimeout(() => {
+                    this._wvBmSpringTimer = null; this._wvBmSpringFolderId = null; this._wvBmSpringWin = null;
+                    if (!this._wvBmSpringStack) this._wvBmSpringStack = [];
+                    if (this._wvBmSpringStack.indexOf(node.id) < 0) this._wvBmSpringStack.push(node.id);   // re-collapse if not dropped in
+                    this._bmReaderToggleFolder(att.libraryID, att.itemKey, node.id)
+                        .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
+                }, 600);
+            }
+        } else {
+            this._wvCancelBmSpring();
+        }
+    }
+
+    /** The drop is the terminal action, so it CONSUMES the spring stack:
+     *  folders the drop landed inside (into the folder itself, or onto one of
+     *  its descendants) stay open; the rest collapse. Clearing the stack here is
+     *  essential — otherwise the dragend that fires next would run
+     *  _wvRecollapseAllSprings and collapse the folder you just dropped into. */
+    _wvConsumeSpringStack(reader: any, idoc: any, att: any, node: any, m: string) {
+        if (this._wvBmSpringStack && this._wvBmSpringStack.length) {
+            const insideOf = (sid: any) =>
+                (sid === node.id) ? (m === "into" || m === "intotop") : this._wvNodeInsideFolder(att, sid, node.id);
+            const toClose = this._wvBmSpringStack.filter((sid: any) => !insideOf(sid));
+            this._wvBmSpringStack = [];
+            if (toClose.length) this._wvRecollapseSpringFolders(reader, idoc, att, toClose);
+        }
+    }
+
+    /** Handle a dropped bookmark ROW (the native, cross-window-capable drag).
+     *  Same document → reorder via _bmReaderMove. Different document → copy the
+     *  bookmark into THIS document's "Elsewhere in Zotero" section (a local
+     *  position/text becomes a cross-doc reference; folders copy their whole
+     *  subtree), then place it at the drop point. `target` is {id, mode} or
+     *  null (section bottom). */
+    async _wvReaderDropBmRow(reader: any, idoc: any, target: any) {
+        try {
+            const src = this._wvBmRowDrag;
+            this._wvBmRowDrag = null;
+            if (!src) return;
+            const att = this._wvReaderAtt(reader); if (!att) return;
+            const sameDoc = src.libraryID === att.libraryID && src.itemKey === att.itemKey;
+            if (sameDoc) {
+                await this._bmReaderMove(att.libraryID, att.itemKey, src.id,
+                    (target && target.id) || null, (target && target.mode) || "after");
+                this._wvReaderRenderBmList(reader, idoc);
+                return;
+            }
+            const srcDoc = this._bmReaderDoc(src.libraryID, src.itemKey);
+            const loc = this._bmLocate(src.id, srcDoc.local) || this._bmLocate(src.id, srcDoc.global);
+            if (!loc || !loc.entry) return;
+            const clone = this._wvCloneBmForCrossDoc(loc.entry, { libraryID: src.libraryID, itemKey: src.itemKey });
+            const added = await this._bmReaderAdd(att.libraryID, att.itemKey, clone, { allowDuplicate: true });
+            if (added && added.id) {
+                await this._wvReaderPlaceDropped(att, [added.id], target);
+                this._wvReaderRenderBmList(reader, idoc);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderDropBmRow err: " + e); }
+    }
+
+    /** Deep-clone a bookmark node for copying into ANOTHER document's list as an
+     *  "Elsewhere in Zotero" reference. A local position/text bookmark (no
+     *  source ref) gains srcLibraryID/srcItemKey pointing back to the source
+     *  attachment so it still navigates there; folders are cloned with their
+     *  whole subtree and forced into the global section. All ids are regenerated
+     *  to stay unique in the destination store. */
+    _wvCloneBmForCrossDoc(node: any, srcAtt: any): any {
+        const clone = JSON.parse(JSON.stringify(node || {}));
+        const fix = (n: any) => {
+            n.id = "wv-" + Zotero.Utilities.randomString(8);
+            if (n.type === "folder") {
+                n._section = "global";
+                if (Array.isArray(n.children)) n.children.forEach(fix);
+            } else if ((n.type === "position" || n.type === "text") && !n.srcItemKey) {
+                n.srcLibraryID = srcAtt.libraryID;
+                n.srcItemKey = srcAtt.itemKey;
+            }
+        };
+        fix(clone);
+        return clone;
     }
 
     /** Cancel a PENDING (not-yet-fired) spring-load timer. Leaves
@@ -2133,6 +2313,65 @@ class _ReaderPanelsMixin {
             const loc = this._bmLocate(folderId, doc.local) || this._bmLocate(folderId, doc.global);
             return !!(loc && loc.entry && this._bmIsDescendant(nodeId, loc.entry));
         } catch (_) { return false; }
+    }
+
+    /** Left offset (px) of the drop-line at a given tree depth, aligned to the
+     *  row's ICON — not its padding edge. The icon sits past the chevron column
+     *  (12px) + flex gap (6px) = +18px from the paddingLeft (8 + depth*14).
+     *  Measured live: depth 0 icon @26px, +14px per level. Keep in sync if the
+     *  row's chevron width / gap / base padding change. */
+    _wvBmDropIndentPx(depth: number): number { return 26 + (depth || 0) * 14; }
+
+    /** Locate a node and its folder-ancestry within a section tree. Returns
+     *  { node, index, siblings, ancestors } where each ancestor is
+     *  { folder, siblings, index, depth } ordered top → immediate parent; null
+     *  if not found. */
+    _wvBmFindAncestry(nodes: any[], id: string, ancestors: any[]): any {
+        for (let i = 0; i < nodes.length; i++) {
+            const n = nodes[i];
+            if (n.id === id) return { node: n, index: i, siblings: nodes, ancestors };
+            if (n.type === "folder" && Array.isArray(n.children)) {
+                const r = this._wvBmFindAncestry(n.children, id,
+                    ancestors.concat([{ folder: n, siblings: nodes, index: i, depth: ancestors.length }]));
+                if (r) return r;
+            }
+        }
+        return null;
+    }
+
+    /** Resolve a drop on row `nodeId` into a concrete { targetId, mode, depth }.
+     *  `mode` is the raw before/after/into/intotop from geometry. For "after" on
+     *  a LAST child, the cursor's X "pops out" to a shallower level — after the
+     *  parent folder, grandparent, … up to top level — which is how you drag an
+     *  item OUT of a folder (e.g. to the last top-level position). `depth` drives
+     *  the indicator line's indent so its length shows where the item lands. */
+    _wvBmDropResolve(att: any, section: "local" | "global", nodeId: string, mode: string, clientX: number, rowRect: any): any {
+        const STEP = 14;
+        try {
+            const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+            const nodes = section === "global" ? doc.global : doc.local;
+            const f = this._wvBmFindAncestry(nodes, nodeId, []);
+            if (!f) return { targetId: nodeId, mode, depth: 0 };
+            const nodeDepth = f.ancestors.length;
+            if (mode === "before") return { targetId: nodeId, mode, depth: nodeDepth };
+            if (mode === "into" || mode === "intotop") return { targetId: nodeId, mode, depth: nodeDepth + 1 };
+            // "after": pop chain from the node's own level up through each
+            // ancestor for which the path so far is a LAST child.
+            const chain = [{ targetId: nodeId, depth: nodeDepth }];
+            let isLast = (f.index === f.siblings.length - 1);
+            for (let a = f.ancestors.length - 1; a >= 0 && isLast; a--) {
+                const anc = f.ancestors[a];
+                chain.push({ targetId: anc.folder.id, depth: anc.depth });
+                isLast = (anc.index === anc.siblings.length - 1);
+            }
+            let steps = Math.round((this._wvBmDropIndentPx(nodeDepth) - (clientX - rowRect.left)) / STEP);
+            if (steps < 0) steps = 0;
+            if (steps > chain.length - 1) steps = chain.length - 1;
+            const pick = chain[steps];
+            return { targetId: pick.targetId, mode: "after", depth: pick.depth };
+        } catch (_) {
+            return { targetId: nodeId, mode, depth: 0 };
+        }
     }
 
     /** Collapse the given spring-opened folders (they were collapsed before the
@@ -2174,6 +2413,7 @@ class _ReaderPanelsMixin {
      *  whose dataTransfer has `zotero/annotation` or `text/plain`. */
     _wvReaderDragHasBookmarkable(dt: any) {
         try {
+            if (this._wvBmRowDrag) return true;     // our cross-window bookmark-row drag
             if (this._wvDraggedAnnKey) return true;
             const t = dt && dt.types;
             if (!t) return false;
@@ -2209,7 +2449,7 @@ class _ReaderPanelsMixin {
                 try {
                     const arr = JSON.parse(payload.annJson);
                     for (const a of (arr || [])) {
-                        if (a && a.id) entries.push({ key: a.id, label: String(a.text || a.comment || "").trim() });
+                        if (a && a.id) entries.push({ key: a.id, label: String(a.text || a.comment || "").trim(), attachmentItemID: a.attachmentItemID });
                         else if (a && !selAnn && (a.text || a.position)) selAnn = a;
                     }
                 } catch (_) {}
@@ -2217,14 +2457,30 @@ class _ReaderPanelsMixin {
             if (entries.length) {
                 const addedIds: string[] = [];
                 for (const en of entries) {
+                    // The dragged annotation may live in a DIFFERENT library
+                    // than the drop target (e.g. dragging from a My Library
+                    // reader window into a group-library document's panel).
+                    // Zotero's reader stamps each dragged annotation with
+                    // `attachmentItemID` (its source attachment); resolve the
+                    // source library from it so the bookmark stores the
+                    // annotation's REAL library. Otherwise it's stored under
+                    // the target's library and getByLibraryAndKey() fails →
+                    // broken navigation + ribbon icon instead of the type glyph.
+                    let recLib = att.libraryID;
+                    if (en.attachmentItemID) {
+                        try {
+                            const srcAtt: any = Zotero.Items.get(en.attachmentItemID);
+                            if (srcAtt) recLib = srcAtt.libraryID;
+                        } catch (_) {}
+                    }
                     let label = en.label;
                     if (!label) {
-                        try { const it: any = Zotero.Items.getByLibraryAndKey(att.libraryID, en.key); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {}
+                        try { const it: any = Zotero.Items.getByLibraryAndKey(recLib, en.key); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {}
                     }
                     label = (label || "Annotation").slice(0, 100);
                     // allowDuplicate: dragging the same annotation again files a
                     // second copy (e.g. into a different folder) instead of no-op.
-                    const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey, { type: "item", libraryID: att.libraryID, itemKey: en.key, label }, { allowDuplicate: true });
+                    const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey, { type: "item", libraryID: recLib, itemKey: en.key, label }, { allowDuplicate: true });
                     if (e2 && e2.id) addedIds.push(e2.id);
                 }
                 if (addedIds.length) {
@@ -2244,12 +2500,30 @@ class _ReaderPanelsMixin {
             const selText = (selAnn && String(selAnn.text || "").trim())
                 || ((payload.txt && payload.txt.indexOf("wvbm:") !== 0) ? payload.txt.trim() : "");
             if (selText) {
-                const cap = this._wvCaptureReaderLocation(reader);
                 let position: any = null;
                 if (selAnn && selAnn.position) { try { position = JSON.parse(JSON.stringify(selAnn.position)); } catch (_) {} }
-                const pageLabel = (selAnn && selAnn.pageLabel) || cap.pageLabel;
-                const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
-                    { type: "text", viewType: cap.viewType, location: cap.location, position, pageLabel, label: selText.slice(0, 160) });
+                // A text selection dragged from ANOTHER document (separate
+                // reader window) must NOT become a local "in this document"
+                // bookmark — its position belongs to the source doc, and
+                // navigating it in THIS reader would jump to a meaningless
+                // location. Zotero stamps the source attachment on the
+                // dragged (temp) annotation as `attachmentItemID`; if it
+                // differs from the drop target, store the source attachment
+                // ref so the bookmark files under "Elsewhere in Zotero" and
+                // clicking it opens the SOURCE document at the selection.
+                const srcAttId = selAnn && selAnn.attachmentItemID;
+                const crossDoc = !!(srcAttId && att.att && srcAttId !== att.att.id);
+                let rec: any;
+                if (crossDoc) {
+                    let srcAtt: any = null;
+                    try { srcAtt = Zotero.Items.get(srcAttId); } catch (_) {}
+                    rec = { type: "text", position, pageLabel: (selAnn && selAnn.pageLabel) || null, label: selText.slice(0, 160) };
+                    if (srcAtt) { rec.srcLibraryID = srcAtt.libraryID; rec.srcItemKey = srcAtt.key; }
+                } else {
+                    const cap = this._wvCaptureReaderLocation(reader);
+                    rec = { type: "text", viewType: cap.viewType, location: cap.location, position, pageLabel: (selAnn && selAnn.pageLabel) || cap.pageLabel, label: selText.slice(0, 160) };
+                }
+                const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey, rec);
                 if (e2 && e2.id) await this._wvReaderPlaceDropped(att, [e2.id], target);
                 this._wvReaderRenderBmList(reader, idoc);
             }
@@ -2427,8 +2701,9 @@ class _ReaderPanelsMixin {
                     try { openIcon = att.att.getImageSrc(); } catch (_) {}
                     item("Open", openIcon, () => this._wvNavigateReaderBookmark(reader, entry, {}));
                     item("Open in New Window", openIcon, () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
-                    item("Show in Library", this._bmShowInLibraryIcon({ libraryID: att.libraryID }, Zotero.getMainWindow()),
-                        () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
+                    // No "Show in Library" for in-document bookmarks — the
+                    // target IS the open document, so there's nothing distinct
+                    // to reveal (kept only for "Elsewhere in Zotero" items).
                     sep();
                     item("Rename…", RP_RENAME_SVG, () => {
                         const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Bookmark", entry.label || "");
@@ -2455,8 +2730,13 @@ class _ReaderPanelsMixin {
                         item("Open " + t.typeLabel + " in New Window", attIcon,
                             () => this._wvNavigateReaderBookmark(reader, entry, { shiftKey: true }));
                     }
-                    item("Show in Library",
-                        this._bmShowInLibraryIcon({ libraryID: entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
+                    // A cross-document location (text selection or pinned
+                    // position) has no annotation item to reveal — offer its
+                    // source attachment FILE ("the parent") instead, under a
+                    // distinct label.
+                    const isCrossDocLoc = (entry.type === "text" || entry.type === "position") && !!entry.srcItemKey;
+                    item(isCrossDocLoc ? "Show Parent in Library" : "Show in Library",
+                        this._bmShowInLibraryIcon({ libraryID: entry.srcLibraryID || entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
                         () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
                     sep();
                     item("Rename…", RP_RENAME_SVG, () => {
@@ -2584,6 +2864,8 @@ class _ReaderPanelsMixin {
                 this._wvReaderStampMenuIcon(reader, LABEL, icon);
             } else {
                 const LABEL = "Add Bookmark to This Position";
+                // A position bookmark drops a 📌 marker in the document, so the
+                // menu item gets the matching pin glyph (not the ribbon).
                 // Snapshot the exact click point NOW (params are stale by command
                 // time): the cursor's x/y (chrome coords, → any point on the page,
                 // text or whitespace) plus the word position as a fallback.
@@ -2598,7 +2880,7 @@ class _ReaderPanelsMixin {
                     };
                 } catch (_) {}
                 append({ label: LABEL, onCommand: () => this._wvReaderAddCurrentBookmark(reader, idoc, click) });
-                this._wvReaderStampMenuIcon(reader, LABEL, icon);
+                this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderViewContextMenu err: " + e); }
     }
@@ -2613,6 +2895,16 @@ class _ReaderPanelsMixin {
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
             + 'viewBox="0 0 16 16" fill="' + color + '">'
             + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    /** Pushpin (📌) data URI for the reader context-menu icon, matching the
+     *  in-document position-bookmark marker. The menu lives in chrome, so the
+     *  emoji is baked into an SVG <text> data URI. */
+    _wvReaderPinMenuIconURL() {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+            + 'viewBox="0 0 16 16"><text x="8" y="13" font-size="13" '
+            + 'text-anchor="middle">' + RP_PIN_EMOJI + '</text></svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 

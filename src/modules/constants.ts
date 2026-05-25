@@ -116,6 +116,21 @@ export const PLUGIN_CSS = [
     "  background: rgba(255, 255, 255, 0.08);",
     "}",
     "." + BTN_TREE_CLASS + " { font-size: 12px; vertical-align: middle; }",
+    // Active-filter accent dot on the filter toolbar button — mirrors
+    // the reader filter button's `.wv-rf-active` dot. The dot element is
+    // always present; only shown when the button is `.wv-filter-tb-active`.
+    "#wv-filter-tb-button { position: relative; }",
+    // Default placement targets the funnel icon's top-right corner
+    // (icon at ~8px left, 16px wide -> right edge ~24px). The button
+    // also carries a dropmarker to the icon's right, so the dot is
+    // anchored to the icon, not the button edge; _updateFilterToolbar-
+    // ActiveState refines left/top from the live icon box.
+    "#wv-filter-tb-button .wv-filter-tb-dot {",
+    "  display: none; position: absolute; top: 5px; left: 20px;",
+    "  width: 6px; height: 6px; border-radius: 50%;",
+    "  background: var(--color-accent, #5e6ad2); pointer-events: none;",
+    "}",
+    "#wv-filter-tb-button.wv-filter-tb-active .wv-filter-tb-dot { display: block; }",
     // Inline-flex wrapper so multiple sidebar/right-pane icons (comment +
     // relations + ...) sit side-by-side rather than stacking vertically
     // when the host slot is block-level (e.g. Zotero's reader

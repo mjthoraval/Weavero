@@ -47,6 +47,7 @@
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
+    BOOKMARK_PATH,
 } from "./constants";
 
 // Module-level data backing the three "constants" the filter
@@ -503,6 +504,79 @@ class _FilterMixin {
                 try {
                     plugin._patchRefreshForReveals();
                 } catch (err) {}
+
+                // FAST PATH (no quick search): re-render the revealed
+                // container's children IN-PLACE (collapse + reopen) and
+                // re-apply, instead of a full `iv.refresh()`. A full
+                // refresh rebuilds `_rows` from scratch and — with a
+                // reveal active — drops SIBLING top-level cascade-matched
+                // items (e.g. a regular item whose attachment has
+                // bookmarks) from `_rows` entirely, making them vanish
+                // (the disappearing-Ebook bug). An in-place toggle only
+                // re-renders THIS container's children (getChildItems
+                // re-runs with the new reveal state) and leaves every
+                // sibling row untouched. The full-refresh path below is
+                // kept for the quick-search case, where revealed children
+                // may be absent from the search set and only the
+                // `getItems` injection can surface them.
+                if (!plugin._currentQuickSearchValue) {
+                    try {
+                        const rpIp: any = iv && iv.rowProvider;
+                        const rawToggle = rpIp
+                            && (rpIp._wvOrigToggleOpenState
+                                || rpIp.toggleOpenState);
+                        const findRaw = (wantId) => {
+                            const rr = (rpIp && rpIp._rows) || [];
+                            for (let i = 0; i < rr.length; i++) {
+                                if (rr[i] && rr[i].ref
+                                    && rr[i].ref.id === wantId) return i;
+                            }
+                            return -1;
+                        };
+                        let i1 = findRaw(id);
+                        if (i1 >= 0 && typeof rawToggle === "function") {
+                            // `toggleOpenState(idx, skipRowMapRefresh)`
+                            // FLIPS the open state. Collapse (if open)
+                            // then reopen so getChildItems re-runs with
+                            // the just-updated reveal set.
+                            if (rpIp._rows[i1] && rpIp._rows[i1].isOpen) {
+                                rawToggle.call(rpIp, i1, true);
+                            }
+                            i1 = findRaw(id);
+                            if (i1 >= 0 && rpIp._rows[i1]
+                                && !rpIp._rows[i1].isOpen) {
+                                rawToggle.call(rpIp, i1, true);
+                            }
+                        }
+                    } catch (err) {
+                        Zotero.debug(
+                            "[Weavero][chev] in-place toggle err: " + err);
+                    }
+                    // The in-place reopen records the container in
+                    // `_userOpenedIDs` (the user-open-tracking wrap), a
+                    // manual-open bypass that force-keeps ALL children.
+                    // That would defeat an UN-reveal (non-matching
+                    // children stay visible) and suppress the chevron
+                    // (hiddenCount → 0). Reveal state is governed solely
+                    // by `_userRevealedAllIDs`, so drop the manual-open
+                    // flag for this container.
+                    try {
+                        plugin._userOpenedIDs
+                            && plugin._userOpenedIDs.delete(id);
+                    } catch (err) {}
+                    plugin._filterApplying = false;
+                    plugin._suppressTreeObserverUntil = 0;
+                    try { plugin._applyItemsListFilter({ cascade: true }); }
+                    catch (err) {
+                        Zotero.debug(
+                            "[Weavero][chev] in-place apply err: " + err);
+                    }
+                    try { iv && iv.tree && iv.tree.invalidate(); }
+                    catch (err) {}
+                    Zotero.debug("[Weavero][chev] in-place reveal done");
+                    return;
+                }
+
                 // Mark that the imminent refresh is driven by us
                 // so the `_refresh` wrap doesn't treat it as an
                 // external search/filter change and clear the
@@ -563,9 +637,37 @@ class _FilterMixin {
                         Zotero.debug("[Weavero][chev] refresh resolved, rows="
                             + (rpBefore && rpBefore._rows
                                 ? rpBefore._rows.length : "?"));
-                        // Re-open the affected container if it was
-                        // open before the refresh — see the capture
-                        // note above.
+                        // Run the apply pass FIRST so the Weavero-filter
+                        // keep[] honours the reveal AND the cascade
+                        // re-opens the revealed container itself. Doing
+                        // the manual toggleOpenState re-open BEFORE the
+                        // apply corrupted `_rows`: it dropped sibling
+                        // top-level items that match only via the cascade
+                        // (e.g. a regular item whose attachment carries
+                        // the Has-Bookmarks match), making them vanish
+                        // entirely. The cascade apply opens the container
+                        // without that corruption.
+                        Zotero.debug("[Weavero][chev] then(): calling apply");
+                        // Force apply to run even if the reentrancy guard
+                        // OR the observer-suppression window is still set
+                        // from the mid-refresh observer-driven pass —
+                        // otherwise the chev's own apply silently bails
+                        // and keep[] is left stale.
+                        plugin._filterApplying = false;
+                        plugin._suppressTreeObserverUntil = 0;
+                        // `cascade: true` re-runs the expand-match-parents
+                        // pass so the revealed container (and any matching
+                        // descendants) auto-open.
+                        try { plugin._applyItemsListFilter(
+                            { cascade: true }); }
+                        catch (e) {
+                            Zotero.debug("[Weavero][chev] then() apply err: " + e);
+                        }
+                        Zotero.debug("[Weavero][chev] then(): apply done");
+                        // Fallback re-open: ONLY if the cascade apply left
+                        // the revealed container closed (it normally opens
+                        // it). Skipping when already open avoids the
+                        // `_rows`-corrupting toggle in the common case.
                         try {
                             if (wasOpenBeforeRefresh) {
                                 const rpAfter = iv && iv.rowProvider;
@@ -584,48 +686,25 @@ class _FilterMixin {
                                         }
                                     }
                                 }
+                                // Use the ORIGINAL (raw-index) toggle,
+                                // NOT the keep[]-translating patched one:
+                                // `rowIdx` is a raw `_rows` index, so the
+                                // patched toggle would translate it
+                                // (keep[rowIdx]) and open the WRONG row,
+                                // corrupting `_rows` and dropping sibling
+                                // cascade-matched items (the disappearing
+                                // Ebook bug). This is how the apply's own
+                                // auto-expand calls it (see line ~9877).
+                                const rawToggle =
+                                    rpAfter._wvOrigToggleOpenState
+                                    || rpAfter.toggleOpenState;
                                 if (rowAfter && !rowAfter.isOpen
                                     && rowIdx >= 0
-                                    && typeof rpAfter.toggleOpenState
-                                        === "function") {
-                                    rpAfter.toggleOpenState(rowIdx, true);
+                                    && typeof rawToggle === "function") {
+                                    rawToggle.call(rpAfter, rowIdx, true);
                                 }
                             }
                         } catch (e) {}
-                        // After `_rows` is rebuilt, run the apply pass
-                        // so the Weavero-filter keep[] honours the
-                        // reveal — without this, the freshly-injected
-                        // children get into `_rows` but the apply's
-                        // keep[] from before the refresh still rejects
-                        // them. Also recompute chevron maps to repaint
-                        // the indicator on the right anchor row.
-                        Zotero.debug("[Weavero][chev] then(): calling apply");
-                        // Force apply to run even if the reentrancy
-                        // guard OR the observer-suppression window is
-                        // still set from the mid-refresh observer-
-                        // driven pass. Without this clear, the chev's
-                        // own apply silently bails (guard returns
-                        // early), and `keep[]` is left at whatever
-                        // the mid-refresh observer apply produced —
-                        // built against stale `_rows` from before
-                        // the inject. Result: revealed rows that
-                        // shouldn't pass the filter slip through.
-                        plugin._filterApplying = false;
-                        plugin._suppressTreeObserverUntil = 0;
-                        // Pass `cascade: true` so apply re-runs the
-                        // expand-match-parents pass — without it,
-                        // containers that should auto-open to reveal
-                        // their primary annotation children (e.g.
-                        // Full Text PDF containing a green-matching
-                        // annotation) stay collapsed after the chev-
-                        // triggered refresh and their annotations
-                        // visibly disappear from the user's view.
-                        try { plugin._applyItemsListFilter(
-                            { cascade: true }); }
-                        catch (e) {
-                            Zotero.debug("[Weavero][chev] then() apply err: " + e);
-                        }
-                        Zotero.debug("[Weavero][chev] then(): apply done");
                         // Only recompute the QS-only chevron maps when
                         // the Weavero filter is inactive. The active
                         // apply we just ran above populated the maps
@@ -1905,6 +1984,9 @@ class _FilterMixin {
             hasRelated: null,
             hasLink: null,
             hasTag: null,
+            // "Has Bookmarks" — item whose attachment(s) carry reader bookmarks
+            // (Weavero's per-attachment store). Tri-state, no scope.
+            hasBookmarks: null,
             // Per-filter row-kind scope for the three cross-level
             // tri-states. Default all-on = current behavior (filter
             // applies to every kind). Each key maps to a row kind:
@@ -1997,6 +2079,7 @@ class _FilterMixin {
         if (group.addedByExclude && group.addedByExclude.length) return true;
         if (group.hasRelated != null) return true;
         if (group.hasLink != null) return true;
+        if (group.hasBookmarks != null) return true;
         if (group.hasTag != null) return true;
         if (group.itemNote != null) return true;
         if (group.standaloneNote != null) return true;
@@ -3390,6 +3473,15 @@ class _FilterMixin {
             }
             if (!found) return false;
         }
+        if (group.hasBookmarks != null) {
+            // The tree "has bookmarks" if any attachment in it carries reader
+            // bookmarks (they belong to file attachments). No scope.
+            let anyHas = false;
+            for (const att of candidates.attachment) {
+                if (att && this._bmAttachmentHasReaderBookmarks(att.libraryID, att.key)) { anyHas = true; break; }
+            }
+            if (anyHas !== group.hasBookmarks) return false;
+        }
         // ── Kind-specific tri-state chips also enforce tree-level
         // constraints per Rule 2. We only enforce the INCLUDE
         // direction here ("=true"); EXCLUDE ("=false") behaves as
@@ -3713,6 +3805,12 @@ class _FilterMixin {
                 }
             }
         }
+        if (group.hasBookmarks != null) {
+            // Attachment rows that carry reader bookmarks are primary (so the
+            // cascade keeps them + their parent item). No scope.
+            const has = this._bmAttachmentHasReaderBookmarks(item.libraryID, item.key);
+            if (has === group.hasBookmarks) return true;
+        }
         if (group.hasTag != null) {
             const k = this._rowKindOf(item);
             if (cInScope(group.hasTagScope, k)) {
@@ -3907,6 +4005,15 @@ class _FilterMixin {
         const dropmarker = doc.createXULElement("image");
         dropmarker.className = "toolbarbutton-menu-dropmarker";
         tbBtn.appendChild(dropmarker);
+        // Active-filter indicator — a small accent dot in the icon's
+        // top-right corner, mirroring the reader filter button's
+        // `.wv-rf-active` dot. Always present; shown only when the
+        // button carries `.wv-filter-tb-active` (toggled by
+        // `_updateFilterToolbarActiveState` on every filter change).
+        const activeDot = doc.createElementNS(
+            "http://www.w3.org/1999/xhtml", "span");
+        activeDot.className = "wv-filter-tb-dot";
+        tbBtn.appendChild(activeDot);
 
         // The panel must be a CHILD of the toolbar button for
         // type="menu" toggle behaviour. We create it once here and
@@ -4514,7 +4621,45 @@ class _FilterMixin {
      *  setup, on every chip add/remove, and after popup commit. The bar
      *  is hidden when no filters are active — the toolbar "+" button is
      *  the entry point in that state. */
+    /** Toggle the accent dot on the filter toolbar button so an active
+     *  filter is visible at a glance even with the chip bar scrolled
+     *  off — mirrors the reader filter button's `.wv-rf-active` dot. */
+    _updateFilterToolbarActiveState() {
+        try {
+            const bar: any = this._filterBar;
+            const win = (Zotero as any).getMainWindow
+                && (Zotero as any).getMainWindow();
+            const doc = (bar && bar.ownerDocument) || (win && win.document);
+            if (!doc) return;
+            const btn = doc.getElementById("wv-filter-tb-button");
+            if (!btn) return;
+            const active = this._isFilterActive(this._filterState);
+            btn.classList.toggle("wv-filter-tb-active", !!active);
+            // Pin the dot to the funnel ICON's top-right corner (same
+            // spot as the reader filter button). The button also hosts a
+            // dropmarker to the icon's right, so the static CSS `left`
+            // is only a fallback — refine from the live icon box so the
+            // dot lands on the funnel regardless of toolbar padding/DPI.
+            if (active) {
+                const dot: any = btn.querySelector(".wv-filter-tb-dot");
+                const icon: any = btn.querySelector(".toolbarbutton-icon");
+                if (dot && icon) {
+                    const br = btn.getBoundingClientRect();
+                    const ir = icon.getBoundingClientRect();
+                    if (br.width && ir.width) {
+                        dot.style.left =
+                            Math.round(ir.right - br.left - 4) + "px";
+                        dot.style.top =
+                            Math.round(ir.top - br.top - 1) + "px";
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+
     _renderFilterBar() {
+        // Reflect active/inactive on the toolbar button (accent dot).
+        this._updateFilterToolbarActiveState();
         // Chip-bar state changed → re-evaluate whether the QS
         // scope dropdown should be visible (active filter is a
         // visibility precondition).
@@ -4599,6 +4744,9 @@ class _FilterMixin {
             }
             if (group.hasLink != null) {
                 bar.appendChild(this._buildHasLinkChip(doc, group, gi));
+            }
+            if (group.hasBookmarks != null) {
+                bar.appendChild(this._buildHasBookmarksChip(doc, group, gi));
             }
             if (group.hasTag != null) {
                 bar.appendChild(this._buildHasTagChip(doc, group, gi));
@@ -4880,6 +5028,51 @@ class _FilterMixin {
             },
             onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
         });
+    }
+
+    _buildHasBookmarksChip(doc, group, gi) {
+        const value = group.hasBookmarks;
+        return this._buildFilterChip(doc, {
+            field: "Has Bookmarks",
+            op: value ? "is" : "is not",
+            fillValue: () => {},
+            onRemove: () => {
+                group.hasBookmarks = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    /** Inline bookmark-ribbon glyph for the "Has Bookmarks" filter tile.
+     *  Drawn with the exact technique Zotero's `annotate-highlight.svg`
+     *  uses: NO stroke, a filled shape under `fill-rule: evenodd`. Two
+     *  concentric ribbon contours sit 1 px apart on the *integer* pixel
+     *  grid; the even-odd rule fills only the 1-px band between them, so
+     *  every straight edge lands exactly on a pixel row and renders
+     *  razor-sharp. (A 1-px *stroke* is centred on its path, so it must
+     *  sit on the `.5` grid and still softens slightly at miter joins;
+     *  an integer-edge fill avoids that entirely.) Outer ribbon spans
+     *  x 3→13, y 1→15 with the bottom V-notch apex centred at x=8. */
+    _makeBookmarkSvg(doc) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS, "svg");
+        svg.setAttribute("class", "wv-filter-svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("aria-hidden", "true");
+        svg.setAttribute("fill", "currentColor");
+        const path = doc.createElementNS(NS, "path");
+        path.setAttribute("fill-rule", "evenodd");
+        path.setAttribute("clip-rule", "evenodd");
+        // Outer contour (M3 1…) + inner contour inset 1 px (M4 2…),
+        // single-sourced from constants so every bookmark icon matches.
+        path.setAttribute("d", BOOKMARK_PATH);
+        // `.wv-filter-svg` also sets `stroke: currentColor` (default
+        // stroke-width 1), which would paint an extra outline around
+        // the filled frame. Suppress it — fill alone draws the glyph.
+        path.style.stroke = "none";
+        svg.appendChild(path);
+        return svg;
     }
 
     _buildHasTagChip(doc, group, gi) {
@@ -7254,7 +7447,7 @@ class _FilterMixin {
         // icon to toggle include/exclude (Alt+click for exclude);
         // click the arrow to choose which row kinds the filter
         // applies to.
-        const buildBtn = (key, scopeKey, kindList, label, iconBuilder, tip) => {
+        const buildBtn = (key, scopeKey, kindList, label, iconBuilder, tip, noScope?) => {
             const slot = doc.createElementNS(NS_HTML, "div");
             slot.className = "wv-filter-cross-slot";
 
@@ -7283,21 +7476,24 @@ class _FilterMixin {
 
             // Scope arrow. `data-modified` flags non-default scopes
             // so the user sees at a glance which filters are
-            // narrowed below the all-on default.
-            const arrow = doc.createElementNS(NS_HTML, "button");
-            arrow.type = "button";
-            arrow.className = "wv-filter-cross-scope-arrow";
-            arrow.title = "Choose which row kinds this filter applies to";
-            arrow.textContent = "▾";
-            const scope = (g0 && g0[scopeKey]) || {};
-            const allOn = kindList.every(k => scope[k.key] !== false);
-            if (!allOn) arrow.dataset.modified = "true";
-            arrow.addEventListener("click", (e) => {
-                e.stopPropagation();
-                this._openCrossLevelScopePopup(
-                    arrow, scopeKey, kindList, refreshAll);
-            });
-            slot.appendChild(arrow);
+            // narrowed below the all-on default. Skipped for scope-less
+            // filters (e.g. Has Bookmarks), which apply to the whole item.
+            if (!noScope) {
+                const arrow = doc.createElementNS(NS_HTML, "button");
+                arrow.type = "button";
+                arrow.className = "wv-filter-cross-scope-arrow";
+                arrow.title = "Choose which row kinds this filter applies to";
+                arrow.textContent = "▾";
+                const scope = (g0 && g0[scopeKey]) || {};
+                const allOn = kindList.every(k => scope[k.key] !== false);
+                if (!allOn) arrow.dataset.modified = "true";
+                arrow.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    this._openCrossLevelScopePopup(
+                        arrow, scopeKey, kindList, refreshAll);
+                });
+                slot.appendChild(arrow);
+            }
 
             opts.appendChild(slot);
         };
@@ -7635,12 +7831,40 @@ class _FilterMixin {
             optsBox.appendChild(lfBtn);
         }
 
-        // Separator pushes Has Annotations to the right edge —
-        // same `margin-left: auto` trick the Item Note row uses.
+        // Separator pushes the Has Bookmarks + Has Annotations pair
+        // to the right edge — same `margin-left: auto` trick the
+        // Item Note row uses.
         const haSep = doc.createElementNS(NS_HTML, "div");
         haSep.className = "wv-filter-vertical-separator";
         haSep.style.marginLeft = "auto";
         optsBox.appendChild(haSep);
+
+        // ── Has Bookmarks tile (tri-state) ──────────────────────
+        // An attachment property — items whose attachment(s) carry
+        // reader bookmarks (in-document or elsewhere). Sits just
+        // left of Has Annotations.
+        const hbCur = g0 ? g0.hasBookmarks : null;
+        const hbBtn = doc.createElementNS(NS_HTML, "button");
+        hbBtn.type = "button";
+        hbBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        hbBtn.title = "Has Bookmarks — items whose attachment(s) have "
+            + "reader bookmarks saved. Alt+click to exclude.";
+        if (hbCur === true) hbBtn.dataset.selected = "true";
+        else if (hbCur === false) hbBtn.dataset.excluded = "true";
+        hbBtn.appendChild(this._makeBookmarkSvg(doc));
+        hbBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.hasBookmarks === false) ? null : false;
+            else          next = (g.hasBookmarks === true) ? null : true;
+            g.hasBookmarks = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        optsBox.appendChild(hbBtn);
 
         // ── Has Annotations tile (tri-state) ────────────────────
         const cur = g0 ? g0.hasAnnotations : null;
@@ -9235,10 +9459,22 @@ class _FilterMixin {
             // inactive applies — otherwise a chevron click during
             // quick-search-only mode would re-enter this branch on
             // the click's own apply call and immediately undo itself.
-            if (this._wvFilterWasActive
-                && this._userRevealedAllIDs
-                && this._userRevealedAllIDs.size) {
-                this._userRevealedAllIDs.clear();
+            if (this._wvFilterWasActive) {
+                if (this._userRevealedAllIDs
+                    && this._userRevealedAllIDs.size) {
+                    this._userRevealedAllIDs.clear();
+                }
+                // Also drop the manual expand/collapse state so clearing
+                // the filter returns the tree to its default expansion.
+                // The user's per-row collapse/expand was relative to the
+                // filtered view, so it must NOT be remembered once the
+                // filter is gone (re-applying should start fresh).
+                if (this._userOpenedIDs && this._userOpenedIDs.size) {
+                    this._userOpenedIDs.clear();
+                }
+                if (this._userClosedIDs && this._userClosedIDs.size) {
+                    this._userClosedIDs.clear();
+                }
             }
             this._wvFilterWasActive = false;
             // Even with no Weavero filter, populate the chevron maps
@@ -9898,7 +10134,8 @@ class _FilterMixin {
         //     the parent is manually expanded.
         Zotero.debug("[Weavero][keep-pass] === USER-OPENED FORCE-KEEP === opened="
             + JSON.stringify(this._userOpenedIDs
-                ? [...this._userOpenedIDs] : []));
+                ? [...this._userOpenedIDs] : [])
+            + " anyGroupActive=" + anyGroupActive);
         if (this._userOpenedIDs && this._userOpenedIDs.size) {
             const activeGroups = (state.groups || [])
                 .filter(g => this._isGroupActive(g));
@@ -9919,6 +10156,31 @@ class _FilterMixin {
                 if (!row || !row.ref) continue;
                 if (!this._userOpenedIDs.has(row.ref.id)) continue;
                 const lvl = row.level || 0;
+                // User's rule for manual twisty-expand under an active
+                // Weavero filter: if the container HAS a matching child,
+                // show ONLY the matching child(ren) (filter wins, chevron
+                // offers to reveal the rest). Only when the container has
+                // NO matching child does manual-expand fall back to
+                // showing ALL children (otherwise expanding would reveal
+                // nothing — e.g. an attachment whose annotations don't
+                // match Has Bookmarks). So skip the force-keep for this
+                // container when it has any matching child.
+                if (anyGroupActive) {
+                    let hasMatchingChild = false;
+                    for (let k = j + 1; k < total; k++) {
+                        let kr;
+                        try { kr = origGetRow(k); } catch (e) { break; }
+                        if (!kr) break;
+                        const kLvl = kr.level || 0;
+                        if (kLvl <= lvl) break;
+                        if (kLvl !== lvl + 1) continue;
+                        if (kr.ref && hasMatch(kr.ref)) {
+                            hasMatchingChild = true;
+                            break;
+                        }
+                    }
+                    if (hasMatchingChild) continue;
+                }
                 for (let k = j + 1; k < total; k++) {
                     let kr;
                     try { kr = origGetRow(k); } catch (e) { break; }
@@ -10018,6 +10280,15 @@ class _FilterMixin {
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
         const keep = [...keepSet].sort((a: number, b: number) => a - b);
+        // IDs of every row that survives into the filtered view — used
+        // below so the chevron's hidden tally counts only children that
+        // are genuinely off-screen, not ones the cascade already shows.
+        const visibleIDs = new Set<number>();
+        for (const vj of keep) {
+            let vrow;
+            try { vrow = origGetRow(vj); } catch (e) { continue; }
+            if (vrow && vrow.ref) visibleIDs.add(vrow.ref.id);
+        }
         // Per-container hidden-children count. For each container row
         // in keep, count the DB direct children that WOULDN'T survive
         // the current filter — i.e. wouldn't be primary themselves
@@ -10043,13 +10314,25 @@ class _FilterMixin {
                 continue;
             }
             if (!childIds.length) continue;
+            // Revealed containers keep counting non-matching children
+            // (on screen only because the chevron revealed them) so the
+            // collapse toggle keeps its tally; otherwise a child counts
+            // as hidden only when it's actually off-screen.
+            const parentRevealed = !!(this._userRevealedAllIDs
+                && this._userRevealedAllIDs.has(it.id));
             let hidden = 0;
             for (const cid of childIds) {
                 const cit = Zotero.Items.get(cid);
                 if (!cit) continue;
-                // "Would survive" = primary itself or has a primary
-                // descendant (= the existing `hasMatch` cache).
-                if (!hasMatch(cit)) hidden++;
+                // A child that satisfies the filter is never hidden.
+                if (hasMatch(cit)) continue;
+                // A non-matching child only counts as hidden when it
+                // isn't already displayed. When a container matched on
+                // its OWN property (e.g. Has Bookmarks on an attachment)
+                // the cascade shows its children even though none of
+                // them match — tallying those produced a phantom chevron
+                // on a fully-expanded container.
+                if (parentRevealed || !visibleIDs.has(cid)) hidden++;
             }
             if (hidden > 0) hiddenCounts.set(it.id, hidden);
         }

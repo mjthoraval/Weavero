@@ -1908,6 +1908,8 @@ class _ReaderMixin {
             // Hide the menu bar too — otherwise it sits as a stray row between
             // the strip and the page. Alt summons it. (Idempotent.)
             try { this._applyReaderCompactMenubar(reader); } catch (e) {}
+            // Keep the window controls at the top-right when Alt reveals the menu.
+            try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowTabStrip err: " + e);
         }
@@ -1923,6 +1925,9 @@ class _ReaderMixin {
             const doc = win && win.document;
             if (!doc) return;
             const stash: any = (win._wvTabStrip) || {};
+            // Stop the controls-follow-menu observer first (it reacts to the
+            // menubar attribute that revert will clear).
+            try { stash.ctrlFollowObserver?.disconnect(); } catch (e) {}
             // Window controls + their sizemode listeners.
             try { stash.controls?.remove(); } catch (e) {}
             try {
@@ -2044,6 +2049,11 @@ class _ReaderMixin {
                 "  margin-left: auto; height: 100%;",
                 "  -moz-window-dragging: no-drag;",
                 "}",
+                /* When Alt summons the menu bar it becomes the topmost row above
+                   the tab strip; the controls follow up onto it (pinned right) so
+                   they stay at the absolute top-right of the window. */
+                "menubar { position: relative; }",
+                ".wv-window-controls.wv-in-menubar { position: absolute; right: 0; top: 0; height: 100%; margin-left: 0; }",
                 ".wv-window-control {",
                 "  display: block;",
                 "  width: 46px; height: 100%; padding: 0; margin: 0;",
@@ -6280,6 +6290,45 @@ class _ReaderMixin {
         }
     }
 
+    /** Keep the reader window's controls at the absolute top-right by following
+     *  the topmost row: into the menu row when Alt reveals it, back to the tab
+     *  strip when it collapses — and reserve their width in the strip so the tab
+     *  doesn't shift. Mirrors the main window. */
+    _wvEnsureReaderControlsFollowMenu(win) {
+        try {
+            if (!win || !win.document || win.closed) return;
+            const doc = win.document;
+            const menubar = doc.querySelector("menubar");
+            const strip = doc.querySelector(".wv-window-tabstrip");
+            const controls = doc.querySelector(".wv-window-controls");
+            if (!menubar || !strip || !controls) return;
+            const stash = win._wvTabStrip || (win._wvTabStrip = {});
+            if (stash.ctrlFollowObserver) return;   // already wired
+            const isHidden = () => menubar.getAttribute("wv-compact-hidden") === "true";
+            const position = () => {
+                try {
+                    if (win.closed) return;
+                    if (isHidden()) {
+                        if (controls.parentNode !== strip) strip.appendChild(controls);
+                        controls.classList.remove("wv-in-menubar");
+                        strip.style.paddingInlineEnd = "";
+                    } else {
+                        const w = Math.round(controls.getBoundingClientRect().width);
+                        if (controls.parentNode !== menubar) menubar.appendChild(controls);
+                        controls.classList.add("wv-in-menubar");
+                        if (w > 0) strip.style.paddingInlineEnd = w + "px";
+                    }
+                } catch (e) {}
+            };
+            position();
+            const mo = new win.MutationObserver(position);
+            mo.observe(menubar, { attributes: true, attributeFilter: ["wv-compact-hidden"] });
+            stash.ctrlFollowObserver = mo;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvEnsureReaderControlsFollowMenu err: " + e);
+        }
+    }
+
     /** Mount a library-aware tooltip on the reader window's tab —
      *  mirrors the main-window's `#wv-tab-library-tooltip`. For an item
      *  in a group library, shows the title + library-group icon + name.
@@ -6613,7 +6662,10 @@ class _ReaderMixin {
                 "  padding-left: 40px;",
                 "  align-items: center;",
                 "  position: relative;",
+                /* Draggable like a title bar (the controls + menus opt out). */
+                "  -moz-window-dragging: drag;",
                 "}",
+                "menubar menu, menubar menuitem { -moz-window-dragging: no-drag; }",
                 /* The injected Z icon — absolute-positioned so XUL
                    menubar nav doesn't include it. Sized + placed to
                    match the main-window's .titlebar-icon (16px, 12px

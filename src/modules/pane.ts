@@ -3296,6 +3296,39 @@ class _PaneMixin {
             stash.menuCommand = menuCommand;
             stash.menubar = menubar;
 
+            // Keep the window controls at the absolute top-right of the window
+            // (convention: controls never sit below another strip). The revealed
+            // menubar becomes the top row ABOVE the tab strip, so move the
+            // buttonbox up into its original title-bar slot while the menubar is
+            // shown, and back down to the tab strip when it collapses — the
+            // controls always head whichever row is topmost (Firefox's mechanic).
+            const positionButtonbox = () => {
+                try {
+                    if (isDead()) return;
+                    if (isCollapsed()) {
+                        if (buttonbox.parentNode !== zoteroTitleBar) zoteroTitleBar.appendChild(buttonbox);
+                        zoteroTitleBar.style.paddingInlineEnd = "";   // buttonbox reserves its own width
+                    } else {
+                        // Measure the buttonbox (still in the tab strip) and reserve
+                        // that width on the tab strip so moving the controls up to
+                        // the menu row doesn't shift the tabs.
+                        const w = Math.round(buttonbox.getBoundingClientRect().width);
+                        const p = stash.buttonboxOrigParent;
+                        if (p && buttonbox.parentNode !== p) {
+                            const nxt = stash.buttonboxOrigNext;
+                            if (nxt && nxt.parentNode === p) p.insertBefore(buttonbox, nxt);
+                            else p.appendChild(buttonbox);
+                        }
+                        if (w > 0) zoteroTitleBar.style.paddingInlineEnd = w + "px";
+                    }
+                } catch (er) {}
+            };
+            try {
+                const mo = new win.MutationObserver(positionButtonbox);
+                mo.observe(menubar, { attributes: true, attributeFilter: ["wv-compact-hidden"] });
+                stash.buttonboxObserver = mo;
+            } catch (er) {}
+
             win._wvCompactTitleBar = stash;
         } catch (e) {
             Zotero.debug("[Weavero] _applyCompactTitleBar err: " + e);
@@ -3323,6 +3356,12 @@ class _PaneMixin {
             const iconContainer = titlebar ? titlebar.querySelector(".titlebar-icon-container") : null;
             const buttonbox = doc.querySelector(".titlebar-buttonbox");
             const stash = win._wvCompactTitleBar || {};
+
+            // 0. Stop the buttonbox-position observer before touching the
+            //    menubar attribute, so it doesn't fire mid-revert; and clear the
+            //    tab-strip width reservation it may have set.
+            try { if (stash.buttonboxObserver) stash.buttonboxObserver.disconnect(); } catch (e) {}
+            try { const ztb = doc.getElementById("zotero-title-bar"); if (ztb) ztb.style.paddingInlineEnd = ""; } catch (e) {}
 
             // 1. Move buttonbox back. If we have an original anchor, use
             //    it; otherwise force it back into #titlebar (the canonical
@@ -3413,7 +3452,12 @@ class _PaneMixin {
                    sized to its content width and won't shrink even with
                    min-width:0 in this XUL context), so step out of the flex
                    flow entirely. */
-                "#zotero-title-bar { position: relative; }",
+                /* Make the tab strip's empty / reserved area window-draggable
+                   too (incl. the space the controls vacate when the Alt menu is
+                   shown). Children keep their own dragging: #tab-bar-container
+                   drags with tabs opting out, #zotero-tabs-toolbar + buttonbox
+                   stay no-drag, so only the empty area becomes a drag handle. */
+                "#zotero-title-bar { position: relative; -moz-window-dragging: drag; }",
                 "#zotero-title-bar > .titlebar-buttonbox {",
                 "  position: absolute;",
                 "  top: 0; right: 0; height: 100%;",
@@ -3426,6 +3470,13 @@ class _PaneMixin {
                 "#zotero-title-bar:has(> .titlebar-buttonbox) {",
                 "  padding-right: 138px;",
                 "}",
+                /* The revealed menu-bar row is window-draggable like a real title
+                   bar (click-and-hold the empty area to move the window); the
+                   menus and the window controls opt out so they stay clickable —
+                   the buttonbox is forced no-drag regardless of which row it's in. */
+                "#toolbar-menubar { -moz-window-dragging: drag; }",
+                "#toolbar-menubar menu, #toolbar-menubar menuitem { -moz-window-dragging: no-drag; }",
+                ".titlebar-buttonbox { -moz-window-dragging: no-drag; }",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
         } catch (e) {

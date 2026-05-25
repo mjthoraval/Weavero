@@ -25,6 +25,8 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
+import { BOOKMARK_PATH } from "./constants";
+
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
 declare const PathUtils: any;
@@ -47,14 +49,14 @@ const BM_ANNOTATION_ICONS: { [k: string]: string } = {
     text: "annotate-text.svg",
 };
 
-// Hollow bookmark-ribbon glyph for the toolbar button, Obsidian/Lucide
-// style (outline, no fill). `context-stroke` themes it; sized a touch
-// larger (18px) than the 16px neighbours.
+// Hollow bookmark-ribbon glyph for the toolbar button — the shared
+// even-odd outline (BOOKMARK_PATH), themed via `context-fill` (the
+// button sets -moz-context-properties + fill: currentColor). Sized a
+// touch larger (18px) than the 16px neighbours.
 const BOOKMARK_SVG =
     '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
-    + 'viewBox="0 0 24 24" fill="none" stroke="context-stroke" '
-    + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/>'
+    + 'viewBox="0 0 16 16" fill="context-fill">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/>'
     + '</svg>';
 
 // Neutral-gray fallback for a row whose target can't be resolved.
@@ -189,6 +191,30 @@ class _BookmarksMixin {
 
     _bmReaderKey(libraryID: number, itemKey: string) {
         return libraryID + ":" + itemKey;
+    }
+
+    /** Set of "lib:key" attachment keys that currently have reader bookmarks
+     *  (local or global). Cached; invalidated in _bmPersist on any change.
+     *  Used by the library "Has Bookmarks" filter for O(1) membership tests. */
+    _bmAttachmentsWithReaderBookmarks(): Set<string> {
+        if (this._bmAttBmSet) return this._bmAttBmSet;
+        const set = new Set<string>();
+        try {
+            const rb = (this._bmDoc && this._bmDoc.readerBookmarks) || {};
+            for (const k of Object.keys(rb)) {
+                const e = rb[k] || {};
+                if ((e.local && e.local.length) || (e.global && e.global.length)) set.add(k);
+            }
+        } catch (_) {}
+        this._bmAttBmSet = set;
+        return set;
+    }
+
+    /** True if the attachment (libraryID + itemKey) has reader bookmarks.
+     *  READ-ONLY; O(1) after the cached set is built. */
+    _bmAttachmentHasReaderBookmarks(libraryID: number, itemKey: string): boolean {
+        if (!this._bmDoc) { try { this._bmInit(); } catch (_) {} return false; }
+        return this._bmAttachmentsWithReaderBookmarks().has(this._bmReaderKey(libraryID, itemKey));
     }
 
     _bmReaderStore() {
@@ -678,6 +704,7 @@ class _BookmarksMixin {
     /** Atomic, serialized write of the current document to disk. */
     _bmPersist() {
         if (!this._bmDoc) return Promise.resolve();
+        this._bmAttBmSet = null;   // bookmark set changed → drop the "has bookmarks" cache
         const snapshot = JSON.stringify(this._bmDoc, null, 2);
         const dir = this._bmDir();
         const path = this._bmFilePath();

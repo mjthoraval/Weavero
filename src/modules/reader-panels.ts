@@ -22,6 +22,8 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
+import { BOOKMARK_PATH } from "./constants";
+
 declare const Components: any;
 declare const Services: any;
 
@@ -150,11 +152,12 @@ const RP_BM_TAB_ON = "wv-bm-tab-on";
 // on it (they only special-case "outline").
 const RP_BM_SIDEBAR_VIEW = "wv-bookmarks";
 
-// Outline-ribbon bookmark glyph (currentColor; themes with the toolbar).
+// Outline-ribbon bookmark glyph — the shared even-odd outline
+// (BOOKMARK_PATH), filled with currentColor so it themes with the
+// reader. Sized by CSS at each use (20px tab, 14px row/hover card).
 const RP_BM_RIBBON =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-    + 'stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
+    '<svg viewBox="0 0 16 16" fill="currentColor">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>';
 const RP_PLUS_SVG =
     '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>';
 // Quote glyph for selected-text bookmarks.
@@ -285,6 +288,7 @@ const RP_BM_CSS = [
     ".wv-bm-hovercard .wv-hc-tag{font-size:11px;padding:1px 6px;border-radius:8px;background:rgba(127,127,127,.18);}",
     ".wv-bm-hovercard .wv-hc-src{margin-top:3px;font-size:11px;opacity:.7;overflow-wrap:anywhere;}",
     ".wv-bm-hovercard .wv-hc-meta{margin-top:4px;font-size:11px;opacity:.55;}",
+    ".wv-bm-hovercard .wv-hc-meta + .wv-hc-meta{margin-top:1px;}",
 ].join("");
 
 class _ReaderPanelsMixin {
@@ -1756,13 +1760,8 @@ class _ReaderPanelsMixin {
         const label = idoc.createElementNS(NS, "span");
         label.className = "wv-bm-reader-label";
         label.textContent = bm.label || "Bookmark";
-        // Tooltip reveals the live original (source) name when the bookmark was
-        // renamed, so the original text stays reachable on hover; otherwise shows
-        // the full label (useful when truncated).
-        const origLbl = this._bmReaderIsRenamed(bm) ? this._bmReaderOriginalLabel(bm) : null;
-        label.setAttribute("title", (origLbl && origLbl !== bm.label)
-            ? ((bm.label || "") + "\nOriginal: " + origLbl)
-            : (bm.label || ""));
+        // No native `title` tooltip here — the rich hover card supersedes it
+        // (a title would show as a SECOND popup over the card).
         const page = idoc.createElementNS(NS, "span");
         page.className = "wv-bm-reader-page";
         // Annotation bookmarks don't store a pageLabel; derive it live from the
@@ -1909,7 +1908,7 @@ class _ReaderPanelsMixin {
             // text label) + the name + page (all always visible).
             const head = mk("wv-hc-head");
             const hic = this._wvReaderBuildBmIcon(reader, idoc, bm);
-            try { hic.setAttribute("title", info.kind || ""); } catch (_) {}
+            try { hic.setAttribute("aria-label", info.kind || ""); } catch (_) {}
             head.appendChild(hic);
             const nm = idoc.createElementNS(NS, "span"); nm.className = "wv-hc-name"; nm.textContent = bm.label || info.kind || "Bookmark"; head.appendChild(nm);
             if (info.page) { const pg = idoc.createElementNS(NS, "span"); pg.className = "wv-hc-page"; pg.textContent = "p. " + info.page; head.appendChild(pg); }
@@ -1947,7 +1946,7 @@ class _ReaderPanelsMixin {
             if (info.original) meta.push("original: " + info.original);
             if (info.itemCreated) meta.push("created " + info.itemCreated);
             if (info.created) meta.push("bookmarked " + info.created);
-            if (meta.length) card.appendChild(mk("wv-hc-meta", meta.join("  ·  ")));
+            for (const m of meta) card.appendChild(mk("wv-hc-meta", m));   // one per line
             // Keep the card alive while the cursor is over it (it's interactive).
             const win = idoc.defaultView;
             card.addEventListener("mouseenter", () => { try { if (this._wvBmHoverHideTimer) { win.clearTimeout(this._wvBmHoverHideTimer); this._wvBmHoverHideTimer = null; } } catch (_) {} });
@@ -2612,9 +2611,8 @@ class _ReaderPanelsMixin {
         try { dark = this._detectUIDark(); } catch (_) {}
         const color = dark ? "#e3e3e3" : "#555555";
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
-            + 'viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="2" '
-            + 'stroke-linecap="round" stroke-linejoin="round">'
-            + '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>';
+            + 'viewBox="0 0 16 16" fill="' + color + '">'
+            + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 

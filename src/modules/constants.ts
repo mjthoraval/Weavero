@@ -73,6 +73,21 @@ export const SCHEME_SVG_TEMPLATE =
     + ' 1.6815 3.36875 1.02513 4.02513C0.368749 4.6815 0 5.57174'
     + ' 0 6.5Z"/></svg>';
 
+// Canonical Weavero bookmark-ribbon glyph. A hollow ribbon drawn as a
+// FILLED shape under `fill-rule: evenodd` (no stroke) — an outer
+// contour plus an inner contour inset 1 px, so the rule fills only the
+// 1-px band between them. Authored for a 16×16 viewBox with every
+// straight edge on an integer pixel row, the exact technique Zotero's
+// `annotate-*.svg` icons use to render razor-sharp. Single-sourced so
+// every bookmark icon in the plugin (collections-pane toolbar button,
+// reader Bookmarks tab, reader list rows, hover card, reader
+// context-menu, library "Has Bookmarks" filter tile) is identical;
+// each call site only varies the size and paint (`context-fill`,
+// `currentColor`, or a baked colour). Outer ribbon spans x 3→13,
+// y 1→15 with the bottom V-notch apex centred at x=8.
+export const BOOKMARK_PATH =
+    "M3 1H13V15L8 12L3 15ZM4 2H12V13.234L8 10.834L4 13.234Z";
+
 // URL_SCHEMES (the user-toggleable scheme registry) lives in
 // modules/url.ts now and is re-imported here for the few non-URL
 // call sites (CSS selector building, default-pref seeding,

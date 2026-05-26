@@ -26,6 +26,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH } from "./constants";
+import { BM_HOVERCARD_CSS } from "./reader-panels";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -120,7 +121,7 @@ const BM_RENAME_ICON = "data:image/svg+xml," + encodeURIComponent(
 // flyout sub-panels (each flyout is a separate <panel>, not nested in the
 // main one). The wv-bm-* classes are unique to this module.
 const BM_POPUP_CSS = [
-    "#" + BM_INNER_ID + ",.wv-bm-flyout-inner{display:flex;flex-direction:column;min-width:230px;max-width:340px;max-height:460px;padding:4px;}",
+    "#" + BM_INNER_ID + ",.wv-bm-flyout-inner{position:relative;display:flex;flex-direction:column;min-width:230px;max-width:340px;max-height:460px;padding:4px;}",
     ".wv-bm-flyout-inner{overflow:auto;}",
     "#" + BM_INNER_ID + " .wv-bm-actions{display:flex;align-items:center;gap:2px;padding:2px 4px;}",
     ".wv-bm-iconbtn{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;background:none;cursor:pointer;border-radius:5px;}",
@@ -386,8 +387,16 @@ class _BookmarksMixin {
                     const lib: any = Zotero.Libraries.get(bm.libraryID);
                     return (lib && lib.name) ? String(lib.name) : null;
                 }
-                case "position":
-                    return bm.pageLabel ? ("Page " + bm.pageLabel) : null;
+                case "position": {
+                    // Use the live-aware page-label resolver so a pin that
+                    // changed pages (drag, re-anchor) tracks the current
+                    // PDF label table on every re-render, rather than the
+                    // stale `bm.pageLabel` captured at create / last-move
+                    // time. The resolver falls back to bm.pageLabel when no
+                    // open reader matches.
+                    const live = this._bmReaderPageLabel(bm);
+                    return live ? ("Page " + live) : null;
+                }
                 default:
                     return null;   // text (no live source), treerow (not re-derived here)
             }
@@ -420,13 +429,76 @@ class _BookmarksMixin {
     _bmReaderPageLabel(bm: any): string {
         try {
             if (!bm) return "";
-            if (bm.pageLabel) return String(bm.pageLabel);
+            // ANNOTATION bookmark → `annotationPageLabel` directly (same as
+            // upstream's annotations sidebar; never re-derive, so the two
+            // listings always agree).
             if (bm.type === "item") {
-                const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                let it: any = null;
+                try { it = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey); } catch (_) {}
                 if (it && it.isAnnotation && it.isAnnotation() && it.annotationPageLabel) {
                     return String(it.annotationPageLabel);
                 }
             }
+            // PIN / TEXT bookmark → match the ANNOTATIONS-SIDEBAR convention,
+            // which uses `annotationPageLabel` stored on each annotation (NOT
+            // the PDF's `_pageLabels` table). The two can disagree: a PDF may
+            // ship rich labels like "4843" while annotations were saved when
+            // those labels weren't loaded yet so they got `pageIndex + 1`
+            // ("5"). The user wants pin/text to read like an annotation, so:
+            //   1. Look up any annotation on the same pageIndex of this
+            //      attachment → use its annotationPageLabel.
+            //   2. No annotation on that page → fall back to pageIndex + 1
+            //      (what Zotero's annotation code uses as a last resort).
+            // We never reach for pv._pageLabels here — it answers a different
+            // question ("what does the PDF call this page?") that we don't
+            // want to expose, since it'd disagree with the annotation row.
+            if ((bm.type === "position" || bm.type === "text")
+                    && bm.position && Number.isInteger(bm.position.pageIndex)) {
+                const pageIndex = bm.position.pageIndex;
+                // Find this bookmark's owning attachment. LOCAL records carry
+                // no libraryID/itemKey — they're identified only by being in a
+                // particular attachment's doc.local list. CROSS-DOC ("global")
+                // records carry srcLibraryID/srcItemKey.
+                const srcLib = bm.srcLibraryID != null ? bm.srcLibraryID : null;
+                const srcKey = bm.srcItemKey || null;
+                let att: any = null;
+                try {
+                    if (srcLib != null && srcKey) {
+                        const id = Zotero.Items.getIDFromLibraryAndKey(srcLib, srcKey);
+                        if (id) att = Zotero.Items.get(id);
+                    } else {
+                        const readers: any[] = (Zotero as any).Reader && (Zotero as any).Reader._readers || [];
+                        for (const r of readers) {
+                            let cand: any = null;
+                            try { cand = Zotero.Items.get(r.itemID); } catch (_) {}
+                            if (!cand) continue;
+                            const rdoc = this._bmReaderDoc(cand.libraryID, cand.key);
+                            const owns = !!(rdoc && rdoc.local && rdoc.local.some((n: any) => n && n.id === bm.id));
+                            if (owns) { att = cand; break; }
+                        }
+                    }
+                } catch (_) {}
+                if (att && att.getAnnotations) {
+                    try {
+                        for (const a of (att.getAnnotations() || [])) {
+                            try {
+                                const raw = a.annotationPosition;
+                                const pos = (typeof raw === "string") ? JSON.parse(raw) : raw;
+                                if (pos && pos.pageIndex === pageIndex
+                                        && a.annotationPageLabel) {
+                                    return String(a.annotationPageLabel);
+                                }
+                            } catch (__) {}
+                        }
+                    } catch (_) {}
+                }
+                // No same-page annotation. Use the index-based fallback (what
+                // Zotero itself uses when annotationPageLabel can't be derived
+                // from the PDF — keeps pin labels in the same "number space"
+                // as annotation labels).
+                return String(pageIndex + 1);
+            }
+            if (bm.pageLabel) return String(bm.pageLabel);
             return "";
         } catch (_) { return ""; }
     }
@@ -1064,7 +1136,17 @@ class _BookmarksMixin {
             const win = Zotero.getMainWindow();
             const zp = win && win.ZoteroPane;
             if (!zp) return;
+            // Library-side bookmarks (library / saved search / collection)
+            // need the main library tab focused first; otherwise the selection
+            // happens in a tree the user can't see while a reader tab is on top.
+            // (For item bookmarks `selectItem` already does this — see
+            // zoteroPane.js:3086 — so we only need the explicit jump here.)
+            const tabs: any = (win as any).Zotero_Tabs;
+            const jumpToLibrary = () => {
+                try { if (tabs && typeof tabs.select === "function") tabs.select("zotero-pane"); } catch (_) {}
+            };
             if (bm.type === "library") {
+                jumpToLibrary();
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectLibrary === "function") {
                     await cv.selectLibrary(bm.libraryID);
@@ -1072,6 +1154,7 @@ class _BookmarksMixin {
                 return;
             }
             if (bm.type === "treerow") {
+                jumpToLibrary();
                 const cv = zp.collectionsView;
                 if (cv && typeof cv.selectByID === "function") {
                     await cv.selectByID(bm.rowID);
@@ -1079,6 +1162,7 @@ class _BookmarksMixin {
                 return;
             }
             if (bm.type === "collection") {
+                jumpToLibrary();
                 const col = Zotero.Collections.getByLibraryAndKey(
                     bm.libraryID, bm.collectionKey);
                 if (col && zp.collectionsView
@@ -1333,7 +1417,11 @@ class _BookmarksMixin {
         if (doc.getElementById(BM_STYLE_ID)) return;
         const style = doc.createElementNS(NS_HTML, "style");
         style.id = BM_STYLE_ID;
-        style.textContent = BM_POPUP_CSS;
+        // Include the rich-hover-card CSS so library-pane bookmark rows can
+        // show the same details popup the reader does (anchor: the bookmark
+        // row; rendered in the popup's HTML body via _wvReaderShowBmHoverCard
+        // with reader=null).
+        style.textContent = BM_POPUP_CSS + BM_HOVERCARD_CSS;
         (doc.documentElement || doc).appendChild(style);
     }
 
@@ -1375,6 +1463,11 @@ class _BookmarksMixin {
         win = win || Zotero.getMainWindow();
         const doc = win && win.document;
         if (!doc) return;
+        // Cancel any pending hover-card show timer (set by a row's mouseenter)
+        // and remove a currently-shown card. Otherwise a 450ms timer queued
+        // just before close could fire post-removal and reattach to doc.body.
+        try { if (this._wvBmHoverTimer && win) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+        try { this._wvReaderHideBmHoverCard(doc); } catch (_) {}
         this._bmCloseAllFlyouts();
         this._bmRemoveDismiss();
         doc.getElementById(BM_ROW_MENU_ID)?.remove();
@@ -1662,6 +1755,20 @@ class _BookmarksMixin {
 
         // Hovering a non-folder cancels any pending sibling-folder open.
         row.addEventListener("mouseenter", () => this._bmCancelOpenTimer());
+        // Rich hover card (same look as the reader bookmarks pane). Show on
+        // delay; cancel if the cursor leaves before the timer fires.
+        row.addEventListener("mouseenter", () => {
+            try { if (this._wvBmHoverHideTimer && win) win.clearTimeout(this._wvBmHoverHideTimer); this._wvBmHoverHideTimer = null; } catch (_) {}
+            try { if (this._wvBmHoverTimer && win) win.clearTimeout(this._wvBmHoverTimer); } catch (_) {}
+            this._wvBmHoverTimer = win.setTimeout(() => {
+                this._wvBmHoverTimer = null;
+                try { this._wvReaderShowBmHoverCard(null, doc, row, bm); } catch (_) {}
+            }, 450);
+        });
+        row.addEventListener("mouseleave", () => {
+            try { if (this._wvBmHoverTimer && win) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+            try { this._wvReaderScheduleHideBmHoverCard(doc); } catch (_) {}
+        });
         row.addEventListener("click", (e: any) => {
             this._bmActivateBookmark(bm, e);
             this._bmHidePopup(win);
@@ -1669,6 +1776,10 @@ class _BookmarksMixin {
         row.addEventListener("contextmenu", (e: any) => {
             e.preventDefault();
             e.stopPropagation();
+            // Right-click dismisses the hover card immediately (re-hover
+            // re-shows it after the standard delay).
+            try { if (this._wvBmHoverTimer && win) { win.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+            try { this._wvReaderHideBmHoverCard(doc); } catch (_) {}
             this._bmRowContextMenu(win, bm, e.screenX, e.screenY);
         });
         this._bmAttachDragHandlers(doc, win, row, bm, false);

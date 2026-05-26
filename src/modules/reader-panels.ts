@@ -802,9 +802,15 @@ class _ReaderPanelsMixin {
         } catch (_) {}
         if (this._wvReaderFilterDismiss) {
             try {
-                const { docs, wins, onDown, onKey } = this._wvReaderFilterDismiss;
+                const { docs, wins, onDown, onKey, swallowLoneAlt } = this._wvReaderFilterDismiss;
                 for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }
-                for (const w of (wins || [])) { try { w.removeEventListener("keydown", onKey, true); } catch (_) {} }
+                for (const w of (wins || [])) {
+                    try { w.removeEventListener("keydown", onKey, true); } catch (_) {}
+                    if (swallowLoneAlt) {
+                        try { w.removeEventListener("keydown", swallowLoneAlt, true); } catch (_) {}
+                        try { w.removeEventListener("keyup", swallowLoneAlt, true); } catch (_) {}
+                    }
+                }
             } catch (_) {}
             this._wvReaderFilterDismiss = null;
         }
@@ -813,6 +819,10 @@ class _ReaderPanelsMixin {
     _wvOpenReaderFilterPopup(reader: any, idoc: any, anchorBtn: any) {
         try {
             this._wvEnsureReaderPanelStyles(idoc);
+            // Remove any leftover popup before creating a fresh one — protects
+            // against stale stylings (e.g. visibility:hidden) inherited from a
+            // previous render lingering when a caller bypasses the toggle path.
+            try { const old = idoc.getElementById(RP_FILTER_POPUP_ID); if (old) old.remove(); } catch (_) {}
             const popup = idoc.createElementNS(NS_HTML_RP, "div");
             popup.id = RP_FILTER_POPUP_ID;
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
@@ -851,6 +861,20 @@ class _ReaderPanelsMixin {
                 const top = idoc.defaultView && idoc.defaultView.top;
                 if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); }
             } catch (_) {}
+            // The reader iframe is its own docshell, so `.top` returns itself
+            // (verified: `iframeWin === iframeWin.top`). The CHROME WINDOW
+            // that hosts the reader iframe — and owns the menubar that Alt
+            // activates — is reached via `_iframe.ownerDocument.defaultView`.
+            // For a reader opened as a tab in the main window this is
+            // zoteroPane.xhtml; for a stand-alone reader it's reader.xhtml.
+            // Either way, attach there so swallowLoneAlt actually catches Alt.
+            try {
+                const hostWin = reader._iframe && reader._iframe.ownerDocument && reader._iframe.ownerDocument.defaultView;
+                if (hostWin && wins.indexOf(hostWin) < 0) {
+                    if (hostWin.document && docs.indexOf(hostWin.document) < 0) docs.push(hostWin.document);
+                    wins.push(hostWin);
+                }
+            } catch (_) {}
             // Nested content iframes (PDF.js / EPUB page) — walk 2 levels so
             // a click on the page itself also dismisses.
             const collectFrames = (doc2: any, depth: number) => {
@@ -874,7 +898,29 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey };
+            // Swallow lone-Alt while the popup is open. Same INTENT as the
+            // library filter's swallowLoneAlt (filter.ts:4150-4165), but
+            // attached to the WINDOWs that received the wins[] collection
+            // (iframe + chrome host), not to the popup element. The library
+            // works because a XUL <panel> auto-focuses on open, so subsequent
+            // Alt keys land on a panel descendant and its capture listener
+            // sees them. The reader popup is an HTML <div> with no auto-focus,
+            // so focus stays in the reader (PDF view / toolbar / wherever)
+            // and the popup never sees the Alt event. Window-level capture
+            // catches it before Mozilla's menubar handler runs — regardless
+            // of where focus is. Other modifiers (Shift / Ctrl / Meta) pass
+            // through so Alt+click and accelerator combos still work.
+            const swallowLoneAlt = (e: any) => {
+                if (e.key !== "Alt") return;
+                if (e.ctrlKey || e.shiftKey || e.metaKey) return;
+                e.preventDefault();
+                e.stopPropagation();
+            };
+            for (const w of wins) {
+                try { w.addEventListener("keydown", swallowLoneAlt, true); } catch (_) {}
+                try { w.addEventListener("keyup", swallowLoneAlt, true); } catch (_) {}
+            }
+            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt };
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenReaderFilterPopup err: " + e);
         }
@@ -990,8 +1036,10 @@ class _ReaderPanelsMixin {
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvCloseReaderFilterPopup(idoc);
         });
-        // Both are only meaningful when something is set — hide otherwise
-        // (same visibility rule as the library popup's renderHeader).
+        // Show Clear / Clear-and-Close only when at least one filter dimension
+        // is set. Hidden via inline visibility (preserves layout); the chip-
+        // toggle paths call `_wvRenderReaderFilterPopup` which re-runs this
+        // check so the buttons appear/disappear in lockstep with state.
         const anyActive = this._wvReaderFilterActive(reader);
         clearBtn.style.visibility = anyActive ? "" : "hidden";
         clearCloseBtn.style.visibility = anyActive ? "" : "hidden";
@@ -1160,10 +1208,17 @@ class _ReaderPanelsMixin {
         });
 
         // ---- Tags (coloured dot when the tag has a colour) — include via native.
+        //      All tags share a single .wv-filter-or-group row so they read as
+        //      one logical "tags" group; coloured tags come FIRST (then plain,
+        //      alphabetical within each subset) to mirror Zotero's library tag
+        //      selector — but on the same line, wrapping if it overflows.
         if (tagsPresent.size) {
-            const tags = Array.from(tagsPresent).sort((a, b) => a.localeCompare(b));
+            const tagsAll = Array.from(tagsPresent);
+            const tagsColored = tagsAll.filter(t => !!tagColors[t]).sort((a, b) => a.localeCompare(b));
+            const tagsPlain = tagsAll.filter(t => !tagColors[t]).sort((a, b) => a.localeCompare(b));
+            const tagsSorted = [...tagsColored, ...tagsPlain];
             addRow((opts: any) => {
-                for (const tg of tags) {
+                for (const tg of tagsSorted) {
                     const col = tagColors[tg];
                     opts.appendChild(mkNativeOpt("tags", nat.tags, st.tagsExcl, tg,
                         "Tag: " + tg + " — Alt+click to exclude",

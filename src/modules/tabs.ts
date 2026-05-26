@@ -873,7 +873,17 @@ class _TabsMixin {
                             // `_wvMergeDragInfo` (set by reader dragstart;
                             // dragover can't getData() the MIME).
                             let ghost: any = regulars.querySelector(".wv-merge-ghost");
-                            const info: any = (self as any)._wvMergeDragInfo || {};
+                            // Read mergeInfo from the LIVE plugin instance via
+                            // Zotero.Weavero.plugin — not via the captured `self`
+                            // closure. Plugin reload swaps the WeaveroPlugin
+                            // instance, but the dragover handler stays wired to
+                            // the container (idempotent guard `_wvPinDragWired`)
+                            // and so `self` would otherwise point at the OLD,
+                            // destroyed instance whose `_wvMergeDragInfo` is
+                            // null. Symptom: every cross-window drag falls into
+                            // the default `attachmentPDF` icon branch.
+                            const livePlugin: any = (Zotero as any).Weavero?.plugin;
+                            const info: any = (livePlugin && livePlugin._wvMergeDragInfo) || {};
                             if (!ghost) {
                                 ghost = doc.createElementNS(
                                     "http://www.w3.org/1999/xhtml", "div");

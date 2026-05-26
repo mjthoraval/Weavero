@@ -833,18 +833,7 @@ class _TabsMixin {
         const wrap = doc.createXULElement("vbox");
         wrap.setAttribute("class", "wv-tab-tooltip-wrap");
 
-        // Tab title row.
-        const titleEl = doc.createXULElement("description");
-        titleEl.setAttribute("class", "wv-tab-tooltip-title");
-        titleEl.textContent = tabData.title || "";
-        wrap.appendChild(titleEl);
-
-        // Thin separator between title and library header.
-        const sep = doc.createXULElement("box");
-        sep.setAttribute("class", "wv-tab-tooltip-sep");
-        wrap.appendChild(sep);
-
-        // Library header: themed library-group icon + library name,
+        // Library header first: themed library-group icon + library name,
         // same visual as the popup's section header. The XUL <image>
         // element renders the SVG via `chrome://` URL with
         // -moz-context-properties so it picks up the right fill.
@@ -861,6 +850,17 @@ class _TabsMixin {
         nameEl.textContent = lib.name;
         headerRow.appendChild(nameEl);
         wrap.appendChild(headerRow);
+
+        // Thin separator between library header and tab title.
+        const sep = doc.createXULElement("box");
+        sep.setAttribute("class", "wv-tab-tooltip-sep");
+        wrap.appendChild(sep);
+
+        // Tab title row (below the library label).
+        const titleEl = doc.createXULElement("description");
+        titleEl.setAttribute("class", "wv-tab-tooltip-title");
+        titleEl.textContent = tabData.title || "";
+        wrap.appendChild(titleEl);
 
         tooltip.appendChild(wrap);
         return true;
@@ -938,6 +938,12 @@ class _TabsMixin {
         ic.className = "wv-tabs-menu-filetype-icon";
         ic.src = "chrome://zotero/skin/16/universal/filter.svg";
         btn.appendChild(ic);
+        // Blue active-filter dot on the funnel — same convention as the library
+        // and reader filter buttons (shown via .wv-active, set by
+        // _refreshFileTypeFilterButtonState when a file-type filter is set).
+        const dot = doc.createElementNS(NS_HTML, "span");
+        dot.className = "wv-tabs-menu-filetype-dot";
+        btn.appendChild(dot);
         // Tiny chevron — matches the look of a XUL toolbarbutton
         // dropmarker (8×8 ▾). Inline SVG so it inherits the same
         // currentColor treatment as the icon.

@@ -3100,6 +3100,27 @@ class _PaneMixin {
             // 1) Move window-controls buttonbox to right end of the tab strip.
             zoteroTitleBar.appendChild(buttonbox);
 
+            // 1b) Firefox-style titlebar spacer — a fixed 40 px draggable
+            //     strip placed IMMEDIATELY left of the window controls.
+            //     The buttonbox is absolute-positioned, so this in-flow
+            //     spacer ends up flush against the buttonbox's left edge
+            //     (the buttonbox sits over the 138 px padding-right zone).
+            //     Drag-region opt-in is in the shared stylesheet.
+            const NSHTML = "http://www.w3.org/1999/xhtml";
+            // Drop any pre-tabs spacer left over from an earlier build that
+            // shipped one — the post-tabs slot is enough to grab the window.
+            try { for (const old of zoteroTitleBar.querySelectorAll(".wv-titlebar-spacer[type='pre-tabs']")) old.remove(); } catch (_) {}
+            let postSpacer = zoteroTitleBar.querySelector(".wv-titlebar-spacer[type='post-tabs']");
+            if (!postSpacer) {
+                postSpacer = doc.createElementNS(NSHTML, "div");
+                postSpacer.setAttribute("class", "wv-titlebar-spacer");
+                postSpacer.setAttribute("type", "post-tabs");
+                // Place just before the buttonbox; the buttonbox was appended
+                // last in step 1 so it's at the end of zoteroTitleBar.
+                zoteroTitleBar.insertBefore(postSpacer, buttonbox);
+            }
+            stash.postSpacer = postSpacer;
+
             // 2) Leave the icon container alone — it lives inside `#titlebar`,
             //    so it collapses naturally when our :has() CSS rule hides
             //    the row, and reappears together with the menubar when
@@ -3173,6 +3194,20 @@ class _PaneMixin {
                     if (open && (open.state === "open" || open.state === "showing")) {
                         return true;
                     }
+                    // READER filter popup — it lives in a reader iframe (not
+                    // the chrome window's doc), has id `wv-reader-filter-popup`
+                    // (see RP_FILTER_POPUP_ID in reader-panels.ts), and is an
+                    // HTML <div> (no XUL .state). Walk open readers whose
+                    // chrome host IS this window and check.
+                    try {
+                        const readers: any[] = (Zotero as any).Reader && (Zotero as any).Reader._readers || [];
+                        for (const r of readers) {
+                            const hostWin = r && r._iframe && r._iframe.ownerDocument && r._iframe.ownerDocument.defaultView;
+                            if (hostWin !== win) continue;
+                            const idoc = r._iframe.contentDocument;
+                            if (idoc && idoc.getElementById("wv-reader-filter-popup")) return true;
+                        }
+                    } catch (er) {}
                 } catch (er) {}
                 return false;
             };
@@ -3380,6 +3415,18 @@ class _PaneMixin {
                 }
             } catch (e) {}
 
+            // 1b. Remove our titlebar spacers (pre-tabs / post-tabs). Use the
+            //     stashed refs when present, else fall back to a query so
+            //     spacers from a partial earlier apply still get cleaned up.
+            try {
+                const spacers: any[] = [];
+                if (stash.preSpacer) spacers.push(stash.preSpacer);
+                if (stash.postSpacer) spacers.push(stash.postSpacer);
+                const ztb = doc.getElementById("zotero-title-bar");
+                if (ztb) for (const s of ztb.querySelectorAll(".wv-titlebar-spacer")) spacers.push(s);
+                for (const s of spacers) { try { s.remove(); } catch (_) {} }
+            } catch (e) {}
+
             // 2. Restore icon container display. Newer code (post-v0.8.8-
             //    dev.20) doesn't touch the icon container — but older
             //    stashes may have an iconDisplay value, so we still
@@ -3477,6 +3524,15 @@ class _PaneMixin {
                 "#toolbar-menubar { -moz-window-dragging: drag; }",
                 "#toolbar-menubar menu, #toolbar-menubar menuitem { -moz-window-dragging: no-drag; }",
                 ".titlebar-buttonbox { -moz-window-dragging: no-drag; }",
+                /* Firefox-style titlebar spacers — fixed 40 px draggable strips
+                   that reserve grabbable area before the tabs (pre-tabs) and
+                   between the tabs and the tabs-toolbar (post-tabs). Using
+                   flex-basis ensures the spacer isn't consumed by the
+                   tab-bar-container's flex-grow when tabs fill the strip. */
+                "#zotero-title-bar > .wv-titlebar-spacer {",
+                "  flex: 0 0 40px; width: 40px; min-width: 40px;",
+                "  -moz-window-dragging: drag;",
+                "}",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
         } catch (e) {

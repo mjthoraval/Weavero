@@ -221,7 +221,14 @@ class _PaneMixin {
                         "[Weavero] itemmenu popupshowing err: " + showErr);
                 }
             };
-            const onHidden = () => {
+            const onHidden = (ev: any) => {
+                // Ignore popuphidden events that bubbled up from descendant
+                // submenu popups (e.g. a third-party plugin's submenu
+                // closing on cursor-move). Without this guard our items
+                // get stripped whenever any submenu closes — they appear
+                // to "disappear" until the parent menu shows again. See
+                // issue #8.
+                if (!ev || ev.target !== menu) return;
                 try {
                     for (const id of ALL_IDS) {
                         const el = doc.getElementById(id);
@@ -229,9 +236,15 @@ class _PaneMixin {
                     }
                 } catch (e) {}
             };
-            menu.addEventListener("popupshowing", onShowing);
+            const onShowingGuarded = (ev: any) => {
+                // Same bubble-up guard: don't re-run the full rebuild on
+                // every descendant submenu open (cosmetic flicker + waste).
+                if (!ev || ev.target !== menu) return;
+                onShowing();
+            };
+            menu.addEventListener("popupshowing", onShowingGuarded);
             menu.addEventListener("popuphidden", onHidden);
-            this._itemMenuHandlers = { menu, onShowing, onHidden };
+            this._itemMenuHandlers = { menu, onShowing: onShowingGuarded, onHidden };
         } catch (e) {
             Zotero.debug("[Weavero] _setupItemsListContextMenu err: " + e);
         }
@@ -424,7 +437,11 @@ class _PaneMixin {
                         "[Weavero] collectionmenu popupshowing err: " + showErr);
                 }
             };
-            const onHidden = () => {
+            const onHidden = (ev: any) => {
+                // Ignore popuphidden events that bubbled up from descendant
+                // submenu popups. See `_setupItemsListContextMenu` for
+                // the full rationale (issue #8).
+                if (!ev || ev.target !== menu) return;
                 try {
                     for (const id of ALL_IDS) {
                         const el = doc.getElementById(id);
@@ -432,9 +449,13 @@ class _PaneMixin {
                     }
                 } catch (e) {}
             };
-            menu.addEventListener("popupshowing", onShowing);
+            const onShowingGuarded = (ev: any) => {
+                if (!ev || ev.target !== menu) return;
+                onShowing();
+            };
+            menu.addEventListener("popupshowing", onShowingGuarded);
             menu.addEventListener("popuphidden", onHidden);
-            this._collectionMenuHandlers = { menu, onShowing, onHidden };
+            this._collectionMenuHandlers = { menu, onShowing: onShowingGuarded, onHidden };
         } catch (e) {
             Zotero.debug("[Weavero] _setupCollectionsContextMenu err: " + e);
         }

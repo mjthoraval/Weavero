@@ -5350,6 +5350,54 @@ class _FilterMixin {
         while (inner.firstChild) inner.removeChild(inner.firstChild);
 
         const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+        // Filter-search row at the very top: magnifier (right-aligned) toggles
+        // a search input that hides any section / group header whose visible
+        // text doesn't include the query. Useful when there are many filter
+        // sections and you want to jump straight to one by name.
+        const fSearchBar = doc.createElementNS(NS_HTML, "div");
+        fSearchBar.className = "wv-filter-popup-search-bar";
+        const fSearchBtn = doc.createElementNS(NS_HTML, "button");
+        fSearchBtn.className = "wv-filter-popup-search-btn";
+        fSearchBtn.setAttribute("type", "button");
+        fSearchBtn.setAttribute("title", "Search filter options");
+        fSearchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="4"/><line x1="9.2" y1="9.2" x2="13" y2="13"/></svg>';
+        const fSearchInput = doc.createElementNS(NS_HTML, "input") as any;
+        fSearchInput.className = "wv-filter-popup-search-input";
+        fSearchInput.setAttribute("type", "text");
+        fSearchInput.setAttribute("placeholder", "Search filters…");
+        fSearchInput.style.display = "none";
+        const fApplyFilter = () => {
+            const q = String(fSearchInput.value || "").trim().toLowerCase();
+            const els = inner.querySelectorAll(".wv-filter-section, .wv-filter-group-header");
+            for (const el of els) {
+                const t = String((el as any).textContent || "").toLowerCase();
+                (el as any).style.display = (!q || t.indexOf(q) >= 0) ? "" : "none";
+            }
+        };
+        fSearchInput.addEventListener("input", fApplyFilter);
+        fSearchInput.addEventListener("keydown", (ev: any) => {
+            if (ev.key === "Escape") {
+                fSearchInput.value = ""; fSearchInput.style.display = "none";
+                fSearchBtn.classList.remove("wv-active"); fApplyFilter();
+            }
+        });
+        fSearchBtn.addEventListener("click", (ev: any) => {
+            ev.preventDefault(); ev.stopPropagation();
+            const showing = fSearchInput.style.display !== "none";
+            if (showing) {
+                fSearchInput.value = ""; fSearchInput.style.display = "none";
+                fSearchBtn.classList.remove("wv-active");
+            } else {
+                fSearchInput.style.display = "";
+                fSearchBtn.classList.add("wv-active");
+                try { fSearchInput.focus(); } catch (_) {}
+            }
+            fApplyFilter();
+        });
+        fSearchBar.appendChild(fSearchBtn);
+        fSearchBar.appendChild(fSearchInput);
+        inner.appendChild(fSearchBar);
         const colorSection = doc.createElementNS(NS_HTML, "div");
         const typeSection = doc.createElementNS(NS_HTML, "div");
         const commentSection = doc.createElementNS(NS_HTML, "div");

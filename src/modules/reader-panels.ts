@@ -204,9 +204,46 @@ const RP_BM_CSS = [
     ".wv-bm-reader-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid rgba(127,127,127,.2);}",
     ".wv-bm-reader-head .wv-bm-reader-htitle{flex:1;font-weight:600;opacity:.75;font-size:11px;text-transform:uppercase;letter-spacing:.04em;}",
     ".wv-bm-reader-add{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;background:none;cursor:pointer;border-radius:4px;color:inherit;}",
+    // Single-row header: scope toggle (segmented) on the left, + button right.
+    ".wv-bm-scope-toggle{display:flex;align-items:center;gap:6px;padding:6px 8px;}",
+    ".wv-bm-scope-group{display:flex;flex:1;min-width:0;}",
+    ".wv-bm-scope-btn{flex:1;padding:3px 6px;font-size:11px;border:1px solid rgba(127,127,127,.35);background:none;color:inherit;cursor:pointer;opacity:.7;}",
+    ".wv-bm-scope-group .wv-bm-scope-btn:first-child{border-radius:4px 0 0 4px;}",
+    ".wv-bm-scope-group .wv-bm-scope-btn:last-child{border-radius:0 4px 4px 0;border-left:none;}",
+    ".wv-bm-scope-btn:hover{opacity:.95;background:rgba(127,127,127,.12);}",
+    ".wv-bm-scope-btn.wv-bm-scope-active{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);opacity:1;}",
+    // Search affordance — magnifier in the header row, input row below.
+    ".wv-bm-search-btn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;background:none;cursor:pointer;border-radius:4px;color:inherit;opacity:.65;}",
+    ".wv-bm-search-btn:hover{opacity:1;background:rgba(127,127,127,.14);}",
+    ".wv-bm-search-btn.wv-bm-search-active{opacity:1;background:rgba(127,127,127,.18);}",
+    ".wv-bm-search-row{display:flex;padding:0 8px 6px;}",
+    ".wv-bm-search-input{flex:1;padding:3px 6px;font-size:12px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
+    ".wv-bm-search-input:focus{outline:none;border-color:var(--color-accent,#5e6ad2);}",
+    // Dim folders shown only because of a matching descendant (the folder
+    // itself doesn't match the search query) so direct matches stand out.
+    ".wv-bm-reader-row.wv-bm-dimmed{opacity:.55;}",
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     ".wv-bm-reader-add svg{width:15px;height:15px;fill:currentColor;}",
     ".wv-bm-reader-list{flex:1 1 auto;overflow:auto;min-height:0;padding:4px;}",
+    // Filter chips at the bottom (selector strip) — mirrors the annotations
+    // pane's color/tag/author rows. Persists across scopes and dimensions
+    // AND together (a node must satisfy every active row).
+    ".wv-bm-chip-bar{flex:0 0 auto;border-top:1px solid rgba(127,127,127,.2);padding:6px 8px;display:none;flex-direction:column;gap:5px;}",
+    ".wv-bm-chip-bar.wv-bm-chip-bar-on{display:flex;}",
+    ".wv-bm-chip-row{display:flex;flex-wrap:wrap;gap:4px;}",
+    ".wv-bm-chip-color{width:14px;height:14px;border-radius:50%;cursor:pointer;border:1.5px solid transparent;box-sizing:border-box;}",
+    ".wv-bm-chip-color.selected{border-color:var(--fill-secondary,#666);box-shadow:0 0 0 1px var(--fill-secondary,#666) inset;}",
+    ".wv-bm-chip-color.inactive{opacity:.35;}",
+    ".wv-bm-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;font-size:11px;line-height:1.4;border:1px solid rgba(127,127,127,.4);border-radius:10px;cursor:pointer;background:rgba(127,127,127,.06);color:inherit;user-select:none;-moz-user-select:none;}",
+    ".wv-bm-chip:hover{background:rgba(127,127,127,.16);}",
+    ".wv-bm-chip.selected{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-chip.inactive{opacity:.45;}",
+    ".wv-bm-chip-tag-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}",
+    ".wv-bm-chip-type{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid rgba(127,127,127,.4);border-radius:4px;cursor:pointer;background:rgba(127,127,127,.06);}",
+    ".wv-bm-chip-type:hover{background:rgba(127,127,127,.16);}",
+    ".wv-bm-chip-type.selected{background:var(--color-accent,#5e6ad2);border-color:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-chip-type svg{width:12px;height:12px;fill:currentColor;opacity:.85;}",
+    ".wv-bm-chip-type.selected svg{fill:#fff;opacity:1;}",
     ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
     // The reader's own CSS sets user-select:auto/text on text-bearing children
     // (the 📌 emoji, the label), so a press-drag on a row starts a text
@@ -285,11 +322,26 @@ const RP_BM_CSS = [
     ".wv-bm-hovercard .wv-hc-expand{display:block;margin-top:5px;font:inherit;font-size:11px;cursor:pointer;",
     "  color:var(--color-accent,#5e6ad2);background:none;border:none;padding:2px 0;text-align:left;}",
     ".wv-bm-hovercard .wv-hc-expand:hover{text-decoration:underline;}",
-    ".wv-bm-hovercard .wv-hc-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:2px 0;}",
-    ".wv-bm-hovercard .wv-hc-comment{margin:3px 0;padding:2px 7px;border-left:2px solid var(--color-accent,#5e6ad2);",
-    "  opacity:.92;white-space:pre-wrap;overflow-wrap:anywhere;}",
-    ".wv-bm-hovercard .wv-hc-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;}",
-    ".wv-bm-hovercard .wv-hc-tag{font-size:11px;padding:1px 6px;border-radius:8px;background:rgba(127,127,127,.18);}",
+    // Annotation-sidebar look: annotation text/comment get a coloured left bar
+    // (the annotation color, via --wv-ann-color set inline; a neutral fallback
+    // for non-annotation bookmarks). The text reads as a quote block.
+    ".wv-bm-hovercard .wv-hc-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:3px 0;padding:1px 0 1px 8px;border-left:3px solid var(--wv-ann-color,rgba(127,127,127,.35));}",
+    ".wv-bm-hovercard.wv-hc-has-color .wv-hc-text{font-style:italic;}",
+    ".wv-bm-hovercard .wv-hc-author{flex:0 0 auto;margin-left:auto;font-size:11px;opacity:.6;font-weight:400;white-space:nowrap;}",
+    // Comment block: NO colored left bar (Zotero's annotation sidebar styles
+    // `.comment` with only a faint bottom separator, no `.blockquote-border`
+    // — that's reserved for the highlight `.text` quote). Plain upright text
+    // with a small top gap so it reads as a follow-up to the quote.
+    ".wv-bm-hovercard .wv-hc-comment{margin:6px 0 3px;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;}",
+    ".wv-bm-hovercard .wv-hc-tags{display:flex;flex-wrap:wrap;align-items:center;gap:3px;margin-top:3px;}",
+    // Tag glyph: filled, same orange as the library filter's Has Tag tile
+    // (var(--accent-orange) — themed across light/dark).
+    ".wv-bm-hovercard .wv-hc-tag-ic{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:14px;height:14px;margin-right:2px;color:var(--accent-orange,#e08a3c);opacity:1;}",
+    ".wv-bm-hovercard .wv-hc-tag-ic svg{width:12px;height:12px;}",
+    ".wv-bm-hovercard .wv-hc-tag{font-size:11px;padding:1px 6px;border-radius:8px;background:rgba(127,127,127,.18);display:inline-flex;align-items:center;}",
+    // Colored dot prefix on tags that have a library-level Zotero tag color
+    // (matches the item pane's coloured-tag indicator).
+    ".wv-bm-hovercard .wv-hc-tag-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;flex:0 0 auto;box-shadow:0 0 0 1px rgba(0,0,0,.15);}",
     ".wv-bm-hovercard .wv-hc-src{margin-top:3px;font-size:11px;opacity:.7;overflow-wrap:anywhere;}",
     ".wv-bm-hovercard .wv-hc-meta{margin-top:4px;font-size:11px;opacity:.55;}",
     ".wv-bm-hovercard .wv-hc-meta + .wv-hc-meta{margin-top:1px;}",
@@ -413,6 +465,7 @@ class _ReaderPanelsMixin {
                 hasComment: null as (boolean | null),
                 hasRelated: null as (boolean | null),
                 hasLink: null as (boolean | null),
+                hasTag: null as (boolean | null),
             };
             this._wvReaderFilters.set(reader, st);
         }
@@ -442,7 +495,7 @@ class _ReaderPanelsMixin {
             || st.types.length || st.typesExcl.length
             || st.colorsExcl.length || st.tagsExcl.length
             || st.addedByExcl.length || st.modifiedBy.length || st.modifiedByExcl.length
-            || st.hasComment !== null || st.hasRelated !== null || st.hasLink !== null
+            || st.hasComment !== null || st.hasRelated !== null || st.hasLink !== null || st.hasTag !== null
             // "Hide Annotations in the Reader" counts as an active filter.
             || this._wvReaderAnnotationsHidden(reader));
     }
@@ -454,6 +507,166 @@ class _ReaderPanelsMixin {
             if (!att || typeof att.getAnnotations !== "function") return [];
             return att.getAnnotations() || [];
         } catch (e) { return []; }
+    }
+
+    // ---- Bookmarks-pane filter chips ---------------------------------------
+    // Bottom selector strip (colors / tags / authors / annotation types) that
+    // mirrors the annotations pane's bottom filter. Chip selections persist
+    // PER-READER across scope flips (This Document / Library / Elsewhere) so
+    // toggling scope doesn't lose the active filter. Strict matching with
+    // ancestor-folder dimming: non-matching items hide; folders that hold a
+    // matching descendant render dimmed (same idiom as the search filter).
+
+    _wvReaderBmChipState(reader: any) {
+        if (!this._wvBmChips) this._wvBmChips = new WeakMap();
+        let st = this._wvBmChips.get(reader);
+        if (!st) {
+            st = { colors: new Set<string>(), tags: new Set<string>(), authors: new Set<string>(), types: new Set<string>() };
+            this._wvBmChips.set(reader, st);
+        }
+        return st;
+    }
+
+    _wvReaderBmChipsActive(reader: any): boolean {
+        const st = this._wvReaderBmChipState(reader);
+        return (st.colors.size + st.tags.size + st.authors.size + st.types.size) > 0;
+    }
+
+    /** Walk every bookmark this reader can see (in-doc local + cross-doc global
+     *  + library tree) and collect facet → count. */
+    _wvReaderBmChipFacets(reader: any) {
+        const colors = new Map<string, number>();
+        const tags = new Map<string, { color: string, count: number }>();
+        const authors = new Map<string, number>();
+        const types = new Map<string, number>();
+        try {
+            const att = this._wvReaderAtt(reader);
+            const userLib = (Zotero as any).Libraries && (Zotero as any).Libraries.userLibraryID;
+            const collect = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") { collect(n.children); continue; }
+                    if (n.type !== "item") continue;
+                    let it: any = null;
+                    try { it = Zotero.Items.getByLibraryAndKey(n.libraryID, n.itemKey); } catch (_) {}
+                    if (!it) continue;
+                    try {
+                        if (it.isAnnotation && it.isAnnotation()) {
+                            const c = String(it.annotationColor || "");
+                            if (c) colors.set(c, (colors.get(c) || 0) + 1);
+                            const tp = String(it.annotationType || "");
+                            if (tp) types.set(tp, (types.get(tp) || 0) + 1);
+                            const isPersonal = (typeof userLib === "number") && (it.libraryID === userLib);
+                            if (!isPersonal) {
+                                let name = String((it as any).annotationAuthorName || "").trim();
+                                if (!name) {
+                                    try {
+                                        const uid = (it as any).createdByUserID;
+                                        if (uid && (Zotero as any).Users && (Zotero as any).Users.getName) {
+                                            name = String((Zotero as any).Users.getName(uid) || "").trim();
+                                        }
+                                    } catch (_) {}
+                                }
+                                if (name) authors.set(name, (authors.get(name) || 0) + 1);
+                            }
+                        }
+                    } catch (_) {}
+                    try {
+                        for (const tag of (it.getTags() || [])) {
+                            if (!tag || !tag.tag) continue;
+                            let tc = "";
+                            try { const ci: any = Zotero.Tags.getColor(it.libraryID, tag.tag); if (ci && ci.color) tc = ci.color; } catch (_) {}
+                            const cur = tags.get(tag.tag) || { color: tc, count: 0 };
+                            if (tc && !cur.color) cur.color = tc;
+                            cur.count++;
+                            tags.set(tag.tag, cur);
+                        }
+                    } catch (_) {}
+                }
+            };
+            if (att) {
+                const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+                if (doc) { collect(doc.local); collect(doc.global); }
+            }
+            const lib = (this._bmDoc && this._bmDoc.bookmarks) || [];
+            collect(lib);
+        } catch (_) {}
+        return { colors, tags, authors, types };
+    }
+
+    /** True iff this node (a bookmark leaf, never a folder) satisfies every
+     *  active chip dimension. Folders never match themselves. */
+    _wvBmNodeMatchesChips(node: any, st: any): boolean {
+        if (!node || node.type === "folder") return false;
+        // Only item-bookmarks reference an underlying Zotero item; everything
+        // else (positions, text, collection, library, treerow) can't satisfy
+        // any chip dimension. Strict mode → hidden when any chip is active.
+        if (node.type !== "item") return false;
+        let it: any = null;
+        try { it = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey); } catch (_) {}
+        if (!it) return false;
+        const isAnn = !!(it.isAnnotation && it.isAnnotation());
+        if (st.colors.size) {
+            if (!isAnn || !st.colors.has(String(it.annotationColor || ""))) return false;
+        }
+        if (st.types.size) {
+            if (!isAnn || !st.types.has(String(it.annotationType || ""))) return false;
+        }
+        if (st.authors.size) {
+            if (!isAnn) return false;
+            let name = String((it as any).annotationAuthorName || "").trim();
+            if (!name) {
+                try {
+                    const uid = (it as any).createdByUserID;
+                    if (uid && (Zotero as any).Users && (Zotero as any).Users.getName) {
+                        name = String((Zotero as any).Users.getName(uid) || "").trim();
+                    }
+                } catch (_) {}
+            }
+            if (!st.authors.has(name)) return false;
+        }
+        if (st.tags.size) {
+            let have: Set<string>;
+            try { have = new Set(((it.getTags() || []) as any[]).map((t: any) => t.tag)); } catch (_) { return false; }
+            let ok = false;
+            for (const t of st.tags) { if (have.has(t)) { ok = true; break; } }
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    /** Combined visibility walker: handles search query + chip filter together,
+     *  returning the same `{visible, dimmed}` shape the existing tree renderer
+     *  consumes. Pass q="" to skip search; chipMatch=null to skip chips. */
+    _wvBmFilterCombined(nodes: any[], q: string, chipMatch: ((n: any) => boolean) | null): { visible: Set<string>, dimmed: Set<string> } {
+        const visible = new Set<string>();
+        const dimmed = new Set<string>();
+        const walk = (arr: any[]): boolean => {
+            let anyMatch = false;
+            for (const n of (arr || [])) {
+                if (!n) continue;
+                if (n.type === "folder") {
+                    const childAny = walk(n.children || []);
+                    const name = String(n.name || "").toLowerCase();
+                    const folderSearchOK = !q || name.indexOf(q) >= 0;
+                    if (childAny) {
+                        visible.add(n.id);
+                        // Folder never satisfies chip dimensions itself, so if
+                        // chips are active OR search-only-and-name-misses, dim.
+                        if (chipMatch || !folderSearchOK) dimmed.add(n.id);
+                        anyMatch = true;
+                    }
+                } else {
+                    const t = String(n.label || "").toLowerCase();
+                    const searchOK = !q || t.indexOf(q) >= 0;
+                    const chipsOK = chipMatch ? chipMatch(n) : true;
+                    if (searchOK && chipsOK) { visible.add(n.id); anyMatch = true; }
+                }
+            }
+            return anyMatch;
+        };
+        walk(nodes);
+        return { visible, dimmed };
     }
 
     // ---- Feature A: toolbar filter button + popup --------------------------
@@ -663,7 +876,7 @@ class _ReaderPanelsMixin {
         const clearState = () => {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
             st.addedByExcl = []; st.modifiedBy = []; st.modifiedByExcl = [];
-            st.hasComment = null; st.hasRelated = null; st.hasLink = null;
+            st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
             // The hide-annotations toggle counts as a filter — clear it too.
             if (this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
             // Also clear the native include channel (colour/tag/author).
@@ -838,9 +1051,19 @@ class _ReaderPanelsMixin {
             }
         });
 
-        // ---- Cross-level: Has Related, Has Link (single-level here → no
-        //      per-kind scope arrow). AND filters, so no OR-group tint.
+        // ---- Cross-level: Has Tag → Has Related → Has Link (mirrors the
+        //      library filter's order AND icon colors: orange tag, wood
+        //      related, red link). Single-level here → no per-kind scope arrow.
         addRow((opts: any) => {
+            opts.appendChild(mkTriTile(st.hasTag,
+                "Has Tag — annotations with at least one tag. Alt+click to exclude.",
+                () => {
+                    const sp = mk("span"); sp.className = "wv-filter-svg";
+                    sp.style.color = "var(--accent-orange)";
+                    sp.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M6.086 1L14.586 9.5L9.5 14.586L1 6.086V1H6.086ZM6.5 0H0.5C0.367 0 0.24 0.053 0.146 0.146C0.053 0.24 0 0.367 0 0.5L0 6.5L9.146 15.646C9.24 15.74 9.367 15.792 9.5 15.792C9.632 15.792 9.759 15.74 9.853 15.646L15.646 9.853C15.74 9.759 15.792 9.632 15.792 9.5C15.792 9.367 15.74 9.24 15.646 9.146L6.5 0ZM4 2.75C3.586 2.75 3.211 2.918 2.94 3.189C2.668 3.461 2.5 3.836 2.5 4.25C2.5 4.664 2.668 5.039 2.94 5.311C3.211 5.582 3.586 5.75 4 5.75C4.414 5.75 4.789 5.582 5.061 5.311C5.332 5.039 5.5 4.664 5.5 4.25C5.5 3.836 5.332 3.461 5.061 3.189C4.789 2.918 4.414 2.75 4 2.75Z"/></svg>';
+                    return sp;
+                },
+                (alt: boolean) => { st.hasTag = alt ? (st.hasTag === false ? null : false) : (st.hasTag === true ? null : true); }));
             opts.appendChild(mkTriTile(st.hasRelated,
                 "Has Related — annotations with at least one related-item link. Alt+click to exclude.",
                 () => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(RP_RELATED_ICON) || RP_RELATED_ICON; img.style.color = "var(--accent-wood)"; return img; },
@@ -1090,6 +1313,12 @@ class _ReaderPanelsMixin {
                 const link = !!this.hasURI(a.annotationComment || "");
                 if (st.hasLink === true && !link) return false;
                 if (st.hasLink === false && link) return false;
+            }
+            if (st.hasTag !== null) {
+                let hasT = false;
+                try { hasT = !!(a.getTags && a.getTags().length); } catch (_) {}
+                if (st.hasTag === true && !hasT) return false;
+                if (st.hasTag === false && hasT) return false;
             }
             if (st.addedByExcl.length) {
                 const an = a.createdByUserID != null ? this._wvUserName(a.createdByUserID) : null;
@@ -1347,6 +1576,7 @@ class _ReaderPanelsMixin {
                     const payload = this._wvReaderReadDropPayload(e);
                     this._wvReaderSetBmActive(reader, idoc, true);
                     if (this._wvBmRowDrag) { this._wvReaderDropBmRow(reader, idoc, null); return; }
+                    if (this._wvReaderBmScope() === "library") { this._wvReaderLibAcceptDrop(reader, idoc, payload, null); return; }
                     this._wvReaderDropPayload(reader, idoc, payload);
                 });
                 const outlineTab = idoc.getElementById("viewOutline");
@@ -1382,6 +1612,13 @@ class _ReaderPanelsMixin {
                         const t = e.target;
                         if (!t || !t.closest || !t.closest(".wv-bm-reader-list")) return;
                         e.preventDefault(); e.stopPropagation();
+                        // Dismiss the hover card on right-click so it doesn't
+                        // linger over the context menu — re-hover re-shows it,
+                        // matching normal browser hover behavior. Also cancel
+                        // any pending show-delay timer so the card doesn't pop
+                        // in after the context menu opens.
+                        try { const w: any = idoc.defaultView; if (this._wvBmHoverTimer && w) { w.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
+                        this._wvReaderHideBmHoverCard(idoc);
                         this._wvReaderShowBmContextMenu(reader, idoc, e);
                     } catch (_) {}
                 }, true);
@@ -1409,26 +1646,104 @@ class _ReaderPanelsMixin {
             if (!view) {
                 view = idoc.createElementNS(NS_HTML_RP, "div");
                 view.className = "viewWrapper " + RP_BM_VIEW_CLASS;
-                const head = idoc.createElementNS(NS_HTML_RP, "div");
-                head.className = "wv-bm-reader-head";
-                const htitle = idoc.createElementNS(NS_HTML_RP, "div");
-                htitle.className = "wv-bm-reader-htitle";
-                htitle.textContent = "Bookmarks";
+                // Single header row: scope toggle on the left, + on the right
+                // (the standalone "Bookmarks" title row was dropped to save
+                // vertical space; the tab already labels the panel).
+                const scopeBar = idoc.createElementNS(NS_HTML_RP, "div");
+                scopeBar.className = "wv-bm-scope-toggle";
+                const scopeGroup = idoc.createElementNS(NS_HTML_RP, "div");
+                scopeGroup.className = "wv-bm-scope-group";
+                // Set the active class at creation time using the persisted
+                // pref. (A post-build idoc.querySelectorAll wouldn't see the
+                // buttons yet — `view` isn't appended to `content` until later
+                // in this block, so the buttons aren't reachable via idoc.)
+                const initialScope = this._wvReaderBmScope();
+                const mkScope = (lbl: string, scope: string) => {
+                    const b = idoc.createElementNS(NS_HTML_RP, "button");
+                    b.className = "wv-bm-scope-btn" + (scope === initialScope ? " wv-bm-scope-active" : "");
+                    b.setAttribute("data-scope", scope);
+                    b.textContent = lbl;
+                    b.addEventListener("click", () => {
+                        this._wvReaderSetBmScope(scope);
+                        this._wvReaderUpdateScopeToggle(idoc);
+                        this._wvReaderRenderBmList(reader, idoc);
+                    });
+                    scopeGroup.appendChild(b);
+                };
+                mkScope("This Document", "document");
+                mkScope("Library", "library");
                 const add = idoc.createElementNS(NS_HTML_RP, "button");
                 add.className = "wv-bm-reader-add";
-                add.setAttribute("title", "Add a bookmark (anywhere in Zotero)…");
-                add.innerHTML = RP_PLUS_SVG;
                 add.setAttribute("title", "Add a bookmark — opens the picker focused on this file (expand it to bookmark its annotations)…");
-                add.addEventListener("click", () => this._wvReaderAddViaDialog(reader, idoc));
-                head.appendChild(htitle);
-                head.appendChild(add);
+                add.innerHTML = RP_PLUS_SVG;
+                add.addEventListener("click", () => {
+                    if (this._wvReaderBmScope() === "library") {
+                        Promise.resolve(this._bmAddBookmarksDialog())
+                            .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} })
+                            .catch(() => {});
+                    } else {
+                        this._wvReaderAddViaDialog(reader, idoc);
+                    }
+                });
+                // Magnifier toggles a search input that filters bookmark
+                // labels (folders with matching descendants stay open). Same
+                // affordance as the reader's Annotations tab.
+                const searchBtn = idoc.createElementNS(NS_HTML_RP, "button");
+                searchBtn.className = "wv-bm-search-btn";
+                searchBtn.setAttribute("title", "Search bookmarks");
+                searchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="4"/><line x1="9.2" y1="9.2" x2="13" y2="13"/></svg>';
+                const searchRow = idoc.createElementNS(NS_HTML_RP, "div");
+                searchRow.className = "wv-bm-search-row";
+                searchRow.style.display = "none";
+                const searchInput = idoc.createElementNS(NS_HTML_RP, "input") as any;
+                searchInput.className = "wv-bm-search-input";
+                // type="text" (not "search") so the reader's keyboard-manager
+                // `isTextBox` gate skips letter shortcuts (r = Read Aloud, h =
+                // hand tool, …) while typing in this field. Matches the reader
+                // Annotations tab's search box, which uses type="text" too.
+                searchInput.setAttribute("type", "text");
+                searchInput.setAttribute("placeholder", "Search bookmarks…");
+                searchInput.addEventListener("input", () => this._wvReaderRenderBmList(reader, idoc));
+                searchInput.addEventListener("keydown", (ev: any) => {
+                    if (ev.key === "Escape") {
+                        searchInput.value = ""; searchRow.style.display = "none";
+                        searchBtn.classList.remove("wv-bm-search-active");
+                        this._wvReaderRenderBmList(reader, idoc);
+                    }
+                });
+                // Click outside while the input is empty → auto-close the
+                // search (mirrors the reader's annotation search box behavior).
+                searchInput.addEventListener("blur", () => {
+                    if (!String(searchInput.value || "").trim()) {
+                        searchRow.style.display = "none";
+                        searchBtn.classList.remove("wv-bm-search-active");
+                    }
+                });
+                searchRow.appendChild(searchInput);
+                searchBtn.addEventListener("click", () => {
+                    const showing = searchRow.style.display !== "none";
+                    if (showing) {
+                        searchInput.value = ""; searchRow.style.display = "none";
+                        searchBtn.classList.remove("wv-bm-search-active");
+                    } else {
+                        searchRow.style.display = "flex";
+                        searchBtn.classList.add("wv-bm-search-active");
+                        try { searchInput.focus(); } catch (_) {}
+                    }
+                    this._wvReaderRenderBmList(reader, idoc);
+                });
+                scopeBar.appendChild(scopeGroup);
+                scopeBar.appendChild(add);
+                scopeBar.appendChild(searchBtn);
                 const list = idoc.createElementNS(NS_HTML_RP, "div");
                 list.className = "wv-bm-reader-list";
-                view.appendChild(head);
+                view.appendChild(scopeBar);
+                view.appendChild(searchRow);
                 view.appendChild(list);
                 // Drop an annotation/selection (from the sidebar OR the center
                 // pane) anywhere on the bookmarks pane to bookmark it.
                 view.addEventListener("dragover", (e: any) => {
+                    if (this._wvLibRowDrag) { e.preventDefault(); return; }   // library row → empty area accepts (root end)
                     if (this._wvReaderDragHasBookmarkable(e.dataTransfer)) e.preventDefault();
                     // Over the pane but off any row → outside every folder; collapse springs.
                     try { if (!(e.target && e.target.closest && e.target.closest(".wv-bm-reader-row"))) this._wvSpringRecollapseLeft(reader, idoc, this._wvReaderAtt(reader), null); } catch (_) {}
@@ -1438,6 +1753,21 @@ class _ReaderPanelsMixin {
                     try { if (!view.contains(e.relatedTarget)) { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } } catch (_) {}
                 });
                 view.addEventListener("drop", (e: any) => {
+                    if (this._wvLibRowDrag) {   // library row dropped on empty area → move to root end
+                        e.preventDefault(); e.stopPropagation();
+                        const d = this._wvLibRowDrag; this._wvLibRowDrag = null; this._wvCancelLibSpring();
+                        this._bmMove(d, null, "after").then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
+                        return;
+                    }
+                    // Library scope: an annotation/selection dropped on empty area
+                    // → add a library item bookmark (at the root end).
+                    if (this._wvReaderBmScope() === "library") {
+                        if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+                        if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
+                        e.preventDefault();
+                        this._wvReaderLibAcceptDrop(reader, idoc, this._wvReaderReadDropPayload(e), null);
+                        return;
+                    }
                     if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
                     if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
                     e.preventDefault();
@@ -1529,6 +1859,16 @@ class _ReaderPanelsMixin {
                 this._bmInit().then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
                 return;
             }
+            // Library scope: render the GLOBAL library bookmarks tree (the
+            // collections-pane bookmarks) instead of this document's sections,
+            // using the same inline tree UI. The header toggle switches scope.
+            if (this._wvReaderBmScope() === "library") {
+                this._wvReaderHideBmHoverCard(idoc);
+                while (list.firstChild) list.firstChild.remove();
+                this._wvReaderRenderLibraryInto(reader, idoc, list);
+                try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
+                return;
+            }
             // Refresh each bookmark's original (source) name from the live data
             // before rendering, so default names track edits and the stored
             // originalLabel stays current (even for renamed bookmarks).
@@ -1583,10 +1923,19 @@ class _ReaderPanelsMixin {
                 empty.className = "wv-bm-reader-empty";
                 empty.textContent = "No bookmarks yet.\n+ bookmarks anywhere in Zotero. Right-click in the page to bookmark a position or selection; drag an annotation here to bookmark it.";
                 list.appendChild(empty);
+                try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
                 return;
             }
-            const addSection = (heading: string, nodes: any[], section: "local" | "global") => {
+            const q = this._wvReaderBmQuery(idoc);
+            const chipsOn = this._wvReaderBmChipsActive(reader);
+            const chipSt = this._wvReaderBmChipState(reader);
+            const chipMatch = chipsOn ? (n: any) => this._wvBmNodeMatchesChips(n, chipSt) : null;
+            const useFilter = q || chipsOn;
+            const fLocal = useFilter ? this._wvBmFilterCombined(doc.local, q, chipMatch) : null;
+            const fGlobal = useFilter ? this._wvBmFilterCombined(doc.global, q, chipMatch) : null;
+            const addSection = (heading: string, nodes: any[], section: "local" | "global", f: { visible: Set<string>, dimmed: Set<string> } | null) => {
                 if (!nodes.length) return;
+                if (f && !f.visible.size) return;   // section has no matches under search
                 const gc = idoc.createElementNS(NS, "div");
                 gc.className = "wv-bm-reader-group " + (section === "local" ? "wv-bm-grp-local" : "wv-bm-grp-global");
                 const h = idoc.createElementNS(NS, "div");
@@ -1608,31 +1957,447 @@ class _ReaderPanelsMixin {
                 gc.appendChild(h);
                 const treeWrap = idoc.createElementNS(NS, "div");
                 treeWrap.className = "wv-bm-reader-tree";
-                this._wvReaderRenderTree(reader, idoc, att, treeWrap, nodes, section, 0);
+                this._wvReaderRenderTree(reader, idoc, att, treeWrap, nodes, section, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
                 gc.appendChild(treeWrap);
                 this._wvReaderWireGroupDrop(reader, idoc, gc, section === "local");
                 list.appendChild(gc);
             };
-            addSection("In this document", doc.local, "local");
-            addSection("Elsewhere in Zotero", doc.global, "global");
+            addSection("In this document", doc.local, "local", fLocal);
+            addSection("Elsewhere in Zotero", doc.global, "global", fGlobal);
+            if (useFilter && (!fLocal || !fLocal.visible.size) && (!fGlobal || !fGlobal.visible.size)) {
+                const empty = idoc.createElementNS(NS, "div");
+                empty.className = "wv-bm-reader-empty";
+                empty.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
+                list.appendChild(empty);
+            }
+            try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderRenderBmList err: " + e);
         }
     }
 
     /** Render one tree level (folders + bookmarks) into a container; folders
-     *  recurse when expanded. `depth` drives indentation. */
-    _wvReaderRenderTree(reader: any, idoc: any, att: any, container: any, nodes: any[], section: "local" | "global", depth: number) {
+     *  recurse when expanded. `depth` drives indentation. When `visible` is
+     *  provided (search active), skip nodes not in the set and force-expand
+     *  folders that contain matches. */
+    _wvReaderRenderTree(reader: any, idoc: any, att: any, container: any, nodes: any[], section: "local" | "global", depth: number, visible?: Set<string>, dimmed?: Set<string>) {
         for (const node of nodes) {
+            if (visible && !visible.has(node.id)) continue;
             if (node.type === "folder") {
-                container.appendChild(this._wvReaderFolderRow(reader, idoc, att, node, section, depth));
-                if (node.expanded) {
-                    this._wvReaderRenderTree(reader, idoc, att, container, node.children || [], section, depth + 1);
+                const row = this._wvReaderFolderRow(reader, idoc, att, node, section, depth);
+                if (dimmed && dimmed.has(node.id)) row.classList.add("wv-bm-dimmed");
+                container.appendChild(row);
+                const expanded = visible ? true : node.expanded;
+                if (expanded) {
+                    this._wvReaderRenderTree(reader, idoc, att, container, node.children || [], section, depth + 1, visible, dimmed);
                 }
             } else {
                 container.appendChild(this._wvReaderBmRow(reader, idoc, att, node, section, depth));
             }
         }
+    }
+
+    // ---- Library-scope bookmarks in the reader tab -----------------------
+    // The reader Bookmarks tab can show EITHER this document's bookmarks or
+    // the global "library" bookmarks (the collections-pane store, _bmDoc).
+    // The scope is a persisted pref toggled in the tab header.
+
+    /** Current reader-tab bookmark scope: "document" (default) or "library". */
+    _wvReaderBmScope(): string {
+        try { return Zotero.Prefs.get("weavero.readerBmScope") === "library" ? "library" : "document"; }
+        catch (_) { return "document"; }
+    }
+    _wvReaderSetBmScope(scope: string) {
+        try { Zotero.Prefs.set("weavero.readerBmScope", scope === "library" ? "library" : "document"); } catch (_) {}
+    }
+    /** Reflect the current scope on the header toggle buttons. */
+    _wvReaderUpdateScopeToggle(idoc: any) {
+        try {
+            const scope = this._wvReaderBmScope();
+            const btns = idoc.querySelectorAll(".wv-bm-scope-btn");
+            for (const b of btns) b.classList.toggle("wv-bm-scope-active", b.getAttribute("data-scope") === scope);
+        } catch (_) {}
+    }
+
+    /** Current search query (lowercased, trimmed) from the header input —
+     *  empty string when the input is hidden or empty. */
+    _wvReaderBmQuery(idoc: any): string {
+        try {
+            const inp: any = idoc.querySelector(".wv-bm-search-input");
+            if (!inp) return "";
+            const row: any = idoc.querySelector(".wv-bm-search-row");
+            if (row && row.style.display === "none") return "";
+            return String(inp.value || "").trim().toLowerCase();
+        } catch (_) { return ""; }
+    }
+
+    /** Compute, for a search query, the set of visible node ids (each match,
+     *  plus every ancestor folder of any match — so the path stays visible)
+     *  AND the set of "dimmed" ids: folders that are visible only because of
+     *  a matching descendant, not their own name. Items only appear in
+     *  `visible` when they match directly, so they're never dimmed. */
+    _wvBmFilterVisible(nodes: any[], q: string): { visible: Set<string>, dimmed: Set<string> } {
+        const visible = new Set<string>();
+        const dimmed = new Set<string>();
+        const walk = (arr: any[]) => {
+            let anyMatch = false;
+            for (const n of (arr || [])) {
+                if (!n) continue;
+                if (n.type === "folder") {
+                    const childAny = walk(n.children || []);
+                    const name = String(n.name || "").toLowerCase();
+                    const folderMatch = name.indexOf(q) >= 0;
+                    if (childAny || folderMatch) {
+                        visible.add(n.id);
+                        if (!folderMatch) dimmed.add(n.id);   // visible only via descendants
+                        anyMatch = true;
+                    }
+                } else {
+                    const t = String(n.label || "").toLowerCase();
+                    if (t.indexOf(q) >= 0) { visible.add(n.id); anyMatch = true; }
+                }
+            }
+            return anyMatch;
+        };
+        walk(nodes);
+        return { visible, dimmed };
+    }
+
+    /** Rebuild the bottom chip selector bar (colors / tags / authors / types).
+     *  Hidden when no facets exist across the visible bookmark universe. */
+    _wvReaderRenderBmChipBar(reader: any, idoc: any) {
+        try {
+            const content = idoc.getElementById("sidebarContent");
+            const view = content && content.querySelector("." + RP_BM_VIEW_CLASS);
+            if (!view) return;
+            let bar = view.querySelector(".wv-bm-chip-bar");
+            const NS = NS_HTML_RP;
+            if (!bar) {
+                bar = idoc.createElementNS(NS, "div");
+                bar.className = "wv-bm-chip-bar";
+                view.appendChild(bar);
+            }
+            while (bar.firstChild) bar.firstChild.remove();
+            const st = this._wvReaderBmChipState(reader);
+            const facets = this._wvReaderBmChipFacets(reader);
+            const TYPE_LABEL: { [k: string]: string } = {
+                highlight: "H", underline: "U", note: "N", text: "T", image: "I", ink: "K",
+            };
+            const TYPE_NAME: { [k: string]: string } = {
+                highlight: "Highlights", underline: "Underlines", note: "Notes",
+                text: "Text annotations", image: "Image annotations", ink: "Ink annotations",
+            };
+            const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
+            if (!anyFacets) { bar.classList.remove("wv-bm-chip-bar-on"); return; }
+            bar.classList.add("wv-bm-chip-bar-on");
+            const mkRow = () => { const r = idoc.createElementNS(NS, "div"); r.className = "wv-bm-chip-row"; return r; };
+            const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
+            const rerender = () => {
+                try {
+                    this._wvReaderRenderBmList(reader, idoc);
+                    this._wvReaderRenderBmChipBar(reader, idoc);   // refresh selected states
+                } catch (_) {}
+            };
+            // Colors row
+            if (facets.colors.size) {
+                const row = mkRow();
+                // Stable order: by hex for determinism
+                const keys = Array.from(facets.colors.keys()).sort();
+                for (const c of keys) {
+                    const d = idoc.createElementNS(NS, "span");
+                    d.className = "wv-bm-chip-color" + (st.colors.has(c) ? " selected" : "");
+                    d.style.background = c;
+                    d.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
+                    d.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
+                    row.appendChild(d);
+                }
+                bar.appendChild(row);
+            }
+            // Tags row
+            if (facets.tags.size) {
+                const row = mkRow();
+                const keys = Array.from(facets.tags.keys()).sort((a, b) => a.localeCompare(b));
+                for (const t of keys) {
+                    const info = facets.tags.get(t)!;
+                    const chip = idoc.createElementNS(NS, "span");
+                    chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "");
+                    chip.setAttribute("title", t + " — " + info.count + " bookmark(s)");
+                    if (info.color) {
+                        const dot = idoc.createElementNS(NS, "span");
+                        dot.className = "wv-bm-chip-tag-dot";
+                        dot.style.background = info.color;
+                        chip.appendChild(dot);
+                    }
+                    const lbl = idoc.createElementNS(NS, "span");
+                    lbl.textContent = t;
+                    chip.appendChild(lbl);
+                    chip.addEventListener("click", () => { toggle(st.tags, t); rerender(); });
+                    row.appendChild(chip);
+                }
+                bar.appendChild(row);
+            }
+            // Authors row (only when >1, matching upstream annotations pane)
+            if (facets.authors.size > 1) {
+                const row = mkRow();
+                const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
+                for (const a of keys) {
+                    const chip = idoc.createElementNS(NS, "span");
+                    chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "");
+                    chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s)");
+                    chip.textContent = a;
+                    chip.addEventListener("click", () => { toggle(st.authors, a); rerender(); });
+                    row.appendChild(chip);
+                }
+                bar.appendChild(row);
+            }
+            // Types row
+            if (facets.types.size) {
+                const row = mkRow();
+                // Use upstream's canonical type ordering for natural left-right flow.
+                const order = ["highlight", "underline", "note", "text", "image", "ink"];
+                const keys = order.filter(t => facets.types.has(t));
+                for (const tp of keys) {
+                    const chip = idoc.createElementNS(NS, "span");
+                    chip.className = "wv-bm-chip-type" + (st.types.has(tp) ? " selected" : "");
+                    chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
+                    chip.textContent = TYPE_LABEL[tp] || tp.charAt(0).toUpperCase();
+                    chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
+                    row.appendChild(chip);
+                }
+                bar.appendChild(row);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderBmChipBar err: " + e); }
+    }
+
+    /** Render the global library bookmarks tree into the list container. */
+    _wvReaderRenderLibraryInto(reader: any, idoc: any, list: any) {
+        const NS = NS_HTML_RP;
+        const nodes = (this._bmDoc && this._bmDoc.bookmarks) || [];
+        const q = this._wvReaderBmQuery(idoc);
+        const chipsOn = this._wvReaderBmChipsActive(reader);
+        const chipSt = this._wvReaderBmChipState(reader);
+        const chipMatch = chipsOn ? (n: any) => this._wvBmNodeMatchesChips(n, chipSt) : null;
+        const useFilter = q || chipsOn;
+        const f = useFilter ? this._wvBmFilterCombined(nodes, q, chipMatch) : null;
+        if (!nodes.length) {
+            const empty = idoc.createElementNS(NS, "div");
+            empty.className = "wv-bm-reader-empty";
+            empty.textContent = "No library bookmarks yet.\nUse + to bookmark an item, collection, library, or saved search — they appear here in every document.";
+            list.appendChild(empty);
+            return;
+        }
+        if (f && !f.visible.size) {
+            const empty = idoc.createElementNS(NS, "div");
+            empty.className = "wv-bm-reader-empty";
+            empty.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
+            list.appendChild(empty);
+            return;
+        }
+        const gc = idoc.createElementNS(NS, "div");
+        gc.className = "wv-bm-reader-group wv-bm-grp-global";
+        const treeWrap = idoc.createElementNS(NS, "div");
+        treeWrap.className = "wv-bm-reader-tree";
+        this._wvReaderRenderLibraryTree(reader, idoc, treeWrap, nodes, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
+        gc.appendChild(treeWrap);
+        list.appendChild(gc);
+    }
+
+    /** Render one level of the library tree (folders recurse when expanded).
+     *  Under search, only nodes in `visible` render and matching folders
+     *  force-expand so their match is shown. */
+    _wvReaderRenderLibraryTree(reader: any, idoc: any, container: any, nodes: any[], depth: number, visible?: Set<string>, dimmed?: Set<string>) {
+        for (const node of (nodes || [])) {
+            if (visible && !visible.has(node.id)) continue;
+            if (node.type === "folder") {
+                const row = this._wvReaderLibFolderRow(reader, idoc, node, depth);
+                if (dimmed && dimmed.has(node.id)) row.classList.add("wv-bm-dimmed");
+                container.appendChild(row);
+                const expanded = visible ? true : node.expanded;
+                if (expanded) this._wvReaderRenderLibraryTree(reader, idoc, container, node.children || [], depth + 1, visible, dimmed);
+            } else {
+                container.appendChild(this._wvReaderLibBmRow(reader, idoc, node, depth));
+            }
+        }
+    }
+
+    /** A library folder row: chevron + folder glyph + name; click toggles. */
+    _wvReaderLibFolderRow(reader: any, idoc: any, folder: any, depth: number) {
+        const NS = NS_HTML_RP;
+        const row = idoc.createElementNS(NS, "div");
+        row.className = "wv-bm-reader-row wv-bm-reader-folder";
+        row.style.paddingLeft = (8 + depth * 14) + "px";
+        const chev = idoc.createElementNS(NS, "span");
+        chev.className = "wv-bm-reader-chev";
+        chev.innerHTML = folder.expanded ? RP_CHEV_DOWN : RP_CHEV_RIGHT;
+        const ic = idoc.createElementNS(NS, "span");
+        ic.className = "wv-bm-reader-ic";
+        ic.innerHTML = RP_FOLDER_SVG;
+        const label = idoc.createElementNS(NS, "span");
+        label.className = "wv-bm-reader-label";
+        label.textContent = folder.name || "Folder";
+        label.setAttribute("title", folder.name || "");
+        row.appendChild(chev); row.appendChild(ic); row.appendChild(label);
+        row.addEventListener("click", (e: any) => {
+            e.stopPropagation();
+            this._bmToggleFolder(folder.id).then(() => this._wvReaderRenderBmList(reader, idoc));
+        });
+        this._wvReaderWireLibRowDrag(reader, idoc, row, folder, depth, true);
+        return row;
+    }
+
+    /** A library bookmark row: type icon + label; click navigates/opens. */
+    _wvReaderLibBmRow(reader: any, idoc: any, bm: any, depth: number) {
+        const NS = NS_HTML_RP;
+        const row = idoc.createElementNS(NS, "div");
+        row.className = "wv-bm-reader-row";
+        row.style.paddingLeft = (8 + depth * 14) + "px";
+        const chevSpacer = idoc.createElementNS(NS, "span");
+        chevSpacer.className = "wv-bm-reader-chev wv-bm-reader-chev-spacer";
+        chevSpacer.innerHTML = RP_CHEV_RIGHT;
+        row.appendChild(chevSpacer);
+        const ic = this._wvReaderBuildBmIcon(reader, idoc, bm);
+        const label = idoc.createElementNS(NS, "span");
+        label.className = "wv-bm-reader-label";
+        label.textContent = bm.label || "Bookmark";
+        label.setAttribute("title", bm.label || "");
+        row.appendChild(ic); row.appendChild(label);
+        row.addEventListener("click", (e: any) => this._bmActivateBookmark(bm, e));
+        this._wvReaderWireLibRowDrag(reader, idoc, row, bm, depth, false);
+        return row;
+    }
+
+    /** Drag/drop wiring for library rows in the reader tab — native HTML5 drag
+     *  (so it survives the focus-manager pointerdown guard, like reader rows),
+     *  operating on the MAIN store (_bmMove). Before/after reorder on every row;
+     *  a middle "into" zone on folders; collapsed folders spring-open on hover. */
+    _wvReaderWireLibRowDrag(reader: any, idoc: any, row: any, node: any, depth: number, isFolder: boolean) {
+        const win = idoc.defaultView;
+        row.setAttribute("data-wv-bm-id", node.id);
+        row.setAttribute("draggable", "true");
+        row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(depth) + "px");
+        // Mid-drag re-renders (spring-load) rebuild rows; keep the dragged row
+        // dimmed across them by re-applying the class when it's the drag source.
+        if (this._wvLibRowDrag === node.id) row.classList.add("wv-bm-dragging");
+        row.addEventListener("pointerdown", (e: any) => { try { e.stopPropagation(); } catch (_) {} });
+        const clearInd = () => {
+            try {
+                const els = idoc.querySelectorAll(".wv-bm-drop-before,.wv-bm-drop-after,.wv-bm-drop-into");
+                for (let i = 0; i < els.length; i++) els[i].classList.remove("wv-bm-drop-before", "wv-bm-drop-after", "wv-bm-drop-into");
+            } catch (_) {}
+        };
+        const modeAt = (clientY: number) => {
+            const r = row.getBoundingClientRect();
+            const rel = clientY - r.top;
+            if (isFolder) return rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into";
+            return rel > r.height / 2 ? "after" : "before";
+        };
+        row.addEventListener("dragstart", (e: any) => {
+            this._wvLibRowDrag = node.id;
+            try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("application/x-weavero-libbm", node.id); } catch (_) {}
+            this._wvReaderHideBmHoverCard(idoc);
+            row.classList.add("wv-bm-dragging");
+        });
+        row.addEventListener("dragend", () => {
+            this._wvLibRowDrag = null; row.classList.remove("wv-bm-dragging"); clearInd(); this._wvCancelLibSpring();
+        });
+        row.addEventListener("dragover", (e: any) => {
+            const libDrag = !!this._wvLibRowDrag;
+            if (libDrag) { if (this._wvLibRowDrag === node.id) return; }
+            else if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;   // annotation/selection drag
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = libDrag ? "move" : "copy"; } catch (_) {}
+            clearInd();
+            const m = modeAt(e.clientY);
+            if (m === "into") {
+                row.classList.add("wv-bm-drop-into");
+                if (isFolder && !node.expanded) this._wvLibSpringOpen(reader, idoc, node, win);
+            } else {
+                row.classList.add(m === "before" ? "wv-bm-drop-before" : "wv-bm-drop-after");
+                row.style.setProperty("--wv-drop-indent", this._wvBmDropIndentPx(depth) + "px");
+                this._wvCancelLibSpring();
+            }
+        });
+        row.addEventListener("dragleave", () => { clearInd(); this._wvCancelLibSpring(); });
+        row.addEventListener("drop", (e: any) => {
+            const libDrag = !!this._wvLibRowDrag;
+            if (!libDrag && !this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
+            e.preventDefault(); e.stopPropagation();
+            clearInd(); this._wvCancelLibSpring();
+            const m = modeAt(e.clientY);
+            if (libDrag) {
+                const dragged = this._wvLibRowDrag; this._wvLibRowDrag = null;
+                if (!dragged || dragged === node.id) return;
+                this._bmMove(dragged, node.id, m).then(() => this._wvReaderRenderBmList(reader, idoc));
+            } else {
+                // Annotation dragged from the reader → add a library item bookmark
+                // at this row's position.
+                this._wvReaderLibAcceptDrop(reader, idoc, this._wvReaderReadDropPayload(e), { id: node.id, mode: m });
+            }
+        });
+    }
+
+    /** Spring-load: pause over a collapsed library folder's "into" zone to open
+     *  it (a real expand — persisted) so you can drop inside. */
+    _wvLibSpringOpen(reader: any, idoc: any, folder: any, win: any) {
+        if (this._wvLibSpringId === folder.id) return;
+        this._wvCancelLibSpring();
+        this._wvLibSpringId = folder.id; this._wvLibSpringWin = win;
+        this._wvLibSpringTimer = win.setTimeout(() => {
+            this._wvLibSpringTimer = null; this._wvLibSpringId = null; this._wvLibSpringWin = null;
+            this._bmToggleFolder(folder.id).then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
+        }, 500);
+    }
+    _wvCancelLibSpring() {
+        try { if (this._wvLibSpringTimer && this._wvLibSpringWin) this._wvLibSpringWin.clearTimeout(this._wvLibSpringTimer); } catch (_) {}
+        this._wvLibSpringTimer = null; this._wvLibSpringId = null; this._wvLibSpringWin = null;
+    }
+
+    /** Accept an annotation/selection dragged FROM the reader (sidebar or page)
+     *  into the LIBRARY view → add item bookmark(s) to the main store, optionally
+     *  placed at `target` ({id, mode} or null = root end). Returns true if it
+     *  handled the drop. (Text-only selections have no library equivalent.) */
+    async _wvReaderLibAcceptDrop(reader: any, idoc: any, payload: any, target: any): Promise<boolean> {
+        try {
+            const att = this._wvReaderAtt(reader);
+            const entries: any[] = [];
+            if (payload.sidebarKey) {
+                entries.push({ libraryID: att && att.libraryID, itemKey: payload.sidebarKey, label: null });
+            } else if (payload.annJson) {
+                try {
+                    const arr = JSON.parse(payload.annJson);
+                    for (const a of (arr || [])) {
+                        if (a && a.id) {
+                            let lib = att && att.libraryID;
+                            if (a.attachmentItemID) { try { const s: any = Zotero.Items.get(a.attachmentItemID); if (s) lib = s.libraryID; } catch (_) {} }
+                            entries.push({ libraryID: lib, itemKey: a.id, label: String(a.text || a.comment || "").trim() });
+                        }
+                    }
+                } catch (_) {}
+            }
+            this._wvDraggedAnnKey = null;
+            if (!entries.length) return false;
+            await this._bmInit();
+            const addedIds: string[] = [];
+            for (const en of entries) {
+                if (!en.itemKey) continue;
+                if (this._bmHasItem(en.libraryID, en.itemKey)) continue;   // de-dupe
+                let label = en.label;
+                if (!label) { try { const it: any = Zotero.Items.getByLibraryAndKey(en.libraryID, en.itemKey); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {} }
+                label = (label || "Annotation").slice(0, 100);
+                const node = { id: "wv-" + Zotero.Utilities.randomString(8), type: "item", libraryID: en.libraryID, itemKey: en.itemKey, label, created: new Date().toISOString() };
+                this._bmDoc.bookmarks.push(node);
+                addedIds.push(node.id);
+            }
+            if (addedIds.length) {
+                await this._bmPersist();
+                if (target && target.id) {
+                    let relId = target.id, mode = target.mode || "after";
+                    for (const id of addedIds) { if (id === target.id) continue; try { await this._bmMove(id, relId, mode); } catch (_) {} relId = id; mode = "after"; }
+                }
+            }
+            this._wvReaderRenderBmList(reader, idoc);
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderLibAcceptDrop err: " + e); return false; }
     }
 
     /** A folder row: chevron (expand/collapse) + folder glyph + name +
@@ -1750,6 +2515,21 @@ class _ReaderPanelsMixin {
         } catch (_) { return false; }
     }
 
+    /** Dismiss the in-document annotation popup if one is open. Used when
+     *  navigating to a different bookmark so a stale popup from a previous
+     *  annotation click doesn't linger. */
+    _wvDismissReaderAnnPopup(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir || !ir._state || !ir._state.primaryViewAnnotationPopup) return;
+            const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+            const upd: any = (iwin && (Components as any).utils)
+                ? (Components as any).utils.cloneInto({ primaryViewAnnotationPopup: null }, iwin)
+                : { primaryViewAnnotationPopup: null };
+            if (ir._updateState) ir._updateState(upd);
+        } catch (_) {}
+    }
+
     /** Click a bookmark. For targets INSIDE the open document (positions,
      *  selected text, this-doc annotations) the same three modifier options as
      *  the collections-pane bookmark apply, mapped to the reader:
@@ -1760,6 +2540,10 @@ class _ReaderPanelsMixin {
      *  behavior (new tab / new window / show in library). */
     _wvNavigateReaderBookmark(reader: any, bm: any, e: any) {
         if (!bm) return;
+        // Clicking a bookmark should reset any open in-document annotation
+        // popup; the annotation-bookmark branch below re-opens it for the
+        // new annotation if applicable.
+        this._wvDismissReaderAnnPopup(reader);
         const ctrl = !!(e && (e.ctrlKey || e.metaKey));
         const shift = !!(e && e.shiftKey);
         const isLocalLoc = (bm.type === "position" || bm.type === "text")
@@ -1792,7 +2576,34 @@ class _ReaderPanelsMixin {
                 }
                 return;
             }
-            if (isLocalAnno) { try { reader.navigate({ annotationID: bm.itemKey }); } catch (_) {} }
+            if (isLocalAnno) {
+                // Mirror a direct annotation click: select it (so the view
+                // scrolls + highlights), then open the in-document popup.
+                //
+                // Two gotchas:
+                //  1. The Reader's setSelectedAnnotations is bundled inside the
+                //     reader iframe; its `ids.length` read fails through Xray
+                //     when an array crosses from chrome into that compartment.
+                //     Cu.cloneInto re-creates the array in the iframe's
+                //     compartment so the call goes through cleanly.
+                //  2. setSelectedAnnotations only flips the selection state —
+                //     the in-document popup is opened by the view's own
+                //     _openAnnotationPopup() (PDF + DOM views both have it).
+                try {
+                    const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+                    const idsArr: any = (iwin && (Components as any).utils)
+                        ? (Components as any).utils.cloneInto([bm.itemKey], iwin)
+                        : [bm.itemKey];
+                    reader.setSelectedAnnotations(idsArr, true);
+                    try {
+                        const ir = reader._internalReader;
+                        const v = ir && (ir._primaryView || ir._lastView);
+                        if (v && v._openAnnotationPopup) v._openAnnotationPopup();
+                    } catch (_) {}
+                } catch (_) {
+                    try { reader.navigate({ annotationID: bm.itemKey }); } catch (__) {}
+                }
+            }
             else this._wvNavigateReaderLocation(reader, bm);
             return;
         }
@@ -1918,7 +2729,7 @@ class _ReaderPanelsMixin {
     /** Gather the rich info shown in the hover card for a bookmark. READ-ONLY —
      *  reads the live target (annotation/item/collection/library); never writes. */
     _wvReaderBmHoverInfo(reader: any, bm: any) {
-        const info: any = { kind: "", color: null, page: "", text: "", comment: "", tags: [], source: "", created: "", itemCreated: "", original: "" };
+        const info: any = { kind: "", color: null, page: "", text: "", comment: "", tags: [], source: "", created: "", itemCreated: "", original: "", author: "" };
         try {
             info.page = this._bmReaderPageLabel(bm);
             if (bm.created) { try { info.created = new Date(bm.created).toLocaleDateString(); } catch (_) {} }
@@ -1927,8 +2738,8 @@ class _ReaderPanelsMixin {
                 highlight: "Highlight", underline: "Underline", note: "Note",
                 text: "Text annotation", image: "Image annotation", ink: "Ink annotation",
             };
-            if (bm.type === "position") { info.kind = "Location"; }
-            else if (bm.type === "text") { info.kind = "Selected text"; info.text = bm.label || ""; }
+            if (bm.type === "position") { info.kind = "Location"; info.comment = String(bm.comment || "").trim(); }
+            else if (bm.type === "text") { info.kind = "Selected text"; info.text = bm.label || ""; info.comment = String(bm.comment || "").trim(); }
             else if (bm.type === "collection") {
                 info.kind = "Collection";
                 try { const c: any = bm.collectionKey && Zotero.Collections.getByLibraryAndKey(bm.libraryID, bm.collectionKey); if (c) info.text = c.name; } catch (_) {}
@@ -1947,7 +2758,39 @@ class _ReaderPanelsMixin {
                     try { info.color = it.annotationColor || null; } catch (_) {}
                     try { info.text = String(it.annotationText || "").trim(); } catch (_) {}
                     try { info.comment = String(it.annotationComment || "").trim(); } catch (_) {}
-                    try { for (const t of (it.getTags() || [])) if (t && t.tag) info.tags.push(t.tag); } catch (_) {}
+                    // Author chip stays EMPTY for personal-library annotations
+                    // (implicitly "you"). For group-library annotations, mirror
+                    // Zotero's annotation popup (annotations.js toJSONSync):
+                    // prefer the explicit `annotationAuthorName`, otherwise fall
+                    // back to the createdByUser display name.
+                    try {
+                        const userLib = (Zotero as any).Libraries && (Zotero as any).Libraries.userLibraryID;
+                        const isPersonal = (typeof userLib === "number") && (it.libraryID === userLib);
+                        if (!isPersonal) {
+                            let name = String((it as any).annotationAuthorName || "").trim();
+                            if (!name) {
+                                try {
+                                    const uid = (it as any).createdByUserID;
+                                    if (uid && (Zotero as any).Users && (Zotero as any).Users.getName) {
+                                        name = String((Zotero as any).Users.getName(uid) || "").trim();
+                                    }
+                                } catch (__) {}
+                            }
+                            info.author = name;
+                        }
+                    } catch (_) {}
+                    // Tags carry their library-level color (Zotero "colored tag"
+                    // associations) when available — surface that so chips can
+                    // render a colored dot, matching the item pane's display.
+                    try {
+                        for (const t of (it.getTags() || [])) {
+                            if (t && t.tag) {
+                                let color = "";
+                                try { const c: any = Zotero.Tags.getColor(it.libraryID, t.tag); if (c && c.color) color = c.color; } catch (_) {}
+                                info.tags.push({ tag: t.tag, color });
+                            }
+                        }
+                    } catch (_) {}
                     if (!info.page) { try { info.page = it.annotationPageLabel || ""; } catch (_) {} }
                     try {
                         if (it.parentItemID && it.parentItemID !== reader.itemID) {
@@ -1975,27 +2818,67 @@ class _ReaderPanelsMixin {
             const NS = NS_HTML_RP;
             const mk = (cls: string, txt?: string) => { const e = idoc.createElementNS(NS, "div"); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
             const card = idoc.createElementNS(NS, "div");
-            card.className = "wv-bm-hovercard";
+            card.className = "wv-bm-hovercard" + (info.color ? " wv-hc-has-color" : "");
             try { card.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
-            // Header: the SAME coloured type glyph as the row (clearer than a
-            // text label) + the name + page (all always visible).
+            // Expose the annotation color to the CSS so the text/comment blocks
+            // get a coloured left bar (matching the reader Annotations sidebar).
+            if (info.color) { try { card.style.setProperty("--wv-ann-color", info.color); } catch (_) {} }
+            // Header layout mirrors the reader Annotations tab:
+            //   annotations         → [icon] [Page X] ............ [author]
+            //   other bookmarks     → [icon] [name]   ............ [page]
             const head = mk("wv-hc-head");
             const hic = this._wvReaderBuildBmIcon(reader, idoc, bm);
             try { hic.setAttribute("aria-label", info.kind || ""); } catch (_) {}
             head.appendChild(hic);
-            const nm = idoc.createElementNS(NS, "span"); nm.className = "wv-hc-name"; nm.textContent = bm.label || info.kind || "Bookmark"; head.appendChild(nm);
-            if (info.page) { const pg = idoc.createElementNS(NS, "span"); pg.className = "wv-hc-page"; pg.textContent = "p. " + info.page; head.appendChild(pg); }
+            const isAnn = !!info.color;
+            // Location-like bookmarks (annotation / text selection / pinned
+            // position) all get the annotation-sidebar header: "Page N" in the
+            // name slot (or empty for HTML/Snapshot which has no page label),
+            // and the author chip on the right (only annotations carry one in
+            // practice; text/position have no author).
+            const isLocLike = isAnn || bm.type === "text" || bm.type === "position";
+            const nm = idoc.createElementNS(NS, "span"); nm.className = "wv-hc-name";
+            nm.textContent = isLocLike
+                ? (info.page ? "Page " + info.page : "")
+                : (bm.label || info.kind || "Bookmark");
+            head.appendChild(nm);
+            if (isLocLike) {
+                if (info.author) { const au = idoc.createElementNS(NS, "span"); au.className = "wv-hc-author"; au.textContent = info.author; head.appendChild(au); }
+            } else if (info.page) {
+                const pg = idoc.createElementNS(NS, "span"); pg.className = "wv-hc-page"; pg.textContent = "p. " + info.page; head.appendChild(pg);
+            }
             card.appendChild(head);
             // Body: the variable-length content — capped by default, scrolls when expanded.
             const body = mk("wv-hc-body");
-            // Show the full text unless it's identical to the name already in the
-            // header (avoid repetition) — but always for text bookmarks, where the
-            // header name is the (possibly clamped) selection.
-            if (info.text && (info.text !== (bm.label || "") || bm.type === "text")) body.appendChild(mk("wv-hc-text", info.text));
+            // Show the full text unless it's identical to the name already in
+            // the header (avoid repetition) — but ALWAYS for text-selection
+            // bookmarks AND for annotations (info.color set), so the quote
+            // block + coloured left bar render and the card mirrors the
+            // reader Annotations tab's row.
+            if (info.text && (bm.type === "text" || info.color || info.text !== (bm.label || ""))) body.appendChild(mk("wv-hc-text", info.text));
             if (info.comment) body.appendChild(mk("wv-hc-comment", info.comment));
             if (info.tags && info.tags.length) {
                 const tg = mk("wv-hc-tags");
-                for (const t of info.tags) tg.appendChild(mk("wv-hc-tag", t));
+                // Tag glyph in front of the row (mirrors the reader Annotations
+                // tab where tags are prefixed by an icon).
+                const tagIc = idoc.createElementNS(NS, "span");
+                tagIc.className = "wv-hc-tag-ic";
+                // Filled glyph from Zotero's own `tag.svg` (chrome://zotero/skin/
+                // 16/universal/tag.svg) — currentColor so we can theme it via CSS.
+                tagIc.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M6.086 1L14.586 9.5L9.5 14.586L1 6.086V1H6.086ZM6.5 0H0.5C0.367 0 0.24 0.053 0.146 0.146C0.053 0.24 0 0.367 0 0.5L0 6.5L9.146 15.646C9.24 15.74 9.367 15.792 9.5 15.792C9.632 15.792 9.759 15.74 9.853 15.646L15.646 9.853C15.74 9.759 15.792 9.632 15.792 9.5C15.792 9.367 15.74 9.24 15.646 9.146L6.5 0ZM4 2.75C3.586 2.75 3.211 2.918 2.94 3.189C2.668 3.461 2.5 3.836 2.5 4.25C2.5 4.664 2.668 5.039 2.94 5.311C3.211 5.582 3.586 5.75 4 5.75C4.414 5.75 4.789 5.582 5.061 5.311C5.332 5.039 5.5 4.664 5.5 4.25C5.5 3.836 5.332 3.461 5.061 3.189C4.789 2.918 4.414 2.75 4 2.75Z"/></svg>';
+                tg.appendChild(tagIc);
+                for (const t of info.tags) {
+                    const chip = idoc.createElementNS(NS, "div");
+                    chip.className = "wv-hc-tag";
+                    if (t && t.color) {
+                        const dot = idoc.createElementNS(NS, "span");
+                        dot.className = "wv-hc-tag-dot";
+                        dot.style.backgroundColor = t.color;
+                        chip.appendChild(dot);
+                    }
+                    chip.appendChild(idoc.createTextNode((t && t.tag) || ""));
+                    tg.appendChild(chip);
+                }
                 body.appendChild(tg);
             }
             if (info.source) body.appendChild(mk("wv-hc-src", info.source));
@@ -2016,9 +2899,9 @@ class _ReaderPanelsMixin {
             }
             // Meta (always visible, below the body/expand).
             const meta: string[] = [];
-            if (info.original) meta.push("original: " + info.original);
-            if (info.itemCreated) meta.push("created " + info.itemCreated);
-            if (info.created) meta.push("bookmarked " + info.created);
+            if (info.original) meta.push("Original: " + info.original);
+            if (info.itemCreated) meta.push("Created: " + info.itemCreated);
+            if (info.created) meta.push("Bookmarked: " + info.created);
             for (const m of meta) card.appendChild(mk("wv-hc-meta", m));   // one per line
             // Keep the card alive while the cursor is over it (it's interactive).
             const win = idoc.defaultView;
@@ -2073,6 +2956,8 @@ class _ReaderPanelsMixin {
         // is what lets the drag — and the navigating click — happen). This is
         // the same net effect the whitelisted annotation rows get.
         row.addEventListener("pointerdown", (e: any) => { try { e.stopPropagation(); } catch (_) {} });
+        // Keep the drag source dimmed across mid-drag re-renders (spring-load).
+        if (this._wvBmRowDrag && this._wvBmRowDrag.id === node.id) row.classList.add("wv-bm-dragging");
         row.addEventListener("dragstart", (e: any) => {
             this._wvBmRowDrag = { libraryID: att.libraryID, itemKey: att.itemKey, id: node.id, section, type: node.type };
             try {
@@ -2678,6 +3563,9 @@ class _ReaderPanelsMixin {
             };
             const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
             const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
+            if (this._wvReaderBmScope() === "library") {
+                this._wvReaderBuildLibCtxItems(reader, idoc, e, item, sep, reRender);
+            } else {
             if (entry) {
                 if (entry.type === "folder") {
                     item("Rename Folder…", RP_RENAME_SVG, () => {
@@ -2705,9 +3593,23 @@ class _ReaderPanelsMixin {
                     // target IS the open document, so there's nothing distinct
                     // to reveal (kept only for "Elsewhere in Zotero" items).
                     sep();
-                    item("Rename…", RP_RENAME_SVG, () => {
-                        const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Bookmark", entry.label || "");
-                        if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
+                    // Unified edit: rename + (for text/position) edit comment.
+                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                        const win = Zotero.getMainWindow();
+                        const newName = this._bmPromptName(win, "Edit Bookmark — Name", entry.label || "");
+                        if (newName === null) return;
+                        const renameP = (newName && newName !== entry.label)
+                            ? this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newName)
+                            : Promise.resolve();
+                        if (entry.type === "text" || entry.type === "position") {
+                            const newComment = this._bmPromptName(win, "Edit Bookmark — Comment (optional)", entry.comment || "");
+                            const commentP = (newComment !== null && newComment !== (entry.comment || ""))
+                                ? this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment })
+                                : Promise.resolve();
+                            Promise.all([renameP, commentP]).then(reRender);
+                        } else {
+                            renameP.then(reRender);
+                        }
                     });
                     {
                         const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
@@ -2739,9 +3641,23 @@ class _ReaderPanelsMixin {
                         this._bmShowInLibraryIcon({ libraryID: entry.srcLibraryID || entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
                         () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
                     sep();
-                    item("Rename…", RP_RENAME_SVG, () => {
-                        const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Bookmark", entry.label || "");
-                        if (n) this._bmReaderRename(att.libraryID, att.itemKey, entry.id, n).then(reRender);
+                    // Unified edit: rename + (for text/position) edit comment.
+                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                        const win = Zotero.getMainWindow();
+                        const newName = this._bmPromptName(win, "Edit Bookmark — Name", entry.label || "");
+                        if (newName === null) return;
+                        const renameP = (newName && newName !== entry.label)
+                            ? this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newName)
+                            : Promise.resolve();
+                        if (entry.type === "text" || entry.type === "position") {
+                            const newComment = this._bmPromptName(win, "Edit Bookmark — Comment (optional)", entry.comment || "");
+                            const commentP = (newComment !== null && newComment !== (entry.comment || ""))
+                                ? this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment })
+                                : Promise.resolve();
+                            Promise.all([renameP, commentP]).then(reRender);
+                        } else {
+                            renameP.then(reRender);
+                        }
                     });
                     {
                         const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
@@ -2758,6 +3674,7 @@ class _ReaderPanelsMixin {
                 const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
                 if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n).then(reRender);
             });
+            }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
             const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
@@ -2777,6 +3694,55 @@ class _ReaderPanelsMixin {
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
         } catch (err) { Zotero.debug("[Weavero] _wvReaderShowBmContextMenu err: " + err); }
+    }
+
+    /** Build the context-menu items for the LIBRARY scope (main store) using the
+     *  same `item`/`sep` helpers as the reader menu. Open / Show in Library /
+     *  Rename / Delete on a row; Rename/New Subfolder/Delete on a folder; plus
+     *  Add Library Bookmark… / New Folder… always. All re-render the tree. */
+    _wvReaderBuildLibCtxItems(reader: any, idoc: any, e: any, item: any, sep: any, reRender: any) {
+        const win = Zotero.getMainWindow();
+        const rowEl = e.target && e.target.closest && e.target.closest(".wv-bm-reader-row");
+        const nodeId = rowEl && rowEl.getAttribute("data-wv-bm-id");
+        const loc = nodeId ? this._bmLocate(nodeId) : null;
+        const entry = loc && loc.entry;
+        if (entry) {
+            if (entry.type === "folder") {
+                item("Rename Folder…", RP_RENAME_SVG, () => {
+                    const n = this._bmPromptName(win, "Rename Folder", entry.name || "");
+                    if (n) this._bmRenameFolder(entry.id, n).then(reRender);
+                });
+                item("New Subfolder…", RP_FOLDER_PLUS_SVG, () => {
+                    const n = this._bmPromptName(win, "New Folder", "New Folder");
+                    if (n) this._bmAddFolder(n, entry.id).then(reRender);
+                });
+                sep();
+                item("Delete Folder", RP_DELETE_SVG, () => {
+                    const c = this._bmCountDescendants(entry);
+                    if (c > 0) { const ok = Services.prompt.confirm(win, "Delete Folder", 'Delete "' + (entry.name || "") + '" and its ' + c + " item" + (c === 1 ? "" : "s") + "?"); if (!ok) return; }
+                    this._bmRemove(entry.id).then(reRender);
+                });
+            } else {
+                let openIcon = "";
+                try { const im = this._bmIconInfo(entry, win).image; openIcon = (im && im.indexOf("chrome://") === 0) ? im : this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win); } catch (_) {}
+                item("Open", openIcon, () => this._bmActivateBookmark(entry, {}));
+                item("Show in Library", this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win), () => this._bmShowInLibrary(entry));
+                sep();
+                item("Rename…", RP_RENAME_SVG, () => {
+                    const n = this._bmPromptName(win, "Rename Bookmark", entry.label || "");
+                    if (n) this._bmRenameBookmark(entry.id, n).then(reRender);
+                });
+                item("Delete Bookmark", RP_DELETE_SVG, () => this._bmRemove(entry.id).then(reRender));
+            }
+            sep();
+        }
+        item("Add Library Bookmark…", RP_PLUS_SVG, () => {
+            Promise.resolve(this._bmAddBookmarksDialog()).then(reRender).catch(() => {});
+        });
+        item("New Folder…", RP_FOLDER_PLUS_SVG, () => {
+            const n = this._bmPromptName(win, "New Folder", "New Folder");
+            if (n) this._bmAddFolder(n).then(reRender);
+        });
     }
 
     _wvCloseReaderBmContextMenu(idoc: any) {

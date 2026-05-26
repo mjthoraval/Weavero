@@ -7142,11 +7142,17 @@ class _ReaderMixin {
             let btn = stripEl.querySelector(":scope > .wv-hamburger-btn");
             if (btn) return btn;
 
-            // 1. Find every top-level <menu> across all <menubar>s.
+            // 1. Find every top-level <menu> across all <menubar>s. Skip
+            //    platform-hidden ones (Zotero hides `go-menu` and `windowMenu`
+            //    with `hidden="true"` on Windows / Linux — they're macOS-only;
+            //    we'd otherwise expose empty entries in the hamburger).
             const sources: any[] = [];
             for (const mb of doc.querySelectorAll("menubar")) {
                 for (const ch of mb.children) {
                     if (ch.tagName !== "menu") continue;
+                    if ((ch as any).hidden
+                            || ch.getAttribute("hidden") === "true"
+                            || ch.getAttribute("collapsed") === "true") continue;
                     const popupId = ch.querySelector(":scope > menupopup")?.id;
                     if (!popupId) continue;
                     sources.push({
@@ -7161,59 +7167,159 @@ class _ReaderMixin {
                 return null;
             }
 
-            // 2. Build the hamburger popup (XUL) with one submenu per source.
+            // 2. Build the hamburger popup. Each top-level item is a <menu>
+            //    with an empty <menupopup> child (gives the native submenu-
+            //    arrow). The placeholder's `popupshowing` is intercepted —
+            //    we preventDefault, then open the LIVE native source popup
+            //    (e.g. menu_FilePopup) as a cascade BESIDE the hamburger's
+            //    menu item via `start_before` anchoring (extends leftward,
+            //    since the hamburger sits at the window's right edge).
+            //
+            //    `noautohide="true"` on the hamburger popup prevents
+            //    Mozilla's popup auto-hide timeout from dismissing it when
+            //    the cursor moves into the source popup (the cursor leaves
+            //    the hamburger → Mozilla would otherwise close it after
+            //    ~500 ms → our listener would then cascade-close the
+            //    source). We handle dismissal manually below: outside-click
+            //    on the chrome window, Escape keydown, and the source
+            //    popup's `popuphidden` (item-click / Escape on the source).
             const popup: any = doc.createXULElement("menupopup");
             popup.id = "wv-hamburger-popup";
-            // Position so the popup opens just below the button.
-            popup.setAttribute("position", "after_start");
+            popup.setAttribute("position", "after_end");
+            popup.setAttribute("noautohide", "true");
+            popup.setAttribute("consumeoutsideclicks", "never");
+            // Single-source-popup-at-a-time state. When the user hovers a
+            // different hamburger item, we DETACH the previous source's
+            // dismissal listener (so closing it doesn't dismiss the
+            // hamburger), close it, then open the new one.
+            let currentSrcPopup: any = null;
+            let currentSrcDismissListener: any = null;
+            const detachSrcDismiss = () => {
+                if (currentSrcPopup && currentSrcDismissListener) {
+                    try {
+                        currentSrcPopup.removeEventListener("popuphidden",
+                            currentSrcDismissListener, true);
+                    } catch (e) {}
+                }
+                currentSrcPopup = null;
+                currentSrcDismissListener = null;
+            };
+
             for (const src of sources) {
                 const submenu: any = doc.createXULElement("menu");
                 submenu.setAttribute("label", src.label);
                 if (src.accesskey) submenu.setAttribute("accesskey", src.accesskey);
-                const subpopup: any = doc.createXULElement("menupopup");
-                subpopup.setAttribute("data-wv-source-popup-id", src.popupId);
-                // Just-in-time clone of the real menupopup's contents whenever
-                // this submenu is about to show — so dynamic items stay live.
-                subpopup.addEventListener("popupshowing", () => {
+                const innerPlaceholder: any = doc.createXULElement("menupopup");
+                const popupIdForCapture = src.popupId;
+                const parentMenuItem = submenu;
+                innerPlaceholder.addEventListener("popupshowing", (e: any) => {
                     try {
-                        while (subpopup.firstChild) {
-                            subpopup.removeChild(subpopup.firstChild);
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // Switch: detach the previous source's dismissal
+                        // listener (so closing it won't cascade-close the
+                        // hamburger), close the previous popup, then open
+                        // the new one.
+                        const previous = currentSrcPopup;
+                        detachSrcDismiss();
+                        if (previous && previous !== doc.getElementById(popupIdForCapture)
+                                && (previous.state === "open" || previous.state === "showing")) {
+                            try { previous.hidePopup(); } catch (er) {}
                         }
-                        const srcPopup = doc.getElementById(src.popupId);
-                        if (!srcPopup) return;
-                        // Fire the source popup's own `popupshowing` first
-                        // so it can fill in dynamic items (e.g. recent files,
-                        // window list) before we read its children.
-                        try {
-                            const ev = new (win as any).Event("popupshowing", { bubbles: false, cancelable: true });
-                            srcPopup.dispatchEvent(ev);
-                        } catch (er) {}
-                        // Deep-clone every child, stripping IDs so we don't
-                        // duplicate them in the document.
-                        const stripIds = (el: any) => {
+                        win.setTimeout(() => {
                             try {
-                                if (el.removeAttribute) el.removeAttribute("id");
-                                if (el.children) {
-                                    for (const c of el.children) stripIds(c);
+                                const srcPopup: any = doc.getElementById(popupIdForCapture);
+                                if (!srcPopup) return;
+                                if (typeof srcPopup.openPopup === "function") {
+                                    srcPopup.openPopup(parentMenuItem, "start_before", 0, 0, false, false);
                                 }
-                            } catch (er) {}
-                        };
-                        for (const ch of Array.from(srcPopup.children) as any[]) {
-                            const clone = ch.cloneNode(true);
-                            stripIds(clone);
-                            subpopup.appendChild(clone);
-                        }
-                    } catch (e) {
-                        Zotero.debug("[Weavero][hamburger] popupshowing err: " + e);
+                                // Track as the currently-open source popup.
+                                currentSrcPopup = srcPopup;
+                                // popuphidden bubbles up from descendants —
+                                // only act on the source popup's OWN close.
+                                // Also: only treat as a dismissal if this is
+                                // STILL the current source (a hover-switch
+                                // detaches the listener before closing).
+                                currentSrcDismissListener = (ev: any) => {
+                                    try {
+                                        if (ev.target !== srcPopup) return;
+                                        if (currentSrcPopup !== srcPopup) return;
+                                        detachSrcDismiss();
+                                        popup.hidePopup();
+                                    } catch (er) {}
+                                };
+                                srcPopup.addEventListener("popuphidden",
+                                    currentSrcDismissListener, true);
+                            } catch (er) {
+                                Zotero.debug("[Weavero][hamburger] open-cascade err: " + er);
+                            }
+                        }, 0);
+                    } catch (er) {
+                        Zotero.debug("[Weavero][hamburger] inner popupshowing err: " + er);
                     }
-                });
-                submenu.appendChild(subpopup);
+                }, true);
+                submenu.appendChild(innerPlaceholder);
                 popup.appendChild(submenu);
             }
             // Mount the popup. Prefer an existing <popupset>; fall back to
             // documentElement so it's at least in the doc.
             const popupset = doc.querySelector("popupset") || doc.documentElement;
             popupset.appendChild(popup);
+
+            // 2b. Manual dismissal wiring. `noautohide` removes Mozilla's
+            //     timeout-based dismissal; we replace it with:
+            //     - window-level mousedown on anything NOT inside either
+            //       the hamburger popup or any currently-open source popup
+            //     - Escape keydown anywhere in the chrome window
+            //     Both listeners are attached on `popupshown` and detached
+            //     on `popuphidden` so they don't leak.
+            const inAnyOpenPopup = (target: any): boolean => {
+                if (!target) return false;
+                if (target.closest && target.closest("#wv-hamburger-popup")) return true;
+                // Any of our source popups currently open?
+                for (const src of sources) {
+                    const sp = doc.getElementById(src.popupId);
+                    if (sp && (sp.state === "open" || sp.state === "showing")
+                            && target.closest
+                            && target.closest("#" + src.popupId)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            let onWinMouseDown: any = null;
+            let onWinKeyDown: any = null;
+            popup.addEventListener("popupshown", () => {
+                try {
+                    onWinMouseDown = (e: any) => {
+                        try {
+                            if (!inAnyOpenPopup(e.target)) popup.hidePopup();
+                        } catch (er) {}
+                    };
+                    onWinKeyDown = (e: any) => {
+                        try {
+                            if (e.key === "Escape") popup.hidePopup();
+                        } catch (er) {}
+                    };
+                    win.addEventListener("mousedown", onWinMouseDown, true);
+                    win.addEventListener("keydown", onWinKeyDown, true);
+                } catch (er) {}
+            });
+            popup.addEventListener("popuphidden", () => {
+                try {
+                    if (onWinMouseDown) win.removeEventListener("mousedown", onWinMouseDown, true);
+                    if (onWinKeyDown) win.removeEventListener("keydown", onWinKeyDown, true);
+                    onWinMouseDown = null;
+                    onWinKeyDown = null;
+                    // Detach and close any lingering source popup so it
+                    // doesn't outlive the hamburger.
+                    const lingering = currentSrcPopup;
+                    detachSrcDismiss();
+                    if (lingering && (lingering.state === "open" || lingering.state === "showing")) {
+                        try { lingering.hidePopup(); } catch (er) {}
+                    }
+                } catch (er) {}
+            });
 
             // 3. Build the HTML hamburger button. SVG must be created via
             //    createElementNS — innerHTML doesn't reliably create SVG-
@@ -7240,7 +7346,11 @@ class _ReaderMixin {
             btn.appendChild(svg);
             btn.addEventListener("click", (e: any) => {
                 try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
-                try { popup.openPopup(btn, "after_start", 0, 0, false, false); } catch (er) {}
+                // `after_end` = anchor at the button's bottom-right, so
+                // the hamburger extends to the LEFT of the button (there's
+                // no room to the right — the hamburger sits next to the
+                // window controls).
+                try { popup.openPopup(btn, "after_end", 0, 0, false, false); } catch (er) {}
             });
             // Insert just before `beforeEl` (window controls / spacer / etc).
             if (beforeEl && beforeEl.parentNode === stripEl) {

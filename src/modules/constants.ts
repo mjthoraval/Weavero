@@ -661,6 +661,14 @@ export const PLUGIN_CSS = [
     "}",
     // Popup-internal styles (the panel hosts an HTML subtree).
     ".wv-filter-popup-inner { padding: 6px; min-width: 200px; }",
+    // Filter-search affordance at the very top of the popup: magnifier on the
+    // right, optional input row below; click to toggle, ESC to close.
+    ".wv-filter-popup-search-bar { display: flex; flex-direction: column; align-items: stretch; padding: 0 0 4px; }",
+    ".wv-filter-popup-search-btn { align-self: flex-end; width: 24px; height: 24px; border: none; background: none; cursor: pointer; border-radius: 4px; color: inherit; opacity: .65; display: flex; align-items: center; justify-content: center; padding: 0; }",
+    ".wv-filter-popup-search-btn:hover { opacity: 1; background: rgba(127, 127, 127, .14); }",
+    ".wv-filter-popup-search-btn.wv-active { opacity: 1; background: rgba(127, 127, 127, .2); }",
+    ".wv-filter-popup-search-input { width: 100%; padding: 3px 6px; font-size: 12px; border: 1px solid rgba(127, 127, 127, .35); border-radius: 4px; background: rgba(127, 127, 127, .06); color: inherit; box-sizing: border-box; margin: 2px 0 0; }",
+    ".wv-filter-popup-search-input:focus { outline: none; border-color: var(--color-accent, #5e6ad2); }",
     ".wv-filter-popup-header {",
     "  padding: 4px 8px 6px;",
     "  font-size: 11px; opacity: 0.6;",
@@ -1744,9 +1752,16 @@ export const PLUGIN_CSS = [
     "#wv-tabs-menu-filetype-btn:active {",
     "  background-color: var(--fill-quarternary);",
     "}",
-    "#wv-tabs-menu-filetype-btn.wv-active {",
-    "  color: var(--color-accent, #2ea8e5);",
+    // Active-filter cue: a blue dot on the funnel (same convention as the
+    // library/reader filter buttons), not a colour tint. Anchored to the
+    // funnel icon's upper-right; the button is position:absolute, so the dot
+    // positions relative to it.
+    "#wv-tabs-menu-filetype-btn .wv-tabs-menu-filetype-dot {",
+    "  display: none; position: absolute; top: 6px; left: 14px;",
+    "  width: 6px; height: 6px; border-radius: 50%;",
+    "  background: var(--color-accent, #5e6ad2); pointer-events: none;",
     "}",
+    "#wv-tabs-menu-filetype-btn.wv-active .wv-tabs-menu-filetype-dot { display: block; }",
     "#wv-tabs-menu-filetype-btn.wv-active:hover {",
     "  background-color: var(--fill-quinary);",
     "}",

@@ -1916,6 +1916,25 @@ export const PLUGIN_CSS = [
     "#zotero-tabs-menu-list .row .wv-tabs-menu-anncount-label {",
     "  line-height: 16px;",
     "}",
+    // Pin glyph for pinned rows — small inline SVG appended at the END of
+    // the row (right side, after the title). Themed via currentColor for
+    // light/dark mode and slightly dimmed so the row's tab icon stays the
+    // primary visual.
+    "#zotero-tabs-menu-list .row .wv-tabs-menu-pin-icon {",
+    "  flex: 0 0 12px;",
+    "  display: inline-flex;",
+    "  align-items: center;",
+    "  justify-content: center;",
+    "  width: 12px;",
+    "  height: 12px;",
+    "  margin-left: 6px;",
+    "  margin-right: 4px;",
+    "  color: var(--fill-secondary);",
+    "}",
+    "#zotero-tabs-menu-list .row .wv-tabs-menu-pin-icon svg {",
+    "  width: 12px;",
+    "  height: 12px;",
+    "}",
     // Row of file-type tiles inside the popup — sits below the
     // top bar (hint + Clear / × buttons) in column flow.
     "#wv-tabs-menu-filetype-popup .wv-tabs-menu-filetype-row {",

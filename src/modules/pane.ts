@@ -3364,6 +3364,15 @@ class _PaneMixin {
                 stash.buttonboxObserver = mo;
             } catch (er) {}
 
+            // Insert the hamburger button just left of the window controls.
+            // Inserts before postSpacer (which sits before the buttonbox), so
+            // the hamburger ends up flush against the spacer's left edge.
+            try {
+                const stripEl = zoteroTitleBar;
+                const beforeEl = postSpacer || buttonbox;
+                (this as any)._wvEnsureHamburger?.(win, stripEl, beforeEl);
+            } catch (e) {}
+
             win._wvCompactTitleBar = stash;
         } catch (e) {
             Zotero.debug("[Weavero] _applyCompactTitleBar err: " + e);
@@ -3397,6 +3406,8 @@ class _PaneMixin {
             //    tab-strip width reservation it may have set.
             try { if (stash.buttonboxObserver) stash.buttonboxObserver.disconnect(); } catch (e) {}
             try { const ztb = doc.getElementById("zotero-title-bar"); if (ztb) ztb.style.paddingInlineEnd = ""; } catch (e) {}
+            // Remove the hamburger button + popup.
+            try { (this as any)._wvRemoveHamburger?.(win); } catch (e) {}
 
             // 1. Move buttonbox back. If we have an original anchor, use
             //    it; otherwise force it back into #titlebar (the canonical
@@ -3533,6 +3544,27 @@ class _PaneMixin {
                 "  flex: 0 0 40px; width: 40px; min-width: 40px;",
                 "  -moz-window-dragging: drag;",
                 "}",
+                /* Hamburger button — Firefox-style application menu trigger
+                   that sits just left of the window controls in compact
+                   title bar mode. SVG drawn as three horizontal lines using
+                   currentColor; transparent background with subtle hover. */
+                "#zotero-title-bar > .wv-hamburger-btn {",
+                "  display: flex; align-items: center; justify-content: center;",
+                "  width: 36px; height: 100%; padding: 0; margin: 0;",
+                "  border: none; appearance: none; -moz-appearance: none;",
+                "  background: transparent;",
+                "  color: currentColor; opacity: 0.65;",
+                "  cursor: default;",
+                "  -moz-window-dragging: no-drag;",
+                "  flex: 0 0 36px;",
+                "}",
+                "#zotero-title-bar > .wv-hamburger-btn svg {",
+                "  width: 16px; height: 16px;",
+                "  stroke: currentColor; stroke-width: 1.4;",
+                "  stroke-linecap: round; fill: none;",
+                "}",
+                "#zotero-title-bar > .wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); opacity: 1; }",
+                "#zotero-title-bar > .wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
         } catch (e) {

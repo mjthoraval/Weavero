@@ -224,6 +224,13 @@ class _TabsMixin {
                 this._addAnnotationCountToRow(row);
             }
         }
+        // Pin glyph on rows whose tab is pinned (independent of group/
+        // ungrouped layout, so apply unconditionally up-front).
+        try {
+            for (const row of allRows) {
+                this._decoratePinIconOnTabsMenuRow(row);
+            }
+        } catch (e) {}
 
         // If "Sort by Library" is off, the user wants the upstream
         // flat list. Apply only the file-type filter (per-row) and
@@ -582,27 +589,799 @@ class _TabsMixin {
             titleBar.setAttribute("tooltip", "wv-tab-library-tooltip");
         }
 
+        // Inject the static stylesheet for pinned tabs (icon-only width,
+        // hidden title + close). Lives in the chrome window's head so it
+        // applies to React-rendered .tab nodes the moment our observer
+        // adds the wv-pinned-tab class.
+        try { this._ensurePinnedTabStyles(doc); } catch (e) {}
+        // Wire drag listeners on the tab-bar container so dragging a
+        // regular tab into the pinned region pins it (and vice-versa).
+        try { this._wireTabBarDrag(win); } catch (e) {}
+
         // Initial pass before we attach the observer so the user
-        // sees decoration immediately on plugin install / Zotero open.
+        // sees decoration + pin state immediately on plugin install / Zotero open.
         try { this._decorateTabBar(win); } catch (e) {}
+        try { this._applyPinnedTabs(win); } catch (e) {}
 
         if (win._wvTabBarDecoMo) {
             try { win._wvTabBarDecoMo.disconnect(); } catch (e) {}
         }
         const mo = new win.MutationObserver(() => {
             try { this._decorateTabBar(win); } catch (e) {}
+            try { this._applyPinnedTabs(win); } catch (e) {}
         });
         mo.observe(container, {
             childList: true,
             subtree: true,
             attributes: true,
             // `data-id` changes when tabs are reordered or replaced.
-            // We no longer rewrite the title attribute (the custom
-            // tooltip carries the library info) so we don't need to
-            // observe title mutations.
-            attributeFilter: ["data-id"],
+            // `class` is needed because React rewrites className=cx('tab',
+            // {selected, dragging}) on every selection change — that overwrites
+            // our `wv-pinned-tab` class, expanding the pinned tab to full
+            // width until we re-apply.
+            attributeFilter: ["data-id", "class"],
         });
         win._wvTabBarDecoMo = mo;
+    }
+
+    // ---- Pinned tabs (Firefox-style icon-only pins, just right of library) -
+
+    /** Read the persisted pin array. Each entry: { libraryID, itemKey }. */
+    _pinnedTabsGet() {
+        try {
+            const raw = Zotero.Prefs.get("weavero.pinnedTabs");
+            if (!raw) return [];
+            const arr = JSON.parse(String(raw));
+            return Array.isArray(arr) ? arr : [];
+        } catch (e) { return []; }
+    }
+
+    _pinnedTabsSet(arr) {
+        try { Zotero.Prefs.set("weavero.pinnedTabs", JSON.stringify(arr || [])); } catch (e) {}
+    }
+
+    _pinnedTabsHas(libraryID, itemKey) {
+        return this._pinnedTabsGet().some(e => e.libraryID === libraryID && e.itemKey === itemKey);
+    }
+
+    _pinnedTabsAdd(libraryID, itemKey) {
+        const arr = this._pinnedTabsGet();
+        if (arr.some(e => e.libraryID === libraryID && e.itemKey === itemKey)) return;
+        arr.push({ libraryID, itemKey });
+        this._pinnedTabsSet(arr);
+    }
+
+    _pinnedTabsRemove(libraryID, itemKey) {
+        const arr = this._pinnedTabsGet().filter(
+            e => !(e.libraryID === libraryID && e.itemKey === itemKey));
+        this._pinnedTabsSet(arr);
+    }
+
+    /** Derive a pin key from a Zotero tab record. Returns `{libraryID,
+     *  itemKey}` for tabs bound to a Zotero item (the case we care about —
+     *  readers, item info tabs), or null for the library tab / other
+     *  non-item-bound tabs. */
+    _tabPinKey(tab) {
+        if (!tab || !tab.data || !tab.data.itemID) return null;
+        try {
+            const it = Zotero.Items.get(tab.data.itemID);
+            if (!it) return null;
+            return { libraryID: it.libraryID, itemKey: it.key };
+        } catch (e) { return null; }
+    }
+
+    /** Reconcile the tab strip with the persisted pin list. THIS RUNS ON
+     *  EVERY TAB-BAR MUTATION (the observer above), so it MUST NOT force
+     *  positions — Zotero's tab order is the source of truth for ordering
+     *  (otherwise a user drag would be reverted on the next render).
+     *
+     *  Behaviour:
+     *    1. Drop pin entries whose underlying item is gone (auto-unpin).
+     *    2. Re-sync the pref's order to Zotero's current order of pinned
+     *       open tabs, so drag-reorder persists across sessions.
+     *    3. Mark each open pinned tab's DOM node with `wv-pinned-tab`;
+     *       strip it from anything no longer pinned.
+     *  Idempotent: only writes pref / mutates DOM when something actually
+     *  changed. Initial PIN POSITIONING (placing a newly-pinned tab last
+     *  among pins) is done in the menu's onCommand handler instead — see
+     *  `_pinTabByCommand`. */
+    _applyPinnedTabs(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const Z_Tabs: any = (win as any).Zotero_Tabs;
+            if (!Z_Tabs || !Z_Tabs._tabs) return;
+            const pinPref = this._pinnedTabsGet();
+            if (!pinPref.length) {
+                // Strip any stale class without scanning the rest.
+                for (const node of doc.querySelectorAll("#tab-bar-container .tab.wv-pinned-tab")) {
+                    node.classList.remove("wv-pinned-tab");
+                }
+                return;
+            }
+            const pinKeySet = new Set<string>();
+            for (const p of pinPref) pinKeySet.add(p.libraryID + ":" + p.itemKey);
+
+            // Walk Zotero's tabs in order; for each pinned-by-pref tab,
+            // record its identity AND its tab.id. The resulting list IS the
+            // display order — what we want the pref to reflect.
+            const pinnedOpenInOrder: Array<{ libraryID: number, itemKey: string, tabID: string }> = [];
+            const pinnedTabIDs = new Set<string>();
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const tab = Z_Tabs._tabs[i];
+                if (!tab) continue;
+                const k = this._tabPinKey(tab);
+                if (!k) continue;
+                if (!pinKeySet.has(k.libraryID + ":" + k.itemKey)) continue;
+                pinnedOpenInOrder.push({ libraryID: k.libraryID, itemKey: k.itemKey, tabID: tab.id });
+                pinnedTabIDs.add(tab.id);
+            }
+
+            // Rebuild the pref array: pinned tabs that are OPEN go first
+            // (in Zotero's current order — captures drag-reorder), then
+            // pinned items with no open tab keep their relative order from
+            // the previous pref (won't visibly affect anything until the
+            // user re-opens them). Stale pins (item gone) are dropped.
+            const openSet = new Set<string>();
+            for (const p of pinnedOpenInOrder) openSet.add(p.libraryID + ":" + p.itemKey);
+            const newPref: Array<{ libraryID: number, itemKey: string }> = pinnedOpenInOrder
+                .map(p => ({ libraryID: p.libraryID, itemKey: p.itemKey }));
+            for (const p of pinPref) {
+                if (openSet.has(p.libraryID + ":" + p.itemKey)) continue;
+                // Pin with no open tab: keep IF the item still exists.
+                try {
+                    const id = Zotero.Items.getIDFromLibraryAndKey(p.libraryID, p.itemKey);
+                    if (id) newPref.push(p);
+                } catch (e) {}
+            }
+            // Persist only if the array changed (order or content).
+            if (JSON.stringify(newPref) !== JSON.stringify(pinPref)) {
+                this._pinnedTabsSet(newPref);
+            }
+
+            // Apply / strip the wv-pinned-tab class on DOM nodes. React rewrites
+            // className on every selection change (cx('tab', {selected,
+            // dragging})), so the MutationObserver fires `class` mutations
+            // and this re-adds the class immediately after each clobber.
+            const nodes = doc.querySelectorAll("#tab-bar-container .tab[data-id]");
+            for (const node of nodes) {
+                const id = node.getAttribute("data-id");
+                if (pinnedTabIDs.has(id)) {
+                    if (!node.classList.contains("wv-pinned-tab")) {
+                        node.classList.add("wv-pinned-tab");
+                    }
+                }
+                else if (node.classList.contains("wv-pinned-tab")) {
+                    node.classList.remove("wv-pinned-tab");
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
+    }
+
+    /** Wire dragstart / dragend on the tab-bar container so dragging a
+     *  regular tab INTO the pinned region pins it, and dragging a pinned
+     *  tab OUT of the pinned region unpins it.
+     *
+     *  "Pinned region" = slots [1, maxOtherPinned] where maxOtherPinned
+     *  is the highest index among currently-pinned tabs OTHER than the
+     *  dragged one. Equivalent rule: a regular tab is being pinned if its
+     *  final index ≤ maxOtherPinned; a pinned tab is being unpinned if
+     *  its final index > maxOtherPinned. Drag-reorders that stay within
+     *  the same region take no action (the existing _applyPinnedTabs
+     *  sync to Zotero's order handles that).
+     *
+     *  We use dragend (not dragover/Z_Tabs.move) so the decision runs
+     *  once on the final position — Zotero fires many move() calls during
+     *  a drag for live preview. */
+    _wireTabBarDrag(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const container = doc.getElementById("tab-bar-container");
+            if (!container || (container as any)._wvPinDragWired) return;
+            const self = this;
+            container.addEventListener("dragstart", (e: any) => {
+                try {
+                    const tabNode = e.target && e.target.closest && e.target.closest(".tab[data-id]");
+                    if (!tabNode) return;
+                    const tabID = tabNode.getAttribute("data-id");
+                    if (!tabID || tabID === "zotero-pane") return;
+                    const Z_Tabs: any = (win as any).Zotero_Tabs;
+                    if (!Z_Tabs) return;
+                    const zotTab = Z_Tabs._tabs.find((t: any) => t && t.id === tabID);
+                    if (!zotTab) return;
+                    const k = self._tabPinKey(zotTab);
+                    if (!k) return;
+                    self._wvTabDrag = {
+                        tabID,
+                        libraryID: k.libraryID,
+                        itemKey: k.itemKey,
+                        wasPinned: self._pinnedTabsHas(k.libraryID, k.itemKey),
+                        initialIndex: Z_Tabs._tabs.indexOf(zotTab),
+                    };
+                    // Mount the overlay on every standalone reader window
+                    // for the duration of this drag — keeps the dragged tab
+                    // from scrolling/jumping any reader-window content.
+                    try { (self as any)._wvShowReaderDragOverlays(); } catch (er2) {}
+                } catch (er) {}
+            }, true);
+            // Shared helper: compute the pin/unpin verdict for the dragged
+            // tab at its current Zotero index. Returns "pin" | "unpin" | "".
+            const computePreview = (drag: any) => {
+                try {
+                    const Z_Tabs: any = (win as any).Zotero_Tabs;
+                    if (!Z_Tabs || !drag) return "";
+                    const tab = Z_Tabs._tabs.find((t: any) => t && t.id === drag.tabID);
+                    if (!tab) return "";
+                    const newIndex = Z_Tabs._tabs.indexOf(tab);
+                    let maxOtherPinned = 0;
+                    for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                        const t = Z_Tabs._tabs[i];
+                        if (!t || t.id === drag.tabID) continue;
+                        const k = self._tabPinKey(t);
+                        if (!k) continue;
+                        if (self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
+                    }
+                    if (!drag.wasPinned && newIndex <= maxOtherPinned) return "pin";
+                    if (drag.wasPinned && newIndex > maxOtherPinned) return "unpin";
+                    return "";
+                } catch (er) { return ""; }
+            };
+            // Live preview during drag: as the dragged tab crosses into /
+            // out of the pinned region (each Z_Tabs.move reflows the DOM),
+            // toggle the data-wv-pin-preview attribute on its tab node.
+            // CSS does the rest (icon-only collapse with accent outline /
+            // full-width with dashed outline).
+            container.addEventListener("dragover", (e: any) => {
+                try {
+                    // Cross-window merge: a drag carrying our reader-merge
+                    // MIME (set on the .wv-window-tab in a standalone reader)
+                    // must preventDefault so the drop event fires here. The
+                    // types check is needed in BOTH dragover AND drop —
+                    // browsers won't let us getData() in dragover, only test
+                    // membership via .types.
+                    try {
+                        const types = e.dataTransfer && e.dataTransfer.types;
+                        const arr = types ? (Array.from(types) as string[]) : [];
+                        if (arr.indexOf("application/x-weavero-reader-merge") >= 0) {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = "move";
+                            // Render a ghost tab at the drop position — same
+                            // blue outline + sizing as the pin/unpin preview
+                            // (icon-only inside the pinned region, full width
+                            // otherwise). Lives inside the regular .tabs
+                            // container; pushed aside as the cursor moves.
+                            const regulars: any = doc.querySelector(
+                                "#tab-bar-container .tabs-wrapper .tabs");
+                            if (!regulars) return;
+                            // Figure out the drop position by comparing the
+                            // cursor's clientX against tab midpoints. The
+                            // result is "insert before tab N" (an element
+                            // ref) or null = drop at the end.
+                            const tabNodes = Array.from(regulars.querySelectorAll(
+                                ".tab[data-id]:not(.wv-merge-ghost)")) as any[];
+                            let insertBefore: any = null;
+                            for (let i = 0; i < tabNodes.length; i++) {
+                                const r = tabNodes[i].getBoundingClientRect();
+                                const mid = r.left + r.width / 2;
+                                if (e.clientX < mid) { insertBefore = tabNodes[i]; break; }
+                            }
+                            // Find ghost (create if first time). Populate
+                            // its contents to mirror what a real merged tab
+                            // would look like: the item's type icon on the
+                            // left and the tab's title text. Payload sits on
+                            // `_wvMergeDragInfo` (set by reader dragstart;
+                            // dragover can't getData() the MIME).
+                            let ghost: any = regulars.querySelector(".wv-merge-ghost");
+                            const info: any = (self as any)._wvMergeDragInfo || {};
+                            if (!ghost) {
+                                ghost = doc.createElementNS(
+                                    "http://www.w3.org/1999/xhtml", "div");
+                                ghost.className = "tab wv-merge-ghost";
+                                const iconEl = doc.createElementNS(
+                                    "http://www.w3.org/1999/xhtml", "span");
+                                iconEl.className = "icon icon-css tab-icon icon-item-type";
+                                ghost.appendChild(iconEl);
+                                const nameEl = doc.createElementNS(
+                                    "http://www.w3.org/1999/xhtml", "div");
+                                nameEl.className = "tab-name";
+                                ghost.appendChild(nameEl);
+                            }
+                            // Refresh icon + title each pass — info is set
+                            // once at dragstart, but we keep it cheap and
+                            // idempotent in case of edge cases.
+                            const iconNode = ghost.querySelector(".tab-icon");
+                            const nameNode = ghost.querySelector(".tab-name");
+                            if (iconNode) {
+                                // Map readerType ("pdf" / "epub" / "snapshot" /
+                                // "note") to the data-item-type Zotero uses
+                                // for tab icons. The real attribute values
+                                // are camelCase (attachmentPDF / attachmentEPUB
+                                // / attachmentSnapshot / note) — kebab-case
+                                // won't match Zotero's CSS rule.
+                                const rt = String(info.readerType || "").toLowerCase();
+                                const itemType = rt === "note" ? "note"
+                                    : rt === "epub" ? "attachmentEPUB"
+                                    : rt === "snapshot" ? "attachmentSnapshot"
+                                    : "attachmentPDF";
+                                iconNode.setAttribute("data-item-type", itemType);
+                            }
+                            if (nameNode) nameNode.textContent = info.title || "";
+                            // Decide pin vs regular style: pinned if dropped
+                            // BEFORE OR AT the last currently-pinned tab.
+                            const Z_Tabs: any = (win as any).Zotero_Tabs;
+                            let maxPinnedIdx = 0;
+                            try {
+                                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                                    const t = Z_Tabs._tabs[i];
+                                    const k = self._tabPinKey(t);
+                                    if (k && self._pinnedTabsHas(k.libraryID, k.itemKey)) maxPinnedIdx = i;
+                                }
+                            } catch (er3) {}
+                            // Translate the insertBefore DOM node to a Z_Tabs index.
+                            let targetIdx = Z_Tabs && Z_Tabs._tabs ? Z_Tabs._tabs.length : 1;
+                            if (insertBefore) {
+                                const did = insertBefore.getAttribute("data-id");
+                                const z = Z_Tabs._tabs.findIndex((t: any) => t && t.id === did);
+                                if (z >= 0) targetIdx = z;
+                            }
+                            const wouldPin = targetIdx <= maxPinnedIdx;
+                            ghost.classList.toggle("wv-merge-ghost-pin", wouldPin);
+                            ghost.classList.toggle("wv-merge-ghost-regular", !wouldPin);
+                            // Position the ghost.
+                            if (insertBefore && insertBefore.parentNode === regulars) {
+                                if (ghost.nextSibling !== insertBefore || ghost.parentNode !== regulars) {
+                                    regulars.insertBefore(ghost, insertBefore);
+                                }
+                            }
+                            else if (ghost.parentNode !== regulars || ghost.nextSibling) {
+                                regulars.appendChild(ghost);
+                            }
+                            return;   // skip pin-preview logic for cross-window drag
+                        }
+                    } catch (er2) {}
+                    const drag = self._wvTabDrag;
+                    if (!drag) return;
+                    const tabNode: any = doc.querySelector('#tab-bar-container .tab[data-id="' + drag.tabID + '"]');
+                    if (!tabNode) return;
+                    const verdict = computePreview(drag);
+                    const cur = tabNode.getAttribute("data-wv-pin-preview") || "";
+                    if (verdict === cur) return;
+                    if (verdict) tabNode.setAttribute("data-wv-pin-preview", verdict);
+                    else tabNode.removeAttribute("data-wv-pin-preview");
+                } catch (er) {}
+            }, true);
+            const clearMergeMarkers = () => {
+                try {
+                    container.removeAttribute("data-wv-merge-target");   // legacy
+                    for (const n of doc.querySelectorAll(".tab[data-wv-merge-drop]")) {
+                        n.removeAttribute("data-wv-merge-drop");
+                    }
+                    for (const g of doc.querySelectorAll(".wv-merge-ghost")) g.remove();
+                } catch (er) {}
+            };
+            container.addEventListener("drop", (e: any) => {
+                try {
+                    clearMergeMarkers();
+                    const types = e.dataTransfer && e.dataTransfer.types;
+                    const arr = types ? (Array.from(types) as string[]) : [];
+                    if (arr.indexOf("application/x-weavero-reader-merge") < 0) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const raw = e.dataTransfer.getData("application/x-weavero-reader-merge");
+                    const data = raw ? JSON.parse(raw) : null;
+                    const itemID = data && typeof data.itemID === "number" ? data.itemID : null;
+                    const kind = data && data.readerType === "note" ? "note" : "reader";
+                    const mover = kind === "note"
+                        ? (self as any)._moveNoteToTab?.bind(self)
+                        : (self as any)._moveReaderToTab?.bind(self);
+                    if (itemID == null || typeof mover !== "function") return;
+
+                    // Compute the drop position → tab index by finding which
+                    // existing-tab gap the cursor's clientX falls into. Uses
+                    // the same midpoint algorithm Zotero's handleTabBarDragOver
+                    // uses internally. The index is *where the new tab should
+                    // land*; tabs at or after that index shift right.
+                    const Z_Tabs: any = (win as any).Zotero_Tabs;
+                    let targetIndex = (Z_Tabs && Z_Tabs._tabs) ? Z_Tabs._tabs.length : 1;
+                    try {
+                        const tabNodes = Array.from(doc.querySelectorAll(
+                            "#tab-bar-container .tab[data-id]")) as any[];
+                        for (let i = 0; i < tabNodes.length; i++) {
+                            const r = tabNodes[i].getBoundingClientRect();
+                            const mid = r.left + r.width / 2;
+                            if (e.clientX < mid) {
+                                // Translate the DOM index to the Z_Tabs._tabs
+                                // index by mapping data-id to the tabs array.
+                                const did = tabNodes[i].getAttribute("data-id");
+                                const z = Z_Tabs && Z_Tabs._tabs
+                                    ? Z_Tabs._tabs.findIndex((t: any) => t && t.id === did)
+                                    : i;
+                                targetIndex = z >= 0 ? z : i;
+                                break;
+                            }
+                        }
+                    } catch (er) {}
+                    // Find the rightmost OTHER currently-pinned slot — anything
+                    // landing at index ≤ this means "inside the pinned region"
+                    // and should auto-pin. Captured BEFORE the merge so the
+                    // newly-arrived tab doesn't itself count.
+                    let maxOtherPinned = 0;
+                    try {
+                        for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                            const t = Z_Tabs._tabs[i];
+                            const k = self._tabPinKey(t);
+                            if (!k) continue;
+                            if (self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
+                        }
+                    } catch (er) {}
+
+                    // Run the merge, then move the new tab to the target slot
+                    // and (if applicable) auto-pin it. The mover branches on
+                    // readerType: "note" → _moveNoteToTab (ZoteroPane.openNote
+                    // with openInWindow:false), anything else → reader path.
+                    try { mover(itemID); } catch (er) {}
+                    // _moveReaderToTab defers the new tab's creation behind a
+                    // ~120 ms setTimeout (it lets the closing reader window
+                    // flush its state first). Poll briefly until the new tab
+                    // appears in Z_Tabs._tabs, then move it.
+                    const startTs = Date.now();
+                    const poll = () => {
+                        try {
+                            const item = Zotero.Items.get(itemID);
+                            if (!item) return;
+                            const tab = Z_Tabs._tabs.find((t: any) =>
+                                t && t.data && t.data.itemID === itemID);
+                            if (!tab) {
+                                if (Date.now() - startTs < 2000) win.setTimeout(poll, 80);
+                                return;
+                            }
+                            // Position the new tab.
+                            try {
+                                if (typeof Z_Tabs.move === "function") {
+                                    const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
+                                    Z_Tabs.move(tab.id, clamped);
+                                }
+                            } catch (er) {}
+                            // Auto-pin if dropped inside the pinned region.
+                            const curIdx = Z_Tabs._tabs.indexOf(tab);
+                            if (curIdx <= maxOtherPinned && curIdx > 0) {
+                                try {
+                                    self._pinnedTabsAdd(item.libraryID, item.key);
+                                    self._applyPinnedTabs(win);
+                                } catch (er) {}
+                            }
+                        } catch (er) {}
+                    };
+                    win.setTimeout(poll, 200);
+                } catch (er) {}
+            }, true);
+            // Clear merge-drop markers whenever the drag leaves the container
+            // or ends entirely (drop / cancel). dragleave fires on EVERY
+            // child crossing, so guard with relatedTarget.
+            container.addEventListener("dragleave", (e: any) => {
+                try {
+                    if (e.relatedTarget && container.contains(e.relatedTarget)) return;
+                    clearMergeMarkers();
+                } catch (er) {}
+            }, true);
+            container.addEventListener("dragend", () => {
+                clearMergeMarkers();
+                try { (self as any)._wvHideReaderDragOverlays(); } catch (er) {}
+            }, true);
+            container.addEventListener("dragend", (e: any) => {
+                try {
+                    // Strip any preview attrs from every tab (defensive — only
+                    // the dragged tab should have one, but in case of a stray).
+                    for (const n of doc.querySelectorAll(".tab[data-wv-pin-preview]")) {
+                        n.removeAttribute("data-wv-pin-preview");
+                    }
+                    const drag = self._wvTabDrag;
+                    self._wvTabDrag = null;
+                    if (!drag) return;
+                    const verdict = computePreview(drag);
+                    const Z_Tabs: any = (win as any).Zotero_Tabs;
+                    if (!Z_Tabs) return;
+                    const tab = Z_Tabs._tabs.find((t: any) => t && t.id === drag.tabID);
+                    if (!tab) return;
+
+                    // TEAR-OFF: if the drop coordinates land OUTSIDE the tab
+                    // strip's bounding rect (the user dragged the tab into the
+                    // content area or off-screen entirely), use Zotero's
+                    // moveToNewWindow hook for the tab's content type. That
+                    // hook (defined in tabs.js for `reader` and `note`)
+                    // closes the tab and reopens it as a standalone window —
+                    // the canonical Zotero tear-off path. Drop position is
+                    // detected via the dragend event's clientX/Y compared
+                    // against the title-bar container's rect; clientX === 0
+                    // && clientY === 0 means "dropped off-window", which we
+                    // also treat as tear-off.
+                    try {
+                        const strip = doc.getElementById("zotero-title-bar");
+                        const rect = strip && strip.getBoundingClientRect();
+                        const cx = e.clientX, cy = e.clientY;
+                        const offWindow = (cx === 0 && cy === 0);
+                        const outsideStrip = rect && (cx < rect.left || cx > rect.right
+                            || cy < rect.top || cy > rect.bottom);
+                        if (offWindow || outsideStrip) {
+                            const tabContentType = Z_Tabs.parseTabType
+                                ? Z_Tabs.parseTabType(tab.type).tabContentType
+                                : null;
+                            if (tabContentType
+                                && typeof Z_Tabs._hasHook === "function"
+                                && Z_Tabs._hasHook(tabContentType, "moveToNewWindow")) {
+                                const hook = Z_Tabs._getHook(tabContentType, "moveToNewWindow");
+                                if (hook) {
+                                    Promise.resolve(hook(tab, Z_Tabs._tabs.indexOf(tab)))
+                                        .catch(er => Zotero.debug("[Weavero] tear-off err: " + er));
+                                    return;
+                                }
+                            }
+                        }
+                    } catch (er) {}
+
+                    const newIndex = Z_Tabs._tabs.indexOf(tab);
+                    if (newIndex === drag.initialIndex && !verdict) return;
+                    if (verdict === "pin") {
+                        self._pinnedTabsAdd(drag.libraryID, drag.itemKey);
+                        try { self._applyPinnedTabs(win); } catch (er) {}
+                    }
+                    else if (verdict === "unpin") {
+                        self._pinnedTabsRemove(drag.libraryID, drag.itemKey);
+                        try { self._applyPinnedTabs(win); } catch (er) {}
+                    }
+                } catch (er) {}
+            }, true);
+            (container as any)._wvPinDragWired = true;
+        } catch (e) { Zotero.debug("[Weavero] _wireTabBarDrag err: " + e); }
+    }
+
+    /** Append a tab to the pinned list AND move its DOM node to the slot
+     *  just after the last currently-pinned tab — i.e. Firefox behaviour:
+     *  newly-pinned tabs sit at the right end of the pinned group. The
+     *  next observer-driven `_applyPinnedTabs` will sync the pref order
+     *  to match this new position. */
+    _pinTabByCommand(win, item) {
+        try {
+            const Z_Tabs: any = (win as any).Zotero_Tabs;
+            if (!Z_Tabs || !Z_Tabs._tabs) return;
+            this._pinnedTabsAdd(item.libraryID, item.key);
+            // Find the tab matching this item.
+            const tab = Z_Tabs._tabs.find((t: any) => {
+                if (!t || !t.data || !t.data.itemID) return false;
+                try {
+                    const it = Zotero.Items.get(t.data.itemID);
+                    return it && it.libraryID === item.libraryID && it.key === item.key;
+                } catch (e) { return false; }
+            });
+            if (!tab || typeof Z_Tabs.move !== "function") return;
+            // Find the highest index occupied by a currently-pinned tab
+            // OTHER than the one we just added — that's where we want to
+            // land just after.
+            let lastOtherPinnedIdx = 0;   // library
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const t = Z_Tabs._tabs[i];
+                if (!t || t.id === tab.id) continue;
+                const k = this._tabPinKey(t);
+                if (!k) continue;
+                if (this._pinnedTabsHas(k.libraryID, k.itemKey)) lastOtherPinnedIdx = i;
+            }
+            const targetSlot = lastOtherPinnedIdx + 1;
+            const curIdx = Z_Tabs._tabs.indexOf(tab);
+            if (curIdx !== targetSlot) { try { Z_Tabs.move(tab.id, targetSlot); } catch (e) {} }
+        } catch (e) { Zotero.debug("[Weavero] _pinTabByCommand err: " + e); }
+    }
+
+    /** Detect when a tab's underlying item is being deleted, and auto-unpin
+     *  it. Called from the notifier's `delete` event for items. */
+    _onItemDeletedForPin(libraryID, itemKey) {
+        try {
+            if (!this._pinnedTabsHas(libraryID, itemKey)) return;
+            this._pinnedTabsRemove(libraryID, itemKey);
+        } catch (e) {}
+    }
+
+    /** One-time CSS for pinned tabs. Icon-only width matches Firefox's
+     *  pinned-tab convention (~36 px); tab name + close button hide. */
+    _ensurePinnedTabStyles(doc) {
+        try {
+            if (!doc || doc.getElementById("wv-pinned-tab-style")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-pinned-tab-style";
+            // Bump specificity above .tab.selected (which Zotero uses to
+            // size the active tab) by chaining the pinned class with .tab
+            // AND #tab-bar-container — the selected rule then loses on
+            // specificity, and our width holds whether selected or not.
+            //
+            // Drag-preview attribute `data-wv-pin-preview="pin"|"unpin"`
+            // is set on the dragged tab during dragover when its position
+            // crosses into / out of the pinned region. Pin-preview applies
+            // the same icon-only collapse + an accent border so the user
+            // sees "will be pinned"; unpin-preview forces full width back
+            // + a dashed border so the user sees "will be unpinned".
+            // Attributes (not classes) so React doesn't manage them on its
+            // re-renders.
+            style.textContent = [
+                "#tab-bar-container .tab.wv-pinned-tab,",
+                "#tab-bar-container .tab.wv-pinned-tab.selected,",
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'],",
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'].selected {",
+                "  max-width: 36px !important;",
+                "  min-width: 36px !important;",
+                "  width: 36px !important;",
+                "  padding-inline-start: 8px !important;",
+                "  padding-inline-end: 8px !important;",
+                "  flex: 0 0 36px !important;",
+                "}",
+                "#tab-bar-container .tab.wv-pinned-tab .tab-name,",
+                "#tab-bar-container .tab.wv-pinned-tab.selected .tab-name,",
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'] .tab-name,",
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'].selected .tab-name {",
+                "  display: none !important;",
+                "}",
+                "#tab-bar-container .tab.wv-pinned-tab .tab-close,",
+                "#tab-bar-container .tab.wv-pinned-tab.selected .tab-close,",
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'] .tab-close,",
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'].selected .tab-close {",
+                "  display: none !important;",
+                "}",
+                // "will be pinned" — accent outline + faint accent tint.
+                "#tab-bar-container .tab[data-wv-pin-preview='pin'] {",
+                "  outline: 2px solid var(--color-accent, #4072e5) !important;",
+                "  outline-offset: -2px !important;",
+                "  background: rgba(64, 114, 229, 0.12) !important;",
+                "}",
+                // "will be unpinned" — force full width back AND a dashed
+                // border so the user can tell apart "merely being moved
+                // within pinned region" from "leaving the pinned region".
+                // The selectors are chained with .wv-pinned-tab AND .selected
+                // so their specificity beats the pin-icon-only rule above
+                // (which uses .tab.wv-pinned-tab.selected = 1,3,0 — we
+                // need 1,4,0 here to win).
+                "#tab-bar-container .tab[data-wv-pin-preview='unpin'],",
+                "#tab-bar-container .tab.wv-pinned-tab[data-wv-pin-preview='unpin'],",
+                "#tab-bar-container .tab.wv-pinned-tab[data-wv-pin-preview='unpin'].selected {",
+                "  max-width: 200px !important;",
+                "  min-width: 100px !important;",
+                "  width: auto !important;",
+                "  flex: 1 1 auto !important;",
+                "  padding-inline-start: 12px !important;",
+                "  padding-inline-end: 12px !important;",
+                "  outline: 2px solid var(--color-accent, #4072e5) !important;",
+                "  outline-offset: -2px !important;",
+                "  background: rgba(64, 114, 229, 0.12) !important;",
+                "}",
+                "#tab-bar-container .tab[data-wv-pin-preview='unpin'] .tab-name,",
+                "#tab-bar-container .tab.wv-pinned-tab[data-wv-pin-preview='unpin'] .tab-name,",
+                "#tab-bar-container .tab.wv-pinned-tab[data-wv-pin-preview='unpin'].selected .tab-name {",
+                "  display: block !important;",
+                "}",
+                "#tab-bar-container .tab[data-wv-pin-preview='unpin'] .tab-close,",
+                "#tab-bar-container .tab.wv-pinned-tab[data-wv-pin-preview='unpin'] .tab-close,",
+                "#tab-bar-container .tab.wv-pinned-tab[data-wv-pin-preview='unpin'].selected .tab-close {",
+                "  display: flex !important;",
+                "}",
+                // Cross-window merge ghost — a placeholder tab at the drop
+                // position, styled exactly like the pin/unpin preview
+                // (solid blue accent outline). Width matches what the
+                // merged tab WILL be: 36 px icon-only when landing inside
+                // the pinned region, normal flex-grow tab width otherwise.
+                "#tab-bar-container .wv-merge-ghost {",
+                "  outline: 2px solid var(--color-accent, #4072e5) !important;",
+                "  outline-offset: -2px !important;",
+                "  border-radius: 4px !important;",
+                "  pointer-events: none !important;",
+                "  align-self: stretch !important;",   /* flex parent stretches us vertically */
+                "  background: rgba(64, 114, 229, 0.12) !important;",
+                "  box-sizing: border-box !important;",
+                "}",
+                "#tab-bar-container .wv-merge-ghost.wv-merge-ghost-pin {",
+                "  max-width: 36px !important;",
+                "  min-width: 36px !important;",
+                "  width: 36px !important;",
+                "  flex: 0 0 36px !important;",
+                "}",
+                "#tab-bar-container .wv-merge-ghost.wv-merge-ghost-regular {",
+                "  min-width: 100px !important;",
+                "  max-width: 200px !important;",
+                "  flex: 1 1 auto !important;",
+                "}",
+            ].join("\n");
+            (doc.head || doc.documentElement).appendChild(style);
+        } catch (e) { Zotero.debug("[Weavero] _ensurePinnedTabStyles err: " + e); }
+    }
+
+    /** Register the Pin/Unpin entry via Zotero's MenuManager plugin API
+     *  (`target: "main/tab"`) — same mechanism the Copy Select/Open Link
+     *  entries use. Appending to the popup AFTER Zotero's _openMenu opens
+     *  it doesn't show the new items (the popup is already shown by
+     *  popup.openPopupAtScreen), so MenuManager — which is invoked by
+     *  `Zotero.MenuManager.updateMenuPopup(popup, "main/tab", ...)` BEFORE
+     *  the popup opens — is the only path that actually works. */
+    _registerPinTabMenu() {
+        try {
+            if (!((Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.registerMenu === "function")) return;
+            this._unregisterPinTabMenu();
+            const self = this;
+            const id = (Zotero as any).MenuManager.registerMenu({
+                menuID: "weavero-tab-pin",
+                pluginID: "weavero@mjthoraval",
+                target: "main/tab",
+                menus: [{
+                    menuType: "menuitem",
+                    onShowing: (_ev, ctx) => {
+                        try {
+                            // Library tab can't be pinned/unpinned.
+                            if (ctx.tabID === "zotero-pane") { ctx.setVisible(false); return; }
+                            const item = ctx.items && ctx.items[0];
+                            if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
+                            ctx.setVisible(true);
+                            const pinned = self._pinnedTabsHas(item.libraryID, item.key);
+                            ctx.menuElem.setAttribute("label", pinned ? "Unpin Tab" : "Pin Tab");
+                            // MenuManager appends custom items AFTER all built-ins
+                            // (Show in Library / Move Tab / Duplicate Tab / Close /
+                            // Close Other Tabs / Reopen Closed Tab). The user wants
+                            // Pin Tab right after Duplicate Tab — locate it by label
+                            // and reposition our menuitem there. (Falls through
+                            // gracefully if Duplicate Tab isn't in this popup, e.g.
+                            // for tab types that don't expose a `duplicate` hook.)
+                            try {
+                                const popup = ctx.menuElem.parentNode;
+                                if (!popup) return;
+                                const dupLabel = Zotero.getString("tabs.duplicate");
+                                let dup = null;
+                                for (const ch of popup.querySelectorAll("menuitem")) {
+                                    if (ch.getAttribute && ch.getAttribute("label") === dupLabel) { dup = ch; break; }
+                                }
+                                if (dup && dup.nextSibling !== ctx.menuElem) {
+                                    popup.insertBefore(ctx.menuElem, dup.nextSibling);
+                                }
+                            } catch (e) {}
+                        } catch (e) {
+                            try { ctx.setVisible(false); } catch (e2) {}
+                        }
+                    },
+                    onCommand: (_ev, ctx) => {
+                        try {
+                            const item = ctx.items && ctx.items[0];
+                            if (!item) return;
+                            if (self._pinnedTabsHas(item.libraryID, item.key)) {
+                                self._pinnedTabsRemove(item.libraryID, item.key);
+                            }
+                            else {
+                                // _pinTabByCommand both adds the pref entry AND
+                                // moves the tab to "last pinned + 1" so a fresh
+                                // pin lands at the right end of the pinned group
+                                // (Firefox behaviour).
+                                try {
+                                    for (const w of Zotero.getMainWindows()) self._pinTabByCommand(w, item);
+                                } catch (e) {}
+                            }
+                            // Re-apply on all known windows so the class shows up
+                            // immediately (the MutationObserver will also pick
+                            // this up, but a direct call avoids a brief flash).
+                            try {
+                                for (const w of Zotero.getMainWindows()) self._applyPinnedTabs(w);
+                            } catch (e) {}
+                        } catch (e) {
+                            Zotero.debug("[Weavero] pin-tab onCommand err: " + e);
+                        }
+                    },
+                }],
+            });
+            if (id) this._pinTabMenuID = id;
+        } catch (e) { Zotero.debug("[Weavero] _registerPinTabMenu err: " + e); }
+    }
+
+    _unregisterPinTabMenu() {
+        try {
+            if (this._pinTabMenuID && (Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.unregisterMenu === "function") {
+                (Zotero as any).MenuManager.unregisterMenu(this._pinTabMenuID);
+            }
+        } catch (e) {}
+        this._pinTabMenuID = null;
     }
 
     _teardownTabBarLibraryDecoration(win) {
@@ -1323,6 +2102,54 @@ class _TabsMixin {
      *  themed via `-moz-context-properties: fill` and a label, both
      *  coloured with `--fill-secondary`. Only renders a non-zero
      *  count — same hide-when-zero rule as the item pane. */
+    /** Append / clear a pin glyph at the END of a tabs-menu row based on
+     *  the current pinned-tabs pref. Idempotent: always strips the prior
+     *  glyph first so the row matches the latest state. */
+    _decoratePinIconOnTabsMenuRow(row) {
+        try {
+            // Strip any prior icon so toggling pin state doesn't stack.
+            const prior = row.querySelector(".wv-tabs-menu-pin-icon");
+            if (prior) prior.remove();
+
+            const tabId = row.dataset && row.dataset.tabId;
+            if (!tabId || tabId === "zotero-pane") return;
+            const win = row.ownerGlobal;
+            const doc = row.ownerDocument;
+            const Z_Tabs: any = win && (win as any).Zotero_Tabs;
+            if (!Z_Tabs || !Array.isArray(Z_Tabs._tabs)) return;
+            const tab = Z_Tabs._tabs.find((t: any) => t && t.id === tabId);
+            if (!tab) return;
+            const key = this._tabPinKey(tab);
+            if (!key) return;
+            if (!this._pinnedTabsHas(key.libraryID, key.itemKey)) return;
+
+            // Inline SVG pushpin — themed via currentColor so it adapts
+            // to light / dark mode. Built via createElementNS (SVG namespace)
+            // because innerHTML on an HTML span doesn't reliably create
+            // SVG-namespaced children in Gecko's chrome context.
+            const HTML_NS = "http://www.w3.org/1999/xhtml";
+            const SVG_NS = "http://www.w3.org/2000/svg";
+            const span = doc.createElementNS(HTML_NS, "span");
+            span.className = "wv-tabs-menu-pin-icon";
+            const svg = doc.createElementNS(SVG_NS, "svg");
+            svg.setAttribute("viewBox", "0 0 16 16");
+            svg.setAttribute("width", "12");
+            svg.setAttribute("height", "12");
+            svg.setAttribute("fill", "currentColor");
+            const path = doc.createElementNS(SVG_NS, "path");
+            path.setAttribute("d", "M9.5 0v4l2 2v2H8.7L8 14.5 7.3 8H4.5V6l2-2V0h3z");
+            svg.appendChild(path);
+            span.appendChild(svg);
+            // Insert just BEFORE the row's close (×) button so the close
+            // stays at the row's right edge on hover — Firefox-style:
+            // [icon] [title] ........ [pin] [×]. If the row has no close
+            // (e.g. the meta library row), fall back to appending.
+            const closeBtn = row.querySelector(".zotero-tabs-menu-entry.close");
+            if (closeBtn) row.insertBefore(span, closeBtn);
+            else row.appendChild(span);
+        } catch (e) { Zotero.debug("[Weavero] _decoratePinIconOnTabsMenuRow err: " + e); }
+    }
+
     _addAnnotationCountToRow(row) {
         try {
             // Strip any prior badge so toggling the setting doesn't

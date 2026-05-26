@@ -1741,6 +1741,27 @@ class _ReaderMixin {
             // child of "Hide title bar (Firefox-style)".
             try { this._ensureReaderWindowTabStrip(reader); } catch (e) {}
 
+            // When the Firefox-style strip is active, the window already
+            // shows a draggable tab — the user can drag it back to the main
+            // window's tab strip to dock it. The dedicated "Move to Tab"
+            // button is redundant in that mode, so skip adding it.
+            if (this._getCompactTitleBarReader?.()) return;
+
+            const btn = this._buildReaderToTabButton(doc, itemID);
+            if (!btn) return;
+            try { append(btn); }
+            catch (e) { Zotero.debug("[Weavero] _toolbarHandler append err: " + e); }
+        } catch (e) {
+            Zotero.debug("[Weavero] _toolbarHandler err: " + e);
+        }
+    }
+
+    /** Build a fresh "Move to Tab" button bound to the given itemID. The
+     *  click closure captures only the itemID (a number — safe across
+     *  chrome/iframe). Used by both the renderToolbar event path and the
+     *  direct-DOM sync path (when the pref toggles back). */
+    _buildReaderToTabButton(doc, itemID) {
+        try {
             const NS_HTML = "http://www.w3.org/1999/xhtml";
             const btn = doc.createElementNS(NS_HTML, "button");
             btn.className = "toolbar-button wv-reader-to-tab";
@@ -1748,12 +1769,9 @@ class _ReaderMixin {
             btn.title = "Move this reader into a tab in the main Zotero window";
             // Tabbed-window glyph: an outlined window body with a tab strip
             // (one full-height active tab merging into the body, plus a
-            // shorter faded tab behind it). fill="currentColor" — not
-            // context-fill — so it inherits the toolbar button's text
-            // colour and reads correctly in both themes (the built-in
-            // icons' context-fill wasn't being applied to a custom-section
-            // child, so the old glyph came out near-black on the dark
-            // toolbar — and also read as a folder rather than tabs).
+            // shorter faded tab behind it). fill="currentColor" so it
+            // inherits the toolbar button's text colour and reads correctly
+            // in both themes.
             btn.innerHTML =
                 '<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">'
                 + '<rect x="1" y="5" width="14" height="9.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.3"/>'
@@ -1766,10 +1784,42 @@ class _ReaderMixin {
                 try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
                 self._moveReaderToTab(capturedItemID);
             });
-            try { append(btn); }
-            catch (e) { Zotero.debug("[Weavero] _toolbarHandler append err: " + e); }
+            return btn;
         } catch (e) {
-            Zotero.debug("[Weavero] _toolbarHandler err: " + e);
+            Zotero.debug("[Weavero] _buildReaderToTabButton err: " + e);
+            return null;
+        }
+    }
+
+    /** Add or remove the standalone-reader-window "Move to Tab" button to
+     *  reflect the current `compactTitleBarReader` pref state, immediately
+     *  — without waiting for the next renderToolbar event. Called from the
+     *  pref-change observer in index.ts. */
+    _wvSyncReaderMoveButton(reader) {
+        try {
+            if (!reader || reader.tabID) return;
+            const doc = reader._iframeWindow && reader._iframeWindow.document;
+            if (!doc) return;
+            const compactOn = !!this._getCompactTitleBarReader?.();
+            const existing = doc.querySelector(".wv-reader-to-tab");
+            if (compactOn) {
+                if (existing) existing.remove();
+                return;
+            }
+            // Pref is OFF: ensure button is present. If it isn't, build &
+            // insert into the existing `.end > .custom-sections > .section`
+            // (Zotero leaves the section element in the DOM even after a
+            // re-render that didn't append anything).
+            if (existing) return;
+            const itemID = reader.itemID;
+            if (!itemID) return;
+            const section = doc.querySelector(".toolbar .end .custom-sections .section")
+                || doc.querySelector(".toolbar .end .custom-sections");
+            if (!section) return;
+            const btn = this._buildReaderToTabButton(doc, itemID);
+            if (btn) section.appendChild(btn);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSyncReaderMoveButton err: " + e);
         }
     }
 
@@ -1868,6 +1918,55 @@ class _ReaderMixin {
                 tab.appendChild(iconEl);
                 tab.appendChild(titleEl);
                 tab.appendChild(closeBtn);
+                // Drag source: dragging this tab onto the main window's
+                // tab strip merges the standalone reader back into a tab.
+                // Mozilla's HTML5 drag-and-drop crosses chrome windows in
+                // the same process, so the main window's drop handler can
+                // read our MIME via dataTransfer.types / getData(). The
+                // payload is the reader's itemID; the drop handler calls
+                // _moveReaderToTab on the plugin instance (already wired
+                // for the context-menu "Move Tab to Main Window" item).
+                tab.setAttribute("draggable", "true");
+                tab.addEventListener("dragstart", (e: any) => {
+                    try {
+                        if (!e.dataTransfer) return;
+                        e.dataTransfer.effectAllowed = "move";
+                        const titleNow = strip && strip.querySelector(".wv-window-tab-title");
+                        const titleText = titleNow ? (titleNow.textContent || "") : "";
+                        e.dataTransfer.setData(
+                            "application/x-weavero-reader-merge",
+                            JSON.stringify({
+                                itemID: reader.itemID,
+                                title: titleText,
+                                readerType: readerType || "",
+                            })
+                        );
+                        // Stash the payload on the shared plugin instance —
+                        // dragover handlers in the main window can read
+                        // it from there (browsers restrict getData() during
+                        // dragover to security-policy-protected MIMEs only).
+                        (this as any)._wvMergeDragInfo = {
+                            itemID: reader.itemID,
+                            title: titleText,
+                            readerType: readerType || "",
+                        };
+                        // Suppress the browser's default drag-preview image.
+                        try {
+                            const img = doc.createElementNS(HTML, "img");
+                            img.setAttribute("src",
+                                "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+                            e.dataTransfer.setDragImage(img, 0, 0);
+                        } catch (er2) {}
+                        // Activate overlays on every standalone reader window
+                        // so the drag can't reach the reader `<browser>` and
+                        // make it scroll.
+                        try { this._wvShowReaderDragOverlays(); } catch (er2) {}
+                    } catch (er) {}
+                });
+                tab.addEventListener("dragend", () => {
+                    try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
+                    try { this._wvHideReaderDragOverlays(); } catch (er) {}
+                });
                 strip.appendChild(tab);
                 if (anchor) anchorParent.insertBefore(strip, anchor);
                 else anchorParent.appendChild(strip);
@@ -1910,8 +2009,390 @@ class _ReaderMixin {
             try { this._applyReaderCompactMenubar(reader); } catch (e) {}
             // Keep the window controls at the top-right when Alt reveals the menu.
             try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
+            // Insert the hamburger button just left of the window controls.
+            // The menubar is hidden in this mode so the hamburger is the
+            // always-available access point to those menus.
+            try {
+                const strip2 = doc.querySelector(".wv-window-tabstrip");
+                const ctlBox = strip2 && strip2.querySelector(":scope > .wv-window-controls");
+                if (strip2) this._wvEnsureHamburger(win, strip2, ctlBox);
+            } catch (e) {}
+            // Absorb merge-MIME dragover/drop on the whole standalone reader
+            // window so (1) the OS forbidden cursor doesn't flash when the
+            // user drags this tab back over the tab strip, and (2) the
+            // dragged tab doesn't scroll/jump the reader content. The actual
+            // merge into the main strip happens in the main window's drop
+            // handler — here we just neutralize the events.
+            try { this._wvWireReaderWindowMergeAbsorber(win); } catch (e) {}
+            // Ensure a hidden overlay node sits on top of the reader
+            // `<browser>`. Chrome-window dragover listeners can't see
+            // events inside a `<browser type="content">` (separate event
+            // loop), so we physically intercept the drag with an overlay
+            // div. Activated by `_wvShowReaderDragOverlays`.
+            try { this._wvEnsureReaderDragOverlay(win); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowTabStrip err: " + e);
+        }
+    }
+
+    /** Window-level dragover/drop absorber for the standalone reader window.
+     *  Only acts on drags carrying our `application/x-weavero-reader-merge`
+     *  MIME — other drags (e.g. annotation-area selections) are untouched.
+     *  Idempotent via `win._wvReaderMergeAbsorberWired`. Capture phase so we
+     *  beat the PDF reader's own auto-scroll handler.
+     *
+     *  Behavior differs by target:
+     *  - Over the tab strip (`.wv-window-tabstrip`): preventDefault so the
+     *    OS treats it as a valid drop target — no forbidden cursor.
+     *  - Over the reader area (everything else): stopPropagation so PDF.js
+     *    can't see the event and auto-scroll, but do NOT preventDefault —
+     *    the OS shows the forbidden cursor (honest UI: dropping there
+     *    really wouldn't do anything). */
+    _wvWireReaderWindowMergeAbsorber(win) {
+        try {
+            if (!win || win._wvReaderMergeAbsorberWired) return;
+            const isMergeDrag = (e) => {
+                try {
+                    const types = e.dataTransfer && e.dataTransfer.types;
+                    if (!types) return false;
+                    // DataTransferItemList has `.contains`; DOMStringList has `.item/length`.
+                    if (typeof types.contains === "function") {
+                        return types.contains("application/x-weavero-reader-merge");
+                    }
+                    for (let i = 0; i < types.length; i++) {
+                        if (types[i] === "application/x-weavero-reader-merge") return true;
+                    }
+                    return false;
+                } catch (er) { return false; }
+            };
+            const isOverStrip = (e) => {
+                try {
+                    const t: any = e.target;
+                    if (!t || !t.closest) return false;
+                    return !!t.closest(".wv-window-tabstrip");
+                } catch (er) { return false; }
+            };
+            const onDragOver = (e) => {
+                if (!isMergeDrag(e)) return;
+                try {
+                    if (isOverStrip(e)) {
+                        // Strip: accept the drag (no forbidden cursor).
+                        e.preventDefault();
+                        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                    }
+                    else {
+                        // Reader area: block PDF.js from seeing the event so
+                        // it can't auto-scroll, but leave preventDefault
+                        // unset so the OS shows the forbidden cursor.
+                        e.stopPropagation();
+                    }
+                } catch (er) {}
+            };
+            const onDrop = (e) => {
+                // No-op: just consume the drop so the reader doesn't
+                // get the event. The source tab's dragend will decide
+                // what to do (typically nothing — the tab stays put).
+                if (!isMergeDrag(e)) return;
+                try {
+                    e.stopPropagation();
+                    if (isOverStrip(e)) e.preventDefault();
+                } catch (er) {}
+            };
+            win.addEventListener("dragover", onDragOver, true);
+            win.addEventListener("drop", onDrop, true);
+            win._wvReaderMergeAbsorberWired = true;
+            // Stash for teardown.
+            const stash = (win._wvTabStrip) || (win._wvTabStrip = {});
+            stash.mergeAbsorberOff = () => {
+                try {
+                    win.removeEventListener("dragover", onDragOver, true);
+                    win.removeEventListener("drop", onDrop, true);
+                    win._wvReaderMergeAbsorberWired = false;
+                } catch (er) {}
+            };
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireReaderWindowMergeAbsorber err: " + e);
+        }
+    }
+
+    /** Create (or refresh) a transparent overlay div positioned absolutely on
+     *  top of the standalone reader window's `<browser id="reader">`. Hidden
+     *  by default; shown only while a tab drag is in progress. The overlay
+     *  is the chrome-window's only way to keep dragover events away from the
+     *  reader's `<browser type="content">` — content browsers have their own
+     *  event loop, so chrome-window listeners simply don't see those events.
+     *  The overlay has no dragover handler at all: by being topmost it
+     *  *receives* the events, and since it never preventDefaults, the OS
+     *  shows the forbidden cursor (drop disallowed) AND won't auto-scroll
+     *  (auto-scroll only fires for valid drop targets). */
+    _wvEnsureReaderDragOverlay(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const browser: any = doc.getElementById("reader")
+                || doc.querySelector("browser[type='content']");
+            if (!browser) return;
+            let overlay: any = doc.getElementById("wv-reader-drag-overlay");
+            if (!overlay) {
+                overlay = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                overlay.id = "wv-reader-drag-overlay";
+                // Positioning + appearance: transparent, fixed to the reader
+                // rect, hidden by default. `pointer-events: auto` is implicit
+                // for a regular div; we only need to make sure it's on top.
+                overlay.setAttribute("style", [
+                    "position: fixed",
+                    "left: 0", "top: 0", "right: 0", "bottom: 0",
+                    "z-index: 2147483646",
+                    "background: transparent",
+                    "display: none",
+                ].join("; ") + ";");
+                // Belt-and-suspenders: also stop dragover/drop just in case.
+                // No preventDefault — we want the OS forbidden cursor.
+                overlay.addEventListener("dragover", (e: any) => {
+                    Zotero.debug("[Weavero][drag-overlay] OVERLAY dragover (good)");
+                    try { e.stopPropagation(); } catch (er) {}
+                }, true);
+                overlay.addEventListener("drop", (e: any) => {
+                    try { e.stopPropagation(); } catch (er) {}
+                }, true);
+                // Mount inside documentElement so it can absolute-position
+                // relative to the window viewport.
+                doc.documentElement.appendChild(overlay);
+                // Diagnostic: log if anything OTHER than the overlay gets
+                // dragover in this reader window (means the overlay didn't
+                // catch it — likely a z-index / process-boundary issue).
+                try {
+                    win.addEventListener("dragover", (e: any) => {
+                        const tgt: any = e.target;
+                        const tgtDesc = tgt && tgt.tagName ? (tgt.tagName + "#" + (tgt.id || "") + "." + (tgt.className || "")) : String(tgt);
+                        if (tgt && tgt.id !== "wv-reader-drag-overlay") {
+                            Zotero.debug("[Weavero][drag-overlay] WIN dragover target=" + tgtDesc);
+                        }
+                    }, true);
+                } catch (er) {}
+            }
+            // Sync overlay rect to the current browser rect (resize-safe).
+            const sync = () => {
+                try {
+                    const r = browser.getBoundingClientRect();
+                    overlay.style.left = r.left + "px";
+                    overlay.style.top = r.top + "px";
+                    overlay.style.width = r.width + "px";
+                    overlay.style.height = r.height + "px";
+                    overlay.style.right = "auto";
+                    overlay.style.bottom = "auto";
+                } catch (er) {}
+            };
+            sync();
+            (win as any)._wvReaderDragOverlaySync = sync;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvEnsureReaderDragOverlay err: " + e);
+        }
+    }
+
+    /** Collect every nested content document under a reader `<browser>`:
+     *  the outer reader.html doc plus the inner PDF.js / EPUB / snapshot
+     *  iframe doc. Used to install capture-phase dragover absorbers that
+     *  fire before PDF.js's own preventDefault-ing file-drop handler. */
+    _wvCollectReaderContentDocs(win) {
+        const docs: any[] = [];
+        try {
+            const browser: any = win && win.document && (win.document.getElementById("reader")
+                || win.document.querySelector("browser[type='content']"));
+            if (!browser) return docs;
+            const seen = new Set<any>();
+            const walk = (doc: any) => {
+                if (!doc || seen.has(doc)) return;
+                seen.add(doc);
+                docs.push(doc);
+                try {
+                    const frames = doc.querySelectorAll("iframe, frame");
+                    for (const f of frames) {
+                        try { walk((f as any).contentDocument); } catch (e) {}
+                    }
+                } catch (e) {}
+            };
+            try { walk(browser.contentDocument); } catch (e) {}
+        } catch (e) {}
+        return docs;
+    }
+
+    /** Walk every nested content document under a reader content doc,
+     *  starting from the given root doc. Same recursion as
+     *  `_wvCollectReaderContentDocs` but takes the doc directly so it
+     *  works for in-tab readers (where there's no `<browser>` element). */
+    _wvCollectDocsFromRoot(rootDoc) {
+        const docs: any[] = [];
+        if (!rootDoc) return docs;
+        const seen = new Set<any>();
+        const walk = (doc: any) => {
+            if (!doc || seen.has(doc)) return;
+            seen.add(doc);
+            docs.push(doc);
+            try {
+                const frames = doc.querySelectorAll("iframe, frame");
+                for (const f of frames) {
+                    try { walk((f as any).contentDocument); } catch (e) {}
+                }
+            } catch (e) {}
+        };
+        try { walk(rootDoc); } catch (e) {}
+        return docs;
+    }
+
+    /** Apply the scroll-lock to a single reader instance. Returns the array
+     *  of locks (caller stashes for restoration). */
+    _wvApplyScrollLockToReader(reader) {
+        const locks: Array<{ el: any; prev: string }> = [];
+        try {
+            // reader._iframeWindow.document is the outer reader.html doc;
+            // we recurse to find the inner PDF/EPUB viewer iframe too.
+            const rootDoc = reader && reader._iframeWindow && reader._iframeWindow.document;
+            if (!rootDoc) return locks;
+            const docs = this._wvCollectDocsFromRoot(rootDoc);
+            for (const cd of docs) {
+                try {
+                    const all = cd.querySelectorAll("*");
+                    for (const el of all) {
+                        try {
+                            if (el.scrollHeight > el.clientHeight + 4
+                                || el.scrollWidth > el.clientWidth + 4) {
+                                const prev = (el.style && el.style.overflow) || "";
+                                locks.push({ el, prev });
+                                el.style.overflow = "hidden";
+                            }
+                        } catch (er) {}
+                    }
+                } catch (er) {}
+            }
+        } catch (e) {}
+        return locks;
+    }
+
+    /** Lock scroll on every reader (in-tab and standalone) so the OS
+     *  drag-autoscroll can't shift PDF content during a tab drag, AND set
+     *  `pointer-events: none` on each reader's iframe element so dropping
+     *  there is honestly disallowed by the OS (forbidden cursor). Called
+     *  from any tab-drag dragstart (main strip or standalone reader strip).
+     *
+     *  The OS auto-scrolls scrollable elements near edges during any drag
+     *  regardless of drop-target validity. JS handlers cannot disable that
+     *  behavior. The only way to stop it is to make the elements
+     *  unscrollable for the duration of the drag (overflow: hidden), then
+     *  restore on dragend.
+     *
+     *  Standalone reader windows additionally get an HTML overlay over
+     *  their `<browser>` — the iframe is already covered by per-reader
+     *  pointer-events:none; the overlay just neatens the chrome layer. */
+    _wvShowReaderDragOverlays() {
+        try {
+            // Stash locks per-reader-instance so dragend can restore.
+            (this as any)._wvReaderLocksByInstance = new Map();
+            (this as any)._wvReaderIframePEByInstance = new Map();
+            const readers: any[] = (Zotero as any).Reader && (Zotero as any).Reader._readers || [];
+            let lockedReaders = 0;
+            for (const r of readers) {
+                try {
+                    const locks = this._wvApplyScrollLockToReader(r);
+                    if (locks.length) lockedReaders++;
+                    (this as any)._wvReaderLocksByInstance.set(r, locks);
+                    // Disable pointer events on the reader iframe so the OS
+                    // shows the forbidden cursor over it during the drag
+                    // (no chrome handler preventDefaults the area under the
+                    // iframe, but PDF.js inside the iframe does — turning
+                    // off the iframe's pointer events suppresses both).
+                    const iframe: any = r && r._iframe;
+                    if (iframe) {
+                        const prev = iframe.style.pointerEvents;
+                        (this as any)._wvReaderIframePEByInstance.set(r, { iframe, prev: prev || "" });
+                        iframe.style.pointerEvents = "none";
+                    }
+                } catch (er) {}
+            }
+            // Standalone-window-only chrome bits: overlay + browser PE:none.
+            // (No-op for in-tab readers; they don't need a forbidden cursor.)
+            const en = (Services as any).wm.getEnumerator(null);
+            let standaloneShown = 0;
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    if (!w || !w.location || !w.location.href) continue;
+                    if (!String(w.location.href).includes("reader.xhtml")) continue;
+                    const doc = w.document;
+                    if (!doc) continue;
+                    let overlay: any = doc.getElementById("wv-reader-drag-overlay");
+                    if (!overlay) {
+                        try { this._wvEnsureReaderDragOverlay(w); } catch (er) {}
+                        overlay = doc.getElementById("wv-reader-drag-overlay");
+                    }
+                    if (!overlay) continue;
+                    try { (w as any)._wvReaderDragOverlaySync?.(); } catch (er) {}
+                    overlay.style.display = "block";
+                    const browser: any = doc.getElementById("reader")
+                        || doc.querySelector("browser[type='content']");
+                    if (browser) {
+                        const prev = browser.style.pointerEvents;
+                        if (!(w as any)._wvReaderPrevPointerEvents) {
+                            (w as any)._wvReaderPrevPointerEvents = prev || "";
+                        }
+                        browser.style.pointerEvents = "none";
+                    }
+                    standaloneShown++;
+                } catch (er) {}
+            }
+            Zotero.debug("[Weavero][drag-overlay] SHOW lockedReaders=" + lockedReaders
+                + " standaloneShown=" + standaloneShown
+                + " totalReaders=" + readers.length);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvShowReaderDragOverlays err: " + e);
+        }
+    }
+
+    /** Restore everything `_wvShowReaderDragOverlays` set. */
+    _wvHideReaderDragOverlays() {
+        try {
+            // Restore per-reader scroll locks.
+            const map: Map<any, Array<{el: any; prev: string}>> = (this as any)._wvReaderLocksByInstance;
+            let restored = 0;
+            if (map) {
+                for (const [_r, locks] of map) {
+                    for (const lock of locks) {
+                        try { lock.el.style.overflow = lock.prev || ""; restored++; } catch (er) {}
+                    }
+                }
+                (this as any)._wvReaderLocksByInstance = null;
+            }
+            // Restore per-reader iframe pointer-events.
+            const peMap: Map<any, {iframe: any; prev: string}> = (this as any)._wvReaderIframePEByInstance;
+            if (peMap) {
+                for (const [_r, rec] of peMap) {
+                    try { rec.iframe.style.pointerEvents = rec.prev || ""; } catch (er) {}
+                }
+                (this as any)._wvReaderIframePEByInstance = null;
+            }
+            // Standalone-window bits.
+            const en = (Services as any).wm.getEnumerator(null);
+            let hid = 0;
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    if (!w || !w.location || !w.location.href) continue;
+                    if (!String(w.location.href).includes("reader.xhtml")) continue;
+                    const doc = w.document;
+                    const overlay = doc && doc.getElementById("wv-reader-drag-overlay");
+                    if (overlay) { overlay.style.display = "none"; hid++; }
+                    const browser: any = doc && (doc.getElementById("reader")
+                        || doc.querySelector("browser[type='content']"));
+                    if (browser) {
+                        const prev = (w as any)._wvReaderPrevPointerEvents;
+                        browser.style.pointerEvents = prev || "";
+                        delete (w as any)._wvReaderPrevPointerEvents;
+                    }
+                } catch (er) {}
+            }
+            Zotero.debug("[Weavero][drag-overlay] HIDE restoredLocks=" + restored + " hidOverlays=" + hid);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvHideReaderDragOverlays err: " + e);
         }
     }
 
@@ -1936,6 +2417,10 @@ class _ReaderMixin {
                     win.removeEventListener("resize", stash.syncMaxIcon);
                 }
             } catch (e) {}
+            // Detach the merge-MIME dragover/drop absorber.
+            try { stash.mergeAbsorberOff?.(); } catch (e) {}
+            // Remove the hamburger button + popup.
+            try { this._wvRemoveHamburger(win); } catch (e) {}
             // Restore the OS title bar (customtitlebar / drawtitle) we collapsed.
             try {
                 const winEl = doc.documentElement;
@@ -1950,6 +2435,287 @@ class _ReaderMixin {
             try { const st = doc.getElementById("wv-window-tabstrip-styles"); if (st) st.remove(); } catch (e) {}
             try { delete win._wvTabStrip; } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _removeReaderWindowTabStrip err: " + e); }
+    }
+
+    /** Apply the Firefox-style title-bar replacement to a standalone NOTE
+     *  window (windowtype "zotero:note"). Mirrors the reader-window strip
+     *  but minimal: a single tab carrying the note title + close ×, the
+     *  window control buttons, the menu-bar hidden behind Alt, and a
+     *  hamburger menu. Self-gates on the `compactTitleBarNote` pref.
+     *
+     *  Reuses the reader-window stylesheet (`wv-window-tabstrip-styles`)
+     *  and the cross-window `_ensureReaderWindowControls` /
+     *  `_wvEnsureReaderControlsFollowMenu` / `_wvEnsureHamburger` helpers,
+     *  so visually the two strips look identical. */
+    _ensureNoteWindowTabStrip(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            try {
+                if (doc.documentElement.getAttribute("windowtype") !== "zotero:note") return;
+            } catch (e) { return; }
+            if (!this._getCompactTitleBarNote?.()) {
+                this._removeNoteWindowTabStrip(win);
+                return;
+            }
+            this._ensureReaderWindowTabStripStyles(doc);
+
+            const menubar = doc.querySelector("menubar");
+            if (!menubar) return;
+
+            const title = doc.title || "Note";
+            const HTML = "http://www.w3.org/1999/xhtml";
+
+            // Read the note's itemID from the editor so we can wire
+            // context-menu + drag-to-main-window without re-parsing
+            // `win.name` (a string of the form `zotero-note-<id>`).
+            let itemID: number | null = null;
+            try {
+                const editor: any = doc.getElementById("zotero-note-editor");
+                if (editor && editor.item && editor.item.id) itemID = editor.item.id;
+                if (!itemID && typeof win.name === "string") {
+                    const m = win.name.match(/^zotero-note-(\d+)$/);
+                    if (m) itemID = parseInt(m[1], 10);
+                }
+            } catch (e) {}
+
+            let strip: any = doc.querySelector(".wv-window-tabstrip");
+            if (!strip) {
+                strip = doc.createElementNS(HTML, "div");
+                strip.className = "wv-window-tabstrip";
+
+                const tab: any = doc.createElementNS(HTML, "div");
+                tab.className = "wv-window-tab";
+
+                const iconEl: any = doc.createElementNS(HTML, "span");
+                iconEl.className = "wv-window-tab-icon";
+                iconEl.setAttribute("data-type", "note");
+                tab.appendChild(iconEl);
+
+                const titleEl: any = doc.createElementNS(HTML, "span");
+                titleEl.className = "wv-window-tab-title";
+                titleEl.textContent = title;
+                tab.appendChild(titleEl);
+
+                const closeBtn: any = doc.createElementNS(HTML, "button");
+                closeBtn.className = "wv-window-tab-close";
+                closeBtn.setAttribute("title", "Close");
+                closeBtn.setAttribute("aria-label", "Close");
+                closeBtn.setAttribute("tabindex", "-1");
+                closeBtn.addEventListener("click", (e: any) => {
+                    try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                    try { win.close(); } catch (er) {}
+                });
+                tab.appendChild(closeBtn);
+
+                // Drag source: drag this tab onto the main window's tab
+                // strip to dock the note as a tab there. Same MIME the
+                // reader window uses (`application/x-weavero-reader-merge`);
+                // payload sets `readerType="note"` so the drop handler
+                // dispatches to `_moveNoteToTab` instead of `_moveReaderToTab`.
+                if (itemID) {
+                    tab.setAttribute("draggable", "true");
+                    tab.addEventListener("dragstart", (e: any) => {
+                        try {
+                            if (!e.dataTransfer) return;
+                            e.dataTransfer.effectAllowed = "move";
+                            const titleNow = strip && strip.querySelector(".wv-window-tab-title");
+                            const titleText = titleNow ? (titleNow.textContent || "") : "";
+                            e.dataTransfer.setData(
+                                "application/x-weavero-reader-merge",
+                                JSON.stringify({
+                                    itemID,
+                                    title: titleText,
+                                    readerType: "note",
+                                })
+                            );
+                            (this as any)._wvMergeDragInfo = {
+                                itemID,
+                                title: titleText,
+                                readerType: "note",
+                            };
+                            // Suppress the OS drag-preview image.
+                            try {
+                                const img = doc.createElementNS(HTML, "img");
+                                img.setAttribute("src",
+                                    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+                                e.dataTransfer.setDragImage(img, 0, 0);
+                            } catch (er) {}
+                            try { this._wvShowReaderDragOverlays(); } catch (er) {}
+                        } catch (er) {}
+                    });
+                    tab.addEventListener("dragend", () => {
+                        try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
+                        try { this._wvHideReaderDragOverlays(); } catch (er) {}
+                    });
+                }
+
+                strip.appendChild(tab);
+                // Insert strip just above the menubar.
+                menubar.parentNode.insertBefore(strip, menubar);
+
+                // Right-click context menu on the tab.
+                if (itemID) {
+                    try { this._ensureNoteWindowTabContextMenu(win, tab, itemID); } catch (e) {}
+                }
+            }
+            else {
+                // Refresh title on re-runs (the window's document.title
+                // can change as the note's first-line is edited).
+                const titleEl = strip.querySelector(".wv-window-tab-title");
+                if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
+            }
+
+            // Swap the title bar — collapse the native OS title bar so we
+            // don't show both. Mirrors the reader-window flow.
+            const stash: any = win._wvTabStrip || (win._wvTabStrip = {});
+            try {
+                const winEl = doc.documentElement;
+                if (!("customtitlebarOrig" in stash)) {
+                    stash.customtitlebarOrig = winEl.getAttribute("customtitlebar");
+                    stash.drawtitleOrig = winEl.getAttribute("drawtitle");
+                }
+                winEl.setAttribute("customtitlebar", "true");
+                winEl.toggleAttribute("drawtitle", false);
+            } catch (e) {}
+
+            // Set the compact-menubar stash so the controls follow-menu
+            // observer can run, then add window controls.
+            try {
+                if (!win._wvCompactMenubar) {
+                    win._wvCompactMenubar = {};
+                }
+            } catch (e) {}
+            try { this._ensureReaderWindowControls(win, win._wvCompactMenubar); } catch (e) {}
+
+            // Hide menubar via our `wv-compact-hidden` attribute (Alt
+            // reveals it). Inject the matching collapse CSS if not yet.
+            try { menubar.setAttribute("wv-compact-hidden", "true"); } catch (e) {}
+            this._ensureNoteWindowMenubarStyles(doc);
+
+            // Alt-key reveal + window-control follow.
+            try { this._wvWireNoteMenubarAltReveal(win, menubar); } catch (e) {}
+            try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
+
+            // Hamburger.
+            try {
+                const ctlBox = strip.querySelector(":scope > .wv-window-controls");
+                this._wvEnsureHamburger(win, strip, ctlBox);
+            } catch (e) {}
+
+            // Merge-MIME drag absorber — keeps the OS forbidden cursor off
+            // the strip while the user drags this tab over its own window
+            // (the absorber is window-type-agnostic; it selects on the
+            // `.wv-window-tabstrip` class for the strip area).
+            try { this._wvWireReaderWindowMergeAbsorber(win); } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureNoteWindowTabStrip err: " + e);
+        }
+    }
+
+    /** Tear down the note-window Firefox-style strip + restore the native
+     *  title bar + un-hide the menu bar. Idempotent. */
+    _removeNoteWindowTabStrip(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const stash: any = win._wvTabStrip || {};
+            try { stash.ctrlFollowObserver?.disconnect(); } catch (e) {}
+            try { stash.controls?.remove(); } catch (e) {}
+            try { stash.mergeAbsorberOff?.(); } catch (e) {}
+            try {
+                if (stash.syncMaxIcon) {
+                    win.removeEventListener("sizemodechange", stash.syncMaxIcon);
+                    win.removeEventListener("resize", stash.syncMaxIcon);
+                }
+            } catch (e) {}
+            try { this._wvRemoveHamburger(win); } catch (e) {}
+            try {
+                const winEl = doc.documentElement;
+                if ("customtitlebarOrig" in stash) {
+                    if (stash.customtitlebarOrig == null) winEl.removeAttribute("customtitlebar");
+                    else winEl.setAttribute("customtitlebar", stash.customtitlebarOrig);
+                    if (stash.drawtitleOrig == null) winEl.removeAttribute("drawtitle");
+                    else winEl.setAttribute("drawtitle", stash.drawtitleOrig);
+                }
+            } catch (e) {}
+            try {
+                const menubar = doc.querySelector("menubar");
+                if (menubar) menubar.removeAttribute("wv-compact-hidden");
+            } catch (e) {}
+            try { (win as any)._wvNoteAltOff?.(); } catch (e) {}
+            try { const strip = doc.querySelector(".wv-window-tabstrip"); if (strip) strip.remove(); } catch (e) {}
+            try { const st = doc.getElementById("wv-note-menubar-styles"); if (st) st.remove(); } catch (e) {}
+            try { delete win._wvTabStrip; } catch (e) {}
+            try { delete win._wvCompactMenubar; } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _removeNoteWindowTabStrip err: " + e);
+        }
+    }
+
+    /** Inject the CSS that collapses the note-window menubar via our
+     *  `wv-compact-hidden` attribute. (Reader uses a separate path for
+     *  its menubar hide; we keep a small dedicated stylesheet here so
+     *  toggling the note pref doesn't disturb the reader one.) */
+    _ensureNoteWindowMenubarStyles(doc) {
+        try {
+            if (doc.getElementById("wv-note-menubar-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-note-menubar-styles";
+            style.textContent = [
+                "menubar[wv-compact-hidden='true'] {",
+                "  height: 0 !important; min-height: 0 !important;",
+                "  overflow: hidden !important;",
+                "}",
+            ].join("\n");
+            (doc.documentElement || doc).appendChild(style);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureNoteWindowMenubarStyles err: " + e);
+        }
+    }
+
+    /** Wire Alt-up to toggle the menubar visibility on the note window.
+     *  Same press-and-release-alone gesture the main window uses. */
+    _wvWireNoteMenubarAltReveal(win, menubar) {
+        try {
+            if ((win as any)._wvNoteAltWired) return;
+            let altAlone = false;
+            const onKeyDown = (e: any) => {
+                if (e.key !== "Alt") return;
+                altAlone = !(e.ctrlKey || e.shiftKey || e.metaKey);
+            };
+            const onKeyUp = (e: any) => {
+                try {
+                    if (e.key !== "Alt") { altAlone = false; return; }
+                    if (!altAlone) return;
+                    altAlone = false;
+                    const hidden = menubar.getAttribute("wv-compact-hidden") === "true";
+                    if (hidden) menubar.removeAttribute("wv-compact-hidden");
+                    else menubar.setAttribute("wv-compact-hidden", "true");
+                } catch (er) {}
+            };
+            const onBlur = () => {
+                try {
+                    if (menubar.getAttribute("wv-compact-hidden") !== "true") {
+                        menubar.setAttribute("wv-compact-hidden", "true");
+                    }
+                } catch (er) {}
+            };
+            win.addEventListener("keydown", onKeyDown, true);
+            win.addEventListener("keyup", onKeyUp, true);
+            win.addEventListener("blur", onBlur, true);
+            (win as any)._wvNoteAltWired = true;
+            (win as any)._wvNoteAltOff = () => {
+                try {
+                    win.removeEventListener("keydown", onKeyDown, true);
+                    win.removeEventListener("keyup", onKeyUp, true);
+                    win.removeEventListener("blur", onBlur, true);
+                    (win as any)._wvNoteAltWired = false;
+                } catch (er) {}
+            };
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireNoteMenubarAltReveal err: " + e);
+        }
     }
 
     /** One-time CSS for the standalone-reader-window tab strip, injected
@@ -2020,10 +2786,12 @@ class _ReaderMixin {
                 ".wv-window-tab-icon[data-type='pdf'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-pdf.svg'); }",
                 ".wv-window-tab-icon[data-type='epub'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-epub.svg'); }",
                 ".wv-window-tab-icon[data-type='snapshot'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-snapshot.svg'); }",
+                ".wv-window-tab-icon[data-type='note'] { background-image: url('chrome://zotero/skin/item-type/16/light/note.svg'); }",
                 "@media (prefers-color-scheme: dark) {",
                 "  .wv-window-tab-icon[data-type='pdf'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-pdf.svg'); }",
                 "  .wv-window-tab-icon[data-type='epub'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-epub.svg'); }",
                 "  .wv-window-tab-icon[data-type='snapshot'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-snapshot.svg'); }",
+                "  .wv-window-tab-icon[data-type='note'] { background-image: url('chrome://zotero/skin/item-type/16/dark/note.svg'); }",
                 "}",
                 ".wv-window-tab-title {",
                 "  flex: 1; min-width: 0;",
@@ -2076,6 +2844,29 @@ class _ReaderMixin {
                 ".wv-window-control.wv-window-close { background-image: url('chrome://browser/skin/window-controls/close.svg'); }",
                 ".wv-window-control:hover { background-color: rgba(127,127,127,0.18); }",
                 ".wv-window-control:active { background-color: rgba(127,127,127,0.30); }",
+                /* Hamburger button — Firefox-style application menu trigger
+                   that sits just left of the window controls. SVG drawn as
+                   three horizontal lines using currentColor; transparent
+                   background with subtle hover, no top/bottom edge. */
+                ".wv-hamburger-btn {",
+                "  display: flex; align-items: center; justify-content: center;",
+                "  width: 36px; height: 100%; padding: 0; margin: 0;",
+                "  border: none; appearance: none; -moz-appearance: none;",
+                "  background: transparent;",
+                "  color: rgba(0, 0, 0, 0.65);",
+                "  cursor: default;",
+                "  -moz-window-dragging: no-drag;",
+                "}",
+                ".wv-hamburger-btn svg {",
+                "  width: 16px; height: 16px;",
+                "  stroke: currentColor; stroke-width: 1.4;",
+                "  stroke-linecap: round; fill: none;",
+                "}",
+                ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); }",
+                ".wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-hamburger-btn { color: rgba(255, 255, 255, 0.70); }",
+                "}",
                 ".wv-window-control.wv-window-close:hover { background-color: #e81123; color: #fff; }",
                 ".wv-window-control.wv-window-close:active { background-color: #c50f1f; color: #fff; }",
                 /* Library-aware tab tooltip — same visual rules as the
@@ -2142,6 +2933,45 @@ class _ReaderMixin {
             st(open, 120);
         } catch (e) {
             Zotero.debug("[Weavero] _moveReaderToTab err: " + e);
+        }
+    }
+
+    /** Close the standalone note window for `itemID` and open the same
+     *  note as a tab in the main window. Mirror of `_moveReaderToTab` but
+     *  for `zotero:note` windows — uses `ZoteroPane.openNote(itemID, {
+     *  openInWindow: false })`. */
+    _moveNoteToTab(itemID) {
+        try {
+            const mainWin = Zotero.getMainWindow();
+            // Find + close the standalone note window for this itemID.
+            try {
+                const en = (Services as any).wm.getEnumerator("zotero:note");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    if (w && w.name === "zotero-note-" + itemID) {
+                        try { w.close(); } catch (e) {}
+                        break;
+                    }
+                }
+            } catch (e) {}
+            const open = () => {
+                try {
+                    const ZP: any = mainWin && (mainWin as any).ZoteroPane;
+                    if (ZP && typeof ZP.openNote === "function") {
+                        ZP.openNote(itemID, { openInWindow: false });
+                    }
+                    else if (ZP && typeof ZP.viewNote === "function") {
+                        // Older builds expose viewNote instead.
+                        ZP.viewNote(itemID);
+                    }
+                }
+                catch (e) { Zotero.debug("[Weavero] _moveNoteToTab open err: " + e); }
+                try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
+            };
+            const st = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            st(open, 120);
+        } catch (e) {
+            Zotero.debug("[Weavero] _moveNoteToTab err: " + e);
         }
     }
 
@@ -6290,6 +7120,156 @@ class _ReaderMixin {
         }
     }
 
+    /** Insert a Firefox-style "hamburger" button into the given strip element,
+     *  just before `beforeEl` (typically the window-controls). The button
+     *  exposes a menupopup mirroring this window's `<menubar>` contents —
+     *  each top-level `<menu>` becomes a submenu in the hamburger popup, and
+     *  its items are cloned just-in-time on `popupshowing` so dynamic items
+     *  (Window list, recent files, …) stay current.
+     *
+     *  Used in compact-title-bar mode where the native menubar is hidden;
+     *  the hamburger is the always-available access point to those menus.
+     *  Idempotent — re-running just re-asserts the same node.
+     *
+     *  Generic across the main window and standalone reader windows: caller
+     *  supplies the strip element and the element to insert before. */
+    _wvEnsureHamburger(win, stripEl, beforeEl) {
+        try {
+            if (!win || !win.document || !stripEl) return null;
+            const doc = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            // Re-use if already present.
+            let btn = stripEl.querySelector(":scope > .wv-hamburger-btn");
+            if (btn) return btn;
+
+            // 1. Find every top-level <menu> across all <menubar>s.
+            const sources: any[] = [];
+            for (const mb of doc.querySelectorAll("menubar")) {
+                for (const ch of mb.children) {
+                    if (ch.tagName !== "menu") continue;
+                    const popupId = ch.querySelector(":scope > menupopup")?.id;
+                    if (!popupId) continue;
+                    sources.push({
+                        label: ch.getAttribute("label") || "",
+                        accesskey: ch.getAttribute("accesskey") || "",
+                        popupId,
+                    });
+                }
+            }
+            if (!sources.length) {
+                Zotero.debug("[Weavero][hamburger] no menubar sources, skipping");
+                return null;
+            }
+
+            // 2. Build the hamburger popup (XUL) with one submenu per source.
+            const popup: any = doc.createXULElement("menupopup");
+            popup.id = "wv-hamburger-popup";
+            // Position so the popup opens just below the button.
+            popup.setAttribute("position", "after_start");
+            for (const src of sources) {
+                const submenu: any = doc.createXULElement("menu");
+                submenu.setAttribute("label", src.label);
+                if (src.accesskey) submenu.setAttribute("accesskey", src.accesskey);
+                const subpopup: any = doc.createXULElement("menupopup");
+                subpopup.setAttribute("data-wv-source-popup-id", src.popupId);
+                // Just-in-time clone of the real menupopup's contents whenever
+                // this submenu is about to show — so dynamic items stay live.
+                subpopup.addEventListener("popupshowing", () => {
+                    try {
+                        while (subpopup.firstChild) {
+                            subpopup.removeChild(subpopup.firstChild);
+                        }
+                        const srcPopup = doc.getElementById(src.popupId);
+                        if (!srcPopup) return;
+                        // Fire the source popup's own `popupshowing` first
+                        // so it can fill in dynamic items (e.g. recent files,
+                        // window list) before we read its children.
+                        try {
+                            const ev = new (win as any).Event("popupshowing", { bubbles: false, cancelable: true });
+                            srcPopup.dispatchEvent(ev);
+                        } catch (er) {}
+                        // Deep-clone every child, stripping IDs so we don't
+                        // duplicate them in the document.
+                        const stripIds = (el: any) => {
+                            try {
+                                if (el.removeAttribute) el.removeAttribute("id");
+                                if (el.children) {
+                                    for (const c of el.children) stripIds(c);
+                                }
+                            } catch (er) {}
+                        };
+                        for (const ch of Array.from(srcPopup.children) as any[]) {
+                            const clone = ch.cloneNode(true);
+                            stripIds(clone);
+                            subpopup.appendChild(clone);
+                        }
+                    } catch (e) {
+                        Zotero.debug("[Weavero][hamburger] popupshowing err: " + e);
+                    }
+                });
+                submenu.appendChild(subpopup);
+                popup.appendChild(submenu);
+            }
+            // Mount the popup. Prefer an existing <popupset>; fall back to
+            // documentElement so it's at least in the doc.
+            const popupset = doc.querySelector("popupset") || doc.documentElement;
+            popupset.appendChild(popup);
+
+            // 3. Build the HTML hamburger button. SVG must be created via
+            //    createElementNS — innerHTML doesn't reliably create SVG-
+            //    namespaced children in chrome (HTML parser inside an
+            //    XHTML chrome doc treats <svg> as an HTML element and the
+            //    lines never paint).
+            btn = doc.createElementNS(HTML, "button");
+            btn.className = "wv-hamburger-btn";
+            btn.setAttribute("title", "Open application menu");
+            btn.setAttribute("tabindex", "-1");
+            btn.setAttribute("aria-label", "Open application menu");
+            const SVG_NS = "http://www.w3.org/2000/svg";
+            const svg = doc.createElementNS(SVG_NS, "svg");
+            svg.setAttribute("viewBox", "0 0 16 16");
+            svg.setAttribute("aria-hidden", "true");
+            for (const y of ["4.5", "8", "11.5"]) {
+                const line = doc.createElementNS(SVG_NS, "line");
+                line.setAttribute("x1", "3");
+                line.setAttribute("y1", y);
+                line.setAttribute("x2", "13");
+                line.setAttribute("y2", y);
+                svg.appendChild(line);
+            }
+            btn.appendChild(svg);
+            btn.addEventListener("click", (e: any) => {
+                try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                try { popup.openPopup(btn, "after_start", 0, 0, false, false); } catch (er) {}
+            });
+            // Insert just before `beforeEl` (window controls / spacer / etc).
+            if (beforeEl && beforeEl.parentNode === stripEl) {
+                stripEl.insertBefore(btn, beforeEl);
+            }
+            else {
+                stripEl.appendChild(btn);
+            }
+            return btn;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvEnsureHamburger err: " + e);
+            return null;
+        }
+    }
+
+    /** Tear down the hamburger button + its popup from the given window. */
+    _wvRemoveHamburger(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const btn = doc.querySelector(".wv-hamburger-btn");
+            if (btn) btn.remove();
+            const popup = doc.getElementById("wv-hamburger-popup");
+            if (popup) popup.remove();
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvRemoveHamburger err: " + e);
+        }
+    }
+
     /** Keep the reader window's controls at the absolute top-right by following
      *  the topmost row: into the menu row when Alt reveals it, back to the tab
      *  strip when it collapses — and reserve their width in the strip so the tab
@@ -6636,6 +7616,117 @@ class _ReaderMixin {
             tab.setAttribute("context", MENU_ID);
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowTabContextMenu err: " + e);
+        }
+    }
+
+    /** Same as `_ensureReaderWindowTabContextMenu` but for standalone NOTE
+     *  windows: Show in Library / Move Tab to Main Window / Close. The note
+     *  has no reader instance, so we pass the bare `itemID` and use
+     *  ZoteroPane for "Show in Library". Idempotent via the menupopup id
+     *  and the `_wvCtxBound` flag on the tab element. */
+    _ensureNoteWindowTabContextMenu(win, tab, itemID) {
+        try {
+            if (!win || !win.document || !tab) return;
+            const doc = win.document;
+            const MENU_ID = "wv-note-window-tab-context-menu";
+            let menu: any = doc.getElementById(MENU_ID);
+            if (!menu) {
+                menu = doc.createXULElement("menupopup");
+                menu.id = MENU_ID;
+
+                const mkItem = (label: string, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
+                    const it = doc.createXULElement("menuitem");
+                    it.setAttribute("label", label);
+                    if (opts?.icon) {
+                        it.setAttribute("class", "menuitem-iconic");
+                        it.setAttribute("image", opts.icon);
+                    }
+                    it.addEventListener("command", (e: any) => {
+                        try { e.stopPropagation(); } catch (er) {}
+                        try { onClick(); } catch (er) {
+                            Zotero.debug("[Weavero] note tab menu err: " + er);
+                        }
+                    });
+                    if (opts?.getVisible) (it as any)._wvGetVisible = opts.getVisible;
+                    return it;
+                };
+
+                const wvIcon = (this as any)._detectUIDark?.()
+                    ? (this as any)._menuItemIconURLDark
+                    : (this as any)._menuItemIconURLLight;
+
+                const showInLibrary = mkItem("Show in Library", () => {
+                    try {
+                        const mw: any = Zotero.getMainWindow();
+                        const ZP: any = mw && (mw as any).ZoteroPane;
+                        if (ZP && typeof ZP.selectItem === "function") {
+                            ZP.selectItem(itemID);
+                            try { mw.focus(); } catch (e) {}
+                        }
+                    } catch (e) {}
+                });
+                const moveToTab = mkItem("Move Tab to Main Window", () => {
+                    try { this._moveNoteToTab(itemID); } catch (e) {}
+                });
+                const sep = doc.createXULElement("menuseparator");
+                const copySelect = mkItem("Copy Select Link", () => {
+                    try {
+                        const item = Zotero.Items.get(itemID);
+                        if (item) (this as any)._copyItemLinks([item], "select");
+                    } catch (e) {}
+                }, { icon: wvIcon, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
+                const copyOpen = mkItem("Copy Open Link", () => {
+                    try {
+                        const item = Zotero.Items.get(itemID);
+                        if (item) (this as any)._copyItemLinks([item], "open");
+                    } catch (e) {}
+                }, { icon: wvIcon, getVisible: () => (this as any)._getEnableCopyItemLink?.() ?? false });
+                const sep2 = doc.createXULElement("menuseparator");
+                const closeItem = mkItem("Close", () => {
+                    try { win.close(); } catch (e) {}
+                });
+
+                menu.appendChild(showInLibrary);
+                menu.appendChild(moveToTab);
+                menu.appendChild(sep);
+                menu.appendChild(copySelect);
+                menu.appendChild(copyOpen);
+                menu.appendChild(sep2);
+                menu.appendChild(closeItem);
+
+                menu.addEventListener("popupshowing", () => {
+                    try {
+                        for (const child of Array.from(menu.children) as any[]) {
+                            if (typeof child._wvGetVisible === "function") {
+                                child.hidden = !child._wvGetVisible();
+                            }
+                        }
+                    } catch (e) {}
+                });
+
+                const popupset = doc.querySelector("popupset") || doc.documentElement;
+                popupset.appendChild(menu);
+            }
+            // HTML tabs ignore the XUL `context` attribute; explicit
+            // contextmenu handler opens the menupopup at cursor position.
+            if (!(tab as any)._wvCtxBound) {
+                (tab as any)._wvCtxBound = true;
+                tab.addEventListener("contextmenu", (e: any) => {
+                    try {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const m = doc.getElementById(MENU_ID);
+                        if (m && typeof (m as any).openPopupAtScreen === "function") {
+                            (m as any).openPopupAtScreen(e.screenX, e.screenY, true);
+                        }
+                    } catch (er) {
+                        Zotero.debug("[Weavero] note tab contextmenu err: " + er);
+                    }
+                });
+            }
+            tab.setAttribute("context", MENU_ID);
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureNoteWindowTabContextMenu err: " + e);
         }
     }
 

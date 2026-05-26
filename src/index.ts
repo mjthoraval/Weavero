@@ -54,6 +54,9 @@ class WeaveroPlugin {
         this._treeObserver    = null;
         this._treeScanTimer   = null;
         this._paneObserver    = null;
+        // Window-watcher for standalone note windows (see
+        // `_setupNoteWindowWatcher`). Single observer per plugin instance.
+        this._wvNoteWindowObserver = null;
         // Keys we just removed via the delete notifier. The debounced
         // _processNoteAnnotationOverlays scan that fires ~100 ms later
         // calls attachment.getAnnotations(); if Zotero's in-memory cache
@@ -715,6 +718,74 @@ class WeaveroPlugin {
      *  becomes a tab strip (with the window buttons) and the menu bar is
      *  hidden. */
     _getCompactTitleBarReader() { return this._getCompactTitleBarChild("compactTitleBarReader"); }
+
+    /** Apply the Firefox-style to standalone NOTE windows: same treatment as
+     *  the reader-window child. */
+    _getCompactTitleBarNote() { return this._getCompactTitleBarChild("compactTitleBarNote"); }
+
+    /** Register a window-watcher that detects new standalone note windows
+     *  (windowtype "zotero:note") and applies the Firefox-style strip if
+     *  `compactTitleBarNote` is on. Also scans any already-open note
+     *  windows so a plugin reload picks them up immediately. The teardown
+     *  hook is `_teardownNoteWindowWatcher`. */
+    _setupNoteWindowWatcher() {
+        try {
+            if (this._wvNoteWindowObserver) return;
+            const tryApply = (win: any) => {
+                try {
+                    const doc = win && win.document;
+                    if (!doc || !doc.documentElement) return;
+                    if (doc.documentElement.getAttribute("windowtype") !== "zotero:note") return;
+                    this._ensureNoteWindowTabStrip(win);
+                } catch (e) {}
+            };
+            const obs = {
+                observe: (subject: any, topic: string) => {
+                    if (topic !== "domwindowopened") return;
+                    try {
+                        const win: any = subject;
+                        // Wait until the window is loaded — windowtype + menubar
+                        // aren't reliable mid-init.
+                        win.addEventListener("load", () => {
+                            // Give Zotero one tick to finish its own init bits.
+                            try { win.setTimeout(() => tryApply(win), 0); } catch (e) { tryApply(win); }
+                        }, { once: true });
+                    } catch (e) {}
+                },
+            };
+            (Services as any).ww.registerNotification(obs);
+            this._wvNoteWindowObserver = obs;
+            // Also scan existing windows.
+            try {
+                const en = (Services as any).wm.getEnumerator(null);
+                while (en.hasMoreElements()) tryApply(en.getNext());
+            } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _setupNoteWindowWatcher err: " + e);
+        }
+    }
+
+    /** Unregister the note-window watcher and revert the strip on any
+     *  currently open note windows. */
+    _teardownNoteWindowWatcher() {
+        try {
+            if (this._wvNoteWindowObserver) {
+                try { (Services as any).ww.unregisterNotification(this._wvNoteWindowObserver); } catch (e) {}
+                this._wvNoteWindowObserver = null;
+            }
+            const en = (Services as any).wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    if (!w || !w.document) continue;
+                    if (w.document.documentElement?.getAttribute("windowtype") !== "zotero:note") continue;
+                    this._removeNoteWindowTabStrip(w);
+                } catch (e) {}
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _teardownNoteWindowWatcher err: " + e);
+        }
+    }
 
     // ====================================================================
     // Per-feature toggles introduced in v0.8.1.
@@ -1796,6 +1867,14 @@ class WeaveroPlugin {
         Zotero.Reader.registerEventListener(
             "renderToolbar", this._toolbarHandler, "weavero@mjthoraval");
 
+        // 2b. Watch for standalone note windows opening and apply the
+        // Firefox-style strip if the compactTitleBarNote pref is on.
+        // Also scan any already-open ones (so a plugin reload picks
+        // them up immediately).
+        try { this._setupNoteWindowWatcher(); } catch (e) {
+            Zotero.debug("[Weavero] _setupNoteWindowWatcher init err: " + e);
+        }
+
         // 3. Notifier: new reader tabs
         this._notifierIDs.push(Zotero.Notifier.registerObserver({
             notify: async (event, type) => {
@@ -2216,6 +2295,8 @@ class WeaveroPlugin {
         // Copy Open Link for the tab's attachment (via Zotero.MenuManager;
         // no-op on builds without that API).
         this._registerTabContextMenu();
+        // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
+        this._registerPinTabMenu();
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
         // see them, so wire a Window Mediator listener that catches
@@ -2426,7 +2507,8 @@ class WeaveroPlugin {
                     //    hide, or tears both down).
                     if (data === "extensions.zotero.weavero.compactTitleBar"
                             || data === "extensions.zotero.weavero.compactTitleBarMain"
-                            || data === "extensions.zotero.weavero.compactTitleBarReader") {
+                            || data === "extensions.zotero.weavero.compactTitleBarReader"
+                            || data === "extensions.zotero.weavero.compactTitleBarNote") {
                         try {
                             const onMain = this._getCompactTitleBarMain();
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
@@ -2437,7 +2519,23 @@ class WeaveroPlugin {
                             const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
                             for (const r of readers) {
                                 try { this._ensureReaderWindowTabStrip(r); } catch (e) {}
+                                // The "Move to Tab" toolbar button (wv-reader-to-tab)
+                                // is only useful when the native title bar is shown.
+                                // Sync it immediately so the pref change is visible
+                                // without reopening the reader — removing when the
+                                // compact strip turns on, re-adding when it turns off.
+                                try { this._wvSyncReaderMoveButton(r); } catch (e) {}
                             }
+                            // Standalone note windows.
+                            try {
+                                const en = (Services as any).wm.getEnumerator(null);
+                                while (en.hasMoreElements()) {
+                                    const w: any = en.getNext();
+                                    if (!w || !w.document || !w.document.documentElement) continue;
+                                    if (w.document.documentElement.getAttribute("windowtype") !== "zotero:note") continue;
+                                    try { this._ensureNoteWindowTabStrip(w); } catch (e) {}
+                                }
+                            } catch (e) {}
                         } catch (e) { Zotero.debug("[Weavero] compactTitleBar toggle err: " + e); }
                     }
                     // Tags column auto-count toggle — (1) resize the
@@ -2963,6 +3061,8 @@ class WeaveroPlugin {
         }
 
         // 1. Tear down listeners / observers / timers.
+        // Note-window watcher + revert the strip on any open note windows.
+        try { this._teardownNoteWindowWatcher(); } catch (e) {}
         if (this._prefObserver && this._prefBranch) {
             try { this._prefBranch.removeObserver("", this._prefObserver); } catch(e) {}
             this._prefObserver = null;
@@ -3033,6 +3133,7 @@ class WeaveroPlugin {
         this._teardownItemsListContextMenu();
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
+        this._unregisterPinTabMenu();
         this._teardownNoteWindowListener();
         this._teardownItemsListFilter();
         try {

@@ -193,6 +193,7 @@
         "compactTitleBar",
         "compactTitleBarMain",
         "compactTitleBarReader",
+        "compactTitleBarNote",
     ];
 
     // === Per-surface enable checkboxes ====================================

@@ -194,6 +194,39 @@ const RP_CHEV_RIGHT =
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>';
 const RP_CHEV_DOWN =
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>';
+// Annotation-type glyphs for the bookmarks filter-chip row. Paths copied
+// verbatim from Zotero's `chrome://zotero/skin/16/universal/annotate-*.svg`
+// (same 16×16 viewBox the "Filter annotations" popup loads). Native size
+// rendering = sharp at 16 CSS px. (Earlier we used the reader's res/icons/20
+// 20×20 viewBox paths and scaled them to 16 px; 80 % non-integer scaling
+// blurred the strokes.) `fill="context-fill"` in the original is rewritten
+// to `currentColor` so my chip's `color` tints the glyph inline.
+const RP_ANN_TYPE_SVG: { [k: string]: string } = {
+    highlight:
+        '<svg viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M2 2H14V14H2V2ZM1 1H2H14H15V2V14V15H14H2H1V14V2V1ZM13 13L8.75 3H7.25L3 13H4.62985L5.90485 10H10.0952L11.3702 13H13ZM8 5.07023L6.32985 9H9.67015L8 5.07023Z" fill="currentColor"/>'
+        + '</svg>',
+    underline:
+        '<svg viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M13 13L8.75 3H7.25L3 13H4.62985L5.90485 10H10.0952L11.3702 13H13ZM8 5.07023L6.32985 9H9.67015L8 5.07023ZM15 15V14H1V15H15Z" fill="currentColor"/>'
+        + '</svg>',
+    note:
+        '<svg viewBox="0 0 16 16" fill="none">'
+        + '<path d="M7.5 14.5H14.5V1.5H1.5V8.5M7.5 14.5L1.5 8.5M7.5 14.5V8.5H1.5" stroke="currentColor"/>'
+        + '</svg>',
+    text:
+        '<svg viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M13 1.5H3V3H7.24997V14H8.74997V3H13V1.5Z" fill="currentColor"/>'
+        + '</svg>',
+    image:
+        '<svg viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M10.0001 1H6.00015V2H10.0001V1ZM12.0001 4H4.00015V12H12.0001V4ZM3.00015 3V13H13.0001V3H3.00015ZM14.0001 14V12H15V15H12V14H14.0001ZM15.0001 6H14.0001V10H15.0001V6ZM1.0001 6H2.0001V10H1.0001V6ZM6.0001 14H10.0001V15H6.0001V14ZM12.0002 2L14.0003 2.00001L14.0002 4H15.0002V1H12.0002V2ZM2.0001 2.00001V4.00001H1.0001L1.0001 1.00001L4.0001 1.00001V2L2.0001 2.00001ZM4 14L2.00015 14L2.00015 12H1L1 15L4 15V14Z" fill="currentColor"/>'
+        + '</svg>',
+    ink:
+        '<svg viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M12.2379 1.96038C7.35382 -0.685304 3.87074 -0.185451 2.14056 1.6023C1.09277 2.68497 0.770104 4.18435 1.20189 5.49993C0.859503 5.9151 0.586015 6.39922 0.406392 6.94321C-0.251619 8.93602 0.392748 11.5506 3.14369 14.3518L3.55138 13.3325C1.22808 10.8298 0.880354 8.69716 1.35597 7.25675C1.44524 6.98637 1.56492 6.73451 1.70984 6.50322C2.01734 6.9348 2.42776 7.31991 2.94254 7.62876C5.08604 8.91477 7.00043 8.47453 7.78686 7.27398C8.17397 6.68302 8.24618 5.93402 7.87663 5.2695C7.51213 4.61407 6.76938 4.12858 5.69987 3.91011C4.4187 3.64842 3.08109 3.95856 2.04205 4.71173C1.9233 3.869 2.19892 2.97994 2.85915 2.29774C4.12914 0.98549 7.04616 0.285329 11.7616 2.83966L12.2379 1.96038ZM3.45701 6.77126C2.98486 6.48799 2.62971 6.12157 2.39003 5.71152C3.22891 4.98627 4.3888 4.66296 5.49973 4.88988C6.38853 5.07143 6.82496 5.43594 7.00268 5.75551C7.17534 6.06599 7.1528 6.41698 6.95036 6.72602C6.55769 7.32546 5.31375 7.88522 3.45701 6.77126ZM13.2929 4C13.6834 3.60948 14.3166 3.60948 14.7071 4L15.5 4.79289C15.8905 5.18342 15.8905 5.81658 15.5 6.20711L7.42612 14.281C7.33036 14.3767 7.21615 14.4521 7.09041 14.5024L4.6857 15.4642L3.60247 15.8975L4.03576 14.8143L4.99765 12.4096C5.04794 12.2839 5.12325 12.1696 5.21902 12.0739L13.2929 4ZM12.5 6.20715L5.92612 12.781L5.39753 14.1025L6.71902 13.5739L13.2929 7.00004L12.5 6.20715ZM13.2071 5.50004L14 6.29293L14.7929 5.5L14 4.70711L13.2071 5.50004Z" fill="currentColor"/>'
+        + '</svg>',
+};
 
 const RP_BM_CSS = [
     // When our tab is active, hide the React view wrappers and show ours.
@@ -228,22 +261,63 @@ const RP_BM_CSS = [
     // Filter chips at the bottom (selector strip) — mirrors the annotations
     // pane's color/tag/author rows. Persists across scopes and dimensions
     // AND together (a node must satisfy every active row).
-    ".wv-bm-chip-bar{flex:0 0 auto;border-top:1px solid rgba(127,127,127,.2);padding:6px 8px;display:none;flex-direction:column;gap:5px;}",
+    // Bottom chip-bar starts at ~140 px (same default cap as the reader's
+    // own annotations Selector, _annotations-view.scss line 47). The height
+    // is user-resizable via a drag handle above it (mirrors the library
+    // tag-selector splitter); the chosen value is stored in the
+    // `weavero.readerBmChipBarHeight` pref. Internally `flex:0 0 <px>` so
+    // the bar carves out fixed space; `overflow:auto` lets crowded rows
+    // scroll within it.
+    ".wv-bm-chip-bar{flex:0 0 140px;padding:6px 8px;display:none;flex-direction:column;gap:5px;overflow:auto;}",
     ".wv-bm-chip-bar.wv-bm-chip-bar-on{display:flex;}",
+    // Drag handle above the chip bar — same idiom as upstream's XUL splitter
+    // (see scss/components/_splitter.scss): the bar is 5 px tall for a
+    // comfortable hit zone, but a -4 px bottom margin overlaps it into the
+    // chip bar so only a 1-px border line is visible. Result: a hair-thin
+    // separator that's still easy to grab. position:relative + z-index keeps
+    // the overlapping portion on top of the chip bar's edge.
+    ".wv-bm-chip-resizer{flex:0 0 auto;height:5px;margin-bottom:-4px;border-top:1px solid rgba(127,127,127,.35);cursor:ns-resize;background:transparent;position:relative;z-index:2;display:none;}",
+    ".wv-bm-chip-resizer.wv-bm-chip-bar-on{display:block;}",
     ".wv-bm-chip-row{display:flex;flex-wrap:wrap;gap:4px;}",
-    ".wv-bm-chip-color{width:14px;height:14px;border-radius:50%;cursor:pointer;border:1.5px solid transparent;box-sizing:border-box;}",
-    ".wv-bm-chip-color.selected{border-color:var(--fill-secondary,#666);box-shadow:0 0 0 1px var(--fill-secondary,#666) inset;}",
-    ".wv-bm-chip-color.inactive{opacity:.35;}",
+    // Colors row is tighter (1-px gap, like upstream's .colors .color
+    // margin-left:1px) so 20×20 buttons read as a row of tiles, not as
+    // spaced-out chips. Tags / authors / types keep the 4-px row gap.
+    ".wv-bm-chip-row:has(> .wv-bm-chip-color){gap:1px;}",
+    // Match the reader's annotations-pane color tiles (upstream
+    // _annotations-view.scss .selector .colors .color + IconColor16):
+    // a 2-px-padded button wrapping a 16×16 rounded-corner square. The
+    // wrapper handles the hover/selected background; the inner tile is
+    // the actual annotation color with a subtle black-0.1 inset ring.
+    ".wv-bm-chip-color{display:inline-flex;padding:2px;border-radius:3px;cursor:pointer;background:transparent;}",
+    ".wv-bm-chip-color:hover{background:var(--fill-quinary,rgba(127,127,127,.16));}",
+    ".wv-bm-chip-color.selected{background:var(--fill-secondary,rgba(127,127,127,.45));}",
+    ".wv-bm-chip-color.inactive .wv-bm-chip-color-tile{opacity:.4;}",
+    // The tile is now an inline 16×16 SVG (same path upstream's IconColor16
+    // uses), so it carries its own width/height/colours — no extra rules needed.
     ".wv-bm-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;font-size:11px;line-height:1.4;border:1px solid rgba(127,127,127,.4);border-radius:10px;cursor:pointer;background:rgba(127,127,127,.06);color:inherit;user-select:none;-moz-user-select:none;}",
     ".wv-bm-chip:hover{background:rgba(127,127,127,.16);}",
     ".wv-bm-chip.selected{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);}",
     ".wv-bm-chip.inactive{opacity:.45;}",
     ".wv-bm-chip-tag-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}",
-    ".wv-bm-chip-type{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid rgba(127,127,127,.4);border-radius:4px;cursor:pointer;background:rgba(127,127,127,.06);}",
+    // Type chips: same 16×16 SVGs the filter popup uses (chrome://zotero/
+    // skin/16/universal/annotate-*.svg) at NATIVE size, no scaling. Box is
+    // 24×24 outer for a comfortable hit zone (4 px padding around the 16×16
+    // glyph) — matches the visual scale of the reader's Filter annotations
+    // popup type buttons.
+    ".wv-bm-chip-type{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid rgba(127,127,127,.4);border-radius:3px;cursor:pointer;background:rgba(127,127,127,.06);}",
     ".wv-bm-chip-type:hover{background:rgba(127,127,127,.16);}",
     ".wv-bm-chip-type.selected{background:var(--color-accent,#5e6ad2);border-color:var(--color-accent,#5e6ad2);}",
-    ".wv-bm-chip-type svg{width:12px;height:12px;fill:currentColor;opacity:.85;}",
-    ".wv-bm-chip-type.selected svg{fill:#fff;opacity:1;}",
+    ".wv-bm-chip-type svg{width:16px;height:16px;opacity:1;display:block;}",
+    // currentColor inherits the chip's text color; we set it via the chip
+    // class. Most icons use `fill="currentColor"`, but the note glyph uses
+    // `stroke="currentColor"` — both inherit from the chip color.
+    // Type-chip glyph stays white in both unselected and selected states —
+    // matches the reader's Filter annotations popup. (Icons use
+    // fill="currentColor" / stroke="currentColor"; setting color on the
+    // chip tints them.)
+    ".wv-bm-chip-type{color:#fff;}",
+    ".wv-bm-chip-type.selected{color:#fff;}",
+    ".wv-bm-chip-type.selected svg{opacity:1;}",
     ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
     // The reader's own CSS sets user-select:auto/text on text-bearing children
     // (the 📌 emoji, the label), so a press-drag on a row starts a text
@@ -298,8 +372,14 @@ const RP_BM_CSS = [
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic.wv-ctx-ic-native{opacity:1;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic svg{width:14px;height:14px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-sep{height:1px;background:rgba(127,127,127,.3);margin:4px 2px;}",
-    // Rich hover card (details popup). Interactive (expandable), so it captures
-    // the pointer; it auto-hides when the cursor leaves BOTH the row and card.
+].join("");
+
+/** Rich bookmark hover card styles. Extracted from RP_BM_CSS so the library-
+ *  pane bookmark popup (in the main window) can inject the same look without
+ *  pulling in reader-iframe-specific rules. */
+export const BM_HOVERCARD_CSS = [
+    // Interactive (expandable), so it captures the pointer; it auto-hides when
+    // the cursor leaves BOTH the row and card.
     ".wv-bm-hovercard{position:absolute;z-index:2147483647;max-width:340px;min-width:170px;",
     "  background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.5);border-radius:6px;",
     "  box-shadow:0 6px 24px rgba(0,0,0,.30);padding:8px 10px;font-size:12px;line-height:1.45;",
@@ -322,16 +402,15 @@ const RP_BM_CSS = [
     ".wv-bm-hovercard .wv-hc-expand{display:block;margin-top:5px;font:inherit;font-size:11px;cursor:pointer;",
     "  color:var(--color-accent,#5e6ad2);background:none;border:none;padding:2px 0;text-align:left;}",
     ".wv-bm-hovercard .wv-hc-expand:hover{text-decoration:underline;}",
-    // Annotation-sidebar look: annotation text/comment get a coloured left bar
-    // (the annotation color, via --wv-ann-color set inline; a neutral fallback
-    // for non-annotation bookmarks). The text reads as a quote block.
+    // Annotation-sidebar look: annotation text gets a coloured left bar (the
+    // annotation color, via --wv-ann-color set inline; a neutral fallback for
+    // non-annotation bookmarks). The text reads as a quote block.
     ".wv-bm-hovercard .wv-hc-text{white-space:pre-wrap;overflow-wrap:anywhere;margin:3px 0;padding:1px 0 1px 8px;border-left:3px solid var(--wv-ann-color,rgba(127,127,127,.35));}",
     ".wv-bm-hovercard.wv-hc-has-color .wv-hc-text{font-style:italic;}",
     ".wv-bm-hovercard .wv-hc-author{flex:0 0 auto;margin-left:auto;font-size:11px;opacity:.6;font-weight:400;white-space:nowrap;}",
     // Comment block: NO colored left bar (Zotero's annotation sidebar styles
     // `.comment` with only a faint bottom separator, no `.blockquote-border`
-    // — that's reserved for the highlight `.text` quote). Plain upright text
-    // with a small top gap so it reads as a follow-up to the quote.
+    // — that's reserved for the highlight `.text` quote).
     ".wv-bm-hovercard .wv-hc-comment{margin:6px 0 3px;padding:0;white-space:pre-wrap;overflow-wrap:anywhere;}",
     ".wv-bm-hovercard .wv-hc-tags{display:flex;flex-wrap:wrap;align-items:center;gap:3px;margin-top:3px;}",
     // Tag glyph: filled, same orange as the library filter's Has Tag tile
@@ -426,7 +505,7 @@ class _ReaderPanelsMixin {
     }
 
     _wvEnsureReaderPanelStyles(idoc: any) {
-        const css = RP_POPUP_CSS + RP_BM_CSS;
+        const css = RP_POPUP_CSS + RP_BM_CSS + BM_HOVERCARD_CSS;
         const existing = idoc.getElementById(RP_STYLE_ID);
         if (existing) {
             // A reader left open across a plugin update keeps its stale
@@ -536,7 +615,7 @@ class _ReaderPanelsMixin {
      *  + library tree) and collect facet → count. */
     _wvReaderBmChipFacets(reader: any) {
         const colors = new Map<string, number>();
-        const tags = new Map<string, { color: string, count: number }>();
+        const tags = new Map<string, { color: string, count: number, position: number }>();
         const authors = new Map<string, number>();
         const types = new Map<string, number>();
         try {
@@ -575,9 +654,15 @@ class _ReaderPanelsMixin {
                         for (const tag of (it.getTags() || [])) {
                             if (!tag || !tag.tag) continue;
                             let tc = "";
-                            try { const ci: any = Zotero.Tags.getColor(it.libraryID, tag.tag); if (ci && ci.color) tc = ci.color; } catch (_) {}
-                            const cur = tags.get(tag.tag) || { color: tc, count: 0 };
+                            let tpos = Number.POSITIVE_INFINITY;   // non-coloured tags sort after coloured ones
+                            try {
+                                const ci: any = Zotero.Tags.getColor(it.libraryID, tag.tag);
+                                if (ci && ci.color) tc = ci.color;
+                                if (ci && Number.isFinite(ci.position)) tpos = ci.position;
+                            } catch (_) {}
+                            const cur = tags.get(tag.tag) || { color: tc, count: 0, position: tpos };
                             if (tc && !cur.color) cur.color = tc;
+                            if (Number.isFinite(tpos) && !Number.isFinite(cur.position)) cur.position = tpos;
                             cur.count++;
                             tags.set(tag.tag, cur);
                         }
@@ -1396,6 +1481,10 @@ class _ReaderPanelsMixin {
     _wvReaderResolveRowIcon(reader: any, idoc: any, src: string) {
         if (!src) return null;
         if (src.indexOf("data:") === 0) return src;
+        // Library-popup context (no reader): chrome://resource:// load directly
+        // since the popup runs in the privileged main-window doc. The data-URI
+        // inlining dance is only needed for the reader's content iframe.
+        if (!reader) return src;
         if (src.indexOf("chrome://") !== 0 && src.indexOf("resource://") !== 0) return src;
         if (!/\.svg(\?|$)/.test(src)) return null;   // only SVGs are inlinable this way
         const cached = this._wvReaderIconUri(src);
@@ -1877,47 +1966,11 @@ class _ReaderPanelsMixin {
             const NS = NS_HTML_RP;
             while (list.firstChild) list.firstChild.remove();
             const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
-            // Pre-load data for item bookmarks whose item isn't loaded. After
-            // a restart, cross-document items aren't loaded at all — and even
-            // `Zotero.Items.get`/`getByLibraryAndKey` THROW for them, so the
-            // icon builder's `annotationType` / `getImageSrc` fail and it
-            // falls back to the generic ribbon glyph. Resolve ids via
-            // `getIDFromLibraryAndKey` (a pure key→id lookup that never
-            // touches unloaded data), load any missing items (primary via
-            // `getAsync`, then `loadAllData` for annotation type/colour),
-            // and re-render once so the real icons paint.
-            try {
-                const ids: number[] = [];
-                const collectIds = (nodes: any[]) => {
-                    for (const n of (nodes || [])) {
-                        if (!n) continue;
-                        if (n.type === "folder") { collectIds(n.children); continue; }
-                        if (n.type !== "item") continue;
-                        let id = 0;
-                        try { id = Zotero.Items.getIDFromLibraryAndKey(n.libraryID, n.itemKey) || 0; } catch (_) {}
-                        if (id) ids.push(id);
-                    }
-                };
-                collectIds(doc.local); collectIds(doc.global);
-                let anyUnloaded = false;
-                for (const id of ids) {
-                    try {
-                        const it: any = Zotero.Items.get(id);
-                        if (!it) { anyUnloaded = true; continue; }
-                        if (it.isAnnotation && it.isAnnotation()) void it.annotationType;
-                    } catch (_) { anyUnloaded = true; }
-                }
-                if (anyUnloaded && !this._wvBmIconLoadInFlight) {
-                    this._wvBmIconLoadInFlight = true;
-                    Promise.all(ids.map(async (id) => {
-                        try { await Zotero.Items.getAsync(id); } catch (_) {}
-                        try { const it: any = Zotero.Items.get(id); if (it && it.loadAllData) await it.loadAllData(); } catch (_) {}
-                    })).then(() => {
-                        this._wvBmIconLoadInFlight = false;
-                        try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
-                    }).catch(() => { this._wvBmIconLoadInFlight = false; });
-                }
-            } catch (_) {}
+            // Pre-load data for item bookmarks whose item isn't loaded; once
+            // loaded, re-render so the real icons / titles paint.
+            this._wvBmEnsureItemsLoaded([doc.local, doc.global], () => {
+                try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+            });
             if (!doc.local.length && !doc.global.length) {
                 const empty = idoc.createElementNS(NS, "div");
                 empty.className = "wv-bm-reader-empty";
@@ -2065,31 +2118,105 @@ class _ReaderPanelsMixin {
 
     /** Rebuild the bottom chip selector bar (colors / tags / authors / types).
      *  Hidden when no facets exist across the visible bookmark universe. */
+    /** Wire ns-resize drag on the chip-bar handle. Drag-up grows the bar,
+     *  drag-down shrinks it. Clamped to [40, view.height − 80] so the bar
+     *  never swallows the list nor disappears. Persists to a pref. */
+    _wvWireChipResizer(reader: any, idoc: any, handle: any) {
+        const win: any = idoc.defaultView;
+        // The reader's focus-manager has a window-level pointerdown handler
+        // that calls preventDefault() for everything outside its whitelist
+        // (.annotation, .thumbnails-view, ...). preventDefault on pointerdown
+        // suppresses the subsequent mousedown too, so the drag never starts.
+        // Same fix the bookmark rows use: stopPropagation on pointerdown to
+        // keep the event from reaching the window-level guard.
+        handle.addEventListener("pointerdown", (e: any) => {
+            try { e.stopPropagation(); } catch (_) {}
+        });
+        // Use pointer events end-to-end (capture on the handle itself) so the
+        // drag tracking works even when the cursor leaves the handle's bounds.
+        handle.addEventListener("pointerdown", (ev: any) => {
+            try {
+                ev.preventDefault();
+                const view = handle.closest("." + RP_BM_VIEW_CLASS);
+                const bar = view && view.querySelector(".wv-bm-chip-bar");
+                if (!bar) return;
+                handle.classList.add("wv-bm-resizing");
+                try { handle.setPointerCapture(ev.pointerId); } catch (_) {}
+                const startY = ev.clientY;
+                const startH = bar.getBoundingClientRect().height || 140;
+                const viewH = view.getBoundingClientRect().height || 600;
+                const pointerId = ev.pointerId;
+                const onMove = (e: any) => {
+                    // Drag-up (negative dy) → bigger bar; clamp to keep list visible.
+                    const dy = e.clientY - startY;
+                    let h = startH - dy;
+                    const max = Math.max(60, viewH - 80);
+                    if (h < 40) h = 40;
+                    if (h > max) h = max;
+                    bar.style.flex = "0 0 " + Math.round(h) + "px";
+                };
+                const onUp = () => {
+                    handle.classList.remove("wv-bm-resizing");
+                    try { handle.releasePointerCapture(pointerId); } catch (_) {}
+                    handle.removeEventListener("pointermove", onMove);
+                    handle.removeEventListener("pointerup", onUp);
+                    handle.removeEventListener("pointercancel", onUp);
+                    // Persist the final height for next session / re-render.
+                    try {
+                        const h = Math.round(bar.getBoundingClientRect().height || 140);
+                        Zotero.Prefs.set("weavero.readerBmChipBarHeight", String(h));
+                    } catch (_) {}
+                };
+                handle.addEventListener("pointermove", onMove);
+                handle.addEventListener("pointerup", onUp);
+                handle.addEventListener("pointercancel", onUp);
+            } catch (_) {}
+        });
+    }
+
     _wvReaderRenderBmChipBar(reader: any, idoc: any) {
         try {
             const content = idoc.getElementById("sidebarContent");
             const view = content && content.querySelector("." + RP_BM_VIEW_CLASS);
             if (!view) return;
-            let bar = view.querySelector(".wv-bm-chip-bar");
             const NS = NS_HTML_RP;
+            // Ensure resizer + bar exist as adjacent siblings at the bottom.
+            // Order: resizer first (it sits ABOVE the bar via DOM order, since
+            // both are flex-items at the bottom of the column view).
+            let resizer = view.querySelector(".wv-bm-chip-resizer");
+            let bar = view.querySelector(".wv-bm-chip-bar");
+            if (!resizer) {
+                resizer = idoc.createElementNS(NS, "div");
+                resizer.className = "wv-bm-chip-resizer";
+                resizer.setAttribute("title", "Drag to resize");
+                this._wvWireChipResizer(reader, idoc, resizer);
+                view.appendChild(resizer);
+            }
             if (!bar) {
                 bar = idoc.createElementNS(NS, "div");
                 bar.className = "wv-bm-chip-bar";
                 view.appendChild(bar);
             }
+            // Apply the persisted height (default 140 px).
+            try {
+                const h = parseInt(String(Zotero.Prefs.get("weavero.readerBmChipBarHeight") || "140"), 10);
+                if (Number.isFinite(h) && h > 0) bar.style.flex = "0 0 " + h + "px";
+            } catch (_) {}
             while (bar.firstChild) bar.firstChild.remove();
             const st = this._wvReaderBmChipState(reader);
             const facets = this._wvReaderBmChipFacets(reader);
-            const TYPE_LABEL: { [k: string]: string } = {
-                highlight: "H", underline: "U", note: "N", text: "T", image: "I", ink: "K",
-            };
             const TYPE_NAME: { [k: string]: string } = {
                 highlight: "Highlights", underline: "Underlines", note: "Notes",
                 text: "Text annotations", image: "Image annotations", ink: "Ink annotations",
             };
             const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
-            if (!anyFacets) { bar.classList.remove("wv-bm-chip-bar-on"); return; }
+            if (!anyFacets) {
+                bar.classList.remove("wv-bm-chip-bar-on");
+                resizer.classList.remove("wv-bm-chip-bar-on");
+                return;
+            }
             bar.classList.add("wv-bm-chip-bar-on");
+            resizer.classList.add("wv-bm-chip-bar-on");
             const mkRow = () => { const r = idoc.createElementNS(NS, "div"); r.className = "wv-bm-chip-row"; return r; };
             const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
             const rerender = () => {
@@ -2098,43 +2225,117 @@ class _ReaderPanelsMixin {
                     this._wvReaderRenderBmChipBar(reader, idoc);   // refresh selected states
                 } catch (_) {}
             };
-            // Colors row
+            // Colors row — button wrapper + inner 16×16 rounded-square tile,
+            // matching the reader's annotations-pane Selector .colors.
+            // Order matches upstream's ANNOTATION_COLORS (defines.js): yellow,
+            // red, green, blue, purple, magenta, orange, gray (+ black for
+            // ink/text). Any non-canonical colours sort alphabetically at the
+            // end so the canonical palette stays in fixed positions.
             if (facets.colors.size) {
                 const row = mkRow();
-                // Stable order: by hex for determinism
-                const keys = Array.from(facets.colors.keys()).sort();
+                const CANON_ORDER = [
+                    "#ffd400", "#ff6666", "#5fb236", "#2ea8e5",
+                    "#a28ae5", "#e56eee", "#f19837", "#aaaaaa", "#000000",
+                ];
+                const rank = (col: string): number => {
+                    const i = CANON_ORDER.indexOf(String(col || "").toLowerCase());
+                    return i < 0 ? CANON_ORDER.length : i;
+                };
+                const keys = Array.from(facets.colors.keys()).sort((a, b) => {
+                    const ra = rank(a), rb = rank(b);
+                    if (ra !== rb) return ra - rb;
+                    return a.localeCompare(b);
+                });
                 for (const c of keys) {
-                    const d = idoc.createElementNS(NS, "span");
-                    d.className = "wv-bm-chip-color" + (st.colors.has(c) ? " selected" : "");
-                    d.style.background = c;
-                    d.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
-                    d.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
-                    row.appendChild(d);
+                    const btn = idoc.createElementNS(NS, "span");
+                    btn.className = "wv-bm-chip-color" + (st.colors.has(c) ? " selected" : "");
+                    btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
+                    // Match upstream's IconColor16 exactly: 16×16 SVG canvas
+                    // with a 14×14 rounded-rect colored path (1 px inset on
+                    // every side) + a black-0.1 stroke overlay. Filling a flat
+                    // 16×16 span made the coloured area ~14% bigger than the
+                    // annotations-pane tiles. Build via createElementNS — the
+                    // reader iframe's parser was leaving innerHTML-built SVG
+                    // contents un-rendered (0×0).
+                    const SVG_NS = "http://www.w3.org/2000/svg";
+                    const svg: any = idoc.createElementNS(SVG_NS, "svg");
+                    svg.setAttribute("class", "wv-bm-chip-color-tile");
+                    svg.setAttribute("width", "16");
+                    svg.setAttribute("height", "16");
+                    svg.setAttribute("viewBox", "0 0 16 16");
+                    svg.setAttribute("fill", "none");
+                    const fillPath: any = idoc.createElementNS(SVG_NS, "path");
+                    fillPath.setAttribute("d", "M1 3C1 1.89543 1.89543 1 3 1H13C14.1046 1 15 1.89543 15 3V13C15 14.1046 14.1046 15 13 15H3C1.89543 15 1 14.1046 1 13V3Z");
+                    fillPath.setAttribute("fill", c);
+                    const strokePath: any = idoc.createElementNS(SVG_NS, "path");
+                    strokePath.setAttribute("d", "M1.5 3C1.5 2.17157 2.17157 1.5 3 1.5H13C13.8284 1.5 14.5 2.17157 14.5 3V13C14.5 13.8284 13.8284 14.5 13 14.5H3C2.17157 14.5 1.5 13.8284 1.5 13V3Z");
+                    strokePath.setAttribute("stroke", "black");
+                    strokePath.setAttribute("stroke-opacity", "0.1");
+                    svg.appendChild(fillPath);
+                    svg.appendChild(strokePath);
+                    btn.appendChild(svg);
+                    btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
+                    row.appendChild(btn);
                 }
                 bar.appendChild(row);
             }
-            // Tags row
-            if (facets.tags.size) {
+            // Types row (sits right below the colour row — the two
+            // annotation-shape facets group together visually).
+            if (facets.types.size) {
                 const row = mkRow();
-                const keys = Array.from(facets.tags.keys()).sort((a, b) => a.localeCompare(b));
-                for (const t of keys) {
-                    const info = facets.tags.get(t)!;
+                // Use upstream's canonical type ordering for natural left-right flow.
+                const order = ["highlight", "underline", "note", "text", "image", "ink"];
+                const keys = order.filter(t => facets.types.has(t));
+                for (const tp of keys) {
                     const chip = idoc.createElementNS(NS, "span");
-                    chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "");
-                    chip.setAttribute("title", t + " — " + info.count + " bookmark(s)");
-                    if (info.color) {
-                        const dot = idoc.createElementNS(NS, "span");
-                        dot.className = "wv-bm-chip-tag-dot";
-                        dot.style.background = info.color;
-                        chip.appendChild(dot);
-                    }
-                    const lbl = idoc.createElementNS(NS, "span");
-                    lbl.textContent = t;
-                    chip.appendChild(lbl);
-                    chip.addEventListener("click", () => { toggle(st.tags, t); rerender(); });
+                    chip.className = "wv-bm-chip-type" + (st.types.has(tp) ? " selected" : "");
+                    chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
+                    // Match the reader's "Filter annotations" popup — annotate-
+                    // highlight/underline/note/text/area/ink SVG glyphs.
+                    chip.innerHTML = RP_ANN_TYPE_SVG[tp] || "";
+                    chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
                     row.appendChild(chip);
                 }
                 bar.appendChild(row);
+            }
+            // Tags: coloured tags on their OWN row, ordered by their library
+            // color position (matches Zotero's tag selector). Plain tags
+            // alphabetical on the next row. The two-row split mirrors the
+            // library tag selector's visual grouping; if either group is
+            // empty its row is skipped so we don't leave a blank line.
+            if (facets.tags.size) {
+                const allKeys = Array.from(facets.tags.keys());
+                const coloured = allKeys.filter(k => !!facets.tags.get(k)!.color).sort((a, b) => {
+                    const pa = facets.tags.get(a)!.position;
+                    const pb = facets.tags.get(b)!.position;
+                    if (pa !== pb) return pa - pb;
+                    return a.localeCompare(b);
+                });
+                const plain = allKeys.filter(k => !facets.tags.get(k)!.color).sort((a, b) => a.localeCompare(b));
+                const addTagRow = (keys: string[]) => {
+                    if (!keys.length) return;
+                    const row = mkRow();
+                    for (const t of keys) {
+                        const info = facets.tags.get(t)!;
+                        const chip = idoc.createElementNS(NS, "span");
+                        chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "");
+                        chip.setAttribute("title", t + " — " + info.count + " bookmark(s)");
+                        if (info.color) {
+                            const dot = idoc.createElementNS(NS, "span");
+                            dot.className = "wv-bm-chip-tag-dot";
+                            dot.style.background = info.color;
+                            chip.appendChild(dot);
+                        }
+                        const lbl = idoc.createElementNS(NS, "span");
+                        lbl.textContent = t;
+                        chip.appendChild(lbl);
+                        chip.addEventListener("click", () => { toggle(st.tags, t); rerender(); });
+                        row.appendChild(chip);
+                    }
+                    bar.appendChild(row);
+                };
+                addTagRow(coloured);
+                addTagRow(plain);
             }
             // Authors row (only when >1, matching upstream annotations pane)
             if (facets.authors.size > 1) {
@@ -2150,29 +2351,61 @@ class _ReaderPanelsMixin {
                 }
                 bar.appendChild(row);
             }
-            // Types row
-            if (facets.types.size) {
-                const row = mkRow();
-                // Use upstream's canonical type ordering for natural left-right flow.
-                const order = ["highlight", "underline", "note", "text", "image", "ink"];
-                const keys = order.filter(t => facets.types.has(t));
-                for (const tp of keys) {
-                    const chip = idoc.createElementNS(NS, "span");
-                    chip.className = "wv-bm-chip-type" + (st.types.has(tp) ? " selected" : "");
-                    chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
-                    chip.textContent = TYPE_LABEL[tp] || tp.charAt(0).toUpperCase();
-                    chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
-                    row.appendChild(chip);
-                }
-                bar.appendChild(row);
-            }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderBmChipBar err: " + e); }
+    }
+
+    /** Pre-load item-bookmark data for any items not yet in memory. After a
+     *  restart, cross-document items aren't loaded at all — and even
+     *  `Zotero.Items.get`/`getByLibraryAndKey` THROW for them, so the icon
+     *  builder's `annotationType` / `getImageSrc` fail and it falls back to
+     *  the generic ribbon glyph. Resolve ids via `getIDFromLibraryAndKey`
+     *  (a pure key→id lookup that never touches unloaded data), load any
+     *  missing items (primary via `getAsync`, then `loadAllData` for
+     *  annotation type/colour), and invoke `rerender` once when done. */
+    _wvBmEnsureItemsLoaded(nodeRoots: any[][], rerender: () => void) {
+        try {
+            const ids: number[] = [];
+            const collectIds = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") { collectIds(n.children); continue; }
+                    if (n.type !== "item") continue;
+                    let id = 0;
+                    try { id = Zotero.Items.getIDFromLibraryAndKey(n.libraryID, n.itemKey) || 0; } catch (_) {}
+                    if (id) ids.push(id);
+                }
+            };
+            for (const root of nodeRoots) collectIds(root);
+            let anyUnloaded = false;
+            for (const id of ids) {
+                try {
+                    const it: any = Zotero.Items.get(id);
+                    if (!it) { anyUnloaded = true; continue; }
+                    if (it.isAnnotation && it.isAnnotation()) void it.annotationType;
+                } catch (_) { anyUnloaded = true; }
+            }
+            if (anyUnloaded && !this._wvBmIconLoadInFlight) {
+                this._wvBmIconLoadInFlight = true;
+                Promise.all(ids.map(async (id) => {
+                    try { await Zotero.Items.getAsync(id); } catch (_) {}
+                    try { const it: any = Zotero.Items.get(id); if (it && it.loadAllData) await it.loadAllData(); } catch (_) {}
+                })).then(() => {
+                    this._wvBmIconLoadInFlight = false;
+                    try { rerender(); } catch (_) {}
+                }).catch(() => { this._wvBmIconLoadInFlight = false; });
+            }
+        } catch (_) {}
     }
 
     /** Render the global library bookmarks tree into the list container. */
     _wvReaderRenderLibraryInto(reader: any, idoc: any, list: any) {
         const NS = NS_HTML_RP;
         const nodes = (this._bmDoc && this._bmDoc.bookmarks) || [];
+        // Pre-load any cross-document items so their real icons/titles paint
+        // (else they show the fallback ribbon glyph until the user clicks them).
+        this._wvBmEnsureItemsLoaded([nodes], () => {
+            try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+        });
         const q = this._wvReaderBmQuery(idoc);
         const chipsOn = this._wvReaderBmChipsActive(reader);
         const chipSt = this._wvReaderBmChipState(reader);
@@ -2259,9 +2492,11 @@ class _ReaderPanelsMixin {
         const label = idoc.createElementNS(NS, "span");
         label.className = "wv-bm-reader-label";
         label.textContent = bm.label || "Bookmark";
-        label.setAttribute("title", bm.label || "");
+        // Drop the plain HTML tooltip in favour of the rich hover card wired
+        // below — the two would otherwise both fire on hover.
         row.appendChild(ic); row.appendChild(label);
         row.addEventListener("click", (e: any) => this._bmActivateBookmark(bm, e));
+        this._wvReaderWireRowHover(reader, idoc, row, bm);
         this._wvReaderWireLibRowDrag(reader, idoc, row, bm, depth, false);
         return row;
     }
@@ -2589,6 +2824,17 @@ class _ReaderPanelsMixin {
                 //  2. setSelectedAnnotations only flips the selection state —
                 //     the in-document popup is opened by the view's own
                 //     _openAnnotationPopup() (PDF + DOM views both have it).
+                // SCROLL FIRST: passing triggeredFromView=true to
+                // setSelectedAnnotations tells the reader "click happened
+                // inside the PDF view, don't scroll" (reader.js:1982-2003).
+                // The sidebar's own listbox path uses navigate() to scroll
+                // BEFORE setting selection. Mirror that: navigate to the
+                // annotation (scrolls the PDF + opens the popup), then run
+                // setSelectedAnnotations with triggeredFromView=true to
+                // mark the row as selected without re-scrolling.
+                try {
+                    reader.navigate({ annotationID: bm.itemKey });
+                } catch (_) {}
                 try {
                     const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
                     const idsArr: any = (iwin && (Components as any).utils)
@@ -2600,9 +2846,7 @@ class _ReaderPanelsMixin {
                         const v = ir && (ir._primaryView || ir._lastView);
                         if (v && v._openAnnotationPopup) v._openAnnotationPopup();
                     } catch (_) {}
-                } catch (_) {
-                    try { reader.navigate({ annotationID: bm.itemKey }); } catch (__) {}
-                }
+                } catch (_) {}
             }
             else this._wvNavigateReaderLocation(reader, bm);
             return;
@@ -2712,10 +2956,34 @@ class _ReaderPanelsMixin {
      *  stay on-screen. Re-run after expand/collapse changes its height. */
     _wvReaderPositionBmHoverCard(card: any, rowEl: any, idoc: any) {
         try {
+            const cw = card.offsetWidth || 260, ch = card.offsetHeight || 120;
+            // Library-popup parent (an HTML container inside a XUL <panel>):
+            // the card lives in the popup's overflow:auto inner, so use
+            // offset-relative coords. The card sits BELOW the row by default,
+            // overlapping rows further down (acceptable for a tooltip card).
+            const popupParent = card.parentNode && card.parentNode.id === "wv-bm-list-inner" ? card.parentNode
+                : (card.parentNode && card.parentNode.classList && card.parentNode.classList.contains("wv-bm-flyout-inner") ? card.parentNode : null);
+            if (popupParent) {
+                const rTop = rowEl.offsetTop;
+                const rH = rowEl.offsetHeight;
+                const pH = popupParent.clientHeight || 460;
+                const pW = popupParent.clientWidth || 340;
+                let top = rTop + rH + 4;
+                // If below the row would overflow the popup, place above the row instead.
+                if (top + ch > popupParent.scrollTop + pH - 6) {
+                    top = Math.max(popupParent.scrollTop + 6, rTop - ch - 4);
+                }
+                // Card width is constrained by the popup width (max 340).
+                const left = Math.max(2, Math.min(rowEl.offsetLeft, pW - cw - 4));
+                card.style.left = left + "px";
+                card.style.top = top + "px";
+                return;
+            }
+            // Reader iframe: viewport-relative positioning (same coord system
+            // as the row inside the iframe).
             const rr = rowEl.getBoundingClientRect();
             const de = idoc.documentElement;
             const vw = (de && de.clientWidth) || 9999, vh = (de && de.clientHeight) || 9999;
-            const cw = card.offsetWidth || 260, ch = card.offsetHeight || 120;
             let left = rr.right + 8;
             if (left + cw > vw - 6) left = Math.max(6, rr.left - cw - 8);
             if (left < 6) left = 6;
@@ -2793,7 +3061,12 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                     if (!info.page) { try { info.page = it.annotationPageLabel || ""; } catch (_) {} }
                     try {
-                        if (it.parentItemID && it.parentItemID !== reader.itemID) {
+                        // Source line ("in: <title>") for cross-document annotations.
+                        // Reader context: hide when the annotation lives in the
+                        // currently-open document (reader.itemID).
+                        // No reader (library popup): every annotation is "elsewhere".
+                        const ownItemID = reader && reader.itemID;
+                        if (it.parentItemID && (!ownItemID || it.parentItemID !== ownItemID)) {
                             const a: any = it.parentItem;
                             const top: any = a && (a.parentItem || a);
                             const title = (top && top.getDisplayTitle) ? top.getDisplayTitle()
@@ -2884,7 +3157,17 @@ class _ReaderPanelsMixin {
             if (info.source) body.appendChild(mk("wv-hc-src", info.source));
             card.appendChild(body);
             // Append now so we can measure whether the body is clamped.
-            (idoc.body || idoc.documentElement).appendChild(card);
+            // Library-popup case: append to the popup's inner container so the
+            // card lives inside the panel widget (same coord system as the row;
+            // popup-hide auto-removes the card). Reader iframe case: append to
+            // the iframe's body where the row also lives.
+            let parent: any = null;
+            try {
+                if (rowEl && rowEl.closest) {
+                    parent = rowEl.closest("#wv-bm-list-inner") || rowEl.closest(".wv-bm-flyout-inner");
+                }
+            } catch (_) {}
+            (parent || idoc.body || idoc.documentElement).appendChild(card);
             if (body.scrollHeight > body.clientHeight + 2) {
                 body.appendChild(mk("wv-hc-fade"));
                 const btn: any = idoc.createElementNS(NS, "button");
@@ -4072,9 +4355,17 @@ class _ReaderPanelsMixin {
                         if (newPos) {
                             const att = this._wvReaderAtt(reader);
                             if (att) {
-                                let pageLabel = "";
-                                try { if (Array.isArray(pv._pageLabels) && pv._pageLabels[newPos.pageIndex]) pageLabel = pv._pageLabels[newPos.pageIndex]; } catch (_) {}
-                                if (!pageLabel) pageLabel = String((newPos.pageIndex || 0) + 1);
+                                // Use the SAME page-label resolver the row /
+                                // hover-card / sync paths use, so a moved pin
+                                // stores a label that matches whatever the
+                                // bookmarks list will show. This is the
+                                // annotation-style label (same-page annotation
+                                // or pageIndex+1), NOT pv._pageLabels (which
+                                // would diverge from the annotations sidebar).
+                                const probeBm: any = { type: "position", id: bmId,
+                                    position: newPos, srcLibraryID: att.libraryID, srcItemKey: att.itemKey };
+                                const pageLabel = this._bmReaderPageLabel(probeBm)
+                                    || String((newPos.pageIndex || 0) + 1);
                                 this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bmId,
                                     { position: newPos, pageLabel, label: "Page " + pageLabel })
                                     .then(() => { try { if (ridoc) this._wvReaderRenderBmList(reader, ridoc); } catch (_) {} });

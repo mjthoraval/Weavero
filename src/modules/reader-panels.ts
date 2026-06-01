@@ -6286,7 +6286,11 @@ class _ReaderPanelsMixin {
      *  object — see caller's cloneInto), then re-composites ONLY the overlay onto
      *  the page's existing canvas via the live layer's `refresh(false)` (busting
      *  its signature cache first). NOT `reset()`+`draw()`, which re-renders the
-     *  pdf.js content and flashes the whole page. */
+     *  pdf.js content and flashes the whole page.
+     *
+     *  In-place highlight technique, outline navigation and TOC extraction are
+     *  derived from / call into Zotero's own reader (AGPL-3.0):
+     *  https://github.com/zotero/reader/blob/master/src/pdf/pdf-view.js */
     _wvOutlinePaint(pv: any, pageIndex: number, posOrNull: any) {
         try {
             pv._highlightedPosition = posOrNull;

@@ -119,8 +119,8 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 **Items-tree columns** (icon-only, hidden by default; enable via the column-picker right-click on the items-tree header):
 
 - **Annotations** — count of annotations on attachments; sums across attachments on regular items.
-- **Related** — count of related items per row.
 - **Tags** — count of tags per row: manual tags (blue) and automatic tags (default colour). Toggle off the automatic count to show only the manual count.
+- **Related** — count of related items per row.
 
 **Group-library visuals:**
 

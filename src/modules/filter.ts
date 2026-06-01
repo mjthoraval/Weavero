@@ -6340,6 +6340,7 @@ class _FilterMixin {
                     await m.onToggle(id, m.getSelectedSet(), isExclude);
                     renderSelectedList();
                     renderButtons();
+                    refreshAll();   // keep the header's Clear buttons in sync
                 });
                 // Alt+click on the pill body (not the ×) switches
                 // the pill from include → exclude or back, the same
@@ -6352,6 +6353,7 @@ class _FilterMixin {
                     await m.onToggle(id, m.getSelectedSet(), !isExclude);
                     renderSelectedList();
                     renderButtons();
+                    refreshAll();   // keep the header's Clear buttons in sync
                 });
                 pill.appendChild(x);
                 selectedList.appendChild(pill);
@@ -6489,6 +6491,13 @@ class _FilterMixin {
                     try { search.blur(); } catch (err) {}
                     renderSelectedList();
                     renderButtons();
+                    // Refresh the whole popup so the header's Clear /
+                    // Clear-and-Close buttons (shown only by renderHeader,
+                    // which runs only inside refreshAll) reflect the now-
+                    // active filter. Without this, adding a tag / author /
+                    // collection left those buttons hidden until the popup
+                    // was closed and reopened.
+                    refreshAll();
                 });
                 box.appendChild(btn);
             }

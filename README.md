@@ -35,8 +35,8 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 
 ## Features
 
-<details>
-<summary><h3 id="enhanced-links-and-relations">Enhanced links and relations</h3></summary>
+<details id="enhanced-links-and-relations">
+<summary><b>Enhanced links and relations</b></summary>
 
 **Clickable links in annotation comments** across the items tree, right item pane, reader sidebar, in-PDF popup, link badges over annotation icons, and notes. Each surface is independently toggleable. Out of the box `https://`, `http://`, and `zotero://` are recognised; sixteen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
 
@@ -69,8 +69,8 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 
 </details>
 
-<details>
-<summary><h3 id="filters">Filters</h3></summary>
+<details id="filters">
+<summary><b>Filters</b></summary>
 
 **Filter popup** — a toolbar `▼` next to the search box opens a compact filter panel. Click to include, Alt+click to exclude.
 
@@ -101,8 +101,8 @@ See [Filtering rules](docs/filter-rules.md) for the full logic.
 
 </details>
 
-<details>
-<summary><h3 id="bookmarks">Bookmarks</h3></summary>
+<details id="bookmarks">
+<summary><b>Bookmarks</b></summary>
 
 Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bookmarks.json` — see the syncing/backup warning near the top of this page.
 
@@ -113,8 +113,8 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 
 </details>
 
-<details>
-<summary><h3 id="extras">Extras</h3></summary>
+<details id="extras">
+<summary><b>Extras</b></summary>
 
 **Items-tree columns** (icon-only, hidden by default; enable via the column-picker right-click on the items-tree header):
 

@@ -116,14 +116,14 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 <details id="extras">
 <summary><b>Extras</b></summary>
 
-**Items-tree columns** (icon-only, hidden by default; enable via the column-picker right-click on the items-tree header):
+**Items-tree columns** — icon-only columns enabled via the column-picker (right-click the items-tree header), plus an enhancement to the built-in Tags column:
 
 - **Annotations** — count of annotations on attachments; sums across attachments on regular items.
 - **Related** — count of related items per row.
+- **Tags count** — enhances Zotero's built-in Tags column to show two numbers per row: manual tags (blue) and automatic tags (default colour). Toggle off to show only the manual count.
 
-**Group-library and items-list visuals:**
+**Group-library visuals:**
 
-- **Tags count** — the Tags column shows two numbers per row: manual tags (blue) and automatic tags (default colour). Toggle off to show only the manual count.
 - **Added By for annotations** — in group libraries, a badge showing who created each annotation (annotation rows aren't covered by Zotero's built-in Added By column), optionally tinted with a **per-user colour** so contributors are easy to scan.
 - **Group-library tab glyph + tooltip** — tabs whose item lives in a group library get a small "Group Libraries" cluster glyph on the file-type icon, plus a tooltip showing the tab title and a *library icon + Library Name* header.
 

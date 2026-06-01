@@ -1848,7 +1848,7 @@ class _PaneMixin {
                 return total;
             };
 
-            // Pref-gated by enableRelatedColumn (Relations group).
+            // Pref-gated by enableRelatedColumn (Visual extras tab).
             const relKey = this._getEnableRelatedColumn()
                 ? (Zotero.ItemTreeManager as any).registerColumn({
                 dataKey: "weaveroRelated",

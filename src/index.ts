@@ -999,8 +999,13 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    /** Items-tree "Related" column. Lives in the Visual extras tab now
+     *  (grouped with the Annotations and Tags columns), so it's gated by
+     *  the enableVisualExtras tab master — NOT the Relations sub-master.
+     *  (Like External viewer above, the getter stays here but the gate
+     *  moved.) */
     _getEnableRelatedColumn() {
-        if (!this._getEnableRelations()) return false;
+        if (!this._getEnableVisualExtras()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableRelatedColumn");
             return v === undefined ? true : !!v;

@@ -740,13 +740,6 @@
       </label>
 
       <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableRelatedColumn" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Items-tree &#8220;Related&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of related items per row. (Hidden by default; enable with the column-picker right-click on the items-tree header.)</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
         <input type="checkbox" name="wv-feature" value="enableLibrariesHighlight" />
         <div class="wv-surface-body">
           <p class="wv-surface-text"><span class="wv-surface-name">Tint linked-libraries rows in the item pane</span>&#160;<span class="wv-desc">&#8212; When an item is replicated across libraries (linked items), highlight the row matching the displayed item&#8217;s library in the <em>Libraries and Collections</em> section.</span></p>
@@ -885,15 +878,35 @@
     </label>
     <div class="wv-children">
 
-  <p class="wv-section-title" style="margin-top:8px">Items list extras</p>
+  <p class="wv-section-title" style="margin-top:8px">Items-tree columns</p>
+  <p class="wv-section-hint">Icon-only columns, hidden by default &#8212; enable each from the column-picker (right-click the items-tree header).</p>
   <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableAnnotationsCountColumn" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Annotations&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of annotations on attachments (and sums across attachments on regular items).</span></p>
+      </div>
+    </label>
 
     <label class="wv-surface-row">
       <input type="checkbox" name="wv-feature" value="enableTagsCountAuto" />
       <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Add count for automatic tags in the Tags column</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
+        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Tags&#8221; column &#8212; add the automatic-tag count</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
       </div>
     </label>
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableRelatedColumn" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Related&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of related items per row.</span></p>
+      </div>
+    </label>
+
+  </div>
+
+  <p class="wv-section-title">Items list extras</p>
+  <div class="wv-surface-list">
 
     <label class="wv-surface-row">
       <input type="checkbox" name="wv-feature" value="enableAnnotationAddedBy" />
@@ -906,13 +919,6 @@
       <input type="checkbox" name="wv-feature" value="enableAddedByColors" />
       <div class="wv-surface-body">
         <p class="wv-surface-text"><span class="wv-surface-name">Use a different color per user in Added By</span>&#160;<span class="wv-desc">&#8212; Tint the Added By column text and the annotation badge with a per-user color so contributors are easier to scan. Uncheck to keep the default text color.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableAnnotationsCountColumn" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Items-tree &#8220;Annotations&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of annotations on attachments (and sums across attachments on regular items). Hidden by default; enable with the column-picker right-click on the items-tree header.</span></p>
       </div>
     </label>
 

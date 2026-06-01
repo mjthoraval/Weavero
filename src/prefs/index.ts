@@ -178,7 +178,6 @@
         "enableAddRelatedMenu",
         "enableChainBadge",
         "enableOpenRelatedSubmenu",
-        "enableRelatedColumn",
         "enableLibrariesHighlight",
         // v0.8.1 — Filters
         "enableFilters",
@@ -188,6 +187,7 @@
         "enableTabsFileTypeFilter",
         // v0.8.1 — Visual extras
         "enableAnnotationsCountColumn",
+        "enableRelatedColumn",
         "enableGroupLibraryGlyph",
         // v0.8.8 — Window bars
         "compactTitleBar",

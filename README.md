@@ -28,15 +28,17 @@ A Zotero 7 to 10-beta plugin that layers convenience features on top of the stan
 
 Grouped the same way as the Preferences tabs. Expand a group below for the details and screenshots.
 
-- **Enhanced links and relations** — clickable links (URLs, `zotero://`, 16 optional app schemes) in comments and notes; inline or icon + popup, colour-coded, with markdown; copy `zotero://` links for items / collections / searches / reader page / location / selection; related-item tools (*Add Related…*, chain badge, *Open Related* submenu, Related column, linked-library highlight).
-- **Filters** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has Related/Links*, multi-select tag/author/added-by/collection/search); Selection Target tri-state; structured tabs menu with per-library and file-type filters.
-- **Bookmarks** — library bookmarks (items / collections / searches) via a toolbar dropdown; document bookmarks (in-PDF locations, selected text, annotations) in a reader-sidebar tab, foldered and draggable; auto-hide when empty.
-- **Extras** — items-tree columns (annotation count, related count); Tags count and *Added By* with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
+- **[Enhanced links and relations](#enhanced-links-and-relations)** — clickable links (URLs, `zotero://`, 16 optional app schemes) in comments and notes; inline or icon + popup, colour-coded, with markdown; copy `zotero://` links for items / collections / searches / reader page / location / selection; related-item tools (*Add Related…*, chain badge, *Open Related* submenu, Related column, linked-library highlight).
+- **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has Related/Links*, multi-select tag/author/added-by/collection/search); Selection Target tri-state; structured tabs menu with per-library and file-type filters.
+- **[Bookmarks](#bookmarks)** — library bookmarks (items / collections / searches) via a toolbar dropdown; document bookmarks (in-PDF locations, selected text, annotations) in a reader-sidebar tab, foldered and draggable; auto-hide when empty.
+- **[Extras](#extras)** — items-tree columns (annotation count, related count); Tags count and *Added By* with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
 
 ## Features
 
+### Enhanced links and relations
+
 <details>
-<summary><b>Enhanced links and relations</b></summary>
+<summary>Details &amp; screenshots</summary>
 
 **Clickable links in annotation comments** across the items tree, right item pane, reader sidebar, in-PDF popup, link badges over annotation icons, and notes. Each surface is independently toggleable. Out of the box `https://`, `http://`, and `zotero://` are recognised; sixteen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
 
@@ -69,8 +71,10 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 
 </details>
 
+### Filters
+
 <details>
-<summary><b>Filters</b></summary>
+<summary>Details &amp; screenshots</summary>
 
 **Filter popup** — a toolbar `▼` next to the search box opens a compact filter panel. Click to include, Alt+click to exclude.
 
@@ -101,8 +105,10 @@ See [Filtering rules](docs/filter-rules.md) for the full logic.
 
 </details>
 
+### Bookmarks
+
 <details>
-<summary><b>Bookmarks</b></summary>
+<summary>Details &amp; screenshots</summary>
 
 Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bookmarks.json` — see the syncing/backup warning near the top of this page.
 
@@ -113,8 +119,10 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 
 </details>
 
+### Extras
+
 <details>
-<summary><b>Extras</b></summary>
+<summary>Details &amp; screenshots</summary>
 
 **Items-tree columns** (icon-only, hidden by default; enable via the column-picker right-click on the items-tree header):
 

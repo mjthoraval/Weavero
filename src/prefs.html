@@ -246,6 +246,23 @@
       font-size: 12px;
       opacity: 0.7;
     }
+    /* Inline warning callout — amber-tinted, slim left border. Use for
+       caveats the user should notice (e.g. local-only storage). Sits
+       at the regular hint font-size so it doesn't fight the layout. */
+    .wv-warning {
+      margin: 0 0 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      border-left: 3px solid rgba(220, 150, 0, 0.8);
+      background: rgba(220, 150, 0, 0.08);
+      border-radius: 0 4px 4px 0;
+    }
+    @media (prefers-color-scheme: dark) {
+      .wv-warning {
+        border-left-color: rgba(255, 184, 77, 0.85);
+        background: rgba(255, 184, 77, 0.10);
+      }
+    }
     /* "Master card" — the accent-blue tint + left border marks a
        master toggle as a meta-control, tying back to the active-tab
        underline and setting it apart from the per-feature toggles
@@ -387,6 +404,7 @@
     }
     body:has(input[value="enableLinksAndRelations"]:not(:checked)) .wv-tab-status[data-master="enableLinksAndRelations"],
     body:has(input[value="enableFilters"]:not(:checked)) .wv-tab-status[data-master="enableFilters"],
+    body:has(input[value="enableBookmarks"]:not(:checked)) .wv-tab-status[data-master="enableBookmarks"],
     body:has(input[value="enableVisualExtras"]:not(:checked)) .wv-tab-status[data-master="enableVisualExtras"] {
       background: transparent;
       border-color: rgba(127, 127, 127, 0.6);
@@ -402,6 +420,7 @@
        the underline-only-coloured pattern for this reason). */
     #wv-tab-links:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-links"],
     #wv-tab-filters:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-filters"],
+    #wv-tab-bookmarks:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-bookmarks"],
     #wv-tab-extras:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-extras"] {
       box-shadow: inset 0 -3px 0 rgb(64, 128, 255);
       opacity: 1;
@@ -421,6 +440,7 @@
     }
     #wv-tab-links:checked ~ .wv-tab-panel[data-tab="links"],
     #wv-tab-filters:checked ~ .wv-tab-panel[data-tab="filters"],
+    #wv-tab-bookmarks:checked ~ .wv-tab-panel[data-tab="bookmarks"],
     #wv-tab-extras:checked ~ .wv-tab-panel[data-tab="extras"] {
       display: block;
     }
@@ -489,6 +509,7 @@
 
   <input type="radio" name="wv-tab" id="wv-tab-links" checked="checked" />
   <input type="radio" name="wv-tab" id="wv-tab-filters" />
+  <input type="radio" name="wv-tab" id="wv-tab-bookmarks" />
   <input type="radio" name="wv-tab" id="wv-tab-extras" />
 
   <div class="wv-tab-nav">
@@ -500,9 +521,13 @@
       <span class="wv-tab-status" data-master="enableFilters" title="Status of the Filters master toggle (green = on, grey = off). Toggle inside the tab."></span>
       <span class="wv-tab-name">Filters</span>
     </label>
+    <label class="wv-tab-item" for="wv-tab-bookmarks">
+      <span class="wv-tab-status" data-master="enableBookmarks" title="Status of the Bookmarks master toggle (green = on, grey = off). Toggle inside the tab."></span>
+      <span class="wv-tab-name">Bookmarks</span>
+    </label>
     <label class="wv-tab-item" for="wv-tab-extras">
       <span class="wv-tab-status" data-master="enableVisualExtras" title="Status of the Visual extras master toggle (green = on, grey = off). Toggle inside the tab."></span>
-      <span class="wv-tab-name">Visual extras</span>
+      <span class="wv-tab-name">Extras</span>
     </label>
   </div>
 
@@ -783,13 +808,79 @@
   </div>
   </section>
 
+  <section class="wv-tab-panel" data-tab="bookmarks">
+  <p class="wv-group-intro" style="margin-top:0">Bookmarks across two scopes: a Bookmarks dropdown on the collections-pane toolbar for items / collections / searches, and a Bookmarks tab in the reader sidebar for in-document locations.</p>
+  <p class="wv-warning"><strong>Note:</strong>&#160;Bookmarks don&#8217;t sync across computers at the moment &#8212; they&#8217;re stored locally in <code>&lt;Zotero data dir&gt;/weavero/bookmarks.json</code>. (Zotero&#8217;s plugin-managed synced storage is in development; this will switch over once it ships.)</p>
+  <div class="wv-master-block">
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableBookmarks" class="wv-master" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable Bookmarks</span>&#160;<span class="wv-desc">&#8212; Master toggle for both bookmark scopes below.</span></p>
+      </div>
+    </label>
+    <div class="wv-children">
+
+    <p class="wv-subsection-title">Scopes</p>
+    <div class="wv-surface-list">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableLibraryBookmarks" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Library bookmarks</span>&#160;<span class="wv-desc">&#8212; Bookmark icon next to the new-collection button in the collections-pane toolbar, with a dropdown for bookmarked items / collections / saved searches. Also adds a &#8220;Bookmark collection&#8221; entry to the collections-tree right-click menu.</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="enableReaderBookmarks" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Document bookmarks</span>&#160;<span class="wv-desc">&#8212; A Bookmarks tab in the reader sidebar with chip-bar filters and a list of in-document location bookmarks. Drop an annotation or selection on the tab to bookmark it.</span></p>
+        </div>
+      </label>
+
+    </div>
+
+    <p class="wv-subsection-title">Reader sidebar</p>
+    <div class="wv-surface-list">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="showLibraryBookmarksInReader" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Show Library bookmarks tab</span>&#160;<span class="wv-desc">&#8212; Include the Library scope tab in the reader&#8217;s Bookmarks panel so library bookmarks can be browsed alongside in-document bookmarks (Ctrl-click to merge both views).</span></p>
+        </div>
+      </label>
+
+    </div>
+
+    <p class="wv-subsection-title">Auto-hide when empty</p>
+    <div class="wv-surface-list">
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="autoHideEmptyLibraryBookmarks" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Library</span>&#160;<span class="wv-desc">&#8212; Hide the Bookmarks button in the collections-pane toolbar when no library bookmarks exist yet. Reappears as soon as you add one.</span></p>
+        </div>
+      </label>
+
+      <label class="wv-surface-row">
+        <input type="checkbox" name="wv-feature" value="autoHideEmptyReaderBookmarks" />
+        <div class="wv-surface-body">
+          <p class="wv-surface-text"><span class="wv-surface-name">Reader</span>&#160;<span class="wv-desc">&#8212; Hide the Bookmarks tab in the reader sidebar when the current document has no bookmarks yet. The tab reappears as soon as you drop an annotation or selection onto its position.</span></p>
+        </div>
+      </label>
+
+    </div>
+
+    </div>
+  </div>
+  </section>
+
   <section class="wv-tab-panel" data-tab="extras">
   <p class="wv-group-intro" style="margin-top:0">Smaller informational displays attached to existing Zotero UI: items-list badges and tab-strip glyphs.</p>
   <div class="wv-master-block">
     <label class="wv-surface-row">
       <input type="checkbox" name="wv-feature" value="enableVisualExtras" class="wv-master" />
       <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable Visual extras</span>&#160;<span class="wv-desc">&#8212; Master toggle for everything in this tab.</span></p>
+        <p class="wv-surface-text"><span class="wv-surface-name">Enable Visual extras</span>&#160;<span class="wv-desc">&#8212; Master toggle for the visual extras below.</span></p>
       </div>
     </label>
     <div class="wv-children">
@@ -870,7 +961,34 @@
     </div>
   </div>
 
+  <p class="wv-section-title">External viewer</p>
+  <p class="wv-section-hint">Right-click menu utility for opening attachments with the OS default application (replaces the standalone Open PDF for Zotero plugin).</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableOpenExternalViewer" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Open in External Viewer&#8221; in the items-list and tab right-click menus</span>&#160;<span class="wv-desc">&#8212; Adds an entry below &#8220;Show File&#8221; (items list) and below &#8220;Show in Library&#8221; (tab menu) that launches the item&#8217;s best attachment with the OS default app. Works for any stored file (PDF, EPUB, snapshot, image, &#8230;); the entry&#8217;s icon mirrors the attachment type. Default off.</span></p>
+      </div>
+    </label>
+
+  </div>
+
     </div>
+  </div>
+
+  <p class="wv-section-title">PDF reader outline</p>
+  <p class="wv-section-hint">Experimental enhancement to Zotero&#8217;s PDF outline (the table of contents in the reader sidebar).</p>
+  <div class="wv-surface-list">
+
+    <label class="wv-surface-row">
+      <input type="checkbox" name="wv-feature" value="enableOutlineTextHighlight" />
+      <div class="wv-surface-body">
+        <p class="wv-surface-text"><span class="wv-surface-name">Highlight the heading text when clicking an outline entry</span>&#160;<span class="wv-desc">&#8212; Clicking a PDF outline entry flashes the actual heading text. For embedded outlines (which only store a target point, so Zotero&#8217;s flash lands on nothing) Weavero finds the heading on the page; for outlines Zotero generates itself it uses the entry directly. It also keeps the highlight timing consistent when activating outline entries (and text-selection bookmarks) in quick succession, working around a Zotero bug. Default off.</span></p>
+        <p class="wv-warning"><strong>Note:</strong>&#160;Experimental and off by default. For embedded outlines it does a small text lookup on the target page per click; on very large PDFs the first click to a not-yet-loaded page may show the highlight a moment after the jump. Matching is best-effort &#8212; scanned pages or unusual fonts may not match, in which case it just jumps without a highlight.</p>
+      </div>
+    </label>
+
   </div>
   </section>
 

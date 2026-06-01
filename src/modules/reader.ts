@@ -1774,7 +1774,7 @@ class _ReaderMixin {
             // in both themes.
             btn.innerHTML =
                 '<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">'
-                + '<rect x="1" y="5" width="14" height="9.5" rx="1.3" fill="none" stroke="currentColor" stroke-width="1.3"/>'
+                + '<rect x="1" y="5" width="14" height="9.5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/>'
                 + '<path d="M2.4 5.7V3.7c0-0.39 0.31-0.7 0.7-0.7h3.2c0.39 0 0.7 0.31 0.7 0.7v2z"/>'
                 + '<path d="M8.2 5.7V4.3c0-0.39 0.31-0.7 0.7-0.7h2.4c0.39 0 0.7 0.31 0.7 0.7v1.4z" fill-opacity="0.45"/>'
                 + '</svg>';
@@ -2850,8 +2850,13 @@ class _ReaderMixin {
                    background with subtle hover, no top/bottom edge. */
                 ".wv-hamburger-btn {",
                 "  display: flex; align-items: center; justify-content: center;",
-                "  width: 36px; height: 100%; padding: 0; margin: 0;",
+                // 28×28 + border-radius 5px + align-self center: match the
+                // sync-button hover-box exactly (sync is `#zotero-tb-sync`,
+                // a XUL <toolbarbutton> 28×28 with 5px corners).
+                "  width: 28px; height: 28px; align-self: center;",
+                "  padding: 0; margin: 0;",
                 "  border: none; appearance: none; -moz-appearance: none;",
+                "  border-radius: 5px;",
                 "  background: transparent;",
                 "  color: rgba(0, 0, 0, 0.65);",
                 "  cursor: default;",
@@ -2859,14 +2864,24 @@ class _ReaderMixin {
                 "}",
                 ".wv-hamburger-btn svg {",
                 "  width: 16px; height: 16px;",
-                "  stroke: currentColor; stroke-width: 1.4;",
-                "  stroke-linecap: round; fill: none;",
+                // Filled rects (Firefox app-menu style) — no stroke.
+                // `fill: currentColor` inherits the .wv-hamburger-btn
+                // colour (0.65 alpha black light / 0.70 alpha white dark).
+                "  fill: currentColor;",
                 "}",
                 ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); }",
                 ".wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
                 "@media (prefers-color-scheme: dark) {",
                 "  .wv-hamburger-btn { color: rgba(255, 255, 255, 0.70); }",
                 "}",
+                /* Widen the hamburger popup so submenu labels + chevron
+                   don't run together. 147px (~2/3 of the original 220px
+                   target) fits the top-level menu names (File / Edit /
+                   View / Tools / Help) with breathing room for the
+                   chevron column without taking over the title bar. */
+                "#wv-hamburger-popup { min-width: 147px; }",
+                "#wv-hamburger-popup > menu,",
+                "#wv-hamburger-popup > menuitem { padding-inline: 12px; }",
                 ".wv-window-control.wv-window-close:hover { background-color: #e81123; color: #fff; }",
                 ".wv-window-control.wv-window-close:active { background-color: #c50f1f; color: #fff; }",
                 /* Library-aware tab tooltip — same visual rules as the
@@ -3791,6 +3806,10 @@ class _ReaderMixin {
             const dataAfterTracker = this._readerObservers.get(reader) || {};
             dataAfterTracker.selectionTrackerOuter = selectionTrackerOuter;
             this._readerObservers.set(reader, dataAfterTracker);
+
+            // Outline text highlight (in-place): make embedded-outline clicks
+            // flash the heading text. No-op for non-PDF / no match.
+            try { this._wvOutlineInstallRecovery(reader); } catch (_) {}
 
             // Also wire up text-annotation handling in the nested PDF.js iframe.
             // (The drag tracker for canvas annotations is wired from
@@ -7273,9 +7292,17 @@ class _ReaderMixin {
             //     - Escape keydown anywhere in the chrome window
             //     Both listeners are attached on `popupshown` and detached
             //     on `popuphidden` so they don't leak.
+            const wvLog = (m: string) => {
+                try { Zotero.debug("[Weavero][hamb] " + m); } catch (e) {}
+            };
             const inAnyOpenPopup = (target: any): boolean => {
                 if (!target) return false;
                 if (target.closest && target.closest("#wv-hamburger-popup")) return true;
+                // Treat the hamburger button itself as "inside" so the
+                // outside-click dismissal doesn't fire — the button's own
+                // click handler runs next and toggles the popup closed.
+                // Without this, mousedown closes then click re-opens.
+                if (btn && (target === btn || (btn.contains && btn.contains(target)))) return true;
                 // Any of our source popups currently open?
                 for (const src of sources) {
                     const sp = doc.getElementById(src.popupId);
@@ -7289,11 +7316,23 @@ class _ReaderMixin {
             };
             let onWinMouseDown: any = null;
             let onWinKeyDown: any = null;
+            // Mozilla's XUL menupopup auto-rolls-up when a real OS mousedown
+            // lands on the anchor it's bound to. That native rollup fires
+            // BEFORE our click handler runs, so by click time popup.state is
+            // already "closed" — toggling on state alone would re-open it.
+            // We treat a click within this window of a popuphidden as the
+            // SAME interaction that closed the popup, and skip the re-open.
+            let lastHiddenAt = 0;
             popup.addEventListener("popupshown", () => {
+                wvLog("popupshown  state=" + popup.state);
                 try {
                     onWinMouseDown = (e: any) => {
                         try {
-                            if (!inAnyOpenPopup(e.target)) popup.hidePopup();
+                            const t = e.target;
+                            const tdesc = t ? ((t.tagName || t.localName || "?") + (t.id ? "#" + t.id : "") + (t.className && typeof t.className === "string" ? "." + t.className.replace(/\s+/g, ".") : "")) : "null";
+                            const inAny = inAnyOpenPopup(t);
+                            wvLog("mousedown target=" + tdesc + " inAny=" + inAny + " state=" + popup.state);
+                            if (!inAny) popup.hidePopup();
                         } catch (er) {}
                     };
                     onWinKeyDown = (e: any) => {
@@ -7305,7 +7344,12 @@ class _ReaderMixin {
                     win.addEventListener("keydown", onWinKeyDown, true);
                 } catch (er) {}
             });
+            popup.addEventListener("popuphiding", () => {
+                wvLog("popuphiding state=" + popup.state);
+            });
             popup.addEventListener("popuphidden", () => {
+                lastHiddenAt = Date.now();
+                wvLog("popuphidden state=" + popup.state + " lastHiddenAt set");
                 try {
                     if (onWinMouseDown) win.removeEventListener("mousedown", onWinMouseDown, true);
                     if (onWinKeyDown) win.removeEventListener("keydown", onWinKeyDown, true);
@@ -7333,24 +7377,50 @@ class _ReaderMixin {
             btn.setAttribute("aria-label", "Open application menu");
             const SVG_NS = "http://www.w3.org/2000/svg";
             const svg = doc.createElementNS(SVG_NS, "svg");
+            // 16×16 viewBox — Firefox's exact app-menu icon. Three filled
+            // rects (16-wide × 1-tall) at y=2/7/12 (centerlines 2.5/7.5/
+            // 12.5), 0.5-radius rounded ends, 5-unit spacing. Bars span
+            // 11/16 = 69% of icon height. Rendered at 16×16 inside the
+            // 28×28 button (CSS sets svg width/height to 16px). Same 0.5-
+            // unit upward offset Firefox itself accepts (bar 2 centerline
+            // y=7.5 vs viewBox centre y=8) — inherent to placing 3 sharp
+            // 1-px bars symmetrically in a square viewBox.
             svg.setAttribute("viewBox", "0 0 16 16");
             svg.setAttribute("aria-hidden", "true");
-            for (const y of ["4.5", "8", "11.5"]) {
-                const line = doc.createElementNS(SVG_NS, "line");
-                line.setAttribute("x1", "3");
-                line.setAttribute("y1", y);
-                line.setAttribute("x2", "13");
-                line.setAttribute("y2", y);
-                svg.appendChild(line);
+            for (const y of ["2", "7", "12"]) {
+                const rect = doc.createElementNS(SVG_NS, "rect");
+                rect.setAttribute("x", "0");
+                rect.setAttribute("y", y);
+                rect.setAttribute("width", "16");
+                rect.setAttribute("height", "1");
+                rect.setAttribute("rx", "0.5");
+                svg.appendChild(rect);
             }
             btn.appendChild(svg);
             btn.addEventListener("click", (e: any) => {
                 try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
-                // `after_end` = anchor at the button's bottom-right, so
-                // the hamburger extends to the LEFT of the button (there's
-                // no room to the right — the hamburger sits next to the
-                // window controls).
-                try { popup.openPopup(btn, "after_end", 0, 0, false, false); } catch (er) {}
+                const sinceHidden = Date.now() - lastHiddenAt;
+                wvLog("click   state=" + popup.state + " sinceHidden=" + sinceHidden);
+                try {
+                    // Toggle. Native XUL rollup may have already closed the
+                    // popup during mousedown; if popuphidden fired within
+                    // the last 200 ms we treat this click as the SAME user
+                    // interaction (the closing one) and do nothing — without
+                    // this guard the click handler would re-open immediately.
+                    // `after_end` = anchor at the button's bottom-right, so
+                    // the popup extends to the LEFT of the button (no room
+                    // on the right — the button sits next to window
+                    // controls).
+                    if (popup.state === "open" || popup.state === "showing") {
+                        wvLog("click   -> hidePopup");
+                        popup.hidePopup();
+                    } else if (sinceHidden < 200) {
+                        wvLog("click   -> skip (just closed by native rollup)");
+                    } else {
+                        wvLog("click   -> openPopup");
+                        popup.openPopup(btn, "after_end", 0, 0, false, false);
+                    }
+                } catch (er) {}
             });
             // Insert just before `beforeEl` (window controls / spacer / etc).
             if (beforeEl && beforeEl.parentNode === stripEl) {

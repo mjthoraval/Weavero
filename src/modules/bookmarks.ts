@@ -25,7 +25,7 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
-import { BOOKMARK_PATH } from "./constants";
+import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG } from "./constants";
 import { BM_HOVERCARD_CSS } from "./reader-panels";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
@@ -36,9 +36,40 @@ declare const Services: any;
 const BM_BTN_ID = "wv-bookmarks-toolbar-button";
 const BM_POPUP_ID = "wv-bookmarks-popup";       // the <panel>
 const BM_INNER_ID = "wv-bookmarks-inner";
+const BM_CHIP_POPUP_ID = "wv-bookmarks-chip-popup";   // sibling XUL <panel>
+const BM_CHIP_INNER_ID = "wv-bookmarks-chip-inner";
 const BM_STYLE_ID = "wv-bookmarks-style";
 const BM_ROW_MENU_ID = "wv-bm-row-menu";
 const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+// Annotation-type SVG glyphs — same paths the reader-sidebar chip popup
+// uses (kept in sync with RP_ANN_TYPE_SVG in reader-panels.ts).
+const BM_ANN_TYPE_SVG: { [k: string]: string } = {
+    highlight:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M2 2H14V14H2V2ZM1 1H2H14H15V2V14V15H14H2H1V14V2V1ZM13 13L8.75 3H7.25L3 13H4.62985L5.90485 10H10.0952L11.3702 13H13ZM8 5.07023L6.32985 9H9.67015L8 5.07023Z" fill="currentColor"/>'
+        + '</svg>',
+    underline:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M13 13L8.75 3H7.25L3 13H4.62985L5.90485 10H10.0952L11.3702 13H13ZM8 5.07023L6.32985 9H9.67015L8 5.07023ZM15 15V14H1V15H15Z" fill="currentColor"/>'
+        + '</svg>',
+    note:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+        + '<path d="M7.5 14.5H14.5V1.5H1.5V8.5M7.5 14.5L1.5 8.5M7.5 14.5V8.5H1.5" stroke="currentColor"/>'
+        + '</svg>',
+    text:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M13 1.5H3V3H7.24997V14H8.74997V3H13V1.5Z" fill="currentColor"/>'
+        + '</svg>',
+    image:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M10.0001 1H6.00015V2H10.0001V1ZM12.0001 4H4.00015V12H12.0001V4ZM3.00015 3V13H13.0001V3H3.00015ZM14.0001 14V12H15V15H12V14H14.0001ZM15.0001 6H14.0001V10H15.0001V6ZM1.0001 6H2.0001V10H1.0001V6ZM6.0001 14H10.0001V15H6.0001V14ZM12.0002 2L14.0003 2.00001L14.0002 4H15.0002V1H12.0002V2ZM2.0001 2.00001V4.00001H1.0001L1.0001 1.00001L4.0001 1.00001V2L2.0001 2.00001ZM4 14L2.00015 14L2.00015 12H1L1 15L4 15V14Z" fill="currentColor"/>'
+        + '</svg>',
+    ink:
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+        + '<path fill-rule="evenodd" clip-rule="evenodd" d="M12.2379 1.96038C7.35382 -0.685304 3.87074 -0.185451 2.14056 1.6023C1.09277 2.68497 0.770104 4.18435 1.20189 5.49993C0.859503 5.9151 0.586015 6.39922 0.406392 6.94321C-0.251619 8.93602 0.392748 11.5506 3.14369 14.3518L3.55138 13.3325C1.22808 10.8298 0.880354 8.69716 1.35597 7.25675C1.44524 6.98637 1.56492 6.73451 1.70984 6.50322C2.01734 6.9348 2.42776 7.31991 2.94254 7.62876C5.08604 8.91477 7.00043 8.47453 7.78686 7.27398C8.17397 6.68302 8.24618 5.93402 7.87663 5.2695C7.51213 4.61407 6.76938 4.12858 5.69987 3.91011C4.4187 3.64842 3.08109 3.95856 2.04205 4.71173C1.9233 3.869 2.19892 2.97994 2.85915 2.29774C4.12914 0.98549 7.04616 0.285329 11.7616 2.83966L12.2379 1.96038ZM3.45701 6.77126C2.98486 6.48799 2.62971 6.12157 2.39003 5.71152C3.22891 4.98627 4.3888 4.66296 5.49973 4.88988C6.38853 5.07143 6.82496 5.43594 7.00268 5.75551C7.17534 6.06599 7.1528 6.41698 6.95036 6.72602C6.55769 7.32546 5.31375 7.88522 3.45701 6.77126ZM13.2929 4C13.6834 3.60948 14.3166 3.60948 14.7071 4L15.5 4.79289C15.8905 5.18342 15.8905 5.81658 15.5 6.20711L7.42612 14.281C7.33036 14.3767 7.21615 14.4521 7.09041 14.5024L4.6857 15.4642L3.60247 15.8975L4.03576 14.8143L4.99765 12.4096C5.04794 12.2839 5.12325 12.1696 5.21902 12.0739L13.2929 4ZM12.5 6.20715L5.92612 12.781L5.39753 14.1025L6.71902 13.5739L13.2929 7.00004L12.5 6.20715ZM13.2071 5.50004L14 6.29293L14.7929 5.5L14 4.70711L13.2071 5.50004Z" fill="currentColor"/>'
+        + '</svg>',
+};
 
 // annotationType → Zotero skin icon (mirrors the filter pane's mapping).
 const BM_ANNOTATION_ICONS: { [k: string]: string } = {
@@ -50,14 +81,22 @@ const BM_ANNOTATION_ICONS: { [k: string]: string } = {
     text: "annotate-text.svg",
 };
 
-// Hollow bookmark-ribbon glyph for the toolbar button — the shared
-// even-odd outline (BOOKMARK_PATH), themed via `context-fill` (the
-// button sets -moz-context-properties + fill: currentColor). Sized a
-// touch larger (18px) than the 16px neighbours.
+// Hollow bookmark-ribbon glyph for the toolbar button — themed via
+// `context-fill` (the button sets -moz-context-properties + fill:
+// currentColor). Sized at 20×20 to match Zotero's own collections-
+// toolbar icons (the native "Add Collection" button uses the
+// `chrome://zotero/skin/20/…` icon set), so the bookmark icon visually
+// matches its toolbar neighbours.
+//
+// Uses the 20-unit `BOOKMARK_PATH_20` shared with the reader Bookmarks
+// tab: at 20px render, 1 SVG unit = 1 device pixel and the outer
+// edges (top, sides, bottom corners, V-apex) land on integer pixel
+// rows — razor-sharp top stripe, matching the tab.
 const BOOKMARK_SVG =
-    '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" '
-    + 'viewBox="0 0 16 16" fill="context-fill">'
-    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/>'
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" '
+    + 'viewBox="0 0 20 20" fill="context-fill">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" '
+    + 'd="' + BOOKMARK_PATH_20 + '"/>'
     + '</svg>';
 
 // Neutral-gray fallback for a row whose target can't be resolved.
@@ -66,56 +105,116 @@ const BM_FALLBACK_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
     + '<path fill="#888" d="M4 1.5h8a1 1 0 0 1 1 1V15l-5-3.2L3 15V2.5a1 1 0 0 1 1-1z"/>'
     + '</svg>');
 
-// Red cross for "Delete" — reads as "remove this entry" (not "send to
-// trash"). Baked-in red since a native menuitem icon can't be tinted.
+// "Delete Bookmark" icon — red cross. Intentionally OFF-theme: Weavero's
+// delete is one-step destructive (no "Bin" intermediate), so a red colour
+// call-out signals danger more clearly than Zotero's themed grey icons.
 const BM_DELETE_ICON = "data:image/svg+xml," + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
     + '<path d="M4 4l8 8M12 4l-8 8" stroke="#e0483b" stroke-width="2" stroke-linecap="round"/>'
     + '</svg>');
 
-// Neutral-gray "+" and folder-with-+ for the context-menu "Add Bookmark" /
-// "New Folder" items. Baked colour (visible in both themes — a menuitem image
-// can't carry -moz-context-properties tinting).
+// Type-specific row icons for `position` / `page` / `text` bookmarks.
+// Mirror the reader's RP_PIN_EMOJI / RP_BM_RIBBON / RP_TEXT_SVG so the
+// same bookmark shows the same glyph in both panels. The library popup
+// uses <img> for row icons (can't host inline SVG/text), so the emoji
+// is wrapped in an SVG <text> element and the others are data: URIs.
+// Page + text use context-fill so they inherit the row's text colour
+// via the -moz-context-properties: fill set on the <img>.
+const BM_PIN_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+    + '<text x="8" y="13" font-size="13" text-anchor="middle">📌</text></svg>');
+// Page bookmark uses a SOLID-FILLED ribbon (just the outer half of
+// BOOKMARK_PATH, no inner cutout) so it visually contrasts with the
+// hollow ribbon used elsewhere for "general bookmarks" (e.g. the
+// reader-sidebar tab glyph).
+const BM_PAGE_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="context-fill">'
+    + '<path d="M4 1H12V15L8 12L4 15Z"/></svg>');
+const BM_TEXT_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="context-fill">'
+    + '<path d="M3 3H10V5H3ZM3 7H13V9H3ZM3 11H10V13H3Z"/></svg>');
+
+// "+" glyph for the context-menu "Add Bookmark…" item. Uses
+// `context-fill` so it inherits `var(--fill-secondary)` from Zotero's
+// global `menupopup image` CSS — themes identically to Zotero's own
+// menu icons (sets `-moz-context-properties: fill` + `fill:` on every
+// menuitem image).
 const BM_MENU_ADD_ICON = "data:image/svg+xml," + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-    + '<path fill="#888" d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>');
+    + '<path fill="context-fill" d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>');
+// Folder+plus glyph for "New Folder…" / "New Subfolder…" menu items.
+// Redrawn at 16-unit to MATCH the menu's icon slot (chrome forces
+// `menuitem-iconic` images to 16×16 — so a 20-unit SVG was being
+// scaled 20→16 internally, reintroducing the 0.8× anti-aliasing the
+// prior fix tried to remove). Every coordinate sits on a `.5` offset
+// so stroke-width 1 centers between pixel rows/columns — each
+// horizontal/vertical stroke covers exactly one pixel; only the short
+// tab slope retains unavoidable 45° anti-aliasing.
+// Filled folder + circle-badge "+" — Zotero-style visual concept,
+// authored with SVG arc commands and explicit per-corner radii
+// rather than borrowing specific bezier control points. Layered:
+//   1. Folder outline (filled ring via evenodd): tab on the LEFT
+//      (x 0-4, y 0-2), 1-unit rounded corners at top-left, top-
+//      right, and bottom-left. The bottom-right is carved along
+//      the badge's outer circle (r=4, large-arc-flag=1 so the
+//      arc wraps the badge's right-bottom-left side, not the
+//      side facing the folder interior).
+//   2. Badge ring: outer r=4 minus inner r=3, centred (11.5, 11.5).
+//   3. + cross (3-unit cross with 1-unit-thick arms) filled inside
+//      the badge's hollow centre.
 const BM_MENU_NEWFOLDER_ICON = "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 20 20" '
-    + 'fill="none" stroke="#888" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M18 11.5V6.5H8.5L7 5H2.5V15.5H10"/><path d="M14.5 12.5v5M12 15h5"/></svg>');
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">'
+    + '<path fill-rule="evenodd" fill="context-fill" d="'
+    + 'M0 1A1 1 0 0 1 1 0H3.586A1 1 0 0 1 4.293 0.293L6 2H13A1 1 0 0 1 14 3V7.76A4.5 4.5 0 0 0 7.03 12H1A1 1 0 0 1 0 11Z'
+    + 'M1 1H3.586L5.293 2.707C5.505 2.919 5.7 3 6 3H13V7.26A4.5 4.5 0 0 0 7.03 11H1Z"/>'
+    + '<path fill-rule="evenodd" fill="context-fill" d="'
+    + 'M11.5 7A4.5 4.5 0 0 1 16 11.5A4.5 4.5 0 0 1 11.5 16A4.5 4.5 0 0 1 7 11.5A4.5 4.5 0 0 1 11.5 7Z'
+    + 'M11.5 8A3.5 3.5 0 0 0 8 11.5A3.5 3.5 0 0 0 11.5 15A3.5 3.5 0 0 0 15 11.5A3.5 3.5 0 0 0 11.5 8Z"/>'
+    + '<path fill="context-fill" d="M11 9H12V11H14V12H12V14H11V12H9V11H11Z"/>'
+    + '</svg>');
 
-// Folder glyph for bookmark folders — an outline (Lucide/Firefox-style)
-// folder, deliberately distinct from Zotero's filled blue collection
-// icon so bookmark folders aren't confused with bookmarked collections.
-// `context-stroke` themes the outline.
+// Row folder glyph for bookmark folder rows — same filled-with-evenodd
+// design language as the "New folder" action above (rounded corners,
+// left-aligned tab, hollow interior) but with no badge. `context-fill`
+// themes the silhouette from the host element's CSS.
+// viewBox y-min set to -2 (instead of 0) shifts the rendered folder
+// down by 2 units so its visual centre aligns with the row's text
+// baseline. The path stays unchanged (folder at SVG y=0-12); only the
+// viewBox window moves. The new-folder icon doesn't need this — its
+// badge already extends to y=16, so it's already vertically centred.
 const BM_FOLDER_ICON = "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
-    + 'viewBox="0 0 16 16" fill="none" stroke="context-stroke" '
-    + 'stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter">'
-    + '<path d="M1.5 4.5H5.5L7 6.5H14.5V13.5H1.5Z"/></svg>');
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 -2 16 16" fill="none">'
+    + '<path fill-rule="evenodd" fill="context-fill" d="'
+    + 'M0 1A1 1 0 0 1 1 0H3.586A1 1 0 0 1 4.293 0.293L6 2H13A1 1 0 0 1 14 3V11A1 1 0 0 1 13 12H1A1 1 0 0 1 0 11Z'
+    + 'M1 1H3.586L5.293 2.707C5.505 2.919 5.7 3 6 3H13V11H1Z"/></svg>');
 
-// "New Folder" action icon — an outline folder (open at the bottom-right)
-// with a "+ in a circle" badge in that corner, mirroring Zotero's New
-// Collection icon but in the outline style of our folder rows. Authored
-// in a 20-unit box at stroke-width 1 so it's a crisp 1px line at the
-// toolbar's 20px size.
+// "Add Bookmark" + glyph for the popup toolbar — 20-unit native so the
+// 2-unit-thick cross arms land on integer pixel boundaries at the
+// toolbar's 20px display size (no sub-pixel blur). Themed via
+// `context-fill`. Replaces Zotero's chrome://zotero/skin/20/universal/
+// plus.svg which was rendering blurry.
+const BM_ADD_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">'
+    + '<path fill="context-fill" d="M9 2H11V9H18V11H11V18H9V11H2V9H9Z"/>'
+    + '</svg>');
+
+// "New Folder" action icon for the popup toolbar — same Zotero-style
+// design as BM_MENU_NEWFOLDER_ICON, but authored natively in a 20-unit
+// viewBox so stroke-width=1 lands on a 1-pixel boundary at the
+// toolbar's 20px display size (no sub-pixel blur). Themed via
+// `context-fill` / `context-stroke` (the toolbar CSS sets both).
 const BM_NEW_FOLDER_ICON = "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" '
-    + 'viewBox="0 0 20 20" fill="none" stroke="context-stroke" '
-    + 'stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter">'
-    + '<path d="M18.5 11V6.5H8L6.5 4.5H2.5V17.5H10"/>'
-    + '<circle cx="14.5" cy="14.5" r="3.5"/>'
-    + '<path d="M14.5 12.5v4M12.5 14.5h4"/></svg>');
+    '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none">'
+    + '<path fill-rule="evenodd" fill="context-fill" d="'
+    + 'M0 1A1 1 0 0 1 1 0H4.586A1 1 0 0 1 5.293 0.293L8 3H17A1 1 0 0 1 18 4V11.672A4.5 4.5 0 0 0 10.028 15H1A1 1 0 0 1 0 14Z'
+    + 'M1 1H4.586L7.293 3.707C7.505 3.919 7.7 4 8 4H17V10.758A4.5 4.5 0 0 0 10.028 14H1Z"/>'
+    + '<circle cx="14.5" cy="14.5" r="4" fill="none" stroke="context-stroke" stroke-width="1"/>'
+    + '<path fill="context-fill" d="M14 12H15V14H17V15H15V17H14V15H12V14H14Z"/>'
+    + '</svg>');
 
-// Pencil for the menu's "Rename…" item (no native Zotero icon for this).
-// Baked #888 to sit alongside the gray Add/New-Folder icons; the reader menu
-// uses the same pencil path via currentColor (RP_RENAME_SVG). Open and
-// Show-in-Library use the native Zotero icons (attachment / library) instead.
-const BM_RENAME_ICON = "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" '
-    + 'fill="none" stroke="#888" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M11.5 2.5l2 2"/>'
-    + '<path d="M12.2 1.8a1 1 0 0 1 1.4 0l.6.6a1 1 0 0 1 0 1.4L5.5 12.5 2.5 13.5 3.5 10.5z"/></svg>');
+// "Rename…" icon — uses Zotero's native rename.svg (same icon Zotero
+// uses for "Rename Collection"). Themes automatically.
+const BM_RENAME_ICON = "chrome://zotero/skin/16/universal/rename.svg";
 
 // Bare-class selectors so the same styles apply in the main panel AND in
 // flyout sub-panels (each flyout is a separate <panel>, not nested in the
@@ -125,11 +224,60 @@ const BM_POPUP_CSS = [
     ".wv-bm-flyout-inner{overflow:auto;}",
     "#" + BM_INNER_ID + " .wv-bm-actions{display:flex;align-items:center;gap:2px;padding:2px 4px;}",
     ".wv-bm-iconbtn{display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;background:none;cursor:pointer;border-radius:5px;}",
+    // The funnel variant carries an extra ▾ chevron — widen the box
+    // (keyed off the chevron child via `:has()` so it targets the
+    // funnel button specifically, not the search button which uses
+    // the `wv-bm-funnel-spacer` margin-helper class).
+    ".wv-bm-iconbtn:has(.wv-bm-funnel-chev){width:auto;min-width:28px;padding:0 4px;gap:1px;position:relative;}",
+    // Accent-blue dot at the funnel icon's top-right when any chip is
+    // selected — same convention as the library filter and reader
+    // bookmarks filter (see constants.ts `.wv-filter-tb-dot` and
+    // reader-panels.ts `.wv-bm-filter-active`). Funnel sits at x=4..24
+    // inside the button; dot at top:3, left:18 lands at its top-right.
+    ".wv-bm-iconbtn.wv-bm-lib-filter-active::after{content:'';position:absolute;top:3px;left:18px;width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);pointer-events:none;}",
     ".wv-bm-iconbtn:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
+    ".wv-bm-iconbtn.wv-active{background:var(--fill-quarternary,rgba(128,128,128,.24));}",
+    "#" + BM_INNER_ID + " .wv-bm-funnel-spacer{margin-left:auto;}",
+    "#" + BM_INNER_ID + " .wv-bm-search{display:flex;padding:0 6px 4px;}",
+    ".wv-bm-search-input{flex:1;padding:4px 8px;font-size:13px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
+    ".wv-bm-search-input:focus{outline:none;border-color:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-search-empty{padding:10px 12px;opacity:.55;font-style:italic;}",
+    // Chip filter SIDE popup — a separate XUL panel anchored to the
+    // right edge of the bookmarks popup. Lives in its own <panel> so the
+    // bookmark list stays fully visible while filtering.
+    // Chip popup container — color/type tiles now use the same
+    // `.wv-filter-opt.wv-filter-opt-icon` class as the library
+    // filter popup (constants.ts already provides those rules
+    // globally in the chrome window). Only popup-specific layout
+    // remains here.
+    "#" + BM_CHIP_INNER_ID + "{display:flex;flex-direction:column;gap:6px;padding:8px 10px;min-width:220px;max-width:300px;max-height:520px;overflow:auto;font-size:12px;}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip-bar-lib-empty{padding:4px 2px;opacity:.6;font-style:italic;}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip-row{display:flex;flex-wrap:wrap;gap:4px;}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;font-size:11px;line-height:1.4;border:1px solid rgba(127,127,127,.4);border-radius:10px;cursor:pointer;background:rgba(127,127,127,.06);color:inherit;user-select:none;-moz-user-select:none;}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip:hover{background:rgba(127,127,127,.16);}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip.selected{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip-tag-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}",
+    // Cap the tag row at ~7 chip rows and let it scroll inside the
+    // popup. Same idea as the reader filter popup's `.wv-rf-tags-row`
+    // — many tags shouldn't push the rest of the chip popup off-screen.
+    // `scrollbar-width:thin` removes the legacy up/down arrow buttons
+    // at the top and bottom of the scrollbar (Firefox/Gecko native
+    // scrollbar style), leaving just a continuous thumb track.
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip-row.wv-bm-tags-row{max-height:170px;overflow-y:auto;scrollbar-width:thin;align-content:flex-start;padding-right:2px;}",
+    // Inline annotation-type SVGs appended via DOMParser don't carry
+    // a sizing class — pin them to 16×16 so they fill the icon area.
+    "#" + BM_CHIP_INNER_ID + " .wv-filter-opt-icon svg{width:16px;height:16px;display:block;}",
     // 20px icons in 28px buttons, matching the collections toolbar; dimmed
     // like the toolbar icons and brightening on hover.
     ".wv-bm-iconbtn img{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:var(--fill-secondary,rgba(127,127,127,.85));stroke:var(--fill-secondary,rgba(127,127,127,.85));}",
+    // Funnel chevron — narrower than the icon, sits after it with 1px
+    // gap. Same -moz-context-properties as the funnel img so it picks
+    // up the same currentColor tint.
+    ".wv-bm-iconbtn img.wv-bm-funnel-chev{width:8px;height:8px;margin-left:1px;}",
     ".wv-bm-iconbtn:hover img{fill:var(--fill-primary,currentColor);stroke:var(--fill-primary,currentColor);}",
+    ".wv-bm-iconbtn svg{width:22px;height:22px;color:var(--fill-secondary,rgba(127,127,127,.85));}",
+    ".wv-bm-iconbtn:hover svg{color:var(--fill-primary,currentColor);}",
+    ".wv-bm-iconbtn.wv-active svg{color:var(--fill-primary,currentColor);}",
     "#" + BM_INNER_ID + " .wv-bm-sep{height:1px;background:var(--fill-quinary,rgba(128,128,128,.22));margin:4px 2px;}",
     ".wv-bm-scroll{overflow:auto;min-height:0;}",
     ".wv-bm-row{display:flex;align-items:center;gap:6px;padding:4px 8px;cursor:pointer;border-radius:4px;}",
@@ -138,8 +286,22 @@ const BM_POPUP_CSS = [
     ".wv-bm-row.wv-bm-dragover{box-shadow:inset 0 2px 0 0 var(--color-accent,#4072e5);}",
     ".wv-bm-row.wv-bm-dragover-bottom{box-shadow:inset 0 -2px 0 0 var(--color-accent,#4072e5);}",
     ".wv-bm-row.wv-bm-dragover-into{background:var(--fill-quinary,rgba(128,128,128,.16));box-shadow:inset 0 0 0 2px var(--color-accent,#4072e5);}",
-    ".wv-bm-arrow{flex:0 0 auto;margin-left:auto;opacity:.55;padding-left:8px;}",
+    ".wv-bm-arrow{flex:0 0 auto;margin-left:auto;opacity:.55;padding-left:8px;display:flex;align-items:center;}",
+    ".wv-bm-arrow svg{width:12px;height:12px;}",
     ".wv-bm-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+    ".wv-bm-sublabel{opacity:.55;font-style:italic;}",
+    // URL-bookmark labels follow the same scheme palette Weavero uses
+    // in notes / reader / item pane. Same hex values; self-contained
+    // so the dropdown paints correctly without relying on a global
+    // link-colour stylesheet.
+    ".wv-bm-label.wv-link-http{color:#1a73e8;}",
+    ".wv-bm-label.wv-link-zotero{color:#8b4513;}",
+    ".wv-bm-label.wv-link-app{color:#9333ea;}",
+    "@media (prefers-color-scheme: dark){",
+    " .wv-bm-label.wv-link-http{color:#8ab4f8;}",
+    " .wv-bm-label.wv-link-zotero{color:#cd853f;}",
+    " .wv-bm-label.wv-link-app{color:#c084fc;}",
+    "}",
     ".wv-bm-empty{padding:8px 10px;opacity:.6;font-size:.9em;}",
 ].join("");
 
@@ -231,7 +393,15 @@ class _BookmarksMixin {
     _bmReaderEntrySection(attLibraryID: number, attItemKey: string, rec: any): "local" | "global" {
         try {
             if (!rec) return "global";
-            if (rec.type === "position" || rec.type === "text" || rec.type === "folder") {
+            // URL / app-link bookmarks never point INTO the document —
+            // always file them under "Elsewhere in Zotero".
+            if (rec.type === "url") return "global";
+            // `position` (pin: precise spot with rects), `page` (whole-page
+            // bookmark, no rects), and `text` (selected text) are in-doc
+            // bookmark types — all local by default unless carrying a
+            // cross-doc source ref.
+            if (rec.type === "position" || rec.type === "page"
+                    || rec.type === "text" || rec.type === "folder") {
                 // Folders carry their own section via _section; default local.
                 if (rec.type === "folder") return rec._section === "global" ? "global" : "local";
                 // A location bookmark carrying a source ref to a DIFFERENT
@@ -298,27 +468,20 @@ class _BookmarksMixin {
 
     /** Add a bookmark to the appropriate section's root. `rec` carries the
      *  type-specific fields (location bookmark or collections-pane-style
-     *  target). Target types are de-duped by identity across both sections;
-     *  locations may repeat. */
+     *  target). Firefox-style list semantics: the same target may be
+     *  bookmarked multiple times (filed into several folders, kept as
+     *  separate copies, etc.). `opts.allowDuplicate` is accepted for
+     *  backward compatibility but has no effect — adds always proceed. */
     async _bmReaderAdd(libraryID: number, itemKey: string, rec: any, opts?: any) {
         await this._bmInit();
         const doc = this._bmReaderDoc(libraryID, itemKey);
         rec = rec || {};
+        // Destination section is always derived from the record's
+        // identity (`_bmReaderEntrySection`). No caller override:
+        // Elsewhere bookmarks are not allowed in the local section, so a
+        // wrong-button add (e.g. picking another doc's item from the
+        // "This Document" +) still files correctly under Elsewhere.
         const section = this._bmReaderEntrySection(libraryID, itemKey, rec);
-        // Drag-to-bookmark passes allowDuplicate so the SAME annotation can be
-        // filed into several folders (user choice). The "+" picker leaves it off,
-        // so an accidental double-add there is still de-duplicated.
-        if (!(opts && opts.allowDuplicate) && rec.type && rec.type !== "position" && rec.type !== "text") {
-            const dupe = (e: any) => {
-                if (e.type !== rec.type) return false;
-                if (rec.type === "item") return e.libraryID === rec.libraryID && e.itemKey === rec.itemKey;
-                if (rec.type === "collection") return e.libraryID === rec.libraryID && e.collectionKey === rec.collectionKey;
-                if (rec.type === "library") return e.libraryID === rec.libraryID;
-                if (rec.type === "treerow") return e.rowID === rec.rowID;
-                return false;
-            };
-            if (this._bmReaderList(libraryID, itemKey).some(dupe)) return null;
-        }
         const entry = Object.assign(
             { id: "wv-" + Zotero.Utilities.randomString(8), type: "position", created: new Date().toISOString() },
             rec);
@@ -330,6 +493,10 @@ class _BookmarksMixin {
         }
         doc[section].push(entry);
         await this._bmPersist();
+        // First-bookmark-on-empty-doc transition: tell the reader-panels
+        // gate to re-evaluate the Bookmarks tab visibility for any open
+        // reader on this attachment, so an auto-hidden tab pops back in.
+        try { this._wvReaderRefreshBookmarksTabAll(libraryID, itemKey); } catch (_) {}
         return entry;
     }
 
@@ -344,6 +511,9 @@ class _BookmarksMixin {
             delete this._bmReaderStore()[this._bmReaderKey(libraryID, itemKey)];
         }
         await this._bmPersist();
+        // Last-bookmark-removed transition: re-evaluate the auto-hide
+        // gate so the tab vanishes when the doc has become empty.
+        try { this._wvReaderRefreshBookmarksTabAll(libraryID, itemKey); } catch (_) {}
     }
 
     /** Rename a bookmark (label) or folder (name) anywhere in either tree. For a
@@ -452,7 +622,7 @@ class _BookmarksMixin {
             // We never reach for pv._pageLabels here — it answers a different
             // question ("what does the PDF call this page?") that we don't
             // want to expose, since it'd disagree with the annotation row.
-            if ((bm.type === "position" || bm.type === "text")
+            if ((bm.type === "position" || bm.type === "page" || bm.type === "text")
                     && bm.position && Number.isInteger(bm.position.pageIndex)) {
                 const pageIndex = bm.position.pageIndex;
                 // Find this bookmark's owning attachment. LOCAL records carry
@@ -672,9 +842,453 @@ class _BookmarksMixin {
                 }
                 this._bmDoc = { version: 2, bookmarks: [] };
             }
+            try { this._bmMigratePageTypes(); } catch (e) {
+                Zotero.debug("[Weavero] _bmMigratePageTypes err: " + e);
+            }
+            try { this._bmMigrateSectionPlacement(); } catch (e) {
+                Zotero.debug("[Weavero] _bmMigrateSectionPlacement err: " + e);
+            }
+            // Now that the bookmarks store is loaded, re-evaluate the
+            // Bookmarks tab on every open reader. Two things need
+            // catching up:
+            //   1. The auto-hide gate ran with `_bmDoc` null at reader-
+            //      open time (post-restart race) and skipped its check;
+            //      now apply it.
+            //   2. `_wvReaderApplyBmTabState` reads the persisted
+            //      "tab was active" pref AND now sees an actual stored
+            //      bookmark list, so restoring the user's last-active
+            //      tab on each attachment is fully accurate from here.
+            try {
+                if (typeof this._wvReaderRefreshBookmarksTabAll === "function") {
+                    this._wvReaderRefreshBookmarksTabAll();
+                }
+            } catch (e) {
+                Zotero.debug("[Weavero] post-init reader refresh err: " + e);
+            }
+            // Same race for the library toolbar button: if
+            // autoHideEmptyLibraryBookmarks is on, `_setupBookmarksToolbarButton`
+            // ran before `_bmDoc` was loaded and skipped the empty-check,
+            // showing the button regardless. Re-run it now that the
+            // store is loaded so the auto-hide actually applies.
+            if (this._getAutoHideEmptyLibraryBookmarks()) {
+                try {
+                    const wins: any = Zotero.getMainWindows && Zotero.getMainWindows();
+                    if (wins) for (const w of wins) {
+                        try { this._setupBookmarksToolbarButton(w); } catch (_) {}
+                    }
+                } catch (e) {
+                    Zotero.debug("[Weavero] post-init lib-toolbar refresh err: " + e);
+                }
+            }
             return this._bmDoc;
         })();
         return this._bmInitPromise;
+    }
+
+    /** One-time migration of dev.13–dev.20 page bookmarks. The buggy
+     *  thumbnail "Add Bookmark to This Page" entry stored whole-page
+     *  records as `type: "position"` with `position.pageIndex` set and
+     *  no `position.rects`. With the page/pin split (dev.21), those
+     *  rebrand to `type: "page"` so the icon picker (ribbon), navigator
+     *  (scroll-to-page, no pin), and dedup all key off the correct type.
+     *  Idempotent (no-op once the records are already `"page"`). Skips
+     *  any `position` record that has real rects — those are real pins. */
+    _bmMigratePageTypes() {
+        if (!this._bmDoc || !this._bmDoc.readerBookmarks) return;
+        let changed = false;
+        const walk = (arr: any[]) => {
+            for (const n of (arr || [])) {
+                if (!n) continue;
+                if (n.type === "folder") { walk(n.children); continue; }
+                if (n.type === "position"
+                    && n.position
+                    && Number.isInteger(n.position.pageIndex)
+                    && (!Array.isArray(n.position.rects)
+                        || n.position.rects.length === 0)) {
+                    n.type = "page";
+                    changed = true;
+                }
+            }
+        };
+        for (const key of Object.keys(this._bmDoc.readerBookmarks)) {
+            const doc = this._bmDoc.readerBookmarks[key];
+            if (!doc) continue;
+            walk(doc.local);
+            walk(doc.global);
+        }
+        if (changed) {
+            try { this._bmPersist(); } catch (_) {}
+        }
+    }
+
+    /** Repair reader bookmarks that landed in the wrong section due to
+     *  an earlier per-section "+" override (now removed): records whose
+     *  identity-derived section (`_bmReaderEntrySection`) doesn't match
+     *  the array they sit in get extracted (from any depth, including
+     *  inside folders) and re-appended at the root of the correct
+     *  section. Folders themselves stay in their own section — they're
+     *  organizational and have no inherent "local vs global" identity.
+     *  Idempotent: a second pass over a clean store does nothing. */
+    _bmMigrateSectionPlacement() {
+        if (!this._bmDoc || !this._bmDoc.readerBookmarks) return;
+        let changed = false;
+        for (const key of Object.keys(this._bmDoc.readerBookmarks)) {
+            const doc = this._bmDoc.readerBookmarks[key];
+            if (!doc || typeof doc !== "object") continue;
+            const colon = key.indexOf(":");
+            if (colon < 0) continue;
+            const libraryID = Number(key.slice(0, colon));
+            const itemKey = key.slice(colon + 1);
+            if (!Number.isFinite(libraryID) || !itemKey) continue;
+
+            // `moved.local` = records that SHOULD be local but were found
+            // in the global tree (will be appended to local root after
+            // both sides are filtered). Symmetric for `moved.global`.
+            const moved: { local: any[], global: any[] } = { local: [], global: [] };
+            const filter = (nodes: any[], wantSection: "local" | "global"): any[] => {
+                const kept: any[] = [];
+                for (const n of (nodes || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") {
+                        n.children = filter(n.children || [], wantSection);
+                        kept.push(n);
+                        continue;
+                    }
+                    const actual = this._bmReaderEntrySection(libraryID, itemKey, n);
+                    if (actual !== wantSection) moved[actual].push(n);
+                    else kept.push(n);
+                }
+                return kept;
+            };
+            const newLocal = filter(Array.isArray(doc.local) ? doc.local : [], "local");
+            const newGlobal = filter(Array.isArray(doc.global) ? doc.global : [], "global");
+            if (moved.local.length || moved.global.length) {
+                for (const n of moved.local) newLocal.push(n);
+                for (const n of moved.global) newGlobal.push(n);
+                doc.local = newLocal;
+                doc.global = newGlobal;
+                changed = true;
+            }
+        }
+        if (changed) {
+            try { this._bmPersist(); } catch (_) {}
+        }
+    }
+
+    /** Open the side chip-filter popup (a separate XUL panel) anchored
+     *  to the right of the bookmarks popup so the bookmark list stays
+     *  fully visible while filtering. The funnel button toggles it. */
+    _bmOpenLibChipPopup(win: any, anchorBtn: any) {
+        const doc: any = win && win.document;
+        if (!doc) return;
+        if (doc.getElementById(BM_CHIP_POPUP_ID)) return;
+        const bmPanel = doc.getElementById(BM_POPUP_ID);
+        if (!bmPanel) return;
+        const panel = doc.createXULElement("panel");
+        panel.id = BM_CHIP_POPUP_ID;
+        panel.setAttribute("animate", "false");
+        panel.setAttribute("noautohide", "true");
+        panel.setAttribute("consumeoutsideclicks", "false");
+        const inner = doc.createElementNS(NS_HTML, "div");
+        inner.id = BM_CHIP_INNER_ID;
+        panel.appendChild(inner);
+        const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+        host.appendChild(panel);
+        this._bmRenderLibChipBar(doc, win, inner);
+        // Anchor the chip popup to the FUNNEL BUTTON inside the
+        // bookmarks popup: its top edge lines up with the funnel
+        // icon's top edge (clear visual link between the button
+        // and the popup it opens), and its left edge sits just
+        // past the bookmarks popup's right edge so the popup
+        // appears beside (not over) the bookmark list. Fall back
+        // to the bookmarks popup top if the funnel button isn't
+        // reachable for some reason.
+        try {
+            const bmR = bmPanel.getBoundingClientRect();
+            const aR = anchorBtn ? anchorBtn.getBoundingClientRect() : null;
+            const x = win.screenX + bmR.right;
+            const y = win.screenY + (aR ? aR.top : bmR.top);
+            panel.openPopupAtScreen(x, y, false);
+        } catch (_) {
+            try { panel.openPopup(anchorBtn || bmPanel, "end_before", 0, 0, false, false); } catch (__) {}
+        }
+    }
+
+    _bmCloseLibChipPopup(win?: any) {
+        win = win || Zotero.getMainWindow();
+        const doc = win && win.document;
+        if (!doc) return;
+        const panel = doc.getElementById(BM_CHIP_POPUP_ID);
+        if (!panel) return;
+        try { panel.hidePopup(); } catch (_) {}
+        try { panel.remove(); } catch (_) {}
+    }
+
+    /** Chip-filter state for the library bookmarks toolbar popup —
+     *  parallel to `_wvReaderBmChipState` but scoped to the chrome-window
+     *  popup. Lazy init; reset via `_bmLibResetChipState` on popup close. */
+    _bmLibChipState() {
+        if (!this._bmLibChipStateBag) {
+            this._bmLibChipStateBag = {
+                colors: new Set<string>(),
+                tags: new Set<string>(),
+                authors: new Set<string>(),
+                types: new Set<string>(),
+            };
+        }
+        return this._bmLibChipStateBag;
+    }
+
+    _bmLibResetChipState() {
+        this._bmLibChipStateBag = null;
+    }
+
+    _bmLibChipsActive(): boolean {
+        const s = this._bmLibChipStateBag;
+        if (!s) return false;
+        return (s.colors.size + s.tags.size + s.authors.size + s.types.size) > 0;
+    }
+
+    /** Walk the library bookmarks tree and collect facet counts for the
+     *  chip popup. Mirrors `_wvReaderBmChipFacets` but only over the
+     *  library store (no per-attachment doc bookmarks). */
+    _bmLibChipFacets() {
+        const colors = new Map<string, number>();
+        const tags = new Map<string, { color: string, count: number, position: number }>();
+        const authors = new Map<string, number>();
+        const types = new Map<string, number>();
+        try {
+            const userLib = (Zotero as any).Libraries && (Zotero as any).Libraries.userLibraryID;
+            const collect = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") { collect(n.children); continue; }
+                    if (n.type !== "item") continue;
+                    let it: any = null;
+                    try { it = Zotero.Items.getByLibraryAndKey(n.libraryID, n.itemKey); } catch (_) {}
+                    if (!it) continue;
+                    try {
+                        if (it.isAnnotation && it.isAnnotation()) {
+                            const c = String(it.annotationColor || "");
+                            if (c) colors.set(c, (colors.get(c) || 0) + 1);
+                            const tp = String(it.annotationType || "");
+                            if (tp) types.set(tp, (types.get(tp) || 0) + 1);
+                            const isPersonal = (typeof userLib === "number") && (it.libraryID === userLib);
+                            if (!isPersonal) {
+                                let name = String((it as any).annotationAuthorName || "").trim();
+                                if (!name) {
+                                    try {
+                                        const uid = (it as any).createdByUserID;
+                                        if (uid && (Zotero as any).Users && (Zotero as any).Users.getName) {
+                                            name = String((Zotero as any).Users.getName(uid) || "").trim();
+                                        }
+                                    } catch (_) {}
+                                }
+                                if (name) authors.set(name, (authors.get(name) || 0) + 1);
+                            }
+                        }
+                    } catch (_) {}
+                    try {
+                        for (const tag of (it.getTags() || [])) {
+                            if (!tag || !tag.tag) continue;
+                            let tc = "";
+                            let tpos = Number.POSITIVE_INFINITY;
+                            try {
+                                const ci: any = Zotero.Tags.getColor(it.libraryID, tag.tag);
+                                if (ci && ci.color) tc = ci.color;
+                                if (ci && Number.isFinite(ci.position)) tpos = ci.position;
+                            } catch (_) {}
+                            const cur = tags.get(tag.tag) || { color: tc, count: 0, position: tpos };
+                            if (tc && !cur.color) cur.color = tc;
+                            if (Number.isFinite(tpos) && !Number.isFinite(cur.position)) cur.position = tpos;
+                            cur.count++;
+                            tags.set(tag.tag, cur);
+                        }
+                    } catch (_) {}
+                }
+            };
+            collect((this._bmDoc && this._bmDoc.bookmarks) || []);
+        } catch (_) {}
+        return { colors, tags, authors, types };
+    }
+
+    /** Render the chip rows (colors / types / tags / authors) into the
+     *  given container. Click on a chip toggles its inclusion in the
+     *  filter state; the bookmark list re-renders live via
+     *  `_bmRefreshPopupList`. Layout mirrors the reader-sidebar chip
+     *  popup (`_wvReaderRenderBmChipBar`). */
+    _bmRenderLibChipBar(doc: any, win: any, bar: any) {
+        while (bar.firstChild) bar.firstChild.remove();
+        const st = this._bmLibChipState();
+        const facets = this._bmLibChipFacets();
+        const TYPE_ORDER = ["highlight", "underline", "note", "text", "image", "ink"];
+        const TYPE_NAME: { [k: string]: string } = {
+            highlight: "Highlights", underline: "Underlines", note: "Notes",
+            text: "Text annotations", image: "Image annotations", ink: "Ink annotations",
+        };
+        const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
+        if (!anyFacets) {
+            const empty = doc.createElementNS(NS_HTML, "div");
+            empty.className = "wv-bm-chip-bar-lib-empty";
+            empty.textContent = "No filters available for the current bookmark list.";
+            bar.appendChild(empty);
+            return;
+        }
+        // `wv-filter-or-group` adds the same subtle grey background tint
+        // the library filter popup uses on its OR-group rows (color,
+        // type, file-type, etc.) — visually marks each chip row as a
+        // "pick any of these" set. CSS rule lives in constants.ts
+        // (global in the chrome window).
+        const mkRow = () => {
+            const r = doc.createElementNS(NS_HTML, "div");
+            r.className = "wv-bm-chip-row wv-filter-or-group";
+            return r;
+        };
+        const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
+        const rerender = () => {
+            try {
+                this._bmRefreshPopupList(win);
+                this._bmRenderLibChipBar(doc, win, bar);
+                // Funnel reflects "popup open OR any selection" (sticky bg
+                // tint via wv-active) AND "any chip selected" (blue dot via
+                // wv-bm-lib-filter-active). `:has(.wv-bm-funnel-chev)` picks
+                // the filter button — the prior selector matched the SEARCH
+                // button instead (it carries `.wv-bm-funnel-spacer`).
+                const fb = doc.getElementById(BM_INNER_ID)?.querySelector(".wv-bm-iconbtn:has(.wv-bm-funnel-chev)");
+                if (fb) {
+                    fb.classList.toggle("wv-active",
+                        !!doc.getElementById(BM_CHIP_POPUP_ID) || this._bmLibChipsActive());
+                    fb.classList.toggle("wv-bm-lib-filter-active",
+                        this._bmLibChipsActive());
+                }
+            } catch (_) {}
+        };
+
+        // Colors row — same SVG tile (IconColor16 path + black-0.1 stroke
+        // ring) the reader chip popup uses, in canonical Zotero palette
+        // order with extras alphabetical at the end.
+        if (facets.colors.size) {
+            const row = mkRow();
+            const CANON = ["#ffd400", "#ff6666", "#5fb236", "#2ea8e5",
+                "#a28ae5", "#e56eee", "#f19837", "#aaaaaa", "#000000"];
+            const rank = (c: string): number => {
+                const i = CANON.indexOf(String(c || "").toLowerCase());
+                return i < 0 ? CANON.length : i;
+            };
+            const keys = Array.from(facets.colors.keys()).sort((a, b) => {
+                const ra = rank(a), rb = rank(b);
+                return ra !== rb ? ra - rb : a.localeCompare(b);
+            });
+            for (const c of keys) {
+                // Black sits apart from the standard 8-colour palette
+                // (upstream Zotero treats it as EXTRA_INK_AND_TEXT_COLORS
+                // — only valid for ink/text annotations). Push it to the
+                // right edge after a thin vertical separator — same
+                // pattern the library filter uses in filter.ts.
+                if (c === "#000000") {
+                    const sep: any = doc.createElementNS(NS_HTML, "div");
+                    sep.className = "wv-filter-vertical-separator";
+                    sep.style.marginLeft = "auto";
+                    row.appendChild(sep);
+                }
+                // Unified with the library filter popup (popup 1):
+                // 26×28 button with a 12×12 colored circle (`.wv-chip-swatch`)
+                // inside, `data-selected="true"` for the highlight state.
+                const btn: any = doc.createElementNS(NS_HTML, "button");
+                btn.type = "button";
+                btn.className = "wv-filter-opt wv-filter-opt-icon";
+                btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
+                if (st.colors.has(c)) btn.dataset.selected = "true";
+                const sw: any = doc.createElementNS(NS_HTML, "span");
+                sw.className = "wv-chip-swatch";
+                sw.style.background = c;
+                btn.appendChild(sw);
+                btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
+                row.appendChild(btn);
+            }
+            bar.appendChild(row);
+        }
+        // Types row — canonical annotation-type ordering. The SVGs are
+        // imported via DOMParser because innerHTML doesn't parse inline
+        // SVG correctly inside the XUL <panel> context (unlike the
+        // reader's HTML iframe, where the same code in
+        // `_wvReaderRenderBmChipBar` uses innerHTML directly).
+        if (facets.types.size) {
+            const row = mkRow();
+            const keys = TYPE_ORDER.filter(t => facets.types.has(t));
+            for (const tp of keys) {
+                // Unified with the library filter popup: 30×28 button
+                // containing the 16×16 annotate-* SVG glyph. DOMParser
+                // import because innerHTML doesn't parse inline SVG
+                // correctly inside the XUL <panel> context.
+                const chip: any = doc.createElementNS(NS_HTML, "button");
+                chip.type = "button";
+                chip.className = "wv-filter-opt wv-filter-opt-icon";
+                chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
+                if (st.types.has(tp)) chip.dataset.selected = "true";
+                const svgStr = BM_ANN_TYPE_SVG[tp];
+                if (svgStr) {
+                    try {
+                        const parsed = new (win as any).DOMParser().parseFromString(svgStr, "image/svg+xml");
+                        const svgEl = parsed && parsed.documentElement;
+                        if (svgEl) chip.appendChild(doc.importNode(svgEl, true));
+                    } catch (_) {}
+                }
+                chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
+                row.appendChild(chip);
+            }
+            bar.appendChild(row);
+        }
+        // Tags row — colored tags first (sorted by their library color
+        // position), then plain tags alphabetically, ALL on a single
+        // wrapping row. Matches the reader filter popup's pattern (the
+        // user can scan a flat list of "tags in this library bookmark
+        // set" without artificial group splits). Capped via CSS at
+        // ~170 px tall with vertical scroll when there are many tags.
+        if (facets.tags.size) {
+            const allKeys = Array.from(facets.tags.keys());
+            const coloured = allKeys.filter(k => !!facets.tags.get(k)!.color).sort((a, b) => {
+                const pa = facets.tags.get(a)!.position;
+                const pb = facets.tags.get(b)!.position;
+                return pa !== pb ? pa - pb : a.localeCompare(b);
+            });
+            const plain = allKeys.filter(k => !facets.tags.get(k)!.color).sort((a, b) => a.localeCompare(b));
+            const keys = [...coloured, ...plain];
+            const row = mkRow();
+            row.classList.add("wv-bm-tags-row");
+            for (const t of keys) {
+                const info = facets.tags.get(t)!;
+                const chip = doc.createElementNS(NS_HTML, "span");
+                chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "");
+                chip.setAttribute("title", t + " — " + info.count + " bookmark(s)");
+                if (info.color) {
+                    const dot = doc.createElementNS(NS_HTML, "span");
+                    dot.className = "wv-bm-chip-tag-dot";
+                    dot.style.background = info.color;
+                    chip.appendChild(dot);
+                }
+                const lbl = doc.createElementNS(NS_HTML, "span");
+                lbl.textContent = t;
+                chip.appendChild(lbl);
+                chip.addEventListener("click", () => { toggle(st.tags, t); rerender(); });
+                row.appendChild(chip);
+            }
+            bar.appendChild(row);
+        }
+        // Authors row — only when >1 (matching the reader's upstream rule).
+        if (facets.authors.size > 1) {
+            const row = mkRow();
+            const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
+            for (const a of keys) {
+                const chip = doc.createElementNS(NS_HTML, "span");
+                chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "");
+                chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s)");
+                chip.textContent = a;
+                chip.addEventListener("click", () => { toggle(st.authors, a); rerender(); });
+                row.appendChild(chip);
+            }
+            bar.appendChild(row);
+        }
     }
 
     /** Root-level entries (folders + bookmarks). */
@@ -801,6 +1415,20 @@ class _BookmarksMixin {
             })
             .catch((e: any) =>
                 Zotero.debug("[Weavero] bookmarks persist failed: " + e));
+        // If auto-hide-when-empty is on, the library bookmarks count
+        // transitioning from 0→1 (or 1→0) must toggle the toolbar
+        // button's visibility in every Zotero main window. Cheap call —
+        // _setupBookmarksToolbarButton no-ops when the button is already
+        // in the right state (it tears down + rebuilds, but only when
+        // the prefs and store agree the button SHOULD exist).
+        if (this._getAutoHideEmptyLibraryBookmarks()) {
+            try {
+                const wins: any = Zotero.getMainWindows && Zotero.getMainWindows();
+                if (wins) for (const w of wins) {
+                    try { this._setupBookmarksToolbarButton(w); } catch (_) {}
+                }
+            } catch (_) {}
+        }
         return this._bmWriteChain;
     }
 
@@ -808,7 +1436,11 @@ class _BookmarksMixin {
         if (!item || !this._bmDoc) return false;
         const libraryID = item.libraryID;
         const itemKey = item.key;
-        if (!itemKey || this._bmHasItem(libraryID, itemKey)) return false;
+        // Firefox-style list semantics: duplicates are explicitly allowed.
+        // The same item can be bookmarked into multiple folders, or simply
+        // bookmarked twice — `_bmHasItem` is no longer consulted at add
+        // time. (Callers that need set-semantics can check it themselves.)
+        if (!itemKey) return false;
         let label = "";
         try {
             label = (typeof item.getDisplayTitle === "function")
@@ -830,7 +1462,9 @@ class _BookmarksMixin {
         if (!collection || !this._bmDoc) return false;
         const libraryID = collection.libraryID;
         const collectionKey = collection.key;
-        if (!collectionKey || this._bmHasCollection(libraryID, collectionKey)) return false;
+        // Firefox-style list semantics — no `_bmHasCollection` dedup at
+        // add time. See `_bmAddItemSync` for rationale.
+        if (!collectionKey) return false;
         let label = "";
         try { label = collection.name || ""; } catch (_) {}
         this._bmDoc.bookmarks.push({
@@ -846,7 +1480,8 @@ class _BookmarksMixin {
 
     _bmAddLibrarySync(libraryID: number) {
         if (!this._bmDoc || typeof libraryID !== "number") return false;
-        if (this._bmHasLibrary(libraryID)) return false;
+        // Firefox-style list semantics — no `_bmHasLibrary` dedup at
+        // add time. See `_bmAddItemSync` for rationale.
         let label = "";
         try { const lib: any = Zotero.Libraries.get(libraryID); label = lib && lib.name; } catch (_) {}
         this._bmDoc.bookmarks.push({
@@ -1115,6 +1750,19 @@ class _BookmarksMixin {
     async _bmActivateBookmark(bm: any, event: any) {
         try {
             if (!bm) return;
+            // URL / app-link bookmarks: route through Weavero's
+            // `_launchURL`, the same helper note-editor / annotation
+            // clicks use. It honours `weavero.enableAppLinksSkipConfirm`
+            // (when set, bypasses Firefox's "Allow this site to open
+            // the <scheme> link with <app>?" dialog by calling
+            // `handlerInfo.launchWithURI` directly), and intercepts
+            // `zotero://` URLs to dispatch into ZoteroPane / Reader /
+            // openNote without prompting.
+            if (bm.type === "url" && bm.url) {
+                try { this._launchURL(String(bm.url)); }
+                catch (e) { Zotero.debug("[Weavero] url-bm launch err: " + e); }
+                return;
+            }
             if (event && (event.ctrlKey || event.metaKey)) {
                 await this._bmShowInLibrary(bm);
                 return;
@@ -1171,10 +1819,12 @@ class _BookmarksMixin {
                 }
                 return;
             }
-            // A cross-document location bookmark (text selection or pinned
-            // position) has no annotation item to reveal — show its source
-            // attachment FILE instead (the "parent" of the location).
-            if ((bm.type === "text" || bm.type === "position") && bm.srcItemKey) {
+            // A cross-document location bookmark (text selection, pinned
+            // position, or whole-page bookmark) has no annotation item to
+            // reveal — show its source attachment FILE instead (the
+            // "parent" of the location).
+            if ((bm.type === "text" || bm.type === "position"
+                    || bm.type === "page") && bm.srcItemKey) {
                 const _aid = Zotero.Items.getIDFromLibraryAndKey(bm.srcLibraryID, bm.srcItemKey);
                 if (!_aid) return;
                 let att: any = null;
@@ -1210,10 +1860,11 @@ class _BookmarksMixin {
         try {
             if (!bm || bm.type === "collection" || bm.type === "folder"
                 || bm.type === "library" || bm.type === "treerow") return null;
-            // Cross-document location bookmark (text selection or pinned
-            // position dragged from another reader): open its SOURCE attachment
-            // at the stored position.
-            if ((bm.type === "text" || bm.type === "position") && bm.srcItemKey) {
+            // Cross-document location bookmark (text selection, pinned
+            // position, or whole-page bookmark dragged from another reader):
+            // open its SOURCE attachment at the stored position.
+            if ((bm.type === "text" || bm.type === "position"
+                    || bm.type === "page") && bm.srcItemKey) {
                 const sid = Zotero.Items.getIDFromLibraryAndKey(bm.srcLibraryID, bm.srcItemKey);
                 if (!sid) return null;
                 let srcAtt: any = null;
@@ -1224,7 +1875,20 @@ class _BookmarksMixin {
                 else if (srcAtt.isEPUBAttachment && srcAtt.isEPUBAttachment()) tl = "EPUB";
                 else if (srcAtt.isSnapshotAttachment && srcAtt.isSnapshotAttachment()) tl = "Snapshot";
                 else return null;
-                return { attachment: srcAtt, location: bm.position ? { position: bm.position } : null, typeLabel: tl };
+                // Whole-page bookmark: scroll to that page index (no rects).
+                let location: any = null;
+                if (bm.type === "page") {
+                    const pi = (bm.location && Number.isInteger(bm.location.pageIndex))
+                        ? bm.location.pageIndex
+                        : (bm.position && Number.isInteger(bm.position.pageIndex))
+                            ? bm.position.pageIndex
+                            : null;
+                    if (pi != null) location = { pageIndex: pi };
+                }
+                else if (bm.position) {
+                    location = { position: bm.position };
+                }
+                return { attachment: srcAtt, location, typeLabel: tl };
             }
             const iid = Zotero.Items.getIDFromLibraryAndKey(bm.libraryID, bm.itemKey);
             if (!iid) return null;
@@ -1260,8 +1924,41 @@ class _BookmarksMixin {
         try {
             const t = await this._bmResolveOpenTarget(bm);
             if (!t) return;
-            await Zotero.Reader.open(t.attachment.id, t.location || null,
+            const opened: any = await Zotero.Reader.open(t.attachment.id, t.location || null,
                 { openInWindow: !!openInWindow });
+            // Position bookmarks drop a 📌 marker — show it after the
+            // reader is ready. `Zotero.Reader.open` returns three things:
+            //   1. A Reader instance (a new tab/window was created)
+            //   2. An existing Reader (already-loaded item is focused)
+            //   3. `undefined` — an UNLOADED tab is being selected and
+            //      its Reader instance is created asynchronously by the
+            //      tab-select handler. In case 3, polling
+            //      `_readers.find(itemID)` is the only way to pick up
+            //      the instance once it lands. Then `_wvShowPinWhenReady`
+            //      takes over (waits for pages to render).
+            if (bm && bm.type === "position" && bm.position) {
+                const itemID = t.attachment && t.attachment.id;
+                const win: any = Zotero.getMainWindow();
+                const st: any = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                const tryShow = (tries: number) => {
+                    let r: any = opened;
+                    if (!r) {
+                        try {
+                            const readers: any = (Zotero.Reader as any)._readers;
+                            if (Array.isArray(readers)) {
+                                r = readers.find((rd: any) => rd && rd.itemID === itemID) || null;
+                            }
+                            if (!r) {
+                                const tabID = win && win.Zotero_Tabs && win.Zotero_Tabs.selectedID;
+                                if (tabID) r = Zotero.Reader.getByTabID(tabID);
+                            }
+                        } catch (_) {}
+                    }
+                    if (r) { try { this._wvShowPinWhenReady(r, bm.position, bm.id); } catch (_) {} return; }
+                    if (tries < 40) st(() => tryShow(tries + 1), 150);
+                };
+                tryShow(0);
+            }
         } catch (e) {
             Zotero.debug("[Weavero] _bmOpenInReader err: " + e);
         }
@@ -1287,12 +1984,53 @@ class _BookmarksMixin {
         return "chrome://zotero/skin/collection-tree/16/" + theme + "/" + name;
     }
 
+    /** Title of the parent attachment that an in-doc location bookmark
+     *  (`position`/`page`/`text`) points into. Returns `null` when the
+     *  bookmark isn't an in-doc type, doesn't carry a `srcItemKey`, or
+     *  the item can't be resolved (e.g. detached attachment, foreign
+     *  library not yet loaded). Used to render the "in *Foo*" subtitle
+     *  on library-store rows. */
+    _bmParentAttachmentTitle(bm: any): string | null {
+        try {
+            if (!bm || !bm.srcItemKey) return null;
+            if (bm.type !== "position" && bm.type !== "page" && bm.type !== "text") return null;
+            const id = Zotero.Items.getIDFromLibraryAndKey(bm.srcLibraryID, bm.srcItemKey);
+            if (!id) return null;
+            const it: any = Zotero.Items.get(id);
+            if (!it) return null;
+            // Prefer the parent regular item's display title (e.g. the
+            // paper) when the attachment is filed under one; fall back
+            // to the attachment's own title (linked PDFs, standalone
+            // attachments). Mirrors `_bmShowInLibrary`'s walk-up logic.
+            let titleSource: any = it;
+            try {
+                if (it.parentItem) titleSource = it.parentItem;
+                else if (it.parentItemID) {
+                    const p = Zotero.Items.get(it.parentItemID);
+                    if (p) titleSource = p;
+                }
+            } catch (_) {}
+            const t = (typeof titleSource.getDisplayTitle === "function")
+                ? titleSource.getDisplayTitle()
+                : (titleSource.getField && titleSource.getField("title")) || "";
+            return String(t || "") || null;
+        } catch (_) { return null; }
+    }
+
     /** `{ image, fill? }` for a bookmark row. */
     _bmIconInfo(bm: any, win: any): any {
         try {
             if (bm.type === "library") {
                 return { image: this._bmShowInLibraryIcon(bm, win) };
             }
+            // In-doc location bookmarks: same type-specific glyph the
+            // reader uses (RP_PIN_EMOJI / RP_BM_RIBBON / RP_TEXT_SVG)
+            // so the same bookmark looks identical in both panels. The
+            // "in <attachment>" suffix already conveys which file it
+            // belongs to — no need to mirror that in the icon.
+            if (bm.type === "position") return { image: BM_PIN_ICON };
+            if (bm.type === "page")     return { image: BM_PAGE_ICON, fill: "currentColor" };
+            if (bm.type === "text")     return { image: BM_TEXT_ICON, fill: "currentColor" };
             if (bm.type === "treerow") {
                 const theme = this._bmIsDark(win) ? "dark" : "light";
                 const map: { [k: string]: string } = {
@@ -1305,6 +2043,33 @@ class _BookmarksMixin {
             if (bm.type === "collection") {
                 const theme = this._bmIsDark(win) ? "dark" : "light";
                 return { image: "chrome://zotero/skin/collection-tree/16/" + theme + "/collection.svg" };
+            }
+            // URL bookmarks: pick a scheme-aware icon AND bake the
+            // matching link colour into the SVG stroke so the `<img>`
+            // glyph matches the row label's colour. (img elements don't
+            // inherit `currentColor`, so we substitute the explicit
+            // hex at data-URI build time.)
+            if (bm.type === "url") {
+                const cls = this._urlLinkClass(String(bm.url || ""));
+                const dark = this._bmIsDark(win);
+                const colorFor = (c: string) => {
+                    if (c === "wv-link-http")    return dark ? "#8ab4f8" : "#1a73e8";
+                    if (c === "wv-link-zotero")  return dark ? "#cd853f" : "#8b4513";
+                    return dark ? "#c084fc" : "#9333ea";          // app
+                };
+                const svgFor = (c: string) => {
+                    if (c === "wv-link-http")    return URL_GLOBE_SVG;
+                    if (c === "wv-link-app")     return URL_EXTERNAL_SVG;
+                    return null;
+                };
+                const tinted = (svgFor(cls) || "").replace(
+                    /currentColor/g, colorFor(cls));
+                if (tinted) {
+                    return { image: "data:image/svg+xml;utf8,"
+                        + encodeURIComponent(tinted) };
+                }
+                // zotero:// urls that escaped auto-conversion — let the
+                // fallback chain (BM_FALLBACK_DATA_URI) kick in below.
             }
             const item: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
             if (item) {
@@ -1330,6 +2095,27 @@ class _BookmarksMixin {
         try {
             win = win || Zotero.getMainWindow();
             if (!win || win.closed) return;
+            // Gate on the Bookmarks master + library sub-toggle. The
+            // call sites already check this, but observer-driven
+            // re-binds and other indirect callers route through here,
+            // so this is the canonical pref gate.
+            if (!this._getEnableLibraryBookmarks()) {
+                this._teardownBookmarksToolbarButton(win);
+                return;
+            }
+            // Auto-hide-when-empty: when the pref is on and the library
+            // bookmarks store has zero entries, hide the toolbar button
+            // until something is added. `_bmDoc` may not be loaded yet
+            // at first window-open — treat "not yet loaded" as "show"
+            // (the button reappears after persist if the store is empty;
+            // see the `_bmPersist` hook below).
+            if (this._getAutoHideEmptyLibraryBookmarks()
+                    && this._bmDoc
+                    && Array.isArray(this._bmDoc.bookmarks)
+                    && this._bmDoc.bookmarks.length === 0) {
+                this._teardownBookmarksToolbarButton(win);
+                return;
+            }
             const doc = win.document;
             if (!doc) return;
             const toolbar = doc.getElementById("zotero-collections-toolbar");
@@ -1414,15 +2200,20 @@ class _BookmarksMixin {
     // ---- UI: the dropdown panel -------------------------------------------
 
     _bmEnsurePopupStyles(doc: any) {
-        if (doc.getElementById(BM_STYLE_ID)) return;
-        const style = doc.createElementNS(NS_HTML, "style");
-        style.id = BM_STYLE_ID;
-        // Include the rich-hover-card CSS so library-pane bookmark rows can
-        // show the same details popup the reader does (anchor: the bookmark
-        // row; rendered in the popup's HTML body via _wvReaderShowBmHoverCard
-        // with reader=null).
+        let style: any = doc.getElementById(BM_STYLE_ID);
+        if (!style) {
+            style = doc.createElementNS(NS_HTML, "style");
+            style.id = BM_STYLE_ID;
+            (doc.documentElement || doc).appendChild(style);
+        }
+        // Always re-assign textContent so a plugin reload picks up CSS
+        // changes — the chrome window itself persists across reloads,
+        // so a stale `<style>` from a previous build would otherwise
+        // shadow new rules until the user restarted Zotero. Cheap (a
+        // string assignment) so re-running on every popup open is fine.
+        // Includes the rich-hover-card CSS so library-pane rows can show
+        // the same details popup the reader does.
         style.textContent = BM_POPUP_CSS + BM_HOVERCARD_CSS;
-        (doc.documentElement || doc).appendChild(style);
     }
 
     /** Toggle the bookmarks dropdown: a XUL <panel> hosting an HTML list. */
@@ -1452,6 +2243,29 @@ class _BookmarksMixin {
         this._bmRenderPopupList(win);
         this._bmInstallDismiss(win, panel, anchorBtn);
         panel.openPopup(anchorBtn, "after_start", 0, 0, false, false);
+        // Firefox-bookmarks style: extend the popup vertically to fill
+        // the space from below the anchor button down to ~20px above
+        // the window's bottom. Computed at popup-open time (after the
+        // panel is laid out so getBoundingClientRect is valid). The
+        // CSS max-height: 460px stays as a fallback if the calc fails.
+        const fitHeight = () => {
+            try {
+                const rect = panel.getBoundingClientRect();
+                const winHeight = win.innerHeight
+                    || (doc.documentElement && doc.documentElement.clientHeight)
+                    || 800;
+                const avail = winHeight - rect.top - 20;
+                if (avail > 200) inner.style.maxHeight = avail + "px";
+            } catch (_) {}
+        };
+        // Run twice: once on next tick (panel laid out), once after
+        // resize (window-resize while open keeps it filling the space).
+        win.setTimeout(fitHeight, 0);
+        const onResize = () => fitHeight();
+        try { win.addEventListener("resize", onResize); } catch (_) {}
+        panel.addEventListener("popuphidden", () => {
+            try { win.removeEventListener("resize", onResize); } catch (_) {}
+        }, { once: true });
         // First open after a restart: a referenced library may not be
         // loaded yet → blank icons. Load them, then refresh if still open.
         this._bmPreloadTargets().then(() => {
@@ -1463,6 +2277,11 @@ class _BookmarksMixin {
         win = win || Zotero.getMainWindow();
         const doc = win && win.document;
         if (!doc) return;
+        // Filter is transient — reset so the next open starts clean.
+        this._bmCloseLibChipPopup(win);
+        this._bmLibResetChipState();
+        this._bmLibFilterText = "";
+        this._bmLibSearchOpen = false;
         // Cancel any pending hover-card show timer (set by a row's mouseenter)
         // and remove a currently-shown card. Otherwise a 450ms timer queued
         // just before close could fire post-removal and reattach to doc.body.
@@ -1487,6 +2306,11 @@ class _BookmarksMixin {
             try {
                 const t = e.target;
                 if (panel.contains && panel.contains(t)) return;
+                // Clicks inside the side chip-filter popup (a sibling XUL
+                // panel, not a child of the bookmarks panel) shouldn't
+                // dismiss the bookmarks popup.
+                const chipPanel = doc.getElementById(BM_CHIP_POPUP_ID);
+                if (chipPanel && chipPanel.contains && chipPanel.contains(t)) return;
                 if (t && t.closest && (t.closest(".wv-bm-flyout")
                     || t.closest("#" + BM_ROW_MENU_ID))) return;
                 if (anchorBtn && (t === anchorBtn
@@ -1536,7 +2360,7 @@ class _BookmarksMixin {
             actions.appendChild(b);
             return b;
         };
-        mkIconBtn("chrome://zotero/skin/20/universal/plus.svg", "Add Bookmarks…", () => {
+        mkIconBtn(BM_ADD_ICON, "Add Bookmarks…", () => {
             this._bmHidePopup(win);
             this._bmAddBookmarksDialog();
         });
@@ -1544,7 +2368,131 @@ class _BookmarksMixin {
             const name = this._bmPromptName(win, "New Folder", "New Folder");
             if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
         });
+
+        // Funnel button — toggles the filter input row below. Mirrors the
+        // reader-sidebar bookmarks filter affordance; for the library list
+        // the filter is text-only (label substring match), so the input is
+        // the whole UI. Push the funnel to the right so it doesn't crowd
+        // the +/folder add buttons. Uses the SAME hollow funnel SVG as
+        // the reader sidebar so the affordance reads identically.
+        const filterBtn = doc.createElementNS(NS_HTML, "button");
+        filterBtn.className = "wv-bm-iconbtn";
+        filterBtn.setAttribute("title", "Filter bookmarks");
+        // Render the funnel exactly like the +/folder icons: an <img>
+        // pointing at a data:image/svg+xml URI. Inline SVG via
+        // createElementNS works in HTML iframes but Gecko's chrome layer
+        // can refuse to give it intrinsic size in XUL panels, leaving
+        // the button collapsed even with explicit width/height. The img
+        // path is bulletproof and lets the existing `.wv-bm-iconbtn img`
+        // rule (with `-moz-context-properties: fill, stroke` + the
+        // var(--fill-secondary) tint) handle sizing and color.
+        const funnelSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
+            + '<path fill="context-fill" fill-rule="evenodd" clip-rule="evenodd" d="M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z"/>'
+            + '</svg>';
+        const funnelImg = doc.createElementNS(NS_HTML, "img");
+        funnelImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(funnelSvg));
+        funnelImg.setAttribute("width", "20");
+        funnelImg.setAttribute("height", "20");
+        filterBtn.appendChild(funnelImg);
+        // ▾ chevron — matches the library filter popup's
+        // toolbarbutton-menu-dropmarker, signalling that the button
+        // opens a popup (same affordance as popups 1 & 2). Inline
+        // 8×8 SVG via data: URI so it inherits `currentColor` through
+        // -moz-context-properties on the image.
+        const chevSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" fill="context-fill">'
+            + '<path d="M1 2.5h6L4 6z"/></svg>';
+        const chevImg = doc.createElementNS(NS_HTML, "img");
+        chevImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(chevSvg));
+        chevImg.setAttribute("width", "8");
+        chevImg.setAttribute("height", "8");
+        chevImg.className = "wv-bm-funnel-chev";
+        filterBtn.appendChild(chevImg);
+        filterBtn.addEventListener("click", () => {
+            const open = !!doc.getElementById(BM_CHIP_POPUP_ID);
+            if (open) {
+                this._bmCloseLibChipPopup(win);
+                this._bmLibResetChipState();
+                this._bmRefreshPopupList(win);
+            } else {
+                this._bmOpenLibChipPopup(win, filterBtn);
+            }
+            filterBtn.classList.toggle("wv-active",
+                !!doc.getElementById(BM_CHIP_POPUP_ID) || this._bmLibChipsActive());
+            // wv-active = popup-open OR any chip selected (sticky bg
+            // tint). wv-bm-lib-filter-active = ONLY chip selected (blue
+            // dot). Two states because the user needs the dot AFTER
+            // closing the popup, when the bg-tint also clears.
+            filterBtn.classList.toggle("wv-bm-lib-filter-active",
+                this._bmLibChipsActive());
+        });
+        if (doc.getElementById(BM_CHIP_POPUP_ID) || this._bmLibChipsActive()) {
+            filterBtn.classList.add("wv-active");
+        }
+        if (this._bmLibChipsActive()) {
+            filterBtn.classList.add("wv-bm-lib-filter-active");
+        }
+        // Search button — toggles a search input row below the actions
+        // row. Sits between +/folder and the funnel (data:image/svg+xml
+        // path mirrors the funnel approach so the icon picks up the
+        // same `-moz-context-properties: fill,stroke` tint as +/folder).
+        const searchBtn = doc.createElementNS(NS_HTML, "button");
+        // First of the right-grouped buttons → carry the spacer so the
+        // gap sits between the +/folder add-cluster and the search +
+        // funnel filter-cluster (instead of between search and funnel).
+        searchBtn.className = "wv-bm-iconbtn wv-bm-funnel-spacer";
+        searchBtn.setAttribute("title", "Search bookmarks");
+        // Use Zotero's native `magnifier.svg` (the same icon the
+        // library's main quick-search field shows) so the search
+        // affordance reads consistently across the UI. `<img>` in the
+        // chrome window can load chrome:// directly — no data URI
+        // dance — and the existing `.wv-bm-iconbtn img` rule themes
+        // it via `-moz-context-properties: fill, stroke`.
+        const searchImg = doc.createElementNS(NS_HTML, "img");
+        searchImg.setAttribute("src", "chrome://zotero/skin/16/universal/magnifier.svg");
+        searchImg.setAttribute("width", "20");
+        searchImg.setAttribute("height", "20");
+        searchBtn.appendChild(searchImg);
+        searchBtn.addEventListener("click", () => {
+            this._bmLibSearchOpen = !this._bmLibSearchOpen;
+            if (!this._bmLibSearchOpen) this._bmLibFilterText = "";
+            this._bmRenderPopupList(win);
+        });
+        if (this._bmLibSearchOpen || (this._bmLibFilterText && this._bmLibFilterText.length)) {
+            searchBtn.classList.add("wv-active");
+        }
+        actions.appendChild(searchBtn);
+        actions.appendChild(filterBtn);
         inner.appendChild(actions);
+
+        // Search input — only rendered when the user has toggled the
+        // search button open. Live-filters labels; composes with the
+        // chip filter (both must match). `_bmRefreshPopupList` only
+        // rebuilds the list, so the input keeps focus + caret on every
+        // keystroke.
+        if (this._bmLibSearchOpen) {
+            const searchRow = doc.createElementNS(NS_HTML, "div");
+            searchRow.className = "wv-bm-search";
+            const searchInput: any = doc.createElementNS(NS_HTML, "input");
+            searchInput.className = "wv-bm-search-input";
+            searchInput.setAttribute("type", "text");
+            searchInput.setAttribute("placeholder", "Search bookmarks…");
+            searchInput.value = this._bmLibFilterText || "";
+            searchInput.addEventListener("input", () => {
+                this._bmLibFilterText = searchInput.value;
+                this._bmRefreshPopupList(win);
+            });
+            searchInput.addEventListener("keydown", (e: any) => {
+                if (e.key === "Escape" && searchInput.value) {
+                    e.stopPropagation();
+                    searchInput.value = "";
+                    this._bmLibFilterText = "";
+                    this._bmRefreshPopupList(win);
+                }
+            });
+            searchRow.appendChild(searchInput);
+            inner.appendChild(searchRow);
+            win.setTimeout(() => { try { searchInput.focus(); searchInput.select(); } catch (_) {} }, 0);
+        }
 
         const sep = doc.createElementNS(NS_HTML, "div");
         sep.className = "wv-bm-sep";
@@ -1554,12 +2502,68 @@ class _BookmarksMixin {
         list.className = "wv-bm-scroll";
         inner.appendChild(list);
 
+        this._bmRenderPopupBody(doc, win, list);
+    }
+
+    /** Render just the scrollable list (folders/items or filtered flat list)
+     *  into the existing container — preserves the search input's focus
+     *  and caret while the user types. Called from the live `input` event;
+     *  full re-render via `_bmRenderPopupList` only when the filter UI
+     *  itself toggles. */
+    _bmRefreshPopupList(win?: any) {
+        win = win || Zotero.getMainWindow();
+        const doc: any = win && win.document;
+        if (!doc) return;
+        const inner = doc.getElementById(BM_INNER_ID);
+        if (!inner) return;
+        const list = inner.querySelector(".wv-bm-scroll");
+        if (!list) return;
+        this._bmCloseAllFlyouts();
+        this._bmRenderPopupBody(doc, win, list);
+    }
+
+    /** Populate the bookmark list container — branches by whether any
+     *  filter (text or chip) is active. Inactive → normal one-level
+     *  tree (folders open as cascading flyouts). Active → walk the
+     *  entire tree and show matching item rows as a flat list. When
+     *  both text and chip filters are active, BOTH must match. */
+    _bmRenderPopupBody(doc: any, win: any, list: any) {
+        while (list.firstChild) list.firstChild.remove();
         const root = this._bmGetAll();
         if (!root.length) {
             const empty = doc.createElementNS(NS_HTML, "div");
             empty.className = "wv-bm-empty";
             empty.textContent = "No bookmarks yet. Use ＋ Add Bookmarks…";
             list.appendChild(empty);
+            return;
+        }
+        const q = (this._bmLibFilterText || "").trim().toLowerCase();
+        const chipsOn = this._bmLibChipsActive();
+        if (q || chipsOn) {
+            const st = chipsOn ? this._bmLibChipState() : null;
+            let any = false;
+            const walk = (arr: any[]) => {
+                for (const n of (arr || [])) {
+                    if (!n) continue;
+                    if (n.type === "folder") { walk(n.children || []); continue; }
+                    if (q) {
+                        const t = String(n.label || "").toLowerCase();
+                        if (t.indexOf(q) < 0) continue;
+                    }
+                    if (st && !this._wvBmNodeMatchesChips(n, st)) continue;
+                    this._bmRenderItemRow(doc, win, list, n, 0);
+                    any = true;
+                }
+            };
+            walk(root);
+            if (!any) {
+                const empty = doc.createElementNS(NS_HTML, "div");
+                empty.className = "wv-bm-search-empty";
+                empty.textContent = q
+                    ? "No bookmarks match \"" + (this._bmLibFilterText || "") + "\"."
+                    : "No bookmarks match the current filter.";
+                list.appendChild(empty);
+            }
             return;
         }
         this._bmRenderInto(doc, win, list, root, 0);
@@ -1747,8 +2751,27 @@ class _BookmarksMixin {
 
         const label = doc.createElementNS(NS_HTML, "div");
         label.className = "wv-bm-label";
-        label.textContent = bm.label || bm.itemKey || bm.collectionKey;
-        label.setAttribute("title", label.textContent);
+        // URL bookmarks inherit the same scheme-coloured link palette
+        // Weavero uses in notes / reader / item pane.
+        if (bm.type === "url") {
+            const cls = this._urlLinkClass(String(bm.url || ""));
+            if (cls) label.classList.add(cls);
+        }
+        const labelText = bm.label || bm.itemKey || bm.collectionKey;
+        label.textContent = labelText;
+        // In-doc location bookmarks (`position`/`page`/`text`) in the
+        // library store get an inline "— in <attachment>" suffix so the
+        // row reads as "spot — in <doc>" without breaking row rhythm.
+        const parentTitle = this._bmParentAttachmentTitle(bm);
+        if (parentTitle) {
+            const sub = doc.createElementNS(NS_HTML, "span");
+            sub.className = "wv-bm-sublabel";
+            sub.textContent = " — in " + parentTitle;
+            label.appendChild(sub);
+            label.setAttribute("title", labelText + " — in " + parentTitle);
+        } else {
+            label.setAttribute("title", labelText);
+        }
 
         row.appendChild(icon);
         row.appendChild(label);
@@ -1795,17 +2818,32 @@ class _BookmarksMixin {
         folderIcon.setAttribute("width", "16");
         folderIcon.setAttribute("height", "16");
         folderIcon.setAttribute("style",
-            "flex:0 0 auto;-moz-context-properties:stroke;stroke:currentColor;fill:none;");
+            "flex:0 0 auto;-moz-context-properties:fill;fill:currentColor;");
 
         const label = doc.createElementNS(NS_HTML, "div");
         label.className = "wv-bm-label";
         label.textContent = bm.name || "Folder";
         label.setAttribute("title", label.textContent);
 
-        // Right-side arrow, Firefox-style (the flyout opens on hover/click).
+        // Right-side chevron, Firefox-style (the flyout opens on hover/click).
+        // Built with createElementNS — innerHTML doesn't auto-set the SVG
+        // namespace in this XHTML/XUL context so a raw <svg> string wouldn't
+        // render. 12px SVG, same shape as RP_CHEV_RIGHT, themed via
+        // currentColor so it tracks the row's text colour.
         const arrow = doc.createElementNS(NS_HTML, "span");
         arrow.className = "wv-bm-arrow";
-        arrow.textContent = "›";
+        const NS_SVG = "http://www.w3.org/2000/svg";
+        const arrowSvg = doc.createElementNS(NS_SVG, "svg");
+        arrowSvg.setAttribute("viewBox", "0 0 16 16");
+        arrowSvg.setAttribute("fill", "none");
+        arrowSvg.setAttribute("stroke", "currentColor");
+        arrowSvg.setAttribute("stroke-width", "1.5");
+        arrowSvg.setAttribute("stroke-linecap", "round");
+        arrowSvg.setAttribute("stroke-linejoin", "round");
+        const arrowPath = doc.createElementNS(NS_SVG, "path");
+        arrowPath.setAttribute("d", "M6 4l4 4-4 4");
+        arrowSvg.appendChild(arrowPath);
+        arrow.appendChild(arrowSvg);
 
         row.appendChild(folderIcon);
         row.appendChild(label);

@@ -466,12 +466,49 @@ class WeaveroPlugin {
                 return;
             }
             if (url.startsWith("zotero://note/")) {
-                let key, lib;
-                if (parts[0] === "u")      { lib = Zotero.Libraries.userLibraryID; key = parts[1]; }
-                else if (parts[0] === "g" || parts[0] === "groups")
-                                           { lib = Zotero.Groups.getLibraryIDFromGroupID(Number(parts[1]))
-                                               || Zotero.Libraries.userLibraryID; key = lastKey; }
-                else                       { lib = Zotero.Libraries.userLibraryID; key = lastKey; }
+                // If another plugin (Better Notes) has registered a
+                // `zotero://note` extension on the protocol handler, defer
+                // to it via Zotero.launchURL — it handles the full URL
+                // feature set (`?line=N`, `?section=NAME`, `?ignore=1`,
+                // `#selectionText`) that Better Notes-created links rely on.
+                try {
+                    const proto: any = Services.io.getProtocolHandler("zotero");
+                    const ext = proto && proto.wrappedJSObject
+                        && proto.wrappedJSObject._extensions
+                        && proto.wrappedJSObject._extensions["zotero://note"];
+                    if (ext) {
+                        Zotero.launchURL(url);
+                        return;
+                    }
+                } catch (e) {}
+                // No external `zotero://note` extension registered — handle
+                // the basic note-open ourselves. URL format (matches the
+                // shape Better Notes emits, so legacy links keep working):
+                //   zotero://note/<u | groupID | "g" | "groups"/<id>>/<key>/
+                // Parse with the same `pop noteKey, pop libToken` pattern
+                // Better Notes uses.
+                const noteKey = parts[parts.length - 1];
+                const libToken = parts.length >= 2 ? parts[parts.length - 2] : "";
+                let key: string | undefined;
+                let lib: number | undefined;
+                if (libToken === "u") {
+                    lib = Zotero.Libraries.userLibraryID;
+                    key = noteKey;
+                }
+                else if (libToken === "g" || libToken === "groups") {
+                    lib = Zotero.Groups.getLibraryIDFromGroupID(Number(parts[parts.length - 1]))
+                        || Zotero.Libraries.userLibraryID;
+                    key = lastKey;
+                }
+                else if (/^\d+$/.test(libToken)) {
+                    lib = Zotero.Groups.getLibraryIDFromGroupID(Number(libToken))
+                        || Zotero.Libraries.userLibraryID;
+                    key = noteKey;
+                }
+                else {
+                    lib = Zotero.Libraries.userLibraryID;
+                    key = lastKey;
+                }
                 if (!key) return;
                 const note = Zotero.Items.getByLibraryAndKey(lib, key);
                 if (!note) {
@@ -600,6 +637,18 @@ class WeaveroPlugin {
             const v = Zotero.Prefs.get("weavero.enableReaderViewIcons");
             return v === undefined ? true : !!v;
         } catch(e) { return true; }
+    }
+    /** Experimental, standalone (NOT gated by any master): when on, clicking a
+     *  PDF outline entry flashes the target HEADING TEXT — recovered from the
+     *  page for embedded outlines (which only store a point), or used directly
+     *  for extracted ones — with a consistent reset-on-each-click timer that
+     *  also works around Zotero's native rapid-click highlight bug. Read at
+     *  click time by the reader navigate hook. Default OFF. */
+    _getEnableOutlineTextHighlight() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableOutlineTextHighlight");
+            return v === undefined ? false : !!v;
+        } catch(e) { return false; }
     }
     /** Master switch for inline markdown rendering inside the popup.
      *  Default true. When false: _commentHasIconableContent ignores markdown
@@ -818,6 +867,73 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    /** Tab master for the Bookmarks tab. Default ON.
+     *  Gates both library-side (collections-toolbar dropdown +
+     *  collections-tree menu) and reader-side (sidebar Bookmarks tab)
+     *  affordances via the two sub-prefs below. */
+    _getEnableBookmarks() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableBookmarks");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    /** Library bookmarks — collections-toolbar Bookmarks button + dropdown,
+     *  plus the "Bookmark collection" right-click entry. Default ON. */
+    _getEnableLibraryBookmarks() {
+        if (!this._getEnableBookmarks()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableLibraryBookmarks");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    /** Document/reader bookmarks — Bookmarks tab in the reader sidebar
+     *  for in-document location bookmarks. Default ON. */
+    _getEnableReaderBookmarks() {
+        if (!this._getEnableBookmarks()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableReaderBookmarks");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    /** When ON, hide the Reader Bookmarks tab while the current
+     *  attachment has zero bookmarks (combined across the local
+     *  "In this document" and global "Elsewhere in Zotero" sections).
+     *  Default ON — keeps the sidebar uncluttered for documents the
+     *  user hasn't bookmarked into; flip OFF to keep the tab as a
+     *  permanent drop target. */
+    _getAutoHideEmptyReaderBookmarks() {
+        if (!this._getEnableReaderBookmarks()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.autoHideEmptyReaderBookmarks");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    /** When ON, hide the collections-pane toolbar Bookmarks button
+     *  while the library has zero bookmarks. Default OFF — the
+     *  button is one of the main entry points for library bookmarks,
+     *  so users typically want it visible even when empty. Flip ON
+     *  to declutter the toolbar until the first bookmark lands. */
+    _getAutoHideEmptyLibraryBookmarks() {
+        if (!this._getEnableLibraryBookmarks()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.autoHideEmptyLibraryBookmarks");
+            return v === undefined ? false : !!v;
+        } catch (e) { return false; }
+    }
+
+    /** When ON, the Library scope tab appears in the reader sidebar's
+     *  Bookmarks panel so library bookmarks can be browsed alongside
+     *  in-document ones (Ctrl-click to merge views). Default ON —
+     *  matches existing behaviour; flip OFF to keep the reader panel
+     *  document-only. */
+    _getShowLibraryBookmarksInReader() {
+        if (!this._getEnableBookmarks()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.showLibraryBookmarksInReader");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
 
     // ---- Group 1: zotero:// link rendering toggle ----
     // Mirrors the existing enableAppLinks master: when off, zotero://
@@ -896,6 +1012,20 @@ class WeaveroPlugin {
             const v = Zotero.Prefs.get("weavero.enableLibrariesHighlight");
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
+    }
+
+    // ---- Group 3: External viewer (was Group 1; moved to Visual extras) ----
+    /** "Open in External Viewer" right-click menu entry that launches
+     *  the item's best attachment with the OS default application
+     *  (replaces the standalone Open PDF for Zotero plugin). Default OFF
+     *  — opt-in, since Zotero's own reader is most users' default.
+     *  Tab 3 (Visual extras) — gated by enableVisualExtras. */
+    _getEnableOpenExternalViewer() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableOpenExternalViewer");
+            return v === undefined ? false : !!v;
+        } catch (e) { return false; }
     }
 
     // ---- Group 2: Filters ----
@@ -2289,19 +2419,40 @@ class WeaveroPlugin {
         this._setupCollectionsContextMenu();
         // 7b-quater. Bookmark icon in the collections-pane toolbar
         // (Obsidian-style). Retries internally if the toolbar isn't
-        // in the DOM yet on a cold start.
-        this._setupBookmarksToolbarButton();
+        // in the DOM yet on a cold start. Gated by the Bookmarks
+        // master + library sub-toggle (both default ON).
+        if (this._getEnableLibraryBookmarks()) {
+            this._setupBookmarksToolbarButton();
+        }
         // 7b-ter. Reader-tab right-click menu — adds Copy Select Link /
         // Copy Open Link for the tab's attachment (via Zotero.MenuManager;
         // no-op on builds without that API).
         this._registerTabContextMenu();
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
+        // PDF Thumbnails right-click menu — "Add Bookmark to This Page"
+        // and "Copy Link to This Page" via the Zotero.Reader plugin API.
+        // One global registration covers every open reader (the hook is
+        // not per-window).
+        try { this._setupThumbnailContextMenu(); }
+        catch (e) { Zotero.debug("[Weavero] init thumbnail menu err: " + e); }
+        // popupshowing listener that moves "Open in External Viewer" from
+        // the bottom of the tab popup (MenuManager appends there) up to
+        // just below "Show in Library". Per-window.
+        try {
+            const wins = Zotero.getMainWindows
+                ? Zotero.getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) this._setupTabExternalRepositioner(w);
+        } catch (e) { Zotero.debug("[Weavero] tab-ext repositioner init err: " + e); }
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
         // see them, so wire a Window Mediator listener that catches
         // note.xhtml windows as they open.
         this._setupNoteWindowListener();
+        // Software Update wizard — appends the running Zotero version
+        // to the dialog (the built-in dialog never displays it).
+        this._setupUpdateWindowListener();
         // Initial pass over any note surface that's already mounted
         // when the plugin starts (e.g. user enabled the toggle, then
         // restarted Zotero with a note already selected).
@@ -2707,15 +2858,100 @@ class WeaveroPlugin {
                             Zotero.debug("[Weavero] tab-3 master toggle err: " + e);
                         }
                     }
+                    // Bookmarks — master + the two sub-toggles + the
+                    // auto-hide-when-empty opt-in. Re-evaluate both
+                    // surfaces on every change since the master cascades.
+                    if (data === "extensions.zotero.weavero.enableBookmarks"
+                        || data === "extensions.zotero.weavero.enableLibraryBookmarks"
+                        || data === "extensions.zotero.weavero.enableReaderBookmarks"
+                        || data === "extensions.zotero.weavero.showLibraryBookmarksInReader"
+                        || data === "extensions.zotero.weavero.autoHideEmptyLibraryBookmarks"
+                        || data === "extensions.zotero.weavero.autoHideEmptyReaderBookmarks") {
+                        try {
+                            // Library bookmarks: per-window toolbar button +
+                            // collections-pane menu. Tear down everywhere
+                            // and rebuild only when the effective gate is on
+                            // — the setup early-returns when off, but we still
+                            // need the explicit teardown so a flip-to-off
+                            // strips the existing button.
+                            const wantLib = this._getEnableLibraryBookmarks();
+                            const wins = Zotero.getMainWindows
+                                ? Zotero.getMainWindows()
+                                : [Zotero.getMainWindow()].filter(Boolean);
+                            for (const w of wins) {
+                                try { this._teardownBookmarksToolbarButton(w); } catch (e) {}
+                                if (wantLib) {
+                                    try { this._setupBookmarksToolbarButton(w); } catch (e) {}
+                                }
+                            }
+                            // Reader bookmarks: tab in the reader sidebar.
+                            // Walk all open readers and either rebuild or
+                            // strip the tab — `_wvProcessReaderPanels`'s
+                            // gate stops new tabs from appearing in
+                            // subsequent renders.
+                            // Some prefs need only the inner panel rebuilt
+                            // (scope buttons, list); others toggle the tab
+                            // itself. Stripping the tab triggers a sidebar
+                            // tab-switch back to Annotations (the active
+                            // pane gets re-selected when the current one
+                            // disappears), so for panel-internal prefs we
+                            // remove ONLY the inner `view` element and
+                            // re-run the ensure path — `_wvReaderEnsureBookmarksTab`
+                            // rebuilds the view in place without touching
+                            // the tab strip's active selection.
+                            const panelInternalPref =
+                                data === "extensions.zotero.weavero.showLibraryBookmarksInReader"
+                                || data === "extensions.zotero.weavero.autoHideEmptyLibraryBookmarks"
+                                || data === "extensions.zotero.weavero.autoHideEmptyReaderBookmarks";
+                            const wantReader = this._getEnableReaderBookmarks();
+                            for (const r of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                                try {
+                                    const iwin = r._iframeWindow
+                                        || (r._iframe && r._iframe.contentWindow);
+                                    const idoc = iwin && iwin.document;
+                                    if (!idoc) continue;
+                                    if (wantReader) {
+                                        if (panelInternalPref) {
+                                            // Surgical: drop the inner view
+                                            // so the next ensure() rebuilds
+                                            // it (with the new scope-button
+                                            // visibility) — tab stays active.
+                                            try {
+                                                const view = idoc.querySelector(".wv-bm-reader-view");
+                                                if (view && view.parentNode) view.parentNode.removeChild(view);
+                                            } catch (_) {}
+                                            this._wvReaderEnsureBookmarksTab(r, idoc);
+                                        } else {
+                                            // Master toggle / enable-reader: full
+                                            // teardown + rebuild (will switch
+                                            // away from the tab, which is the
+                                            // expected behaviour when the tab
+                                            // is being disabled and re-enabled).
+                                            try { this._wvRemoveReaderBookmarksTab(r, idoc); } catch (_) {}
+                                            this._wvReaderEnsureBookmarksTab(r, idoc);
+                                        }
+                                    } else {
+                                        this._wvRemoveReaderBookmarksTab(r, idoc);
+                                    }
+                                } catch (e) {}
+                            }
+                        } catch (e) {
+                            Zotero.debug("[Weavero] bookmarks toggle err: " + e);
+                        }
+                    }
 
                     // URI utilities — re-bind the items-list / collections
                     // context menus. The popupshowing handler already
                     // re-evaluates the gates each time, so a re-bind also
                     // re-checks whether to install the listener at all.
+                    // The Open in External Viewer gate is evaluated inside
+                    // the same popupshowing handler, so its toggle is
+                    // covered by re-binding too.
                     if (data === "extensions.zotero.weavero.enableUriUtilities"
                         || data === "extensions.zotero.weavero.enableCopyItemLink"
                         || data === "extensions.zotero.weavero.enableAddRelatedMenu"
-                        || data === "extensions.zotero.weavero.enableRelations") {
+                        || data === "extensions.zotero.weavero.enableRelations"
+                        || data === "extensions.zotero.weavero.enableOpenExternalViewer") {
                         try { this._setupItemsListContextMenu(); }
                         catch (e) { Zotero.debug("[Weavero] re-bind itemmenu err: " + e); }
                     }
@@ -2955,7 +3191,10 @@ class WeaveroPlugin {
             this._setupTreeClickDelegate();
             this._setupItemsListContextMenu();
             this._setupCollectionsContextMenu();
-            this._setupBookmarksToolbarButton(_window);
+            this._setupTabExternalRepositioner(_window);
+            if (this._getEnableLibraryBookmarks()) {
+                this._setupBookmarksToolbarButton(_window);
+            }
             this._setupPaneObserver();
             this._setupItemsListFilter();
             this._setupTabsMenuLibrarySort(_window);
@@ -2993,6 +3232,7 @@ class WeaveroPlugin {
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();
             this._teardownBookmarksToolbarButton(_window);
+            this._teardownTabExternalRepositioner(_window);
             this._paneObserver?.disconnect();
             this._paneObserver = null;
             this._treeMarkObserver?.disconnect();
@@ -3134,7 +3374,9 @@ class WeaveroPlugin {
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
         this._unregisterPinTabMenu();
+        try { this._teardownThumbnailContextMenu(); } catch (e) {}
         this._teardownNoteWindowListener();
+        try { this._teardownUpdateWindowListener(); } catch (e) {}
         this._teardownItemsListFilter();
         try {
             this._teardownTabsMenuLibrarySort(Zotero.getMainWindow());

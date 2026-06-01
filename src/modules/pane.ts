@@ -32,6 +32,85 @@ import {
 
 class _PaneMixin {
     [k: string]: any;
+
+    /** Synchronous replica of `Zotero.Item.prototype.getBestAttachments` —
+     *  used in popupshowing handlers (which can't await).
+     *
+     *  Upstream SQL (xpcom/data/item.js:4050-4055):
+     *
+     *      WHERE parentItemID=? AND linkMode NOT IN (LINK_MODE_LINKED_URL)
+     *        AND IA.itemID NOT IN (SELECT itemID FROM deletedItems)
+     *      ORDER BY contentType='application/pdf' DESC,
+     *               value=<parentURL> DESC,
+     *               dateAdded ASC
+     *
+     *  Translation:
+     *    1. PDF attachments first (single binary split — EPUB / snapshot /
+     *       image / video are all "non-PDF" together, not their own tiers).
+     *    2. Within each tier, attachments whose `url` field matches the
+     *       parent item's `url` field come first (so a snapshot of the
+     *       parent's URL beats an unrelated PDF only when no PDF exists,
+     *       but among non-PDFs the URL-match wins).
+     *    3. Finally oldest-first by `dateAdded`.
+     *
+     *  Standalone attachment rows (in the items list) are returned
+     *  directly when they're file attachments. */
+    _wvGetBestAttachmentSync(item: any): any {
+        try {
+            if (!item) return null;
+            if (item.isAttachment && item.isAttachment()) {
+                if (!item.isFileAttachment || !item.isFileAttachment()) return null;
+                return item;
+            }
+            if (!item.isRegularItem || !item.isRegularItem()) return null;
+            const ids = (item.getAttachments && item.getAttachments()) || [];
+            if (!ids.length) return null;
+            const parentURL = (item.getField && item.getField("url")) || "";
+            const cands: any[] = [];
+            for (const aid of ids) {
+                const a = Zotero.Items.get(aid);
+                if (!a) continue;
+                if (!a.isFileAttachment || !a.isFileAttachment()) continue;
+                cands.push({
+                    a,
+                    isPDF: a.attachmentContentType === "application/pdf" ? 1 : 0,
+                    urlMatch: (parentURL && a.getField && a.getField("url") === parentURL) ? 1 : 0,
+                    dateAdded: a.dateAdded || "",
+                });
+            }
+            if (!cands.length) return null;
+            cands.sort((x, y) => {
+                if (x.isPDF !== y.isPDF) return y.isPDF - x.isPDF;             // PDFs first
+                if (x.urlMatch !== y.urlMatch) return y.urlMatch - x.urlMatch; // URL match first
+                if (x.dateAdded < y.dateAdded) return -1;                      // oldest first
+                if (x.dateAdded > y.dateAdded) return 1;
+                return 0;
+            });
+            return cands[0].a;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvGetBestAttachmentSync err: " + e);
+            return null;
+        }
+    }
+
+    /** Wrapper around `att.getImageSrc()` that patches an upstream bug.
+     *  Zotero's kebab regex doesn't insert a dash between adjacent
+     *  uppercase runs, so `attachmentPDFLink` / `attachmentEPUBLink`
+     *  collapse to `attachment-pdflink.svg` / `attachment-epublink.svg`
+     *  — but the actual skin files are `attachment-pdf-link.svg` and
+     *  `attachment-epub-link.svg`. Without this fix linked-PDF /
+     *  linked-EPUB attachments get a broken (blank) menu icon. */
+    _wvAttachmentIconURL(att: any): string | null {
+        try {
+            if (!att || typeof att.getImageSrc !== "function") return null;
+            const raw = att.getImageSrc();
+            if (!raw) return null;
+            return String(raw).replace(
+                /attachment-(pdf|epub)link(@\dx)?\.svg$/i,
+                "attachment-$1-link$2.svg");
+        } catch (_) { return null; }
+    }
+
     /** Hook the items-tree right-click menu (`#zotero-itemmenu`) and
      *  insert "Add related item…" when the right-clicked selection
      *  contains at least one annotation. Mirrors the entry the plugin
@@ -59,7 +138,8 @@ class _PaneMixin {
             const COPY_SELECT_SEP_ID = "wv-itemmenu-copy-select-sep";  // multi: separate Select links
             const COPY_OPEN_ID = "wv-itemmenu-copy-open";              // Open link(s)
             const SEP_ID = "wv-itemmenu-separator";
-            const ALL_IDS = [ADD_REL_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID, SEP_ID];
+            const EXTV_ID = "wv-itemmenu-open-external";               // "Open in External Viewer"
+            const ALL_IDS = [ADD_REL_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID, SEP_ID, EXTV_ID];
             // Include any item type that has an `addRelatedItem`
             // method — annotations, attachments, regular items, and
             // notes all support the dc:relation predicate. Excludes
@@ -82,6 +162,73 @@ class _PaneMixin {
                     const zp = win.ZoteroPane;
                     const selected = (zp && typeof zp.getSelectedItems === "function")
                         ? zp.getSelectedItems() : [];
+
+                    // "Open in External Viewer" — sits below Show File,
+                    // shown when the selection contains at least one
+                    // stored file (attachment row OR a regular item with
+                    // a file child). Independent of `targets` (the
+                    // relatable filter governs Copy/Add Related entries,
+                    // which appear at the bottom of the menu). Icon
+                    // mirrors the representative attachment's type.
+                    if (this._getEnableOpenExternalViewer()) {
+                        try {
+                            const showFile = menu.querySelector(".zotero-menuitem-show-file");
+                            if (showFile) {
+                                // Pick a representative attachment for
+                                // the icon. Uses the same ordering as
+                                // Zotero's `getBestAttachments()` SQL
+                                // (PDF first, URL-match second,
+                                // dateAdded oldest third) so the icon
+                                // matches what "Open PDF in New Tab"
+                                // would target. Sync (popupshowing
+                                // can't await).
+                                let repAtt: any = null;
+                                let any = false;
+                                for (const it of selected) {
+                                    const att = this._wvGetBestAttachmentSync(it);
+                                    if (!att) continue;
+                                    any = true;
+                                    if (!repAtt) repAtt = att;
+                                }
+                                if (any) {
+                                    const mi = doc.createXULElement("menuitem");
+                                    mi.id = EXTV_ID;
+                                    mi.classList.add("menuitem-iconic");
+                                    mi.setAttribute("label", "Open in External Viewer");
+                                    try {
+                                        const img = this._wvAttachmentIconURL(repAtt);
+                                        if (img) mi.setAttribute("image", img);
+                                    } catch (_) {}
+                                    mi.addEventListener("command", async () => {
+                                        try {
+                                            const zp2 = win.ZoteroPane;
+                                            const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
+                                                ? zp2.getSelectedItems() : [];
+                                            // Launch each selected item's best attachment via
+                                            // `Zotero.launchFile` — the API Open PDF for
+                                            // Zotero uses; bypasses `fileHandler.<kind>`
+                                            // prefs so it really opens in the OS app.
+                                            for (const it of sel2) {
+                                                const best = this._wvGetBestAttachmentSync(it);
+                                                if (!best) continue;
+                                                let path = null;
+                                                try { path = await best.getFilePathAsync(); } catch (_) {}
+                                                if (!path) continue;
+                                                try { Zotero.launchFile(path); }
+                                                catch (e) { Zotero.debug("[Weavero] launchFile err: " + e); }
+                                            }
+                                        } catch (cmdErr) {
+                                            Zotero.debug("[Weavero] open-external cmd err: " + cmdErr);
+                                        }
+                                    });
+                                    showFile.after(mi);
+                                }
+                            }
+                        } catch (extErr) {
+                            Zotero.debug("[Weavero] open-external inject err: " + extErr);
+                        }
+                    }
+
                     const targets = selected.filter(isRelatable);
                     if (!targets.length) return;
                     const isDark = doc.documentElement
@@ -319,6 +466,67 @@ class _PaneMixin {
                     }
                 },
             });
+            // "Open in External Viewer" — gated by enableOpenExternalViewer.
+            // Icon is set dynamically in onShowing to the attachment-type
+            // glyph that Zotero's "Open PDF in New Tab" would target (same
+            // sort order as `getBestAttachments`). Command uses
+            // `Zotero.launchFile` — the API Open PDF for Zotero uses, which
+            // hands off unconditionally to the OS app. (`viewAttachment(...,
+            // true)` honours `fileHandler.<kind>` prefs and can still keep
+            // the file inside a Zotero tab.)
+            //
+            // MenuManager appends plugin entries at the bottom of the popup
+            // and exposes no positional API. To land this entry right under
+            // "Show in Library" instead, we register it via MenuManager
+            // (which handles onShowing / onCommand / icon plumbing for us)
+            // and then move it up to the top in `_wvRepositionTabExternal`
+            // — see `_setupTabExternalRepositioner`.
+            const externalEntry = {
+                menuType: "menuitem",
+                icon: self._menuItemIconURLLight,
+                darkIcon: self._menuItemIconURLDark,
+                onShowing: (_ev, ctx) => {
+                    try {
+                        if (!self._getEnableOpenExternalViewer()) { ctx.setVisible(false); return; }
+                        const item = ctx.items && ctx.items[0];
+                        const att = self._wvGetBestAttachmentSync(item);
+                        if (!att) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", "Open in External Viewer");
+                        // Mark the entry so the popupshowing repositioner
+                        // can find it without depending on label matching.
+                        ctx.menuElem.setAttribute("data-wv-tab-external", "1");
+                        // Override the MenuManager-set icon CSS vars with the
+                        // attachment-type glyph so the entry reads as "file of
+                        // type X" rather than the generic Weavero link icon.
+                        try {
+                            const img = self._wvAttachmentIconURL(att);
+                            if (img) {
+                                ctx.menuElem.style.setProperty(
+                                    "--custom-menu-icon-light", "url(" + img + ")");
+                                ctx.menuElem.style.setProperty(
+                                    "--custom-menu-icon-dark", "url(" + img + ")");
+                            }
+                        } catch (_) {}
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tab-menu external onShowing err: " + e);
+                        try { ctx.setVisible(false); } catch (e2) {}
+                    }
+                },
+                onCommand: async (_ev, ctx) => {
+                    try {
+                        const item = ctx.items && ctx.items[0];
+                        const att = self._wvGetBestAttachmentSync(item);
+                        if (!att) return;
+                        let path = null;
+                        try { path = await att.getFilePathAsync(); } catch (_) {}
+                        if (!path) return;
+                        Zotero.launchFile(path);
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tab-menu external onCommand err: " + e);
+                    }
+                },
+            };
             const id = (Zotero as any).MenuManager.registerMenu({
                 menuID: "weavero-tab-copy-links",
                 pluginID: "weavero@mjthoraval",
@@ -326,6 +534,7 @@ class _PaneMixin {
                 menus: [
                     makeEntry("select"),
                     makeEntry("open"),
+                    externalEntry,
                 ],
             });
             if (id) this._tabMenuID = id;
@@ -343,6 +552,279 @@ class _PaneMixin {
             }
         } catch (e) {}
         this._tabMenuID = null;
+    }
+
+    /** Per-window popupshowing listener that moves the "Open in External
+     *  Viewer" menuitem up to sit directly after "Show in Library".
+     *
+     *  Why this isn't a monkey-patch: TabBar.init runs at window load and
+     *  captures `Zotero_Tabs._openMenu.bind(this)` into the React component
+     *  (tabs.js:542). Any later override of `_openMenu` is bypassed by that
+     *  captured bound reference. Listening for `popupshowing` survives
+     *  hot-reload because the new listener attaches on the next plugin load
+     *  and runs against the live popup whose lifecycle is independent.
+     *
+     *  We identify the tab popup by its first menuitem being
+     *  `Zotero.getString("general.showInLibrary")`. Our own entry is
+     *  marked with `data-wv-tab-external` in the MenuManager onShowing
+     *  handler. */
+    _setupTabExternalRepositioner(win: any) {
+        try {
+            if (!win || !win.document) return;
+            if ((win as any)._wvTabExtRepositioner) return;
+            const doc = win.document;
+            const showInLib = (typeof Zotero !== "undefined" && Zotero.getString)
+                ? Zotero.getString("general.showInLibrary") : null;
+
+            // Capture the right-clicked tab id so the popupshowing handler
+            // can resolve the tab's library and stamp the matching library
+            // icon onto "Show in Library" (My Library → library.svg, group
+            // → library-group.svg, feed → feed-library.svg — via the
+            // existing `_bmShowInLibraryIcon` helper).
+            const tabState = { id: null as string | null, ts: 0 };
+            const plugin: any = this;
+            const ctxHandler = (ev: any) => {
+                try {
+                    const tabEl = ev.target && ev.target.closest
+                        && ev.target.closest("#tab-bar-container .tab[data-id]");
+                    if (tabEl) {
+                        tabState.id = tabEl.getAttribute("data-id");
+                        tabState.ts = Date.now();
+                    }
+                } catch (_) {}
+            };
+            const container = doc.getElementById("tab-bar-container") || doc;
+            container.addEventListener("contextmenu", ctxHandler, true);
+
+            const handler = (ev: any) => {
+                try {
+                    const popup = ev.target;
+                    if (!popup || popup.localName !== "menupopup") return;
+                    const first = popup.firstElementChild;
+                    if (!first || first.localName !== "menuitem") return;
+                    const firstLabel = first.getAttribute("label");
+                    if (showInLib ? (firstLabel !== showInLib)
+                                  : (firstLabel !== "Show in Library")) return;
+
+                    // Stamp the library-aware icon on "Show in Library"
+                    // (only if no icon set yet, so we don't fight a future
+                    // upstream addition). Tab id was captured by
+                    // `ctxHandler` above; resolve to the tab's item and
+                    // pass the libraryID to `_bmShowInLibraryIcon`.
+                    try {
+                        if (tabState.id && (Date.now() - tabState.ts) <= 1500
+                            && !first.getAttribute("image")) {
+                            const Z = win.Zotero_Tabs;
+                            const info = Z && typeof Z._getTab === "function"
+                                ? Z._getTab(tabState.id) : null;
+                            const tab = info && info.tab;
+                            const itemID = tab && tab.data && tab.data.itemID;
+                            const item: any = itemID && Zotero.Items.get(itemID);
+                            if (item && item.libraryID != null) {
+                                const iconURL = plugin._bmShowInLibraryIcon
+                                    && plugin._bmShowInLibraryIcon({ libraryID: item.libraryID }, win);
+                                if (iconURL) {
+                                    first.classList.add("menuitem-iconic");
+                                    first.setAttribute("image", iconURL);
+                                }
+                                // For items in a group or feed library,
+                                // attach the rich Weavero library card
+                                // (icon + library name) to the menuitem,
+                                // reusing the same `wv-tab-library-tooltip`
+                                // that the tab strip itself uses. The
+                                // populate handler reads the libraryID off
+                                // the `data-wv-show-in-library-libid`
+                                // marker we stamp here. My Library is
+                                // skipped — the tooltip would just restate
+                                // the obvious.
+                                try {
+                                    const lib: any = Zotero.Libraries.get(item.libraryID);
+                                    if (lib && lib.libraryType && lib.libraryType !== "user"
+                                            && lib.name && !first.getAttribute("tooltip")) {
+                                        first.setAttribute(
+                                            "tooltip", "wv-tab-library-tooltip");
+                                        first.setAttribute(
+                                            "data-wv-show-in-library-libid",
+                                            String(item.libraryID));
+                                    }
+                                } catch (_) {}
+                            }
+                        }
+                    } catch (_) {}
+
+                    const mine = popup.querySelector("[data-wv-tab-external='1']");
+                    if (!mine || mine === first.nextElementSibling) return;
+                    first.after(mine);
+                } catch (e) {
+                    Zotero.debug("[Weavero] tab popupshowing reposition err: " + e);
+                }
+            };
+            // Bubble phase, NOT capture: MenuManager's `onShowing` hooks
+            // (which set our `data-wv-tab-external` attribute and labels)
+            // run at the popup's target phase, between capture and bubble.
+            // Listening in capture means we'd run before MenuManager and
+            // the entry wouldn't be there to find.
+            doc.addEventListener("popupshowing", handler, false);
+            (win as any)._wvTabExtRepositioner = { handler, ctxHandler, container };
+        } catch (e) {
+            Zotero.debug("[Weavero] _setupTabExternalRepositioner err: " + e);
+        }
+    }
+
+    _teardownTabExternalRepositioner(win: any) {
+        try {
+            if (!win) return;
+            const wired = (win as any)._wvTabExtRepositioner;
+            if (!wired) return;
+            try { win.document.removeEventListener("popupshowing", wired.handler, false); } catch (_) {}
+            try { wired.container.removeEventListener("contextmenu", wired.ctxHandler, true); } catch (_) {}
+            delete (win as any)._wvTabExtRepositioner;
+        } catch (e) {}
+    }
+
+    /** Watch for the Mozilla "Software Update" wizard (`Update:Wizard`) to
+     *  open, and append a small "Currently installed" line showing the
+     *  running Zotero version inside each wizardpage's content vbox. The
+     *  built-in dialog never displays the current version anywhere — only
+     *  "No Updates Found" — which is mildly frustrating when you're trying
+     *  to confirm what build you're on. Cosmetic-only; the rest of the
+     *  dialog is untouched. */
+    _setupUpdateWindowListener() {
+        if ((this as any)._wvUpdateWinListener) return;
+        const inject = (w: any) => {
+            try {
+                if (!w || !w.document) return;
+                const wiz = w.document.querySelector("wizard");
+                if (!wiz) return;
+                // Match the "About Zotero" dialog's version-line format:
+                //   `${Zotero.version} (${64|32}-bit)` on Windows/Linux,
+                //   plain `Zotero.version` on macOS (no bitness suffix).
+                // (Source: chrome/content/zotero/about.xhtml#L31-37.)
+                let ver = (typeof Zotero !== "undefined" && Zotero.version) || "?";
+                try {
+                    if (typeof Zotero !== "undefined" && !Zotero.isMac
+                        && (Services as any).appinfo) {
+                        ver += " (" + ((Services as any).appinfo.is64Bit ? "64" : "32") + "-bit)";
+                    }
+                } catch (_) {}
+                const versionText = "Currently installed: Zotero " + ver;
+                const NS_HTML = "http://www.w3.org/1999/xhtml";
+
+                // One-shot stylesheet that overrides Mozilla's chrome-level
+                // `user-select: none` so the user can SELECT + COPY any
+                // text inside the dialog (version line, "No Updates Found"
+                // header, "There are no updates available" body, etc.).
+                if (!w.document.getElementById("wv-update-win-style")) {
+                    const style = w.document.createElementNS(NS_HTML, "style");
+                    style.id = "wv-update-win-style";
+                    style.textContent = "#updates, #updates label, #updates description,"
+                        + " #updates wizardpage, #updates .wv-update-current-version {"
+                        + " -moz-user-select: text !important;"
+                        + " user-select: text !important; }";
+                    (w.document.documentElement || w.document.body || wiz).appendChild(style);
+                }
+
+                const pages = w.document.querySelectorAll("wizardpage");
+                for (const page of pages) {
+                    if (page.querySelector(".wv-update-current-version")) continue;
+                    const host = page.querySelector("vbox.update-content") || page;
+                    if (!host) continue;
+                    const sep = w.document.createXULElement("separator");
+                    sep.setAttribute("class", "thin wv-update-current-version-sep");
+                    // XUL <description> (real child text nodes — NOT
+                    // `<label value="…">`) so the text stays user-
+                    // selectable while inheriting the parent vbox's
+                    // native left alignment. The earlier HTML <span>
+                    // (with display:block / margin-top inline) was
+                    // visually shifted right of the surrounding XUL
+                    // <description>s because of the box-model mismatch
+                    // — `description` aligns natively without inline
+                    // overrides.
+                    const lbl = w.document.createXULElement("description");
+                    lbl.setAttribute("class", "wv-update-current-version");
+                    lbl.textContent = versionText;
+                    lbl.setAttribute("style",
+                        "opacity: 0.7; margin-top: 8px;"
+                        + " font: inherit; color: inherit;");
+                    host.appendChild(sep);
+                    host.appendChild(lbl);
+                }
+            } catch (e) {
+                Zotero.debug("[Weavero] update-win inject err: " + e);
+            }
+        };
+        const onLoad = (w: any) => {
+            try {
+                if (!w || !w.document || !w.document.documentElement) return;
+                const wt = w.document.documentElement.getAttribute("windowtype");
+                if (wt !== "Update:Wizard") return;
+                inject(w);
+            } catch (e) {
+                Zotero.debug("[Weavero] update-win load err: " + e);
+            }
+        };
+        const listener: any = {
+            onOpenWindow: (xulWindow: any) => {
+                try {
+                    const w = xulWindow.docShell && xulWindow.docShell.domWindow;
+                    if (!w) return;
+                    if (w.document && w.document.readyState === "complete") {
+                        onLoad(w);
+                    } else {
+                        w.addEventListener("load", () => onLoad(w), { once: true });
+                    }
+                } catch (e) {}
+            },
+            onCloseWindow: () => {},
+            onWindowTitleChange: () => {},
+        };
+        try { Services.wm.addListener(listener); }
+        catch (e) { Zotero.debug("[Weavero] update-win addListener err: " + e); return; }
+        (this as any)._wvUpdateWinListener = listener;
+        // Already-open windows (rare on first install, but safe to scan).
+        try {
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (w && w.document && w.document.documentElement
+                    && w.document.documentElement.getAttribute("windowtype") === "Update:Wizard") {
+                    inject(w);
+                }
+            }
+        } catch (_) {}
+    }
+
+    _teardownUpdateWindowListener() {
+        try {
+            const l = (this as any)._wvUpdateWinListener;
+            if (!l) return;
+            try { Services.wm.removeListener(l); } catch (_) {}
+            (this as any)._wvUpdateWinListener = null;
+            // Strip injected labels from any open update window so a
+            // restart-less reload leaves the dialog clean.
+            try {
+                const en = Services.wm.getEnumerator(null);
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    if (!w || !w.document) continue;
+                    const wt = w.document.documentElement
+                        && w.document.documentElement.getAttribute("windowtype");
+                    if (wt !== "Update:Wizard") continue;
+                    for (const n of w.document.querySelectorAll(".wv-update-current-version")) {
+                        try {
+                            const prev = n.previousElementSibling;
+                            if (prev && prev.localName === "separator"
+                                && prev.classList.contains("wv-update-current-version-sep")) {
+                                prev.remove();
+                            }
+                            n.remove();
+                        } catch (_) {}
+                    }
+                    try { w.document.getElementById("wv-update-win-style")?.remove(); }
+                    catch (_) {}
+                }
+            } catch (_) {}
+        } catch (_) {}
     }
 
     /** Hook the collections-tree right-click menu
@@ -3571,21 +4053,36 @@ class _PaneMixin {
                    currentColor; transparent background with subtle hover. */
                 "#zotero-title-bar > .wv-hamburger-btn {",
                 "  display: flex; align-items: center; justify-content: center;",
-                "  width: 36px; height: 100%; padding: 0; margin: 0;",
+                // 28×28 + border-radius 5px + align-self center: match the
+                // sync-button hover-box exactly (sync is `#zotero-tb-sync`,
+                // a XUL <toolbarbutton> 28×28 with 5px corners).
+                "  width: 28px; height: 28px; align-self: center;",
+                "  padding: 0; margin: 0;",
                 "  border: none; appearance: none; -moz-appearance: none;",
+                "  border-radius: 5px;",
                 "  background: transparent;",
                 "  color: currentColor; opacity: 0.65;",
                 "  cursor: default;",
                 "  -moz-window-dragging: no-drag;",
-                "  flex: 0 0 36px;",
+                "  flex: 0 0 28px;",
                 "}",
                 "#zotero-title-bar > .wv-hamburger-btn svg {",
                 "  width: 16px; height: 16px;",
-                "  stroke: currentColor; stroke-width: 1.4;",
-                "  stroke-linecap: round; fill: none;",
+                // Filled rects (Firefox app-menu style) — no stroke.
+                // `fill: currentColor` inherits the .wv-hamburger-btn
+                // colour (0.65 alpha black light / 0.70 alpha white dark).
+                "  fill: currentColor;",
                 "}",
                 "#zotero-title-bar > .wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); opacity: 1; }",
                 "#zotero-title-bar > .wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
+                /* Widen the hamburger popup so submenu labels + chevron
+                   don't run together. 147px (~2/3 of the original 220px
+                   target) fits the top-level menu names (File / Edit /
+                   View / Tools / Help) with breathing room for the
+                   chevron column without taking over the title bar. */
+                "#wv-hamburger-popup { min-width: 147px; }",
+                "#wv-hamburger-popup > menu,",
+                "#wv-hamburger-popup > menuitem { padding-inline: 12px; }",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
         } catch (e) {

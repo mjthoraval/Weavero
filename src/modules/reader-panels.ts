@@ -22,7 +22,7 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
-import { BOOKMARK_PATH } from "./constants";
+import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG } from "./constants";
 
 declare const Components: any;
 declare const Services: any;
@@ -36,12 +36,31 @@ const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 // Same funnel + related icons as the library filter.
 const RP_FUNNEL_ICON = "chrome://zotero/skin/16/universal/filter.svg";
 const RP_RELATED_ICON = "chrome://zotero/skin/16/universal/related.svg";
+const RP_TAG_ICON = "chrome://zotero/skin/16/universal/tag.svg";
+
+// Baked-in data: URI of Zotero's `filter.svg` (chrome://zotero/skin/16/
+// universal/filter.svg, byte-identical content). Used as the funnel-
+// button icon at reader startup — gives the SAME visual as the library
+// filter funnels (which load the chrome SVG directly) without waiting
+// for `_wvReaderPrefetchIcons` to land. `context-fill` cooperates with
+// the parent IMG's `-moz-context-properties: fill` to inherit color.
+const RP_FUNNEL_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
+    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z" fill="context-fill"/>'
+    + '</svg>');
 
 // Person glyph for Added By / Modified By chips — the same Font Awesome
 // "user" icon the reader uses for annotation authors (IconUser). Inline so
 // it renders inside the reader iframe (chrome:// images are blocked there).
+// The annotations-view author chip in Zotero's reader uses the same
+// FontAwesome user silhouette at width="8" (see upstream
+// reader/src/common/components/common/icons.js → IconUser). Matching
+// it verbatim keeps Weavero's filter-popup author chips visually
+// identical to Zotero's own. The 448×512 viewBox is FontAwesome's
+// standard; at 8 px display the scale is extreme but the icon is so
+// small it reads as a uniform glyph.
 const RP_USER_SVG =
-    '<svg viewBox="0 0 448 512" aria-hidden="true">'
+    '<svg width="8" viewBox="0 0 448 512" aria-hidden="true">'
     + '<path fill="currentColor" d="M224 256c70.7 0 128-57.31 128-128s-57.3-128-128-128C153.3 0 96 57.31 96 128'
     + 'S153.3 256 224 256zM274.7 304H173.3C77.61 304 0 381.6 0 477.3c0 19.14 15.52 34.67 34.66 34.67h378.7'
     + 'C432.5 512 448 496.5 448 477.3C448 381.6 370.4 304 274.7 304z"/></svg>';
@@ -86,8 +105,13 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-section{display:flex;flex-direction:row;align-items:center;gap:4px;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-or-inline{display:flex;align-items:center;gap:3px;",
     "  background:rgba(127,127,127,0.18);border-radius:6px;padding:3px 6px;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-section-title{display:none;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-options{flex:1 1 auto;display:flex;flex-wrap:wrap;gap:3px;}",
+    // Tags can balloon into dozens of chips; cap the wrap-list at ~7
+    // chip rows and scroll inside the popup. Slight horizontal padding
+    // so the scrollbar doesn't crowd the right-most chip.
+    // `scrollbar-width:thin` strips the legacy up/down arrow buttons
+    // from the scrollbar so the thumb reads as one continuous track.
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-tags-row .wv-filter-options{max-height:170px;overflow-y:auto;scrollbar-width:thin;align-content:flex-start;padding-right:2px;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt{display:inline-flex;align-items:center;gap:6px;",
     "  padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid rgba(127,127,127,0.4);",
     "  background:transparent;color:inherit;font:inherit;font-size:12px;}",
@@ -101,10 +125,22 @@ const RP_POPUP_CSS = [
     "  background:linear-gradient(to top right,transparent calc(50% - 1px),",
     "    rgba(220,72,72,0.85) calc(50% - 1px),rgba(220,72,72,0.85) calc(50% + 1px),",
     "    transparent calc(50% + 1px)),rgba(220,72,72,0.10);}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon{padding:4px 6px;min-width:26px;justify-content:center;gap:0;}",
+    // height:28px + box-sizing:border-box pins every icon-only tile at
+    // the same outer height as the library popup. Without this clamp
+    // the reader iframe's higher default line-height (16.8 vs 16 in
+    // chrome) gave color tiles 22 tall and Has Comment 32 tall, while
+    // annotation-type icons were 26 — mixed visual heights across what
+    // should read as one row of tiles. Children center via flex
+    // align-items, so the SVG/swatch inside is unaffected.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon{padding:4px 6px;min-width:26px;height:28px;box-sizing:border-box;justify-content:center;gap:0;}",
+    // `_makeLinkSvg` builds a 1em×1em SVG so it scales with surrounding
+    // text in reader badges. Inside a filter-popup tile (font-size:12px
+    // → 12×12 icon) that ends up smaller than the 16×16 icons next to
+    // it (Has Tag / Has Related). Force 16×16 here for visual parity.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon .wv-link-svg{width:16px;height:16px;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-svg{display:inline-block;width:16px;height:16px;",
     "  -moz-context-properties:fill,stroke,fill-opacity,stroke-opacity;fill:currentColor;stroke:currentColor;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-chip-swatch{width:10px;height:10px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,0.15);}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-vertical-separator{width:1px;align-self:stretch;background:rgba(127,127,127,0.45);margin:2px 4px;}",
     // OR-group card tint (same as the library's .wv-filter-or-group) for
     // the "pick any of these" rows (colour, tags, added/modified by).
@@ -113,7 +149,11 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-link-svg{width:16px;height:16px;display:inline-block;}",
     // Added By / Modified By person glyph.
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-user-svg{display:inline-flex;align-items:center;margin-right:5px;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-rf-user-svg svg{height:11px;width:auto;display:block;opacity:.8;}",
+    // Match Zotero's annotations-view author chip — `.author svg`
+    // there gets no explicit size, the SVG renders at its declared
+    // `width="8"`. Mirroring that keeps Weavero's filter-popup author
+    // chips visually identical to the annotations-view footer.
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-user-svg svg{display:block;opacity:.8;}",
     // Group heading on its own line (separates Added By / Modified By without
     // eating chip width).
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-grouphead{font-size:10px;opacity:.55;text-transform:uppercase;",
@@ -123,7 +163,7 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt[data-inactive=\"true\"]{opacity:.35;}",
     // Bottom "Alt+Click to exclude" hint (same as library).
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-bottom-controls{display:flex;justify-content:center;align-items:center;margin-top:4px;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-bottom-hint{font-size:10px;opacity:0.5;text-align:center;padding:4px 0 2px;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-bottom-hint{font-size:10px;opacity:0.5;text-align:center;padding:4px 0;}",
     // "Hide annotations in the reader" — checkbox row (bottom of the popup).
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-hideann{display:flex;align-items:center;gap:6px;margin-top:6px;",
     "  padding:4px 2px;font-size:12px;cursor:pointer;color:inherit;}",
@@ -134,7 +174,11 @@ const RP_POPUP_CSS = [
     "  width:8px;height:8px;margin-right:4px;border-radius:50%;background:var(--wv-tag-color,currentColor);",
     "  border:1px solid rgba(127,127,127,0.3);vertical-align:-1px;flex:0 0 auto;}",
     // ---- toolbar button ----
-    "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg{width:16px;height:16px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
+    "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
+    // Dropmarker chevron next to the funnel icon — same 8×8 inline SVG
+    // the tabs-menu file-type button uses; signals "opens a popup" so
+    // the affordance matches Zotero's native filter buttons.
+    "." + RP_FILTER_BTN_CLASS + " .wv-rf-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;margin-left:1px;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active{position:relative;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
@@ -152,48 +196,92 @@ const RP_BM_TAB_ON = "wv-bm-tab-on";
 // on it (they only special-case "outline").
 const RP_BM_SIDEBAR_VIEW = "wv-bookmarks";
 
-// Outline-ribbon bookmark glyph — the shared even-odd outline
-// (BOOKMARK_PATH), filled with currentColor so it themes with the
-// reader. Sized by CSS at each use (20px tab, 14px row/hover card).
+// Solid-filled ribbon for "page" bookmark rows — just the outer half
+// of BOOKMARK_PATH (no inner cutout). Visually contrasts with the
+// hollow ribbon used for the sidebar tab glyph (RP_BM_RIBBON_TAB),
+// so a "page" bookmark in a row reads as a different icon than the
+// generic "bookmarks" tab. 16-unit viewBox so 1 SVG unit = 1 device
+// pixel at the 16×16 row size — outer edges land on integer pixel
+// rows for sharp rendering.
 const RP_BM_RIBBON =
     '<svg viewBox="0 0 16 16" fill="currentColor">'
-    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>';
+    + '<path d="M4 1H12V15L8 12L4 15Z"/></svg>';
+
+// Tab-specific variant of the ribbon. The sidebar tab renders at 20×20,
+// and 20 / 16 = 1.25 px per SVG unit on the shared path — every "integer"
+// coordinate lands on a fractional pixel (the top edge at y=1 hits
+// pixel-row 1.25, antialiased across two rows → the fuzzy top stripe).
+// Re-author the same shape in a 20-unit viewBox with outer corners and
+// the V-apex on **integer** coordinates so 1 SVG unit = 1 device pixel
+// at the tab size; outer edges (top, sides, bottom corners, V-apex) are
+// razor-sharp. Inner cutout uses a half-pixel y for the diagonals'
+// perpendicular offset, where the slight AA is inside the glyph and
+// unnoticeable.
+const RP_BM_RIBBON_TAB =
+    '<svg viewBox="0 0 20 20" fill="currentColor">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" '
+    + 'd="' + BOOKMARK_PATH_20 + '"/></svg>';
 const RP_PLUS_SVG =
     '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>';
-// Quote glyph for selected-text bookmarks.
+// 20-unit "+" specifically for the sidebar toolbar add button, which
+// renders at 20×20. Same shape as BM_ADD_ICON (library toolbar +) —
+// arms 2 units thick going edge-to-edge — so the same path is pixel-
+// sharp at the 20-px display size. The 16-unit RP_PLUS_SVG above stays
+// for 16-px sites (menu items).
+const RP_PLUS_20_SVG =
+    '<svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 4H11V9H16V11H11V16H9V11H4V9H9Z"/></svg>';
+// Quote glyph for selected-text bookmarks — three filled "text line"
+// rectangles. All y-edges on integer pixel rows so each line renders
+// as exactly 2 sharp pixel rows with 2 empty rows between them
+// (was: 1.4-tall lines on fractional y → every edge anti-aliased).
 const RP_TEXT_SVG =
-    '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 4h7v1.4H3zM3 7.3h10v1.4H3zM3 10.6h7V12H3z"/></svg>';
+    '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3H10V5H3ZM3 7H13V9H3ZM3 11H10V13H3Z"/></svg>';
 // Pushpin glyph for position bookmarks — the 📌 emoji (user preference over a
 // line map-pin). Used both as the list-row icon and the temporary in-document
 // marker dropped on click.
 const RP_PIN_EMOJI = "📌";
-// Outline folder for bookmark folder rows; folder-with-plus for "New folder";
-// chevrons for expand/collapse. All themed by currentColor.
+// Filled folder + folder-with-"+" matching the library popup icons
+// (BM_FOLDER_ICON / BM_MENU_NEWFOLDER_ICON), themed via currentColor.
+// Rounded body corners and a left-aligned tab; the "+" variant carves
+// the bottom-right along the badge circle so the badge tessellates
+// instead of overlapping.
+// viewBox y-min = -2 shifts the rendered folder down by 2 units so it
+// vertically centres with the row's text baseline. Path is unchanged.
 const RP_FOLDER_SVG =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">'
-    + '<path d="M1.5 4.5H6L7.3 6H14.5V13H1.5Z"/></svg>';
+    '<svg viewBox="0 -2 16 16" fill="currentColor">'
+    + '<path fill-rule="evenodd" d="'
+    + 'M0 1A1 1 0 0 1 1 0H3.586A1 1 0 0 1 4.293 0.293L6 2H13A1 1 0 0 1 14 3V11A1 1 0 0 1 13 12H1A1 1 0 0 1 0 11Z'
+    + 'M1 1H3.586L5.293 2.707C5.505 2.919 5.7 3 6 3H13V11H1Z"/></svg>';
 const RP_FOLDER_PLUS_SVG =
-    '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M18 11.5V6.5H8.5L7 5H2.5V15.5H10"/><path d="M14.5 12.5v5M12 15h5"/></svg>';
-// Rename (pencil) + Delete (red cross) glyphs for the reader bookmark context
-// menu, themed via currentColor (pencil) / baked red (cross) to match the
-// library menu's BM_RENAME_ICON / BM_DELETE_ICON. The Open and Show-in-Library
-// items use the native Zotero icons instead, fetched + inlined by
-// `_wvChromeIconSvg` (the reader iframe can't load chrome:// images directly).
+    '<svg viewBox="0 0 16 16" fill="currentColor">'
+    + '<path fill-rule="evenodd" d="'
+    + 'M0 1A1 1 0 0 1 1 0H3.586A1 1 0 0 1 4.293 0.293L6 2H13A1 1 0 0 1 14 3V7.76A4.5 4.5 0 0 0 7.03 12H1A1 1 0 0 1 0 11Z'
+    + 'M1 1H3.586L5.293 2.707C5.505 2.919 5.7 3 6 3H13V7.26A4.5 4.5 0 0 0 7.03 11H1Z"/>'
+    + '<circle cx="11.5" cy="11.5" r="4" fill="none" stroke="currentColor" stroke-width="1"/>'
+    + '<path d="M11 9H12V11H14V12H12V14H11V12H9V11H11Z"/></svg>';
+// Reader bookmark context menu glyphs. Inlined paths from Zotero's
+// native 16/universal/rename.svg + reset.svg (the reader iframe can't
+// load chrome:// images), themed via `currentColor` to match the menu
+// text colour. Delete keeps its baked red — same one-step-destructive
+// reasoning as BM_DELETE_ICON in the library popup.
 const RP_RENAME_SVG =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M11.5 2.5l2 2"/><path d="M12.2 1.8a1 1 0 0 1 1.4 0l.6.6a1 1 0 0 1 0 1.4L5.5 12.5 2.5 13.5 3.5 10.5z"/></svg>';
+    '<svg viewBox="0 0 16 16" fill="currentColor">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="M14.4141 0.707094C13.6331-0.0739541 12.3668-0.0739554 11.5857 0.707093L1.54845 10.7444L0.312744 15.6872L5.25555 14.4515L15.2928 4.4142C16.0739 3.63315 16.0739 2.36682 15.2928 1.58577L14.4141 0.707094ZM12.2928 1.4142C12.6833 1.02368 13.3165 1.02368 13.707 1.4142L14.5857 2.29288C14.9762 2.6834 14.9762 3.31657 14.5857 3.70709L13.4999 4.79288L11.207 2.49999L12.2928 1.4142ZM10.4999 3.20709L12.7928 5.49999L4.7443 13.5485L1.68711 14.3128L2.45141 11.2556L10.4999 3.20709ZM15 16H5.12134L6.12134 15H15V12H9.12134L10.1213 11H15H16V12V15V16H15Z"/></svg>';
 const RP_DELETE_SVG =
     '<svg viewBox="0 0 16 16" fill="none" stroke="#e0483b" stroke-width="2" stroke-linecap="round">'
     + '<path d="M4 4l8 8M12 4l-8 8"/></svg>';
-// Revert/undo glyph (circular arrow) for "Reset to original name".
+// "Reset to Original Name" — Zotero's native reset.svg (curved arrow).
 const RP_REVERT_SVG =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">'
-    + '<path d="M3.5 8a4.5 4.5 0 1 1 1.4 3.3"/><path d="M3.2 4.8v3h3"/></svg>';
-const RP_CHEV_RIGHT =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>';
+    '<svg viewBox="0 0 16 16" fill="currentColor">'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="M4.79297 3.50001L8.29298 0L9 0.70719L6.70719 3L8.5 3V2.99998C12.0899 2.99998 15 5.91013 15 9.49998C15 13.087 12.0945 15.9953 8.50856 16L8.5 16L8.49145 16C4.90553 15.9954 2 13.087 2 9.49998C2 9.33175 2.00639 9.16501 2.01894 8.99999L3.02242 9C3.00758 9.16467 3 9.33144 3 9.49998C3 12.5375 5.46243 15 8.5 15C11.5376 15 14 12.5375 14 9.49998C14 6.46241 11.5376 3.99998 8.5 3.99998V4L6.70717 4L9 6.29282L8.29296 7L4.79297 3.50001Z"/></svg>';
+// Expand/collapse chevrons for folder rows — Zotero's chevron-8 path
+// (filled silhouette, same as the items-tree twisty). Down chevron is
+// the canonical path; right chevron uses the same path rotated -90°
+// around the centre (matches Zotero's CSS rotate(-90deg) on `.twisty`).
 const RP_CHEV_DOWN =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>';
+    '<svg viewBox="0 0 8 8" fill="currentColor"><path d="M0 2.70711L4 6.70711L8 2.70711L7.29289 2L4 5.29289L0.707107 2Z"/></svg>';
+const RP_CHEV_RIGHT =
+    '<svg viewBox="0 0 8 8" fill="currentColor"><path transform="rotate(-90 4 4)" d="M0 2.70711L4 6.70711L8 2.70711L7.29289 2L4 5.29289L0.707107 2Z"/></svg>';
 // Annotation-type glyphs for the bookmarks filter-chip row. Paths copied
 // verbatim from Zotero's `chrome://zotero/skin/16/universal/annotate-*.svg`
 // (same 16×16 viewBox the "Filter annotations" popup loads). Native size
@@ -236,19 +324,113 @@ const RP_BM_CSS = [
     "." + RP_BM_TAB_CLASS + " svg{width:20px;height:20px;}",
     ".wv-bm-reader-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid rgba(127,127,127,.2);}",
     ".wv-bm-reader-head .wv-bm-reader-htitle{flex:1;font-weight:600;opacity:.75;font-size:11px;text-transform:uppercase;letter-spacing:.04em;}",
-    ".wv-bm-reader-add{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;background:none;cursor:pointer;border-radius:4px;color:inherit;}",
+    ".wv-bm-reader-add{display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;border-radius:5px;color:var(--fill-secondary);}",
+    ".wv-bm-reader-add:hover{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-reader-add:active{background-color:var(--fill-quarternary);}",
     // Single-row header: scope toggle (segmented) on the left, + button right.
     ".wv-bm-scope-toggle{display:flex;align-items:center;gap:6px;padding:6px 8px;}",
     ".wv-bm-scope-group{display:flex;flex:1;min-width:0;}",
-    ".wv-bm-scope-btn{flex:1;padding:3px 6px;font-size:11px;border:1px solid rgba(127,127,127,.35);background:none;color:inherit;cursor:pointer;opacity:.7;}",
+    ".wv-bm-scope-btn{flex:1;padding:3px 6px;font-size:12px;border:1px solid rgba(127,127,127,.35);background:none;color:inherit;cursor:pointer;opacity:.7;}",
     ".wv-bm-scope-group .wv-bm-scope-btn:first-child{border-radius:4px 0 0 4px;}",
     ".wv-bm-scope-group .wv-bm-scope-btn:last-child{border-radius:0 4px 4px 0;border-left:none;}",
     ".wv-bm-scope-btn:hover{opacity:.95;background:rgba(127,127,127,.12);}",
     ".wv-bm-scope-btn.wv-bm-scope-active{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);opacity:1;}",
+    ".wv-bm-scope-btn.wv-bm-scope-dropok{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;opacity:1;}",
+    // While a cross-scope drop is hovering (group has .wv-bm-scope-dragover),
+    // dim the active button so its solid blue doesn't compete with the
+    // drop-target outline — the drop is going to the OTHER button.
+    ".wv-bm-scope-group.wv-bm-scope-dragover .wv-bm-scope-btn.wv-bm-scope-active{"
+        + "background:transparent;color:inherit;"
+        + "border-color:rgba(127,127,127,.35);opacity:.55;}",
     // Search affordance — magnifier in the header row, input row below.
-    ".wv-bm-search-btn{display:flex;align-items:center;justify-content:center;width:24px;height:24px;border:none;background:none;cursor:pointer;border-radius:4px;color:inherit;opacity:.65;}",
-    ".wv-bm-search-btn:hover{opacity:1;background:rgba(127,127,127,.14);}",
-    ".wv-bm-search-btn.wv-bm-search-active{opacity:1;background:rgba(127,127,127,.18);}",
+    // Action buttons live in the reader sidebar's top toolbar `.end` slot,
+    // beside the tab icons. Hidden by default — the bookmarks-tab gate
+    // class on `#sidebarContainer` reveals them only while the bookmarks
+    // tab is active, so the other tabs (thumbnails / annotations /
+    // outline) keep their clean toolbar.
+    //
+    // Fade-in instead of jumping when the bookmarks tab is focused.
+    // Plain `display:none -> display:flex` is instant — we use Firefox's
+    // `@starting-style` + `transition-behavior: allow-discrete` (Gecko
+    // 129+, Zotero 10 runs Firefox 140) so opacity transitions from 0
+    // even though the resting state is `display:none`. On other tabs
+    // the buttons take no space; on the bookmarks tab they fade in.
+    ".wv-bm-sidebar-actions{display:none;align-items:center;gap:2px;opacity:0;transition:opacity 0.15s ease-out, display 0.15s ease-out allow-discrete;}",
+    "#sidebarContainer." + RP_BM_TAB_ON + " .wv-bm-sidebar-actions{display:flex;opacity:1;}",
+    "@starting-style{",
+    " #sidebarContainer." + RP_BM_TAB_ON + " .wv-bm-sidebar-actions{opacity:0;}",
+    "}",
+    // Fallback action bar at the top of the pane (only used when the
+    // upstream `.sidebar-toolbar > .end` slot isn't found — e.g. some
+    // alternative theme).
+    ".wv-bm-actionbar{display:flex;align-items:center;justify-content:flex-end;gap:2px;padding:4px 8px 2px;}",
+    ".wv-bm-search-btn,.wv-bm-reader-add{width:28px;height:28px;}",
+    // Filter button grows horizontally to fit the funnel + ▾ chevron
+    // (same icon-and-chevron pattern as the reader toolbar funnel).
+    ".wv-bm-filter-btn{height:28px;padding:0 4px;gap:1px;}",
+    ".wv-bm-search-btn svg,.wv-bm-reader-add svg{width:20px;height:20px;}",
+    // Filter funnel renders at 16×16 (centered inside the 28×28 button)
+    // to match Zotero's reader-toolbar filter button exactly. Same SVG
+    // artwork, same dimensions, same visual weight.
+    // Direct-child selector so this only sizes the funnel SVG; the
+    // chevron's SVG is a grandchild inside `.wv-bm-filter-chev` and
+    // stays at its own 8×8 size.
+    ".wv-bm-filter-btn > svg{width:20px;height:20px;}",
+    ".wv-bm-filter-btn .wv-bm-filter-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;}",
+    ".wv-bm-filter-btn .wv-bm-filter-chev svg{width:8px;height:8px;}",
+    // Hover/dim pattern lifted verbatim from Zotero's reader
+    // `_search-box.scss` so the bookmark action buttons (search /
+    // filter / add) feel native to the sidebar toolbar:
+    //   default: color var(--fill-secondary) — dim via colour, not opacity
+    //   hover:   var(--fill-quinary) background, colour goes primary
+    //   active:  var(--fill-quarternary) background (pressed feel)
+    //   open:    var(--fill-quinary) background, colour primary (search
+    //            row showing / filter popover open — sticky bg matches
+    //            the upstream `.expanded` state of the search box)
+    // Match Zotero's `_search-box.scss` exactly, including the smooth
+    // transition on background-color / color so the state changes don't
+    // pop. The hover rule is gated by `:not(.wv-bm-search-active)` to
+    // mirror upstream's `:not(.expanded)` — once the search row is open,
+    // the button stops responding to hover-bg (it stays in its open
+    // state visual instead of being overridden by hover). Active state
+    // uses a heavier `--fill-quarternary` background (matching upstream
+    // expanded look) — distinguishes "search is open" from "search is
+    // closed but you're hovering".
+    ".wv-bm-search-btn{display:flex;align-items:center;justify-content:center;border:none;background:transparent;cursor:pointer;border-radius:5px;color:var(--fill-secondary);transition:background-color 0.12s ease-out,color 0.12s ease-out;}",
+    ".wv-bm-search-btn:not(.wv-bm-search-active):hover{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-search-btn:not(.wv-bm-search-active):active{background-color:var(--fill-quarternary);}",
+    ".wv-bm-search-btn.wv-bm-search-active{background-color:var(--fill-quarternary);color:var(--fill-primary);}",
+    // Filter funnel button — same dimensions as the search button so the
+    // toolbar reads as a row of equal-sized affordances. `wv-bm-filter-open`
+    // marks the popover-open state; `wv-bm-filter-active` marks "any chip
+    // currently selected" so the user notices the list is filtered even
+    // when the popover is closed (accent dot in the bottom-right corner).
+    // Same hover/dim ladder as the search button — color via
+    // `--fill-secondary`, hover `--fill-quinary`, active `--fill-quarternary`,
+    // popover-open keeps `--fill-quinary` background for a sticky "active
+    // surface" feel. The accent-blue dot at the funnel icon's top-right
+    // surfaces when any chip is selected — same style/position as the
+    // library filter button's `.wv-filter-tb-dot` (see constants.ts).
+    ".wv-bm-filter-btn{display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;border-radius:5px;color:var(--fill-secondary);position:relative;}",
+    ".wv-bm-filter-btn:hover{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-filter-btn:active{background-color:var(--fill-quarternary);}",
+    ".wv-bm-filter-btn.wv-bm-filter-open{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    // Funnel icon sits at x=4..24 (padding 4 + 20-wide svg). Dot at
+    // top:3, left:18 lands at icon's top-right corner — same offset
+    // the library filter uses against its own 20-wide funnel icon.
+    ".wv-bm-filter-btn.wv-bm-filter-active::after{content:'';position:absolute;top:3px;left:18px;width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);pointer-events:none;}",
+    // Chip popover — anchored under the filter button by the toggle helper.
+    // Position is set inline; visible-by-default once attached (toggle
+    // adds/removes the element itself). Z-index sits above the row drop
+    // indicators (which are at 2147483647 — see drop-line styles), and
+    // matches the menu / context-menu z-index ladder.
+    ".wv-bm-chip-popup{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:8px 10px;min-width:220px;max-width:340px;max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:5px;font-size:12px;}",
+    ".wv-bm-chip-popup-empty{padding:4px 2px;opacity:.6;font-style:italic;}",
+    // The old docked chip-bar + its resizer are now superseded by the
+    // popover above. Hard-hide them so any cached DOM from a previous
+    // build doesn't reserve space at the bottom of the pane.
+    ".wv-bm-chip-bar{display:none!important;}",
+    ".wv-bm-chip-resizer{display:none!important;}",
     ".wv-bm-search-row{display:flex;padding:0 8px 6px;}",
     ".wv-bm-search-input{flex:1;padding:3px 6px;font-size:12px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
     ".wv-bm-search-input:focus{outline:none;border-color:var(--color-accent,#5e6ad2);}",
@@ -256,7 +438,9 @@ const RP_BM_CSS = [
     // itself doesn't match the search query) so direct matches stand out.
     ".wv-bm-reader-row.wv-bm-dimmed{opacity:.55;}",
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
-    ".wv-bm-reader-add svg{width:15px;height:15px;fill:currentColor;}",
+    // Inherit the 20×20 svg size from the .wv-bm-actionbar rule above;
+    // the previous 15×15 override forced 15/16 sub-pixel scaling on a
+    // 16-unit viewBox → blurry.
     ".wv-bm-reader-list{flex:1 1 auto;overflow:auto;min-height:0;padding:4px;}",
     // Filter chips at the bottom (selector strip) — mirrors the annotations
     // pane's color/tag/author rows. Persists across scopes and dimensions
@@ -279,46 +463,62 @@ const RP_BM_CSS = [
     ".wv-bm-chip-resizer{flex:0 0 auto;height:5px;margin-bottom:-4px;border-top:1px solid rgba(127,127,127,.35);cursor:ns-resize;background:transparent;position:relative;z-index:2;display:none;}",
     ".wv-bm-chip-resizer.wv-bm-chip-bar-on{display:block;}",
     ".wv-bm-chip-row{display:flex;flex-wrap:wrap;gap:4px;}",
+    // Pin toggle — same 20×20 box as the color filters (16px SVG +
+    // 2px padding on every side). Sits at the right end of the FIRST
+    // chip row via `margin-left: auto` so it lines up horizontally
+    // with the colored squares. Off (default) = per-scope filters
+    // (This Document / Library each keep their own); on = global.
+    ".wv-bm-chip-pin{display:inline-flex;align-items:center;justify-content:center;"
+        + "width:20px;height:20px;padding:2px;border:none;background:none;"
+        + "cursor:pointer;color:inherit;opacity:.45;border-radius:3px;"
+        + "margin-left:auto;flex:0 0 auto;}",
+    ".wv-bm-chip-pin:hover{opacity:.85;background:var(--fill-quinary,rgba(127,127,127,.16));}",
+    // On (pinned) — render as a solid accent-blue chip, matching the
+    // visual weight of `.wv-bm-scope-active`. Filled background + white
+    // icon reads unambiguously as "active state" instead of the easy-to-
+    // miss accent-coloured outline glyph the earlier version used.
+    ".wv-bm-chip-pin.wv-bm-chip-pin-on{opacity:1;color:#fff;"
+        + "background:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-chip-pin.wv-bm-chip-pin-on:hover{background:var(--color-accent,#5e6ad2);"
+        + "filter:brightness(1.1);}",
+    ".wv-bm-chip-pin svg{width:16px;height:16px;display:block;}",
     // Colors row is tighter (1-px gap, like upstream's .colors .color
     // margin-left:1px) so 20×20 buttons read as a row of tiles, not as
     // spaced-out chips. Tags / authors / types keep the 4-px row gap.
-    ".wv-bm-chip-row:has(> .wv-bm-chip-color){gap:1px;}",
-    // Match the reader's annotations-pane color tiles (upstream
-    // _annotations-view.scss .selector .colors .color + IconColor16):
-    // a 2-px-padded button wrapping a 16×16 rounded-corner square. The
-    // wrapper handles the hover/selected background; the inner tile is
-    // the actual annotation color with a subtle black-0.1 inset ring.
-    ".wv-bm-chip-color{display:inline-flex;padding:2px;border-radius:3px;cursor:pointer;background:transparent;}",
-    ".wv-bm-chip-color:hover{background:var(--fill-quinary,rgba(127,127,127,.16));}",
-    ".wv-bm-chip-color.selected{background:var(--fill-secondary,rgba(127,127,127,.45));}",
-    ".wv-bm-chip-color.inactive .wv-bm-chip-color-tile{opacity:.4;}",
-    // The tile is now an inline 16×16 SVG (same path upstream's IconColor16
-    // uses), so it carries its own width/height/colours — no extra rules needed.
+    // Chip popup now uses the SAME button class as the filter popup
+    // (`.wv-filter-opt.wv-filter-opt-icon` + `.wv-chip-swatch` for
+    // colors) so tile sizes and rendering match popups 1 & 2 exactly.
+    // The rules below scope the filter-popup styling to the chip
+    // popup container too — same declarations as the
+    // `#wv-reader-filter-popup` rules above (lines ~113-141).
+    ".wv-bm-chip-popup .wv-filter-opt{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid rgba(127,127,127,0.4);background:transparent;color:inherit;font:inherit;font-size:12px;}",
+    ".wv-bm-chip-popup .wv-filter-opt:hover{background:rgba(127,127,127,0.08);}",
+    ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]{background:rgba(94,106,210,0.34);border-color:rgba(94,106,210,0.95);box-shadow:inset 0 0 0 1px rgba(94,106,210,0.55);}",
+    ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]:hover{background:rgba(94,106,210,0.45);}",
+    ".wv-bm-chip-popup .wv-filter-opt-icon{padding:4px 6px;min-width:26px;height:28px;box-sizing:border-box;justify-content:center;gap:0;}",
+    ".wv-bm-chip-popup .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
+    // OR-group card tint — applied to each chip row so the popup reads
+    // as a stack of "pick any of these" sets, matching the library
+    // filter / reader annotations filter (`#wv-reader-filter-popup
+    // .wv-filter-or-group` at line ~147). Lives in the reader iframe
+    // so this rule must be scoped under `.wv-bm-chip-popup` (the
+    // chrome-window equivalent in constants.ts is unreachable from here).
+    ".wv-bm-chip-popup .wv-filter-or-group{background:rgba(127,127,127,0.18);border-radius:6px;padding:5px 6px;margin:1px 0;}",
+    // Vertical separator used to push black off the standard 8-colour
+    // palette in the colors row (mirrors the library filter pattern —
+    // upstream Zotero treats black as EXTRA_INK_AND_TEXT_COLORS).
+    ".wv-bm-chip-popup .wv-filter-vertical-separator{width:1px;align-self:stretch;background:rgba(127,127,127,0.45);margin:2px 4px;}",
+    // Inline annotation-type SVG injected into the type buttons via
+    // innerHTML (RP_ANN_TYPE_SVG) lacks a sizing class — pin it to
+    // 16×16 so the glyph fills the icon area like the filter popup.
+    ".wv-bm-chip-popup .wv-filter-opt-icon svg{width:16px;height:16px;display:block;}",
     ".wv-bm-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;font-size:11px;line-height:1.4;border:1px solid rgba(127,127,127,.4);border-radius:10px;cursor:pointer;background:rgba(127,127,127,.06);color:inherit;user-select:none;-moz-user-select:none;}",
     ".wv-bm-chip:hover{background:rgba(127,127,127,.16);}",
     ".wv-bm-chip.selected{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);}",
     ".wv-bm-chip.inactive{opacity:.45;}",
     ".wv-bm-chip-tag-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}",
-    // Type chips: same 16×16 SVGs the filter popup uses (chrome://zotero/
-    // skin/16/universal/annotate-*.svg) at NATIVE size, no scaling. Box is
-    // 24×24 outer for a comfortable hit zone (4 px padding around the 16×16
-    // glyph) — matches the visual scale of the reader's Filter annotations
-    // popup type buttons.
-    ".wv-bm-chip-type{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid rgba(127,127,127,.4);border-radius:3px;cursor:pointer;background:rgba(127,127,127,.06);}",
-    ".wv-bm-chip-type:hover{background:rgba(127,127,127,.16);}",
-    ".wv-bm-chip-type.selected{background:var(--color-accent,#5e6ad2);border-color:var(--color-accent,#5e6ad2);}",
-    ".wv-bm-chip-type svg{width:16px;height:16px;opacity:1;display:block;}",
-    // currentColor inherits the chip's text color; we set it via the chip
-    // class. Most icons use `fill="currentColor"`, but the note glyph uses
-    // `stroke="currentColor"` — both inherit from the chip color.
-    // Type-chip glyph stays white in both unselected and selected states —
-    // matches the reader's Filter annotations popup. (Icons use
-    // fill="currentColor" / stroke="currentColor"; setting color on the
-    // chip tints them.)
-    ".wv-bm-chip-type{color:#fff;}",
-    ".wv-bm-chip-type.selected{color:#fff;}",
     ".wv-bm-chip-type.selected svg{opacity:1;}",
-    ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;user-select:none;-moz-user-select:none;}",
+    ".wv-bm-reader-row{position:relative;display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;user-select:none;-moz-user-select:none;}",
     // The reader's own CSS sets user-select:auto/text on text-bearing children
     // (the 📌 emoji, the label), so a press-drag on a row starts a text
     // selection despite the row's none. Force none on every descendant with
@@ -329,21 +529,34 @@ const RP_BM_CSS = [
     // Decorative monochrome glyphs (text quote / folder) stay subtle at 14px;
     // native item-type icons (<img>) render at full size/opacity to match the
     // library bookmark rows exactly.
-    ".wv-bm-reader-row .wv-bm-reader-ic svg{width:14px;height:14px;opacity:.85;}",
+    ".wv-bm-reader-row .wv-bm-reader-ic svg{width:16px;height:16px;opacity:.85;}",
     ".wv-bm-reader-row .wv-bm-reader-ic img{width:16px;height:16px;}",
     ".wv-bm-reader-row .wv-bm-reader-ic.wv-bm-emoji{font-size:13px;line-height:16px;opacity:1;}",
     ".wv-bm-reader-row .wv-bm-reader-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+    // URL bookmark labels follow the same scheme palette Weavero uses
+    // for inline links in notes / reader / item pane. Self-contained
+    // declaration so the sidebar paints correctly even if the surface's
+    // global link-colour stylesheet isn't loaded.
+    ":root .wv-bm-reader-label.wv-link-http{color:#1a73e8;}",
+    ":root .wv-bm-reader-label.wv-link-zotero{color:#8b4513;}",
+    ":root .wv-bm-reader-label.wv-link-app{color:#9333ea;}",
+    "@media (prefers-color-scheme: dark){",
+    " :root .wv-bm-reader-label.wv-link-http{color:#8ab4f8;}",
+    " :root .wv-bm-reader-label.wv-link-zotero{color:#cd853f;}",
+    " :root .wv-bm-reader-label.wv-link-app{color:#c084fc;}",
+    "}",
+    ".wv-bm-reader-sublabel{opacity:.55;font-style:italic;}",
     ".wv-bm-reader-row .wv-bm-reader-page{flex:0 0 auto;opacity:.5;font-size:11px;}",
     ".wv-bm-reader-row .wv-bm-reader-actions{display:none;gap:1px;flex:0 0 auto;}",
     ".wv-bm-reader-row:hover .wv-bm-reader-actions{display:flex;}",
     ".wv-bm-reader-actbtn{border:none;background:none;cursor:pointer;opacity:.55;padding:1px 4px;border-radius:3px;color:inherit;font-size:12px;line-height:1;}",
     ".wv-bm-reader-actbtn:hover{opacity:1;background:rgba(127,127,127,.2);}",
     ".wv-bm-reader-empty{opacity:.5;padding:14px 10px;font-size:12px;text-align:center;line-height:1.5;}",
-    ".wv-bm-reader-grouphead{font-size:10px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px 2px;display:flex;align-items:center;}",
+    ".wv-bm-reader-grouphead{font-size:11px;padding:6px 8px 2px;display:flex;align-items:center;gap:4px;}",
     ".wv-bm-reader-grouphead .wv-bm-gh-title{flex:1;opacity:.55;}",
-    ".wv-bm-reader-newfolder{display:flex;align-items:center;justify-content:center;width:18px;height:16px;border:none;background:none;cursor:pointer;border-radius:3px;color:inherit;opacity:.5;padding:0;flex:0 0 auto;}",
+    ".wv-bm-reader-newfolder{display:flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;cursor:pointer;border-radius:3px;color:inherit;opacity:.5;padding:0;flex:0 0 auto;}",
     ".wv-bm-reader-newfolder:hover{opacity:.95;background:rgba(127,127,127,.2);}",
-    ".wv-bm-reader-newfolder svg{width:13px;height:13px;}",
+    ".wv-bm-reader-newfolder svg{width:16px;height:16px;}",
     "." + RP_BM_TAB_CLASS + ".wv-bm-dropok{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;}",
     ".wv-bm-reader-row.wv-bm-dragging{opacity:.4;}",
     // Before/after indicators are INDENTED lines (a pseudo-element from
@@ -360,18 +573,33 @@ const RP_BM_CSS = [
     ".wv-bm-reader-group{border-radius:6px;}",
     ".wv-bm-reader-group.wv-bm-grp-nodrop{opacity:.5;cursor:no-drop;}",
     // Folder rows: chevron + folder glyph; nested children indent via padding.
-    ".wv-bm-reader-row .wv-bm-reader-chev{flex:0 0 auto;width:12px;height:12px;display:flex;align-items:center;justify-content:center;opacity:.6;}",
-    ".wv-bm-reader-row .wv-bm-reader-chev svg{width:12px;height:12px;}",
+    ".wv-bm-reader-row .wv-bm-reader-chev{flex:0 0 auto;width:16px;height:16px;padding:4px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;opacity:.6;}",
+    ".wv-bm-reader-row .wv-bm-reader-chev svg{width:8px;height:8px;}",
     ".wv-bm-reader-row .wv-bm-reader-chev.wv-bm-reader-chev-spacer{visibility:hidden;}",
     ".wv-bm-reader-row.wv-bm-drop-into{box-shadow:inset 0 0 0 2px var(--color-accent,#5e6ad2);border-radius:4px;}",
     // Right-click context menu (Add Bookmark / New Folder / row actions).
     "#" + RP_BM_CTX_ID + "{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:160px;font-size:13px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
-    "#" + RP_BM_CTX_ID + " .wv-ctx-ic{flex:0 0 auto;width:14px;height:14px;display:flex;align-items:center;justify-content:center;opacity:.8;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-ic{flex:0 0 auto;width:16px;height:16px;display:flex;align-items:center;justify-content:center;opacity:.8;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic.wv-ctx-ic-native{opacity:1;}",
-    "#" + RP_BM_CTX_ID + " .wv-ctx-ic svg{width:14px;height:14px;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-ic svg{width:16px;height:16px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-sep{height:1px;background:rgba(127,127,127,.3);margin:4px 2px;}",
+    // Modal Add-Link dialog (Text + URL fields), mounted inside the
+    // reader iframe so it covers the iframe viewport. Backdrop dims
+    // the document; dialog centers and uses Canvas/CanvasText to track
+    // light/dark themes.
+    ".wv-bm-url-dialog-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.40);z-index:2147483646;display:flex;align-items:center;justify-content:center;}",
+    ".wv-bm-url-dialog{background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.5);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.45);padding:14px 16px;min-width:340px;max-width:560px;font-size:13px;display:flex;flex-direction:column;gap:8px;}",
+    ".wv-bm-url-dialog-row{display:flex;flex-direction:column;gap:3px;}",
+    ".wv-bm-url-dialog-label{font-size:11px;opacity:.7;font-weight:500;}",
+    ".wv-bm-url-dialog-input{font:inherit;padding:5px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:Field;color:FieldText;outline:none;}",
+    ".wv-bm-url-dialog-input:focus{border-color:var(--color-accent,#5e6ad2);box-shadow:0 0 0 2px color-mix(in srgb,var(--color-accent,#5e6ad2) 25%,transparent);}",
+    ".wv-bm-url-dialog-btns{display:flex;justify-content:flex-end;gap:6px;margin-top:6px;}",
+    ".wv-bm-url-dialog-btn{font:inherit;padding:5px 14px;border:1px solid rgba(127,127,127,.45);border-radius:4px;background:transparent;color:inherit;cursor:pointer;}",
+    ".wv-bm-url-dialog-btn:hover{background:rgba(127,127,127,.14);}",
+    ".wv-bm-url-dialog-btn-primary{background:var(--color-accent,#5e6ad2);border-color:var(--color-accent,#5e6ad2);color:#fff;}",
+    ".wv-bm-url-dialog-btn-primary:hover{filter:brightness(1.08);}",
 ].join("");
 
 /** Rich bookmark hover card styles. Extracted from RP_BM_CSS so the library-
@@ -478,7 +706,7 @@ class _ReaderPanelsMixin {
         if (this._wvReaderIconsReady || this._wvReaderIconsPrefetching) return;
         this._wvReaderIconsPrefetching = true;
         if (!this._wvReaderIconCache) this._wvReaderIconCache = {};
-        const urls = [RP_FUNNEL_ICON, RP_RELATED_ICON];
+        const urls = [RP_FUNNEL_ICON, RP_RELATED_ICON, RP_TAG_ICON];
         try { for (const t of this._ANNOTATION_TYPES) if (t && t.icon) urls.push(t.icon); } catch (_) {}
         Promise.all(urls.map(async (u: string) => {
             try {
@@ -590,20 +818,63 @@ class _ReaderPanelsMixin {
 
     // ---- Bookmarks-pane filter chips ---------------------------------------
     // Bottom selector strip (colors / tags / authors / annotation types) that
-    // mirrors the annotations pane's bottom filter. Chip selections persist
-    // PER-READER across scope flips (This Document / Library / Elsewhere) so
-    // toggling scope doesn't lose the active filter. Strict matching with
-    // ancestor-folder dimming: non-matching items hide; folders that hold a
-    // matching descendant render dimmed (same idiom as the search filter).
+    // mirrors the annotations pane's bottom filter.
+    //
+    // Selections are kept PER-READER in a small bag carrying three independent
+    // chip-state slots:
+    //   • bag.document  — chips for the "This Document" scope (default)
+    //   • bag.library   — chips for the "Library" scope (default)
+    //   • bag.global    — chips applied to both scopes, used when bag.pinned
+    //
+    // When `bag.pinned` is true, the global slot is the effective filter on
+    // every scope. When false (the default), each scope keeps its own filter
+    // and switching scopes shows the chip selections for THAT scope.
+    //
+    // Strict matching with ancestor-folder dimming: non-matching items hide;
+    // folders that hold a matching descendant render dimmed (same idiom as
+    // the search filter).
+
+    _wvReaderBmChipBag(reader: any) {
+        if (!this._wvBmChips) this._wvBmChips = new WeakMap();
+        let bag = this._wvBmChips.get(reader);
+        if (!bag) {
+            const fresh = () => ({
+                colors: new Set<string>(), tags: new Set<string>(),
+                authors: new Set<string>(), types: new Set<string>(),
+            });
+            bag = { document: fresh(), library: fresh(), global: fresh(), pinned: false };
+            this._wvBmChips.set(reader, bag);
+        }
+        return bag;
+    }
 
     _wvReaderBmChipState(reader: any) {
-        if (!this._wvBmChips) this._wvBmChips = new WeakMap();
-        let st = this._wvBmChips.get(reader);
-        if (!st) {
-            st = { colors: new Set<string>(), tags: new Set<string>(), authors: new Set<string>(), types: new Set<string>() };
-            this._wvBmChips.set(reader, st);
-        }
-        return st;
+        const bag = this._wvReaderBmChipBag(reader);
+        // Filter behaviour follows the scope automatically:
+        //   • "both"    → shared `global` slot (filter applies across all
+        //                 three sections at once)
+        //   • "library" → bag.library
+        //   • "document" → bag.document
+        // The legacy pin toggle is gone — Ctrl-click on a scope button now
+        // controls the merged state, which controls the shared filter.
+        const scope = this._wvReaderBmScope();
+        if (scope === "both") return bag.global;
+        return scope === "library" ? bag.library : bag.document;
+    }
+
+    /** Seed the global chip slot from whichever per-scope filter was last
+     *  active, so entering the merged ("both") scope carries the existing
+     *  filter context across rather than starting blank. Called from the
+     *  scope-button click handler when transitioning into "both". */
+    _wvReaderBmChipsSeedGlobal(reader: any, fromScope: string) {
+        const bag = this._wvReaderBmChipBag(reader);
+        const src = fromScope === "library" ? bag.library : bag.document;
+        bag.global = {
+            colors: new Set(src.colors),
+            tags: new Set(src.tags),
+            authors: new Set(src.authors),
+            types: new Set(src.types),
+        };
     }
 
     _wvReaderBmChipsActive(reader: any): boolean {
@@ -611,8 +882,19 @@ class _ReaderPanelsMixin {
         return (st.colors.size + st.tags.size + st.authors.size + st.types.size) > 0;
     }
 
-    /** Walk every bookmark this reader can see (in-doc local + cross-doc global
-     *  + library tree) and collect facet → count. */
+    /** Walk the bookmarks the chip filter should consider and collect
+     *  facet → count. The walked set follows the same per-scope split
+     *  the bookmark LIST already uses, so the chip bar matches what's
+     *  visible:
+     *    • not pinned + scope="document" → walk doc.local + doc.global
+     *    • not pinned + scope="library"  → walk the library tree
+     *    • pinned                         → walk all three (the chip set
+     *                                       has to be the union so the
+     *                                       pinned filter applies the
+     *                                       same on either scope).
+     *  Earlier this method always walked all three sources, which made
+     *  the chip bar show library-only facets while the user was on the
+     *  "This Document" tab. */
     _wvReaderBmChipFacets(reader: any) {
         const colors = new Map<string, number>();
         const tags = new Map<string, { color: string, count: number, position: number }>();
@@ -621,6 +903,11 @@ class _ReaderPanelsMixin {
         try {
             const att = this._wvReaderAtt(reader);
             const userLib = (Zotero as any).Libraries && (Zotero as any).Libraries.userLibraryID;
+            // Walk doc bookmarks when scope includes the document, library
+            // when scope includes the library; "both" walks all three.
+            const scope = this._wvReaderBmScope();
+            const includeDoc = scope === "document" || scope === "both";
+            const includeLib = scope === "library" || scope === "both";
             const collect = (nodes: any[]) => {
                 for (const n of (nodes || [])) {
                     if (!n) continue;
@@ -669,12 +956,14 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                 }
             };
-            if (att) {
+            if (includeDoc && att) {
                 const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
                 if (doc) { collect(doc.local); collect(doc.global); }
             }
-            const lib = (this._bmDoc && this._bmDoc.bookmarks) || [];
-            collect(lib);
+            if (includeLib) {
+                const lib = (this._bmDoc && this._bmDoc.bookmarks) || [];
+                collect(lib);
+            }
         } catch (_) {}
         return { colors, tags, authors, types };
     }
@@ -769,10 +1058,28 @@ class _ReaderPanelsMixin {
                 btn.className = "toolbar-button " + RP_FILTER_BTN_CLASS;
                 btn.setAttribute("tabindex", "-1");
                 btn.setAttribute("title", "Filter annotations");
+                // `<img>` with a BAKED-IN data: URI of Zotero's
+                // filter.svg — same `context-fill` icon as the library
+                // popup's funnel button, but ready at the first paint
+                // (no chrome:// load, no waiting on the prefetch). Once
+                // the prefetch lands the callback in
+                // `_wvReaderPrefetchIcons` will overwrite the src with
+                // the fetched copy; both URIs are byte-identical so the
+                // user sees nothing change.
                 const fimg = idoc.createElementNS(NS_HTML_RP, "img");
                 fimg.className = "wv-filter-svg";
-                fimg.setAttribute("src", this._wvReaderIconUri(RP_FUNNEL_ICON) || RP_FUNNEL_ICON);
+                fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
                 btn.appendChild(fimg);
+                // Tiny ▾ chevron after the funnel — matches Zotero's
+                // native UI convention (a chevron next to an icon
+                // signals "opens a dropdown/popup") and the library
+                // filter button's XUL `toolbarbutton-menu-dropmarker`.
+                // Same 8×8 inline SVG the tabs-menu file-type button
+                // uses (see tabs.ts).
+                const chev = idoc.createElementNS(NS_HTML_RP, "span");
+                chev.className = "wv-rf-chev";
+                chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
+                btn.appendChild(chev);
                 btn.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
                     this._wvToggleReaderFilterPopup(reader, idoc, btn);
@@ -823,15 +1130,39 @@ class _ReaderPanelsMixin {
             // against stale stylings (e.g. visibility:hidden) inherited from a
             // previous render lingering when a caller bypasses the toggle path.
             try { const old = idoc.getElementById(RP_FILTER_POPUP_ID); if (old) old.remove(); } catch (_) {}
+
+            // Measure the sidebar BEFORE creating + appending the popup
+            // so we can set the popup's final width inline ahead of the
+            // first layout pass. Otherwise the popup is appended at the
+            // CSS `max-width: 360px` default, lays out, THEN the width
+            // assignment forces a reflow that re-wraps the chip rows —
+            // visible to the user as a two-stage "popup grows taller"
+            // rendering when the sidebar is narrower than 360px.
+            let sbWidth = 0, sbLeft = -1;
+            try {
+                const sb = anchorBtn && anchorBtn.closest && anchorBtn.closest("#sidebarContainer");
+                if (sb) {
+                    const rect = sb.getBoundingClientRect();
+                    sbWidth = rect.width;
+                    sbLeft = rect.left;
+                }
+            } catch (_) {}
+
             const popup = idoc.createElementNS(NS_HTML_RP, "div");
             popup.id = RP_FILTER_POPUP_ID;
+            if (sbWidth > 0) {
+                popup.style.width = sbWidth + "px";
+                popup.style.maxWidth = "none";
+            }
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             (idoc.body || idoc.documentElement).appendChild(popup);
 
-            // Position under the anchor button, right-aligned to stay on-screen.
+            // Position under the anchor button. When we know the sidebar's
+            // bounds, left-align the popup with it; otherwise fall back to
+            // the anchor's left edge. Always clamp to stay on-screen.
             const r = anchorBtn.getBoundingClientRect();
-            const pw = popup.offsetWidth || 240;
-            let left = r.left;
+            const pw = sbWidth > 0 ? sbWidth : (popup.offsetWidth || 240);
+            let left = sbLeft >= 0 ? sbLeft : r.left;
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
             if (left + pw > vw - 6) left = Math.max(6, vw - pw - 6);
             popup.style.left = left + "px";
@@ -1002,7 +1333,7 @@ class _ReaderPanelsMixin {
         // Header + Clear / Clear-and-Close (mirrors the library filter).
         const head = mk("div", "wv-rf-head");
         const title = mk("div", "wv-rf-title");
-        title.textContent = "Filter annotations";
+        title.textContent = "Filter Annotations";
         head.appendChild(title);
         const clearState = () => {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
@@ -1075,9 +1406,18 @@ class _ReaderPanelsMixin {
             });
             return btn;
         };
-        const addRow = (build: (opts: any) => void, groupBg?: boolean, label?: string) => {
-            const sec = mk("div", "wv-filter-section" + (groupBg ? " wv-filter-or-group" : ""));
-            const t = mk("div", "wv-filter-section-title"); sec.appendChild(t);
+        // Sections in the reader filter popup are FLAT — no row-kind
+        // grouping. The library filter popup groups its rows by row
+        // kind (Cross-level / Parent / Attachment / Annotation) with
+        // dashed-divider headers — useful there because items live at
+        // multiple row kinds and the grouping tells the user which
+        // level each filter targets. The reader filters annotations
+        // only (no hierarchy), so the same grouping has nothing to
+        // organise. This asymmetry between the two popups is intentional;
+        // see filter.ts `addGroupHeader` for the library-side rationale.
+        const addRow = (build: (opts: any) => void, groupBg?: boolean, label?: string, extraClass?: string) => {
+            const sec = mk("div", "wv-filter-section" + (groupBg ? " wv-filter-or-group" : "")
+                + (extraClass ? " " + extraClass : ""));
             // Optional visible label — used to separate the otherwise-identical
             // Added By / Modified By person rows.
             if (label) { const lb = mk("span", "wv-rf-grouplabel"); lb.textContent = label; sec.appendChild(lb); }
@@ -1087,6 +1427,9 @@ class _ReaderPanelsMixin {
         };
         // A small heading on its OWN line (full-width chips below it) — used to
         // label the Added By / Modified By rows without eating chip width.
+        // This is NOT a row-kind group divider (the reader has none — see
+        // `addRow` comment above); it's purely a semantic disambiguator for
+        // two otherwise-identical rows of person-name chips.
         const addHead = (text: string) => {
             const h = mk("div", "wv-rf-grouphead");
             h.textContent = text;
@@ -1190,11 +1533,28 @@ class _ReaderPanelsMixin {
         addRow((opts: any) => {
             opts.appendChild(mkTriTile(st.hasTag,
                 "Has Tag — annotations with at least one tag. Alt+click to exclude.",
+                // Use Zotero's `tag.svg` (same source as the library
+                // popup's Has Tag icon) so both popups render visually
+                // identical artwork at the same 16×16 size. The earlier
+                // inline custom SVG drew a similar shape but with thinner
+                // strokes that read as a smaller icon next to the library
+                // version.
                 () => {
-                    const sp = mk("span"); sp.className = "wv-filter-svg";
-                    sp.style.color = "var(--accent-orange)";
-                    sp.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M6.086 1L14.586 9.5L9.5 14.586L1 6.086V1H6.086ZM6.5 0H0.5C0.367 0 0.24 0.053 0.146 0.146C0.053 0.24 0 0.367 0 0.5L0 6.5L9.146 15.646C9.24 15.74 9.367 15.792 9.5 15.792C9.632 15.792 9.759 15.74 9.853 15.646L15.646 9.853C15.74 9.759 15.792 9.632 15.792 9.5C15.792 9.367 15.74 9.24 15.646 9.146L6.5 0ZM4 2.75C3.586 2.75 3.211 2.918 2.94 3.189C2.668 3.461 2.5 3.836 2.5 4.25C2.5 4.664 2.668 5.039 2.94 5.311C3.211 5.582 3.586 5.75 4 5.75C4.414 5.75 4.789 5.582 5.061 5.311C5.332 5.039 5.5 4.664 5.5 4.25C5.5 3.836 5.332 3.461 5.061 3.189C4.789 2.918 4.414 2.75 4 2.75Z"/></svg>';
-                    return sp;
+                    const img: any = mk("img");
+                    img.className = "wv-filter-svg";
+                    // Only set `src` when the prefetch cache has the
+                    // data: URI. Falling back to the chrome:// URL
+                    // would paint a broken-image placeholder inside
+                    // the content iframe (same reason the funnel
+                    // button doesn't fall back either — see
+                    // `_wvReaderEnsureFilterButton`). The prefetch
+                    // is seeded with RP_TAG_ICON so by the time the
+                    // user clicks the funnel to open this popup the
+                    // cache is essentially always populated.
+                    const u = this._wvReaderIconUri(RP_TAG_ICON);
+                    if (u) img.setAttribute("src", u);
+                    img.style.color = "var(--accent-orange)";
+                    return img;
                 },
                 (alt: boolean) => { st.hasTag = alt ? (st.hasTag === false ? null : false) : (st.hasTag === true ? null : true); }));
             opts.appendChild(mkTriTile(st.hasRelated,
@@ -1209,14 +1569,20 @@ class _ReaderPanelsMixin {
 
         // ---- Tags (coloured dot when the tag has a colour) — include via native.
         //      All tags share a single .wv-filter-or-group row so they read as
-        //      one logical "tags" group; coloured tags come FIRST (then plain,
-        //      alphabetical within each subset) to mirror Zotero's library tag
-        //      selector — but on the same line, wrapping if it overflows.
+        //      one logical "tags" group. Three-bucket order: coloured FIRST,
+        //      then plain "normal" tags (start with a letter/digit — bubble
+        //      bursting, Fluid mechanics, …), then "special" tags (underscore,
+        //      hashtag, slash-leading and other punctuation-prefixed
+        //      conventions — _Tag1, #Category, etc.), so the eye walks from
+        //      colours → familiar words → bookkeeping prefixes. Alphabetical
+        //      within each bucket.
         if (tagsPresent.size) {
             const tagsAll = Array.from(tagsPresent);
+            const isNormal = (t: string) => /^[\p{L}\p{N}]/u.test(t);
             const tagsColored = tagsAll.filter(t => !!tagColors[t]).sort((a, b) => a.localeCompare(b));
-            const tagsPlain = tagsAll.filter(t => !tagColors[t]).sort((a, b) => a.localeCompare(b));
-            const tagsSorted = [...tagsColored, ...tagsPlain];
+            const tagsNormal  = tagsAll.filter(t => !tagColors[t] &&  isNormal(t)).sort((a, b) => a.localeCompare(b));
+            const tagsSpecial = tagsAll.filter(t => !tagColors[t] && !isNormal(t)).sort((a, b) => a.localeCompare(b));
+            const tagsSorted = [...tagsColored, ...tagsNormal, ...tagsSpecial];
             addRow((opts: any) => {
                 for (const tg of tagsSorted) {
                     const col = tagColors[tg];
@@ -1228,7 +1594,7 @@ class _ReaderPanelsMixin {
                         },
                         actTags));
                 }
-            }, true);
+            }, true, undefined, "wv-rf-tags-row");
         }
 
         // ---- Added By (group libraries only) — include via native authors.
@@ -1264,7 +1630,7 @@ class _ReaderPanelsMixin {
         // ---- Bottom hint (same as the library filter).
         const bottom = mk("div", "wv-filter-bottom-controls");
         const hint = mk("span", "wv-filter-bottom-hint");
-        hint.textContent = "Alt+Click to exclude";
+        hint.textContent = "Alt+Click to Exclude";
         bottom.appendChild(hint);
         stack.appendChild(bottom);
 
@@ -1414,6 +1780,14 @@ class _ReaderPanelsMixin {
         const btn = idoc.createElementNS(NS_HTML_RP, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
+        // Has Comment sits in the same row as a `.wv-filter-or-inline`
+        // group that's taller because of its 3 px×2 padding. The flex
+        // container defaults to `align-items: stretch`, but this
+        // button's explicit `height: 28 px` wins → button hugs the top
+        // of the row, 3 px above the icons inside the group's
+        // background. `align-self: center` lines it up with the type
+        // icons. Same fix as the library popup (filter.ts).
+        btn.style.alignSelf = "center";
         if (st.hasComment === true) btn.dataset.selected = "true";
         else if (st.hasComment === false) btn.dataset.excluded = "true";
         btn.title = "Has Comment — annotations with non-empty comment text. Alt+click to exclude.";
@@ -1665,9 +2039,96 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** Re-evaluate the Bookmarks tab in every open reader whose
+     *  attachment matches `(libraryID, itemKey)`. Used after bookmark
+     *  add / remove so the auto-hide gate flips the tab in or out live
+     *  (the gate itself is in `_wvReaderEnsureBookmarksTab`). No-op
+     *  when `libraryID`/`itemKey` are missing — call without args to
+     *  refresh every reader. */
+    _wvReaderRefreshBookmarksTabAll(libraryID?: number, itemKey?: string) {
+        try {
+            for (const r of (Zotero.Reader && Zotero.Reader._readers) || []) {
+                try {
+                    const iwin = r._iframeWindow
+                        || (r._iframe && r._iframe.contentWindow);
+                    const idoc = iwin && iwin.document;
+                    if (!idoc) continue;
+                    if (libraryID != null && itemKey) {
+                        const att = this._wvReaderAtt(r);
+                        if (!att) continue;
+                        if (att.libraryID !== libraryID || att.itemKey !== itemKey) continue;
+                    }
+                    this._wvReaderEnsureBookmarksTab(r, idoc);
+                } catch (_) {}
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderRefreshBookmarksTabAll err: " + e);
+        }
+    }
+
+    /** Strip the Bookmarks tab + view from this reader's sidebar. Called
+     *  when the user disables the reader bookmarks pref live, so the tab
+     *  disappears across every open reader without a restart. */
+    _wvRemoveReaderBookmarksTab(reader: any, idoc: any) {
+        try {
+            if (!idoc) return;
+            // Deactivate first so the native sidebar comes back if the
+            // user had the Bookmarks pane open (the deactivate path
+            // clears `RP_BM_TAB_ON` and restores the prior sidebarView).
+            try { this._wvReaderSetBmActive(reader, idoc, false); } catch (_) {}
+            const tab = idoc.querySelector("." + RP_BM_TAB_CLASS);
+            if (tab && tab.parentNode) tab.parentNode.removeChild(tab);
+            const view = idoc.querySelector("." + RP_BM_VIEW_CLASS);
+            if (view && view.parentNode) view.parentNode.removeChild(view);
+            const sc = idoc.getElementById("sidebarContainer");
+            if (sc) sc.classList.remove(RP_BM_TAB_ON);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvRemoveReaderBookmarksTab err: " + e);
+        }
+    }
+
     /** Inject the Bookmarks tab (beside Outline) and its view panel. */
     _wvReaderEnsureBookmarksTab(reader: any, idoc: any) {
         try {
+            // Gate on the Bookmarks master + reader sub-toggle. If the
+            // user disables either, strip any tab that's already in the
+            // DOM and bail before rebuilding.
+            if (!this._getEnableReaderBookmarks()) {
+                try { this._wvRemoveReaderBookmarksTab(reader, idoc); } catch (e) {}
+                return;
+            }
+            // Auto-hide-when-empty (opt-in). When the user has the
+            // toggle on and this attachment has zero bookmarks across
+            // both sections, strip the tab. Adding the first bookmark
+            // re-fires this via `_wvReaderRefreshBookmarksTabAll`, so
+            // the tab pops back into existence the moment there's
+            // something to show. The Bookmarks pane stays unaffected
+            // for attachments that DO have bookmarks.
+            //
+            // Gate on `this._bmDoc` being loaded — `_bmInit` is async,
+            // and on Zotero restart the reader's mutation observer
+            // fires this method BEFORE the bookmarks.json file read
+            // resolves. At that moment `_bmReaderList` returns []
+            // (empty in-memory store), which would falsely trip
+            // auto-hide → `_wvRemoveReaderBookmarksTab` →
+            // `_wvReaderSetBmActive(false)` → **wipes the persisted
+            // tab-active state from the pref**. The post-init
+            // re-render (kicked off at the bottom of `_bmInit`) walks
+            // every open reader and re-evaluates auto-hide once the
+            // store IS loaded, so the gate doesn't suppress the
+            // feature — it just races safely.
+            if (this._getAutoHideEmptyReaderBookmarks() && this._bmDoc) {
+                try {
+                    const att = this._wvReaderAtt(reader);
+                    if (att && att.libraryID != null && att.itemKey) {
+                        const list = this._bmReaderList(att.libraryID, att.itemKey);
+                        if (!list || !list.length) {
+                            this._wvRemoveReaderBookmarksTab(reader, idoc);
+                            return;
+                        }
+                    }
+                } catch (_) {}
+            }
             const tablist = idoc.querySelector("#sidebarContainer .sidebar-toolbar .start")
                 || idoc.querySelector(".sidebar-toolbar .start");
             const content = idoc.getElementById("sidebarContent");
@@ -1701,25 +2162,32 @@ class _ReaderPanelsMixin {
                 tab.setAttribute("tabindex", "-1");
                 tab.setAttribute("role", "tab");
                 tab.setAttribute("title", "Bookmarks");
-                tab.innerHTML = RP_BM_RIBBON;
+                tab.innerHTML = RP_BM_RIBBON_TAB;
                 tab.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
                     this._wvReaderSetBmActive(reader, idoc, true);
                 });
                 // Drop an annotation/selection (from the sidebar OR the center
                 // pane) onto the tab to bookmark it (activates the tab).
+                // A drag that originated FROM inside the bookmarks list
+                // (`_wvBmRowDrag` for doc rows or `_wvLibRowDrag` for lib
+                // rows) is NOT accepted here — the row already belongs to
+                // bookmarks, so dropping it on the tab icon would be a
+                // no-op semantically; refusing makes the cursor show the
+                // standard no-drop state.
                 tab.addEventListener("dragover", (e: any) => {
+                    if (this._wvBmRowDrag || this._wvLibRowDrag) return;
                     if (this._wvReaderDragHasBookmarkable(e.dataTransfer)) { e.preventDefault(); tab.classList.add("wv-bm-dropok"); }
                 });
                 tab.addEventListener("dragleave", () => tab.classList.remove("wv-bm-dropok"));
                 tab.addEventListener("drop", (e: any) => {
                     tab.classList.remove("wv-bm-dropok");
+                    if (this._wvBmRowDrag || this._wvLibRowDrag) return;
                     if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
                     if (e._wvBmDropHandled) return; e._wvBmDropHandled = true;
                     e.preventDefault();
                     const payload = this._wvReaderReadDropPayload(e);
                     this._wvReaderSetBmActive(reader, idoc, true);
-                    if (this._wvBmRowDrag) { this._wvReaderDropBmRow(reader, idoc, null); return; }
                     if (this._wvReaderBmScope() === "library") { this._wvReaderLibAcceptDrop(reader, idoc, payload, null); return; }
                     this._wvReaderDropPayload(reader, idoc, payload);
                 });
@@ -1804,38 +2272,129 @@ class _ReaderPanelsMixin {
                 const initialScope = this._wvReaderBmScope();
                 const mkScope = (lbl: string, scope: string) => {
                     const b = idoc.createElementNS(NS_HTML_RP, "button");
-                    b.className = "wv-bm-scope-btn" + (scope === initialScope ? " wv-bm-scope-active" : "");
+                    const isActive = (initialScope === "both") || (scope === initialScope);
+                    b.className = "wv-bm-scope-btn" + (isActive ? " wv-bm-scope-active" : "");
                     b.setAttribute("data-scope", scope);
+                    b.setAttribute("title", "Click: switch scope. Ctrl-click: merge both scopes (show together).");
                     b.textContent = lbl;
-                    b.addEventListener("click", () => {
-                        this._wvReaderSetBmScope(scope);
+                    b.addEventListener("click", (e: any) => {
+                        // Prevent the click from bubbling up to Zotero's
+                        // sidebar tab handlers — without this, clicking
+                        // the scope toggle can flip the active sidebar
+                        // tab away from "Bookmarks" (the click event
+                        // travels up past our panel and lands on a tab
+                        // strip listener that interprets it as a tab
+                        // selection).
+                        try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                        const ctrl = !!(e && (e.ctrlKey || e.metaKey));
+                        const cur = this._wvReaderBmScope();
+                        let next: string;
+                        if (ctrl) {
+                            // Ctrl-click merges/un-merges: toggle THIS button's
+                            // inclusion in the current selection.
+                            if (cur === "both") {
+                                // Both selected → de-select the clicked one
+                                // → leaves the OTHER as the single scope.
+                                next = scope === "library" ? "document" : "library";
+                            } else if (cur === scope) {
+                                // Clicked the already-single-active button →
+                                // refuse: can't end up with nothing selected.
+                                return;
+                            } else {
+                                // Single scope + Ctrl-click on the OTHER button
+                                // → merge both.
+                                next = "both";
+                            }
+                        } else {
+                            // Plain click: switch to that single scope.
+                            next = scope;
+                        }
+                        // Entering "both" → seed the shared (global) chip
+                        // slot from the previously-active scope so any
+                        // existing filter context carries across into the
+                        // merged view.
+                        if (next === "both" && cur !== "both") {
+                            try { this._wvReaderBmChipsSeedGlobal(reader, cur); } catch (_) {}
+                        }
+                        this._wvReaderSetBmScope(next);
                         this._wvReaderUpdateScopeToggle(idoc);
                         this._wvReaderRenderBmList(reader, idoc);
+                        // Chip selections follow the scope: each single
+                        // scope keeps its own filter, "both" uses the
+                        // shared filter. Refresh the bar to reflect.
+                        try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
                     });
+                    // Cross-scope drop target — drop a doc-row on the
+                    // "Library" button to copy/move it into the library
+                    // store, drop a lib-row on "This Document" for the
+                    // reverse. No modifier = copy, Shift = move (Mac:
+                    // metaKey). Matches Zotero's collectionTree convention.
+                    this._wvWireScopeBtnDrop(b, scope, reader, idoc);
                     scopeGroup.appendChild(b);
                 };
-                mkScope("This Document", "document");
-                mkScope("Library", "library");
-                const add = idoc.createElementNS(NS_HTML_RP, "button");
-                add.className = "wv-bm-reader-add";
-                add.setAttribute("title", "Add a bookmark — opens the picker focused on this file (expand it to bookmark its annotations)…");
-                add.innerHTML = RP_PLUS_SVG;
-                add.addEventListener("click", () => {
-                    if (this._wvReaderBmScope() === "library") {
-                        Promise.resolve(this._bmAddBookmarksDialog())
-                            .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} })
-                            .catch(() => {});
-                    } else {
-                        this._wvReaderAddViaDialog(reader, idoc);
+                mkScope("Reader", "document");
+                if (this._getShowLibraryBookmarksInReader()) {
+                    mkScope("Library", "library");
+                } else {
+                    // Pref hid the Library tab — if the user was last on
+                    // it (or in merged "both" state), fall back to the
+                    // doc scope so the panel stays usable.
+                    const cur = this._wvReaderBmScope();
+                    if (cur === "library" || cur === "both") {
+                        try { this._wvReaderSetBmScope("document"); } catch (_) {}
                     }
-                });
+                }
+                // The +/search/scope buttons live above the bookmark list,
+                // so the cursor passes over them during any drag up to the
+                // top of the panel. Dropping a bookmark-row drag on them
+                // is meaningless (the row already belongs to the bookmark
+                // store) — refuse via stopPropagation so the event doesn't
+                // bubble up to the ancestor section drop handler (which
+                // would otherwise reorder the source row to section end).
+                // Also sweep any lingering drop indicators from rows the
+                // cursor passed through, so the first row's "before" bar
+                // doesn't keep painting under the section header.
+                const blockBmRowDrag = (el: any) => {
+                    const sweep = () => {
+                        try {
+                            const stale = idoc.querySelectorAll(
+                                ".wv-bm-drop-before,.wv-bm-drop-after,.wv-bm-drop-into");
+                            for (let i = 0; i < stale.length; i++) {
+                                stale[i].classList.remove("wv-bm-drop-before",
+                                    "wv-bm-drop-after", "wv-bm-drop-into");
+                            }
+                        } catch (_) {}
+                    };
+                    el.addEventListener("dragover", (e: any) => {
+                        if (!this._wvBmRowDrag && !this._wvLibRowDrag) return;
+                        e.stopPropagation();   // no preventDefault → OS shows no-drop cursor
+                        sweep();
+                    });
+                    el.addEventListener("drop", (e: any) => {
+                        if (!this._wvBmRowDrag && !this._wvLibRowDrag) return;
+                        e.stopPropagation();
+                    });
+                };
+
+                // Top-level + button removed: the destination was
+                // ambiguous when both scopes are merged. Per-section
+                // "+" buttons (Elsewhere / Library headers) replaced
+                // it — each one knows exactly where its bookmark lands.
                 // Magnifier toggles a search input that filters bookmark
                 // labels (folders with matching descendants stay open). Same
                 // affordance as the reader's Annotations tab.
                 const searchBtn = idoc.createElementNS(NS_HTML_RP, "button");
                 searchBtn.className = "wv-bm-search-btn";
+                blockBmRowDrag(searchBtn);
                 searchBtn.setAttribute("title", "Search bookmarks");
-                searchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="4"/><line x1="9.2" y1="9.2" x2="13" y2="13"/></svg>';
+                // Use Zotero's 16-px `magnifier.svg` path (byte-
+                // identical to chrome://zotero/skin/16/universal/
+                // magnifier.svg) so the search affordance is visually
+                // consistent with the library's main quick-search
+                // magnifier + the bookmark popup search icon.
+                // `fill="currentColor"` for inline SVG so the icon
+                // inherits the button's text color.
+                searchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M11 6C11 8.76142 8.76142 11 6 11C3.23858 11 1 8.76142 1 6C1 3.23858 3.23858 1 6 1C8.76142 1 11 3.23858 11 6ZM9.87438 10.5816C8.82905 11.4664 7.47683 12 6 12C2.68629 12 0 9.31371 0 6C0 2.68629 2.68629 0 6 0C9.31371 0 12 2.68629 12 6C12 7.47687 11.4664 8.82911 10.5815 9.87446L16 15.2929L15.2929 16L9.87438 10.5816Z"/></svg>';
                 const searchRow = idoc.createElementNS(NS_HTML_RP, "div");
                 searchRow.className = "wv-bm-search-row";
                 searchRow.style.display = "none";
@@ -1876,9 +2435,73 @@ class _ReaderPanelsMixin {
                     }
                     this._wvReaderRenderBmList(reader, idoc);
                 });
-                scopeBar.appendChild(scopeGroup);
-                scopeBar.appendChild(add);
-                scopeBar.appendChild(searchBtn);
+                // Filter-funnel button — opens a popover that holds the
+                // chip-bar (annotation color / type / author / tag chips,
+                // plus the global-pin toggle). Previously the chip rows
+                // lived in a docked panel at the bottom of the pane; the
+                // popover keeps the same chips and behaviour, just anchored
+                // to the funnel here instead of taking permanent vertical
+                // space below the list.
+                const filterBtn = idoc.createElementNS(NS_HTML_RP, "button");
+                filterBtn.className = "wv-bm-filter-btn";
+                blockBmRowDrag(filterBtn);
+                filterBtn.setAttribute("title", "Filter bookmarks");
+                // Use the same funnel path Weavero's reader-filter
+                // button uses (the funnel above the reader in the
+                // annotations toolbar). 16 viewBox, `currentColor`
+                // fill, rendered at 20×20 to match the toolbar.
+                filterBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z"/></svg>';
+                // Tiny ▾ chevron — same affordance as the reader
+                // toolbar funnel (popup 2) signalling "opens a popup".
+                const chev = idoc.createElementNS(NS_HTML_RP, "span");
+                chev.className = "wv-bm-filter-chev";
+                chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
+                filterBtn.appendChild(chev);
+                filterBtn.addEventListener("click", (e: any) => {
+                    try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                    this._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
+                });
+                // Only show the scope group when there's a real choice
+                // to make. With `showLibraryBookmarksInReader` off, the
+                // group would render as a single highlighted "Reader"
+                // pill — visually a redundant header. Hide it; the
+                // section headings ("This Document", "Elsewhere") still
+                // tell the user what they're looking at.
+                if (this._getShowLibraryBookmarksInReader()) {
+                    scopeBar.appendChild(scopeGroup);
+                }
+                // Action buttons (Add / Search / Filter) live in the
+                // reader sidebar's TOP toolbar — Zotero's `.sidebar-toolbar`
+                // already has a right-aligned `.end` slot that sits beside
+                // the tab icons (thumbnails / annotations / outline /
+                // bookmarks). Injecting our buttons there integrates them
+                // into the reader's chrome instead of taking another row
+                // inside the bookmark pane. Visibility is gated by the
+                // `RP_BM_TAB_ON` class the bookmarks-tab activation already
+                // toggles on `#sidebarContainer` (see CSS below).
+                const sidebarEnd = idoc.querySelector(
+                    "#sidebarContainer .sidebar-toolbar .end");
+                let actionHost: any = null;
+                if (sidebarEnd) {
+                    // Clear any stale host from a prior plugin load so
+                    // hot-reload doesn't stack duplicate buttons.
+                    const stale = sidebarEnd.querySelector(".wv-bm-sidebar-actions");
+                    if (stale) try { stale.remove(); } catch (_) {}
+                    actionHost = idoc.createElementNS(NS_HTML_RP, "div");
+                    actionHost.className = "wv-bm-sidebar-actions";
+                    actionHost.appendChild(searchBtn);
+                    actionHost.appendChild(filterBtn);
+                    sidebarEnd.appendChild(actionHost);
+                } else {
+                    // Toolbar isn't there for some reason (alternative
+                    // theme? upstream change?) — fall back to a row at
+                    // the top of the pane so the buttons remain usable.
+                    const actionBar = idoc.createElementNS(NS_HTML_RP, "div");
+                    actionBar.className = "wv-bm-actionbar";
+                    actionBar.appendChild(searchBtn);
+                    actionBar.appendChild(filterBtn);
+                    view.appendChild(actionBar);
+                }
                 const list = idoc.createElementNS(NS_HTML_RP, "div");
                 list.className = "wv-bm-reader-list";
                 view.appendChild(scopeBar);
@@ -2003,16 +2626,21 @@ class _ReaderPanelsMixin {
                 this._bmInit().then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} });
                 return;
             }
-            // Library scope: render the GLOBAL library bookmarks tree (the
-            // collections-pane bookmarks) instead of this document's sections,
-            // using the same inline tree UI. The header toggle switches scope.
-            if (this._wvReaderBmScope() === "library") {
+            // Scope rendering:
+            //   "library" → library bookmarks only
+            //   "document" → this document + elsewhere (default)
+            //   "both" → all three sections (Library + This Document +
+            //             Elsewhere), reached via Ctrl-click on the
+            //             other scope button.
+            const _scope = this._wvReaderBmScope();
+            if (_scope === "library") {
                 this._wvReaderHideBmHoverCard(idoc);
                 while (list.firstChild) list.firstChild.remove();
                 this._wvReaderRenderLibraryInto(reader, idoc, list);
                 try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
                 return;
             }
+            const includeLibrary = _scope === "both";
             // Refresh each bookmark's original (source) name from the live data
             // before rendering, so default names track edits and the stored
             // originalLabel stays current (even for renamed bookmarks).
@@ -2051,6 +2679,30 @@ class _ReaderPanelsMixin {
                 const htitle = idoc.createElementNS(NS, "span");
                 htitle.className = "wv-bm-gh-title";
                 htitle.textContent = heading;
+                h.appendChild(htitle);
+                // Per-section "+" buttons. "Elsewhere" opens the
+                // add-menu (Pick item / Add Link). "This Document"
+                // skips the menu and goes straight to the item picker
+                // — Add Link doesn't apply here (URLs auto-route to
+                // Elsewhere) so a 2-item menu with one option is just
+                // an extra click. The picker pre-selects the current
+                // attachment and expands its annotations so the user
+                // lands in the right place by default.
+                const add = idoc.createElementNS(NS, "button");
+                add.className = "wv-bm-reader-newfolder";
+                add.setAttribute("title", section === "local"
+                    ? "Pick an annotation or item to bookmark"
+                    : "Add bookmark");
+                add.innerHTML = RP_PLUS_SVG;
+                add.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    if (section === "local") {
+                        this._wvReaderAddViaDialog(reader, idoc, section);
+                    } else {
+                        this._wvShowReaderBmAddMenu(reader, idoc, add, "document", section);
+                    }
+                });
+                h.appendChild(add);
                 const nf = idoc.createElementNS(NS, "button");
                 nf.className = "wv-bm-reader-newfolder";
                 nf.setAttribute("title", "New folder in this section");
@@ -2061,7 +2713,7 @@ class _ReaderPanelsMixin {
                     if (name) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, name)
                         .then(() => this._wvReaderRenderBmList(reader, idoc));
                 });
-                h.appendChild(htitle); h.appendChild(nf);
+                h.appendChild(nf);
                 gc.appendChild(h);
                 const treeWrap = idoc.createElementNS(NS, "div");
                 treeWrap.className = "wv-bm-reader-tree";
@@ -2070,8 +2722,59 @@ class _ReaderPanelsMixin {
                 this._wvReaderWireGroupDrop(reader, idoc, gc, section === "local");
                 list.appendChild(gc);
             };
-            addSection("In this document", doc.local, "local", fLocal);
-            addSection("Elsewhere in Zotero", doc.global, "global", fGlobal);
+            // Merged scope ("both"): reader bookmarks first (This Document
+            // → Elsewhere), then Library at the bottom. Reader is more
+            // contextually relevant when you're reading a document, so
+            // it appears above the global library list. Library tree is
+            // rendered via `_wvReaderRenderLibraryTree` and wrapped with
+            // a section heading so the three blocks read symmetrically.
+            addSection("This Document", doc.local, "local", fLocal);
+            addSection("Elsewhere", doc.global, "global", fGlobal);
+            if (includeLibrary
+                    && this._getShowLibraryBookmarksInReader()
+                    && this._bmDoc
+                    && Array.isArray(this._bmDoc.bookmarks)
+                    && this._bmDoc.bookmarks.length) {
+                const libNodes = this._bmDoc.bookmarks;
+                const fLib = useFilter ? this._wvBmFilterCombined(libNodes, q, chipMatch) : null;
+                if (!fLib || fLib.visible.size) {
+                    const gc = idoc.createElementNS(NS, "div");
+                    gc.className = "wv-bm-reader-group wv-bm-grp-library";
+                    const h = idoc.createElementNS(NS, "div");
+                    h.className = "wv-bm-reader-grouphead";
+                    const htitle = idoc.createElementNS(NS, "span");
+                    htitle.className = "wv-bm-gh-title";
+                    htitle.textContent = "Global";
+                    h.appendChild(htitle);
+                    const addLib = idoc.createElementNS(NS, "button");
+                    addLib.className = "wv-bm-reader-newfolder";
+                    addLib.setAttribute("title", "Add bookmark to Library");
+                    addLib.innerHTML = RP_PLUS_SVG;
+                    addLib.addEventListener("click", (e: any) => {
+                        e.stopPropagation();
+                        this._wvShowReaderBmAddMenu(reader, idoc, addLib, "library");
+                    });
+                    h.appendChild(addLib);
+                    const nfLib = idoc.createElementNS(NS, "button");
+                    nfLib.className = "wv-bm-reader-newfolder";
+                    nfLib.setAttribute("title", "New folder in Library");
+                    nfLib.innerHTML = RP_FOLDER_PLUS_SVG;
+                    nfLib.addEventListener("click", (e: any) => {
+                        e.stopPropagation();
+                        const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+                        if (name) this._bmAddFolder(name)
+                            .then(() => this._wvReaderRenderBmList(reader, idoc));
+                    });
+                    h.appendChild(nfLib);
+                    gc.appendChild(h);
+                    const treeWrap = idoc.createElementNS(NS, "div");
+                    treeWrap.className = "wv-bm-reader-tree";
+                    this._wvReaderRenderLibraryTree(reader, idoc, treeWrap, libNodes, 0,
+                        fLib ? fLib.visible : undefined, fLib ? fLib.dimmed : undefined);
+                    gc.appendChild(treeWrap);
+                    list.appendChild(gc);
+                }
+            }
             if (useFilter && (!fLocal || !fLocal.visible.size) && (!fGlobal || !fGlobal.visible.size)) {
                 const empty = idoc.createElementNS(NS, "div");
                 empty.className = "wv-bm-reader-empty";
@@ -2112,18 +2815,30 @@ class _ReaderPanelsMixin {
 
     /** Current reader-tab bookmark scope: "document" (default) or "library". */
     _wvReaderBmScope(): string {
-        try { return Zotero.Prefs.get("weavero.readerBmScope") === "library" ? "library" : "document"; }
+        try {
+            const v = Zotero.Prefs.get("weavero.readerBmScope");
+            if (v === "library" || v === "both") return v;
+            return "document";
+        }
         catch (_) { return "document"; }
     }
     _wvReaderSetBmScope(scope: string) {
-        try { Zotero.Prefs.set("weavero.readerBmScope", scope === "library" ? "library" : "document"); } catch (_) {}
+        try {
+            const norm = (scope === "library" || scope === "both") ? scope : "document";
+            Zotero.Prefs.set("weavero.readerBmScope", norm);
+        } catch (_) {}
     }
-    /** Reflect the current scope on the header toggle buttons. */
+    /** Reflect the current scope on the header toggle buttons. "both"
+     *  highlights BOTH buttons so the merged state is visually obvious. */
     _wvReaderUpdateScopeToggle(idoc: any) {
         try {
             const scope = this._wvReaderBmScope();
             const btns = idoc.querySelectorAll(".wv-bm-scope-btn");
-            for (const b of btns) b.classList.toggle("wv-bm-scope-active", b.getAttribute("data-scope") === scope);
+            for (const b of btns) {
+                const s = b.getAttribute("data-scope");
+                const active = (scope === "both") || (s === scope);
+                b.classList.toggle("wv-bm-scope-active", active);
+            }
         } catch (_) {}
     }
 
@@ -2171,11 +2886,176 @@ class _ReaderPanelsMixin {
         return { visible, dimmed };
     }
 
-    /** Rebuild the bottom chip selector bar (colors / tags / authors / types).
+    /** Open/close the chip-filter popover anchored to the funnel button.
+     *  Lazily creates `.wv-bm-chip-popup` inside the bookmark view's
+     *  popup-host on first open and tears it down on close so the
+     *  click-outside listener gets removed cleanly. Repositions on
+     *  every open since the funnel button can shift when the search
+     *  row is shown/hidden. */
+    _wvReaderToggleBmChipPopup(reader: any, idoc: any, anchor: any) {
+        try {
+            // Popup is appended to the iframe body (see below), look
+            // it up at document scope.
+            let popup = idoc && idoc.querySelector(".wv-bm-chip-popup");
+            const isOpen = !!popup;
+            if (isOpen) {
+                this._wvReaderCloseBmChipPopup(idoc);
+                try { anchor.classList.remove("wv-bm-filter-open"); } catch (_) {}
+                return;
+            }
+            const NS = NS_HTML_RP;
+            popup = idoc.createElementNS(NS, "div");
+            popup.className = "wv-bm-chip-popup";
+            // Append to the iframe body (not to `view`) so the popup's
+            // `position: absolute` resolves against the viewport. Then
+            // `popup.style.top = r.top` (where r comes from
+            // `getBoundingClientRect`) lands the popup at the same Y as
+            // the funnel button. Inside `view`, the popup's offset
+            // parent is a positioned ancestor higher up the tree and
+            // `top: <viewport-y>` ends up shifted downward by that
+            // ancestor's own top.
+            (idoc.body || idoc.documentElement).appendChild(popup);
+            // Render the chips now that the popover exists.
+            this._wvReaderRenderBmChipBar(reader, idoc);
+            // Match the bookmarks sidebar's width so the popup reads as
+            // a continuation of the bookmark list it filters. Override
+            // the CSS max-width: 340px since wider sidebars deserve
+            // wider popups.
+            let sbWidth = 0, sbRight = -1;
+            try {
+                const sb = anchor && anchor.closest && anchor.closest("#sidebarContainer");
+                if (sb) {
+                    const rectSb = sb.getBoundingClientRect();
+                    sbWidth = rectSb.width;
+                    sbRight = rectSb.right;
+                }
+            } catch (_) {}
+            if (sbWidth > 0) {
+                popup.style.width = sbWidth + "px";
+                popup.style.maxWidth = "none";
+            }
+            // Anchor to the right of the sidebar so the popup sits
+            // alongside (not over) the bookmark list — the user can
+            // see both at once while filtering. Top-aligned with the
+            // funnel button. If overflow on the right, flip and place
+            // it just left of the sidebar instead.
+            try {
+                const r = anchor.getBoundingClientRect();
+                const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
+                const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+                popup.style.visibility = "hidden";
+                popup.style.display = "block";
+                const pw = sbWidth > 0 ? sbWidth : (popup.offsetWidth || 240);
+                const ph = popup.offsetHeight || 140;
+                let x = sbRight >= 0 ? (sbRight + 4) : (r.right + 4);
+                if (x + pw > vw - 6) {
+                    // Not enough room — flip to the left of the sidebar.
+                    const sbLeft = sbRight - sbWidth;
+                    x = (sbLeft >= 0 ? sbLeft : r.left) - 4 - pw;
+                }
+                if (x < 6) x = 6;
+                let y = r.top;
+                if (y + ph > vh - 6) y = Math.max(6, vh - ph - 6);
+                popup.style.left = x + "px";
+                popup.style.top = y + "px";
+                popup.style.visibility = "";
+            } catch (_) {}
+            try { anchor.classList.add("wv-bm-filter-open"); } catch (_) {}
+            // Click-outside / Escape dismiss. The popup lives in the reader
+            // iframe but events DON'T cross iframe boundaries — a click on
+            // the surrounding Zotero chrome (sidebar, item list, toolbar)
+            // would otherwise never reach a single-doc listener. Mirror
+            // `_wvOpenReaderFilterPopup` and attach on every reachable doc:
+            // the reader iframe, the chrome host window, plus nested content
+            // iframes (PDF.js / EPUB page) and the primary view doc.
+            const onDown = (ev: any) => {
+                try {
+                    const t = ev.target;
+                    if (t && popup.contains && popup.contains(t)) return;
+                    if (anchor && (anchor === t || (anchor.contains && anchor.contains(t)))) return;
+                    this._wvReaderCloseBmChipPopup(idoc);
+                } catch (_) {}
+            };
+            const onKey = (ev: any) => {
+                if (ev.key === "Escape") {
+                    this._wvReaderCloseBmChipPopup(idoc);
+                }
+            };
+            const docs: any[] = [idoc];
+            const wins: any[] = [];
+            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+            try {
+                const hostWin = reader._iframe && reader._iframe.ownerDocument && reader._iframe.ownerDocument.defaultView;
+                if (hostWin && wins.indexOf(hostWin) < 0) {
+                    if (hostWin.document && docs.indexOf(hostWin.document) < 0) docs.push(hostWin.document);
+                    wins.push(hostWin);
+                }
+            } catch (_) {}
+            const collectFrames = (doc2: any, depth: number) => {
+                if (!doc2 || depth > 2) return;
+                try {
+                    for (const f of doc2.querySelectorAll("iframe")) {
+                        try {
+                            const d = f.contentDocument;
+                            if (d && docs.indexOf(d) < 0) { docs.push(d); collectFrames(d, depth + 1); }
+                        } catch (_) {}
+                    }
+                } catch (_) {}
+            };
+            collectFrames(idoc, 1);
+            try {
+                const ir = reader._internalReader;
+                const v = ir && (ir._primaryView || ir._lastView);
+                const vd = v && v._iframeWindow && v._iframeWindow.document;
+                if (vd && docs.indexOf(vd) < 0) docs.push(vd);
+            } catch (_) {}
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+            (popup as any)._wvDismiss = { docs, wins, onDown, onKey };
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderToggleBmChipPopup err: " + e);
+        }
+    }
+
+    /** Tear down the chip-filter popover and remove its outside-click /
+     *  Escape listeners across every doc/window the toggle attached to. */
+    _wvReaderCloseBmChipPopup(idoc: any) {
+        try {
+            // Popup is appended to the iframe body (see toggle helper),
+            // not nested inside the bookmarks view, so look it up at
+            // document scope.
+            const popup = idoc && idoc.querySelector(".wv-bm-chip-popup");
+            if (!popup) return;
+            const d = (popup as any)._wvDismiss;
+            if (d) {
+                for (const doc2 of (d.docs || [])) {
+                    try { doc2.removeEventListener("pointerdown", d.onDown, true); } catch (_) {}
+                }
+                for (const w of (d.wins || [])) {
+                    try { w.removeEventListener("keydown", d.onKey, true); } catch (_) {}
+                }
+            }
+            try { popup.remove(); } catch (_) {}
+            // Restore the funnel button to its closed visual state — the
+            // toggle helper added .wv-bm-filter-open on open, and the
+            // dismiss listener relied on a callback to remove it. Now
+            // that close is called from multiple paths (outside-click,
+            // Escape, anchor-retoggle, programmatic), strip it here so
+            // every path leaves the button visually consistent.
+            try {
+                const btn = idoc && idoc.querySelector(".wv-bm-filter-btn.wv-bm-filter-open");
+                if (btn) btn.classList.remove("wv-bm-filter-open");
+            } catch (_) {}
+        } catch (_) {}
+    }
+
+    /** Rebuild the chip popover contents (colors / tags / authors / types).
      *  Hidden when no facets exist across the visible bookmark universe. */
     /** Wire ns-resize drag on the chip-bar handle. Drag-up grows the bar,
      *  drag-down shrinks it. Clamped to [40, view.height − 80] so the bar
-     *  never swallows the list nor disappears. Persists to a pref. */
+     *  never swallows the list nor disappears. Persists to a pref.
+     *  Retained for back-compat with cached resizer DOM nodes from prior
+     *  builds; the popover doesn't need vertical resizing.  */
     _wvWireChipResizer(reader: any, idoc: any, handle: any) {
         const win: any = idoc.defaultView;
         // The reader's focus-manager has a window-level pointerdown handler
@@ -2234,29 +3114,32 @@ class _ReaderPanelsMixin {
             const content = idoc.getElementById("sidebarContent");
             const view = content && content.querySelector("." + RP_BM_VIEW_CLASS);
             if (!view) return;
-            const NS = NS_HTML_RP;
-            // Ensure resizer + bar exist as adjacent siblings at the bottom.
-            // Order: resizer first (it sits ABOVE the bar via DOM order, since
-            // both are flex-items at the bottom of the column view).
-            let resizer = view.querySelector(".wv-bm-chip-resizer");
-            let bar = view.querySelector(".wv-bm-chip-bar");
-            if (!resizer) {
-                resizer = idoc.createElementNS(NS, "div");
-                resizer.className = "wv-bm-chip-resizer";
-                resizer.setAttribute("title", "Drag to resize");
-                this._wvWireChipResizer(reader, idoc, resizer);
-                view.appendChild(resizer);
-            }
-            if (!bar) {
-                bar = idoc.createElementNS(NS, "div");
-                bar.className = "wv-bm-chip-bar";
-                view.appendChild(bar);
-            }
-            // Apply the persisted height (default 140 px).
+            // Reflect "any filter selected" state on the funnel button so
+            // the user can see at a glance that something is filtering
+            // the list even when the popover is closed. Always runs.
             try {
-                const h = parseInt(String(Zotero.Prefs.get("weavero.readerBmChipBarHeight") || "140"), 10);
-                if (Number.isFinite(h) && h > 0) bar.style.flex = "0 0 " + h + "px";
+                // Funnel button lives in `.wv-bm-sidebar-actions` (a
+                // sibling of the bookmark view), not inside `view`, so
+                // query at doc scope to find it.
+                const filterBtn = idoc.querySelector(".wv-bm-filter-btn");
+                if (filterBtn) {
+                    if (this._wvReaderBmChipsActive(reader)) {
+                        filterBtn.classList.add("wv-bm-filter-active");
+                    } else {
+                        filterBtn.classList.remove("wv-bm-filter-active");
+                    }
+                }
             } catch (_) {}
+            // Chips are rendered into a popover anchored to the funnel
+            // button — only when the popover is open. If it doesn't
+            // exist yet (closed) there's nothing else to do here; the
+            // toggle helper will populate it when the user clicks the
+            // funnel. Older builds used a docked bar at the bottom of
+            // the pane (snapshot kept under `.claude/snapshots/`).
+            const popup = idoc && idoc.querySelector(".wv-bm-chip-popup");
+            if (!popup) return;
+            const NS = NS_HTML_RP;
+            const bar = popup;
             while (bar.firstChild) bar.firstChild.remove();
             const st = this._wvReaderBmChipState(reader);
             const facets = this._wvReaderBmChipFacets(reader);
@@ -2266,13 +3149,19 @@ class _ReaderPanelsMixin {
             };
             const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
             if (!anyFacets) {
-                bar.classList.remove("wv-bm-chip-bar-on");
-                resizer.classList.remove("wv-bm-chip-bar-on");
+                const empty = idoc.createElementNS(NS, "div");
+                empty.className = "wv-bm-chip-popup-empty";
+                empty.textContent = "No filters available for the current bookmark list.";
+                bar.appendChild(empty);
                 return;
             }
-            bar.classList.add("wv-bm-chip-bar-on");
-            resizer.classList.add("wv-bm-chip-bar-on");
-            const mkRow = () => { const r = idoc.createElementNS(NS, "div"); r.className = "wv-bm-chip-row"; return r; };
+            // `wv-filter-or-group` adds the subtle grey background tint
+            // the library filter / reader annotations popups use on their
+            // OR-group rows — visually marks each chip row as a "pick any
+            // of these" set. CSS rule is scoped to `.wv-bm-chip-popup`
+            // because the chip popup lives in the reader iframe, where
+            // the chrome-window's `wv-filter-or-group` rule doesn't reach.
+            const mkRow = () => { const r = idoc.createElementNS(NS, "div"); r.className = "wv-bm-chip-row wv-filter-or-group"; return r; };
             const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
             const rerender = () => {
                 try {
@@ -2280,6 +3169,11 @@ class _ReaderPanelsMixin {
                     this._wvReaderRenderBmChipBar(reader, idoc);   // refresh selected states
                 } catch (_) {}
             };
+
+            // (Filter-scope-pin button removed: scope-sharing of filters is
+            // now driven by the merged-scope state — Ctrl-click on the
+            // Reader/Library scope buttons to merge, and the filter
+            // auto-applies across both. See `_wvReaderBmChipState`.)
             // Colors row — button wrapper + inner 16×16 rounded-square tile,
             // matching the reader's annotations-pane Selector .colors.
             // Order matches upstream's ANNOTATION_COLORS (defines.js): yellow,
@@ -2302,33 +3196,31 @@ class _ReaderPanelsMixin {
                     return a.localeCompare(b);
                 });
                 for (const c of keys) {
-                    const btn = idoc.createElementNS(NS, "span");
-                    btn.className = "wv-bm-chip-color" + (st.colors.has(c) ? " selected" : "");
+                    // Black sits apart from the standard 8-colour palette
+                    // (upstream Zotero treats it as EXTRA_INK_AND_TEXT_COLORS
+                    // — only valid for ink/text annotations). Push it to the
+                    // right edge after a thin vertical separator — same
+                    // pattern the library filter uses in filter.ts.
+                    if (c === "#000000") {
+                        const sep = idoc.createElementNS(NS, "div");
+                        sep.className = "wv-filter-vertical-separator";
+                        (sep as any).style.marginLeft = "auto";
+                        row.appendChild(sep);
+                    }
+                    // Unified with the filter popup (popups 1 & 2):
+                    // 26×28 button with a 12×12 colored circle inside
+                    // (`.wv-chip-swatch`), `data-selected="true"` for
+                    // the highlight state. Replaces the earlier 20×20
+                    // wrapper holding a 16×16 IconColor16 SVG.
+                    const btn = idoc.createElementNS(NS, "button");
+                    (btn as any).type = "button";
+                    btn.className = "wv-filter-opt wv-filter-opt-icon";
                     btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
-                    // Match upstream's IconColor16 exactly: 16×16 SVG canvas
-                    // with a 14×14 rounded-rect colored path (1 px inset on
-                    // every side) + a black-0.1 stroke overlay. Filling a flat
-                    // 16×16 span made the coloured area ~14% bigger than the
-                    // annotations-pane tiles. Build via createElementNS — the
-                    // reader iframe's parser was leaving innerHTML-built SVG
-                    // contents un-rendered (0×0).
-                    const SVG_NS = "http://www.w3.org/2000/svg";
-                    const svg: any = idoc.createElementNS(SVG_NS, "svg");
-                    svg.setAttribute("class", "wv-bm-chip-color-tile");
-                    svg.setAttribute("width", "16");
-                    svg.setAttribute("height", "16");
-                    svg.setAttribute("viewBox", "0 0 16 16");
-                    svg.setAttribute("fill", "none");
-                    const fillPath: any = idoc.createElementNS(SVG_NS, "path");
-                    fillPath.setAttribute("d", "M1 3C1 1.89543 1.89543 1 3 1H13C14.1046 1 15 1.89543 15 3V13C15 14.1046 14.1046 15 13 15H3C1.89543 15 1 14.1046 1 13V3Z");
-                    fillPath.setAttribute("fill", c);
-                    const strokePath: any = idoc.createElementNS(SVG_NS, "path");
-                    strokePath.setAttribute("d", "M1.5 3C1.5 2.17157 2.17157 1.5 3 1.5H13C13.8284 1.5 14.5 2.17157 14.5 3V13C14.5 13.8284 13.8284 14.5 13 14.5H3C2.17157 14.5 1.5 13.8284 1.5 13V3Z");
-                    strokePath.setAttribute("stroke", "black");
-                    strokePath.setAttribute("stroke-opacity", "0.1");
-                    svg.appendChild(fillPath);
-                    svg.appendChild(strokePath);
-                    btn.appendChild(svg);
+                    if (st.colors.has(c)) (btn as any).dataset.selected = "true";
+                    const sw = idoc.createElementNS(NS, "span");
+                    sw.className = "wv-chip-swatch";
+                    (sw as any).style.background = c;
+                    btn.appendChild(sw);
                     btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
                     row.appendChild(btn);
                 }
@@ -2338,15 +3230,19 @@ class _ReaderPanelsMixin {
             // annotation-shape facets group together visually).
             if (facets.types.size) {
                 const row = mkRow();
-                // Use upstream's canonical type ordering for natural left-right flow.
                 const order = ["highlight", "underline", "note", "text", "image", "ink"];
                 const keys = order.filter(t => facets.types.has(t));
                 for (const tp of keys) {
-                    const chip = idoc.createElementNS(NS, "span");
-                    chip.className = "wv-bm-chip-type" + (st.types.has(tp) ? " selected" : "");
+                    // Unified with the filter popup (popups 1 & 2):
+                    // 30×28 button containing the 16×16 inline SVG
+                    // glyph (annotate-highlight/underline/note/text/
+                    // area/ink). `data-selected="true"` for the
+                    // active state.
+                    const chip = idoc.createElementNS(NS, "button");
+                    (chip as any).type = "button";
+                    chip.className = "wv-filter-opt wv-filter-opt-icon";
                     chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
-                    // Match the reader's "Filter annotations" popup — annotate-
-                    // highlight/underline/note/text/area/ink SVG glyphs.
+                    if (st.types.has(tp)) (chip as any).dataset.selected = "true";
                     chip.innerHTML = RP_ANN_TYPE_SVG[tp] || "";
                     chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
                     row.appendChild(chip);
@@ -2482,7 +3378,37 @@ class _ReaderPanelsMixin {
             return;
         }
         const gc = idoc.createElementNS(NS, "div");
-        gc.className = "wv-bm-reader-group wv-bm-grp-global";
+        gc.className = "wv-bm-reader-group wv-bm-grp-library";
+        // Section header with title + add + new-folder buttons (matches
+        // the merged-scope layout so single-Library scope has the same
+        // affordances as when it appears alongside the doc sections).
+        const h = idoc.createElementNS(NS, "div");
+        h.className = "wv-bm-reader-grouphead";
+        const htitle = idoc.createElementNS(NS, "span");
+        htitle.className = "wv-bm-gh-title";
+        htitle.textContent = "Global";
+        h.appendChild(htitle);
+        const addBtn = idoc.createElementNS(NS, "button");
+        addBtn.className = "wv-bm-reader-newfolder";
+        addBtn.setAttribute("title", "Add bookmark to Library");
+        addBtn.innerHTML = RP_PLUS_SVG;
+        addBtn.addEventListener("click", (e: any) => {
+            e.stopPropagation();
+            this._wvShowReaderBmAddMenu(reader, idoc, addBtn, "library");
+        });
+        h.appendChild(addBtn);
+        const nfBtn = idoc.createElementNS(NS, "button");
+        nfBtn.className = "wv-bm-reader-newfolder";
+        nfBtn.setAttribute("title", "New folder in Library");
+        nfBtn.innerHTML = RP_FOLDER_PLUS_SVG;
+        nfBtn.addEventListener("click", (e: any) => {
+            e.stopPropagation();
+            const name = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
+            if (name) this._bmAddFolder(name)
+                .then(() => this._wvReaderRenderBmList(reader, idoc));
+        });
+        h.appendChild(nfBtn);
+        gc.appendChild(h);
         const treeWrap = idoc.createElementNS(NS, "div");
         treeWrap.className = "wv-bm-reader-tree";
         this._wvReaderRenderLibraryTree(reader, idoc, treeWrap, nodes, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
@@ -2546,7 +3472,27 @@ class _ReaderPanelsMixin {
         const ic = this._wvReaderBuildBmIcon(reader, idoc, bm);
         const label = idoc.createElementNS(NS, "span");
         label.className = "wv-bm-reader-label";
-        label.textContent = bm.label || "Bookmark";
+        // URL bookmarks inherit the same scheme-coloured link palette
+        // (http=blue, zotero://=brown, app=violet) the rest of Weavero
+        // uses in notes / reader / item pane. The CSS variables are
+        // already injected per surface; just stamp the matching class.
+        if (bm.type === "url") {
+            const cls = this._urlLinkClass(String(bm.url || ""));
+            if (cls) label.classList.add(cls);
+        }
+        const labelText = bm.label || "Bookmark";
+        label.textContent = labelText;
+        // Inline "— in <attachment>" suffix for in-doc location
+        // bookmarks living in the library store: they point at a spot
+        // inside an attachment, and the user is no longer "in" that
+        // attachment. Kept single-line so row rhythm stays uniform.
+        const parentTitle = this._bmParentAttachmentTitle(bm);
+        if (parentTitle) {
+            const sub = idoc.createElementNS(NS, "span");
+            sub.className = "wv-bm-reader-sublabel";
+            sub.textContent = " — in " + parentTitle;
+            label.appendChild(sub);
+        }
         // Drop the plain HTML tooltip in favour of the rich hover card wired
         // below — the two would otherwise both fire on hover.
         row.appendChild(ic); row.appendChild(label);
@@ -2583,7 +3529,13 @@ class _ReaderPanelsMixin {
         };
         row.addEventListener("dragstart", (e: any) => {
             this._wvLibRowDrag = node.id;
-            try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("application/x-weavero-libbm", node.id); } catch (_) {}
+            try {
+                // `copyMove` so cross-scope drops (onto the "This Document"
+                // tab button) can pick `copy` (default) or `move` (Shift)
+                // per the Zotero collectionTree convention.
+                e.dataTransfer.effectAllowed = "copyMove";
+                e.dataTransfer.setData("application/x-weavero-libbm", node.id);
+            } catch (_) {}
             this._wvReaderHideBmHoverCard(idoc);
             row.classList.add("wv-bm-dragging");
         });
@@ -2645,11 +3597,15 @@ class _ReaderPanelsMixin {
     /** Accept an annotation/selection dragged FROM the reader (sidebar or page)
      *  into the LIBRARY view → add item bookmark(s) to the main store, optionally
      *  placed at `target` ({id, mode} or null = root end). Returns true if it
-     *  handled the drop. (Text-only selections have no library equivalent.) */
+     *  handled the drop. Text-only selections become a `text`-type bookmark
+     *  pointing at the source document via `srcLibraryID`/`srcItemKey` —
+     *  same shape `_wvBmTransferDocToLib` produces when a doc-scope text
+     *  bookmark is dragged to the library scope. */
     async _wvReaderLibAcceptDrop(reader: any, idoc: any, payload: any, target: any): Promise<boolean> {
         try {
             const att = this._wvReaderAtt(reader);
             const entries: any[] = [];
+            let selAnn: any = null;
             if (payload.sidebarKey) {
                 entries.push({ libraryID: att && att.libraryID, itemKey: payload.sidebarKey, label: null });
             } else if (payload.annJson) {
@@ -2661,16 +3617,60 @@ class _ReaderPanelsMixin {
                             if (a.attachmentItemID) { try { const s: any = Zotero.Items.get(a.attachmentItemID); if (s) lib = s.libraryID; } catch (_) {} }
                             entries.push({ libraryID: lib, itemKey: a.id, label: String(a.text || a.comment || "").trim() });
                         }
+                        // Unsaved text selection (no id, but has text + position).
+                        else if (a && !selAnn && (a.text || a.position)) selAnn = a;
                     }
                 } catch (_) {}
             }
             this._wvDraggedAnnKey = null;
-            if (!entries.length) return false;
+            // No saved annotations → try text selection fallback.
+            if (!entries.length) {
+                const selText = (selAnn && String(selAnn.text || "").trim())
+                    || ((payload.txt && payload.txt.indexOf("wvbm:") !== 0) ? payload.txt.trim() : "");
+                if (!selText) return false;
+                await this._bmInit();
+                let position: any = null;
+                if (selAnn && selAnn.position) { try { position = JSON.parse(JSON.stringify(selAnn.position)); } catch (_) {} }
+                // Cross-doc check: if the selection's source attachment
+                // differs from the drop target's doc, store the source
+                // ref so navigating opens the SOURCE document at the
+                // selection (matches the doc-scope cross-doc semantics
+                // in `_wvReaderDropPayload`).
+                const srcAttId = selAnn && selAnn.attachmentItemID;
+                let srcLib = att && att.libraryID;
+                let srcKey = att && att.att && att.att.key;
+                if (srcAttId && att && att.att && srcAttId !== att.att.id) {
+                    try {
+                        const srcAtt: any = Zotero.Items.get(srcAttId);
+                        if (srcAtt) { srcLib = srcAtt.libraryID; srcKey = srcAtt.key; }
+                    } catch (_) {}
+                }
+                const node: any = {
+                    id: "wv-" + Zotero.Utilities.randomString(8),
+                    type: "text",
+                    label: selText.slice(0, 160),
+                    pageLabel: (selAnn && selAnn.pageLabel) || null,
+                    position,
+                    srcLibraryID: srcLib,
+                    srcItemKey: srcKey,
+                    created: new Date().toISOString(),
+                };
+                this._bmDoc.bookmarks.push(node);
+                await this._bmPersist();
+                if (target && target.id) {
+                    try { await this._bmMove(node.id, target.id, target.mode || "after"); } catch (_) {}
+                }
+                this._wvReaderRenderBmList(reader, idoc);
+                this._wvReaderRecoverAnnotationPopup(reader);
+                return true;
+            }
             await this._bmInit();
             const addedIds: string[] = [];
             for (const en of entries) {
                 if (!en.itemKey) continue;
-                if (this._bmHasItem(en.libraryID, en.itemKey)) continue;   // de-dupe
+                // Firefox-style list semantics: same item may be bookmarked
+                // multiple times (e.g. filed into several folders), so the
+                // `_bmHasItem` dedup check that used to live here is gone.
                 let label = en.label;
                 if (!label) { try { const it: any = Zotero.Items.getByLibraryAndKey(en.libraryID, en.itemKey); label = it ? String(it.annotationText || it.annotationComment || "").trim() : ""; } catch (_) {} }
                 label = (label || "Annotation").slice(0, 100);
@@ -2779,12 +3779,237 @@ class _ReaderPanelsMixin {
         });
     }
 
+    /** Wire a scope-toggle button (`mkScope`-built) as a cross-scope drop
+     *  target. Convention from Zotero's `collectionTree.jsx`:
+     *    • no modifier  → copy
+     *    • Shift        → move
+     *    • Mac metaKey  → move
+     *  Drop a doc-row onto the "Library" button to copy/move it into the
+     *  library store; drop a lib-row onto "This Document" for the reverse.
+     *  Drops onto the SAME-scope button are ignored — no preventDefault, so
+     *  the browser keeps the no-drop cursor. */
+    _wvWireScopeBtnDrop(btn: any, btnScope: string, reader: any, idoc: any) {
+        const plugin: any = this;
+        const dragInfo = () => {
+            if (plugin._wvBmRowDrag) return { kind: "doc", src: plugin._wvBmRowDrag };
+            if (plugin._wvLibRowDrag) return { kind: "lib", id: plugin._wvLibRowDrag };
+            return null;
+        };
+        const opposite = (kind: string) =>
+            (kind === "doc" && btnScope === "library")
+            || (kind === "lib" && btnScope === "document");
+        // Firefox-style cross-scope convention: drag = move (default),
+        // Ctrl-drag (Mac: Cmd-drag) = copy. The pre-Firefox convention
+        // was the inverse — default copy, Shift to move — mirroring
+        // Zotero's collection tree. Holding ANY of Ctrl/Meta flips to
+        // copy; we keep Shift too as a no-op-historical alias so old
+        // muscle memory doesn't accidentally trigger move.
+        const copyModifier = (e: any) => !!(e && (e.ctrlKey
+            || ((typeof Zotero !== "undefined" && Zotero.isMac) && e.metaKey)));
+
+        // Tag the scope-group while a valid drop is hovering so CSS can
+        // dim the OTHER (active) button — otherwise its solid blue
+        // background looks like a drop target and competes with the
+        // outline on the actual drop target.
+        const group = btn.parentNode;
+        btn.addEventListener("dragover", (e: any) => {
+            try {
+                const d = dragInfo();
+                // Annotation/selection dragged in from the reader sidebar
+                // (or PDF view): accept on the LIBRARY scope button so it
+                // creates a library item-bookmark, same as dropping on a
+                // library row (which the per-row handler accepts already).
+                const isAnnotDrag = !d && btnScope === "library"
+                    && plugin._wvReaderDragHasBookmarkable(e.dataTransfer);
+                if (!isAnnotDrag && (!d || !opposite(d.kind))) return;
+                e.preventDefault();
+                // stopPropagation: an ancestor section container also has
+                // a drop handler that, given an active row drag, calls
+                // `_wvReaderDropBmRow(reader, idoc, null)` (reorder to
+                // section end). Without stopping the bubble, dropping
+                // here copies/moves AND reorders the source — visibly
+                // shifting its position in "In This Document". (Same
+                // issue on dragover would set the wrong dropEffect.)
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = isAnnotDrag ? "copy"
+                    : (copyModifier(e) ? "copy" : "move");
+                // Clear any row-level drop indicators left over from the
+                // cursor moving up through bookmark rows on its way to
+                // this button. Without this, the first row visible at
+                // the top of the list keeps its `wv-bm-drop-before`
+                // class — drawing a blue line under the section header
+                // — even though the drop is going to the scope button.
+                try {
+                    const stale = idoc.querySelectorAll(
+                        ".wv-bm-drop-before,.wv-bm-drop-after,.wv-bm-drop-into");
+                    for (let i = 0; i < stale.length; i++) {
+                        stale[i].classList.remove("wv-bm-drop-before",
+                            "wv-bm-drop-after", "wv-bm-drop-into");
+                    }
+                } catch (_) {}
+                btn.classList.add("wv-bm-scope-dropok");
+                if (group && group.classList) group.classList.add("wv-bm-scope-dragover");
+            } catch (_) {}
+        });
+        btn.addEventListener("dragleave", () => {
+            btn.classList.remove("wv-bm-scope-dropok");
+            if (group && group.classList) group.classList.remove("wv-bm-scope-dragover");
+        });
+        btn.addEventListener("drop", (e: any) => {
+            btn.classList.remove("wv-bm-scope-dropok");
+            if (group && group.classList) group.classList.remove("wv-bm-scope-dragover");
+            try {
+                const d = dragInfo();
+                // Annotation/selection dropped on the LIBRARY scope button:
+                // add the item-bookmark to the library root (target=null).
+                const isAnnotDrag = !d && btnScope === "library"
+                    && plugin._wvReaderDragHasBookmarkable(e.dataTransfer);
+                if (!isAnnotDrag && (!d || !opposite(d.kind))) return;
+                e.preventDefault();
+                // Same bubble-stop as in dragover, for the same reason —
+                // without this, the section's append-on-drop handler
+                // ALSO fires after us and reorders the source row.
+                e.stopPropagation();
+                if (isAnnotDrag) {
+                    const payload = plugin._wvReaderReadDropPayload(e);
+                    Promise.resolve(plugin._wvReaderLibAcceptDrop(reader, idoc, payload, null))
+                        .catch((err: any) => Zotero.debug("[Weavero] annot→lib err: " + err));
+                    return;
+                }
+                const isMove = !copyModifier(e);
+                if (d.kind === "doc") {
+                    Promise.resolve(plugin._wvBmTransferDocToLib(d.src, isMove, reader, idoc))
+                        .catch((err: any) => Zotero.debug("[Weavero] doc→lib err: " + err));
+                } else {
+                    Promise.resolve(plugin._wvBmTransferLibToDoc(d.id, isMove, reader, idoc))
+                        .catch((err: any) => Zotero.debug("[Weavero] lib→doc err: " + err));
+                }
+            } catch (err: any) {
+                Zotero.debug("[Weavero] scope-btn drop err: " + err);
+            }
+        });
+    }
+
+    /** Deep-clone a bookmark node, regenerating ids recursively (folders +
+     *  their children) so the copy doesn't collide with the source on
+     *  identity checks (drag highlight, dedup-by-id, etc.). */
+    _wvBmCloneNodeFresh(node: any): any {
+        if (!node) return node;
+        const fresh = Object.assign({}, node);
+        fresh.id = "wv-" + Zotero.Utilities.randomString(8);
+        fresh.created = new Date().toISOString();
+        if (node.type === "folder" && Array.isArray(node.children)) {
+            fresh.children = node.children.map((c: any) => this._wvBmCloneNodeFresh(c));
+        }
+        return fresh;
+    }
+
+    /** Copy/move a doc-row to the library store. `src = { libraryID, itemKey,
+     *  id, section, type }` (the captured drag state). All types transfer —
+     *  including the in-document location types (`position`, `page`, `text`),
+     *  which gain a `srcLibraryID/srcItemKey` source ref pointing back at
+     *  their host attachment so the library store can still navigate
+     *  there (clicking opens that attachment at that spot). The url, item,
+     *  collection, library, treerow and folder types are self-contained. */
+    async _wvBmTransferDocToLib(src: any, isMove: boolean, reader: any, idoc: any) {
+        if (!src || !src.id || src.libraryID == null || !src.itemKey) return;
+        await this._bmInit();
+        const srcDoc = this._bmReaderDoc(src.libraryID, src.itemKey);
+        const loc = this._bmLocate(src.id, srcDoc.local)
+            || this._bmLocate(src.id, srcDoc.global);
+        if (!loc || !loc.entry) return;
+        const rec = loc.entry;
+
+        // Firefox-style list semantics: cross-scope drops always add, even
+        // if the same target is already bookmarked in the library.
+        {
+            const fresh = this._wvBmCloneNodeFresh(rec);
+            // In-doc location types need a source ref so the library
+            // store knows which attachment to open. Stamp it if missing;
+            // if the entry already carries one (e.g. a text selection
+            // dragged from another doc), keep it as-is.
+            if ((fresh.type === "position" || fresh.type === "page"
+                    || fresh.type === "text") && !fresh.srcItemKey) {
+                fresh.srcLibraryID = src.libraryID;
+                fresh.srcItemKey = src.itemKey;
+            }
+            // For all OTHER types the src refs are noise — the library
+            // record stands on its own.
+            else if (fresh.type !== "position" && fresh.type !== "page"
+                    && fresh.type !== "text") {
+                delete fresh.srcLibraryID; delete fresh.srcItemKey;
+            }
+            // Strip section flag (folders use it for reader-store sectioning).
+            delete fresh._section;
+            this._bmDoc.bookmarks.push(fresh);
+            await this._bmPersist();
+        }
+
+        if (isMove) {
+            try { await this._bmReaderRemove(src.libraryID, src.itemKey, src.id); }
+            catch (_) {}
+        }
+
+        if (idoc) {
+            try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+        }
+    }
+
+    /** Copy/move a library-row to the current attachment's reader store.
+     *  The section classifier inside `_bmReaderAdd` routes annotations of
+     *  this attachment to "In this document" and everything else to
+     *  "Elsewhere in Zotero". All library types map cleanly. */
+    async _wvBmTransferLibToDoc(libRecId: string, isMove: boolean, reader: any, idoc: any) {
+        if (!libRecId) return;
+        await this._bmInit();
+        const loc = this._bmLocate(libRecId);
+        if (!loc || !loc.entry) return;
+        const rec = loc.entry;
+        const att = this._wvReaderAtt(reader);
+        if (!att || att.libraryID == null || !att.itemKey) return;
+
+        const fresh = this._wvBmCloneNodeFresh(rec);
+        // `_bmReaderAdd` assigns its own id + created timestamp on the
+        // merged record, so strip the ones we just generated to let the
+        // store-side defaults win (avoids two random-id collisions).
+        delete fresh.id;
+        delete fresh.created;
+        // Round-trip clean-up: if this is an in-doc location bookmark
+        // (position/page/text) that points back at the SAME attachment
+        // we're dropping into, drop the src refs so the entry looks
+        // identical to a freshly-made local bookmark (and `_bmReaderEntrySection`
+        // files it under "This Document" rather than "Elsewhere").
+        if ((fresh.type === "position" || fresh.type === "page"
+                || fresh.type === "text")
+                && fresh.srcItemKey === att.itemKey
+                && fresh.srcLibraryID === att.libraryID) {
+            delete fresh.srcLibraryID;
+            delete fresh.srcItemKey;
+        }
+
+        try {
+            await this._bmReaderAdd(att.libraryID, att.itemKey, fresh,
+                { allowDuplicate: false });
+        } catch (e) {
+            Zotero.debug("[Weavero] lib→doc add err: " + e);
+            return;
+        }
+
+        if (isMove) {
+            try { await this._bmRemove(libRecId); } catch (_) {}
+        }
+
+        if (idoc) {
+            try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+        }
+    }
+
     /** True for bookmarks that point INTO the currently-open document
      *  (positions, selected-text, and annotations of this attachment). */
     _wvReaderBookmarkIsLocal(reader: any, bm: any) {
         try {
             if (!bm) return false;
-            if (bm.type === "position" || bm.type === "text") {
+            if (bm.type === "position" || bm.type === "page" || bm.type === "text") {
                 // A location bookmark with a source ref to a DIFFERENT
                 // attachment (text selection dragged from another doc)
                 // points elsewhere, not into the open document.
@@ -2830,13 +4055,27 @@ class _ReaderPanelsMixin {
      *  behavior (new tab / new window / show in library). */
     _wvNavigateReaderBookmark(reader: any, bm: any, e: any) {
         if (!bm) return;
+        // URL / app-link bookmark — hand off to the OS browser via
+        // Route via Weavero's `_launchURL` — same helper note-editor
+        // and annotation clicks use. It honours the per-scheme
+        // `weavero.enableAppLinksSkipConfirm` pref (when set, bypasses
+        // Firefox's "Allow this site to open the <scheme> link?" dialog
+        // by calling `handlerInfo.launchWithURI` directly), and routes
+        // `zotero://` URLs through the internal dispatcher.  Modifier
+        // keys intentionally don't change behaviour here (no "Show in
+        // Library" for a URL — it doesn't have a library presence).
+        if (bm.type === "url" && bm.url) {
+            try { this._launchURL(String(bm.url)); }
+            catch (err) { Zotero.debug("[Weavero] url-bm launch err: " + err); }
+            return;
+        }
         // Clicking a bookmark should reset any open in-document annotation
         // popup; the annotation-bookmark branch below re-opens it for the
         // new annotation if applicable.
         this._wvDismissReaderAnnPopup(reader);
         const ctrl = !!(e && (e.ctrlKey || e.metaKey));
         const shift = !!(e && e.shiftKey);
-        const isLocalLoc = (bm.type === "position" || bm.type === "text")
+        const isLocalLoc = (bm.type === "position" || bm.type === "page" || bm.type === "text")
             && this._wvReaderBookmarkIsLocal(reader, bm);
         const isLocalAnno = bm.type === "item" && this._wvReaderBookmarkIsLocal(reader, bm);
         if (isLocalLoc || isLocalAnno) {
@@ -2850,6 +4089,15 @@ class _ReaderPanelsMixin {
                 if (att) {
                     let loc: any = null;
                     if (isLocalAnno) loc = { annotationID: bm.itemKey };
+                    else if (bm.type === "page") {
+                        // Whole-page bookmark — page-level scroll, no pin.
+                        const pi = (bm.location && Number.isInteger(bm.location.pageIndex))
+                            ? bm.location.pageIndex
+                            : (bm.position && Number.isInteger(bm.position.pageIndex))
+                                ? bm.position.pageIndex
+                                : null;
+                        if (pi != null) loc = { pageIndex: pi };
+                    }
                     else if (bm.position) loc = { position: bm.position };
                     else if (bm.viewType === "pdf" && bm.location && Number.isInteger(bm.location.pageIndex)) loc = { pageIndex: bm.location.pageIndex };
                     else if (bm.location && bm.location.cfi) loc = { pageNumber: bm.location.cfi };
@@ -2917,8 +4165,33 @@ class _ReaderPanelsMixin {
         const NS = NS_HTML_RP;
         const ic = idoc.createElementNS(NS, "span");
         ic.className = "wv-bm-reader-ic";
-        if (bm.type === "position") { ic.classList.add("wv-bm-emoji"); ic.textContent = RP_PIN_EMOJI; }
+        if (bm.type === "position") {
+            // "Add Bookmark to This Position" — a precise spot, marked with
+            // the 📌 pushpin both in the list row and as the in-document
+            // overlay (`_wvReaderShowPin`).
+            ic.classList.add("wv-bm-emoji");
+            ic.textContent = RP_PIN_EMOJI;
+        }
+        else if (bm.type === "page") {
+            // "Add Bookmark to This Page" — whole-page bookmark, ribbon
+            // glyph (no rects → not a precise spot → not a pin).
+            ic.innerHTML = RP_BM_RIBBON;
+        }
         else if (bm.type === "text") ic.innerHTML = RP_TEXT_SVG;
+        else if (bm.type === "url") {
+            // Scheme-aware icon: globe for http(s)://, external-link arrow
+            // for app-link schemes (obsidian://, slack://, mailto:, …),
+            // chain for the few zotero:// links that aren't auto-converted.
+            // (Zotero `select`/`open` links are normally rewritten to
+            // native `item`/`collection` bookmark types at save time and
+            // never hit this branch — they get their own type icons via
+            // `_bmIconInfo`.) Strokes use `currentColor` so the SVG
+            // inherits the row's link colour.
+            const cls = this._urlLinkClass(String(bm.url || ""));
+            if (cls === "wv-link-http") ic.innerHTML = URL_GLOBE_SVG;
+            else if (cls === "wv-link-app") ic.innerHTML = URL_EXTERNAL_SVG;
+            else ic.innerHTML = SCHEME_SVG_TEMPLATE.replace("__FILL__", "currentColor");
+        }
         else {
             let done = false;
             try {
@@ -2956,6 +4229,10 @@ class _ReaderPanelsMixin {
         const ic = this._wvReaderBuildBmIcon(reader, idoc, bm);
         const label = idoc.createElementNS(NS, "span");
         label.className = "wv-bm-reader-label";
+        if (bm.type === "url") {
+            const cls = this._urlLinkClass(String(bm.url || ""));
+            if (cls) label.classList.add(cls);
+        }
         label.textContent = bm.label || "Bookmark";
         // No native `title` tooltip here — the rich hover card supersedes it
         // (a title would show as a SECOND popup over the card).
@@ -3322,13 +4599,19 @@ class _ReaderPanelsMixin {
             const r = row.getBoundingClientRect();
             const rel = clientY - r.top;
             if (_isFolder) {
-                // An EXPANDED folder's header has the first-child slot right
-                // below it, so its lower half means "insert as first child"
-                // (intotop) — matching where the indicator line shows. (A
-                // top-level sibling after an expanded folder would otherwise
-                // render below ALL its children, contradicting the line.) A
-                // COLLAPSED folder keeps before / into(append) / after.
-                if (node && node.expanded) return rel < r.height * 0.5 ? "before" : "intotop";
+                // Uniform folder zones (collapsed OR expanded) — top 28%
+                // = before (sibling above), middle 44% = into (append as
+                // last child), bottom 28% = after (sibling below). For
+                // expanded folders the "into" zone is the folder header
+                // itself (highlighted as a box), so dropping ANYWHERE on
+                // the folder's row body appends to the end of its
+                // children, matching the user's mental model "drop on
+                // folder → last position". Mirror the library-side
+                // `modeAt`'s folder zoning so doc + library behave
+                // identically. (Earlier versions used `intotop` here for
+                // expanded folders to track the first-child slot visually,
+                // but that contradicted the "drop on folder = append"
+                // intent.)
                 return rel < r.height * 0.28 ? "before" : rel > r.height * 0.72 ? "after" : "into";
             }
             return rel > r.height / 2 ? "after" : "before";
@@ -3510,7 +4793,8 @@ class _ReaderPanelsMixin {
             if (n.type === "folder") {
                 n._section = "global";
                 if (Array.isArray(n.children)) n.children.forEach(fix);
-            } else if ((n.type === "position" || n.type === "text") && !n.srcItemKey) {
+            } else if ((n.type === "position" || n.type === "page"
+                    || n.type === "text") && !n.srcItemKey) {
                 n.srcLibraryID = srcAtt.libraryID;
                 n.srcItemKey = srcAtt.itemKey;
             }
@@ -3789,9 +5073,17 @@ class _ReaderPanelsMixin {
     /** + → Zotero's select-items picker; bookmark the chosen item / collection
      *  / library / saved-search into the per-document list (same picker the
      *  collections-pane bookmark uses). */
-    async _wvReaderAddViaDialog(reader: any, idoc: any) {
+    async _wvReaderAddViaDialog(reader: any, idoc: any, section?: string) {
         try {
             const att = this._wvReaderAtt(reader); if (!att) return;
+            // `section` controls only the picker's INITIAL focus (current
+            // doc for "local", library root for "global"). The
+            // destination section is ALWAYS decided by the item's actual
+            // nature (`_bmReaderEntrySection`) — clicking "This Document"
+            // + and picking an item from a different document still
+            // routes the bookmark to "Elsewhere", because Elsewhere
+            // bookmarks aren't allowed in the local section.
+            const addOpts: any = undefined;
             const win = Zotero.getMainWindow(); if (!win) return;
             const io: any = { dataIn: null, dataOut: null, deferred: Zotero.Promise.defer(), itemTreeID: "weavero-reader-bm-select" };
             const dlg: any = win.openDialog("chrome://zotero/content/selectItemsDialog.xhtml", "",
@@ -3808,14 +5100,20 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                 }, true);
             } catch (_) {}
-            // Focus the file currently in the reader so its annotations are
-            // right there to pick — but only EXPAND it if it actually has
-            // annotations (no point opening an empty attachment).
+            // Focus the file currently in the reader so its annotations
+            // are right there to pick — but ONLY when adding to "This
+            // Document" (section === "local"). For Elsewhere /
+            // Library-scope adds, the user is explicitly looking
+            // outside the current doc, so pre-selecting it would just
+            // make them navigate away. Skip the focus dance in those
+            // cases and let the dialog open at its default location.
             try {
                 const attItem: any = att.att || Zotero.Items.get(reader.itemID);
                 let hasAnns = false;
                 try { hasAnns = !!(attItem && attItem.getAnnotations && attItem.getAnnotations().length); } catch (_) {}
+                const focusCurrentDoc = section === "local";
                 (async () => {
+                    if (!focusCurrentDoc) return;
                     try {
                         const sleep = (ms: number) => new Promise(res => win.setTimeout(res, ms));
                         for (let n = 0; n < 80 && !(dlg.loaded && dlg.itemsView); n++) await sleep(75);
@@ -3838,7 +5136,7 @@ class _ReaderPanelsMixin {
                 })();
             } catch (_) {}
             await io.deferred.promise;
-            const add = (rec: any) => this._bmReaderAdd(att.libraryID, att.itemKey, rec);
+            const add = (rec: any) => this._bmReaderAdd(att.libraryID, att.itemKey, rec, addOpts);
             if (io.dataOut && io.dataOut.length) {
                 const targets: any = await Zotero.Items.getAsync(io.dataOut);
                 for (const it of (targets || [])) {
@@ -3859,6 +5157,389 @@ class _ReaderPanelsMixin {
             }
             this._wvReaderRenderBmList(reader, idoc);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderAddViaDialog err: " + e); }
+    }
+
+    /** Small popup menu anchored to the + button. Two options:
+     *    • "Pick item from library…" — the existing picker (current scope-
+     *      aware dialog).
+     *    • "Add URL or app link…"    — prompts for a URL + label and stores
+     *      a `type: "url"` bookmark in the current scope's store.
+     *  Reuses the bookmark-pane's existing `RP_BM_CTX_ID` styling for a
+     *  consistent look with the right-click context menu. Anchored to the
+     *  button's bottom-right; dismissed on outside click / Escape via the
+     *  shared `_wvReaderBmCtxDismiss` plumbing. */
+    _wvShowReaderBmAddMenu(reader: any, idoc: any, anchor: any, destScope?: string, section?: string) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const mkItem = (label: string, icon: string, fn: () => void) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.innerHTML = icon || "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { close(); fn(); });
+                menu.appendChild(it);
+            };
+            // destScope overrides the panel's active scope so a per-section
+            // + button can route the add unambiguously: "library" for the
+            // Library section, "document" for Elsewhere. Without it, fall
+            // back to the active scope (legacy single-scope behaviour).
+            const target = destScope || this._wvReaderBmScope();
+            // No icons yet for either entry — the user said icons can come
+            // later. Placeholder empty span keeps layout consistent with
+            // the rest of the context menu.
+            mkItem("Pick item from library…", "", () => {
+                if (target === "library") {
+                    Promise.resolve(this._bmAddBookmarksDialog())
+                        .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} })
+                        .catch(() => {});
+                } else {
+                    this._wvReaderAddViaDialog(reader, idoc, section);
+                }
+            });
+            // Suppress "Add Link…" when invoked from "This Document":
+            // URL bookmarks always auto-route to "Elsewhere" (per
+            // `_bmReaderEntrySection`), so offering it here would
+            // create the bookmark in a different section than the
+            // user expected — confusing.
+            if (section !== "local") {
+                mkItem("Add Link…", "", () => {
+                    Promise.resolve(this._wvAddUrlBookmark(reader, idoc, target, section))
+                        .catch((e: any) => Zotero.debug("[Weavero] add-url-bm err: " + e));
+                });
+            }
+            (idoc.body || idoc.documentElement).appendChild(menu);
+
+            // Anchor under the bottom-LEFT of the button so the menu opens
+            // downward like a typical dropdown. Clamp inside viewport.
+            const r = anchor.getBoundingClientRect();
+            const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
+            const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+            const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 70;
+            let x = r.left;
+            let y = r.bottom + 2;
+            if (x + mw > vw - 6) x = Math.max(6, vw - mw - 6);
+            if (y + mh > vh - 6) y = Math.max(6, r.top - mh - 2);
+            menu.style.left = x + "px";
+            menu.style.top = y + "px";
+
+            const onDown = (ev: any) => {
+                try {
+                    if (ev.target && menu.contains && menu.contains(ev.target)) return;
+                    if (ev.target === anchor) return;
+                    close();
+                } catch (_) {}
+            };
+            const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
+            const docs: any[] = [idoc]; const wins: any[] = [];
+            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvShowReaderBmAddMenu err: " + e);
+        }
+    }
+
+    /** Prompt the user for a link (Text + URL) and add a bookmark to the
+     *  current scope's store. The link can be:
+     *    • a web URL                 (http://, https://, …)
+     *    • an app-link               (obsidian://, slack://, vscode://, …)
+     *    • a Zotero link             (zotero://select/…, zotero://open/…)
+     *  Zotero `select` / `open` links are PARSED at save time and stored
+     *  as the native bookmark type they correspond to (`item`,
+     *  `collection`) — so the icon picker, click handler, and integration
+     *  surfaces all match the link's true target rather than treating
+     *  every link as a generic URL. Anything else gets the `type: "url"`
+     *  record + `Zotero.launchURL` on click. */
+    async _wvAddUrlBookmark(reader: any, idoc: any, destScope?: string, section?: string) {
+        try {
+            await this._bmInit();
+            const result = await this._wvShowUrlBookmarkDialog(idoc, { text: "", url: "" });
+            if (!result) return;
+            const url = result.url;
+            const label = result.text;
+            const rec = this._wvLinkToBookmarkRec(url, label);
+            if (!rec) return;
+            // destScope overrides the panel's active scope so a per-section
+            // + button can route the add to the correct store ("library"
+            // for the Library section, "document" for the doc sections).
+            const scope = destScope || this._wvReaderBmScope();
+            if (scope === "library") {
+                if (!this._bmDoc) return;
+                const fresh = Object.assign({
+                    id: "wv-" + Zotero.Utilities.randomString(8),
+                    created: new Date().toISOString(),
+                }, rec);
+                this._bmDoc.bookmarks.push(fresh);
+                await this._bmPersist();
+            } else {
+                const att = this._wvReaderAtt(reader);
+                if (!att || att.libraryID == null || !att.itemKey) return;
+                // URL bookmarks always auto-route to "Elsewhere" via
+                // `_bmReaderEntrySection` — no section override even if
+                // invoked from a per-section + button.
+                await this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: false });
+            }
+            if (idoc) this._wvReaderRenderBmList(reader, idoc);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvAddUrlBookmark err: " + e);
+        }
+    }
+
+    /** Edit an existing URL bookmark's display text + URL via the same
+     *  two-field dialog the Add Link path uses, pre-filled with the
+     *  bookmark's current values. Persists in place — id, created
+     *  timestamp, and the bookmark's slot in its parent folder all
+     *  survive. Type stays `url` even if the user pastes a
+     *  `zotero://select/...` (Add Link auto-converts on FIRST save; we
+     *  don't surprise users by mutating an existing bookmark's type
+     *  out from under them — delete + re-add to convert). */
+    async _wvEditUrlBookmark(reader: any, idoc: any, entry: any, reRender: any) {
+        try {
+            const result = await this._wvShowUrlBookmarkDialog(idoc, {
+                text: entry.label || "",
+                url: entry.url || "",
+            });
+            if (!result) return;
+            const url = String(result.url || "").trim();
+            if (!url) return;
+            const label = String(result.text || "").trim() || url;
+            entry.url = url;
+            entry.label = label;
+            await this._bmPersist();
+            try { reRender(); } catch (_) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvEditUrlBookmark err: " + e);
+        }
+    }
+
+    /** Convert a user-typed link string into a bookmark record:
+     *    • `zotero://select/<lib>/items/<key>`        → `type: "item"`
+     *    • `zotero://select/<lib>/collections/<key>`  → `type: "collection"`
+     *    • `zotero://select/<lib>/searches/<key>`     → `type: "item"`
+     *      (saved searches are rows in Zotero's `items` table)
+     *    • `zotero://open/<lib>/items/<key>?…`        → `type: "item"`
+     *      (page/annotation query params are stored as-is, lost on
+     *      the integration side; click still opens the file at top
+     *      via the existing reader-open behaviour)
+     *    • anything else                              → `type: "url"`
+     *  `<lib>` accepts both `library` (user library) and `groups/<gid>`. */
+    _wvLinkToBookmarkRec(url: string, label: string): any {
+        const s = String(url || "");
+        const m = s.match(
+            /^zotero:\/\/(?:select|open)\/((?:library)|(?:groups\/\d+))\/(items|collections|searches)\/([A-Za-z0-9]+)(?:\?(.*))?$/i);
+        if (m) {
+            const libToken = m[1].toLowerCase();
+            const kind = m[2].toLowerCase();
+            const key = m[3];
+            const query = m[4] || "";
+            // `zotero://open/.../items/PARENT?annotation=ANN_KEY` — the
+            // PATH key is the parent attachment, the annotation's own
+            // key sits in the query string. Store the ANNOTATION as the
+            // bookmark target so clicking navigates to that specific
+            // location instead of just opening the attachment at page 1.
+            let annKey: string | null = null;
+            if (query) {
+                const qm = query.match(/(?:^|&)annotation=([A-Za-z0-9]+)/);
+                if (qm) annKey = qm[1];
+            }
+            let libraryID: number | null = null;
+            try {
+                if (libToken === "library") {
+                    libraryID = Zotero.Libraries.userLibraryID;
+                } else {
+                    const gm = libToken.match(/^groups\/(\d+)$/);
+                    if (gm) {
+                        libraryID = Zotero.Groups.getLibraryIDFromGroupID(parseInt(gm[1], 10)) || null;
+                    }
+                }
+            } catch (_) {}
+            if (libraryID != null) {
+                if (kind === "collections") {
+                    return {
+                        type: "collection",
+                        libraryID,
+                        collectionKey: key,
+                        label: label || "",
+                    };
+                }
+                // items + searches both live in the items table
+                return {
+                    type: "item",
+                    libraryID,
+                    itemKey: annKey || key,
+                    label: label || "",
+                };
+            }
+        }
+        // Web / app-link / unparseable zotero link → plain URL bookmark.
+        return { type: "url", url, label };
+    }
+
+    /** Two-field modal (Text + URL) matching the note-editor's Edit Link
+     *  dialog. Lives inside the reader iframe (position:fixed → covers the
+     *  iframe viewport). Resolves to `{ text, url }` on Apply, `null` on
+     *  Cancel / backdrop click / Escape. Apply is gated on a non-empty
+     *  URL; Text auto-fills from a derived label as the user types in
+     *  URL, but only while the Text field is empty or still matches the
+     *  last derived value (so once the user edits Text manually it stays
+     *  put). */
+    _wvShowUrlBookmarkDialog(idoc: any, initial: any): Promise<any> {
+        return new Promise((resolve) => {
+            try {
+                const NS = NS_HTML_RP;
+                const backdrop = idoc.createElementNS(NS, "div");
+                backdrop.className = "wv-bm-url-dialog-backdrop";
+                const dlg = idoc.createElementNS(NS, "div");
+                dlg.className = "wv-bm-url-dialog";
+
+                const mkRow = (label: string, initialVal: string) => {
+                    const row = idoc.createElementNS(NS, "div");
+                    row.className = "wv-bm-url-dialog-row";
+                    const lbl = idoc.createElementNS(NS, "label");
+                    lbl.className = "wv-bm-url-dialog-label";
+                    lbl.textContent = label;
+                    const input: any = idoc.createElementNS(NS, "input");
+                    input.className = "wv-bm-url-dialog-input";
+                    input.setAttribute("type", "text");
+                    input.value = initialVal || "";
+                    row.appendChild(lbl); row.appendChild(input);
+                    return { row, input };
+                };
+
+                const textRow = mkRow("Text", (initial && initial.text) || "");
+                const urlRow = mkRow("URL", (initial && initial.url) || "");
+
+                let lastDerived = "";
+                urlRow.input.addEventListener("input", () => {
+                    const cur = String(textRow.input.value || "");
+                    if (cur === "" || cur === lastDerived) {
+                        const derived = this._wvUrlBookmarkDefaultLabel(urlRow.input.value);
+                        textRow.input.value = derived;
+                        lastDerived = derived;
+                    }
+                });
+
+                const btnRow = idoc.createElementNS(NS, "div");
+                btnRow.className = "wv-bm-url-dialog-btns";
+                const cancelBtn: any = idoc.createElementNS(NS, "button");
+                cancelBtn.textContent = "Cancel";
+                cancelBtn.className = "wv-bm-url-dialog-btn";
+                const applyBtn: any = idoc.createElementNS(NS, "button");
+                applyBtn.textContent = "Apply";
+                applyBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
+                btnRow.appendChild(cancelBtn); btnRow.appendChild(applyBtn);
+
+                dlg.appendChild(textRow.row);
+                dlg.appendChild(urlRow.row);
+                dlg.appendChild(btnRow);
+                backdrop.appendChild(dlg);
+                (idoc.body || idoc.documentElement).appendChild(backdrop);
+
+                let resolved = false;
+                const finish = (result: any) => {
+                    if (resolved) return;
+                    resolved = true;
+                    try { backdrop.remove(); } catch (_) {}
+                    resolve(result);
+                };
+                const submit = () => {
+                    const url = String(urlRow.input.value || "").trim();
+                    if (!url) { try { urlRow.input.focus(); } catch (_) {} return; }
+                    const text = String(textRow.input.value || "").trim() || url;
+                    finish({ text, url });
+                };
+                cancelBtn.addEventListener("click", () => finish(null));
+                applyBtn.addEventListener("click", submit);
+                backdrop.addEventListener("click", (e: any) => {
+                    if (e.target === backdrop) finish(null);
+                });
+                const onKey = (e: any) => {
+                    if (e.key === "Escape") { e.preventDefault(); finish(null); }
+                    else if (e.key === "Enter") { e.preventDefault(); submit(); }
+                };
+                textRow.input.addEventListener("keydown", onKey);
+                urlRow.input.addEventListener("keydown", onKey);
+
+                try { urlRow.input.focus(); urlRow.input.select(); } catch (_) {}
+            } catch (e) {
+                Zotero.debug("[Weavero] _wvShowUrlBookmarkDialog err: " + e);
+                resolve(null);
+            }
+        });
+    }
+
+    /** Derive a friendly default label from a URL/app-link string. For
+     *  http(s): use the hostname (drop www.). For app-link schemes (`foo:`
+     *  or `foo://path`): use the scheme name capitalised, plus the host or
+     *  first path segment if present. Anything unparseable falls back to
+     *  the raw URL. */
+    _wvUrlBookmarkDefaultLabel(url: string): string {
+        try {
+            const s = String(url || "");
+            // `zotero://(open|select)/<lib>/(items|collections|searches)/<KEY>[?annotation=ANN_KEY]`
+            // — resolve the target and mirror the label drag-and-drop /
+            // the item picker would set (so the dialog's default text
+            // matches what the same bookmark looks like via other paths).
+            const zm = s.match(
+                /^zotero:\/\/(?:select|open)\/((?:library)|(?:groups\/\d+))\/(items|collections|searches)\/([A-Za-z0-9]+)(?:\?(.*))?$/i);
+            if (zm) {
+                const libToken = zm[1].toLowerCase();
+                const kind = zm[2].toLowerCase();
+                const key = zm[3];
+                const query = zm[4] || "";
+                let annKey: string | null = null;
+                if (query) {
+                    const qm = query.match(/(?:^|&)annotation=([A-Za-z0-9]+)/);
+                    if (qm) annKey = qm[1];
+                }
+                let libraryID: number | null = null;
+                try {
+                    if (libToken === "library") libraryID = Zotero.Libraries.userLibraryID;
+                    else {
+                        const gm = libToken.match(/^groups\/(\d+)$/);
+                        if (gm) libraryID = Zotero.Groups.getLibraryIDFromGroupID(parseInt(gm[1], 10)) || null;
+                    }
+                } catch (_) {}
+                if (libraryID != null) {
+                    if (kind === "collections") {
+                        try {
+                            const col: any = Zotero.Collections.getByLibraryAndKey(libraryID, key);
+                            if (col && col.name) return String(col.name);
+                        } catch (_) {}
+                    } else {
+                        const targetKey = annKey || key;
+                        try {
+                            const it: any = Zotero.Items.getByLibraryAndKey(libraryID, targetKey);
+                            if (it) {
+                                if (it.isAnnotation && it.isAnnotation()) return this._wvReaderAnnLabel(it);
+                                const title = (it.getDisplayTitle && it.getDisplayTitle())
+                                    || (it.getField && it.getField("title")) || "";
+                                if (title) return String(title);
+                            }
+                        } catch (_) {}
+                    }
+                }
+            }
+            const m = s.match(/^([a-z][a-z0-9+.\-]*):(\/\/)?(.*)$/i);
+            if (!m) return url;
+            const scheme = m[1].toLowerCase();
+            const rest = m[3] || "";
+            if (scheme === "http" || scheme === "https") {
+                const host = rest.split(/[\/?#]/)[0] || "";
+                return host.replace(/^www\./i, "") || url;
+            }
+            const head = rest.split(/[\/?#]/)[0] || "";
+            const niceScheme = scheme.charAt(0).toUpperCase() + scheme.slice(1);
+            return head ? (niceScheme + " — " + head) : niceScheme;
+        } catch (_) { return url; }
     }
 
     /** Firefox-bookmarks-style right-click menu for the reader Bookmarks pane:
@@ -3882,15 +5563,26 @@ class _ReaderPanelsMixin {
             }
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
-            // `icon` is either inline SVG markup, or a chrome:// URL for a
-            // native Zotero icon — fetched + inlined async (the reader iframe
-            // can't load chrome:// images, so we read their SVG source).
+            // `icon` is one of:
+            //   • inline SVG markup       → assign to ic.innerHTML
+            //   • chrome:// URL           → fetched + inlined as SVG
+            //                               (the reader iframe can't load
+            //                               chrome:// images directly)
+            //   • data: URI               → wrap in an <img src=…>; would
+            //                               otherwise be inserted as text.
             const item = (label: string, icon: string, fn: any) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div"); it.className = "wv-ctx-item";
                 const ic = idoc.createElementNS(NS_HTML_RP, "span"); ic.className = "wv-ctx-ic";
                 if (icon && icon.indexOf("chrome://") === 0) {
                     ic.classList.add("wv-ctx-ic-native");
                     this._wvChromeIconSvg(icon).then((svg: string) => { try { ic.innerHTML = svg || ""; } catch (_) {} });
+                } else if (icon && icon.indexOf("data:") === 0) {
+                    const img = idoc.createElementNS(NS_HTML_RP, "img");
+                    img.setAttribute("src", icon);
+                    img.setAttribute("width", "16");
+                    img.setAttribute("height", "16");
+                    img.setAttribute("style", "-moz-context-properties:fill;fill:currentColor;");
+                    ic.appendChild(img);
                 } else {
                     ic.innerHTML = icon || "";
                 }
@@ -4061,15 +5753,45 @@ class _ReaderPanelsMixin {
                     this._bmRemove(entry.id).then(reRender);
                 });
             } else {
+                // Mirror the row's own icon on the Open menuitem so a URL
+                // bookmark shows the globe / external-link glyph (with
+                // its baked-in scheme colour), an item bookmark shows
+                // the type icon, etc. Earlier code gated this on a
+                // `chrome://` prefix — that filtered out the data: URIs
+                // `_bmIconInfo` returns for URL bookmarks, which then
+                // fell back to the library icon (the columns glyph)
+                // regardless of scheme.  HTML menu items handle data
+                // URIs fine, so the gate is unnecessary; the library
+                // icon is now only the fallback when there's no row
+                // icon at all (folders don't reach this branch).
                 let openIcon = "";
-                try { const im = this._bmIconInfo(entry, win).image; openIcon = (im && im.indexOf("chrome://") === 0) ? im : this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win); } catch (_) {}
+                try {
+                    const im = this._bmIconInfo(entry, win).image;
+                    openIcon = im || this._bmShowInLibraryIcon(
+                        { libraryID: entry.libraryID }, win);
+                } catch (_) {}
                 item("Open", openIcon, () => this._bmActivateBookmark(entry, {}));
-                item("Show in Library", this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win), () => this._bmShowInLibrary(entry));
+                // Library bookmarks point at the library itself — "Show in
+                // Library" would just select the library, which is exactly
+                // what "Open" already does. Suppress the redundant entry.
+                if (entry.type !== "library") {
+                    item("Show in Library", this._bmShowInLibraryIcon({ libraryID: entry.libraryID }, win), () => this._bmShowInLibrary(entry));
+                }
                 sep();
-                item("Rename…", RP_RENAME_SVG, () => {
-                    const n = this._bmPromptName(win, "Rename Bookmark", entry.label || "");
-                    if (n) this._bmRenameBookmark(entry.id, n).then(reRender);
-                });
+                if (entry.type === "url") {
+                    // URL bookmarks have TWO mutable fields (display text +
+                    // URL), so a plain rename prompt would only let the user
+                    // touch half of it. Open the same two-field dialog the
+                    // Add Link path uses, pre-filled with the current values.
+                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                        this._wvEditUrlBookmark(reader, idoc, entry, reRender);
+                    });
+                } else {
+                    item("Rename…", RP_RENAME_SVG, () => {
+                        const n = this._bmPromptName(win, "Rename Bookmark", entry.label || "");
+                        if (n) this._bmRenameBookmark(entry.id, n).then(reRender);
+                    });
+                }
                 item("Delete Bookmark", RP_DELETE_SVG, () => this._bmRemove(entry.id).then(reRender));
             }
             sep();
@@ -4167,7 +5889,16 @@ class _ReaderPanelsMixin {
                 append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
                 this._wvReaderStampMenuIcon(reader, LABEL, icon);
             } else {
-                const LABEL = "Add Bookmark to This Position";
+                // Menu items are scope-aware: when the bookmarks panel's
+                // Library tab is the active scope, the right-click items
+                // add to the library store (with a src ref to this doc)
+                // instead of the per-doc store. Label reflects scope so
+                // the action is unambiguous.
+                const activeScope = this._wvReaderBmScope();
+                const isLib = activeScope === "library";
+                const LABEL = isLib
+                    ? "Add Library Bookmark to This Position"
+                    : "Add Bookmark to This Position";
                 // A position bookmark drops a 📌 marker in the document, so the
                 // menu item gets the matching pin glyph (not the ribbon).
                 // Snapshot the exact click point NOW (params are stale by command
@@ -4183,22 +5914,119 @@ class _ReaderPanelsMixin {
                         y: (typeof params.y === "number") ? params.y : null,
                     };
                 } catch (_) {}
-                append({ label: LABEL, onCommand: () => this._wvReaderAddCurrentBookmark(reader, idoc, click) });
+
+                // Collect the bookmark items and append them in ONE
+                // group (each `append(...)` call from the reader plugin
+                // API becomes a separate visual group / separator). The
+                // pin-position entry plus the PDF-only page entry sit
+                // together as "Add Bookmark to …" siblings.
+                const bmItems: any[] = [
+                    { label: LABEL, onCommand: () => this._wvReaderAddCurrentBookmark(reader, idoc, click, activeScope) },
+                ];
+
+                // "Add Bookmark to This Page" — PDF-only sibling of the
+                // pin-position entry. Same record shape as the thumbnails
+                // menu entry (`position.pageIndex` with no rects → whole-
+                // page → ribbon icon, label resolves via pageIndex + 1).
+                // Page resolution mirrors the copy-link entry: clicked
+                // position → `.page:hover` element → viewport-top page,
+                // resolved at popupshowing time so the captured pageIndex
+                // is correct even if the popup lingers.
+                let LABEL_PAGE: string | null = null;
+                if (reader._type === "pdf") {
+                    let pageIndex: number | null = null;
+                    try {
+                        const p = event.params || {};
+                        const pp = p.position || (p.overlay && p.overlay.position);
+                        if (pp && Number.isInteger(pp.pageIndex) && pp.pageIndex >= 0) {
+                            pageIndex = pp.pageIndex;
+                        }
+                    } catch (_) {}
+                    if (pageIndex == null) {
+                        try {
+                            const hovered = idoc && idoc.querySelector
+                                && idoc.querySelector(".page:hover");
+                            const pageDiv = hovered
+                                && (hovered.matches && hovered.matches(".page")
+                                    ? hovered
+                                    : hovered.closest && hovered.closest(".page"));
+                            const n = pageDiv && parseInt(
+                                pageDiv.getAttribute("data-page-number"), 10);
+                            if (Number.isInteger(n) && n >= 1) pageIndex = n - 1;
+                        } catch (_) {}
+                    }
+                    if (pageIndex == null) {
+                        try {
+                            const stats = reader._internalReader
+                                && reader._internalReader._state
+                                && reader._internalReader._state.primaryViewStats;
+                            if (stats && Number.isInteger(stats.pageIndex)
+                                && stats.pageIndex >= 0) {
+                                pageIndex = stats.pageIndex;
+                            }
+                        } catch (_) {}
+                    }
+                    if (pageIndex == null) pageIndex = 0;
+                    const piCaptured = pageIndex;
+                    const att = this._wvReaderAtt(reader);
+                    if (att && att.libraryID != null && att.itemKey) {
+                        LABEL_PAGE = isLib
+                            ? "Add Library Bookmark to This Page"
+                            : "Add Bookmark to This Page";
+                        bmItems.push({
+                            label: LABEL_PAGE,
+                            onCommand: async () => {
+                                try {
+                                    const pageLabel = String(piCaptured + 1);
+                                    const rec: any = {
+                                        type: "page",
+                                        viewType: "pdf",
+                                        location: { pageIndex: piCaptured },
+                                        position: { pageIndex: piCaptured },
+                                        pageLabel,
+                                        label: "Page " + pageLabel,
+                                    };
+                                    if (isLib) {
+                                        await this._bmInit();
+                                        const node = Object.assign({
+                                            id: "wv-" + Zotero.Utilities.randomString(8),
+                                            srcLibraryID: att.libraryID,
+                                            srcItemKey: att.itemKey,
+                                            created: new Date().toISOString(),
+                                        }, rec);
+                                        this._bmDoc.bookmarks.push(node);
+                                        await this._bmPersist();
+                                    } else {
+                                        await this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true });
+                                    }
+                                    if (idoc) this._wvReaderRenderBmList(reader, idoc);
+                                } catch (e) {
+                                    Zotero.debug("[Weavero] view-menu Add Page Bookmark err: " + e);
+                                }
+                            },
+                        });
+                    }
+                }
+
+                append(...bmItems);
                 this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
+                if (LABEL_PAGE) this._wvReaderStampMenuIcon(reader, LABEL_PAGE, icon);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderViewContextMenu err: " + e); }
     }
 
     /** Bookmark-ribbon data URI for the reader context-menu icon, themed to
      *  the reader window (the menu lives in chrome, so a baked-colour data URI
-     *  is simplest). Same ribbon glyph as the Bookmarks tab. */
+     *  is simplest). SOLID-FILLED ribbon — same shape as the page-bookmark
+     *  row icon (BM_PAGE_ICON / RP_BM_RIBBON) so the "Add Bookmark to This
+     *  Page" menu item stays visually consistent with what it creates. */
     _wvReaderBmMenuIconURL() {
         let dark = true;
         try { dark = this._detectUIDark(); } catch (_) {}
         const color = dark ? "#e3e3e3" : "#555555";
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
             + 'viewBox="0 0 16 16" fill="' + color + '">'
-            + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>';
+            + '<path d="M4 1H12V15L8 12L4 15Z"/></svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
@@ -4275,6 +6103,334 @@ class _ReaderPanelsMixin {
             const r = page.viewport.convertToPdfPoint(x, y);
             return { pageIndex, rects: [[r[0], r[1], r[0], r[1]]] };
         } catch (_) { return null; }
+    }
+
+    // ---- Outline text highlight (in-place, no scroll, no flash) -----------
+    // An embedded PDF outline entry stores only a destination POINT, so clicking
+    // it scrolls to the page top and Zotero's flash lands on nothing. This makes
+    // the heading TEXT flash instead: navigation runs unchanged (honors the real
+    // dest), then we recover the heading's bounding box and paint the highlight
+    // IN PLACE. The paint primitive (see _wvOutlinePaint) avoids both a second
+    // scroll and a full-page flash. (Wiring lives in _wvOutlineInstallRecovery.)
+
+    /** True if a position is a degenerate (zero-area) rect — a bare dest point. */
+    _wvOutlineIsPointRect(position: any): boolean {
+        try {
+            const r = position && Array.isArray(position.rects) && position.rects[0];
+            if (!r || r.length < 4) return false;
+            return r[0] === r[2] && r[1] === r[3];
+        } catch (_) { return false; }
+    }
+
+    /** Title of the outline entry for a navigation `location`. The reader passes
+     *  a structurally-equal COPY (not the tree's own object), so reference
+     *  identity fails — match by VALUE: same pageIndex + same dest point. */
+    _wvOutlineFindTitle(outline: any, location: any): string {
+        try {
+            const pos = location && location.position;
+            const pi = pos && pos.pageIndex;
+            const r = pos && pos.rects && pos.rects[0];
+            const stack = Array.isArray(outline) ? outline.slice() : [];
+            while (stack.length) {
+                const it = stack.shift();
+                if (!it) continue;
+                if (it.location === location) return String(it.title || "");
+                const ip = it.location && it.location.position;
+                const ir = ip && ip.rects && ip.rects[0];
+                if (ip && r && ir && ip.pageIndex === pi
+                        && Math.abs(ir[0] - r[0]) < 0.5 && Math.abs(ir[1] - r[1]) < 0.5) {
+                    return String(it.title || "");
+                }
+                if (Array.isArray(it.items) && it.items.length) stack.push(...it.items);
+            }
+        } catch (_) {}
+        return "";
+    }
+
+    /** Normalise for fuzzy title↔page-text matching: NFKC, lowercase, keep only
+     *  letters/digits (drops whitespace + punctuation like "1." vs "1"). */
+    _wvOutlineNorm(s: string): string {
+        try {
+            let t = String(s == null ? "" : s);
+            if ((t as any).normalize) t = t.normalize("NFKC");
+            t = t.toLowerCase();
+            try { return t.replace(/[^\p{L}\p{N}]+/gu, ""); }
+            catch (_) { return t.replace(/[^a-z0-9]+/g, ""); }
+        } catch (_) { return ""; }
+    }
+
+    /** A REAL pdf.js page proxy (one with getTextContent). Zotero wraps
+     *  `app.pdfDocument`, stripping getTextContent, so reach the genuine proxy
+     *  via the rendered page view, else the viewer's own document proxy. */
+    async _wvOutlineGetPdfPage(app: any, pageIndex: number): Promise<any> {
+        try {
+            const pageView = app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+            const pp = pageView && pageView.pdfPage;
+            if (pp && typeof pp.getTextContent === "function") return pp;
+        } catch (_) {}
+        try {
+            const vd = app.pdfViewer.pdfDocument;
+            if (vd && typeof vd.getPage === "function") {
+                const p = await vd.getPage(pageIndex + 1);
+                if (p && typeof p.getTextContent === "function") return p;
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    /** Recover the heading title's bounding box on its dest page (PDF points,
+     *  bottom-left origin). Matches the (punctuation-insensitive) title against
+     *  the page text, preferring the occurrence nearest the dest y. Null on no
+     *  match. Best-effort; scanned / unusual-font pages may miss. */
+    async _wvOutlineRecoverRect(pv: any, pageIndex: number, destX: number, destY: number, title: string): Promise<number[] | null> {
+        try {
+            const win = pv && pv._iframeWindow;
+            const app = win && win.PDFViewerApplication;
+            if (!app || !app.pdfViewer) return null;
+            const candidates: string[] = [];
+            const full = this._wvOutlineNorm(title);
+            if (full.length >= 2) candidates.push(full);
+            const stripped = String(title == null ? "" : title)
+                .replace(/^\s*[\divxlcdmIVXLCDM]+[.\d]*[\s.):–—-]+/, "");
+            const noNum = this._wvOutlineNorm(stripped);
+            if (noNum.length >= 3 && noNum !== full) candidates.push(noNum);
+            if (!candidates.length) return null;
+
+            // Build match tokens {normalised char(s), rect}. PREFERRED source:
+            // the reader's OWN structured chars (`_pdfPages[pi].chars`) — their
+            // `.rect` is the exact glyph box used for text selection, so the
+            // highlight lines up with a manual selection (no vertical shift).
+            // FALLBACK: pdf.js getTextContent run boxes (baseline-derived, sits
+            // a little high) when chars aren't available.
+            const toks: any[] = [];
+            try { if (typeof pv._ensureBasicPageData === "function") await pv._ensureBasicPageData(pageIndex); } catch (_) {}
+            let chars: any = null;
+            try { chars = pv._pdfPages && pv._pdfPages[pageIndex] && pv._pdfPages[pageIndex].chars; } catch (_) {}
+            if (chars && chars.length) {
+                for (const ch of chars) {
+                    const c = ch && ch.c;
+                    const rc = ch && ch.rect;
+                    if (!c || !rc) continue;
+                    const nn = this._wvOutlineNorm(c);
+                    if (!nn) continue;
+                    toks.push({ n: nn, x0: rc[0], y0: rc[1], x1: rc[2], y1: rc[3] });
+                }
+            }
+            if (!toks.length) {
+                const page = await this._wvOutlineGetPdfPage(app, pageIndex);
+                if (!page || typeof page.getTextContent !== "function") return null;
+                const tc = await page.getTextContent();
+                const items = (tc && tc.items) || [];
+                for (const it of items) {
+                    const s = it && it.str;
+                    if (!s) continue;
+                    const nn = this._wvOutlineNorm(s);
+                    if (!nn) continue;
+                    const tr = it.transform || [1, 0, 0, 1, 0, 0];
+                    const x0 = tr[4], yb = tr[5];
+                    const w = it.width || 0, h = it.height || 0;
+                    toks.push({ n: nn, x0, y0: yb, x1: x0 + w, y1: yb + h });
+                }
+            }
+            if (!toks.length) return null;
+
+            let concat = "";
+            const map: number[] = [];
+            for (let i = 0; i < toks.length; i++) {
+                for (let k = 0; k < toks[i].n.length; k++) { concat += toks[i].n[k]; map.push(i); }
+            }
+
+            let best: number[] | null = null;
+            for (const target of candidates) {
+                let bestDy = Infinity, from = 0, idx: number;
+                while ((idx = concat.indexOf(target, from)) !== -1) {
+                    const startTok = map[idx], endTok = map[idx + target.length - 1];
+                    const dy = Math.abs(toks[startTok].y1 - destY);
+                    if (dy < bestDy) { bestDy = dy; best = [startTok, endTok]; }
+                    from = idx + 1;
+                }
+                if (best) break;
+            }
+            if (!best) return null;
+
+            let X0 = Infinity, Y0 = Infinity, X1 = -Infinity, Y1 = -Infinity;
+            for (let i = best[0]; i <= best[1]; i++) {
+                if (toks[i].x0 < X0) X0 = toks[i].x0;
+                if (toks[i].y0 < Y0) Y0 = toks[i].y0;
+                if (toks[i].x1 > X1) X1 = toks[i].x1;
+                if (toks[i].y1 > Y1) Y1 = toks[i].y1;
+            }
+            if (!isFinite(X0) || !isFinite(Y0) || !isFinite(X1) || !isFinite(Y1)) return null;
+            return [X0, Y0, X1, Y1];
+        } catch (_) { return null; }
+    }
+
+    /** The reader LAYER page object bound to the LIVE pdf.js page view for
+     *  `pageIndex` (match by `_originalPage` identity — indexing the pool gives
+     *  stale entries whose canvas is detached). Null if not currently built. */
+    _wvOutlineLiveLayer(pv: any, pageIndex: number): any {
+        try {
+            const app = pv._iframeWindow && pv._iframeWindow.PDFViewerApplication;
+            const live = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+            if (!live) return null;
+            const ps = pv._pages || [];
+            for (let i = 0; i < ps.length; i++) {
+                if (ps[i] && ps[i]._originalPage === live) return ps[i];
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    /** Paint (or, with posOrNull = null, clear) the highlight IN PLACE — no
+     *  scroll, no flash. Sets `_highlightedPosition` (must be an iframe-compartment
+     *  object — see caller's cloneInto), then re-composites ONLY the overlay onto
+     *  the page's existing canvas via the live layer's `refresh(false)` (busting
+     *  its signature cache first). NOT `reset()`+`draw()`, which re-renders the
+     *  pdf.js content and flashes the whole page. */
+    _wvOutlinePaint(pv: any, pageIndex: number, posOrNull: any) {
+        try {
+            pv._highlightedPosition = posOrNull;
+            const layer = this._wvOutlineLiveLayer(pv, pageIndex);
+            if (layer) {
+                try { if (layer._pageRenderer) layer._pageRenderer._lastRenderSignature = null; } catch (_) {}
+                try { layer.refresh(false); } catch (_) {}
+            }
+        } catch (_) {}
+    }
+
+    /** Flash the recovered heading box in place once the page view is fully
+     *  rendered (renderingState 3). Clones the position into the iframe
+     *  compartment (chrome objects read as undefined there → no paint), paints,
+     *  and auto-clears after ~2s. Polls briefly for the page to finish rendering.
+     *
+     *  `gen` is the click generation (`pv._wvHlSeq`): a click that's been
+     *  superseded by a newer one aborts (so a slow older recovery can't paint
+     *  over a newer highlight). The 2s clear is a SINGLE timer per view,
+     *  cancelled + rescheduled on each paint — so rapid clicks behave
+     *  consistently (the timer is reset to 2s from the latest highlight) and a
+     *  prior highlight left on another page is cleared.
+     *
+     *  `rects` is an array of [x0,y0,x1,y1] (one per line for a multi-line text
+     *  selection; a single entry for an outline heading box). */
+    _wvOutlineHighlightInPlace(pv: any, pageIndex: number, rects: number[][], gen: number, tries?: number) {
+        if (pv._wvHlSeq !== gen) return;   // superseded by a newer click
+        const n = tries || 0;
+        let ready = false;
+        try {
+            const app = pv && pv._iframeWindow && pv._iframeWindow.PDFViewerApplication;
+            const pView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+            ready = !!(pView && pView.viewport && pView.div && pView.renderingState === 3);
+        } catch (_) {}
+        const w: any = Zotero.getMainWindow();
+        const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+        if (ready) {
+            try {
+                // Cancel the prior clear timer and clear a highlight still
+                // showing on a different page, then paint and (re)start the 2s.
+                try { if (pv._wvHlClearTimer && w && w.clearTimeout) w.clearTimeout(pv._wvHlClearTimer); } catch (_) {}
+                pv._wvHlClearTimer = null;
+                if (pv._wvHlPage != null && pv._wvHlPage !== pageIndex) {
+                    this._wvOutlinePaint(pv, pv._wvHlPage, null);
+                }
+                const clean = (rects || []).map((r: any) => [r[0], r[1], r[2], r[3]]);
+                const pos = (Components as any).utils.cloneInto({ pageIndex, rects: clean }, pv._iframeWindow);
+                this._wvOutlinePaint(pv, pageIndex, pos);
+                pv._wvHlPage = pageIndex;
+                pv._wvHlClearTimer = st(() => {
+                    if (pv._wvHlSeq === gen) { this._wvOutlinePaint(pv, pageIndex, null); pv._wvHlPage = null; }
+                    pv._wvHlClearTimer = null;
+                }, 2000);
+            } catch (_) {}
+            return;
+        }
+        if (n < 60) {
+            st(() => this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, n + 1), 150);
+        }
+    }
+
+    /** Wrap a reader primary view's `navigate` so an outline click flashes the
+     *  heading text consistently — for EMBEDDED outlines (recover the heading box
+     *  from a bare-point dest) and EXTRACTED outlines (use the entry's own rect),
+     *  both via our own reset-on-each-click timer (works around the native
+     *  rapid-click bug, Zotero forums #122030). Gated at click time on
+     *  `weavero.enableOutlineTextHighlight` (default off). Idempotent per view;
+     *  captures the true original navigate once for clean re-install; reads the
+     *  live plugin so it survives reloads. */
+    _wvOutlineInstallRecovery(reader: any, tries?: number) {
+        const n = tries || 0;
+        let pv: any = null;
+        try { const ir = reader && reader._internalReader; pv = ir && ir._primaryView; } catch (_) {}
+        if (pv && typeof pv.navigate === "function") {
+            if (pv._wvOutlineWired) return;
+            try {
+                pv._wvOutlineWired = true;
+                if (!pv._wvOutlineOrigNavigate) pv._wvOutlineOrigNavigate = pv.navigate.bind(pv);
+                const origNavigate = pv._wvOutlineOrigNavigate;
+                pv.navigate = function (location: any, options: any) {
+                    let handled = false;
+                    try {
+                        const plugin: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        // Handle ANY outline click — embedded (bare-point dest)
+                        // OR extracted (real heading rect). We identify it as an
+                        // outline click by matching the location to an outline
+                        // entry (non-empty title). Opt-in via the toggle.
+                        if (plugin && typeof plugin._getEnableOutlineTextHighlight === "function"
+                                && plugin._getEnableOutlineTextHighlight()
+                                && location && location.position
+                                && location.position.rects && location.position.rects.length) {
+                            const title = plugin._wvOutlineFindTitle(pv._outline, location);
+                            if (title) {
+                                handled = true;
+                                const pi = location.position.pageIndex;
+                                // New click generation — supersedes any in-flight
+                                // recovery/highlight from a previous click.
+                                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                                // Scroll to the dest WITHOUT the reader's native
+                                // flash. The native _highlightPosition arms an
+                                // unconditional 2s timer that nulls
+                                // _highlightedPosition — and on rapid clicks an
+                                // earlier click's timer wipes a later click's
+                                // highlight (native bug, Zotero forums #122030).
+                                // We do the scroll and fully own the highlight +
+                                // its (reset-on-each-click) timer — fixing the
+                                // inconsistency for BOTH outline kinds.
+                                try {
+                                    if (!(options && options.skipHistory) && typeof pv._onManualNavigation === "function") {
+                                        try { pv._onManualNavigation(); } catch (_) {}
+                                    }
+                                    try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+                                    pv.navigateToPosition(location.position, options);
+                                } catch (e) {
+                                    try { origNavigate(location, options); } catch (_) {}
+                                }
+                                if (plugin._wvOutlineIsPointRect(location.position)) {
+                                    // Embedded: dest is a bare point → recover the
+                                    // heading's text box, then flash it.
+                                    const r = location.position.rects[0];
+                                    Promise.resolve(
+                                        plugin._wvOutlineRecoverRect(pv, pi, r[0], r[1], title)
+                                    ).then(function (box: any) {
+                                        if (box) plugin._wvOutlineHighlightInPlace(pv, pi, [box], gen, 0);
+                                    }).catch(function () {});
+                                } else {
+                                    // Extracted: the entry already carries the real
+                                    // heading rect — flash it directly (no recovery).
+                                    const rr = location.position.rects[0];
+                                    plugin._wvOutlineHighlightInPlace(pv, pi, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
+                                }
+                            }
+                        }
+                    } catch (_) {}
+                    if (!handled) return origNavigate(location, options);
+                };
+            } catch (_) {}
+            return;
+        }
+        if (n < 40) {
+            const w: any = Zotero.getMainWindow();
+            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => this._wvOutlineInstallRecovery(reader, n + 1), 150);
+        }
     }
 
     /** Drop a location pin at a PDF position to flag a position bookmark's exact
@@ -4489,7 +6645,7 @@ class _ReaderPanelsMixin {
         };
     }
 
-    async _wvReaderAddCurrentBookmark(reader: any, idoc: any, click?: any) {
+    async _wvReaderAddCurrentBookmark(reader: any, idoc: any, click?: any, scope?: string) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
@@ -4511,8 +6667,32 @@ class _ReaderPanelsMixin {
                     }
                 } catch (_) {}
             }
-            await this._bmReaderAdd(att.libraryID, att.itemKey, rec);
+            let entry: any;
+            if (scope === "library") {
+                // Library scope: push directly to the library store with a
+                // src ref pointing at this document, so clicking the bookmark
+                // re-opens this attachment at the captured position.
+                await this._bmInit();
+                const node: any = Object.assign({
+                    id: "wv-" + Zotero.Utilities.randomString(8),
+                    srcLibraryID: att.libraryID,
+                    srcItemKey: att.itemKey,
+                    created: new Date().toISOString(),
+                }, rec);
+                this._bmDoc.bookmarks.push(node);
+                await this._bmPersist();
+                entry = node;
+            } else {
+                entry = await this._bmReaderAdd(att.libraryID, att.itemKey, rec);
+            }
             this._wvReaderRenderBmList(reader, idoc);
+            // Show the pin overlay at the just-added spot so the user
+            // sees it land — same temporary marker as clicking the row
+            // (PDF-only; EPUB/snapshot have no rects-based overlay and
+            // `_wvReaderShowPin` returns early there).
+            if (entry && entry.type === "position" && entry.position) {
+                try { this._wvReaderShowPin(reader, entry.position, entry.id); } catch (_) {}
+            }
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderAddCurrentBookmark err: " + e);
         }
@@ -4561,8 +6741,57 @@ class _ReaderPanelsMixin {
         return null;
     }
 
+    /** PDF only: scroll to a stored text-selection bookmark and flash its rects
+     *  via the in-place highlighter (consistent reset-on-each-click timer, no
+     *  native flash-timer bug). Clones the position into the iframe compartment
+     *  for the scroll (chrome objects read as undefined there). Returns true if
+     *  handled; false (non-PDF / bad position / failure) → caller falls back to
+     *  the native `reader.navigate({position})`. */
+    _wvReaderHighlightTextBookmark(reader: any, position: any): boolean {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const iwin = pv && pv._iframeWindow;
+            const app = iwin && iwin.PDFViewerApplication;
+            if (!pv || !app || !app.pdfViewer) return false;   // not a PDF view
+            if (!position || !Number.isInteger(position.pageIndex)
+                    || !Array.isArray(position.rects) || !position.rects.length) return false;
+            const pi = position.pageIndex;
+            const rects = position.rects.map((r: any) => [r[0], r[1], r[2], r[3]]);
+            const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+            // Scroll WITHOUT the native flash (which arms the buggy 2s timer).
+            try {
+                if (typeof pv._onManualNavigation === "function") { try { pv._onManualNavigation(); } catch (_) {} }
+                try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+                const cpos = (Components as any).utils.cloneInto({ pageIndex: pi, rects }, iwin);
+                const copts = (Components as any).utils.cloneInto({ block: "center" }, iwin);
+                pv.navigateToPosition(cpos, copts);
+            } catch (e) {
+                try { reader.navigate({ position: position }); return true; } catch (_) { return false; }
+            }
+            this._wvOutlineHighlightInPlace(pv, pi, rects, gen, 0);
+            return true;
+        } catch (_) { return false; }
+    }
+
     _wvNavigateReaderLocation(reader: any, bm: any) {
         try {
+            // Whole-page bookmark — scroll the named page to the top,
+            // no pin marker (the bookmark isn't a precise spot). The
+            // page index can live in `position.pageIndex` (new records
+            // also set it for `_bmReaderPageLabel`) or `location.pageIndex`
+            // (the canonical field).
+            if (bm && bm.type === "page") {
+                const pi = (bm.position && Number.isInteger(bm.position.pageIndex))
+                    ? bm.position.pageIndex
+                    : (bm.location && Number.isInteger(bm.location.pageIndex))
+                        ? bm.location.pageIndex
+                        : null;
+                if (pi != null) {
+                    try { reader.navigate({ pageIndex: pi }); } catch (_) {}
+                }
+                return;
+            }
             if (bm && bm.position) {
                 if (bm.type === "position") {
                     // Scroll precisely WITHOUT the built-in highlight box, then
@@ -4580,8 +6809,14 @@ class _ReaderPanelsMixin {
                     return;
                 }
                 // A stored selection position scrolls to AND highlights the
-                // text (the same flash as navigating to an annotation). Works
-                // for PDF (rects) and EPUB/snapshot (selector) alike.
+                // text. For PDF, when the outline-highlight toggle is on, route
+                // through Weavero's in-place highlighter (consistent timer, no
+                // native rapid-click bug); otherwise / for EPUB / snapshot, fall
+                // back to the native navigate.
+                if (this._getEnableOutlineTextHighlight && this._getEnableOutlineTextHighlight()
+                        && this._wvReaderHighlightTextBookmark(reader, bm.position)) {
+                    return;
+                }
                 reader.navigate({ position: bm.position });
                 return;
             }
@@ -4597,6 +6832,172 @@ class _ReaderPanelsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvNavigateReaderLocation err: " + e);
         }
+    }
+
+    /** Register a `createThumbnailContextMenu` listener on Zotero.Reader so
+     *  the PDF Thumbnails sidebar's right-click menu gains two Weavero
+     *  entries:
+     *
+     *    • "Add Bookmark to This Page" — gated by `enableReaderBookmarks`.
+     *      Creates a position bookmark for the right-clicked page (or one
+     *      per page in a multi-select). The page label mirrors what the
+     *      Bookmarks list already shows for same-page annotations.
+     *
+     *    • "Copy Link to This Page" — gated by the URI-utilities pref
+     *      (matches the items-list "Copy Open Link"). Builds
+     *      `zotero://open/…/items/<attKey>?page=N` for the page;
+     *      multi-select copies one link per line.
+     *
+     *  The Reader plugin API surfaces this hook once (not per-window), so
+     *  one listener covers every reader instance. Keep the handler ref so
+     *  the teardown call passes the exact handler to `unregisterEventListener`. */
+    _setupThumbnailContextMenu() {
+        try {
+            if (!Zotero.Reader || typeof Zotero.Reader.registerEventListener !== "function") return;
+            if (this._thumbnailMenuHandler) return; // idempotent
+            const plugin: any = this;
+            const handler = (event: any) => {
+                try {
+                    const { reader, params, append } = event || {};
+                    if (!reader || !params || !append) return;
+                    if (reader._type && reader._type !== "pdf") return;
+                    const pageIndexes: number[] = Array.isArray(params.pageIndexes)
+                        ? params.pageIndexes.slice().sort((a: number, b: number) => a - b)
+                        : [];
+                    if (!pageIndexes.length) return;
+                    const att = plugin._wvReaderAtt(reader);
+                    if (!att || att.libraryID == null || !att.itemKey) return;
+
+                    // Match the pin's label convention by using `pageIndex + 1`
+                    // directly — the display path (`_bmReaderPageLabel`)
+                    // explicitly ignores `pv._pageLabels` ("answers a different
+                    // question") and falls back to `pageIndex + 1` when no
+                    // annotation labels apply. Reading `pv._pageLabels` here
+                    // would store rich journal labels like "4839" that the
+                    // display path would never produce on its own, giving the
+                    // list an inconsistent two-number-spaces feel.
+                    const labelFor = (pi: number) => String(pi + 1);
+                    const single = pageIndexes.length === 1;
+                    const items: any[] = [];
+
+                    let addBmLabel: string | null = null;
+                    if (plugin._getEnableReaderBookmarks()) {
+                        addBmLabel = single
+                            ? "Add Bookmark to This Page"
+                            : "Add Bookmarks to " + pageIndexes.length + " Pages";
+                        items.push({
+                            label: addBmLabel,
+                            onCommand: async () => {
+                                try {
+                                    for (const pi of pageIndexes) {
+                                        const pageLabel = labelFor(pi);
+                                        await plugin._bmReaderAdd(att.libraryID, att.itemKey, {
+                                            // `type: "page"` is the dedicated
+                                            // whole-page bookmark type — the
+                                            // section classifier, icon picker,
+                                            // and navigator all key off this
+                                            // (ribbon icon, scroll-to-page,
+                                            // routes to "In this document").
+                                            type: "page",
+                                            viewType: "pdf",
+                                            location: { pageIndex: pi },
+                                            // Mirror pageIndex into `position`
+                                            // so `_bmReaderPageLabel` resolves
+                                            // the column label via its
+                                            // position branch.
+                                            position: { pageIndex: pi },
+                                            pageLabel,
+                                            label: "Page " + pageLabel,
+                                        }, { allowDuplicate: true });
+                                    }
+                                } catch (e) {
+                                    Zotero.debug("[Weavero] thumb-menu Add Bookmark err: " + e);
+                                }
+                            },
+                        });
+                    }
+
+                    // The Copy Link entry is a sibling of the items-tree
+                    // "Copy Open Link", so gate it the same way: URI
+                    // utilities master + Copy Item Link sub-toggle (the
+                    // sub-toggle is named for items-list links but its
+                    // contract is broader — "Weavero may copy zotero://
+                    // links from right-click menus").
+                    let copyLinkLabel: string | null = null;
+                    if (plugin._getEnableUriUtilities && plugin._getEnableCopyItemLink
+                        && plugin._getEnableUriUtilities() && plugin._getEnableCopyItemLink()) {
+                        copyLinkLabel = single
+                            ? "Copy Link to This Page"
+                            : "Copy Links to " + pageIndexes.length + " Pages";
+                        items.push({
+                            label: copyLinkLabel,
+                            onCommand: async () => {
+                                try {
+                                    const base = plugin._buildOpenLink && att.att && plugin._buildOpenLink(att.att);
+                                    if (!base) return;
+                                    const links = pageIndexes.map(pi =>
+                                        base + (base.includes("?") ? "&" : "?") + "page=" + (pi + 1));
+                                    const text = links.join("\n");
+                                    try {
+                                        Zotero.Utilities.Internal.copyTextToClipboard(text);
+                                    } catch (_) {
+                                        // Fallback path
+                                        try {
+                                            const w = Zotero.getMainWindow();
+                                            if (w && w.navigator && w.navigator.clipboard
+                                                && w.navigator.clipboard.writeText) {
+                                                w.navigator.clipboard.writeText(text);
+                                            }
+                                        } catch (_2) {}
+                                    }
+                                } catch (e) {
+                                    Zotero.debug("[Weavero] thumb-menu Copy Link err: " + e);
+                                }
+                            },
+                        });
+                    }
+
+                    if (items.length) append(...items);
+
+                    // Icon stamping — the reader's append() API carries
+                    // no icon, but the popup itself is XUL (not React;
+                    // see `_openContextMenu` in xpcom/reader.js), so we
+                    // wait for popupshowing on the reader window's
+                    // popupset and stamp `menuitem-iconic` + `image`
+                    // onto the menuitems by label. Same trick used by
+                    // the in-document "Add Bookmark to This Position"
+                    // and "Copy Link to This Page" entries.
+                    try {
+                        if (addBmLabel) {
+                            plugin._wvReaderStampMenuIcon(reader, addBmLabel,
+                                plugin._wvReaderBmMenuIconURL());
+                        }
+                        if (copyLinkLabel) {
+                            plugin._wvReaderStampMenuIcon(reader, copyLinkLabel,
+                                plugin._menuItemIconURL);
+                        }
+                    } catch (_) {}
+                } catch (e) {
+                    Zotero.debug("[Weavero] thumbnail menu handler err: " + e);
+                }
+            };
+            Zotero.Reader.registerEventListener(
+                "createThumbnailContextMenu", handler, "weavero@mjthoraval");
+            this._thumbnailMenuHandler = handler;
+        } catch (e) {
+            Zotero.debug("[Weavero] _setupThumbnailContextMenu err: " + e);
+        }
+    }
+
+    _teardownThumbnailContextMenu() {
+        try {
+            if (!this._thumbnailMenuHandler) return;
+            if (Zotero.Reader && typeof Zotero.Reader.unregisterEventListener === "function") {
+                Zotero.Reader.unregisterEventListener(
+                    "createThumbnailContextMenu", this._thumbnailMenuHandler);
+            }
+            this._thumbnailMenuHandler = null;
+        } catch (e) {}
     }
 }
 

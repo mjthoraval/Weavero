@@ -9,6 +9,7 @@
 
 export const STYLE_ID = "weavero-styles";
 export const PANEL_ID = "weavero-panel";
+
 export const BTN_CLASS = "wv-btn";
 export const BTN_TREE_CLASS = "wv-btn-tree";
 export const BTN_PANE_CLASS = "wv-btn-pane";
@@ -33,6 +34,35 @@ export const BTN_SIDEBAR_CLASS = "wv-btn-sidebar";
 // `cloneInto` boundary (which can normalize Unicode-format markers
 // like ZWSP away), at the small cost that another plugin using the
 // exact same label would also pick up our icon.
+
+// Globe icon for `http(s)://` web-link bookmarks. Stroke-based at
+// 16-unit so it inherits the row label's link colour via
+// `stroke="currentColor"` and renders pixel-sharp at the 16×16 row
+// icon size used by `.wv-bm-reader-ic` / `.wv-bm-iconbtn`. Replaces
+// an earlier 24-unit Lucide path that was being scaled into a 14px
+// box — visibly blurry.
+export const URL_GLOBE_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"'
+    + ' viewBox="0 0 16 16" fill="none" stroke="currentColor"'
+    + ' stroke-width="1" stroke-linecap="round" stroke-linejoin="round">'
+    + '<circle cx="8" cy="8" r="6.5"/>'
+    + '<line x1="1.5" y1="8.5" x2="14.5" y2="8.5"/>'
+    + '<ellipse cx="8" cy="8" rx="3" ry="6.5"/>'
+    + '</svg>';
+
+// "External-link" (arrow out of a box) for app-link bookmarks
+// (obsidian://, slack://, vscode://, mailto:, etc.). Redrawn at
+// 16-unit so viewBox, attr width/height, and the 16×16 render size
+// all agree. Stroke-width 1 lands cleanly on the pixel grid.
+export const URL_EXTERNAL_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"'
+    + ' viewBox="0 0 16 16" fill="none" stroke="currentColor"'
+    + ' stroke-width="1" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M11.5 8.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/>'
+    + '<polyline points="9.5 2.5 13.5 2.5 13.5 6.5"/>'
+    + '<line x1="7" y1="9" x2="13.5" y2="2.5"/>'
+    + '</svg>';
+
 // Chain (relations) icon SVG markup with a `__FILL__` placeholder
 // for the path's fill color. Used at init() to bake light + dark
 // theme variants into data: URLs that the chrome XUL items-tree menu
@@ -88,6 +118,28 @@ export const SCHEME_SVG_TEMPLATE =
 export const BOOKMARK_PATH =
     "M3 1H13V15L8 12L3 15ZM4 2H12V13.234L8 10.834L4 13.234Z";
 
+// Same ribbon, re-authored in a 20-unit viewBox with outer corners
+// and the V-apex on **integer** coordinates. Used wherever the icon
+// renders at 20×20 device pixels (collections-pane toolbar button,
+// reader Bookmarks tab) so 1 SVG unit = 1 device pixel and the
+// outer edges land cleanly on pixel rows — the shared 16-unit path
+// scales by 1.25 px/unit at 20px and antialiases every edge across
+// two pixel rows. Inner cutout uses half-pixel y on the diagonals
+// (perpendicular offset for uniform border width along the V); the
+// AA stays inside the glyph where it's not visible.
+export const BOOKMARK_PATH_20 =
+    "M4 1H16V19L10 15L4 19ZM5 2H15V16.5L10 13.5L5 16.5Z";
+
+// 14-unit variant for the reader's smaller bookmark icons (list rows,
+// hover card, context-menu). Renders at 14×14 device pixels so 1 SVG
+// unit = 1 device pixel and the outer edges hit integer pixel rows
+// — the 16-unit shared path scales at 14/16 = 0.875 px/unit and
+// antialiases every edge. Same V-apex / half-pixel inner trick as
+// the 20-unit version, scaled to 14:
+//   outer 8×12 (x 3→11, y 1→13), V-apex (7, 10).
+export const BOOKMARK_PATH_14 =
+    "M3 1H11V13L7 10L3 13ZM4 2H10V11.5L7 9L4 11.5Z";
+
 // URL_SCHEMES (the user-toggleable scheme registry) lives in
 // modules/url.ts now and is re-imported here for the few non-URL
 // call sites (CSS selector building, default-pref seeding,
@@ -121,12 +173,13 @@ export const PLUGIN_CSS = [
     // always present; only shown when the button is `.wv-filter-tb-active`.
     "#wv-filter-tb-button { position: relative; }",
     // Default placement targets the funnel icon's top-right corner
-    // (icon at ~8px left, 16px wide -> right edge ~24px). The button
+    // (icon at ~8 px left, 20 px wide -> right edge ~28 px, dot
+    // anchored at left:24 sits just inside that corner). The button
     // also carries a dropmarker to the icon's right, so the dot is
     // anchored to the icon, not the button edge; _updateFilterToolbar-
     // ActiveState refines left/top from the live icon box.
     "#wv-filter-tb-button .wv-filter-tb-dot {",
-    "  display: none; position: absolute; top: 5px; left: 20px;",
+    "  display: none; position: absolute; top: 3px; left: 24px;",
     "  width: 6px; height: 6px; border-radius: 50%;",
     "  background: var(--color-accent, #5e6ad2); pointer-events: none;",
     "}",
@@ -598,9 +651,14 @@ export const PLUGIN_CSS = [
     "  padding: 3px 7px; font-size: 14px; line-height: 1;",
     "}",
     ".wv-chip-remove:hover { opacity: 1; background: rgba(127,127,127,0.12); }",
+    // 12×12 colored circle with a 1px subtle ring for legibility on
+    // backgrounds close to the swatch color (e.g. near-white/yellow on
+    // a light popup, near-black on a dark popup). `box-sizing:
+    // border-box` keeps the declared size equal to the visible size —
+    // the ring lives INSIDE the 12×12 box, leaving a 10×10 color area.
     ".wv-chip-swatch {",
-    "  width: 10px; height: 10px; border-radius: 50%;",
-    "  display: inline-block;",
+    "  width: 12px; height: 12px; border-radius: 50%;",
+    "  display: inline-block; box-sizing: border-box;",
     "  border: 1px solid rgba(0,0,0,0.15);",
     "}",
     // Tags-column counts: manual in blue, automatic in default text
@@ -661,14 +719,6 @@ export const PLUGIN_CSS = [
     "}",
     // Popup-internal styles (the panel hosts an HTML subtree).
     ".wv-filter-popup-inner { padding: 6px; min-width: 200px; }",
-    // Filter-search affordance at the very top of the popup: magnifier on the
-    // right, optional input row below; click to toggle, ESC to close.
-    ".wv-filter-popup-search-bar { display: flex; flex-direction: column; align-items: stretch; padding: 0 0 4px; }",
-    ".wv-filter-popup-search-btn { align-self: flex-end; width: 24px; height: 24px; border: none; background: none; cursor: pointer; border-radius: 4px; color: inherit; opacity: .65; display: flex; align-items: center; justify-content: center; padding: 0; }",
-    ".wv-filter-popup-search-btn:hover { opacity: 1; background: rgba(127, 127, 127, .14); }",
-    ".wv-filter-popup-search-btn.wv-active { opacity: 1; background: rgba(127, 127, 127, .2); }",
-    ".wv-filter-popup-search-input { width: 100%; padding: 3px 6px; font-size: 12px; border: 1px solid rgba(127, 127, 127, .35); border-radius: 4px; background: rgba(127, 127, 127, .06); color: inherit; box-sizing: border-box; margin: 2px 0 0; }",
-    ".wv-filter-popup-search-input:focus { outline: none; border-color: var(--color-accent, #5e6ad2); }",
     ".wv-filter-popup-header {",
     "  padding: 4px 8px 6px;",
     "  font-size: 11px; opacity: 0.6;",
@@ -704,14 +754,12 @@ export const PLUGIN_CSS = [
     "  -moz-user-select: text;",
     "}",
     // Bottom row — just the Alt+Click hint, centered. The Clear /
-    // × buttons moved up to the right end of the cross-level row,
-    // so the hint can be alone here without competing controls.
+    // Bottom hint row — Alt+Click hint, alone, centered. Same
+    // styling as the reader filter popup so the two popups read
+    // identically at the bottom.
     ".wv-filter-bottom-controls {",
     "  display: flex; justify-content: center; align-items: center;",
     "  margin-top: 4px;",
-    "}",
-    ".wv-filter-bottom-controls .wv-filter-bottom-hint {",
-    "  text-align: center; padding: 0;",
     "}",
     // Display-option checkbox row (e.g. "Show non-matching
     // annotations of matched files") at the very bottom of the
@@ -810,14 +858,6 @@ export const PLUGIN_CSS = [
     "  background: rgba(127,127,127,0.18);",
     "  border-radius: 6px;",
     "  padding: 3px 6px;",
-    "}",
-    // Section titles (e.g. "Annotation Color", "Has Comment", …)
-    // are hidden — the icon swatches and the search-input placeholder
-    // identify each filter on their own. The element stays in the
-    // DOM so existing renderers don't need to branch on whether the
-    // title exists.
-    ".wv-filter-section-title {",
-    "  display: none;",
     "}",
     // Toggle-bar layout shared by the Selection Target row at the
     // bottom of the filter popup. (Was previously also used by a
@@ -921,9 +961,9 @@ export const PLUGIN_CSS = [
     "  transform: translateY(3px);",
     "}",
     ".wv-filter-scope-bar-label {",
-    "  flex: 0 0 var(--wv-title-col, 150px);",
+    "  flex: 0 0 auto;",
     "  font-size: 12px; opacity: 0.75;",
-    "  text-align: right; padding-right: 4px;",
+    "  padding-right: 4px;",
     "}",
     ".wv-filter-scope-toggle {",
     "  font-weight: 500;",
@@ -936,6 +976,12 @@ export const PLUGIN_CSS = [
     "  border-top: 1px solid rgba(127,127,127,0.35);",
     "  border-bottom: none;",
     "  margin-top: 6px; margin-bottom: 0;",
+    // No content sits BELOW this row's own buttons inside the bar —
+    // the next thing is the Alt+Click hint, which carries its own
+    // padding. Zeroing the bottom padding here removes the asymmetric
+    // 8px gap that made the hint visually closer to the rows below
+    // than to the Selection Target row above.
+    "  padding-bottom: 0;",
     "}",
     ".wv-filter-seltarget-bar {",
     "  margin-bottom: 0;",
@@ -976,32 +1022,17 @@ export const PLUGIN_CSS = [
     ".wv-filter-group-header-top {",
     "  border-top: none; margin-top: 0; padding-top: 0;",
     "}",
-    // Group-header label and TBD tag are also hidden — the dashed
-    // top border of each group still provides visual separation.
-    ".wv-filter-group-header-title,",
-    ".wv-filter-group-header-todo {",
-    "  display: none;",
-    "}",
-    // Added By section's scope checkboxes — three ticks stacked
-    // under the title in the same left column. The section flips
-    // to a 2-column grid when the scope row is present so the
-    // user-button column on the right keeps its full height while
-    // the title + ticks share the title column.
+    // Added By section's scope checkboxes — three ticks (Top-level
+    // items / Attachments / Annotations) controlling which row kinds
+    // the addedBy filter applies to. The section becomes a vertical
+    // stack when the scope row is present: scope row on top, the
+    // user-button list below.
     ".wv-filter-section:has(> .wv-filter-scope-row:not([style*=\"none\"])) {",
-    "  display: grid;",
-    "  grid-template-columns: var(--wv-title-col, 150px) 1fr;",
-    "  align-items: start; column-gap: 8px; row-gap: 2px;",
-    "}",
-    ".wv-filter-section:has(> .wv-filter-scope-row:not([style*=\"none\"])) > .wv-filter-section-title {",
-    "  grid-row: 1; grid-column: 1;",
-    "}",
-    ".wv-filter-section:has(> .wv-filter-scope-row:not([style*=\"none\"])) > .wv-filter-options {",
-    "  grid-row: 1 / 3; grid-column: 2;",
+    "  flex-direction: column; align-items: stretch; gap: 4px;",
     "}",
     ".wv-filter-scope-row {",
-    "  grid-row: 2; grid-column: 1;",
-    "  display: flex; flex-direction: column; align-items: flex-end;",
-    "  gap: 2px; padding-right: 4px;",
+    "  display: flex; flex-direction: row; align-items: center;",
+    "  gap: 10px; padding: 2px 4px;",
     "  font-size: 11px; opacity: 0.85;",
     "}",
     ".wv-filter-scope-cb {",
@@ -1093,6 +1124,15 @@ export const PLUGIN_CSS = [
     ".wv-filter-opt-icon {",
     "  padding: 4px 6px; min-width: 26px;",
     "  justify-content: center; gap: 0;",
+    "}",
+    // The link SVG (built by `_makeLinkSvg`) is sized `1em × 1em` by
+    // default so it scales with surrounding text in reader/annotation
+    // overlays. Inside a filter popup tile the surrounding text is 12px
+    // → 12×12 icon, smaller than the 16×16 icons in adjacent Has Tag /
+    // Has Related buttons. Force 16×16 here so all cross-level icons
+    // read as the same family.
+    ".wv-filter-opt-icon .wv-link-svg {",
+    "  width: 16px; height: 16px;",
     "}",
     // (Old in-search Item Type picker CSS removed — Item Type now
     // has its own dedicated row above the search box, styled by
@@ -1520,7 +1560,18 @@ export const PLUGIN_CSS = [
     // bottom of the popup. Centered so it reads as a footer.
     ".wv-filter-bottom-hint {",
     "  font-size: 10px; opacity: 0.5;",
-    "  text-align: center; padding: 4px 0 2px;",
+    "  text-align: center; padding: 4px 0;",
+    "}",
+    // Header bar at the top of the library filter popup — title on
+    // the left, Clear + × pushed to the right by `.wv-filter-clear-btn`'s
+    // margin-left:auto. Mirrors the reader-sidebar filter popup's
+    // header layout (`.wv-rf-head` + `.wv-rf-title`).
+    ".wv-filter-popup-headbar {",
+    "  display: flex; align-items: center; gap: 8px;",
+    "  padding: 6px 8px 4px;",
+    "}",
+    ".wv-filter-popup-headtitle {",
+    "  font-weight: 600; flex: 1; opacity: 0.85; font-size: 12px;",
     "}",
     // Text-style "Clear" button — sits between the hint and the
     // red × in the top bar. Margin-auto pushes it (and the × that
@@ -1684,15 +1735,25 @@ export const PLUGIN_CSS = [
     ".wv-tabs-menu-row-hidden {",
     "  display: none !important;",
     "}",
-    // Tabs-menu toolbar button picks up an accent tint when at least
-    // one library filter is active, so the user can tell at a glance
-    // that the visible tab list is narrowed.
-    "#zotero-tb-tabs-menu.wv-tabs-menu-filter-active {",
-    "  background-color: var(--color-accent-secondary, rgba(46,168,229,0.18)) !important;",
-    "  border-radius: 4px;",
+    // Tabs-menu toolbar button shows a small accent-blue dot at its
+    // top-right when at least one library / file-type filter is active,
+    // so the user can tell at a glance that the visible tab list is
+    // narrowed. Same convention as the items-tree filter button
+    // (`.wv-filter-tb-dot` above) — a discrete cue rather than a button-
+    // wide tint.
+    "#zotero-tb-tabs-menu {",
+    "  position: relative;",
     "}",
-    "#zotero-tb-tabs-menu.wv-tabs-menu-filter-active .toolbarbutton-icon {",
-    "  fill: var(--color-accent, #2ea8e5);",
+    "#zotero-tb-tabs-menu.wv-tabs-menu-filter-active::after {",
+    "  content: '';",
+    "  position: absolute;",
+    "  top: 3px;",
+    "  right: 4px;",
+    "  width: 6px;",
+    "  height: 6px;",
+    "  border-radius: 50%;",
+    "  background: var(--color-accent, #5e6ad2);",
+    "  pointer-events: none;",
     "}",
     // File-type filter button: small funnel positioned over the right
     // edge of the search input. Wrapper is given `position: relative`
@@ -1737,7 +1798,7 @@ export const PLUGIN_CSS = [
     "  -moz-appearance: none;",
     "}",
     "#wv-tabs-menu-filetype-btn .wv-tabs-menu-filetype-icon {",
-    "  width: 16px; height: 16px;",
+    "  width: 20px; height: 20px;",
     "  -moz-context-properties: fill, fill-opacity, stroke, stroke-opacity;",
     "  fill: currentColor;",
     "}",

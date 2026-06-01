@@ -711,7 +711,32 @@ class _TabsMixin {
                 const tab = Z_Tabs._tabs[i];
                 if (!tab) continue;
                 const k = this._tabPinKey(tab);
-                if (!k) continue;
+                if (!k) {
+                    // `_tabPinKey` returns null when the underlying item
+                    // isn't in the cache yet. On restart, Zotero re-creates
+                    // tab DOM nodes from session before warming items —
+                    // reader tabs self-load when the reader bootstraps,
+                    // but a note tab can sit with its item un-cached
+                    // indefinitely (until the user clicks it), leaving
+                    // the pin pref unable to match → the tab renders
+                    // expanded among the icon-only pins. Kick off an
+                    // async load so we can re-fire once the item lands.
+                    const iid = tab.data && tab.data.itemID;
+                    if (iid) {
+                        if (!(this as any)._wvPinPendingIIDs) {
+                            (this as any)._wvPinPendingIIDs = new Set<number>();
+                        }
+                        const pending: Set<number> = (this as any)._wvPinPendingIIDs;
+                        if (!pending.has(iid)) {
+                            pending.add(iid);
+                            Zotero.Items.getAsync(iid).then(() => {
+                                pending.delete(iid);
+                                try { this._applyPinnedTabs(win); } catch (_) {}
+                            }).catch(() => { pending.delete(iid); });
+                        }
+                    }
+                    continue;
+                }
                 if (!pinKeySet.has(k.libraryID + ":" + k.itemKey)) continue;
                 pinnedOpenInOrder.push({ libraryID: k.libraryID, itemKey: k.itemKey, tabID: tab.id });
                 pinnedTabIDs.add(tab.id);
@@ -1531,6 +1556,70 @@ class _TabsMixin {
         // per-tab `tooltip="..."` wiring is needed. Mozilla ignores
         // that attribute on HTML elements anyway. The popupshowing
         // handler decides what to render based on the trigger tab.
+
+        // Override the tab-icon `data-item-type` for linked attachments
+        // so the tab shows the link-decorated glyph (PDFLink, EPUBLink,
+        // etc.) instead of the plain attachment icon Zotero picks via
+        // its link-mode-stripped lookup.
+        try { this._decorateTabIconsForLinkMode(win); } catch (e) {}
+    }
+
+    /** Stamp link-mode-aware `data-item-type` values onto tab-icon
+     *  spans for linked attachments (`LINK_MODE_LINKED_FILE`). Zotero
+     *  builds tab icons from `getItemTypeIconName(true)` (the
+     *  link-mode-stripped form), so a linked PDF tab gets the plain
+     *  PDF glyph. Zotero's own SCSS DOES ship link-decorated variants
+     *  for `attachmentPDFLink` / `attachmentEPUBLink` etc. — we just
+     *  point the existing icon span at them. Idempotent; re-runs every
+     *  MutationObserver tick from `_decorateTabBar`. */
+    _decorateTabIconsForLinkMode(win: any) {
+        if (!win) return;
+        const doc = win.document;
+        if (!doc) return;
+        const Zotero_Tabs: any = win.Zotero_Tabs;
+        if (!Zotero_Tabs || !Array.isArray(Zotero_Tabs._tabs)) return;
+
+        const LINKED_FILE = (Zotero as any).Attachments
+            && (Zotero as any).Attachments.LINK_MODE_LINKED_FILE;
+        if (LINKED_FILE == null) return;
+
+        const escape = (s: string) =>
+            (win.CSS && win.CSS.escape) ? win.CSS.escape(s) : s;
+
+        for (const tab of Zotero_Tabs._tabs) {
+            if (!tab || tab.id === "zotero-pane") continue;
+            const tabEl = doc.querySelector(
+                `.tab[data-id="${escape(tab.id)}"]`);
+            if (!tabEl) continue;
+            const iconEl = tabEl.querySelector(".tab-icon");
+            if (!iconEl) continue;
+
+            let kind: string | null = null;
+            try {
+                const item = Zotero.Items.get(tab.data && tab.data.itemID);
+                if (item && (item as any).isAttachment
+                    && (item as any).isAttachment()
+                    && (item as any).attachmentLinkMode === LINKED_FILE
+                    && typeof (item as any).getItemTypeIconName === "function") {
+                    // Pass `false` to keep the LinkMode suffix (PDFLink,
+                    // EPUBLink, ImageLink, VideoLink, generic Link).
+                    kind = (item as any).getItemTypeIconName(false);
+                }
+            } catch (_) {}
+
+            if (!kind) {
+                // Non-linked tab — only revert if WE were the last to
+                // touch it (don't trample Zotero's value).
+                if (iconEl.getAttribute("data-wv-linkmode") === "1") {
+                    iconEl.removeAttribute("data-wv-linkmode");
+                }
+                continue;
+            }
+            if (iconEl.getAttribute("data-item-type") !== kind) {
+                iconEl.setAttribute("data-item-type", kind);
+            }
+            iconEl.setAttribute("data-wv-linkmode", "1");
+        }
     }
 
     /** popupshowing handler for the custom tab tooltip. Mounted on
@@ -1569,6 +1658,52 @@ class _TabsMixin {
             desc.textContent = text;
             tooltip.appendChild(desc);
         };
+
+        // "Show in Library" tab-context menuitem trigger: a menuitem
+        // we stamped with `data-wv-show-in-library-libid="N"` from the
+        // popupshowing repositioner. Resolve the library by id directly
+        // (no tab lookup) and render JUST the library header — no
+        // separator, no title row — since the menu entry already labels
+        // itself "Show in Library". Has to come BEFORE the tab lookup
+        // because menuitems don't sit inside `.tab[data-id]`.
+        let menuLibIDStr: string | null = null;
+        try {
+            let n: any = triggerNode;
+            while (n) {
+                if (n.getAttribute
+                        && n.getAttribute("data-wv-show-in-library-libid")) {
+                    menuLibIDStr = n.getAttribute("data-wv-show-in-library-libid");
+                    break;
+                }
+                n = n.parentNode;
+            }
+        } catch (_) {}
+        if (menuLibIDStr != null) {
+            let mLib: any = null;
+            try { mLib = Zotero.Libraries.get(parseInt(menuLibIDStr, 10)); } catch (_) {}
+            if (mLib && mLib.libraryType && mLib.libraryType !== "user" && mLib.name) {
+                const wrap = doc.createXULElement("vbox");
+                wrap.setAttribute("class", "wv-tab-tooltip-wrap");
+                const headerRow = doc.createXULElement("hbox");
+                headerRow.setAttribute("class", "wv-tab-tooltip-header");
+                headerRow.setAttribute("align", "center");
+                const iconEl = doc.createXULElement("image");
+                iconEl.setAttribute("class", "wv-tab-tooltip-icon");
+                const iconName = mLib.libraryType === "feed"
+                    ? "feed-library.svg"
+                    : "library-group.svg";
+                iconEl.setAttribute("src",
+                    "chrome://zotero/skin/collection-tree/16/light/" + iconName);
+                headerRow.appendChild(iconEl);
+                const nameEl = doc.createXULElement("description");
+                nameEl.setAttribute("class", "wv-tab-tooltip-libname");
+                nameEl.textContent = mLib.name;
+                headerRow.appendChild(nameEl);
+                wrap.appendChild(headerRow);
+                tooltip.appendChild(wrap);
+                return true;
+            }
+        }
 
         const tab = (triggerNode.closest && triggerNode.closest(
             ".tab[data-id]")) || null;

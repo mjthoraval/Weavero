@@ -194,6 +194,17 @@
         "compactTitleBarMain",
         "compactTitleBarReader",
         "compactTitleBarNote",
+        // v0.11.5 — Bookmarks (master + 2 subs + auto-hide opt-in)
+        "enableBookmarks",
+        "enableLibraryBookmarks",
+        "enableReaderBookmarks",
+        "showLibraryBookmarksInReader",
+        "autoHideEmptyLibraryBookmarks",
+        "autoHideEmptyReaderBookmarks",
+        // v0.11.5 — External viewer
+        "enableOpenExternalViewer",
+        // v0.11.5 — Reader outline (experimental, default off)
+        "enableOutlineTextHighlight",
     ];
 
     // === Per-surface enable checkboxes ====================================
@@ -240,6 +251,8 @@
         "enableAppLinks", "enableAppLinksSkipConfirm",
         "enableNotes",
         "compactTitleBar",
+        "enableOpenExternalViewer",
+        "enableOutlineTextHighlight",
         ...SCHEMES,
     ]);
     function readSurface(name) {

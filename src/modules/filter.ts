@@ -3947,6 +3947,13 @@ class _FilterMixin {
         icon.className = "toolbarbutton-icon";
         icon.setAttribute("src",
             "chrome://zotero/skin/16/universal/filter.svg");
+        // Force 20×20 so the filter funnel matches the size of its
+        // toolbar siblings (zotero-tb-add / -attachment-add / -note-add).
+        // Without these attrs the icon adopts the SVG's intrinsic 16×16
+        // size — same chrome SVG, but Zotero's own buttons override it
+        // (or use a different source path) to render at 20.
+        icon.setAttribute("width", "20");
+        icon.setAttribute("height", "20");
         tbBtn.appendChild(icon);
         const dropmarker = doc.createXULElement("image");
         dropmarker.className = "toolbarbutton-menu-dropmarker";
@@ -5342,7 +5349,6 @@ class _FilterMixin {
                     span - POPUP_CHROME_DELTA + POPUP_EXTEND_EACH_SIDE * 2);
                 inner.style.minWidth = w + "px";
                 inner.style.maxWidth = w + "px";
-                inner.style.setProperty("--wv-title-col", "0px");
             } catch (e) {}
         }
 
@@ -5351,53 +5357,6 @@ class _FilterMixin {
 
         const NS_HTML = "http://www.w3.org/1999/xhtml";
 
-        // Filter-search row at the very top: magnifier (right-aligned) toggles
-        // a search input that hides any section / group header whose visible
-        // text doesn't include the query. Useful when there are many filter
-        // sections and you want to jump straight to one by name.
-        const fSearchBar = doc.createElementNS(NS_HTML, "div");
-        fSearchBar.className = "wv-filter-popup-search-bar";
-        const fSearchBtn = doc.createElementNS(NS_HTML, "button");
-        fSearchBtn.className = "wv-filter-popup-search-btn";
-        fSearchBtn.setAttribute("type", "button");
-        fSearchBtn.setAttribute("title", "Search filter options");
-        fSearchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="4"/><line x1="9.2" y1="9.2" x2="13" y2="13"/></svg>';
-        const fSearchInput = doc.createElementNS(NS_HTML, "input") as any;
-        fSearchInput.className = "wv-filter-popup-search-input";
-        fSearchInput.setAttribute("type", "text");
-        fSearchInput.setAttribute("placeholder", "Search filters…");
-        fSearchInput.style.display = "none";
-        const fApplyFilter = () => {
-            const q = String(fSearchInput.value || "").trim().toLowerCase();
-            const els = inner.querySelectorAll(".wv-filter-section, .wv-filter-group-header");
-            for (const el of els) {
-                const t = String((el as any).textContent || "").toLowerCase();
-                (el as any).style.display = (!q || t.indexOf(q) >= 0) ? "" : "none";
-            }
-        };
-        fSearchInput.addEventListener("input", fApplyFilter);
-        fSearchInput.addEventListener("keydown", (ev: any) => {
-            if (ev.key === "Escape") {
-                fSearchInput.value = ""; fSearchInput.style.display = "none";
-                fSearchBtn.classList.remove("wv-active"); fApplyFilter();
-            }
-        });
-        fSearchBtn.addEventListener("click", (ev: any) => {
-            ev.preventDefault(); ev.stopPropagation();
-            const showing = fSearchInput.style.display !== "none";
-            if (showing) {
-                fSearchInput.value = ""; fSearchInput.style.display = "none";
-                fSearchBtn.classList.remove("wv-active");
-            } else {
-                fSearchInput.style.display = "";
-                fSearchBtn.classList.add("wv-active");
-                try { fSearchInput.focus(); } catch (_) {}
-            }
-            fApplyFilter();
-        });
-        fSearchBar.appendChild(fSearchBtn);
-        fSearchBar.appendChild(fSearchInput);
-        inner.appendChild(fSearchBar);
         const colorSection = doc.createElementNS(NS_HTML, "div");
         const typeSection = doc.createElementNS(NS_HTML, "div");
         const commentSection = doc.createElementNS(NS_HTML, "div");
@@ -5484,36 +5443,36 @@ class _FilterMixin {
             clearBtn.style.visibility = active ? "" : "hidden";
         };
 
-        // Helper: insert a labeled group header above a section
-        // group. The optional `todo` text appears in italics next
-        // to the title — used on "Multi scope" to flag pending work.
-        // `rightSlot`, when provided, is appended on the right side
-        // of the header (margin-left: auto); used by the first
-        // header to host the Clear-filter × button.
+        // Helper: insert a section-group divider into the panel. The
+        // dashed top border on `.wv-filter-group-header` is the only
+        // visual marker — there's no longer a textual label (every
+        // section is identified by its icons + tooltips). `label` is
+        // kept solely as a `data-section` attribute for DevTools, so
+        // each divider is still discoverable when inspecting the DOM.
+        //
+        // The four groups (Cross-level / Parent / Attachment / Annotation)
+        // mirror the row-kind hierarchy of the items tree: Cross-level
+        // filters apply at every kind, Parent only to top-level items,
+        // Attachment only to attachments, Annotation only to annotations.
+        // The grouping carries SEMANTIC information about which row kind
+        // each filter targets — knowing whether a chip is in the Parent
+        // group vs the Attachment group tells the user what gets matched.
+        // The reader filter popup has no analogous grouping because the
+        // reader filters annotations only — no hierarchy, so a flat row
+        // stack suffices there. This asymmetry between the two popups is
+        // intentional, not a consistency bug. See reader-panels.ts's
+        // `_wvRenderReaderFilterPopup` / `addRow` for the flat-row pattern.
         let _wvFirstGroupHeader = true;
-        const addGroupHeader = (label, todo?, rightSlot?) => {
+        const addGroupHeader = (label: string) => {
             const hdr = doc.createElementNS(NS_HTML, "div");
             hdr.className = "wv-filter-group-header";
+            hdr.setAttribute("data-section", label);
             // The first header sits at the top of the panel — drop its
             // divider line (an empty quick-search anchor div precedes
             // it, so the CSS `:first-child` rule can't catch it).
             if (_wvFirstGroupHeader) {
                 hdr.classList.add("wv-filter-group-header-top");
                 _wvFirstGroupHeader = false;
-            }
-            const t = doc.createElementNS(NS_HTML, "span");
-            t.className = "wv-filter-group-header-title";
-            t.textContent = label;
-            hdr.appendChild(t);
-            if (todo) {
-                const td = doc.createElementNS(NS_HTML, "span");
-                td.className = "wv-filter-group-header-todo";
-                td.textContent = todo;
-                hdr.appendChild(td);
-            }
-            if (rightSlot) {
-                rightSlot.style.marginLeft = "auto";
-                hdr.appendChild(rightSlot);
             }
             inner.appendChild(hdr);
         };
@@ -5548,6 +5507,21 @@ class _FilterMixin {
         //   Selection Target — Ctrl+A target picker (bottom bar)
         const quickSearchSection = doc.createElementNS(NS_HTML, "div");
         inner.appendChild(quickSearchSection);
+
+        // Header row — title + Clear + × button (mirrors the reader
+        // sidebar's filter popup, where this same row sits at the very
+        // top). Clear / × move out of the cross-level row's right end
+        // so the new home is unambiguous. `renderHeader` (defined above)
+        // toggles their visibility in lockstep with `_isFilterActive`.
+        const headBar = doc.createElementNS(NS_HTML, "div");
+        headBar.className = "wv-filter-popup-headbar";
+        const headTitle = doc.createElementNS(NS_HTML, "div");
+        headTitle.className = "wv-filter-popup-headtitle";
+        headTitle.textContent = "Filter Library";
+        headBar.appendChild(headTitle);
+        headBar.appendChild(clearTextBtn);
+        headBar.appendChild(clearBtn);
+        inner.appendChild(headBar);
 
         addGroupHeader("Cross-level");
         inner.appendChild(crossLevelSection);
@@ -5669,7 +5643,7 @@ class _FilterMixin {
         bottomBar.className = "wv-filter-bottom-controls";
         const hint = doc.createElementNS(NS_HTML, "span");
         hint.className = "wv-filter-bottom-hint";
-        hint.textContent = "Alt+Click to exclude";
+        hint.textContent = "Alt+Click to Exclude";
         bottomBar.appendChild(hint);
         inner.appendChild(bottomBar);
 
@@ -5761,26 +5735,6 @@ class _FilterMixin {
             this._renderParentHasFieldsSection(doc, parentHasFieldsSection, refreshAll);
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
-            // Re-append the Clear and × buttons to the right end of
-            // the cross-level row each refresh. `_renderCrossLevelSection`
-            // wipes its container, so we have to re-mount the
-            // buttons here after it runs. `margin-left: auto` on
-            // the wrapper pushes them flush right inside the flex
-            // row of cross-level filter icons.
-            try {
-                const xlOpts = crossLevelSection.querySelector(".wv-filter-options");
-                if (xlOpts) {
-                    const wrap = doc.createElementNS(NS_HTML, "div");
-                    wrap.className = "wv-filter-xl-clear-slot";
-                    wrap.style.marginLeft = "auto";
-                    wrap.style.display = "flex";
-                    wrap.style.alignItems = "center";
-                    wrap.style.gap = "4px";
-                    wrap.appendChild(clearTextBtn);
-                    wrap.appendChild(clearBtn);
-                    xlOpts.appendChild(wrap);
-                }
-            } catch (e) {}
             this._renderQuickSearchSection(doc, quickSearchSection, refreshAll);
             renderHeader();
             // Filters changed → the smart Selection Target may have changed
@@ -5819,12 +5773,6 @@ class _FilterMixin {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Search";
-        title.title = "Pick a facet from the dropdown then type to filter that facet's values. Click a suggestion to add it. Saved Search and Collection apply globally; Tag, Author and Added By apply to the current OR group.";
-        section.appendChild(title);
 
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options wv-filter-options-stacked";
@@ -6636,12 +6584,6 @@ class _FilterMixin {
         section.className = "wv-filter-section wv-filter-itype-row";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
 
-        // Hidden title (CSS hides .wv-filter-section-title globally).
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Item Type";
-        section.appendChild(title);
-
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options wv-filter-options-stacked";
         section.appendChild(opts);
@@ -6987,12 +6929,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
 
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Annotation Color";
-        title.title = "Show only annotations whose color matches one of the selected swatches.";
-        section.appendChild(title);
-
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options";
         section.appendChild(opts);
@@ -7048,12 +6984,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
 
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Annotation Type";
-        title.title = "Show only annotations of the selected types (Highlight, Underline, Note, Image, Ink, Text).";
-        section.appendChild(title);
-
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options";
         section.appendChild(opts);
@@ -7107,10 +7037,7 @@ class _FilterMixin {
         // mirrors the Item Note / Standalone Note right-aligned
         // placement in their respective rows. Thin vertical
         // separator with `margin-left: auto` pushes the tile to
-        // the right edge of the flex container; an empty
-        // wv-filter-section row for the standalone Has Comment
-        // section continues to render below but produces no
-        // visible content (see `_renderHasCommentSection` no-op).
+        // the right edge of the flex container.
         const sep = doc.createElementNS(NS_HTML, "div");
         sep.className = "wv-filter-vertical-separator";
         sep.style.marginLeft = "auto";
@@ -7389,11 +7316,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
 
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Cross-level";
-        section.appendChild(title);
-
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options";
         section.appendChild(opts);
@@ -7613,11 +7535,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
 
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = opts.title;
-        section.appendChild(title);
-
         const optsBox = doc.createElementNS(NS_HTML, "div");
         optsBox.className = "wv-filter-options";
         section.appendChild(optsBox);
@@ -7674,11 +7591,6 @@ class _FilterMixin {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Parent Has";
-        section.appendChild(title);
 
         const optsBox = doc.createElementNS(NS_HTML, "div");
         optsBox.className = "wv-filter-options";
@@ -7761,11 +7673,6 @@ class _FilterMixin {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Has Annotations";
-        section.appendChild(title);
 
         const optsBox = doc.createElementNS(NS_HTML, "div");
         optsBox.className = "wv-filter-options";
@@ -7894,6 +7801,15 @@ class _FilterMixin {
         const btn = doc.createElementNS(NS_HTML, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
+        // Has Comment sits in `.wv-filter-options` next to a
+        // `.wv-filter-or-inline` group that's TALLER than this button
+        // (group: 34 px = 28 px icon + 3 px×2 padding; button: 28 px).
+        // The options container defaults to `align-items: stretch`, but
+        // this button's explicit `height: 28 px` wins — so without an
+        // override the button hugs the top of the row and ends up 3 px
+        // above the icons inside the group. `align-self: center` pulls
+        // it back to the same Y as the centered type icons.
+        (btn as any).style.alignSelf = "center";
         if (cur === true) btn.dataset.selected = "true";
         else if (cur === false) btn.dataset.excluded = "true";
         btn.title = "Has Comment — annotations with non-empty "
@@ -7944,14 +7860,17 @@ class _FilterMixin {
         // covers integer pixel rows (otherwise the stroke center
         // straddles two rows and anti-aliases to a blurry line —
         // exactly the trick Zotero's `annotate-note.svg` uses,
-        // e.g. `1.5`, `8.5`, `14.5`). Bubble body: (1.5, 1.5) →
-        // (14.5, 11.5), corner radius ≈ 1.5; tail tip at (4.5, 14.5).
+        // e.g. `0.5`, `8.5`, `15.5`). Bubble body now: (0.5, 0.5) →
+        // (15.5, 11.5) — 15×11 vs the old 13×10, so the icon fills
+        // the 16-px box closer to its siblings. Tail tip at
+        // (4.5, 15.5), drawing down to the bottom edge of the
+        // viewBox.
         path.setAttribute("d",
-            "M1.5 3C1.5 2.17 2.17 1.5 3 1.5H13"
-            + "C13.83 1.5 14.5 2.17 14.5 3V10"
-            + "C14.5 10.83 13.83 11.5 13 11.5H6.5"
-            + "L4.5 14.5V11.5H3"
-            + "C2.17 11.5 1.5 10.83 1.5 10V3Z");
+            "M0.5 2C0.5 1.17 1.17 0.5 2 0.5H14"
+            + "C14.83 0.5 15.5 1.17 15.5 2V10"
+            + "C15.5 10.83 14.83 11.5 14 11.5H6.5"
+            + "L4.5 15.5V11.5H2"
+            + "C1.17 11.5 0.5 10.83 0.5 10V2Z");
         path.setAttribute("stroke", "currentColor");
         // Match Zotero's stroke-only icons — `annotate-note.svg`
         // and friends omit `stroke-width` so it defaults to 1.
@@ -7962,24 +7881,19 @@ class _FilterMixin {
         // hiding the letter. Inline style beats the class rule.
         path.style.fill = "none";
         svg.appendChild(path);
-        const text = doc.createElementNS(NS, "text");
-        // C is centered on the bubble body (y midpoint ≈ 6.5).
-        // font-size 8 with cap-height ~5.6 → baseline at y=9 puts
-        // the cap visually centered. font-weight 600 (semi-bold)
-        // approximates the ~1.5-px stroke thickness of Zotero's
-        // letter-glyph icons (annotate-text "T", annotate-highlight
-        // "A") which draw their strokes as filled paths of that
-        // width. Bold (700) was too heavy and crowded the bubble.
-        text.setAttribute("x", "8");
-        text.setAttribute("y", "9");
-        text.setAttribute("text-anchor", "middle");
-        text.setAttribute("font-family",
-            "-apple-system, Segoe UI, sans-serif");
-        text.setAttribute("font-size", "8");
-        text.setAttribute("font-weight", "600");
-        text.setAttribute("fill", "currentColor");
-        text.textContent = "C";
-        svg.appendChild(text);
+        // C drawn as a stroked arc — text rendering at 16-px doesn't
+        // hit pixel boundaries cleanly and ends up soft. An SVG arc
+        // with coords on the .5 grid + the same 1-px stroke as the
+        // bubble produces a crisp letter. Center (8, 6), radius 2.5,
+        // endpoints at (9.5, 4) and (9.5, 8) — the long arc going
+        // counter-clockwise leaves the opening on the right.
+        const c = doc.createElementNS(NS, "path");
+        c.setAttribute("d", "M9.5 4A2.5 2.5 0 1 0 9.5 8");
+        c.setAttribute("stroke", "currentColor");
+        c.setAttribute("stroke-width", "1");
+        c.setAttribute("stroke-linecap", "round");
+        c.setAttribute("fill", "none");
+        svg.appendChild(c);
         return svg;
     }
 
@@ -7998,12 +7912,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
 
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Tag";
-        title.title = "Filter by tag — type to search the library's tags. Multi-select.";
-        section.appendChild(title);
-
         // Stacked layout: input on top, tag list below. Both sit
         // inside the standard `.wv-filter-options` flex column for
         // alignment with the section title.
@@ -8263,12 +8171,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
 
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Author";
-        title.title = "Filter by author / creator. Multi-select; OR within authors.";
-        section.appendChild(title);
-
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options wv-filter-options-stacked";
         section.appendChild(opts);
@@ -8384,12 +8286,6 @@ class _FilterMixin {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Attachment File Type";
-        title.title = "Filter attachments by file kind (PDF, EPUB, Snapshot, Image, Video, Web Link, Other File). Multi-select.";
-        section.appendChild(title);
 
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options";
@@ -8582,12 +8478,6 @@ class _FilterMixin {
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
 
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Collection";
-        title.title = "Narrow the items list to members of any of the selected collections in the active library. Multi-select; OR.";
-        section.appendChild(title);
-
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options wv-filter-options-stacked";
         section.appendChild(opts);
@@ -8683,12 +8573,6 @@ class _FilterMixin {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Saved Search";
-        title.title = "Narrow the items list to matches of any of the selected saved searches in the active library. Multi-select; OR.";
-        section.appendChild(title);
 
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options wv-filter-options-stacked";
@@ -8829,12 +8713,6 @@ class _FilterMixin {
         while (section.firstChild) section.removeChild(section.firstChild);
         section.className = "wv-filter-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
-
-        const title = doc.createElementNS(NS_HTML, "div");
-        title.className = "wv-filter-section-title";
-        title.textContent = "Added By";
-        title.title = "Filter by who created the item (group libraries). Use the scope ticks below to choose which row kinds the filter applies to.";
-        section.appendChild(title);
 
         // Row-kind scope checkboxes — control which row kinds the
         // `addedBy` filter applies to. Hidden until the user has

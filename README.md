@@ -31,7 +31,7 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 - **[Enhanced links and relations](#enhanced-links-and-relations)** — clickable links (URLs, `zotero://`, 16 optional app schemes) in comments and notes; inline or icon + popup, colour-coded, with markdown; copy `zotero://` links for items / collections / searches / reader page / location / selection; related-item tools (*Add Related…*, chain badge, *Open Related* submenu, Related column, linked-library highlight).
 - **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has Related/Links*, multi-select tag/author/added-by/collection/search); Selection Target tri-state; structured tabs menu with per-library and file-type filters.
 - **[Bookmarks](#bookmarks)** — library bookmarks (items / collections / searches) via a toolbar dropdown; document bookmarks (in-PDF locations, selected text, annotations) in a reader-sidebar tab, foldered and draggable; auto-hide when empty.
-- **[Extras](#extras)** — items-tree columns (annotation count, related count); Tags count and *Added By* with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
+- **[Extras](#extras)** — items-tree columns (annotation, related, tag counts); *Added By* for annotations with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
 
 ## Features
 
@@ -116,11 +116,11 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 <details id="extras">
 <summary><b>Extras</b></summary>
 
-**Items-tree columns** — icon-only columns enabled via the column-picker (right-click the items-tree header), plus an enhancement to the built-in Tags column:
+**Items-tree columns** (icon-only, hidden by default; enable via the column-picker right-click on the items-tree header):
 
 - **Annotations** — count of annotations on attachments; sums across attachments on regular items.
 - **Related** — count of related items per row.
-- **Tags count** — enhances Zotero's built-in Tags column to show two numbers per row: manual tags (blue) and automatic tags (default colour). Toggle off to show only the manual count.
+- **Tags** — count of tags per row: manual tags (blue) and automatic tags (default colour). Toggle off the automatic count to show only the manual count.
 
 **Group-library visuals:**
 

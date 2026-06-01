@@ -9825,6 +9825,16 @@ class _FilterMixin {
         const activeGroups = anyGroupActive
             ? state.groups.filter(g => this._isGroupActive(g))
             : [];
+        // Quick-search scope helper, consumed by the final scope
+        // enforcement pass below. A row-kind counts as suppressed only
+        // when a quick search is active AND every scoped active group
+        // excludes it (mirrors `_rowIsPrimary`'s "passes some group"
+        // semantics).
+        const qsScopedGroups = this._currentQuickSearchValue
+            ? activeGroups.filter(g => g.quickSearchScope)
+            : [];
+        const kindSuppressed = (k) => qsScopedGroups.length > 0
+            && qsScopedGroups.every(g => g.quickSearchScope[k] === false);
         // Strict per-row matching: every row is judged on its own
         // primary status. Non-primary rows are kept ONLY when they
         // happen to be ancestors of a primary descendant (so the
@@ -10136,6 +10146,50 @@ class _FilterMixin {
                         }
                     }
                 }
+            }
+        }
+        // ---- Quick-search scope enforcement (final gate) ----
+        // Whatever keep-rule above admitted a row, an active quick-
+        // search scope must win: drop every kept row whose KIND the
+        // scope excludes, EXCEPT genuine ancestors of a kept in-scope
+        // row (so in-scope descendants can still nest in the tree).
+        // One tree-order pass with an ancestor stack — an in-scope (or
+        // kept-as-ancestor) row marks its parent "needed", so a
+        // suppressed parent holding a kept in-scope attachment survives
+        // while a leaf annotation or a standalone suppressed parent
+        // does not. Without this the scope is a no-op: the context /
+        // search-match keep rules silently re-add out-of-scope rows
+        // (the "Apply to" dropdown appeared to do nothing).
+        if (qsScopedGroups.length && keepSet.size) {
+            const keptArr = [...keepSet].sort((a: number, b: number) => a - b);
+            const stack: any[] = [];
+            const toDrop: number[] = [];
+            const settle = (node: any) => {
+                const survives = !node.suppressed || node.keepForDesc;
+                if (!survives) toDrop.push(node.idx);
+                else if (stack.length) stack[stack.length - 1].keepForDesc = true;
+            };
+            for (const j of keptArr) {
+                let row: any;
+                try { row = origGetRow(j); } catch (e) { continue; }
+                if (!row || !row.ref) continue;
+                const lvl = row.level || 0;
+                while (stack.length
+                    && stack[stack.length - 1].lvl >= lvl) {
+                    settle(stack.pop());
+                }
+                const kind = this._rowKindOf(row.ref);
+                stack.push({
+                    idx: j, lvl,
+                    suppressed: !!(kind && kindSuppressed(kind)),
+                    keepForDesc: false,
+                });
+            }
+            while (stack.length) settle(stack.pop());
+            for (const idx of toDrop) keepSet.delete(idx);
+            if (toDrop.length) {
+                dbg("[Weavero][filter] QS-scope dropped "
+                    + toDrop.length + " out-of-scope row(s)");
             }
         }
         // Materialise the deduped keep set as a sorted array. The

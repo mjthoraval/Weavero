@@ -15,6 +15,17 @@ A Zotero plugin to make clickable links and filter your library — it turns URL
 
 Out of the box, `https://`, `http://`, and `zotero://` links are recognised everywhere a comment is shown. Sixteen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
 
+> [!NOTE]
+> **Your documents are safe.** Weavero never writes to or modifies your PDF files or attachments on disk — there's no risk of corrupting your documents. It only layers UI on top of Zotero's standard views and keeps its own data (bookmarks, preferences) in separate files. Any feature you turn off is inert.
+
+> [!WARNING]
+> **Weavero is under active development — please report anything that misbehaves** ([open an issue](https://github.com/mjthoraval/Weavero/issues)). A few things to know:
+>
+> - **Built on Zotero's internals, and on a beta.** Weavero hooks deep into Zotero's reader, items tree, tabs menu, and preferences, and is developed and tested against **Zotero 10.0-beta**. A Zotero update (beta or stable) can temporarily break a feature until the plugin catches up.
+> - **Bookmarks are local-only.** The Bookmarks feature stores its data in `<Zotero data dir>/weavero/bookmarks.json`. Bookmarks are **not synced** across computers and are **not included in Zotero's cloud backup** — they won't appear on your other devices, and they're lost if you start a fresh profile or lose that folder. **Back up your Zotero data directory if your bookmarks matter to you.** (The Zotero developers have said they intend to add plugin-managed synced storage; Weavero will adopt it once it's available.)
+> - **Some features need Zotero 10.** A few rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
+> - **Experimental, opt-in features.** Some features are off by default and marked *experimental* in Preferences (e.g. *PDF outline text highlight* in the Extras tab) — they may be rough or change.
+
 ## Features
 
 **Clickable links in annotation comments** across the items tree, right item pane, reader sidebar, in-PDF popup, link badges over annotation icons, and notes. Each surface is independently toggleable.

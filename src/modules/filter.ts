@@ -1804,6 +1804,26 @@ class _FilterMixin {
                     // `searchItemIDs`. Augment the upstream result
                     // with primaries that aren't already in it.
                     const fs = plugin && plugin._filterState;
+                    // getChildItems runs during Zotero's native _rows
+                    // rebuild — BEFORE _applyItemsListFilterInner
+                    // refreshes _currentQuickSearchValue — so the cached
+                    // value is stale (empty) here, which silently
+                    // disabled the augment below: primary annotations
+                    // that don't themselves match the search were never
+                    // re-added, so a chip-matching annotation under a
+                    // search-matching item vanished. Read the LIVE
+                    // search box and sync the cached value so the augment
+                    // AND the _rowIsPrimary spine check it drives see the
+                    // current query.
+                    try {
+                        const sbq: any = Zotero.getMainWindow()
+                            && Zotero.getMainWindow().document
+                                .getElementById("zotero-tb-search");
+                        if (plugin && sbq) {
+                            plugin._currentQuickSearchValue = sbq.value
+                                ? String(sbq.value).trim() : "";
+                        }
+                    } catch (e) {}
                     if (fs && plugin._isFilterActive
                         && plugin._isFilterActive(fs)
                         && plugin._currentQuickSearchValue) {

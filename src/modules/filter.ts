@@ -4810,6 +4810,15 @@ class _FilterMixin {
             const inner = popup.querySelector(".wv-filter-panel-inner");
             if (inner) this._renderFilterPanelContents(popup, inner);
         }
+        // The quick-search "Apply to" scope button lives on the toolbar
+        // search box, OUTSIDE the filter popup — clearing the filter
+        // state above resets its scope to all-on, so refresh its
+        // "modified" colour cue too (otherwise the dropdown stays tinted
+        // as if a scope were still active).
+        try {
+            const qsBtn: any = doc && doc.querySelector(".wv-qs-scope-btn");
+            if (qsBtn) this._refreshQuickSearchScopeButtonState(qsBtn);
+        } catch (e) {}
     }
 
     /** Generic chip builder. Each chip is `Field | op | value(s) | ×`,

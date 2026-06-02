@@ -1985,14 +1985,17 @@ class _ReaderMixin {
                 } catch (er) { return null; }
             };
             const onDragOver = (e) => {
+                const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 // Main-window reader tab → this strip: accept (so drop fires).
                 if (mainTabDrag()) {
                     try {
                         if (isOverStrip(e)) {
                             e.preventDefault();
                             if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                            try { P && P._wvWTShowDropIndicator(win, e.clientX); } catch (er) {}
                         } else {
                             e.stopPropagation();   // keep PDF.js from auto-scrolling
+                            try { P && P._wvWTHideDropIndicator(win); } catch (er) {}
                         }
                     } catch (er) {}
                     return;
@@ -2000,19 +2003,22 @@ class _ReaderMixin {
                 if (!isMergeDrag(e)) return;
                 try {
                     if (isOverStrip(e)) {
-                        // Strip: accept the drag (no forbidden cursor).
+                        // Strip: accept the drag (no forbidden cursor) + preview.
                         e.preventDefault();
                         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                        try { P && P._wvWTShowDropIndicator(win, e.clientX); } catch (er) {}
                     }
                     else {
                         // Reader area: block PDF.js from seeing the event so
                         // it can't auto-scroll, but leave preventDefault
                         // unset so the OS shows the forbidden cursor.
                         e.stopPropagation();
+                        try { P && P._wvWTHideDropIndicator(win); } catch (er) {}
                     }
                 } catch (er) {}
             };
             const onDrop = (e) => {
+                try { (Zotero as any).Weavero.plugin._wvWTHideDropIndicator(win); } catch (er) {}
                 // Main-window reader tab dropped on the strip → mount it here as
                 // a new tab (and close the source main tab — move semantics).
                 const md = mainTabDrag();
@@ -2747,6 +2753,16 @@ class _ReaderMixin {
                 "}",
                 ".wv-window-tab-close:hover { background-color: var(--fill-quinary); }",
                 ".wv-window-tab-close:active { background-color: var(--fill-quarternary); }",
+                /* Drop-position indicator shown while dragging a tab over the
+                   strip (reorder or drop-in) — a vertical accent bar at the gap
+                   the tab will land in. */
+                ".wv-window-tab-drop-indicator {",
+                "  flex: 0 0 auto; align-self: center;",
+                "  width: 2px; height: 22px; margin: 0 1px;",
+                "  border-radius: 1px;",
+                "  background: var(--color-accent, #2ea8e5);",
+                "  pointer-events: none;",
+                "}",
                 /* Window controls — matches the main-window
                    `.titlebar-button` design: 46x36 buttons using
                    chrome://browser/skin/window-controls/*.svg icons,
@@ -3333,6 +3349,45 @@ class _ReaderMixin {
         } catch (e) {}
     }
 
+    /** Show/move the drop-position indicator (a vertical accent bar) at the gap
+     *  the dragged tab would land in, computed from the cursor x. Drives the
+     *  "drop preview" during a strip drag (reorder or drop-in). */
+    _wvWTShowDropIndicator(win: any, clientX: any) {
+        try {
+            const doc = win.document;
+            const tabsBox = doc.querySelector(".wv-window-tabs");
+            if (!tabsBox) return;
+            let bar = tabsBox.querySelector(":scope > .wv-window-tab-drop-indicator");
+            if (!bar) {
+                bar = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                bar.className = "wv-window-tab-drop-indicator";
+            }
+            let before: any = null;
+            for (const el of tabsBox.querySelectorAll(":scope > .wv-window-tab")) {
+                const r = el.getBoundingClientRect();
+                if (clientX < r.left + r.width / 2) { before = el; break; }
+            }
+            if (before) tabsBox.insertBefore(bar, before);
+            else tabsBox.appendChild(bar);
+        } catch (e) {}
+    }
+
+    /** Remove the drop indicator from a window's strip. */
+    _wvWTHideDropIndicator(win: any) {
+        try {
+            const bar = win.document.querySelector(".wv-window-tabs > .wv-window-tab-drop-indicator");
+            if (bar) bar.remove();
+        } catch (e) {}
+    }
+
+    /** Remove the drop indicator from every reader window (drag ended). */
+    _wvWTHideAllDropIndicators() {
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) { try { this._wvWTHideDropIndicator(en.getNext()); } catch (e) {} }
+        } catch (e) {}
+    }
+
     /** "List all tabs" button (▾) — mirrors the main window's tabs-menu, but
      *  for THIS reader window's tabs. Sits just left of the hamburger. Clicking
      *  opens a popup listing every tab (icon + title, active one checked);
@@ -3538,6 +3593,7 @@ class _ReaderMixin {
                 try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
                 try { (this as any)._wvMergeDragSourceWin = null; } catch (er) {}
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
+                try { this._wvWTHideAllDropIndicators(); } catch (er) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireNativeTabDrag err: " + e); }
     }
@@ -3577,6 +3633,7 @@ class _ReaderMixin {
                 try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
                 try { (this as any)._wvMergeDragSourceWin = null; } catch (er) {}
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
+                try { this._wvWTHideAllDropIndicators(); } catch (er) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireTabDrag err: " + e); }
     }

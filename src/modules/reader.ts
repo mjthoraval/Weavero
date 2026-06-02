@@ -2019,14 +2019,19 @@ class _ReaderMixin {
                     } catch (er) { Zotero.debug("[Weavero] main-tab drop err: " + er); }
                     return;
                 }
-                // No-op for the reader-window's own merge drag: just consume the
-                // drop so the reader doesn't get the event. The source tab's
-                // dragend decides what to do (typically nothing).
+                // A reader-window tab dropped on a strip. If it came from a
+                // DIFFERENT reader window, move it here; dropping on its own
+                // strip is a no-op (the tab stays). Consume the event either way
+                // so the reader content doesn't receive it.
                 if (!isMergeDrag(e)) return;
                 try {
                     e.stopPropagation();
-                    if (isOverStrip(e)) e.preventDefault();
-                } catch (er) {}
+                    if (isOverStrip(e)) {
+                        e.preventDefault();
+                        const plugin: any = (Zotero as any).Weavero.plugin;
+                        plugin._wvWTHandleCrossWindowDrop(win);
+                    }
+                } catch (er) { Zotero.debug("[Weavero] cross-window drop err: " + er); }
             };
             win.addEventListener("dragover", onDragOver, true);
             win.addEventListener("drop", onDrop, true);
@@ -3323,7 +3328,12 @@ class _ReaderMixin {
                         "application/x-weavero-reader-merge",
                         JSON.stringify({ itemID: reader.itemID, title: titleText, readerType: readerType || "" })
                     );
-                    (this as any)._wvMergeDragInfo = { itemID: reader.itemID, title: titleText, readerType: readerType || "" };
+                    // sourceTabId + source window enable cross-window moves
+                    // (drop on another reader window's strip). The JSON payload
+                    // deliberately omits multiTab so the MAIN window's drop keeps
+                    // using the native _moveReaderToTab path (drop-position + pin).
+                    (this as any)._wvMergeDragInfo = { itemID: reader.itemID, title: titleText, readerType: readerType || "", sourceTabId: tab.id };
+                    (this as any)._wvMergeDragSourceWin = win;
                     try {
                         const img: any = doc.createElementNS(HTML, "img");
                         img.setAttribute("src",
@@ -3335,6 +3345,7 @@ class _ReaderMixin {
             });
             el.addEventListener("dragend", () => {
                 try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
+                try { (this as any)._wvMergeDragSourceWin = null; } catch (er) {}
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireNativeTabDrag err: " + e); }
@@ -3421,6 +3432,27 @@ class _ReaderMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTHandleMainTabDrop err: " + e);
         }
+    }
+
+    /** Drop handler for a tab dragged from ANOTHER reader window onto this
+     *  window's strip: move it here — mount in the target window and close it
+     *  in the source window (which closes that window if it was its last tab).
+     *  Dropping on the source's own strip is a no-op (the tab stays). Reads the
+     *  live drag state off the shared plugin (set by the tab's dragstart). */
+    _wvWTHandleCrossWindowDrop(targetWin: any) {
+        try {
+            const plugin: any = (Zotero as any).Weavero.plugin;
+            const info = plugin && plugin._wvMergeDragInfo;
+            const srcWin = plugin && plugin._wvMergeDragSourceWin;
+            if (!info || info.itemID == null) return;
+            if (!srcWin || srcWin === targetWin) return;     // own strip → stay
+            const itemID = info.itemID;
+            const sourceTabId = info.sourceTabId;
+            // Clear shared drag state first so neither window's dragend re-acts.
+            try { plugin._wvMergeDragInfo = null; plugin._wvMergeDragSourceWin = null; } catch (e) {}
+            try { if (sourceTabId != null) this._wvWTCloseTab(srcWin, sourceTabId); } catch (e) {}
+            this._wvWTMountTab(targetWin, itemID, { allowDuplicate: false, select: true });
+        } catch (e) { Zotero.debug("[Weavero] _wvWTHandleCrossWindowDrop err: " + e); }
     }
 
     /** Move a tab out of the reader window into a main-window tab. Closes the

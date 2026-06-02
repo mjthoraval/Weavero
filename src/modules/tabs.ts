@@ -822,9 +822,18 @@ class _TabsMixin {
                         libraryID: k.libraryID,
                         itemKey: k.itemKey,
                         // Captured so a standalone reader window can mount this
-                        // tab when it's dropped on its strip (increment 3a).
+                        // tab when it's dropped on its strip (increment 3a), and
+                        // render a faithful drop-preview ghost (title + icon).
                         itemID: (zotTab.data && zotTab.data.itemID) || null,
                         tabType: zotTab.type || null,
+                        title: zotTab.title || "",
+                        readerType: (() => {
+                            try {
+                                const iid = zotTab.data && zotTab.data.itemID;
+                                const it: any = iid && Zotero.Items.get(iid);
+                                return (it && it.attachmentReaderType) || "";
+                            } catch (e) { return ""; }
+                        })(),
                         wasPinned: self._pinnedTabsHas(k.libraryID, k.itemKey),
                         initialIndex: Z_Tabs._tabs.indexOf(zotTab),
                     };

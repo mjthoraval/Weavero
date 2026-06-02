@@ -2003,10 +2003,18 @@ class _ReaderMixin {
                 if (!isMergeDrag(e)) return;
                 try {
                     if (isOverStrip(e)) {
-                        // Strip: accept the drag (no forbidden cursor) + preview.
+                        // Strip: accept the drag (no forbidden cursor).
                         e.preventDefault();
                         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                        try { P && P._wvWTShowDropIndicator(win, e.clientX); } catch (er) {}
+                        const srcWin = P && P._wvMergeDragSourceWin;
+                        if (srcWin === win) {
+                            // Same window → move the tab directly (native style).
+                            const info = P._wvMergeDragInfo;
+                            try { P._wvWTLiveReorder(win, info && info.sourceTabId, e.clientX); } catch (er) {}
+                        } else {
+                            // From another reader window → ghost preview.
+                            try { P._wvWTShowDropIndicator(win, e.clientX); } catch (er) {}
+                        }
                     }
                     else {
                         // Reader area: block PDF.js from seeing the event so
@@ -2753,15 +2761,15 @@ class _ReaderMixin {
                 "}",
                 ".wv-window-tab-close:hover { background-color: var(--fill-quinary); }",
                 ".wv-window-tab-close:active { background-color: var(--fill-quarternary); }",
-                /* Drop-position indicator shown while dragging a tab over the
-                   strip (reorder or drop-in) — a vertical accent bar at the gap
-                   the tab will land in. */
-                ".wv-window-tab-drop-indicator {",
-                "  flex: 0 0 auto; align-self: center;",
-                "  width: 2px; height: 22px; margin: 0 1px;",
-                "  border-radius: 1px;",
-                "  background: var(--color-accent, #2ea8e5);",
-                "  pointer-events: none;",
+                /* Drop preview — a GHOST TAB (icon + title) at the gap the
+                   dragged tab will land in, pushing the real tabs aside, exactly
+                   like the main window's .wv-merge-ghost (src/modules/tabs.ts).
+                   Accent outline + reduced opacity mark it as a preview. */
+                ".wv-window-tab.wv-window-tab-ghost {",
+                "  pointer-events: none; opacity: 0.7;",
+                "  background: var(--material-button);",
+                "  box-shadow: inset 0 0 0 1.5px var(--color-accent, #2ea8e5);",
+                "  border-bottom: none;",
                 "}",
                 /* Window controls — matches the main-window
                    `.titlebar-button` design: 46x36 buttons using
@@ -2782,14 +2790,10 @@ class _ReaderMixin {
                 "  overflow-x: auto; overflow-y: hidden;",
                 "  scrollbar-width: thin;",
                 "}",
-                /* Draggable filler (Firefox-style): grows to fill the strip so
-                   the empty area stays window-draggable, and pushes the tab-list
-                   + hamburger + controls to the far right. Collapses when the
-                   tabs fill the bar. */
-                ".wv-window-drag-spacer {",
-                "  flex: 1 1 auto; min-width: 0; align-self: stretch;",
-                "  -moz-window-dragging: drag;",
-                "}",
+                /* Draggable empty space is the strip's own background between
+                   the hamburger and the controls (controls use margin-left:auto
+                   to push right). No spacer element — the strip itself is
+                   -moz-window-dragging: drag, so that gap moves the window. */
                 ".wv-window-controls {",
                 "  display: flex; align-items: stretch;",
                 "  flex: 0 0 auto; margin-left: auto; height: 100%;",
@@ -3291,16 +3295,13 @@ class _ReaderMixin {
                 strip.insertBefore(tabsBox, strip.firstChild);
                 try { this._wvWTWireTabsWheelScroll(tabsBox); } catch (e) {}
             }
-            // Get-or-create the draggable spacer immediately after the tabs
-            // container (keeps the empty strip area window-draggable, Firefox-
-            // style, and pushes the right-hand buttons over).
-            let spacer: any = strip.querySelector(":scope > .wv-window-drag-spacer");
-            if (!spacer) {
-                spacer = doc.createElementNS(HTML, "div");
-                spacer.className = "wv-window-drag-spacer";
-                if (tabsBox.nextSibling) strip.insertBefore(spacer, tabsBox.nextSibling);
-                else strip.appendChild(spacer);
-            }
+            // Draggable empty space: NOT a spacer element. Like the note-window
+            // strip, the tabs container is content-sized (flex 0 1 auto) and the
+            // window controls carry `margin-left: auto`, so the gap sits to the
+            // RIGHT of the hamburger and is the strip's own background — which is
+            // `-moz-window-dragging: drag`, so dragging it moves the window.
+            // (Remove any spacer left by an earlier build.)
+            try { const sp = strip.querySelector(":scope > .wv-window-drag-spacer"); if (sp) sp.remove(); } catch (e) {}
             // Drop any legacy tabs left directly under the strip (pre-container).
             for (const el of strip.querySelectorAll(":scope > .wv-window-tab")) {
                 try { el.remove(); } catch (e) {}
@@ -3349,34 +3350,83 @@ class _ReaderMixin {
         } catch (e) {}
     }
 
-    /** Show/move the drop-position indicator (a vertical accent bar) at the gap
-     *  the dragged tab would land in, computed from the cursor x. Drives the
-     *  "drop preview" during a strip drag (reorder or drop-in). */
+    /** Drop preview for a tab coming from ELSEWHERE (another reader window, or
+     *  the main window): a ghost tab (icon + title) at the gap it will land in,
+     *  pushing the real tabs aside — mirrors the main window's .wv-merge-ghost.
+     *  (Same-window reorder uses _wvWTLiveReorder instead, which moves the real
+     *  tab directly.) */
     _wvWTShowDropIndicator(win: any, clientX: any) {
         try {
             const doc = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
             const tabsBox = doc.querySelector(".wv-window-tabs");
             if (!tabsBox) return;
-            let bar = tabsBox.querySelector(":scope > .wv-window-tab-drop-indicator");
-            if (!bar) {
-                bar = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                bar.className = "wv-window-tab-drop-indicator";
+            const plugin: any = (Zotero as any).Weavero.plugin;
+            const mi = plugin._wvMergeDragInfo;
+            const td = plugin._wvTabDrag;
+            const info: any = (mi && mi.itemID != null) ? mi : (td || {});
+            const title = info.title || "";
+            const rtype = String(info.readerType || "").toLowerCase();
+            let ghost: any = tabsBox.querySelector(":scope > .wv-window-tab-ghost");
+            if (!ghost) {
+                ghost = doc.createElementNS(HTML, "div");
+                ghost.className = "wv-window-tab wv-window-tab-ghost";
+                const ic = doc.createElementNS(HTML, "span"); ic.className = "wv-window-tab-icon"; ghost.appendChild(ic);
+                const nm = doc.createElementNS(HTML, "span"); nm.className = "wv-window-tab-title"; ghost.appendChild(nm);
             }
+            const ic = ghost.querySelector(".wv-window-tab-icon");
+            const nm = ghost.querySelector(".wv-window-tab-title");
+            if (ic) {
+                const variant = (this._detectUIDark && this._detectUIDark()) ? "dark" : "light";
+                const name = (rtype === "pdf" || rtype === "epub" || rtype === "snapshot") ? ("attachment-" + rtype)
+                    : (rtype === "note") ? "note" : "attachment-pdf";
+                ic.style.backgroundImage = "url('chrome://zotero/skin/item-type/16/" + variant + "/" + name + ".svg')";
+            }
+            if (nm) nm.textContent = title;
+            // Position at the drop gap, skipping the ghost itself.
             let before: any = null;
-            for (const el of tabsBox.querySelectorAll(":scope > .wv-window-tab")) {
+            for (const el of tabsBox.querySelectorAll(":scope > .wv-window-tab:not(.wv-window-tab-ghost)")) {
                 const r = el.getBoundingClientRect();
                 if (clientX < r.left + r.width / 2) { before = el; break; }
             }
-            if (before) tabsBox.insertBefore(bar, before);
-            else tabsBox.appendChild(bar);
+            if (before) { if (ghost.nextSibling !== before) tabsBox.insertBefore(ghost, before); }
+            else if (ghost.parentNode !== tabsBox || ghost.nextSibling) tabsBox.appendChild(ghost);
         } catch (e) {}
     }
 
-    /** Remove the drop indicator from a window's strip. */
+    /** Remove the ghost drop preview from a window's strip. */
     _wvWTHideDropIndicator(win: any) {
         try {
-            const bar = win.document.querySelector(".wv-window-tabs > .wv-window-tab-drop-indicator");
-            if (bar) bar.remove();
+            const g = win.document.querySelector(".wv-window-tabs > .wv-window-tab-ghost");
+            if (g) g.remove();
+        } catch (e) {}
+    }
+
+    /** Live reorder during a same-window drag — moves the dragged tab to the
+     *  cursor position immediately (re-render), like Zotero's native tab drag.
+     *  No persist/clear (that happens on drop). Re-renders only when the slot
+     *  actually changes. */
+    _wvWTLiveReorder(win: any, sourceTabId: any, clientX: any) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st || sourceTabId == null) return;
+            const fromIdx = st.tabs.findIndex((t: any) => t.id === sourceTabId);
+            if (fromIdx < 0) return;
+            const tabsBox: any = win.document.querySelector(".wv-window-tabs");
+            const els = tabsBox ? Array.from(tabsBox.querySelectorAll(":scope > .wv-window-tab:not(.wv-window-tab-ghost)")) as any[] : [];
+            let insertIdx = st.tabs.length;
+            for (let i = 0; i < els.length; i++) {
+                const r = els[i].getBoundingClientRect();
+                if (clientX < r.left + r.width / 2) { insertIdx = i; break; }
+            }
+            let target = insertIdx;
+            if (target > fromIdx) target--;
+            if (target < 0) target = 0;
+            if (target > st.tabs.length - 1) target = st.tabs.length - 1;
+            if (target === fromIdx) return;   // unchanged → no re-render
+            const [moved] = st.tabs.splice(fromIdx, 1);
+            st.tabs.splice(target, 0, moved);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
         } catch (e) {}
     }
 

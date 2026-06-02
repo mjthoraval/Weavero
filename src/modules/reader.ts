@@ -2690,7 +2690,11 @@ class _ReaderMixin {
                    main window's .tab-name exactly. */
                 ".wv-window-tab {",
                 "  display: flex; align-items: center; gap: 6px;",
-                "  max-width: 360px; min-width: 0;",
+                // Uniform tab width — matches the main window's .tab
+                // (flex: 1 1 200px; max 200; min 100), so every tab is the
+                // same size with the title truncated, rather than sizing to
+                // its title length.
+                "  flex: 1 1 200px; max-width: 200px; min-width: 100px;",
                 "  height: 32px;",
                 "  padding: 0 4px 0 8px;",
                 "  border-radius: 5px 5px 0 0;",

@@ -3150,11 +3150,13 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWTSwitch err: " + e); }
     }
 
-    /** Close a tab. Last tab → close the whole window (via the native
-     *  reader). Non-native tab → uninit + drop its instance/browser and
-     *  switch to a neighbour. Closing the native tab while others remain is
-     *  not supported in increment 1 (the window *is* the native reader) —
-     *  we switch away instead and log. */
+    /** Close a tab. Last tab → close the whole window. Any non-last tab →
+     *  uninit its reader, drop it from the model + `_readers`, and switch to a
+     *  neighbour. The native tab is handled uniformly: since the window *is*
+     *  the native `ReaderWindow`, we can't call its close() while others
+     *  remain (that closes the window), so we uninit it WITHOUT closing the
+     *  window and hide its `#reader` browser; once it's gone the last-tab
+     *  branch falls back to win.close(). */
     _wvWTCloseTab(win: any, tabId: any) {
         try {
             const st = this._wvWTState(win);
@@ -3170,21 +3172,24 @@ class _ReaderMixin {
                 return;
             }
 
-            if (tab.native) {
-                Zotero.debug("[Weavero] _wvWTCloseTab: closing the native tab with others open is not supported in increment 1; switching instead");
-                const other = st.tabs.find((t: any) => t.id !== tabId);
-                if (other) this._wvWTSwitch(win, other.id);
-                return;
-            }
-
+            // Drop the reader instance from the registry + uninit it.
             try {
                 const rs = (Zotero.Reader as any)._readers || [];
                 const i = rs.indexOf(tab.reader);
                 if (i >= 0) rs.splice(i, 1);
             } catch (e) {}
             try { if (tab.reader && typeof tab.reader.uninit === "function") tab.reader.uninit(); } catch (e) {}
-            try { if (tab.browser && tab.browser.remove) tab.browser.remove(); } catch (e) {}
-            try { if (tab._popupset && tab._popupset.remove) tab._popupset.remove(); } catch (e) {}
+            if (tab.native) {
+                // The native `#reader` browser belongs to reader.xhtml — hide it
+                // rather than remove it, and DON'T close the window (other tabs
+                // live here). The window stays open; once this native tab is
+                // gone, _wvWTFindNativeReader returns null so a later last-tab
+                // close uses win.close().
+                try { if (tab.browser) tab.browser.collapsed = true; } catch (e) {}
+            } else {
+                try { if (tab.browser && tab.browser.remove) tab.browser.remove(); } catch (e) {}
+                try { if (tab._popupset && tab._popupset.remove) tab._popupset.remove(); } catch (e) {}
+            }
             st.tabs.splice(idx, 1);
             try { this._wvWTRenderStrip(win); } catch (e) {}
 

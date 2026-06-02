@@ -3291,12 +3291,14 @@ class _ReaderMixin {
                 try { this._ensureReaderWindowTabTooltip(tab.reader, el); } catch (e) {}
                 try { this._ensureReaderWindowTabContextMenu(tab.reader, el); } catch (e) {}
             }
-            // The native tab additionally drags back to the main window (the
-            // shipped behaviour). Per-tab drag-out for mounted tabs is a later
-            // increment; meanwhile the context menu's "Move Tab to Main
-            // Window" gives every tab a non-drag way out.
-            if (tab.native && tab.reader) {
-                try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {}
+            // Every tab can be dragged out to the main window. The native tab
+            // keeps the shipped path (docks via _moveReaderToTab → lands at the
+            // drop position + auto-pin). Mounted tabs route through
+            // _wvWTMoveTabToMain, which closes just that tab (and the window if
+            // it was the last) and lands the tab at the end.
+            if (tab.reader) {
+                if (tab.native) { try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {} }
+                else { try { this._wvWTWireTabDrag(win, el, tab); } catch (e) {} }
             }
             return el;
         } catch (e) { Zotero.debug("[Weavero] _wvWTBuildTabEl err: " + e); return null; }
@@ -3336,6 +3338,45 @@ class _ReaderMixin {
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireNativeTabDrag err: " + e); }
+    }
+
+    /** Make a MOUNTED (non-native) strip tab a drag source that docks it into
+     *  a main-window tab. The payload carries `sourceTabId` + `multiTab: true`,
+     *  and the source window is stashed on the plugin, so the main window's
+     *  drop handler routes through _wvWTMoveTabToMain — closing only this tab
+     *  (or the window if it was the last) instead of the whole window. */
+    _wvWTWireTabDrag(win: any, el: any, tab: any) {
+        try {
+            const doc: any = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const reader = tab.reader;
+            const itemID = (tab.itemID != null) ? tab.itemID : (reader && reader.itemID);
+            const readerType = tab.type || (reader && reader._type) || "";
+            el.setAttribute("draggable", "true");
+            el.addEventListener("dragstart", (e: any) => {
+                try {
+                    if (!e.dataTransfer) return;
+                    e.dataTransfer.effectAllowed = "move";
+                    const titleText = this._wvWTTabTitle(tab);
+                    const payload = { itemID, title: titleText, readerType: readerType || "", sourceTabId: tab.id, multiTab: true };
+                    e.dataTransfer.setData("application/x-weavero-reader-merge", JSON.stringify(payload));
+                    (this as any)._wvMergeDragInfo = payload;
+                    (this as any)._wvMergeDragSourceWin = win;
+                    try {
+                        const img: any = doc.createElementNS(HTML, "img");
+                        img.setAttribute("src",
+                            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+                        e.dataTransfer.setDragImage(img, 0, 0);
+                    } catch (er2) {}
+                    try { this._wvShowReaderDragOverlays(); } catch (er2) {}
+                } catch (er) {}
+            });
+            el.addEventListener("dragend", () => {
+                try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
+                try { (this as any)._wvMergeDragSourceWin = null; } catch (er) {}
+                try { this._wvHideReaderDragOverlays(); } catch (er) {}
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvWTWireTabDrag err: " + e); }
     }
 
     /** Drop handler for a reader tab dragged from the main window's tab bar

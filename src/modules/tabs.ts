@@ -1010,6 +1010,19 @@ class _TabsMixin {
                     const raw = e.dataTransfer.getData("application/x-weavero-reader-merge");
                     const data = raw ? JSON.parse(raw) : null;
                     const itemID = data && typeof data.itemID === "number" ? data.itemID : null;
+                    // Mounted (multi-tab) reader-window tab → route through
+                    // _wvWTMoveTabToMain so only THAT tab is closed (not the
+                    // whole window). Lands the tab at the end (skips the
+                    // reposition/pin below, which the native single-tab path
+                    // still uses).
+                    if (data && data.multiTab && data.sourceTabId != null) {
+                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const srcWin = live && live._wvMergeDragSourceWin;
+                        if (live && srcWin && typeof live._wvWTMoveTabToMain === "function") {
+                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId); } catch (er) {}
+                            return;
+                        }
+                    }
                     const kind = data && data.readerType === "note" ? "note" : "reader";
                     const mover = kind === "note"
                         ? (self as any)._moveNoteToTab?.bind(self)

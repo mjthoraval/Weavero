@@ -1129,6 +1129,8 @@ class _TabsMixin {
             container.addEventListener("dragend", () => {
                 clearMergeMarkers();
                 try { (self as any)._wvHideReaderDragOverlays(); } catch (er) {}
+                // Also clear any reader-window drop ghost a main→reader drag left.
+                try { (self as any)._wvWTHideAllDropIndicators(); } catch (er) {}
             }, true);
             container.addEventListener("dragend", (e: any) => {
                 try {

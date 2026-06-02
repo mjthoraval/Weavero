@@ -2983,6 +2983,8 @@ class _ReaderMixin {
             native: true,
         });
         st.activeId = "wvwt-native";
+        // On startup, re-mount any extra tabs saved for this native item.
+        try { this._wvWTMaybeRestore(win, reader.itemID); } catch (e) {}
         return st;
     }
 
@@ -3086,6 +3088,7 @@ class _ReaderMixin {
             const tab = { id, itemID, type: inst._type || null, reader: inst, browser: nb, native: false, _popupset: ps };
             st.tabs.push(tab);
             try { this._wvWTRenderStrip(win); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
 
             // Load reader.html, then run the real _open once createReader is
             // defined (its _waitForReader only polls for _iframeWindow).
@@ -3147,6 +3150,7 @@ class _ReaderMixin {
                 if (it) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(it.getDisplayTitle());
             } catch (e) {}
             try { if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus(); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTSwitch err: " + e); }
     }
 
@@ -3169,6 +3173,7 @@ class _ReaderMixin {
                 const native = this._wvWTFindNativeReader(win);
                 try { if (native && typeof native.close === "function") native.close(); else win.close(); }
                 catch (e) { try { win.close(); } catch (e2) {} }
+                try { this._wvWTPersistSaveDebounced(); } catch (e) {}
                 return;
             }
 
@@ -3197,6 +3202,7 @@ class _ReaderMixin {
                 const next = st.tabs[Math.min(idx, st.tabs.length - 1)];
                 if (next) this._wvWTSwitch(win, next.id);
             }
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTCloseTab err: " + e); }
     }
 
@@ -3366,6 +3372,125 @@ class _ReaderMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTHandleMainTabDrop err: " + e);
         }
+    }
+
+    // ---- Session persistence (increment 3b) -------------------------------
+    // Zotero only saves/restores single-item reader windows (getWindowStates →
+    // ReaderWindow instances; reader.js). Weavero persists each window's EXTRA
+    // (M2) tabs to its own JSON, keyed by the window's NATIVE itemID, and
+    // re-mounts them when Zotero restores that native window on the next
+    // startup. We augment Zotero's restore rather than replacing it, so
+    // windows without the multi-tab strip (pref off) keep restoring normally.
+    // Known v1 limitation: a window whose native tab was closed during the
+    // session isn't saved by Zotero, so its extras (keyed off an absent
+    // native) aren't restored.
+
+    _wvWTStorePath() {
+        return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "reader-tab-windows.json");
+    }
+
+    /** Snapshot every reader window's extra tabs into a map keyed by native
+     *  itemID and write it to disk (serialized via a write chain). */
+    _wvWTPersistSave() {
+        try {
+            const map: any = {};
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                const st = w && w._wvWT;
+                if (!st || !st.tabs || st.tabs.length < 2) continue;     // nothing extra
+                const native = st.tabs.find((t: any) => t.native);
+                if (!native || native.itemID == null) continue;          // native-closed → can't key (limitation)
+                const extras = st.tabs.filter((t: any) => !t.native && t.itemID != null).map((t: any) => t.itemID);
+                if (!extras.length) continue;
+                let activeIndex = st.tabs.findIndex((t: any) => t.id === st.activeId);
+                if (activeIndex < 0) activeIndex = 0;
+                map[native.itemID] = { extras, activeIndex };
+            }
+            const doc = { version: 1, windows: map };
+            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+            const path = this._wvWTStorePath();
+            this._wvWTWriteChain = (this._wvWTWriteChain || Promise.resolve())
+                .then(async () => {
+                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                    await IOUtils.writeUTF8(path, JSON.stringify(doc, null, 2), { tmpPath: path + ".tmp" });
+                })
+                .catch((e: any) => Zotero.debug("[Weavero] _wvWTPersistSave write err: " + e));
+        } catch (e) { Zotero.debug("[Weavero] _wvWTPersistSave err: " + e); }
+    }
+
+    /** Debounced save (coalesces rapid mount/switch/close churn). */
+    _wvWTPersistSaveDebounced() {
+        try {
+            const win = Zotero.getMainWindow();
+            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const clearT = (win && win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
+            if (this._wvWTSaveTimer) { try { clearT(this._wvWTSaveTimer); } catch (e) {} }
+            this._wvWTSaveTimer = setT(() => {
+                this._wvWTSaveTimer = null;
+                try { this._wvWTPersistSave(); } catch (e) {}
+            }, 400);
+        } catch (e) { try { this._wvWTPersistSave(); } catch (e2) {} }
+    }
+
+    /** Load the persisted map once into memory and open a ~30s restore window
+     *  during which a reader window adopting a saved native item re-mounts its
+     *  extras. Cached promise — safe to call repeatedly. */
+    _wvWTLoadRestoreMap() {
+        if (this._wvWTRestoreLoadPromise) return this._wvWTRestoreLoadPromise;
+        this._wvWTRestoreLoadPromise = (async () => {
+            const path = this._wvWTStorePath();
+            let map: any = {};
+            try {
+                const text: any = await Zotero.File.getContentsAsync(path);
+                const doc = JSON.parse(text);
+                if (doc && doc.windows && typeof doc.windows === "object") map = doc.windows;
+            } catch (e) { /* missing/unreadable → empty */ }
+            this._wvWTRestoreMap = map;
+            this._wvWTRestoreActive = true;
+            // Close the restore window once startup settles, so a fresh open of
+            // a previously-multi-tab item mid-session doesn't re-add old tabs.
+            try {
+                const win = Zotero.getMainWindow();
+                const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                setT(() => { this._wvWTRestoreActive = false; this._wvWTRestoreMap = {}; }, 30000);
+            } catch (e) {}
+            return map;
+        })();
+        return this._wvWTRestoreLoadPromise;
+    }
+
+    /** When a reader window adopts its native tab during the startup restore
+     *  window, re-mount the extras saved for that native item. Once per
+     *  window (guarded by win._wvWTRestored). */
+    _wvWTMaybeRestore(win: any, nativeItemID: any) {
+        try {
+            if (!win || win._wvWTRestored) return;
+            win._wvWTRestored = true;   // guard re-entry synchronously
+            (async () => {
+                try {
+                    await this._wvWTLoadRestoreMap();
+                    if (!this._wvWTRestoreActive) return;
+                    const entry = this._wvWTRestoreMap && this._wvWTRestoreMap[nativeItemID];
+                    if (!entry || !Array.isArray(entry.extras) || !entry.extras.length) return;
+                    try { delete this._wvWTRestoreMap[nativeItemID]; } catch (e) {}   // consume once
+                    for (const itemID of entry.extras) {
+                        try {
+                            if (Zotero.Items.exists(itemID)) {
+                                await this._wvWTMountTab(win, itemID, { allowDuplicate: false, select: false, await: true });
+                            }
+                        } catch (e) { Zotero.debug("[Weavero] restore mount err: " + e); }
+                    }
+                    // Restore the active tab by index into [native, ...extras].
+                    try {
+                        const st = win._wvWT;
+                        if (st && st.tabs && entry.activeIndex != null && st.tabs[entry.activeIndex]) {
+                            this._wvWTSwitch(win, st.tabs[entry.activeIndex].id);
+                        }
+                    } catch (e) {}
+                } catch (e) { Zotero.debug("[Weavero] _wvWTMaybeRestore err: " + e); }
+            })();
+        } catch (e) { Zotero.debug("[Weavero] _wvWTMaybeRestore outer err: " + e); }
     }
 
     /** Open Zotero's standard select-items dialog filtered to the

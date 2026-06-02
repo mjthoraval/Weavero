@@ -4336,7 +4336,9 @@ class _FilterMixin {
                             try {
                                 this._collectionSwapping = false;
                                 this._filterApplying = false;
-                                this._applyItemsListFilter({ cascade: true });
+                                this._wvViaSetFilter = true;
+                                try { this._applyItemsListFilter({ cascade: true }); }
+                                finally { this._wvViaSetFilter = false; }
                                 this._patchIsSelectable();
                                 this._patchExpandMatchParents();
                                 this._patchHideContextAttachments();
@@ -4442,7 +4444,9 @@ class _FilterMixin {
                             try {
                                 this._collectionSwapping = false;
                                 this._filterApplying = false;
-                                this._applyItemsListFilter({ cascade: true });
+                                this._wvViaSetFilter = true;
+                                try { this._applyItemsListFilter({ cascade: true }); }
+                                finally { this._wvViaSetFilter = false; }
                                 this._patchIsSelectable();
                                 this._patchExpandMatchParents();
                             } catch (e) {
@@ -9148,6 +9152,32 @@ class _FilterMixin {
             // them.
             return;
         }
+        // ---- Order-B fix (approach a, flickery — see work/TODO.md) ----
+        // A deliberate filter change (cascade) while BOTH a quick search
+        // and a Weavero filter are active must re-run getChildItems so a
+        // chip-matching annotation the search alone dropped gets re-added
+        // (e.g. a starred annotation under a "Test"-matching item, when
+        // the tag chip is applied AFTER the search). A chip-apply doesn't
+        // rebuild the rows, so re-route through the wrapped setFilter,
+        // which collapses + re-expands the containers and re-invokes
+        // getChildItems with the chip active. Narrowly gated (search AND
+        // filter active); the _wvViaSetFilter guard (set around the wrap's
+        // own re-apply) keeps it from looping. Cost: a visible tree
+        // re-render on such chip changes. TODO: a non-flickery re-invoke.
+        try {
+            const _win = Zotero.getMainWindow();
+            const _sb: any = _win && _win.document
+                .getElementById("zotero-tb-search");
+            const _live = (_sb && _sb.value) ? String(_sb.value).trim() : "";
+            const _iv: any = _win && _win.ZoteroPane && _win.ZoteroPane.itemsView;
+            if (opts && opts.cascade && _live
+                && !this._wvViaSetFilter && !this._collectionSwapping
+                && _iv && typeof _iv.setFilter === "function"
+                && this._isFilterActive(this._filterState)) {
+                _iv.setFilter("search", _live);
+                return;
+            }
+        } catch (e) {}
         this._filterApplying = true;
         this._filterApplyDirty = false;
         this._filterApplyDirtyCascade = !!(opts && opts.cascade);

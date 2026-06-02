@@ -2730,8 +2730,12 @@ class _ReaderMixin {
                 "}",
                 ".wv-window-tab-title {",
                 "  flex: 1 1 100%; min-width: 0; margin-inline-start: 4px;",
-                "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: start;",
+                "  white-space: nowrap; overflow: hidden; text-align: start;",
                 "}",
+                // Fade the overflowing edge instead of an ellipsis — matches the
+                // main window's .tab-name.overflowing (_tabBar.scss). The
+                // .overflowing class is toggled in _wvWTRenderStrip by measuring.
+                ".wv-window-tab-title.overflowing { mask-image: linear-gradient(to left, transparent 0px, var(--fill-primary) 20px); }",
                 ".wv-window-tab-close {",
                 "  position: absolute; inset-inline-end: 6px;",
                 "  width: 16px; height: 16px; flex-shrink: 0;",
@@ -3293,6 +3297,13 @@ class _ReaderMixin {
                 const el = this._wvWTBuildTabEl(win, tab);
                 if (el) tabsBox.appendChild(el);
             }
+            // Toggle the title fade (.overflowing) by measuring each title —
+            // matches the main window's .tab-name.overflowing (no ellipsis).
+            try {
+                for (const t of tabsBox.querySelectorAll(":scope > .wv-window-tab > .wv-window-tab-title")) {
+                    t.classList.toggle("overflowing", t.scrollWidth > t.clientWidth + 1);
+                }
+            } catch (e) {}
             // Keep the active tab visible when the strip is scrolled.
             try { if (st.activeId) this._wvWTScrollTabIntoView(win, st.activeId); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTRenderStrip err: " + e); }

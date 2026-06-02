@@ -2990,6 +2990,261 @@ class _ReaderMixin {
         }
     }
 
+    // ===== Multi-tab reader window (increment 1: deck + switch/close) =======
+    //
+    // Lets a standalone `zotero:reader` window host more than one document.
+    // Tab 0 is the native `ReaderWindow` (its `#reader` browser); additional
+    // tabs are mounted by REUSING the base `ReaderInstance` class against our
+    // own `<browser src=reader.html>` siblings inside `#zotero-reader`
+    // (strategy "M2", validated — see work/research-notes.md §6.3). The
+    // "deck" is virtual: all reader browsers are siblings in the reader vbox
+    // and only the active one is left uncollapsed (re-parenting a live
+    // `<browser>` reloads it — strategy "M1" — so we never move them).
+    //
+    // Per-window state lives on the chrome window as
+    //   win._wvWT = { tabs: [{ id, itemID, type, reader, browser, native }], activeId, seq }
+    //
+    // Increment 1 exposes only the plumbing (mount / switch / close +
+    // window-teardown). The tab strip UI, drag entry points, and session
+    // persistence land in later increments. These methods reach into
+    // non-public reader internals, so every step is guarded; callers should
+    // treat a null/false return as "not available on this Zotero build".
+
+    /** Get (creating if needed) the per-window multi-tab state. */
+    _wvWTState(win: any) {
+        if (!win) return null;
+        if (!win._wvWT) win._wvWT = { tabs: [], activeId: null, seq: 0 };
+        return win._wvWT;
+    }
+
+    /** Find the native `ReaderWindow` instance backing this window's
+     *  `#reader` browser (the one Zotero created for the window). */
+    _wvWTFindNativeReader(win: any) {
+        try {
+            const browser = win.document.getElementById("reader");
+            const rs = (Zotero.Reader as any)._readers || [];
+            return rs.find((r: any) => r && r._window === win && r._iframe === browser) || null;
+        } catch (e) { return null; }
+    }
+
+    /** Adopt the native reader as tab 0 if the model is still empty. */
+    _wvWTEnsureNativeTab(win: any) {
+        const st = this._wvWTState(win);
+        if (!st) return null;
+        if (st.tabs.length) return st;
+        const reader = this._wvWTFindNativeReader(win);
+        const browser: any = win.document.getElementById("reader");
+        if (!reader || !browser) return st;
+        st.tabs.push({
+            id: "wvwt-native",
+            itemID: reader.itemID,
+            type: reader._type || null,
+            reader,
+            browser,
+            native: true,
+        });
+        st.activeId = "wvwt-native";
+        return st;
+    }
+
+    /** Reach the base `ReaderInstance` class via a live instance's prototype
+     *  chain (it isn't exported). Returns null if it can't be resolved. */
+    _wvWTReaderInstanceClass(win: any) {
+        try {
+            let anyReader = this._wvWTFindNativeReader(win);
+            if (!anyReader) anyReader = ((Zotero.Reader as any)._readers || [])[0];
+            if (!anyReader) return null;
+            const Ctor = anyReader.constructor;                          // ReaderWindow / ReaderTab
+            const Base = Object.getPrototypeOf(Ctor.prototype).constructor; // ReaderInstance
+            if (!Base || Base === Object) return null;
+            return Base;
+        } catch (e) { return null; }
+    }
+
+    /** Wire a one-shot window-unload teardown that removes this window's
+     *  mounted (non-native) reader instances from `Zotero.Reader._readers`
+     *  and uninits them, so closing the window can't leave dangling readers
+     *  pointing at dead browsers. Idempotent per window. */
+    _wvWTWireWindowTeardown(win: any) {
+        try {
+            if (!win || win._wvWTTeardownWired) return;
+            win._wvWTTeardownWired = true;
+            const handler = () => {
+                try {
+                    const st = win._wvWT;
+                    if (!st) return;
+                    const rs = (Zotero.Reader as any)._readers || [];
+                    for (const t of st.tabs) {
+                        if (t.native) continue;
+                        try { const i = rs.indexOf(t.reader); if (i >= 0) rs.splice(i, 1); } catch (e) {}
+                        try { if (t.reader && typeof t.reader.uninit === "function") t.reader.uninit(); } catch (e) {}
+                    }
+                    st.tabs = [];
+                } catch (e) { Zotero.debug("[Weavero] _wvWT teardown err: " + e); }
+            };
+            win.addEventListener("unload", handler, { once: true });
+        } catch (e) { Zotero.debug("[Weavero] _wvWTWireWindowTeardown err: " + e); }
+    }
+
+    /** Mount `itemID` as an additional tab in reader window `win`, reusing
+     *  the base `ReaderInstance._open` (which assembles file/annotations and
+     *  wires every reader callback for us). Returns the new tab id, or the
+     *  existing tab id if the item is already open here (unless
+     *  `opts.allowDuplicate`), or null on failure.
+     *
+     *  `opts.select` (default true) switches to the new tab once created.
+     *  `opts.await` (default false) waits for `_open` to resolve before
+     *  returning (useful for tests). */
+    async _wvWTMountTab(win: any, itemID: any, opts?: any) {
+        opts = opts || {};
+        try {
+            if (!win || !win.document) return null;
+            const st = this._wvWTEnsureNativeTab(win);
+            if (!st) return null;
+            this._wvWTWireWindowTeardown(win);
+
+            const existing = st.tabs.find((t: any) => t.itemID === itemID);
+            if (existing && !opts.allowDuplicate) {
+                if (opts.select !== false) this._wvWTSwitch(win, existing.id);
+                return existing.id;
+            }
+
+            const Base: any = this._wvWTReaderInstanceClass(win);
+            if (!Base) { Zotero.debug("[Weavero] _wvWTMountTab: ReaderInstance class unavailable"); return null; }
+            const item = Zotero.Items.get(itemID);
+            if (!item) return null;
+            const doc: any = win.document;
+            const vbox: any = doc.getElementById("zotero-reader");
+            if (!vbox) return null;
+
+            const inst: any = new Base({ item });
+            inst._window = win;
+            inst._sidebarWidth = 240;
+            inst._sidebarOpen = false;
+            inst._contextPaneOpen = false;
+            inst._bottomPlaceholderHeight = 0;
+            inst._showContextPaneToggle = false;
+            // Base ReaderInstance has no _setTitleValue (only the Tab/Window
+            // subclasses do), so its updateTitle() would reject during _open.
+            // Neutralize it — the window title is owned by _wvWTSwitch.
+            inst._setTitleValue = function () {};
+
+            const seq = ++st.seq;
+            const id = "wvwt-" + seq;
+            const nb: any = doc.createXULElement("browser");
+            nb.id = "wv-wt-browser-" + seq;
+            nb.setAttribute("class", "reader");
+            nb.setAttribute("type", "content");
+            nb.setAttribute("flex", "1");
+            nb.setAttribute("transparent", "true");
+            nb.collapsed = true;                 // mounted hidden; switch reveals
+            vbox.appendChild(nb);
+            inst._iframe = nb;
+            const ps: any = doc.createXULElement("popupset");
+            vbox.appendChild(ps);
+            inst._popupset = ps;
+
+            const tab = { id, itemID, type: inst._type || null, reader: inst, browser: nb, native: false, _popupset: ps };
+            st.tabs.push(tab);
+
+            // Load reader.html, then run the real _open once createReader is
+            // defined (its _waitForReader only polls for _iframeWindow).
+            const opened = new Promise((resolve) => {
+                const onLoad = (ev: any) => {
+                    try {
+                        if (nb.contentDocument && ev.target === nb.contentDocument) {
+                            const cw = nb.contentWindow;
+                            if (cw && cw.wrappedJSObject && typeof cw.wrappedJSObject.createReader === "function") {
+                                nb.removeEventListener("DOMContentLoaded", onLoad, true);
+                                inst._iframeWindow = cw;
+                                inst._open({}).then(() => {
+                                    try {
+                                        const rs = (Zotero.Reader as any)._readers || [];
+                                        if (!rs.includes(inst)) rs.push(inst);
+                                    } catch (e) {}
+                                    resolve(true);
+                                }).catch((e: any) => { Zotero.debug("[Weavero] _wvWTMountTab _open err: " + e); resolve(false); });
+                            }
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] _wvWTMountTab onLoad err: " + e); resolve(false); }
+                };
+                nb.addEventListener("DOMContentLoaded", onLoad, true);
+                nb.setAttribute("src", "resource://zotero/reader/reader.html");
+            });
+
+            if (opts.select !== false) this._wvWTSwitch(win, id);
+            if (opts.await) await opened;
+            return id;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWTMountTab err: " + e);
+            return null;
+        }
+    }
+
+    /** Switch the active tab: collapse every reader browser except the
+     *  target, update the window title, and focus the active reader. */
+    _wvWTSwitch(win: any, tabId: any) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st) return;
+            const tab = st.tabs.find((t: any) => t.id === tabId);
+            if (!tab) return;
+            for (const t of st.tabs) {
+                try { t.browser.collapsed = (t.id !== tabId); } catch (e) {}
+            }
+            st.activeId = tabId;
+            try {
+                const it = Zotero.Items.get(tab.itemID);
+                if (it) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(it.getDisplayTitle());
+            } catch (e) {}
+            try { if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWTSwitch err: " + e); }
+    }
+
+    /** Close a tab. Last tab → close the whole window (via the native
+     *  reader). Non-native tab → uninit + drop its instance/browser and
+     *  switch to a neighbour. Closing the native tab while others remain is
+     *  not supported in increment 1 (the window *is* the native reader) —
+     *  we switch away instead and log. */
+    _wvWTCloseTab(win: any, tabId: any) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st) return;
+            const idx = st.tabs.findIndex((t: any) => t.id === tabId);
+            if (idx < 0) return;
+            const tab = st.tabs[idx];
+
+            if (st.tabs.length === 1) {
+                const native = this._wvWTFindNativeReader(win);
+                try { if (native && typeof native.close === "function") native.close(); else win.close(); }
+                catch (e) { try { win.close(); } catch (e2) {} }
+                return;
+            }
+
+            if (tab.native) {
+                Zotero.debug("[Weavero] _wvWTCloseTab: closing the native tab with others open is not supported in increment 1; switching instead");
+                const other = st.tabs.find((t: any) => t.id !== tabId);
+                if (other) this._wvWTSwitch(win, other.id);
+                return;
+            }
+
+            try {
+                const rs = (Zotero.Reader as any)._readers || [];
+                const i = rs.indexOf(tab.reader);
+                if (i >= 0) rs.splice(i, 1);
+            } catch (e) {}
+            try { if (tab.reader && typeof tab.reader.uninit === "function") tab.reader.uninit(); } catch (e) {}
+            try { if (tab.browser && tab.browser.remove) tab.browser.remove(); } catch (e) {}
+            try { if (tab._popupset && tab._popupset.remove) tab._popupset.remove(); } catch (e) {}
+            st.tabs.splice(idx, 1);
+
+            if (st.activeId === tabId) {
+                const next = st.tabs[Math.min(idx, st.tabs.length - 1)];
+                if (next) this._wvWTSwitch(win, next.id);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWTCloseTab err: " + e); }
+    }
+
     /** Open Zotero's standard select-items dialog filtered to the
      *  annotation's library, then add a symmetric `dc:relation` triple
      *  between every picked item and every annotation in `annotations`.

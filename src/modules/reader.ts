@@ -3284,11 +3284,19 @@ class _ReaderMixin {
                 } catch (er) {}
             });
 
-            // Native tab keeps the shipped behaviours.
-            if (tab.native && tab.reader) {
-                try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {}
+            // Library tooltip + right-click context menu on every tab. Both
+            // shared popups are tab-aware (resolve the hovered/right-clicked
+            // tab), so they act on the correct document.
+            if (tab.reader) {
                 try { this._ensureReaderWindowTabTooltip(tab.reader, el); } catch (e) {}
                 try { this._ensureReaderWindowTabContextMenu(tab.reader, el); } catch (e) {}
+            }
+            // The native tab additionally drags back to the main window (the
+            // shipped behaviour). Per-tab drag-out for mounted tabs is a later
+            // increment; meanwhile the context menu's "Move Tab to Main
+            // Window" gives every tab a non-drag way out.
+            if (tab.native && tab.reader) {
+                try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {}
             }
             return el;
         } catch (e) { Zotero.debug("[Weavero] _wvWTBuildTabEl err: " + e); return null; }
@@ -3372,6 +3380,31 @@ class _ReaderMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTHandleMainTabDrop err: " + e);
         }
+    }
+
+    /** Move a tab out of the reader window into a main-window tab. Closes the
+     *  source tab here first (which closes the window if it was the last tab),
+     *  then opens the item as a main-window tab. Works uniformly for the native
+     *  and mounted tabs. Used by the per-tab context menu's "Move Tab to Main
+     *  Window" (a non-drag way out for any tab). */
+    _wvWTMoveTabToMain(win: any, tabId: any) {
+        try {
+            const st = this._wvWTState(win);
+            const tab = st && st.tabs.find((t: any) => t.id === tabId);
+            if (!tab) return;
+            const itemID = tab.itemID;
+            const mainWin = Zotero.getMainWindow();
+            try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+            // Defer the open so the closing reader's debounced state write lands
+            // first (mirrors _moveReaderToTab), preserving scroll position.
+            const open = () => {
+                try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); }
+                catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain open err: " + e); }
+                try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
+            };
+            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            setT(open, 150);
+        } catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain err: " + e); }
     }
 
     // ---- Session persistence (increment 3b) -------------------------------
@@ -8050,6 +8083,9 @@ class _ReaderMixin {
                 };
                 tab.addEventListener("mouseenter", (e: any) => {
                     try {
+                        // Point the shared tooltip at THIS tab's reader so the
+                        // popupshowing populator shows the hovered tab's item.
+                        (tooltip as any)._wvReader = reader;
                         lastScreenX = e.screenX; lastScreenY = e.screenY;
                         if (showTimer) win.clearTimeout(showTimer);
                         showTimer = win.setTimeout(() => {
@@ -8223,11 +8259,30 @@ class _ReaderMixin {
                     ? (this as any)._menuItemIconURLDark
                     : (this as any)._menuItemIconURLLight;
 
+                // The menu is shared across all strip tabs; the contextmenu
+                // listener stashes the right-clicked tab id on win._wvWTCtxTabId
+                // so each action operates on THAT tab (falling back to the
+                // creating reader for safety).
+                const targetTab = () => {
+                    try {
+                        const st = win._wvWT;
+                        const tid = win._wvWTCtxTabId;
+                        return (st && st.tabs.find((t: any) => t.id === tid)) || null;
+                    } catch (e) { return null; }
+                };
+                const targetItemID = () => { const t = targetTab(); return t ? t.itemID : (reader && reader.itemID); };
+
                 const showInLibrary = mkItem("Show in Library", () => {
-                    try { reader.showInLibrary?.(); } catch (e) {}
+                    try {
+                        const t = targetTab();
+                        if (t && t.reader && typeof t.reader.showInLibrary === "function") { t.reader.showInLibrary(); return; }
+                        const id = targetItemID();
+                        const mw = Zotero.getMainWindow();
+                        if (mw && mw.ZoteroPane && id != null) { mw.ZoteroPane.selectItem(id); mw.focus(); }
+                    } catch (e) {}
                 });
                 const moveToTab = mkItem("Move Tab to Main Window", () => {
-                    try { this._moveReaderToTab(reader.itemID); } catch (e) {}
+                    try { const t = targetTab(); if (t) this._wvWTMoveTabToMain(win, t.id); } catch (e) {}
                 });
                 const sep = doc.createXULElement("menuseparator");
                 // Copy Select/Open Link — these are Weavero-added items
@@ -8236,19 +8291,19 @@ class _ReaderMixin {
                 // their provenance obvious.
                 const copySelect = mkItem("Copy Select Link", () => {
                     try {
-                        const item = Zotero.Items.get(reader.itemID);
+                        const item = Zotero.Items.get(targetItemID());
                         if (item) this._copyItemLinks([item], "select");
                     } catch (e) {}
                 }, { icon: wvIcon, getVisible: () => this._getEnableCopyItemLink?.() ?? false });
                 const copyOpen = mkItem("Copy Open Link", () => {
                     try {
-                        const item = Zotero.Items.get(reader.itemID);
+                        const item = Zotero.Items.get(targetItemID());
                         if (item) this._copyItemLinks([item], "open");
                     } catch (e) {}
                 }, { icon: wvIcon, getVisible: () => this._getEnableCopyItemLink?.() ?? false });
                 const sep2 = doc.createXULElement("menuseparator");
                 const closeItem = mkItem("Close", () => {
-                    try { reader.close?.() ?? win.close(); } catch (e) {}
+                    try { const t = targetTab(); if (t) this._wvWTCloseTab(win, t.id); else (reader.close?.() ?? win.close()); } catch (e) {}
                 });
 
                 menu.appendChild(showInLibrary);
@@ -8285,6 +8340,8 @@ class _ReaderMixin {
                     try {
                         e.preventDefault();
                         e.stopPropagation();
+                        // Tell the shared menu which tab was right-clicked.
+                        try { win._wvWTCtxTabId = tab.getAttribute("data-wv-tab-id"); } catch (er2) {}
                         const m = doc.getElementById(MENU_ID);
                         if (m && typeof (m as any).openPopupAtScreen === "function") {
                             (m as any).openPopupAtScreen(e.screenX, e.screenY, true);

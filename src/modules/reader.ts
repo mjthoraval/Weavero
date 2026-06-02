@@ -2687,12 +2687,10 @@ class _ReaderMixin {
                 ".wv-window-tabstrip {",
                 "  display: flex; align-items: stretch; box-sizing: border-box;",
                 "  height: 36px; padding: 4px 4px 0 4px;",
-                "  background: rgb(245, 245, 245);",
-                "  border-bottom: 1px solid rgba(0,0,0,0.12);",
+                // Theme-tracking bar colour — same var as the main window's tab
+                // bar (#tab-bar-container { background: var(--material-tabbar) }).
+                "  background: var(--material-tabbar);",
                 "  -moz-window-dragging: drag;",
-                "}",
-                "@media (prefers-color-scheme: dark) {",
-                "  .wv-window-tabstrip { background: rgb(30, 30, 30); border-bottom-color: rgba(0,0,0,0.4); }",
                 "}",
                 /* Tab: rounded top corners, file-type icon + title +
                    close. Brighter than the strip — matches main
@@ -2700,72 +2698,51 @@ class _ReaderMixin {
                    nearly-white on light) so the tab visually pops out
                    of the bar. Font color + size + family mirrors the
                    main window's .tab-name exactly. */
+                /* Tabs mirror the native main-window `.tab` (scss/components/
+                   _tabBar.scss): same geometry, and theme-tracking colours via
+                   Zotero's CSS variables (available because reader.xhtml loads
+                   zotero.css) instead of hard-coded light/dark guesses. */
                 ".wv-window-tab {",
-                "  display: flex; align-items: center; gap: 6px;",
-                // Uniform tab width — matches the main window's .tab
-                // (flex: 1 1 200px; max 200; min 100), so every tab is the
-                // same size with the title truncated, rather than sizing to
-                // its title length.
+                "  box-sizing: border-box; position: relative;",
                 "  flex: 1 1 200px; max-width: 200px; min-width: 100px;",
-                "  height: 32px;",
-                "  padding: 0 4px 0 8px;",
-                "  border-radius: 5px 5px 0 0;",
-                "  background: rgb(255, 255, 255);",
-                "  color: rgba(0, 0, 0, 0.898);",
+                "  height: 28px; align-self: center;",
+                "  display: flex; align-items: center;",
+                "  padding-inline: 6px 22px;",          /* room for the absolute close button */
+                "  border-radius: 5px;",
+                "  color: var(--fill-primary);",
                 "  font: caption; font-size: 13px;",
-                "  font-family: system-ui, -apple-system, sans-serif;",
-                "  text-rendering: optimizelegibility;",
-                "  -moz-window-dragging: no-drag;",
+                "  transition: background-color 0.1s ease-out;",
+                "  -moz-window-dragging: no-drag; cursor: default;",
                 "}",
-                "@media (prefers-color-scheme: dark) {",
-                "  .wv-window-tab { background: rgb(64, 64, 64); color: rgba(255, 255, 255, 0.898); }",
-                "}",
-                /* Multi-tab: inactive tabs are muted + clickable; the active
-                   tab keeps the bright look above. A single-document window's
-                   lone tab is always active, so its appearance is unchanged. */
-                ".wv-window-tab:not(.wv-active) { background: rgb(228, 228, 228); color: rgba(0,0,0,0.55); cursor: pointer; }",
-                ".wv-window-tab:not(.wv-active):hover { background: rgb(236, 236, 236); }",
-                "@media (prefers-color-scheme: dark) {",
-                "  .wv-window-tab:not(.wv-active) { background: rgb(43, 43, 43); color: rgba(255,255,255,0.55); }",
-                "  .wv-window-tab:not(.wv-active):hover { background: rgb(52, 52, 52); }",
-                "}",
-                /* File-type icon: 16×16, pulled from Zotero's chrome
-                   skin via data-type. PDF / EPUB / snapshot covered;
-                   anything else falls through to attachment-link.svg. */
-                /* File-type icon paths mirror what Zotero's main-window
-                   tab uses (item-type/16/<theme>/attachment-<type>.svg).
-                   Pick light vs. dark variant via prefers-color-scheme
-                   so the icon stays visible in both themes. */
+                /* Separator between adjacent tabs + bottom border on inactive
+                   tabs (--tab-border is empty in this doc, so fall back). */
+                ".wv-window-tabs > .wv-window-tab:not(:last-child) { border-inline-end: 0.5px solid var(--color-border, var(--fill-quarternary)); }",
+                ".wv-window-tab:not(.wv-active) { border-bottom: 0.5px solid var(--color-border, var(--fill-quarternary)); cursor: pointer; }",
+                ".wv-window-tab:not(.wv-active):hover { background-color: var(--fill-quinary); }",
+                /* Active tab = raised Material button, exactly like .tab.selected. */
+                ".wv-window-tab.wv-active { background: var(--material-button); box-shadow: 0 0 0 0.5px rgba(0,0,0,0.05), 0 0.5px 2.5px 0 rgba(0,0,0,0.30); }",
+                /* File-type icon: 16×16; the image URL (theme variant) is set
+                   inline in _wvWTBuildTabEl via _detectUIDark so it tracks the
+                   Zotero theme, not the OS prefers-color-scheme. */
                 ".wv-window-tab-icon {",
-                "  flex-shrink: 0;",
-                "  width: 16px; height: 16px;",
-                "  background-size: contain;",
-                "  background-repeat: no-repeat;",
-                "  background-position: center;",
-                "}",
-                ".wv-window-tab-icon[data-type='pdf'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-pdf.svg'); }",
-                ".wv-window-tab-icon[data-type='epub'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-epub.svg'); }",
-                ".wv-window-tab-icon[data-type='snapshot'] { background-image: url('chrome://zotero/skin/item-type/16/light/attachment-snapshot.svg'); }",
-                ".wv-window-tab-icon[data-type='note'] { background-image: url('chrome://zotero/skin/item-type/16/light/note.svg'); }",
-                "@media (prefers-color-scheme: dark) {",
-                "  .wv-window-tab-icon[data-type='pdf'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-pdf.svg'); }",
-                "  .wv-window-tab-icon[data-type='epub'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-epub.svg'); }",
-                "  .wv-window-tab-icon[data-type='snapshot'] { background-image: url('chrome://zotero/skin/item-type/16/dark/attachment-snapshot.svg'); }",
-                "  .wv-window-tab-icon[data-type='note'] { background-image: url('chrome://zotero/skin/item-type/16/dark/note.svg'); }",
+                "  flex: 0 0 16px; width: 16px; height: 16px;",
+                "  background-size: contain; background-repeat: no-repeat; background-position: center;",
                 "}",
                 ".wv-window-tab-title {",
-                "  flex: 1; min-width: 0;",
-                "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;",
+                "  flex: 1 1 100%; min-width: 0; margin-inline-start: 4px;",
+                "  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: start;",
                 "}",
                 ".wv-window-tab-close {",
-                "  flex-shrink: 0; appearance: none; -moz-appearance: none;",
-                "  width: 18px; height: 18px; padding: 0; margin: 0;",
+                "  position: absolute; inset-inline-end: 6px;",
+                "  width: 16px; height: 16px; flex-shrink: 0;",
+                "  appearance: none; -moz-appearance: none; padding: 0; margin: 0;",
                 "  border: none; border-radius: 3px; background: transparent;",
                 "  color: inherit; cursor: pointer;",
-                "  font: inherit; font-size: 15px; line-height: 16px; text-align: center;",
+                "  font: inherit; font-size: 14px; line-height: 16px; text-align: center;",
+                "  transition: background-color 0.1s ease-out;",
                 "}",
-                ".wv-window-tab-close:hover { background: rgba(127,127,127,0.28); }",
-                ".wv-window-tab-close:active { background: rgba(127,127,127,0.4); }",
+                ".wv-window-tab-close:hover { background-color: var(--fill-quinary); }",
+                ".wv-window-tab-close:active { background-color: var(--fill-quarternary); }",
                 /* Window controls — matches the main-window
                    `.titlebar-button` design: 46x36 buttons using
                    chrome://browser/skin/window-controls/*.svg icons,
@@ -3146,6 +3123,9 @@ class _ReaderMixin {
                                         const rs = (Zotero.Reader as any)._readers || [];
                                         if (!rs.includes(inst)) rs.push(inst);
                                     } catch (e) {}
+                                    // _open set inst._title (item.getTabTitle); re-render so the
+                                    // tab shows the metadata title instead of the load-time fallback.
+                                    try { this._wvWTRenderStrip(win); } catch (e) {}
                                     resolve(true);
                                 }).catch((e: any) => { Zotero.debug("[Weavero] _wvWTMountTab _open err: " + e); resolve(false); });
                             }
@@ -3187,8 +3167,8 @@ class _ReaderMixin {
                 }
             } catch (e) {}
             try {
-                const it = Zotero.Items.get(tab.itemID);
-                if (it) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(it.getDisplayTitle());
+                const t = this._wvWTTabTitle(tab);
+                if (t) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(t);
             } catch (e) {}
             try { if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus(); } catch (e) {}
             try { this._wvWTPersistSaveDebounced(); } catch (e) {}
@@ -3247,10 +3227,25 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWTCloseTab err: " + e); }
     }
 
-    /** Display title for a tab (from its attachment item). */
+    /** Tab title — the metadata-based title Zotero uses for reader tabs (e.g.
+     *  "Author - Year - Title"), NOT the attachment's own name ("Full Text
+     *  PDF"). The reader instance caches it as `_title` (set by updateTitle →
+     *  item.getTabTitle()); fall back to computing getTabTitle (async, cached
+     *  on the tab) and finally the display title. */
     _wvWTTabTitle(tab: any) {
         try {
-            const it = Zotero.Items.get(tab.itemID);
+            if (tab && tab.reader && tab.reader._title) { tab.title = tab.reader._title; return tab.title; }
+            if (tab && tab.title) return tab.title;
+            const it: any = Zotero.Items.get(tab.itemID);
+            if (it && typeof it.getTabTitle === "function") {
+                // Compute + cache, then refresh the strip when it resolves.
+                it.getTabTitle().then((t: any) => {
+                    if (t && t !== tab.title) {
+                        tab.title = t;
+                        try { const win = tab.reader && tab.reader._window; if (win) this._wvWTRenderStrip(win); } catch (e) {}
+                    }
+                }).catch(() => {});
+            }
             return it ? it.getDisplayTitle() : "";
         } catch (e) { return ""; }
     }
@@ -3438,7 +3433,15 @@ class _ReaderMixin {
             const iconEl: any = doc.createElementNS(HTML, "span");
             iconEl.className = "wv-window-tab-icon";
             const rtype = tab.type || (tab.reader && tab.reader._type) || "";
-            if (rtype) iconEl.setAttribute("data-type", rtype);
+            if (rtype) {
+                iconEl.setAttribute("data-type", rtype);
+                // Pick the icon's theme variant from the Zotero theme (not the
+                // OS prefers-color-scheme) so it matches the rest of the chrome.
+                const variant = (this._detectUIDark && this._detectUIDark()) ? "dark" : "light";
+                const name = (rtype === "pdf" || rtype === "epub" || rtype === "snapshot") ? ("attachment-" + rtype)
+                    : (rtype === "note") ? "note" : "attachment-link";
+                iconEl.style.backgroundImage = "url('chrome://zotero/skin/item-type/16/" + variant + "/" + name + ".svg')";
+            }
 
             const titleEl: any = doc.createElementNS(HTML, "span");
             titleEl.className = "wv-window-tab-title";

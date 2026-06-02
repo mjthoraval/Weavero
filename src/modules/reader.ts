@@ -2779,9 +2779,19 @@ class _ReaderMixin {
                    spilling off the edge. */
                 ".wv-window-tabs {",
                 "  display: flex; align-items: stretch;",
-                "  flex: 1 1 auto; min-width: 0;",
+                // Content-sized; shrinks + scrolls on overflow but does NOT grow
+                // (the drag spacer fills the slack so it stays draggable).
+                "  flex: 0 1 auto; min-width: 0;",
                 "  overflow-x: auto; overflow-y: hidden;",
                 "  scrollbar-width: thin;",
+                "}",
+                /* Draggable filler (Firefox-style): grows to fill the strip so
+                   the empty area stays window-draggable, and pushes the tab-list
+                   + hamburger + controls to the far right. Collapses when the
+                   tabs fill the bar. */
+                ".wv-window-drag-spacer {",
+                "  flex: 1 1 auto; min-width: 0; align-self: stretch;",
+                "  -moz-window-dragging: drag;",
                 "}",
                 ".wv-window-controls {",
                 "  display: flex; align-items: stretch;",
@@ -3265,6 +3275,16 @@ class _ReaderMixin {
                 tabsBox.className = "wv-window-tabs";
                 strip.insertBefore(tabsBox, strip.firstChild);
                 try { this._wvWTWireTabsWheelScroll(tabsBox); } catch (e) {}
+            }
+            // Get-or-create the draggable spacer immediately after the tabs
+            // container (keeps the empty strip area window-draggable, Firefox-
+            // style, and pushes the right-hand buttons over).
+            let spacer: any = strip.querySelector(":scope > .wv-window-drag-spacer");
+            if (!spacer) {
+                spacer = doc.createElementNS(HTML, "div");
+                spacer.className = "wv-window-drag-spacer";
+                if (tabsBox.nextSibling) strip.insertBefore(spacer, tabsBox.nextSibling);
+                else strip.appendChild(spacer);
             }
             // Drop any legacy tabs left directly under the strip (pre-container).
             for (const el of strip.querySelectorAll(":scope > .wv-window-tab")) {

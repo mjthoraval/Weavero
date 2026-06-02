@@ -1851,28 +1851,6 @@ class _ReaderMixin {
                 return;
             }
 
-            const title = (() => {
-                try {
-                    if (doc.title) return doc.title;
-                    const it = reader.itemID && Zotero.Items.get(reader.itemID);
-                    return it ? it.getDisplayTitle() : "";
-                } catch (e) { return ""; }
-            })();
-
-            // What kind of attachment is this? Used to pick an icon that
-            // matches Zotero's items-tree convention (PDF / EPUB / snapshot).
-            const readerType: string = (() => {
-                try {
-                    if (reader._type) return String(reader._type);
-                    const it = reader.itemID && Zotero.Items.get(reader.itemID);
-                    const ct = it?.attachmentContentType || "";
-                    if (ct === "application/pdf") return "pdf";
-                    if (ct === "application/epub+zip") return "epub";
-                    if (ct === "text/html") return "snapshot";
-                    return "";
-                } catch (e) { return ""; }
-            })();
-
             const HTML = "http://www.w3.org/1999/xhtml";
             let strip = doc.querySelector(".wv-window-tabstrip");
             if (!strip) {
@@ -1896,98 +1874,13 @@ class _ReaderMixin {
                 if (!anchorParent) return;
                 strip = doc.createElementNS(HTML, "div");
                 strip.className = "wv-window-tabstrip";
-                const tab = doc.createElementNS(HTML, "div");
-                tab.className = "wv-window-tab";
-                // File-type icon (PDF/EPUB/snapshot) on the left, matching
-                // the items-tree / main-window tab convention.
-                const iconEl = doc.createElementNS(HTML, "span");
-                iconEl.className = "wv-window-tab-icon";
-                if (readerType) iconEl.setAttribute("data-type", readerType);
-                const titleEl = doc.createElementNS(HTML, "span");
-                titleEl.className = "wv-window-tab-title";
-                const closeBtn = doc.createElementNS(HTML, "button");
-                closeBtn.className = "wv-window-tab-close";
-                closeBtn.setAttribute("title", "Close");
-                closeBtn.setAttribute("tabindex", "-1");
-                closeBtn.textContent = "×";   // ×
-                closeBtn.addEventListener("click", (e) => {
-                    try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
-                    try { if (typeof reader.close === "function") reader.close(); else win.close(); }
-                    catch (er) { try { win.close(); } catch (er2) {} }
-                });
-                tab.appendChild(iconEl);
-                tab.appendChild(titleEl);
-                tab.appendChild(closeBtn);
-                // Drag source: dragging this tab onto the main window's
-                // tab strip merges the standalone reader back into a tab.
-                // Mozilla's HTML5 drag-and-drop crosses chrome windows in
-                // the same process, so the main window's drop handler can
-                // read our MIME via dataTransfer.types / getData(). The
-                // payload is the reader's itemID; the drop handler calls
-                // _moveReaderToTab on the plugin instance (already wired
-                // for the context-menu "Move Tab to Main Window" item).
-                tab.setAttribute("draggable", "true");
-                tab.addEventListener("dragstart", (e: any) => {
-                    try {
-                        if (!e.dataTransfer) return;
-                        e.dataTransfer.effectAllowed = "move";
-                        const titleNow = strip && strip.querySelector(".wv-window-tab-title");
-                        const titleText = titleNow ? (titleNow.textContent || "") : "";
-                        e.dataTransfer.setData(
-                            "application/x-weavero-reader-merge",
-                            JSON.stringify({
-                                itemID: reader.itemID,
-                                title: titleText,
-                                readerType: readerType || "",
-                            })
-                        );
-                        // Stash the payload on the shared plugin instance —
-                        // dragover handlers in the main window can read
-                        // it from there (browsers restrict getData() during
-                        // dragover to security-policy-protected MIMEs only).
-                        (this as any)._wvMergeDragInfo = {
-                            itemID: reader.itemID,
-                            title: titleText,
-                            readerType: readerType || "",
-                        };
-                        // Suppress the browser's default drag-preview image.
-                        try {
-                            const img = doc.createElementNS(HTML, "img");
-                            img.setAttribute("src",
-                                "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
-                            e.dataTransfer.setDragImage(img, 0, 0);
-                        } catch (er2) {}
-                        // Activate overlays on every standalone reader window
-                        // so the drag can't reach the reader `<browser>` and
-                        // make it scroll.
-                        try { this._wvShowReaderDragOverlays(); } catch (er2) {}
-                    } catch (er) {}
-                });
-                tab.addEventListener("dragend", () => {
-                    try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
-                    try { this._wvHideReaderDragOverlays(); } catch (er) {}
-                });
-                strip.appendChild(tab);
                 if (anchor) anchorParent.insertBefore(strip, anchor);
                 else anchorParent.appendChild(strip);
-
-                // Mount the library-aware tooltip and the right-click
-                // context menu so the reader window's tab behaves like
-                // a main-window tab on hover and right-click.
-                try { this._ensureReaderWindowTabTooltip(reader, tab); } catch (e) {}
-                try { this._ensureReaderWindowTabContextMenu(reader, tab); } catch (e) {}
             }
-            try {
-                const titleEl = strip.querySelector(".wv-window-tab-title");
-                if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
-                // Do NOT set the HTML `title` attribute — that would show
-                // the browser's default tooltip, which would race with
-                // (and visually override) our custom XUL tooltip wired
-                // by `_ensureReaderWindowTabTooltip`.
-                // Keep the icon's type in sync (in case reader type changes).
-                const iconEl = strip.querySelector(".wv-window-tab-icon");
-                if (iconEl && readerType) iconEl.setAttribute("data-type", readerType);
-            } catch (e) {}
+            // Tab elements themselves are rendered from the per-window
+            // multi-tab model (_wvWT) by _wvWTRenderStrip — called once the
+            // controls + hamburger exist, below — so the strip holds one
+            // tab per open document. (Increment 2.)
 
             // Swap the title bar FOR the strip: collapse the native OS title
             // bar (so we don't show both) and mount the min/max/close controls
@@ -2017,6 +1910,9 @@ class _ReaderMixin {
                 const ctlBox = strip2 && strip2.querySelector(":scope > .wv-window-controls");
                 if (strip2) this._wvEnsureHamburger(win, strip2, ctlBox);
             } catch (e) {}
+            // Render the tab(s) from the multi-tab model into the strip, left
+            // of the hamburger/controls. Idempotent — rebuilds the tab list.
+            try { this._wvWTRenderStrip(win); } catch (e) {}
             // Absorb merge-MIME dragover/drop on the whole standalone reader
             // window so (1) the OS forbidden cursor doesn't flash when the
             // user drags this tab back over the tab strip, and (2) the
@@ -2769,6 +2665,15 @@ class _ReaderMixin {
                 "@media (prefers-color-scheme: dark) {",
                 "  .wv-window-tab { background: rgb(64, 64, 64); color: rgba(255, 255, 255, 0.898); }",
                 "}",
+                /* Multi-tab: inactive tabs are muted + clickable; the active
+                   tab keeps the bright look above. A single-document window's
+                   lone tab is always active, so its appearance is unchanged. */
+                ".wv-window-tab:not(.wv-active) { background: rgb(228, 228, 228); color: rgba(0,0,0,0.55); cursor: pointer; }",
+                ".wv-window-tab:not(.wv-active):hover { background: rgb(236, 236, 236); }",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-window-tab:not(.wv-active) { background: rgb(43, 43, 43); color: rgba(255,255,255,0.55); }",
+                "  .wv-window-tab:not(.wv-active):hover { background: rgb(52, 52, 52); }",
+                "}",
                 /* File-type icon: 16×16, pulled from Zotero's chrome
                    skin via data-type. PDF / EPUB / snapshot covered;
                    anything else falls through to attachment-link.svg. */
@@ -3146,6 +3051,7 @@ class _ReaderMixin {
 
             const tab = { id, itemID, type: inst._type || null, reader: inst, browser: nb, native: false, _popupset: ps };
             st.tabs.push(tab);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
 
             // Load reader.html, then run the real _open once createReader is
             // defined (its _waitForReader only polls for _iframeWindow).
@@ -3193,6 +3099,15 @@ class _ReaderMixin {
                 try { t.browser.collapsed = (t.id !== tabId); } catch (e) {}
             }
             st.activeId = tabId;
+            // Update the active-tab highlight on the strip (no full rebuild).
+            try {
+                const strip = win.document.querySelector(".wv-window-tabstrip");
+                if (strip) {
+                    for (const el of strip.querySelectorAll(":scope > .wv-window-tab")) {
+                        el.classList.toggle("wv-active", el.getAttribute("data-wv-tab-id") === tabId);
+                    }
+                }
+            } catch (e) {}
             try {
                 const it = Zotero.Items.get(tab.itemID);
                 if (it) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(it.getDisplayTitle());
@@ -3237,12 +3152,137 @@ class _ReaderMixin {
             try { if (tab.browser && tab.browser.remove) tab.browser.remove(); } catch (e) {}
             try { if (tab._popupset && tab._popupset.remove) tab._popupset.remove(); } catch (e) {}
             st.tabs.splice(idx, 1);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
 
             if (st.activeId === tabId) {
                 const next = st.tabs[Math.min(idx, st.tabs.length - 1)];
                 if (next) this._wvWTSwitch(win, next.id);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWTCloseTab err: " + e); }
+    }
+
+    /** Display title for a tab (from its attachment item). */
+    _wvWTTabTitle(tab: any) {
+        try {
+            const it = Zotero.Items.get(tab.itemID);
+            return it ? it.getDisplayTitle() : "";
+        } catch (e) { return ""; }
+    }
+
+    /** (Re)build the tab elements in the strip from the per-window model,
+     *  inserted left of the hamburger/controls. Idempotent — clears and
+     *  rebuilds the `.wv-window-tab` children, leaving the controls and
+     *  hamburger in place. */
+    _wvWTRenderStrip(win: any) {
+        try {
+            const doc: any = win.document;
+            const strip: any = doc.querySelector(".wv-window-tabstrip");
+            if (!strip) return;
+            const st = this._wvWTEnsureNativeTab(win);
+            if (!st) return;
+            for (const el of strip.querySelectorAll(":scope > .wv-window-tab")) {
+                try { el.remove(); } catch (e) {}
+            }
+            // Keep tabs left of the hamburger / window-controls.
+            const anchor = strip.querySelector(":scope > .wv-hamburger-btn, :scope > .wv-window-controls");
+            for (const tab of st.tabs) {
+                const el = this._wvWTBuildTabEl(win, tab);
+                if (!el) continue;
+                if (anchor) strip.insertBefore(el, anchor);
+                else strip.appendChild(el);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWTRenderStrip err: " + e); }
+    }
+
+    /** Build one `.wv-window-tab` element for a model tab: file-type icon +
+     *  title + close ×, click-to-switch, active highlight. The native tab
+     *  additionally keeps the shipped drag-to-main-window + library tooltip
+     *  + right-click context menu (per-tab drag for mounted tabs lands in a
+     *  later increment). */
+    _wvWTBuildTabEl(win: any, tab: any) {
+        try {
+            const doc: any = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const st = this._wvWTState(win);
+            const el: any = doc.createElementNS(HTML, "div");
+            el.className = "wv-window-tab" + (st && st.activeId === tab.id ? " wv-active" : "");
+            el.setAttribute("data-wv-tab-id", tab.id);
+
+            const iconEl: any = doc.createElementNS(HTML, "span");
+            iconEl.className = "wv-window-tab-icon";
+            const rtype = tab.type || (tab.reader && tab.reader._type) || "";
+            if (rtype) iconEl.setAttribute("data-type", rtype);
+
+            const titleEl: any = doc.createElementNS(HTML, "span");
+            titleEl.className = "wv-window-tab-title";
+            titleEl.textContent = this._wvWTTabTitle(tab);
+
+            const closeBtn: any = doc.createElementNS(HTML, "button");
+            closeBtn.className = "wv-window-tab-close";
+            closeBtn.setAttribute("title", "Close");
+            closeBtn.setAttribute("tabindex", "-1");
+            closeBtn.textContent = "×";
+            closeBtn.addEventListener("click", (e: any) => {
+                try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                try { this._wvWTCloseTab(win, tab.id); } catch (er) {}
+            });
+
+            el.appendChild(iconEl);
+            el.appendChild(titleEl);
+            el.appendChild(closeBtn);
+
+            // Click anywhere on the tab (but not the × button) → switch.
+            el.addEventListener("click", (e: any) => {
+                try {
+                    if (e.target && e.target.closest && e.target.closest(".wv-window-tab-close")) return;
+                    this._wvWTSwitch(win, tab.id);
+                } catch (er) {}
+            });
+
+            // Native tab keeps the shipped behaviours.
+            if (tab.native && tab.reader) {
+                try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {}
+                try { this._ensureReaderWindowTabTooltip(tab.reader, el); } catch (e) {}
+                try { this._ensureReaderWindowTabContextMenu(tab.reader, el); } catch (e) {}
+            }
+            return el;
+        } catch (e) { Zotero.debug("[Weavero] _wvWTBuildTabEl err: " + e); return null; }
+    }
+
+    /** Make the native tab a drag source that docks the standalone reader
+     *  back into a main-window tab (the shipped single-tab behaviour, now
+     *  factored out so the render path can reapply it). */
+    _wvWTWireNativeTabDrag(win: any, el: any, tab: any) {
+        try {
+            const doc: any = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const reader = tab.reader;
+            const readerType = tab.type || (reader && reader._type) || "";
+            el.setAttribute("draggable", "true");
+            el.addEventListener("dragstart", (e: any) => {
+                try {
+                    if (!e.dataTransfer) return;
+                    e.dataTransfer.effectAllowed = "move";
+                    const titleText = this._wvWTTabTitle(tab);
+                    e.dataTransfer.setData(
+                        "application/x-weavero-reader-merge",
+                        JSON.stringify({ itemID: reader.itemID, title: titleText, readerType: readerType || "" })
+                    );
+                    (this as any)._wvMergeDragInfo = { itemID: reader.itemID, title: titleText, readerType: readerType || "" };
+                    try {
+                        const img: any = doc.createElementNS(HTML, "img");
+                        img.setAttribute("src",
+                            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+                        e.dataTransfer.setDragImage(img, 0, 0);
+                    } catch (er2) {}
+                    try { this._wvShowReaderDragOverlays(); } catch (er2) {}
+                } catch (er) {}
+            });
+            el.addEventListener("dragend", () => {
+                try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
+                try { this._wvHideReaderDragOverlays(); } catch (er) {}
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvWTWireNativeTabDrag err: " + e); }
     }
 
     /** Open Zotero's standard select-items dialog filtered to the

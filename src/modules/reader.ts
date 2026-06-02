@@ -1968,7 +1968,30 @@ class _ReaderMixin {
                     return !!t.closest(".wv-window-tabstrip");
                 } catch (er) { return false; }
             };
+            // A reader tab dragged FROM the main window's tab bar carries no
+            // merge MIME — it's identified by the shared `_wvTabDrag` (set in
+            // _wireTabBarDrag's dragstart). Read it live off the plugin (not a
+            // stale closure) at event time.
+            const mainTabDrag = () => {
+                try {
+                    const plugin: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const d = plugin && plugin._wvTabDrag;
+                    return (d && d.tabType === "reader") ? d : null;
+                } catch (er) { return null; }
+            };
             const onDragOver = (e) => {
+                // Main-window reader tab → this strip: accept (so drop fires).
+                if (mainTabDrag()) {
+                    try {
+                        if (isOverStrip(e)) {
+                            e.preventDefault();
+                            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                        } else {
+                            e.stopPropagation();   // keep PDF.js from auto-scrolling
+                        }
+                    } catch (er) {}
+                    return;
+                }
                 if (!isMergeDrag(e)) return;
                 try {
                     if (isOverStrip(e)) {
@@ -1985,9 +2008,20 @@ class _ReaderMixin {
                 } catch (er) {}
             };
             const onDrop = (e) => {
-                // No-op: just consume the drop so the reader doesn't
-                // get the event. The source tab's dragend will decide
-                // what to do (typically nothing — the tab stays put).
+                // Main-window reader tab dropped on the strip → mount it here as
+                // a new tab (and close the source main tab — move semantics).
+                const md = mainTabDrag();
+                if (md && isOverStrip(e)) {
+                    try { e.preventDefault(); e.stopPropagation(); } catch (er) {}
+                    try {
+                        const plugin: any = (Zotero as any).Weavero.plugin;
+                        plugin._wvWTHandleMainTabDrop(win, md);
+                    } catch (er) { Zotero.debug("[Weavero] main-tab drop err: " + er); }
+                    return;
+                }
+                // No-op for the reader-window's own merge drag: just consume the
+                // drop so the reader doesn't get the event. The source tab's
+                // dragend decides what to do (typically nothing).
                 if (!isMergeDrag(e)) return;
                 try {
                     e.stopPropagation();
@@ -3283,6 +3317,50 @@ class _ReaderMixin {
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireNativeTabDrag err: " + e); }
+    }
+
+    /** Drop handler for a reader tab dragged from the main window's tab bar
+     *  onto this reader window's strip: mount the item here as a new tab and
+     *  close the source main-window tab (move semantics). Because `drop` fires
+     *  before the source's `dragend`, closing the source tab first makes the
+     *  main window's tear-off path a no-op (it finds no tab). Only reader-able
+     *  attachments are accepted. */
+    _wvWTHandleMainTabDrop(win: any, drag: any) {
+        try {
+            let itemID = drag && drag.itemID;
+            if (!itemID && drag && drag.libraryID && drag.itemKey) {
+                try {
+                    const it = Zotero.Items.getByLibraryAndKey(drag.libraryID, drag.itemKey);
+                    itemID = it && it.id;
+                } catch (e) {}
+            }
+            if (!itemID) return;
+            const item = Zotero.Items.get(itemID);
+            if (!item || !item.attachmentReaderType) return;   // reader-able attachments only
+
+            // Close the source main-window tab FIRST (saves its reader state and
+            // defuses the main dragend tear-off), then clear the shared drag.
+            try {
+                const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
+                for (const mw of wins) {
+                    const ZT: any = mw && (mw as any).Zotero_Tabs;
+                    if (ZT && ZT._tabs && ZT._tabs.some((t: any) => t && t.id === drag.tabID)) {
+                        ZT.close(drag.tabID);
+                        break;
+                    }
+                }
+            } catch (e) {}
+            try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvTabDrag = null; } catch (e) {}
+
+            // Mount as a new tab here. Defer a tick so the closing reader's
+            // debounced state write lands before _open reads it back (mirrors
+            // _moveReaderToTab), preserving scroll position.
+            const mount = () => { try { this._wvWTMountTab(win, itemID, { select: true }); } catch (e) {} };
+            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            st(mount, 150);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWTHandleMainTabDrop err: " + e);
+        }
     }
 
     /** Open Zotero's standard select-items dialog filtered to the

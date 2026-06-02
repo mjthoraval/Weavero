@@ -821,6 +821,10 @@ class _TabsMixin {
                         tabID,
                         libraryID: k.libraryID,
                         itemKey: k.itemKey,
+                        // Captured so a standalone reader window can mount this
+                        // tab when it's dropped on its strip (increment 3a).
+                        itemID: (zotTab.data && zotTab.data.itemID) || null,
+                        tabType: zotTab.type || null,
                         wasPinned: self._pinnedTabsHas(k.libraryID, k.itemKey),
                         initialIndex: Z_Tabs._tabs.indexOf(zotTab),
                     };

@@ -2024,19 +2024,24 @@ class _ReaderMixin {
                     } catch (er) { Zotero.debug("[Weavero] main-tab drop err: " + er); }
                     return;
                 }
-                // A reader-window tab dropped on a strip. If it came from a
-                // DIFFERENT reader window, move it here; dropping on its own
-                // strip is a no-op (the tab stays). Consume the event either way
-                // so the reader content doesn't receive it.
+                // A reader-window tab dropped on a strip. Same window → reorder
+                // to the drop position; different window → move it here. Consume
+                // the event either way so the reader content doesn't receive it.
                 if (!isMergeDrag(e)) return;
                 try {
                     e.stopPropagation();
                     if (isOverStrip(e)) {
                         e.preventDefault();
                         const plugin: any = (Zotero as any).Weavero.plugin;
-                        plugin._wvWTHandleCrossWindowDrop(win);
+                        const srcWin = plugin && plugin._wvMergeDragSourceWin;
+                        if (srcWin === win) {
+                            const info = plugin._wvMergeDragInfo;
+                            plugin._wvWTReorderTab(win, info && info.sourceTabId, e.clientX);
+                        } else {
+                            plugin._wvWTHandleCrossWindowDrop(win);
+                        }
                     }
-                } catch (er) { Zotero.debug("[Weavero] cross-window drop err: " + er); }
+                } catch (er) { Zotero.debug("[Weavero] strip drop err: " + er); }
             };
             win.addEventListener("dragover", onDragOver, true);
             win.addEventListener("drop", onDrop, true);
@@ -3605,6 +3610,35 @@ class _ReaderMixin {
             try { if (sourceTabId != null) this._wvWTCloseTab(srcWin, sourceTabId); } catch (e) {}
             this._wvWTMountTab(targetWin, itemID, { allowDuplicate: false, select: true });
         } catch (e) { Zotero.debug("[Weavero] _wvWTHandleCrossWindowDrop err: " + e); }
+    }
+
+    /** Reorder a tab within its own window's strip to the drop position
+     *  (computed from the cursor x vs the tab midpoints). Re-renders + persists.
+     *  Called when a tab is dropped on the strip it came from. */
+    _wvWTReorderTab(win: any, sourceTabId: any, clientX: any) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st || sourceTabId == null) return;
+            const fromIdx = st.tabs.findIndex((t: any) => t.id === sourceTabId);
+            if (fromIdx < 0) return;
+            // Insertion index = first tab whose midpoint is right of the cursor.
+            const tabsBox: any = win.document.querySelector(".wv-window-tabs");
+            const els = tabsBox ? Array.from(tabsBox.querySelectorAll(":scope > .wv-window-tab")) as any[] : [];
+            let insertIdx = st.tabs.length;
+            for (let i = 0; i < els.length; i++) {
+                const r = els[i].getBoundingClientRect();
+                if (clientX < r.left + r.width / 2) { insertIdx = i; break; }
+            }
+            const [moved] = st.tabs.splice(fromIdx, 1);
+            if (insertIdx > fromIdx) insertIdx--;            // account for the removal shift
+            if (insertIdx < 0) insertIdx = 0;
+            if (insertIdx > st.tabs.length) insertIdx = st.tabs.length;
+            st.tabs.splice(insertIdx, 0, moved);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            try { this._wvWTScrollTabIntoView(win, moved.id); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+            try { const p: any = (Zotero as any).Weavero.plugin; p._wvMergeDragInfo = null; p._wvMergeDragSourceWin = null; } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWTReorderTab err: " + e); }
     }
 
     /** Move a tab out of the reader window into a main-window tab. Closes the

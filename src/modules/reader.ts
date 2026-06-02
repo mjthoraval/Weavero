@@ -1908,10 +1908,15 @@ class _ReaderMixin {
             try {
                 const strip2 = doc.querySelector(".wv-window-tabstrip");
                 const ctlBox = strip2 && strip2.querySelector(":scope > .wv-window-controls");
-                if (strip2) this._wvEnsureHamburger(win, strip2, ctlBox);
+                if (strip2) {
+                    this._wvEnsureHamburger(win, strip2, ctlBox);
+                    // "List all tabs" button, just left of the hamburger.
+                    const ham = strip2.querySelector(":scope > .wv-hamburger-btn");
+                    this._wvWTEnsureTabListButton(win, strip2, ham || ctlBox);
+                }
             } catch (e) {}
-            // Render the tab(s) from the multi-tab model into the strip, left
-            // of the hamburger/controls. Idempotent — rebuilds the tab list.
+            // Render the tab(s) from the multi-tab model into the strip's
+            // scroll container. Idempotent — rebuilds the tab list.
             try { this._wvWTRenderStrip(win); } catch (e) {}
             // Absorb merge-MIME dragover/drop on the whole standalone reader
             // window so (1) the OS forbidden cursor doesn't flash when the
@@ -2356,6 +2361,8 @@ class _ReaderMixin {
             try { stash.mergeAbsorberOff?.(); } catch (e) {}
             // Remove the hamburger button + popup.
             try { this._wvRemoveHamburger(win); } catch (e) {}
+            // Remove the "list all tabs" popup (the button goes with the strip).
+            try { const tlp = doc.getElementById("wv-window-tablist-popup"); if (tlp) tlp.remove(); } catch (e) {}
             // Restore the OS title bar (customtitlebar / drawtitle) we collapsed.
             try {
                 const winEl = doc.documentElement;
@@ -2760,9 +2767,20 @@ class _ReaderMixin {
                    themed via -moz-context-properties so the stroke
                    inherits currentColor. Same hover colors as Win11
                    title bar — neutral grey for min/max, red for close. */
+                /* Scrollable tabs region: grows to fill the strip (pushing the
+                   tab-list button + hamburger + window controls to the far
+                   right, like the main window), shrinks to 0 (min-width:0) and
+                   scrolls horizontally when the tabs overflow instead of
+                   spilling off the edge. */
+                ".wv-window-tabs {",
+                "  display: flex; align-items: stretch;",
+                "  flex: 1 1 auto; min-width: 0;",
+                "  overflow-x: auto; overflow-y: hidden;",
+                "  scrollbar-width: thin;",
+                "}",
                 ".wv-window-controls {",
                 "  display: flex; align-items: stretch;",
-                "  margin-left: auto; height: 100%;",
+                "  flex: 0 0 auto; margin-left: auto; height: 100%;",
                 "  -moz-window-dragging: no-drag;",
                 "}",
                 /* When Alt summons the menu bar it becomes the topmost row above
@@ -2796,11 +2814,12 @@ class _ReaderMixin {
                    that sits just left of the window controls. SVG drawn as
                    three horizontal lines using currentColor; transparent
                    background with subtle hover, no top/bottom edge. */
-                ".wv-hamburger-btn {",
+                // Hamburger + tab-list buttons share the sync-button hover-box
+                // geometry (28×28, 5px corners), pinned (flex 0 0 auto) to the
+                // right of the scrollable tabs region.
+                ".wv-hamburger-btn, .wv-window-tablist-btn {",
                 "  display: flex; align-items: center; justify-content: center;",
-                // 28×28 + border-radius 5px + align-self center: match the
-                // sync-button hover-box exactly (sync is `#zotero-tb-sync`,
-                // a XUL <toolbarbutton> 28×28 with 5px corners).
+                "  flex: 0 0 auto;",
                 "  width: 28px; height: 28px; align-self: center;",
                 "  padding: 0; margin: 0;",
                 "  border: none; appearance: none; -moz-appearance: none;",
@@ -2810,18 +2829,16 @@ class _ReaderMixin {
                 "  cursor: default;",
                 "  -moz-window-dragging: no-drag;",
                 "}",
-                ".wv-hamburger-btn svg {",
+                ".wv-hamburger-btn svg, .wv-window-tablist-btn svg {",
                 "  width: 16px; height: 16px;",
-                // Filled rects (Firefox app-menu style) — no stroke.
-                // `fill: currentColor` inherits the .wv-hamburger-btn
-                // colour (0.65 alpha black light / 0.70 alpha white dark).
                 "  fill: currentColor;",
                 "}",
-                ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); }",
-                ".wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
+                ".wv-hamburger-btn:hover, .wv-window-tablist-btn:hover { background-color: rgba(127,127,127,0.18); }",
+                ".wv-hamburger-btn:active, .wv-window-tablist-btn:active { background-color: rgba(127,127,127,0.30); }",
                 "@media (prefers-color-scheme: dark) {",
-                "  .wv-hamburger-btn { color: rgba(255, 255, 255, 0.70); }",
+                "  .wv-hamburger-btn, .wv-window-tablist-btn { color: rgba(255, 255, 255, 0.70); }",
                 "}",
+                "#wv-window-tablist-popup { min-width: 180px; }",
                 /* Widen the hamburger popup so submenu labels + chevron
                    don't run together. 147px (~2/3 of the original 220px
                    target) fits the top-level menu names (File / Edit /
@@ -3223,29 +3240,160 @@ class _ReaderMixin {
         } catch (e) { return ""; }
     }
 
-    /** (Re)build the tab elements in the strip from the per-window model,
-     *  inserted left of the hamburger/controls. Idempotent — clears and
-     *  rebuilds the `.wv-window-tab` children, leaving the controls and
-     *  hamburger in place. */
+    /** (Re)build the tab elements from the per-window model, inside a
+     *  horizontally-scrollable `.wv-window-tabs` container that grows to fill
+     *  the strip (pushing the tab-list/hamburger/controls to the far right).
+     *  Idempotent. */
     _wvWTRenderStrip(win: any) {
         try {
+            const HTML = "http://www.w3.org/1999/xhtml";
             const doc: any = win.document;
             const strip: any = doc.querySelector(".wv-window-tabstrip");
             if (!strip) return;
             const st = this._wvWTEnsureNativeTab(win);
             if (!st) return;
+            // Get-or-create the scroll container as the FIRST child of the
+            // strip (so everything pinned stays to its right).
+            let tabsBox: any = strip.querySelector(":scope > .wv-window-tabs");
+            if (!tabsBox) {
+                tabsBox = doc.createElementNS(HTML, "div");
+                tabsBox.className = "wv-window-tabs";
+                strip.insertBefore(tabsBox, strip.firstChild);
+                try { this._wvWTWireTabsWheelScroll(tabsBox); } catch (e) {}
+            }
+            // Drop any legacy tabs left directly under the strip (pre-container).
             for (const el of strip.querySelectorAll(":scope > .wv-window-tab")) {
                 try { el.remove(); } catch (e) {}
             }
-            // Keep tabs left of the hamburger / window-controls.
-            const anchor = strip.querySelector(":scope > .wv-hamburger-btn, :scope > .wv-window-controls");
+            // Rebuild the tab elements inside the container.
+            for (const el of tabsBox.querySelectorAll(":scope > .wv-window-tab")) {
+                try { el.remove(); } catch (e) {}
+            }
             for (const tab of st.tabs) {
                 const el = this._wvWTBuildTabEl(win, tab);
-                if (!el) continue;
-                if (anchor) strip.insertBefore(el, anchor);
-                else strip.appendChild(el);
+                if (el) tabsBox.appendChild(el);
             }
+            // Keep the active tab visible when the strip is scrolled.
+            try { if (st.activeId) this._wvWTScrollTabIntoView(win, st.activeId); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTRenderStrip err: " + e); }
+    }
+
+    /** Translate vertical wheel into horizontal scroll over the tabs region. */
+    _wvWTWireTabsWheelScroll(tabsBox: any) {
+        try {
+            tabsBox.addEventListener("wheel", (e: any) => {
+                try {
+                    if (tabsBox.scrollWidth <= tabsBox.clientWidth) return;
+                    const delta = e.deltaY || e.deltaX;
+                    if (!delta) return;
+                    tabsBox.scrollLeft += delta;
+                    e.preventDefault();
+                } catch (er) {}
+            }, { passive: false });
+        } catch (e) {}
+    }
+
+    /** Scroll a tab into view within the scrollable tabs region. */
+    _wvWTScrollTabIntoView(win: any, tabId: any) {
+        try {
+            const el = win.document.querySelector(
+                '.wv-window-tabs > .wv-window-tab[data-wv-tab-id="' + tabId + '"]');
+            if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        } catch (e) {}
+    }
+
+    /** "List all tabs" button (▾) — mirrors the main window's tabs-menu, but
+     *  for THIS reader window's tabs. Sits just left of the hamburger. Clicking
+     *  opens a popup listing every tab (icon + title, active one checked);
+     *  choosing one switches to it and scrolls it into view (handy when many
+     *  tabs overflow the scroll region). Idempotent per window. */
+    _wvWTEnsureTabListButton(win: any, stripEl: any, beforeEl: any) {
+        try {
+            if (!win || !win.document || !stripEl) return null;
+            const doc = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const SVG_NS = "http://www.w3.org/2000/svg";
+            let btn = stripEl.querySelector(":scope > .wv-window-tablist-btn");
+            if (btn) return btn;
+
+            // Popup, rebuilt from the live model each time it opens.
+            const popup: any = doc.createXULElement("menupopup");
+            popup.id = "wv-window-tablist-popup";
+            popup.addEventListener("popupshowing", () => {
+                try {
+                    while (popup.firstChild) popup.removeChild(popup.firstChild);
+                    const st = win._wvWT;
+                    if (!st || !st.tabs.length) {
+                        const empty = doc.createXULElement("menuitem");
+                        empty.setAttribute("label", "No tabs");
+                        empty.setAttribute("disabled", "true");
+                        popup.appendChild(empty);
+                        return;
+                    }
+                    const dark = !!(this._detectUIDark && this._detectUIDark());
+                    for (const tab of st.tabs) {
+                        const it: any = doc.createXULElement("menuitem");
+                        it.setAttribute("type", "radio");
+                        it.setAttribute("label", this._wvWTTabTitle(tab) || "(untitled)");
+                        if (st.activeId === tab.id) it.setAttribute("checked", "true");
+                        const rtype = tab.type || (tab.reader && tab.reader._type) || "";
+                        if (rtype) {
+                            it.setAttribute("class", "menuitem-iconic");
+                            const variant = dark ? "dark" : "light";
+                            const icon = (rtype === "pdf" || rtype === "epub" || rtype === "snapshot")
+                                ? ("attachment-" + rtype) : "attachment-link";
+                            it.setAttribute("image",
+                                "chrome://zotero/skin/item-type/16/" + variant + "/" + icon + ".svg");
+                        }
+                        const tid = tab.id;
+                        it.addEventListener("command", () => {
+                            try { this._wvWTSwitch(win, tid); this._wvWTScrollTabIntoView(win, tid); } catch (e) {}
+                        });
+                        popup.appendChild(it);
+                    }
+                } catch (e) { Zotero.debug("[Weavero] tablist popupshowing err: " + e); }
+            });
+            const popupset = doc.querySelector("popupset") || doc.documentElement;
+            popupset.appendChild(popup);
+
+            // Button with a downward-chevron icon.
+            btn = doc.createElementNS(HTML, "button");
+            btn.className = "wv-window-tablist-btn";
+            btn.setAttribute("title", "List all tabs");
+            btn.setAttribute("tabindex", "-1");
+            btn.setAttribute("aria-label", "List all tabs");
+            const svg: any = doc.createElementNS(SVG_NS, "svg");
+            svg.setAttribute("viewBox", "0 0 16 16");
+            svg.setAttribute("aria-hidden", "true");
+            const path: any = doc.createElementNS(SVG_NS, "path");
+            path.setAttribute("d", "M4 6.5 L8 10.5 L12 6.5");
+            path.setAttribute("fill", "none");
+            path.setAttribute("stroke", "currentColor");
+            path.setAttribute("stroke-width", "1.6");
+            path.setAttribute("stroke-linecap", "round");
+            path.setAttribute("stroke-linejoin", "round");
+            svg.appendChild(path);
+            btn.appendChild(svg);
+
+            let lastHiddenAt = 0;
+            popup.addEventListener("popuphidden", () => { lastHiddenAt = Date.now(); });
+            btn.addEventListener("click", (e: any) => {
+                try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                try {
+                    const sinceHidden = Date.now() - lastHiddenAt;
+                    if (popup.state === "open" || popup.state === "showing") popup.hidePopup();
+                    else if (sinceHidden < 200) { /* native rollup just closed it */ }
+                    else popup.openPopup(btn, "after_end", 0, 0, false, false);
+                } catch (er) {}
+            });
+
+            if (beforeEl && beforeEl.parentNode === stripEl) stripEl.insertBefore(btn, beforeEl);
+            else stripEl.appendChild(btn);
+            return btn;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWTEnsureTabListButton err: " + e);
+            return null;
+        }
     }
 
     /** Build one `.wv-window-tab` element for a model tab: file-type icon +

@@ -1447,6 +1447,288 @@ class _TabsMixin {
         this._pinTabMenuID = null;
     }
 
+    /** Dev-only: add a "New Main Window" entry to the tab context menu,
+     *  gated behind the hidden pref `weavero.devNewMainWindow` (default
+     *  OFF, and deliberately NOT surfaced in prefs.html so users never
+     *  see it). Lets the developer spin up a second *native* main window
+     *  via `Zotero.openMainWindow()` to experiment with the multi-main-
+     *  window approach (a full library window owns its own Zotero_Tabs /
+     *  ZoteroContextPane / ZoteroPane). Zotero itself considers >1 main
+     *  window unsupported-but-possible, hence the hidden gate. Registered
+     *  the same way as the Pin/Unpin entry (`target: "main/tab"`); the
+     *  pref is re-read on every `onShowing`, so toggling it takes effect
+     *  with no reload. */
+    _registerDevNewWindowMenu() {
+        try {
+            if (!((Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.registerMenu === "function")) return;
+            this._unregisterDevNewWindowMenu();
+            const id = (Zotero as any).MenuManager.registerMenu({
+                menuID: "weavero-dev-new-window",
+                pluginID: "weavero@mjthoraval",
+                target: "main/tab",
+                menus: [{
+                    menuType: "menuitem",
+                    onShowing: (_ev, ctx) => {
+                        try {
+                            let on = false;
+                            try { on = !!Zotero.Prefs.get("weavero.devNewMainWindow"); } catch (e) {}
+                            // This is a WINDOW-level action — it does nothing to the
+                            // item in a reader/note tab — so only offer it on the
+                            // library tab, and only from a primary main window (never
+                            // from inside a Weavero-dev-spawned window).
+                            const win = ctx.menuElem && ctx.menuElem.ownerDocument
+                                && ctx.menuElem.ownerDocument.defaultView;
+                            const isManagedWin = !!(win && win._wvManagedWindow);
+                            if (!on || ctx.tabID !== "zotero-pane" || isManagedWin) {
+                                ctx.setVisible(false); return;
+                            }
+                            ctx.setVisible(true);
+                            ctx.menuElem.setAttribute("label", "New Main Window (Weavero dev)");
+                        } catch (e) {
+                            try { ctx.setVisible(false); } catch (e2) {}
+                        }
+                    },
+                    onCommand: () => {
+                        try {
+                            // Flag the next main window to load as a Weavero-dev
+                            // window so onMainWindowLoad gives it a clean, independent
+                            // start (library tab only) instead of mirroring the
+                            // shared session.
+                            const plugin = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (plugin) plugin._wvPendingDevWindow = true;
+                            (Zotero as any).openMainWindow();
+                        }
+                        catch (e) { Zotero.debug("[Weavero] dev openMainWindow err: " + e); }
+                    },
+                }],
+            });
+            if (id) this._devNewWindowMenuID = id;
+        } catch (e) { Zotero.debug("[Weavero] _registerDevNewWindowMenu err: " + e); }
+    }
+
+    _unregisterDevNewWindowMenu() {
+        try {
+            if (this._devNewWindowMenuID && (Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.unregisterMenu === "function") {
+                (Zotero as any).MenuManager.unregisterMenu(this._devNewWindowMenuID);
+            }
+        } catch (e) {}
+        this._devNewWindowMenuID = null;
+    }
+
+    /** Keep the invariant "the OLDEST navigator:browser window is the untagged
+     *  anchor; younger ones are tagged/managed." Zotero's session restore
+     *  always reopens the oldest pane (its window enumerator is creation-order,
+     *  oldest-first — verified in Gecko's nsWindowMediator), so the anchor must
+     *  stay the oldest. The only event that can break this is the anchor
+     *  closing, after which the new oldest is a managed window; promote it by
+     *  untagging. Idempotent: a no-op when the oldest is already the anchor
+     *  (e.g. a managed window closed). Run deferred, after the closing window
+     *  has left the mediator. No relabel/wrap needed — an untagged window is
+     *  simply left to Zotero's native restore. */
+    _wvNormalizeAnchor() {
+        try {
+            const en = Services.wm.getEnumerator("navigator:browser");
+            const oldest: any = en.hasMoreElements() ? en.getNext() : null;   // first = oldest
+            if (oldest && oldest._wvManagedWindow) {
+                delete oldest._wvManagedWindow;
+                Zotero.debug("[Weavero] promoted new oldest window to anchor");
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvNormalizeAnchor err: " + e); }
+    }
+
+    /** Initialise a Weavero-dev-spawned main window. A new main window first
+     *  mirrors the shared session (`Zotero_Tabs.restoreState` at zoteroPane.js
+     *  init, async), so we wait for that to settle (tab count stable), then:
+     *   • restore case (group given) → closeAll + restoreState(group.tabs),
+     *   • clean case (no group)      → closeAll + focus My Library.
+     *  Waiting for the count to stabilise avoids both racing the async native
+     *  restore and double-applying our own restore. NOTE: only the TABS are
+     *  isolated; Weavero's per-feature state (filters, tabs-menu sort, …) is a
+     *  plugin-instance singleton still shared across windows. */
+    _wvInitDevMainWindow(win, group) {
+        if (!win) return;
+        let lastCount = -1, stableTicks = 0, ticks = 0, done = false;
+        const finish = () => {
+            if (done) return; done = true;
+            try {
+                const tabs = win.Zotero_Tabs;
+                if (tabs && typeof tabs.closeAll === "function") {
+                    try { tabs.closeAll(); } catch (e) {}     // clears native-restored tabs (keeps library)
+                }
+                if (group && group.tabs && group.tabs.length > 1) {
+                    try { tabs.restoreState(group.tabs); }    // re-add this dev window's own tabs
+                    catch (e) { Zotero.debug("[Weavero] dev restore err: " + e); }
+                } else {
+                    try {
+                        const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+                        if (cv && typeof cv.selectLibrary === "function") {
+                            cv.selectLibrary(Zotero.Libraries.userLibraryID);
+                        }
+                    } catch (e) {}
+                }
+            } catch (e) { Zotero.debug("[Weavero] _wvInitDevMainWindow err: " + e); }
+        };
+        const settle = () => {
+            if (done) return;
+            ticks++;
+            let n = -1;
+            try { n = win.Zotero_Tabs ? win.Zotero_Tabs.getState().length : -1; } catch (e) {}
+            if (n === lastCount) stableTicks++; else { stableTicks = 0; lastCount = n; }
+            // Stable for ~2 ticks → native restore done; cap at ~3s as a backstop.
+            if (stableTicks >= 2 || ticks >= 15) { finish(); return; }
+            try { win.setTimeout(settle, 200); } catch (e) { finish(); }
+        };
+        try { win.setTimeout(settle, 150); } catch (e) { finish(); }
+    }
+
+    // ---- Unified Weavero session store (Phase 1: dev main windows) --------
+    // One Weavero-owned store + recreation path for non-primary managed
+    // windows. Phase 1 covers dev main windows (spawned via the hidden
+    // devNewMainWindow feature); separate reader windows keep their own
+    // persistence (reader-tab-windows.json) until Phase 2 folds them in here.
+    // Store: <data dir>/weavero/session.json, v3 = { windows: [ {kind, tabs} ] }.
+
+    _wvSessionStorePath() {
+        return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "session.json");
+    }
+
+    /** Sync snapshot of every currently-open dev main window. Stores each
+     *  window's full `Zotero_Tabs.getState()` (same shape Zotero's own pane
+     *  session uses), so restore round-trips via `Zotero_Tabs.restoreState`.
+     *  Cheap + synchronous → safe to call from the quit observer. */
+    _wvSessionCaptureDevWindows() {
+        const groups: any[] = [];
+        try {
+            const en = Services.wm.getEnumerator("navigator:browser");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (!w || !w._wvManagedWindow) continue;
+                let tabs = null;
+                try { tabs = w.Zotero_Tabs && w.Zotero_Tabs.getState(); } catch (e) {}
+                if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
+                groups.push({ kind: "main-dev", tabs });
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvSessionCaptureDevWindows err: " + e); }
+        return groups;
+    }
+
+    /** Issue an atomic write of the store doc (chained so writes serialise). */
+    _wvSessionWrite(doc) {
+        try {
+            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+            const path = this._wvSessionStorePath();
+            this._wvSessionWriteChain = (this._wvSessionWriteChain || Promise.resolve())
+                .then(async () => {
+                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                    await IOUtils.writeUTF8(path, JSON.stringify(doc, null, 2), { tmpPath: path + ".tmp" });
+                })
+                .catch((e: any) => Zotero.debug("[Weavero] _wvSessionWrite err: " + e));
+            return this._wvSessionWriteChain;
+        } catch (e) { Zotero.debug("[Weavero] _wvSessionWrite err: " + e); }
+    }
+
+    /** Synchronous capture + issue write. Safe from `quit-application-granted`:
+     *  capture is sync; the IOUtils write is flushed by Gecko's profile-before-
+     *  change I/O barrier as long as it's *issued* here (no awaits before it). */
+    _wvSessionSaveSync() {
+        // Unified doc: dev main windows + reader windows in one file, captured
+        // together on every save so neither path clobbers the other's entries.
+        this._wvSessionWrite({ version: 4, windows: [
+            ...this._wvSessionCaptureDevWindows(),
+            ...this._wvSessionCaptureReaderWindows(),
+        ] });
+    }
+
+    /** Debounced save — coalesces churn (e.g. closing a dev window). */
+    _wvSessionSaveDebounced() {
+        try {
+            const win = Zotero.getMainWindow();
+            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const clearT = (win && win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
+            if (this._wvSessionSaveTimer) { try { clearT(this._wvSessionSaveTimer); } catch (e) {} }
+            this._wvSessionSaveTimer = setT(() => {
+                this._wvSessionSaveTimer = null;
+                try { this._wvSessionSaveSync(); } catch (e) {}
+            }, 400);
+        } catch (e) { try { this._wvSessionSaveSync(); } catch (e2) {} }
+    }
+
+    /** Read + parse the store; returns the windows array (empty on missing). */
+    async _wvSessionLoad() {
+        try {
+            const text: any = await Zotero.File.getContentsAsync(this._wvSessionStorePath());
+            const doc = JSON.parse(text);
+            if (doc && Array.isArray(doc.windows)) return doc.windows;
+        } catch (e) { /* missing/unreadable → none */ }
+        return [];
+    }
+
+    /** Recreate previously-open dev main windows from the store, gated by the
+     *  hidden prefs (`devNewMainWindow` on AND `devSessionAutoReopen` ≠ false).
+     *  Queues the saved groups and spawns windows one at a time, chained off
+     *  each window's load (no timing races); Weavero owning the recreation is
+     *  what resolves window↔group identity, Firefox-style. */
+    async _wvSessionRestoreDevWindows() {
+        try {
+            if (this._wvSessionDevRestored) return;
+            this._wvSessionDevRestored = true;
+            // Reload-safe guard: if any managed window is ALREADY open, this is
+            // a plugin hot-reload (windows persist), not a cold start — the
+            // instance flag above was reset by the reload, so we check the live
+            // windows instead. Don't re-spawn windows that are already there.
+            try {
+                const en = Services.wm.getEnumerator("navigator:browser");
+                while (en.hasMoreElements()) { if ((en.getNext() as any)._wvManagedWindow) return; }
+            } catch (e) {}
+            let featureOn = false;
+            try { featureOn = !!Zotero.Prefs.get("weavero.devNewMainWindow"); } catch (e) {}
+            if (!featureOn) return;
+            let auto = true;
+            try { const v = Zotero.Prefs.get("weavero.devSessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}
+            if (!auto) return;
+            const groups = (await this._wvSessionLoad())
+                .filter((g: any) => g && g.kind === "main-dev" && g.tabs && g.tabs.length > 1);
+            if (!groups.length) return;
+            this._wvDevSpawnQueue = groups.slice();
+            this._wvSpawnNextDevWindow();
+        } catch (e) { Zotero.debug("[Weavero] _wvSessionRestoreDevWindows err: " + e); }
+    }
+
+    /** Spawn the next queued dev window. Its `onMainWindowLoad` consumes one
+     *  queued group and (if more remain) chains the next spawn. */
+    _wvSpawnNextDevWindow() {
+        try {
+            if (!this._wvDevSpawnQueue || !this._wvDevSpawnQueue.length) return;
+            this._wvPendingDevWindow = true;
+            (Zotero as any).openMainWindow();
+        } catch (e) { Zotero.debug("[Weavero] _wvSpawnNextDevWindow err: " + e); }
+    }
+
+    /** Register a `quit-application-granted` observer that synchronously
+     *  captures the open dev windows and issues the store write — the
+     *  authoritative final save (the debounced ones may not flush at quit).
+     *  Same hook + timing Zotero's own `Session.save` relies on. */
+    _wvSessionRegisterQuitFlush() {
+        try {
+            if (this._wvSessionQuitObserver) return;
+            const self = this;
+            const obs = { observe() { try { self._wvSessionSaveSync(); } catch (e) {} } };
+            this._wvSessionQuitObserver = obs;
+            Services.obs.addObserver(obs, "quit-application-granted", false);
+        } catch (e) { Zotero.debug("[Weavero] _wvSessionRegisterQuitFlush err: " + e); }
+    }
+
+    _wvSessionUnregisterQuitFlush() {
+        try {
+            if (this._wvSessionQuitObserver) {
+                Services.obs.removeObserver(this._wvSessionQuitObserver, "quit-application-granted");
+                this._wvSessionQuitObserver = null;
+            }
+        } catch (e) {}
+    }
+
     _teardownTabBarLibraryDecoration(win) {
         if (!win) return;
         const doc = win.document;

@@ -2435,6 +2435,19 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
+        // Dev-only "New Main Window" entry — hidden behind the
+        // `weavero.devNewMainWindow` pref (default off; not in prefs.html).
+        this._registerDevNewWindowMenu();
+        // Unified Weavero session store (Phase 1): flush dev-window state on
+        // quit, and once the UI is ready re-open the dev windows that were
+        // open last time (gated by devNewMainWindow + devSessionAutoReopen).
+        try { this._wvSessionRegisterQuitFlush(); } catch (e) {}
+        try {
+            (Zotero as any).uiReadyPromise
+                .then(() => { try { this._wvSessionRestoreDevWindows(); } catch (e) {} })
+                .then(() => { try { this._wvSessionRestoreOrphanReaderWindows(); } catch (e) {} })
+                .catch(() => {});
+        } catch (e) {}
         // PDF Thumbnails right-click menu — "Add Bookmark to This Page"
         // and "Copy Link to This Page" via the Zotero.Reader plugin API.
         // One global registration covers every open reader (the hook is
@@ -3146,6 +3159,33 @@ class WeaveroPlugin {
      *  is idempotent. */
     onMainWindowLoad(_window) {
         try {
+            // Weavero managed window: a window spawned by the dev "New Main
+            // Window" command (or by session-restore) is tagged `_wvManagedWindow`
+            // — a Weavero-managed peer, as opposed to the untagged oldest
+            // "anchor" window that Zotero restores natively. The tag (a) hides
+            // the "New Main Window" menu entry inside it and (b) marks it for
+            // capture into Weavero's own store. It then either restores its
+            // saved tab group (startup restore) or starts clean — library tab
+            // only (manual new window). No pane relabel: Zotero already restores
+            // only the oldest pane (the anchor), so managed windows are skipped
+            // for free; Weavero recreates them itself.
+            try {
+                if (this._wvPendingDevWindow && _window && !_window._wvManagedWindow) {
+                    this._wvPendingDevWindow = false;
+                    _window._wvManagedWindow = true;
+                    // Restore case: pull the next queued group. Manual case:
+                    // queue is empty → group is null → clean start.
+                    let group = null;
+                    if (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length) {
+                        group = this._wvDevSpawnQueue.shift();
+                    }
+                    this._wvInitDevMainWindow(_window, group);
+                    // Chain the next queued dev window, if any.
+                    if (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length) {
+                        try { this._wvSpawnNextDevWindow(); } catch (e) {}
+                    }
+                }
+            } catch (e) {}
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();
@@ -3233,6 +3273,28 @@ class WeaveroPlugin {
      *  reader event listeners etc. survive across windows. */
     onMainWindowUnload(_window) {
         try {
+            // Window-close upkeep, only when managed windows are in play:
+            //  • re-anchor — if the closing window was the anchor, the new
+            //    oldest window must be promoted (untagged) so Zotero keeps
+            //    restoring the anchor (`_wvNormalizeAnchor`);
+            //  • re-save — drop the closed window from the store.
+            // Deferred so the closing window has left the window mediator first.
+            try {
+                let managedInPlay = !!(_window && _window._wvManagedWindow);
+                if (!managedInPlay) {
+                    const en = Services.wm.getEnumerator("navigator:browser");
+                    while (en.hasMoreElements()) {
+                        const w: any = en.getNext();
+                        if (w !== _window && w._wvManagedWindow) { managedInPlay = true; break; }
+                    }
+                }
+                if (managedInPlay) {
+                    setTimeout(() => {
+                        try { this._wvNormalizeAnchor(); } catch (e) {}
+                        try { this._wvSessionSaveDebounced(); } catch (e) {}
+                    }, 50);
+                }
+            } catch (e) {}
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();
@@ -3379,6 +3441,8 @@ class WeaveroPlugin {
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
         this._unregisterPinTabMenu();
+        this._unregisterDevNewWindowMenu();
+        try { this._wvSessionUnregisterQuitFlush(); } catch (e) {}
         try { this._teardownThumbnailContextMenu(); } catch (e) {}
         this._teardownNoteWindowListener();
         try { this._teardownUpdateWindowListener(); } catch (e) {}

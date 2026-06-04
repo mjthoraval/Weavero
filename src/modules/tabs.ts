@@ -1729,6 +1729,82 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    // ---- Per-window items-tree column isolation (interim) ------------------
+    // PROBLEM: Zotero persists items-tree column layout to ONE file
+    // (treePrefs.json) keyed by the tree's id ("item-tree-main"), shared by
+    // every main window — and the tree RE-READS it on every view/tab switch
+    // (`_loadColumnPrefsFromFile` in `setId`). So two windows clobber each
+    // other's columns, live.
+    //
+    // FIX (interim): for MANAGED (non-anchor) windows only, re-point the tree's
+    // column file I/O to a per-window key so each window keeps its own layout.
+    // The anchor keeps "item-tree-main" (native, works without Weavero). We
+    // never touch `this.id` (used elsewhere) — only the two file methods — and
+    // writes only set a NEW key (atomic, all other keys preserved), so the
+    // primary window's columns can't be affected.
+    //
+    // ⚠ THE SEAM: when library tabs become first-class tabs (multiple per
+    // window), this moves to a per-TAB key in Weavero's own store — change it
+    // here. Session-scoped today (runtime seq); not persisted per-window across
+    // restarts yet.
+    _wvScheduleApplyPerWindowColumns(win) {
+        let tries = 0;
+        const tick = () => {
+            try {
+                if (!win || win.closed) return;
+                const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
+                if (iv) { this._wvApplyPerWindowColumns(win); return; }
+                if (++tries >= 20) return;          // give up after ~6s
+                win.setTimeout(tick, 300);
+            } catch (e) {}
+        };
+        try { win.setTimeout(tick, 300); } catch (e) {}
+    }
+
+    async _wvApplyPerWindowColumns(win) {
+        try {
+            if (!win || !win._wvManagedWindow) return;
+            const iv: any = win.ZoteroPane && win.ZoteroPane.itemsView;
+            if (!iv || iv._wvColIsolated) return;
+            if (!iv.props || !iv.props.columnPicker) return;   // no column persistence to isolate
+            iv._wvColIsolated = true;                          // guard re-entry across awaits
+            // Let the tree finish its initial (shared-key) load so _columnPrefs
+            // holds the columns it's currently showing, before we seed our key.
+            try { if (iv._sortContextReadyPromise) await iv._sortContextReadyPromise; } catch (e) {}
+            const origId = iv.id;
+            const seq = (this._wvColSeq = (this._wvColSeq || 0) + 1);
+            const key = origId + "::wv" + seq;
+            const path = PathUtils.join((Zotero as any).Profile.dir, "treePrefs.json");
+            iv._wvColKey = key;
+            iv._loadColumnPrefsFromFile = async function () {
+                try {
+                    const text: any = await Zotero.File.getContentsAsync(path);
+                    const persist = JSON.parse(text);
+                    let prefs = persist[key];
+                    // Seed from the shared layout the first time (before our key exists).
+                    if (!prefs || !Object.keys(prefs).length) prefs = persist[origId] || persist[origId + "-default"];
+                    this._columnPrefs = prefs || {};
+                } catch (e) { this._columnPrefs = {}; }
+            };
+            iv._writeColumnPrefsToFile = async function (force) {
+                const self = this;
+                const writeToFile = async () => {
+                    let persist: any;
+                    try { const t: any = await Zotero.File.getContentsAsync(path); persist = JSON.parse(t); } catch (e) { persist = {}; }
+                    persist[key] = self._columnPrefs;            // only our key; everything else preserved
+                    return Zotero.File.putContentsAsync(path, JSON.stringify(persist));   // atomic (tmpPath) internally
+                };
+                if (this._wvColWriteTimer) { try { clearTimeout(this._wvColWriteTimer); } catch (e) {} }
+                if (force) return writeToFile();
+                this._wvColWriteTimer = setTimeout(writeToFile, 60000);
+            };
+            // Seed our key with the columns the window currently shows, so future
+            // re-reads use the isolated key instead of the shared fallback.
+            try { await iv._writeColumnPrefsToFile(true); } catch (e) {}
+            Zotero.debug("[Weavero] per-window items-tree columns isolated under " + key);
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowColumns err: " + e); }
+    }
+
     _teardownTabBarLibraryDecoration(win) {
         if (!win) return;
         const doc = win.document;

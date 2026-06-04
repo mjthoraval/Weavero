@@ -3180,6 +3180,9 @@ class WeaveroPlugin {
                         group = this._wvDevSpawnQueue.shift();
                     }
                     this._wvInitDevMainWindow(_window, group);
+                    // Give this managed window its own items-tree column layout
+                    // (else it shares/clobbers the primary's via treePrefs.json).
+                    try { this._wvScheduleApplyPerWindowColumns(_window); } catch (e) {}
                     // Chain the next queued dev window, if any.
                     if (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length) {
                         try { this._wvSpawnNextDevWindow(); } catch (e) {}

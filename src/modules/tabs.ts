@@ -1496,7 +1496,10 @@ class _TabsMixin {
                             // start (library tab only) instead of mirroring the
                             // shared session.
                             const plugin = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                            if (plugin) plugin._wvPendingDevWindow = true;
+                            if (plugin) {
+                                plugin._wvPendingDevWindow = true;
+                                plugin._wvClearSessionPaneState();   // open clean — no tab flash
+                            }
                             (Zotero as any).openMainWindow();
                         }
                         catch (e) { Zotero.debug("[Weavero] dev openMainWindow err: " + e); }
@@ -1706,8 +1709,44 @@ class _TabsMixin {
         try {
             if (!this._wvDevSpawnQueue || !this._wvDevSpawnQueue.length) return;
             this._wvPendingDevWindow = true;
+            this._wvClearSessionPaneState();        // open clean — no flash of the original's tabs
             (Zotero as any).openMainWindow();
         } catch (e) { Zotero.debug("[Weavero] _wvSpawnNextDevWindow err: " + e); }
+    }
+
+    /** Temporarily drop the saved 'pane' (main-window) entries from
+     *  `Zotero.Session.state` so a window we're about to open doesn't restore —
+     *  and briefly flash — the original window's tabs before Weavero clears them.
+     *  Restored once the spawn run finishes (`_wvRestoreSessionPaneState`, from
+     *  onMainWindowLoad), with a safety timeout in case that never fires. The
+     *  global state self-heals on the next `Session.save` regardless. Idempotent;
+     *  'reader' entries are left intact. */
+    _wvClearSessionPaneState() {
+        try {
+            if (this._wvSavedPaneState) return;     // already cleared for this run
+            const full: any = Zotero.Session.state.windows;
+            if (!Array.isArray(full)) return;
+            this._wvSavedPaneState = full;
+            Zotero.Session.state.windows = full.filter((w: any) => w && w.type !== "pane");
+            try {
+                this._wvPaneStateRestoreTimer = setTimeout(() => {
+                    try { this._wvRestoreSessionPaneState(); } catch (e) {}
+                }, 8000);
+            } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvClearSessionPaneState err: " + e); }
+    }
+
+    _wvRestoreSessionPaneState() {
+        try {
+            if (this._wvPaneStateRestoreTimer) {
+                try { clearTimeout(this._wvPaneStateRestoreTimer); } catch (e) {}
+                this._wvPaneStateRestoreTimer = null;
+            }
+            if (this._wvSavedPaneState) {
+                try { Zotero.Session.state.windows = this._wvSavedPaneState; } catch (e) {}
+                this._wvSavedPaneState = null;
+            }
+        } catch (e) {}
     }
 
     /** Register a `quit-application-granted` observer that synchronously

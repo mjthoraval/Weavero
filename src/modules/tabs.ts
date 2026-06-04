@@ -1534,9 +1534,11 @@ class _TabsMixin {
             if (oldest && oldest._wvManagedWindow) {
                 delete oldest._wvManagedWindow;
                 Zotero.debug("[Weavero] promoted new oldest window to anchor");
-                // The promoted window is now the anchor → give it the indicator.
-                try { this._wvUpdateMainWindowIndicator(oldest); } catch (e) {}
             }
+            // Re-evaluate the main-window dot on all windows: the count just
+            // changed, so dropping to a single window hides the dot, and the
+            // promoted window (if any) gets re-evaluated as the new anchor.
+            try { this._wvUpdateAllMainWindowIndicators(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvNormalizeAnchor err: " + e); }
     }
 
@@ -1894,9 +1896,23 @@ class _TabsMixin {
                 (d.head || d.documentElement).appendChild(st);
             }
             if (st.textContent !== css) st.textContent = css;   // refresh if rule changed
-            // Anchor = the untagged window; managed windows are tagged.
-            d.documentElement.classList.toggle("wv-anchor-window", !win._wvManagedWindow);
+            // Show the dot only when there's MORE THAN ONE main window — with a
+            // single window there's no "which is the main one?" ambiguity. Anchor
+            // = the untagged window; managed windows are tagged.
+            let multi = false;
+            try { multi = (Zotero.getMainWindows ? Zotero.getMainWindows().length : 1) > 1; } catch (e) {}
+            d.documentElement.classList.toggle("wv-anchor-window", multi && !win._wvManagedWindow);
         } catch (e) { Zotero.debug("[Weavero] _wvUpdateMainWindowIndicator err: " + e); }
+    }
+
+    /** Re-evaluate the main-window dot on EVERY window. Call whenever the window
+     *  count changes (open/close), since going 1→2 windows should reveal the dot
+     *  on the anchor and 2→1 should hide it. */
+    _wvUpdateAllMainWindowIndicators() {
+        try {
+            const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
+            for (const w of wins) { try { this._wvUpdateMainWindowIndicator(w); } catch (e) {} }
+        } catch (e) {}
     }
 
     _teardownTabBarLibraryDecoration(win) {

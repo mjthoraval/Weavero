@@ -137,6 +137,33 @@ const _ATTACHMENT_FILE_TYPES_DATA = [
 class _FilterMixin {
     [k: string]: any;
 
+    // ---- Per-window filter state (Pattern C: de-singleton) -----------------
+    // These four hold window-DOM-tied filter state: the filter definition
+    // (`_filterState`), the chip-bar element (`_filterBar`), the toolbar `+`
+    // button (`_filterTbBtn`), and the items-tree MutationObserver
+    // (`_filterTreeObserver`). They used to be plain plugin-instance fields —
+    // ONE set shared by every main window — so opening a second main window
+    // re-pointed them at the new window and orphaned/clobbered the first
+    // window's bar + observer + filter (the long-standing multi-window gap).
+    //
+    // The whole module already resolves its target window via
+    // `Zotero.getMainWindow()` (the focused window) at every site, so we key
+    // these on that SAME window and stash the value in a per-window expando
+    // (`win._wvFilter*`). With a single main window — the case every shipping
+    // user is in — `getMainWindow()` always returns that one window, so this is
+    // semantically identical to the old singleton (zero behaviour change). With
+    // several main windows each gets its own slot, so they no longer collide.
+    // Mixed onto WeaveroPlugin.prototype as accessors by the index.ts mixin
+    // (defineProperties preserves get/set; see the comment there).
+    get _filterState() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterState : this._wvFilterStateNoWin; }
+    set _filterState(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterState = v; else this._wvFilterStateNoWin = v; }
+    get _filterBar() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterBar : this._wvFilterBarNoWin; }
+    set _filterBar(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterBar = v; else this._wvFilterBarNoWin = v; }
+    get _filterTbBtn() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterTbBtn : this._wvFilterTbBtnNoWin; }
+    set _filterTbBtn(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterTbBtn = v; else this._wvFilterTbBtnNoWin = v; }
+    get _filterTreeObserver() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterTreeObserver : this._wvFilterTreeObserverNoWin; }
+    set _filterTreeObserver(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterTreeObserver = v; else this._wvFilterTreeObserverNoWin = v; }
+
     /** Does `item` (assumed to be an attachment) match the given
      *  attachment-file-type list?
      *

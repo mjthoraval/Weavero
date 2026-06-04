@@ -1723,31 +1723,21 @@ class _TabsMixin {
      *  'reader' entries are left intact. */
     _wvClearSessionPaneState() {
         try {
-            if (this._wvSavedPaneState) return;     // already cleared for this run
             const full: any = Zotero.Session.state.windows;
             if (!Array.isArray(full)) return;
-            this._wvSavedPaneState = full;
-            Zotero.Session.state.windows = full.filter((w: any) => w && w.type !== "pane");
-            try {
-                this._wvPaneStateRestoreTimer = setTimeout(() => {
-                    try { this._wvRestoreSessionPaneState(); } catch (e) {}
-                }, 8000);
-            } catch (e) {}
+            const filtered = full.filter((w: any) => w && w.type !== "pane");
+            if (filtered.length !== full.length) {
+                Zotero.Session.state.windows = filtered;
+                Zotero.debug("[Weavero] cleared " + (full.length - filtered.length)
+                    + " session pane entr(ies) for clean window open");
+            }
         } catch (e) { Zotero.debug("[Weavero] _wvClearSessionPaneState err: " + e); }
     }
 
-    _wvRestoreSessionPaneState() {
-        try {
-            if (this._wvPaneStateRestoreTimer) {
-                try { clearTimeout(this._wvPaneStateRestoreTimer); } catch (e) {}
-                this._wvPaneStateRestoreTimer = null;
-            }
-            if (this._wvSavedPaneState) {
-                try { Zotero.Session.state.windows = this._wvSavedPaneState; } catch (e) {}
-                this._wvSavedPaneState = null;
-            }
-        } catch (e) {}
-    }
+    /** Retained as a no-op: we no longer restore the cleared pane state (doing
+     *  so re-populated it before the new window read it → the tab flash). The
+     *  in-memory state self-heals on the next `Session.save`. */
+    _wvRestoreSessionPaneState() {}
 
     /** Register a `quit-application-granted` observer that synchronously
      *  captures the open dev windows and issues the store write — the

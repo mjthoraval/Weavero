@@ -3185,13 +3185,12 @@ class WeaveroPlugin {
                     // Give this managed window its own items-tree column layout
                     // (else it shares/clobbers the primary's via treePrefs.json).
                     try { this._wvScheduleApplyPerWindowColumns(_window); } catch (e) {}
-                    // Chain the next queued dev window, or — once the spawn run is
-                    // done — restore the session pane state we cleared to keep the
-                    // new window(s) from flashing the original's tabs.
+                    // Chain the next queued dev window, if any. (We do NOT restore
+                    // the cleared session pane state here — that re-populated it
+                    // before the new window read it → the flash. It self-heals on
+                    // the next Session.save.)
                     if (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length) {
                         try { this._wvSpawnNextDevWindow(); } catch (e) {}
-                    } else {
-                        try { this._wvRestoreSessionPaneState(); } catch (e) {}
                     }
                 }
             } catch (e) {}

@@ -1805,6 +1805,35 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowColumns err: " + e); }
     }
 
+    // ---- Context-pane cross-window leak guard ------------------------------
+    // Zotero's context-pane element reacts to the GLOBAL 'tab' Notifier and
+    // reads the tab TYPE from the event (`extraData[tabID].type`), never
+    // checking whether the tab belongs to THIS window. So selecting a reader
+    // tab in one window shows the context pane in EVERY window — including ones
+    // sitting on their library tab (→ library item pane + reader context pane
+    // both visible = "duplicated sidebar"). Fix: wrap `_handleTabSelect` per
+    // window to bail when the tab isn't one of this window's own tabs. No-op in
+    // single-window (every tab is local), so the anchor is unaffected with
+    // Weavero off. Applied to ALL main windows (the anchor leaks too).
+    _wvGuardContextPaneCrossWindow(win) {
+        try {
+            const cp: any = win && win.document && win.document.getElementById("zotero-context-pane-inner");
+            if (!cp || cp._wvCrossWindowGuarded || typeof cp._handleTabSelect !== "function") return;
+            const orig = cp._handleTabSelect.bind(cp);
+            cp._handleTabSelect = async function (action, type, ids, extraData) {
+                try {
+                    const tabID = ids && ids[0];
+                    if (tabID && win.Zotero_Tabs) {
+                        const found = win.Zotero_Tabs._getTab(tabID);
+                        if (!found || !found.tab) return;   // tab belongs to another window → ignore
+                    }
+                } catch (e) {}
+                return orig(action, type, ids, extraData);
+            };
+            cp._wvCrossWindowGuarded = true;
+        } catch (e) { Zotero.debug("[Weavero] _wvGuardContextPaneCrossWindow err: " + e); }
+    }
+
     _teardownTabBarLibraryDecoration(win) {
         if (!win) return;
         const doc = win.document;

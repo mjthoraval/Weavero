@@ -1765,7 +1765,73 @@ class WeaveroPlugin {
 
     // ---- Init / Destroy ---------------------------------------------------
 
+    /** Register Weavero's preference DEFAULTS on Zotero's default branch.
+     *  The settings pane uses native `<checkbox preference=…>` binding, which
+     *  renders a pref as UNCHECKED when it has no registered default — but
+     *  Weavero defaults most features ON (historically computed in JS via the
+     *  `_get*` getters). Registering the defaults here makes the native pane
+     *  reflect the real effective state. Idempotent (re-runs each startup);
+     *  the DEFAULT branch never overrides a user value, so existing user
+     *  toggles are untouched. Values MUST stay in sync with the `_get*`
+     *  getters' `=== undefined ? …` fallbacks. */
+    _wvRegisterDefaultPrefs() {
+        try {
+            const branch = (Services as any).prefs.getDefaultBranch("");
+            const P = "extensions.zotero.weavero.";
+            const ON = [
+                // Group masters
+                "enableLinksAndRelations", "enableVisualExtras", "enableFilters",
+                "enableBookmarks", "enableUriUtilities", "enableRelations",
+                // Display mode (true = Inline) + content sub-toggles
+                "inlineLinks",
+                "enableInlineUrls", "enableIconUrls", "enableCommentMarkdown",
+                "enableIconMarkdown", "enableIconAppLinks", "enableZoteroLinks",
+                "enableReaderViewIcons",
+                // Apply-to surfaces
+                "enableItemsList", "enableRightPane", "enableReaderSidebar",
+                "enableReaderView",
+                // URI utilities + relations
+                "enableCopyItemLink", "enableCopyCollectionLink",
+                "enableAddRelatedMenu", "enableChainBadge",
+                "enableOpenRelatedSubmenu", "enableLibrariesHighlight",
+                // Filters
+                "enableItemsTreeFilter", "enableSelectionTarget",
+                "enableTabsLibraryFilter", "enableTabsFileTypeFilter",
+                // Visual extras
+                "enableAnnotationsCountColumn", "enableTagsCountAuto",
+                "enableRelatedColumn", "enableGroupLibraryGlyph",
+                "enableAnnotationAddedBy", "enableAddedByColors",
+                // Compact title bar — master is OFF, but the per-window subs
+                // default ON (so enabling the master turns all three on).
+                "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
+                // Bookmarks
+                "enableLibraryBookmarks", "enableReaderBookmarks",
+                "showLibraryBookmarksInReader",
+                "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks",
+            ];
+            const OFF = [
+                "enableAppLinks", "enableAppLinksSkipConfirm", "enableNotes",
+                "compactTitleBar", "enableOpenExternalViewer",
+                "enableOutlineTextHighlight", "devNewMainWindow", "debug",
+                // Optional URL schemes — all opt-in
+                "enableMagnetScheme", "enableMailtoScheme", "enableSkypeScheme",
+                "enableSmsScheme", "enableSpotifyScheme", "enableTelScheme",
+                "enableDiscordScheme", "enableEvernoteScheme", "enableFigmaScheme",
+                "enableFileScheme", "enableFtpScheme", "enableMsteamsScheme",
+                "enableNotionScheme", "enableObsidianScheme", "enableSlackScheme",
+                "enableVscodeScheme", "enableZoomScheme",
+            ];
+            for (const n of ON) branch.setBoolPref(P + n, true);
+            for (const n of OFF) branch.setBoolPref(P + n, false);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvRegisterDefaultPrefs err: " + e);
+        }
+    }
+
     async init() {
+        // Register pref defaults FIRST so native settings-pane binding (and our
+        // own getters) see the right initial values.
+        try { this._wvRegisterDefaultPrefs(); } catch (e) {}
         // Warm the bookmarks store (file read) early so the dropdown is
         // populated by the time the user opens it. Fire-and-forget; the
         // cached promise dedupes with later callers.

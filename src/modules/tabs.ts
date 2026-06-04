@@ -1880,9 +1880,13 @@ class _TabsMixin {
             // Class/attribute-only selector (NO `html` element name): the main
             // window's root is XUL <window>, so a type selector like `html` is in
             // the wrong namespace and wouldn't match.
-            const css = `.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"] .tab-name::before{`
-                + `content:"";display:inline-block;width:6px;height:6px;margin-inline-end:5px;border-radius:50%;`
-                + `background:var(--color-accent,#4072e5);vertical-align:middle;flex:0 0 auto;}`;
+            // Dot at the RIGHT end of the library tab. `::after` on the flex
+            // `.tab` is its last flex item; the name grows (flex:1) and the close
+            // button is display:none on the library tab, so this lands at the far
+            // right. align-self:center keeps it vertically centered.
+            const css = `.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
+                + `content:"";display:inline-block;width:6px;height:6px;margin-inline-start:6px;border-radius:50%;`
+                + `background:var(--color-accent,#4072e5);align-self:center;flex:0 0 auto;}`;
             let st: any = d.getElementById("wv-anchor-indicator-style");
             if (!st) {
                 st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");

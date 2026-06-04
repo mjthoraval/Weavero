@@ -1447,10 +1447,10 @@ class _TabsMixin {
         this._pinTabMenuID = null;
     }
 
-    /** Dev-only: add a "New Main Window" entry to the tab context menu,
-     *  gated behind the hidden pref `weavero.devNewMainWindow` (default
-     *  OFF, and deliberately NOT surfaced in prefs.html so users never
-     *  see it). Lets the developer spin up a second *native* main window
+    /** Add a "New Main Window" entry to the tab context menu, gated on the
+     *  pref `weavero.devNewMainWindow` (default OFF — exposed in prefs.html
+     *  under "Multiple main windows", flagged experimental). Lets the user
+     *  spin up a second *native* main window
      *  via `Zotero.openMainWindow()` to experiment with the multi-main-
      *  window approach (a full library window owns its own Zotero_Tabs /
      *  ZoteroContextPane / ZoteroPane). Zotero itself considers >1 main
@@ -1673,7 +1673,8 @@ class _TabsMixin {
     }
 
     /** Recreate previously-open dev main windows from the store, gated by the
-     *  hidden prefs (`devNewMainWindow` on AND `devSessionAutoReopen` ≠ false).
+     *  prefs (`devNewMainWindow` on — see prefs.html — AND the still-hidden
+     *  `devSessionAutoReopen` ≠ false).
      *  Queues the saved groups and spawns windows one at a time, chained off
      *  each window's load (no timing races); Weavero owning the recreation is
      *  what resolves window↔group identity, Firefox-style. */

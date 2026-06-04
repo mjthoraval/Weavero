@@ -2435,8 +2435,9 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
-        // Dev-only "New Main Window" entry — hidden behind the
-        // `weavero.devNewMainWindow` pref (default off; not in prefs.html).
+        // "New Main Window" entry — gated on the `weavero.devNewMainWindow`
+        // pref (exposed in prefs.html under "Multiple main windows"; default
+        // off — experimental).
         this._registerDevNewWindowMenu();
         // Unified Weavero session store (Phase 1): flush dev-window state on
         // quit, and once the UI is ready re-open the dev windows that were

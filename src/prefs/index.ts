@@ -205,6 +205,8 @@
         "enableOpenExternalViewer",
         // v0.11.5 — Reader outline (experimental, default off)
         "enableOutlineTextHighlight",
+        // v0.12.3 — Multiple main windows (experimental, default off)
+        "devNewMainWindow",
     ];
 
     // === Per-surface enable checkboxes ====================================
@@ -253,6 +255,7 @@
         "compactTitleBar",
         "enableOpenExternalViewer",
         "enableOutlineTextHighlight",
+        "devNewMainWindow",
         ...SCHEMES,
     ]);
     function readSurface(name) {

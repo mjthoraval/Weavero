@@ -157,7 +157,7 @@
       margin-top: 8px;
     }
     .wv-group-intro {
-      margin: -4px 0 12px;
+      margin: 4px 0 12px;
       font-size: 12px;
       opacity: 0.7;
     }
@@ -264,17 +264,13 @@
       }
     }
     /* "Master card" — the accent-blue tint + left border marks a
-       master toggle as a meta-control, tying back to the active-tab
-       underline and setting it apart from the per-feature toggles
-       below. The card spans the section's description line + the
-       toggle row, mirroring the tab master (per-tab `.wv-group-intro`
-       description + toggle). Applied to EVERY .wv-master-block — the
-       one at the top of each tab AND the nested section masters (URI
-       utilities, Relations, …) — so a section's master is as visually
-       prominent as the tab's. The section TITLE stays above the card
-       as plain text — the same role the tab-bar label plays for a tab
-       master. */
-    .wv-tab-panel > .wv-group-intro,
+       master toggle as a meta-control, setting it apart from the
+       per-feature toggles below. The card spans the section's
+       description line + the toggle row. Applied to the NESTED section
+       masters (URI utilities, Relations, Hide title bar) that still sit
+       inside a group body as .wv-master-block rows — the four top-level
+       GROUP masters now live in their <summary> instead. The section
+       TITLE stays above the card as plain text. */
     .wv-master-block > .wv-section-hint,
     .wv-master-block > label.wv-surface-row {
       background: rgba(64, 128, 255, 0.07);
@@ -282,16 +278,7 @@
       padding-right: 14px;
       border-left: 3px solid rgb(64, 128, 255);
     }
-    /* Card top — the description line (a `.wv-group-intro` for a tab
-       master, a `.wv-section-hint` for a section master). */
-    .wv-tab-panel > .wv-group-intro {
-      padding-top: 12px;
-      padding-bottom: 6px;
-      margin: 0;
-      font-size: 12.5px;
-      opacity: 0.95;
-      border-radius: 6px 6px 0 0;
-    }
+    /* Card top — the section master's description line. */
     .wv-master-block > .wv-section-hint {
       margin: 0;
       padding-top: 9px;
@@ -344,110 +331,64 @@
       margin-left: 26px;
     }
 
-    /* ==== Tabs ====================================================
-       Pure-CSS tabs via the radio + label trick. Three hidden
-       <input type="radio" name="wv-tab"> at the top of <body>; the
-       .wv-tab-nav <label> row below them flips the radio on click;
-       the .wv-tab-panel <section>s use the general-sibling
-       combinator to show only the panel matching the checked
-       radio. No JS needed; works back to Firefox 4. */
-    input[name="wv-tab"] {
-      display: none;
-    }
-    .wv-tab-nav {
-      display: flex;
-      gap: 2px;
-      margin: 4px 0 16px;
-      border-bottom: 1px solid rgba(127, 127, 127, 0.35);
-    }
-    /* Each tab is a div containing a small status dot + a label.
-       The dot is purely visual (CSS reads the matching tab-master's
-       checked state via :has() and tints accordingly). The actual
-       master toggle lives inside the tab panel as the first row. */
-    /* Underline-style tabs (Material 3 / GitHub / Linear convention).
-       Inactive tabs are text-only with the status dot; the active
-       tab gets a thick accent-blue bottom border + matching text
-       colour. The .wv-tab-nav already supplies the 1px divider line
-       below the row of tabs; the active item's box-shadow overlays
-       a 3px segment on top of it. */
-    .wv-tab-item {
+    /* ==== Feature groups ==========================================
+       Each top-level group is a <details class="wv-group"> collapsed by
+       default; its master toggle lives in the <summary>. A flat,
+       scrollable stack (no tabs) so Zotero's Settings search can hide
+       the non-matching groups and highlight matches. Zotero's search
+       highlights a match but never opens a <details> itself, so a
+       collapsed group holding a match is auto-expanded by the search
+       hook in prefs/index.ts. */
+    details.wv-group { margin: 0; }
+    summary.wv-group-summary {
       display: flex;
       align-items: center;
-      gap: 7px;
-      padding: 8px 14px 10px;
-      margin-bottom: -1px;
+      gap: 8px;
       cursor: pointer;
-      font-size: 13.5px;
-      font-weight: 600;
-      /* Inactive tabs are slightly muted so the active tab's full-
-         strength text + accent underline both stand out (GitHub /
-         Linear / Notion convention). */
-      opacity: 0.75;
-      transition: background 0.12s, opacity 0.12s, box-shadow 0.12s;
+      list-style: none;
+      font-weight: 700;
+      font-size: 16px;
+      margin: 26px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(127, 127, 127, 0.25);
     }
-    .wv-tab-item:hover {
-      background: rgba(127, 127, 127, 0.08);
-      opacity: 1;
+    details.wv-group:first-of-type > summary.wv-group-summary {
+      margin-top: 8px;
     }
-    /* Status dot — filled green when the matching master pref is
-       on; hollow grey outline when off. (Red was misleading — red
-       is universally an error / destructive signal.) */
-    .wv-tab-status {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: #4caf50;
-      border: 1.5px solid transparent;
-      box-sizing: border-box;
+    /* Custom disclosure triangle (hide both native markers — see the
+       .wv-summary note above for why two rules are needed). */
+    summary.wv-group-summary::-webkit-details-marker { display: none; }
+    summary.wv-group-summary::before {
+      content: "\25B8";  /* ▸ */
+      display: inline-block;
+      font-size: 13px;
+      opacity: 0.7;
       flex-shrink: 0;
-      transition: background 0.15s, border-color 0.15s;
+      transition: transform 0.12s ease;
     }
-    body:has(input[value="enableLinksAndRelations"]:not(:checked)) .wv-tab-status[data-master="enableLinksAndRelations"],
-    body:has(input[value="enableFilters"]:not(:checked)) .wv-tab-status[data-master="enableFilters"],
-    body:has(input[value="enableBookmarks"]:not(:checked)) .wv-tab-status[data-master="enableBookmarks"],
-    body:has(input[value="enableVisualExtras"]:not(:checked)) .wv-tab-status[data-master="enableVisualExtras"] {
-      background: transparent;
-      border-color: rgba(127, 127, 127, 0.6);
+    details.wv-group[open] > summary.wv-group-summary::before {
+      transform: rotate(90deg);
     }
-    /* Active-tab styling — accent-blue underline + full-strength
-       text (no colour change). Box-shadow inset places a 3px line
-       at the bottom of the item so it visually sits on top of the
-       .wv-tab-nav divider line without needing margin tricks.
-       Keeping the text at body colour preserves readability —
-       saturated blue text at 13px on dark backgrounds tests at the
-       WCAG AA contrast boundary and suffers from chromatic aberration
-       on LCD subpixels (GitHub / Linear / Notion all converged on
-       the underline-only-coloured pattern for this reason). */
-    #wv-tab-links:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-links"],
-    #wv-tab-filters:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-filters"],
-    #wv-tab-bookmarks:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-bookmarks"],
-    #wv-tab-extras:checked ~ .wv-tab-nav .wv-tab-item[for="wv-tab-extras"] {
-      box-shadow: inset 0 -3px 0 rgb(64, 128, 255);
-      opacity: 1;
-      /* No `background` override here — that lets the .wv-tab-item:hover
-         background apply on the active tab too, matching GitHub's
-         behaviour where hovering an already-selected tab still shows
-         the wash. */
+    /* The master checkbox sits in the summary: clicking IT toggles the
+       pref (intercepted in prefs/index.ts so it doesn't also open/close
+       the group), clicking the NAME toggles the disclosure. */
+    summary.wv-group-summary input.wv-group-master {
+      margin: 0;
+      cursor: pointer;
+      flex-shrink: 0;
     }
-    /* Status dot stays visible on the active tab — with the
-       background now transparent (active state is signalled by the
-       blue underline + blue text), the green/hollow dot is legible
-       and gives the user a quick scan of "is this group on?"
-       without having to glance at every tab header in turn. */
-
-    .wv-tab-panel {
-      display: none;
+    .wv-group-name { font-weight: 700; }
+    /* Whole-group grey-out — when a group's summary master is unchecked,
+       fade + disable its body. Scoped to the group's OWN direct master +
+       direct .wv-children so the nested .wv-master-block grey-out above
+       doesn't fight it. */
+    details.wv-group:has(> summary > input.wv-group-master:not(:checked)) > .wv-children {
+      opacity: 0.4;
+      pointer-events: none;
     }
-    #wv-tab-links:checked ~ .wv-tab-panel[data-tab="links"],
-    #wv-tab-filters:checked ~ .wv-tab-panel[data-tab="filters"],
-    #wv-tab-bookmarks:checked ~ .wv-tab-panel[data-tab="bookmarks"],
-    #wv-tab-extras:checked ~ .wv-tab-panel[data-tab="extras"] {
-      display: block;
-    }
-    /* The first .wv-section-title inside each tab needs a tighter
-       top margin since it's no longer following a group header. */
-    .wv-tab-panel > .wv-section-title:first-child,
-    .wv-tab-panel > .wv-section-hint:first-child + .wv-section-title {
+    /* Trim the top margin of whatever element opens a group body so it
+       sits snug under the group summary. */
+    details.wv-group > .wv-children > :first-child {
       margin-top: 0;
     }
     /* Same look as .wv-section-hint, applied to inline descriptions
@@ -507,40 +448,13 @@
 <body>
   <p class="wv-section-hint" style="margin: 0 0 14px;">Clickable links in comments and notes + Filters in the items list and tabs.</p>
 
-  <input type="radio" name="wv-tab" id="wv-tab-links" checked="checked" />
-  <input type="radio" name="wv-tab" id="wv-tab-filters" />
-  <input type="radio" name="wv-tab" id="wv-tab-bookmarks" />
-  <input type="radio" name="wv-tab" id="wv-tab-extras" />
-
-  <div class="wv-tab-nav">
-    <label class="wv-tab-item" for="wv-tab-links">
-      <span class="wv-tab-status" data-master="enableLinksAndRelations" title="Status of the Enhanced Links and Relations master toggle (green = on, grey = off). Toggle inside the tab."></span>
-      <span class="wv-tab-name">Enhanced Links and Relations</span>
-    </label>
-    <label class="wv-tab-item" for="wv-tab-filters">
-      <span class="wv-tab-status" data-master="enableFilters" title="Status of the Filters master toggle (green = on, grey = off). Toggle inside the tab."></span>
-      <span class="wv-tab-name">Filters</span>
-    </label>
-    <label class="wv-tab-item" for="wv-tab-bookmarks">
-      <span class="wv-tab-status" data-master="enableBookmarks" title="Status of the Bookmarks master toggle (green = on, grey = off). Toggle inside the tab."></span>
-      <span class="wv-tab-name">Bookmarks</span>
-    </label>
-    <label class="wv-tab-item" for="wv-tab-extras">
-      <span class="wv-tab-status" data-master="enableVisualExtras" title="Status of the Visual extras master toggle (green = on, grey = off). Toggle inside the tab."></span>
-      <span class="wv-tab-name">Extras</span>
-    </label>
-  </div>
-
-  <section class="wv-tab-panel" data-tab="links">
-  <p class="wv-group-intro" style="margin-top:0">In text support for clickable URIs and markdown + Icons to identify and access related items to annotations + Right-click utilities to copy Zotero links and add related items.</p>
-  <div class="wv-master-block">
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableLinksAndRelations" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable Enhanced Links and Relations</span>&#160;<span class="wv-desc">&#8212; Master toggle for everything in this tab.</span></p>
-      </div>
-    </label>
-    <div class="wv-children">
+  <details class="wv-group" data-group="links">
+  <summary class="wv-group-summary">
+    <input type="checkbox" name="wv-feature" value="enableLinksAndRelations" class="wv-group-master" aria-label="Enable Enhanced Links and Relations" />
+    <span class="wv-group-name">Enhanced Links and Relations</span>
+  </summary>
+  <p class="wv-group-intro">In text support for clickable URIs and markdown + Icons to identify and access related items to annotations + Right-click utilities to copy Zotero links and add related items.</p>
+  <div class="wv-children">
   <p class="wv-section-title" style="margin-top:0">Display Mode</p>
   <p class="wv-section-hint">How links and markdown appear in annotation comments and notes.</p>
 
@@ -750,20 +664,16 @@
   </div>
 
     </div>
-  </div>
   <p class="wv-section-hint" style="margin-top:18px">Supported markdown: <strong>**bold**</strong>, <em>*italic*</em>, <s>~~strike~~</s>, <code>`code`</code>, <code>[label](url)</code>.</p>
-  </section>
+  </details>
 
-  <section class="wv-tab-panel" data-tab="filters">
-  <p class="wv-group-intro" style="margin-top:0">Controls that hide, dim, or scope the visible set: the items-tree filter pane (the toolbar &#9662; button) and the per-library / file-type filters in the tabs menu.</p>
-  <div class="wv-master-block">
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableFilters" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable Filters</span>&#160;<span class="wv-desc">&#8212; Master toggle for everything in this tab.</span></p>
-      </div>
-    </label>
-    <div class="wv-children">
+  <details class="wv-group" data-group="filters">
+  <summary class="wv-group-summary">
+    <input type="checkbox" name="wv-feature" value="enableFilters" class="wv-group-master" aria-label="Enable Filters" />
+    <span class="wv-group-name">Filters</span>
+  </summary>
+  <p class="wv-group-intro">Controls that hide, dim, or scope the visible set: the items-tree filter pane (the toolbar &#9662; button) and the per-library / file-type filters in the tabs menu.</p>
+  <div class="wv-children">
 
     <div class="wv-surface-list">
 
@@ -798,20 +708,16 @@
     </div>
 
     </div>
-  </div>
-  </section>
+  </details>
 
-  <section class="wv-tab-panel" data-tab="bookmarks">
-  <p class="wv-group-intro" style="margin-top:0">Bookmarks across two scopes: a Bookmarks dropdown on the collections-pane toolbar for items / collections / searches, and a Bookmarks tab in the reader sidebar for in-document locations.</p>
+  <details class="wv-group" data-group="bookmarks">
+  <summary class="wv-group-summary">
+    <input type="checkbox" name="wv-feature" value="enableBookmarks" class="wv-group-master" aria-label="Enable Bookmarks" />
+    <span class="wv-group-name">Bookmarks</span>
+  </summary>
+  <p class="wv-group-intro">Bookmarks across two scopes: a Bookmarks dropdown on the collections-pane toolbar for items / collections / searches, and a Bookmarks tab in the reader sidebar for in-document locations.</p>
   <p class="wv-warning"><strong>Note:</strong>&#160;Bookmarks don&#8217;t sync across computers at the moment &#8212; they&#8217;re stored locally in <code>&lt;Zotero data dir&gt;/weavero/bookmarks.json</code>. (Zotero&#8217;s plugin-managed synced storage is in development; this will switch over once it ships.)</p>
-  <div class="wv-master-block">
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableBookmarks" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable Bookmarks</span>&#160;<span class="wv-desc">&#8212; Master toggle for both bookmark scopes below.</span></p>
-      </div>
-    </label>
-    <div class="wv-children">
+  <div class="wv-children">
 
     <p class="wv-subsection-title">Scopes</p>
     <div class="wv-surface-list">
@@ -864,19 +770,15 @@
     </div>
 
     </div>
-  </div>
-  </section>
+  </details>
 
-  <section class="wv-tab-panel" data-tab="extras">
-  <p class="wv-group-intro" style="margin-top:0">Smaller informational displays attached to existing Zotero UI: items-list badges and tab-strip glyphs.</p>
-  <div class="wv-master-block">
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableVisualExtras" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable Visual extras</span>&#160;<span class="wv-desc">&#8212; Master toggle for the visual extras below.</span></p>
-      </div>
-    </label>
-    <div class="wv-children">
+  <details class="wv-group" data-group="extras">
+  <summary class="wv-group-summary">
+    <input type="checkbox" name="wv-feature" value="enableVisualExtras" class="wv-group-master" aria-label="Enable Visual extras" />
+    <span class="wv-group-name">Extras</span>
+  </summary>
+  <p class="wv-group-intro">Smaller informational displays attached to existing Zotero UI: items-list badges and tab-strip glyphs.</p>
+  <div class="wv-children">
 
   <p class="wv-section-title" style="margin-top:8px">Items-tree columns</p>
   <p class="wv-section-hint">Icon-only columns, hidden by default &#8212; enable each from the column-picker (right-click the items-tree header).</p>
@@ -981,7 +883,6 @@
   </div>
 
     </div>
-  </div>
 
   <p class="wv-section-title">PDF reader outline</p>
   <p class="wv-section-hint">Experimental enhancement to Zotero&#8217;s PDF outline (the table of contents in the reader sidebar).</p>
@@ -1010,7 +911,7 @@
     </label>
 
   </div>
-  </section>
+  </details>
 
   <details class="wv-collapsible">
     <summary class="wv-section-title wv-summary">Debug</summary>

@@ -478,39 +478,70 @@
         return true;
     }
 
-    // === Active-tab persistence ============================================
-    // The three top-level tabs (Enhanced Links and Relations / Filters /
-    // Visual extras) are pure-CSS via radio inputs; reloading the prefs
-    // pane (e.g. after a plugin re-install during dev iteration) resets
-    // the radios to their HTML-default first tab. Persist the user's
-    // last-viewed tab to a pref so the pane reopens where they left off.
-    const TAB_PREF = "weavero.activeTab";
-    const TAB_IDS  = ["links", "filters", "extras"];
-    function bindTabs(doc) {
-        const radios = TAB_IDS
-            .map((id) => doc.getElementById("wv-tab-" + id))
-            .filter(Boolean);
-        if (radios.length !== TAB_IDS.length) return false;
-
-        // Restore the saved tab (default to "links").
-        let saved = "links";
-        try {
-            const v = Zotero.Prefs.get(TAB_PREF);
-            if (typeof v === "string" && TAB_IDS.indexOf(v) !== -1) saved = v;
-        } catch (e) {}
-        for (const r of radios as any[]) r.checked = (r.id === "wv-tab-" + saved);
-
-        for (const r of radios as any[]) {
-            if (r.dataset.wvTabBound) continue;
-            r.dataset.wvTabBound = "1";
-            r.addEventListener("change", () => {
-                if (!r.checked) return;
-                const id = (r.id || "").replace(/^wv-tab-/, "");
-                if (TAB_IDS.indexOf(id) === -1) return;
-                try { Zotero.Prefs.set(TAB_PREF, id); }
-                catch (e) { dbg("activeTab write err: " + e); }
+    // === Feature-group <details> ===========================================
+    // The four top-level groups are <details>; the group's master toggle
+    // lives in the <summary>. A click on that checkbox would also toggle the
+    // <details> open/closed (the summary's default action), so we intercept
+    // it: preventDefault cancels BOTH the disclosure toggle AND the
+    // checkbox's own toggle, then we flip the checkbox ourselves and fire a
+    // `change` so bindFeatures' listener writes the pref. Clicking the group
+    // NAME (not the checkbox) still toggles the disclosure as usual.
+    function bindGroupMasters(doc) {
+        const masters = Array.from(
+            doc.querySelectorAll("summary input.wv-group-master")) as any[];
+        if (!masters.length) return false;
+        for (const cb of masters) {
+            if (cb.dataset.wvMasterBound) continue;
+            cb.dataset.wvMasterBound = "1";
+            cb.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                cb.checked = !cb.checked;
+                try {
+                    const view: any = cb.ownerDocument && cb.ownerDocument.defaultView;
+                    cb.dispatchEvent(new view.Event("change", { bubbles: true }));
+                } catch (ex) { dbg("group master change err: " + ex); }
             });
         }
+        return true;
+    }
+
+    // === Settings-search auto-expand =======================================
+    // Zotero's pref search hides non-matching sections and highlights
+    // matches, but it never opens a <details> — so a match inside a
+    // collapsed group would stay invisible. While the Settings search box
+    // has text, force every Weavero group/collapsible open (Zotero hides the
+    // non-matching ones independently, so only the matching groups end up
+    // visible AND expanded); when the box is cleared, re-collapse the ones
+    // we opened. `document` here is the prefs WINDOW (the sandboxPrototype),
+    // so the search field is reachable directly; the pane lives in `doc`.
+    // Only depends on the search field existing — degrades to "click to
+    // expand" if Zotero ever renames it.
+    function bindSearchAutoExpand(doc) {
+        let searchField: any = null;
+        try { searchField = document.getElementById("prefs-search"); } catch (e) {}
+        if (!searchField) return false;
+        if (searchField._wvSearchBound) return true;
+        searchField._wvSearchBound = true;
+        const apply = () => {
+            try {
+                const active = !!(searchField.value
+                    && String(searchField.value).trim());
+                const items = doc.querySelectorAll(
+                    "details.wv-group, details.wv-collapsible");
+                for (const d of items as any) {
+                    if (active) {
+                        if (!d.open) { d.dataset.wvForcedOpen = "1"; d.open = true; }
+                    } else if (d.dataset.wvForcedOpen) {
+                        d.open = false;
+                        delete d.dataset.wvForcedOpen;
+                    }
+                }
+            } catch (e) { dbg("searchAutoExpand err: " + e); }
+        };
+        searchField.addEventListener("command", apply);
+        searchField.addEventListener("input", apply);
+        apply();   // sync now — the pane may mount with a search already typed
         return true;
     }
 
@@ -646,8 +677,9 @@
         if (doc && bind(doc)) {
             try { bindSurfaces(doc); } catch (e) { dbg("bindSurfaces err: " + e); }
             try { bindFeatures(doc); } catch (e) { dbg("bindFeatures err: " + e); }
+            try { bindGroupMasters(doc); } catch (e) { dbg("bindGroupMasters err: " + e); }
             try { bindSchemes(doc);  } catch (e) { dbg("bindSchemes err: " + e); }
-            try { bindTabs(doc);     } catch (e) { dbg("bindTabs err: " + e); }
+            try { bindSearchAutoExpand(doc); } catch (e) { dbg("bindSearchAutoExpand err: " + e); }
             try { bindContextMenu(doc); } catch (e) { dbg("bindContextMenu err: " + e); }
             try { bindIconSamples(doc); } catch (e) { dbg("bindIconSamples err: " + e); }
             dbg("bound on retry=" + (60 - retries));

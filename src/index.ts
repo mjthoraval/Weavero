@@ -2444,8 +2444,10 @@ class WeaveroPlugin {
         try { this._wvSessionRegisterQuitFlush(); } catch (e) {}
         try {
             (Zotero as any).uiReadyPromise
+                .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 .then(() => { try { this._wvSessionRestoreDevWindows(); } catch (e) {} })
                 .then(() => { try { this._wvSessionRestoreOrphanReaderWindows(); } catch (e) {} })
+                .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 .catch(() => {});
         } catch (e) {}
         // PDF Thumbnails right-click menu — "Add Bookmark to This Page"

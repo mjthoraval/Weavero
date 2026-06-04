@@ -1817,21 +1817,50 @@ class _TabsMixin {
     // Weavero off. Applied to ALL main windows (the anchor leaks too).
     _wvGuardContextPaneCrossWindow(win) {
         try {
-            const cp: any = win && win.document && win.document.getElementById("zotero-context-pane-inner");
-            if (!cp || cp._wvCrossWindowGuarded || typeof cp._handleTabSelect !== "function") return;
-            const orig = cp._handleTabSelect.bind(cp);
-            cp._handleTabSelect = async function (action, type, ids, extraData) {
-                try {
-                    const tabID = ids && ids[0];
-                    if (tabID && win.Zotero_Tabs) {
-                        const found = win.Zotero_Tabs._getTab(tabID);
-                        if (!found || !found.tab) return;   // tab belongs to another window → ignore
-                    }
-                } catch (e) {}
-                return orig(action, type, ids, extraData);
-            };
-            cp._wvCrossWindowGuarded = true;
+            if (!win || !win.document) return;
+            const cp: any = win.document.getElementById("zotero-context-pane-inner");
+            // Install the guard ONCE per window: ignore tab events for tabs that
+            // aren't this window's own (the cross-window leak source).
+            if (cp && !cp._wvCrossWindowGuarded && typeof cp._handleTabSelect === "function") {
+                const orig = cp._handleTabSelect.bind(cp);
+                cp._handleTabSelect = async function (action, type, ids, extraData) {
+                    try {
+                        const tabID = ids && ids[0];
+                        if (tabID && win.Zotero_Tabs) {
+                            const found = win.Zotero_Tabs._getTab(tabID);
+                            if (!found || !found.tab) return;   // another window's tab → ignore
+                        }
+                    } catch (e) {}
+                    return orig(action, type, ids, extraData);
+                };
+                cp._wvCrossWindowGuarded = true;
+            }
+            // Re-assert (every call): if this window is on its library tab, make
+            // sure the context pane is collapsed — clears a stale pane left
+            // visible by a leak that happened before the guard was installed
+            // (e.g. during startup/restore). Mirrors Zotero's own library
+            // handling (collapsed + splitter hidden); deliberately does NOT touch
+            // the splitter STATE, so the reader-tab collapse preference is kept.
+            try {
+                if (win.Zotero_Tabs && win.Zotero_Tabs.selectedType === "library") {
+                    const ctxEl = win.document.getElementById("zotero-context-pane");
+                    const splitter = win.document.getElementById("zotero-context-splitter");
+                    if (ctxEl) ctxEl.setAttribute("collapsed", "true");
+                    if (splitter) splitter.setAttribute("hidden", "true");
+                }
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvGuardContextPaneCrossWindow err: " + e); }
+    }
+
+    /** Guard + re-assert the context pane on EVERY open main window. Needed
+     *  because the PRIMARY window's `onMainWindowLoad` doesn't fire at startup
+     *  (it loads before the plugin), so it would otherwise never get guarded.
+     *  Idempotent. */
+    _wvGuardAllContextPanes() {
+        try {
+            const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
+            for (const w of wins) { try { this._wvGuardContextPaneCrossWindow(w); } catch (e) {} }
+        } catch (e) {}
     }
 
     _teardownTabBarLibraryDecoration(win) {

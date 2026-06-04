@@ -1,930 +1,320 @@
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-  <meta charset="utf-8" />
-  <style><![CDATA[
-    body {
-      font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
-      font-size: 13px;
-      margin: 0;
-      padding: 0;
-      color: inherit;
-      background: transparent;
-      /* Override Zotero's chrome-level `user-select: none` so users
-         can select + copy text inside the Weavero pane (the same
-         behaviour they'd get inside any normal HTML page). The
-         `!important` is necessary because the chrome rule lives on
-         the outer XUL <window> with high specificity. */
-      -moz-user-select: text !important;
-      user-select: text !important;
+<!-- Weavero preferences pane.
+     Native XUL fragment (Zotero registers plugin panes with defaultXUL=true,
+     so the default namespace is XUL and HTML tags use the `html:` prefix).
+     Native `<checkbox preference="extensions.zotero.weavero.X" native="true">`
+     is two-way bound by Zotero automatically — defaults are registered on the
+     default branch by WeaveroPlugin._wvRegisterDefaultPrefs() at startup.
+     A flat, scrolling stack of <groupbox> sections (like Better Notes /
+     Zotero itself) so the Settings search works and the pane looks native.
+     prefs.js (bundled from src/prefs/index.ts) handles only what native
+     binding can't: the Display-mode radios, the inline/icon dual-write, and
+     master->children grey-out. -->
+<html:style>
+  .wv-desc {
+    margin: 1px 0 8px;
+    margin-inline-start: 24px;
+    opacity: 0.75;
+    font-size: 0.92em;
+    line-height: 1.35;
+  }
+  .wv-desc:last-child { margin-bottom: 2px; }
+  .wv-note {
+    margin: 2px 0 8px;
+    padding: 6px 10px;
+    font-size: 0.92em;
+    line-height: 1.35;
+    border-inline-start: 3px solid rgba(220, 150, 0, 0.8);
+    background: rgba(220, 150, 0, 0.08);
+    border-radius: 0 4px 4px 0;
+  }
+  @media (prefers-color-scheme: dark) {
+    .wv-note {
+      border-inline-start-color: rgba(255, 184, 77, 0.85);
+      background: rgba(255, 184, 77, 0.10);
     }
-
-    .wv-radio-group { display: flex; flex-direction: column; gap: 10px; }
-    .wv-radio-group.wv-radio-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-    /* Shared sub-toggles row that lives ABOVE the two mode cards
-       (one set of checkboxes governs both Inline and Icon & Popup
-       modes via dual-write to the per-mode prefs). */
-    .wv-mode-subs {
-      display: flex;
-      gap: 14px;
-      margin: 8px 0 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .wv-mode-subs .wv-mode-subs-label {
-      font-size: 12.5px;
-      opacity: 0.75;
-      margin-right: 2px;
-    }
-    .wv-mode-subs .wv-sub-row {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      cursor: pointer;
-      font-size: 12.5px;
-    }
-    .wv-mode-subs .wv-sub-row input[type="checkbox"] {
-      cursor: pointer;
-      margin: 0;
-    }
-
-    .wv-radio-card {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 10px 12px;
-      border: 1px solid rgba(127, 127, 127, 0.35);
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background 0.12s, border-color 0.12s;
-    }
-    .wv-radio-card:hover {
-      background: rgba(127, 127, 127, 0.08);
-    }
-    .wv-radio-card input[type="radio"] {
-      margin-top: 2px;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .wv-radio-card.is-checked {
-      border-color: rgba(64, 128, 255, 0.65);
-      background: rgba(64, 128, 255, 0.08);
-    }
-
-    .wv-radio-card .wv-card-body { line-height: 1.45; }
-    .wv-radio-card .wv-card-text {
-      margin: 0;
-      font-size: 12.5px;
-    }
-    .wv-radio-card .wv-card-title {
-      font-weight: 600;
-    }
-    .wv-radio-card .wv-card-rec {
-      display: inline-block;
-      margin: 6px 0 0;
-      padding: 3px 8px;
-      font-size: 12px;
-      background: rgba(127, 127, 127, 0.18);
-      border-radius: 4px;
-    }
-    .wv-radio-card .wv-card-rec::before {
-      content: "\2192\00a0";
-    }
-    .wv-radio-card .wv-card-subs {
-      display: flex;
-      gap: 14px;
-      margin: 8px 0 0;
-      flex-wrap: wrap;
-    }
-    .wv-radio-card .wv-sub-row {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      cursor: pointer;
-      font-size: 12.5px;
-    }
-    .wv-radio-card .wv-sub-row input[type="checkbox"] {
-      cursor: pointer;
-      margin: 0;
-    }
-    /* Colour the Display Mode sub-toggle labels with the same hues
-       the plugin uses for rendered URLs and app-scheme links so the
-       prefs surface the visual mnemonic. Themed via prefers-color-
-       scheme so the colours stay readable on both backgrounds.
-       Source-of-truth is PLUGIN_CSS in modules/constants.ts. */
-    .wv-mark-zotero { color: #8b4513; } /* light theme — saddle brown */
-    .wv-mark-url    { color: #1a73e8; } /* light theme — Google blue */
-    .wv-mark-app    { color: #9333ea; } /* light theme — violet-600 */
-    @media (prefers-color-scheme: dark) {
-      .wv-mark-zotero { color: #cd853f; } /* dark theme — lighter orange */
-      .wv-mark-url    { color: #8ab4f8; } /* dark theme — lighter blue */
-      .wv-mark-app    { color: #c084fc; } /* dark theme — lighter violet */
-    }
-    /* Small inline samples of the actual badges Weavero draws over
-       annotations in the reader Document view — the plugin logo (the
-       "link" badge) and the amber "related items" chain — so the
-       toggle's label shows what it controls. Chain colour matches the
-       plugin's reader relations badge (#7a4a00 light / #ffb84d dark);
-       the logo image swaps light/dark with the theme. */
-    .wv-icon-sample {
-      display: inline-flex;
-      align-items: center;
-      vertical-align: text-bottom;
-      margin: 0 1px;
-      line-height: 1;
-    }
-    .wv-icon-sample svg,
-    .wv-icon-sample img { display: block; width: 14px; height: 14px; }
-    .wv-icon-rel { color: #7a4a00; }
-    @media (prefers-color-scheme: dark) { .wv-icon-rel { color: #ffb84d; } }
-
-    /* Group-level header — one above .wv-section-title in the visual
-       hierarchy. Used for the three top-level feature groups
-       (Enhanced Links and Relations / Filters / Visual extras).
-       Renders larger and with a divider rule so the three groups
-       are visually distinct from each other. */
-    .wv-group-title {
-      font-weight: 700;
-      font-size: 16px;
-      margin: 32px 0 12px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid rgba(127, 127, 127, 0.25);
-    }
-    .wv-group-title:first-of-type {
-      margin-top: 8px;
-    }
-    .wv-group-intro {
-      margin: 4px 0 12px;
-      font-size: 12px;
-      opacity: 0.7;
-    }
-
-    .wv-section-title {
-      font-weight: 600;
-      font-size: 14px;
-      /* Matches Zotero's pref h2 spacing (scss/preferences.scss:200 —
-         "groupbox:not(:first-of-type) label > h2 { margin-top: 2em }").
-         2em at 13px body = 26px. */
-      margin: 26px 0 10px;
-    }
-    /* <summary> reuses .wv-section-title so the Debug header reads the
-       same as the other section titles. The native disclosure triangle
-       (rendered by the browser) signals that the section can expand. */
-    summary.wv-summary {
-      cursor: pointer;
-      list-style: none;
-    }
-    /* Hide the default disclosure marker — list-style:none covers Firefox /
-       Gecko (where Zotero runs); ::-webkit-details-marker covers Chromium /
-       Safari. Without list-style:none, Gecko shows its native triangle in
-       front of our custom one. */
-    summary.wv-summary::-webkit-details-marker { display: none; }
-    summary.wv-summary::before {
-      content: "\25B8";  /* ▸ — right-pointing triangle */
-      display: inline-block;
-      margin-right: 6px;
-      /* Roughly matches Firefox's native disclosure marker size when the
-         section title inherits the 13px body font. */
-      font-size: 14px;
-      transition: transform 0.12s ease;
-    }
-    details[open] > summary.wv-summary::before {
-      transform: rotate(90deg);
-    }
-    details.wv-collapsible {
-      margin: 0;
-    }
-    .wv-subsection-title {
-      font-weight: 600;
-      font-size: 12.5px;
-      margin: 16px 0 6px;
-      /* Aligns with the bold .wv-surface-name text after the checkbox:
-         ~14px (checkbox) + 10px (gap). No left padding on .wv-surface-row
-         since these aren't card-styled — they follow Zotero's native
-         settings list look. */
-      padding-left: 24px;
-      opacity: 0.85;
-    }
-    .wv-subsection-title:first-of-type {
-      margin-top: 8px;
-    }
-    .wv-surface-list {
-      display: flex;
-      flex-direction: column;
-      /* Row padding (4px top + 4px bottom) gives the 8px effective gap
-         that Zotero's `checkbox { margin-block: 4px }` produces between
-         consecutive checkboxes (scss/preferences.scss:374-376). */
-      gap: 0;
-      margin: 0 0 8px;
-      max-width: 630px;
-    }
-    .wv-surface-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 4px 0;
-      cursor: pointer;
-    }
-    .wv-surface-row input[type="checkbox"] {
-      margin-top: 2px;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .wv-surface-row .wv-surface-body { line-height: 1.4; }
-    .wv-surface-row .wv-surface-text {
-      margin: 0;
-      font-size: 12.5px;
-    }
-    .wv-surface-row .wv-surface-name {
-      font-weight: 600;
-    }
-    .wv-section-hint {
-      margin: 0 0 6px;
-      font-size: 12px;
-      opacity: 0.7;
-    }
-    /* Inline warning callout — amber-tinted, slim left border. Use for
-       caveats the user should notice (e.g. local-only storage). Sits
-       at the regular hint font-size so it doesn't fight the layout. */
-    .wv-warning {
-      margin: 0 0 10px;
-      padding: 6px 10px;
-      font-size: 12px;
-      border-left: 3px solid rgba(220, 150, 0, 0.8);
-      background: rgba(220, 150, 0, 0.08);
-      border-radius: 0 4px 4px 0;
-    }
-    @media (prefers-color-scheme: dark) {
-      .wv-warning {
-        border-left-color: rgba(255, 184, 77, 0.85);
-        background: rgba(255, 184, 77, 0.10);
-      }
-    }
-    /* "Master card" — the accent-blue tint + left border marks a
-       master toggle as a meta-control, setting it apart from the
-       per-feature toggles below. The card spans the section's
-       description line + the toggle row. Applied to the NESTED section
-       masters (URI utilities, Relations, Hide title bar) that still sit
-       inside a group body as .wv-master-block rows — the four top-level
-       GROUP masters now live in their <summary> instead. The section
-       TITLE stays above the card as plain text. */
-    .wv-master-block > .wv-section-hint,
-    .wv-master-block > label.wv-surface-row {
-      background: rgba(64, 128, 255, 0.07);
-      padding-left: 14px;
-      padding-right: 14px;
-      border-left: 3px solid rgb(64, 128, 255);
-    }
-    /* Card top — the section master's description line. */
-    .wv-master-block > .wv-section-hint {
-      margin: 0;
-      padding-top: 9px;
-      padding-bottom: 3px;
-      border-radius: 6px 6px 0 0;
-      /* Match `.wv-group-intro`'s 0.95 (not the general hint's 0.7) —
-         the lower value also dims the 3px accent border, making the
-         card's left strip look two-toned where the hint meets the
-         toggle row below it. */
-      opacity: 0.95;
-    }
-    /* Card bottom — the master toggle row itself (always preceded by a
-       description line above, which already rounds the card's top). */
-    .wv-master-block > label.wv-surface-row {
-      padding-top: 4px;
-      padding-bottom: 12px;
-      margin: 0 0 18px;
-      border-radius: 0 0 6px 6px;
-    }
-    /* Master/child grey-out — when the .wv-master checkbox of a
-       .wv-master-block is unchecked, that block's .wv-children fades
-       and intercepts no clicks. Pure CSS via :has() (Firefox 121+,
-       Zotero 10's runtime is Firefox 140 so we're safe).
-       The :has(> …) / > .wv-children parts are deliberately scoped to
-       DIRECT children: .wv-master-blocks nest (URI utilities and
-       Relations sit inside the Links-and-relations block), and a loose
-       `:has(input.wv-master:not(:checked)) .wv-children` would make an
-       OUTER block match whenever an INNER master is unchecked — then
-       pointer-events:none on the outer .wv-children would freeze the
-       inner master's own row, so it could never be re-checked. */
-    .wv-master-block:has(> label.wv-surface-row > input.wv-master:not(:checked)) > .wv-children {
-      opacity: 0.4;
-      pointer-events: none;
-    }
-    .wv-children {
-      transition: opacity 0.12s;
-    }
-    /* Plain master block — a normal master checkbox with lightly indented
-       sub-toggles, NOT the prominent blue card. Used where the children are
-       the point (Window bars → "Hide title bar"). Keeps the grey-out above. */
-    .wv-master-block.wv-master-plain > label.wv-surface-row {
-      background: none;
-      border-left: none;
-      padding-left: 0;
-      padding-right: 0;
-      margin: 0;
-      border-radius: 0;
-    }
-    .wv-master-block.wv-master-plain > .wv-children {
-      margin-left: 26px;
-    }
-
-    /* ==== Feature groups ==========================================
-       Each top-level group is a <details class="wv-group"> collapsed by
-       default; its master toggle lives in the <summary>. A flat,
-       scrollable stack (no tabs) so Zotero's Settings search can hide
-       the non-matching groups and highlight matches. Zotero's search
-       highlights a match but never opens a <details> itself, so a
-       collapsed group holding a match is auto-expanded by the search
-       hook in prefs/index.ts. */
-    details.wv-group { margin: 0; }
-    summary.wv-group-summary {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      list-style: none;
-      font-weight: 700;
-      font-size: 16px;
-      margin: 26px 0 12px;
-      padding-bottom: 6px;
-      border-bottom: 1px solid rgba(127, 127, 127, 0.25);
-    }
-    details.wv-group:first-of-type > summary.wv-group-summary {
-      margin-top: 8px;
-    }
-    /* Custom disclosure triangle (hide both native markers — see the
-       .wv-summary note above for why two rules are needed). */
-    summary.wv-group-summary::-webkit-details-marker { display: none; }
-    summary.wv-group-summary::before {
-      content: "\25B8";  /* ▸ */
-      display: inline-block;
-      font-size: 13px;
-      opacity: 0.7;
-      flex-shrink: 0;
-      transition: transform 0.12s ease;
-    }
-    details.wv-group[open] > summary.wv-group-summary::before {
-      transform: rotate(90deg);
-    }
-    /* The master checkbox sits in the summary: clicking IT toggles the
-       pref (intercepted in prefs/index.ts so it doesn't also open/close
-       the group), clicking the NAME toggles the disclosure. */
-    summary.wv-group-summary input.wv-group-master {
-      margin: 0;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .wv-group-name { font-weight: 700; }
-    /* Whole-group grey-out — when a group's summary master is unchecked,
-       fade + disable its body. Scoped to the group's OWN direct master +
-       direct .wv-children so the nested .wv-master-block grey-out above
-       doesn't fight it. */
-    details.wv-group:has(> summary > input.wv-group-master:not(:checked)) > .wv-children {
-      opacity: 0.4;
-      pointer-events: none;
-    }
-    /* Trim the top margin of whatever element opens a group body so it
-       sits snug under the group summary. */
-    details.wv-group > .wv-children > :first-child {
-      margin-top: 0;
-    }
-    /* Same look as .wv-section-hint, applied to inline descriptions
-       inside radio cards and surface rows so the explanation reads
-       the same as the plugin intro line beside the section title. */
-    .wv-desc {
-      font-size: 12px;
-      opacity: 0.7;
-    }
-    /* Compact 3-column grid for the "Extra link schemes" tickable
-       list. Each row is just `[ ] scheme:` — the description rides
-       in the parent label's `title=` attribute (browser tooltip on
-       hover). 16 schemes fit in ~6 rows instead of 16. */
-    .wv-scheme-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 4px 12px;
-      margin: 4px 0 8px;
-    }
-    .wv-scheme-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 6px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 12.5px;
-    }
-    .wv-scheme-row:hover {
-      background: rgba(127, 127, 127, 0.08);
-    }
-    .wv-scheme-row input[type="checkbox"] {
-      margin: 0;
-      cursor: pointer;
-      flex-shrink: 0;
-    }
-    .wv-scheme-name {
-      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    }
-    /* Tier subheadings inside `.wv-scheme-grid`. Spans the full grid
-       width so the `name:` / `name://` rows live under their own
-       label. Same look as `.wv-subsection-title` but tweaked for
-       the tighter grid spacing. */
-    .wv-scheme-tier {
-      grid-column: 1 / -1;
-      font-weight: 600;
-      font-size: 12px;
-      opacity: 0.7;
-      margin: 4px 0 2px;
-      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    }
-    .wv-scheme-tier:first-of-type {
-      margin-top: 0;
-    }
-  ]]></style>
-</head>
-<body>
-  <p class="wv-section-hint" style="margin: 0 0 14px;">Clickable links in comments and notes + Filters in the items list and tabs.</p>
-
-  <details class="wv-group" data-group="links">
-  <summary class="wv-group-summary">
-    <input type="checkbox" name="wv-feature" value="enableLinksAndRelations" class="wv-group-master" aria-label="Enable Enhanced Links and Relations" />
-    <span class="wv-group-name">Enhanced Links and Relations</span>
-  </summary>
-  <p class="wv-group-intro">In text support for clickable URIs and markdown + Icons to identify and access related items to annotations + Right-click utilities to copy Zotero links and add related items.</p>
-  <div class="wv-children">
-  <p class="wv-section-title" style="margin-top:0">Display Mode</p>
-  <p class="wv-section-hint">How links and markdown appear in annotation comments and notes.</p>
-
-  <div class="wv-radio-group wv-radio-grid" role="radiogroup" aria-label="Display mode">
-
-    <label class="wv-radio-card" data-value="inline">
-      <input type="radio" name="wv-mode" value="inline" />
-      <div class="wv-card-body">
-        <p class="wv-card-text"><span class="wv-card-title">Inline</span>&#160;<span class="wv-desc">&#8212; Render directly inside each comment and note. A link icon only appears when content is clipped, opening a popup with the rendered text.</span></p>
-        <p class="wv-card-rec">Full rendering.</p>
-      </div>
-    </label>
-
-    <label class="wv-radio-card" data-value="icon">
-      <input type="radio" name="wv-mode" value="icon" />
-      <div class="wv-card-body">
-        <p class="wv-card-text"><span class="wv-card-title">Icon &amp; Popup</span>&#160;<span class="wv-desc">&#8212; Comments and notes stay plain text. A link icon next to each annotation opens a popup with the rendered view when needed.</span></p>
-        <p class="wv-card-rec">Light &#8212; If Inline mode is too slow.</p>
-      </div>
-    </label>
-
-  </div>
-
-  <div class="wv-mode-subs">
-    <span class="wv-mode-subs-label">Show:</span>
-    <label class="wv-sub-row">
-      <input type="checkbox" name="wv-feature" value="enableInlineUrls" data-wv-also="enableIconUrls" />
-      <span class="wv-mark-url">URLs</span>
-    </label>
-    <label class="wv-sub-row" title="Render zotero://select/... and zotero://open/... links inside annotation comments.">
-      <input type="checkbox" name="wv-feature" value="enableZoteroLinks" />
-      <span class="wv-mark-zotero">Zotero Links</span>
-    </label>
-    <label class="wv-sub-row" title="Recognize links that open in other apps (mailto:, obsidian://, slack://, …). Pick which schemes in the &quot;Extra link schemes&quot; section below.">
-      <input type="checkbox" name="wv-feature" value="enableAppLinks" data-wv-also="enableIconAppLinks" />
-      <span class="wv-mark-app">App Links</span>
-    </label>
-    <label class="wv-sub-row">
-      <input type="checkbox" name="wv-feature" value="enableCommentMarkdown" data-wv-also="enableIconMarkdown" />
-      Markdown
-    </label>
-  </div>
-
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableReaderViewIcons" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Icons over annotations in the Document view</span>&#160;(<span class="wv-icon-sample wv-icon-rel" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill="currentColor" d="M12.5 13H8.5C7.57174 13 6.6815 12.6313 6.02513 11.9749C5.36875 11.3185 5 10.4283 5 9.5C5 8.57174 5.36875 7.6815 6.02513 7.02513C6.6815 6.36875 7.57174 6 8.5 6H8.908C9.03111 6.32197 9.03111 6.67803 8.908 7H8.5C7.83696 7 7.20107 7.26339 6.73223 7.73223C6.26339 8.20107 6 8.83696 6 9.5C6 10.163 6.26339 10.7989 6.73223 11.2678C7.20107 11.7366 7.83696 12 8.5 12H12.5C13.163 12 13.7989 11.7366 14.2678 11.2678C14.7366 10.7989 15 10.163 15 9.5C15 8.83696 14.7366 8.20107 14.2678 7.73223C13.7989 7.26339 13.163 7 12.5 7H11.953C11.9778 6.83432 11.9935 6.6674 12 6.5C11.9935 6.3326 11.9778 6.16568 11.953 6H12.5C13.4283 6 14.3185 6.36875 14.9749 7.02513C15.6313 7.6815 16 8.57174 16 9.5C16 10.4283 15.6313 11.3185 14.9749 11.9749C14.3185 12.6313 13.4283 13 12.5 13ZM0 6.5C0 7.42826 0.368749 8.3185 1.02513 8.97487C1.6815 9.63125 2.57174 10 3.5 10H4.047C4.02219 9.83432 4.0065 9.6674 4 9.5C4.0065 9.3326 4.02219 9.16568 4.047 9H3.5C2.83696 9 2.20107 8.73661 1.73223 8.26777C1.26339 7.79893 1 7.16304 1 6.5C1 5.83696 1.26339 5.20107 1.73223 4.73223C2.20107 4.26339 2.83696 4 3.5 4H7.5C8.16304 4 8.79893 4.26339 9.26777 4.73223C9.73661 5.20107 10 5.83696 10 6.5C10 7.16304 9.73661 7.79893 9.26777 8.26777C8.79893 8.73661 8.16304 9 7.5 9H7.092C6.96889 9.32197 6.96889 9.67803 7.092 10H7.5C8.42826 10 9.3185 9.63125 9.97487 8.97487C10.6313 8.3185 11 7.42826 11 6.5C11 5.57174 10.6313 4.6815 9.97487 4.02513C9.3185 3.36875 8.42826 3 7.5 3H3.5C2.57174 3 1.6815 3.36875 1.02513 4.02513C0.368749 4.6815 0 5.57174 0 6.5Z"/></svg></span>,&#160;<span class="wv-icon-sample" aria-hidden="true"><img id="wv-doc-icon-link" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="" /></span>)&#160;<span class="wv-desc">&#8212; When checked, these icons appear on the page over annotations whose comment contains a link, or that have related items, so you can spot them at a glance. Uncheck to keep the document page free of plugin overlays.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-section-title">Apply to</p>
-
-  <p class="wv-subsection-title">My Library</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-surface" value="enableItemsList" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Items list</span>&#160;<span class="wv-desc">&#8212; Annotation rows under each item in the main library.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-surface" value="enableRightPane" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Annotations panel</span>&#160;<span class="wv-desc">&#8212; The right pane when an item is selected.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-subsection-title">Reader</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-surface" value="enableReaderSidebar" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Sidebar</span>&#160;<span class="wv-desc">&#8212; The annotation list on the left side of the reader.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-surface" value="enableReaderView" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Document view</span>&#160;<span class="wv-desc">&#8212; In-document popups (when you click an annotation) and small link badges over annotation icons.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-subsection-title">Notes</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-surface" value="enableNotes" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Render in notes</span>&#160;<span class="wv-desc">&#8212; Standalone and child notes across all surfaces: items-tree note rows, the right-pane Notes section, and the note editor (right pane and pop-out window).</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <details class="wv-collapsible">
-    <summary class="wv-section-title wv-summary">App link schemes</summary>
-    <p class="wv-section-hint">Pick which schemes Weavero recognises as app links in annotation comments. Active only when <strong>App links</strong> is ticked above &#8212; otherwise these are ignored even if checked. Hover a row for what it means.</p>
-    <label class="wv-surface-row" style="margin: 0 0 8px;" title="When ticked, Weavero sets network.protocol-handler.warn-external.&lt;scheme&gt; = false for every enabled scheme so clicks open the target app immediately, without Firefox's confirmation dialog. Only the schemes you tick below are affected; unticking restores the default prompt for those schemes.">
-      <input type="checkbox" name="wv-feature" value="enableAppLinksSkipConfirm" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Open without confirmation dialog</span>&#160;<span class="wv-desc">&#8212; Skip Firefox&#8217;s &#8220;Allow this site to open the &#8230; link?&#8221; prompt for enabled schemes.</span></p>
-      </div>
-    </label>
-    <div class="wv-scheme-grid">
-      <div class="wv-scheme-tier">name:</div>
-      <label class="wv-scheme-row" title="Torrent magnet links"><input type="checkbox" name="wv-scheme" value="enableMagnetScheme" /><span class="wv-scheme-name">magnet:</span></label>
-      <label class="wv-scheme-row" title="Email addresses"><input type="checkbox" name="wv-scheme" value="enableMailtoScheme" /><span class="wv-scheme-name">mailto:</span></label>
-      <label class="wv-scheme-row" title="Skype calls / chats"><input type="checkbox" name="wv-scheme" value="enableSkypeScheme" /><span class="wv-scheme-name">skype:</span></label>
-      <label class="wv-scheme-row" title="SMS messages"><input type="checkbox" name="wv-scheme" value="enableSmsScheme" /><span class="wv-scheme-name">sms:</span></label>
-      <label class="wv-scheme-row" title="Spotify tracks / playlists"><input type="checkbox" name="wv-scheme" value="enableSpotifyScheme" /><span class="wv-scheme-name">spotify:</span></label>
-      <label class="wv-scheme-row" title="Phone numbers"><input type="checkbox" name="wv-scheme" value="enableTelScheme" /><span class="wv-scheme-name">tel:</span></label>
-      <div class="wv-scheme-tier">name://</div>
-      <label class="wv-scheme-row" title="Discord servers"><input type="checkbox" name="wv-scheme" value="enableDiscordScheme" /><span class="wv-scheme-name">discord://</span></label>
-      <label class="wv-scheme-row" title="Evernote notes"><input type="checkbox" name="wv-scheme" value="enableEvernoteScheme" /><span class="wv-scheme-name">evernote://</span></label>
-      <label class="wv-scheme-row" title="Figma files"><input type="checkbox" name="wv-scheme" value="enableFigmaScheme" /><span class="wv-scheme-name">figma://</span></label>
-      <label class="wv-scheme-row" title="Local files"><input type="checkbox" name="wv-scheme" value="enableFileScheme" /><span class="wv-scheme-name">file://</span></label>
-      <label class="wv-scheme-row" title="FTP servers"><input type="checkbox" name="wv-scheme" value="enableFtpScheme" /><span class="wv-scheme-name">ftp://</span></label>
-      <label class="wv-scheme-row" title="Microsoft Teams"><input type="checkbox" name="wv-scheme" value="enableMsteamsScheme" /><span class="wv-scheme-name">msteams://</span></label>
-      <label class="wv-scheme-row" title="Notion pages"><input type="checkbox" name="wv-scheme" value="enableNotionScheme" /><span class="wv-scheme-name">notion://</span></label>
-      <label class="wv-scheme-row" title="Obsidian notes"><input type="checkbox" name="wv-scheme" value="enableObsidianScheme" /><span class="wv-scheme-name">obsidian://</span></label>
-      <label class="wv-scheme-row" title="Slack channels"><input type="checkbox" name="wv-scheme" value="enableSlackScheme" /><span class="wv-scheme-name">slack://</span></label>
-      <label class="wv-scheme-row" title="VS Code workspaces / files"><input type="checkbox" name="wv-scheme" value="enableVscodeScheme" /><span class="wv-scheme-name">vscode://</span></label>
-      <label class="wv-scheme-row" title="Zoom meetings"><input type="checkbox" name="wv-scheme" value="enableZoomScheme" /><span class="wv-scheme-name">zoommtg://</span></label>
-    </div>
-  </details>
-
-  <div class="wv-master-block">
-    <p class="wv-section-title">URI utilities</p>
-    <p class="wv-section-hint">Right-click utilities that copy <code>zotero://</code> deep links to the clipboard.</p>
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableUriUtilities" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable URI utilities</span>&#160;<span class="wv-desc">&#8212; Master toggle for the URI-link right-click items below.</span></p>
-      </div>
-    </label>
-    <div class="wv-surface-list wv-children">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableCopyItemLink" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Select Link&#8221; / &#8220;Copy Open Link&#8221; in the right-click menus</span>&#160;<span class="wv-desc">&#8212; Adds <code>Copy Select Link</code> (<code>zotero://select/&#8230;</code>) to navigate to the item in the Items List.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableCopyCollectionLink" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Copy Collection Link&#8221; / &#8220;Copy Saved Search Link&#8221; in the collections tree right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that copies <code>zotero://select/&#8230;/collections/&lt;key&gt;</code> on a collection row, or <code>zotero://select/&#8230;/searches/&lt;key&gt;</code> on a saved-search row.</span></p>
-        </div>
-      </label>
-
-    </div>
-  </div>
-
-  <div class="wv-master-block">
-    <p class="wv-section-title">Relations and linked items</p>
-    <p class="wv-section-hint">Features built around Zotero&#8217;s related-items relations (<code>dc:relation</code>) and the linked-items mechanism.</p>
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableRelations" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Enable relations and linked-items features</span>&#160;<span class="wv-desc">&#8212; Master toggle for the items below.</span></p>
-      </div>
-    </label>
-    <div class="wv-surface-list wv-children">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableAddRelatedMenu" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Add Related&#8230;&#8221; in the items list right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds a menu item that opens Zotero&#8217;s select-items dialog and links the chosen items as <code>dc:relation</code> peers (multi-annotation aware).</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableChainBadge" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Chain badge on annotation rows with related items</span>&#160;<span class="wv-desc">&#8212; Show a small chain icon next to annotations that have related items; click it for a popup listing the relations.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableOpenRelatedSubmenu" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Open Related Item&#8221; sub-menu in the annotation right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds Open in Reader / In New Window entries in the reader&#8217;s annotation context menu for each related item.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableLibrariesHighlight" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Tint linked-libraries rows in the item pane</span>&#160;<span class="wv-desc">&#8212; When an item is replicated across libraries (linked items), highlight the row matching the displayed item&#8217;s library in the <em>Libraries and Collections</em> section.</span></p>
-        </div>
-      </label>
-
-    </div>
-  </div>
-
-    </div>
-  <p class="wv-section-hint" style="margin-top:18px">Supported markdown: <strong>**bold**</strong>, <em>*italic*</em>, <s>~~strike~~</s>, <code>`code`</code>, <code>[label](url)</code>.</p>
-  </details>
-
-  <details class="wv-group" data-group="filters">
-  <summary class="wv-group-summary">
-    <input type="checkbox" name="wv-feature" value="enableFilters" class="wv-group-master" aria-label="Enable Filters" />
-    <span class="wv-group-name">Filters</span>
-  </summary>
-  <p class="wv-group-intro">Controls that hide, dim, or scope the visible set: the items-tree filter pane (the toolbar &#9662; button) and the per-library / file-type filters in the tabs menu.</p>
-  <div class="wv-children">
-
-    <div class="wv-surface-list">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableItemsTreeFilter" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Items-tree filter pane</span>&#160;<span class="wv-desc">&#8212; The toolbar &#9662; button next to the items-tree search box, plus the popup it opens (annotation color/type/has-comment, attachment file type, item type, multi-select tag/author/added-by/collection/saved-search).</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableSelectionTarget" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Selection Target tri-state</span>&#160;<span class="wv-desc">&#8212; The Parent / Attachment / Annotation tickboxes inside the filter popup that scope Ctrl+A and dim out-of-scope rows.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableTabsLibraryFilter" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Tabs menu per-library filter</span>&#160;<span class="wv-desc">&#8212; The tickbox next to each library section header in the &#8220;List all tabs&#8221; popup, hiding tabs from both the popup and the main tab strip.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableTabsFileTypeFilter" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Tabs menu file-type filter</span>&#160;<span class="wv-desc">&#8212; The funnel button at the top of the &#8220;List all tabs&#8221; popup that opens the per-attachment-kind tristate filter.</span></p>
-        </div>
-      </label>
-
-    </div>
-
-    </div>
-  </details>
-
-  <details class="wv-group" data-group="bookmarks">
-  <summary class="wv-group-summary">
-    <input type="checkbox" name="wv-feature" value="enableBookmarks" class="wv-group-master" aria-label="Enable Bookmarks" />
-    <span class="wv-group-name">Bookmarks</span>
-  </summary>
-  <p class="wv-group-intro">Bookmarks across two scopes: a Bookmarks dropdown on the collections-pane toolbar for items / collections / searches, and a Bookmarks tab in the reader sidebar for in-document locations.</p>
-  <p class="wv-warning"><strong>Note:</strong>&#160;Bookmarks don&#8217;t sync across computers at the moment &#8212; they&#8217;re stored locally in <code>&lt;Zotero data dir&gt;/weavero/bookmarks.json</code>. (Zotero&#8217;s plugin-managed synced storage is in development; this will switch over once it ships.)</p>
-  <div class="wv-children">
-
-    <p class="wv-subsection-title">Scopes</p>
-    <div class="wv-surface-list">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableLibraryBookmarks" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Library bookmarks</span>&#160;<span class="wv-desc">&#8212; Bookmark icon next to the new-collection button in the collections-pane toolbar, with a dropdown for bookmarked items / collections / saved searches. Also adds a &#8220;Bookmark collection&#8221; entry to the collections-tree right-click menu.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="enableReaderBookmarks" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Document bookmarks</span>&#160;<span class="wv-desc">&#8212; A Bookmarks tab in the reader sidebar with chip-bar filters and a list of in-document location bookmarks. Drop an annotation or selection on the tab to bookmark it.</span></p>
-        </div>
-      </label>
-
-    </div>
-
-    <p class="wv-subsection-title">Reader sidebar</p>
-    <div class="wv-surface-list">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="showLibraryBookmarksInReader" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Show Library bookmarks tab</span>&#160;<span class="wv-desc">&#8212; Include the Library scope tab in the reader&#8217;s Bookmarks panel so library bookmarks can be browsed alongside in-document bookmarks (Ctrl-click to merge both views).</span></p>
-        </div>
-      </label>
-
-    </div>
-
-    <p class="wv-subsection-title">Auto-hide when empty</p>
-    <div class="wv-surface-list">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="autoHideEmptyLibraryBookmarks" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Library</span>&#160;<span class="wv-desc">&#8212; Hide the Bookmarks button in the collections-pane toolbar when no library bookmarks exist yet. Reappears as soon as you add one.</span></p>
-        </div>
-      </label>
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="autoHideEmptyReaderBookmarks" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Reader</span>&#160;<span class="wv-desc">&#8212; Hide the Bookmarks tab in the reader sidebar when the current document has no bookmarks yet. The tab reappears as soon as you drop an annotation or selection onto its position.</span></p>
-        </div>
-      </label>
-
-    </div>
-
-    </div>
-  </details>
-
-  <details class="wv-group" data-group="extras">
-  <summary class="wv-group-summary">
-    <input type="checkbox" name="wv-feature" value="enableVisualExtras" class="wv-group-master" aria-label="Enable Visual extras" />
-    <span class="wv-group-name">Extras</span>
-  </summary>
-  <p class="wv-group-intro">Smaller informational displays attached to existing Zotero UI: items-list badges and tab-strip glyphs.</p>
-  <div class="wv-children">
-
-  <p class="wv-section-title" style="margin-top:8px">Items-tree columns</p>
-  <p class="wv-section-hint">Icon-only columns, hidden by default &#8212; enable each from the column-picker (right-click the items-tree header).</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableAnnotationsCountColumn" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Annotations&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of annotations on attachments (and sums across attachments on regular items).</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableTagsCountAuto" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Tags&#8221; column &#8212; add the automatic-tag count</span>&#160;<span class="wv-desc">&#8212; The Tags column shows two numbers per row: manual tags (blue) and automatic tags (in default color). Uncheck to display only the manual tag count.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableRelatedColumn" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Related&#8221; column</span>&#160;<span class="wv-desc">&#8212; Register an icon-only column that shows the count of related items per row.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-section-title">Items list extras</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableAnnotationAddedBy" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Show Added By for annotations</span>&#160;<span class="wv-desc">&#8212; In group libraries, show a badge with the user who created each annotation, next to its row in the items list. Annotation rows aren&#8217;t covered by Zotero&#8217;s built-in Added By column.</span></p>
-      </div>
-    </label>
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableAddedByColors" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Use a different color per user in Added By</span>&#160;<span class="wv-desc">&#8212; Tint the Added By column text and the annotation badge with a per-user color so contributors are easier to scan. Uncheck to keep the default text color.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-section-title">Window bars</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableGroupLibraryGlyph" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Group-library glyph + tooltip on tabs</span>&#160;<span class="wv-desc">&#8212; Tabs whose item lives in a group library get a small &#8220;Group Libraries&#8221; cluster glyph in the corner of the file-type icon, plus a custom tooltip showing the tab title and a <em>library icon + Library Name</em> header.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-  <div class="wv-master-block wv-master-plain">
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="compactTitleBar" class="wv-master" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Hide title bar (Firefox-style)</span>&#160;<span class="wv-desc">&#8212; Replace the title bar with a browser-style bar &#8212; menus move out of the way (press <kbd>Alt</kbd> to summon them) and the window buttons move into the tab bar / tab strip. Pick where it applies below. Windows / Linux only. Default off.</span></p>
-      </div>
-    </label>
-    <div class="wv-children">
-      <div class="wv-surface-list">
-        <label class="wv-surface-row">
-          <input type="checkbox" name="wv-feature" value="compactTitleBarMain" />
-          <div class="wv-surface-body">
-            <p class="wv-surface-text"><span class="wv-surface-name">Main window</span>&#160;<span class="wv-desc">&#8212; Remove the main window&#8217;s title bar (which holds the menus) and move the window buttons into the tab bar. Default on.</span></p>
-          </div>
-        </label>
-        <label class="wv-surface-row">
-          <input type="checkbox" name="wv-feature" value="compactTitleBarReader" />
-          <div class="wv-surface-body">
-            <p class="wv-surface-text"><span class="wv-surface-name">Separate reader window</span>&#160;<span class="wv-desc">&#8212; In a reader opened in its own window, turn the title bar into a tab strip carrying the document tab (title + close &#215;) and the window buttons, and hide the menu bar. Default on.</span></p>
-          </div>
-        </label>
-        <label class="wv-surface-row">
-          <input type="checkbox" name="wv-feature" value="compactTitleBarNote" />
-          <div class="wv-surface-body">
-            <p class="wv-surface-text"><span class="wv-surface-name">Separate note window</span>&#160;<span class="wv-desc">&#8212; Same treatment for a note opened in its own window: title bar becomes a tab strip with the note tab and window buttons, menu bar hidden (Alt to reveal). Default on.</span></p>
-          </div>
-        </label>
-      </div>
-    </div>
-  </div>
-
-  <p class="wv-section-title">External viewer</p>
-  <p class="wv-section-hint">Right-click menu utility for opening attachments with the OS default application (replaces the standalone Open PDF for Zotero plugin).</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableOpenExternalViewer" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;Open in External Viewer&#8221; in the items-list and tab right-click menus</span>&#160;<span class="wv-desc">&#8212; Adds an entry below &#8220;Show File&#8221; (items list) and below &#8220;Show in Library&#8221; (tab menu) that launches the item&#8217;s best attachment with the OS default app. Works for any stored file (PDF, EPUB, snapshot, image, &#8230;); the entry&#8217;s icon mirrors the attachment type. Default off.</span></p>
-      </div>
-    </label>
-
-  </div>
-
-    </div>
-
-  <p class="wv-section-title">PDF reader outline</p>
-  <p class="wv-section-hint">Experimental enhancement to Zotero&#8217;s PDF outline (the table of contents in the reader sidebar).</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="enableOutlineTextHighlight" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">Highlight the heading text when clicking an outline entry</span>&#160;<span class="wv-desc">&#8212; Clicking a PDF outline entry flashes the actual heading text. For embedded outlines (which only store a target point, so Zotero&#8217;s flash lands on nothing) Weavero finds the heading on the page; for outlines Zotero generates itself it uses the entry directly. It also keeps the highlight timing consistent when activating outline entries (and text-selection bookmarks) in quick succession, working around a Zotero bug. Default off.</span></p>
-        <p class="wv-warning"><strong>Note:</strong>&#160;Experimental and off by default. For embedded outlines it does a small text lookup on the target page per click; on very large PDFs the first click to a not-yet-loaded page may show the highlight a moment after the jump. Matching is best-effort &#8212; scanned pages or unusual fonts may not match, in which case it just jumps without a highlight.</p>
-      </div>
-    </label>
-
-  </div>
-
-  <p class="wv-section-title">Multiple main windows</p>
-  <p class="wv-section-hint">Experimental, in-development support for opening more than one main Zotero window.</p>
-  <div class="wv-surface-list">
-
-    <label class="wv-surface-row">
-      <input type="checkbox" name="wv-feature" value="devNewMainWindow" />
-      <div class="wv-surface-body">
-        <p class="wv-surface-text"><span class="wv-surface-name">&#8220;New Main Window&#8221; in the tab right-click menu</span>&#160;<span class="wv-desc">&#8212; Adds an entry to the library tab&#8217;s right-click menu that opens an independent second main window with its own tabs, columns, filters and pane widths. Open windows are saved and restored across restarts. Default off.</span></p>
-        <p class="wv-warning"><strong>Note:</strong>&#160;Experimental and incomplete &#8212; many tools and menus aren&#8217;t available in extra windows yet. Off by default.</p>
-      </div>
-    </label>
-
-  </div>
-  </details>
-
-  <details class="wv-collapsible">
-    <summary class="wv-section-title wv-summary">Debug</summary>
-    <div class="wv-surface-list">
-
-      <label class="wv-surface-row">
-        <input type="checkbox" name="wv-feature" value="debug" />
-        <div class="wv-surface-body">
-          <p class="wv-surface-text"><span class="wv-surface-name">Enable debug logging</span>&#160;<span class="wv-desc">&#8212; Emits detailed plugin activity via Zotero.debug. To see it, open Help &#8594; Debug Output Logging &#8594; View Output. Useful when reporting issues; leave off for normal use.</span></p>
-        </div>
-      </label>
-
-    </div>
-  </details>
-</body>
-</html>
+  }
+  .wv-mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  /* Master -> children grey-out: prefs.js toggles `.wv-disabled` on a
+     `.wv-children` container when its data-master pref is off. */
+  .wv-children.wv-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  .wv-scheme-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0 14px;
+  }
+  .wv-links { margin: 4px 0 0; }
+</html:style>
+
+<vbox class="main-section">
+
+  <html:p class="wv-desc" style="margin-inline-start:0">Clickable links in comments and notes, filters in the items list and tabs, bookmarks, and items-tree columns. Most features are on by default; turn off whatever you don&#8217;t use.</html:p>
+
+  <!-- ============================ Enhanced links and relations -->
+  <groupbox>
+    <label><html:h2>Enhanced links and relations</html:h2></label>
+    <checkbox label="Enable enhanced links and relations" native="true"
+      preference="extensions.zotero.weavero.enableLinksAndRelations"/>
+    <html:p class="wv-desc">Master toggle for the link, markdown and relation features below.</html:p>
+
+    <vbox class="wv-children" data-master="enableLinksAndRelations">
+
+      <separator class="thin"/>
+      <label><html:h3>Display mode</html:h3></label>
+      <html:p class="wv-desc" style="margin-inline-start:0">How links and markdown appear in annotation comments and notes.</html:p>
+      <radiogroup id="wv-mode" orient="vertical">
+        <radio value="inline" label="Inline — render directly inside each comment and note"/>
+        <radio value="icon" label="Icon &amp; popup — keep text plain; an icon opens a rendered popup"/>
+      </radiogroup>
+
+      <html:p class="wv-desc" style="margin:8px 0 2px 0">Show:</html:p>
+      <vbox class="indented-pref">
+        <checkbox label="URLs" native="true" class="wv-mirror" data-wv-also="enableIconUrls"
+          preference="extensions.zotero.weavero.enableInlineUrls"/>
+        <checkbox label="Zotero links" native="true"
+          preference="extensions.zotero.weavero.enableZoteroLinks"/>
+        <checkbox label="App links (mailto:, obsidian://, …)" native="true" class="wv-mirror" data-wv-also="enableIconAppLinks"
+          preference="extensions.zotero.weavero.enableAppLinks"/>
+        <checkbox label="Markdown" native="true" class="wv-mirror" data-wv-also="enableIconMarkdown"
+          preference="extensions.zotero.weavero.enableCommentMarkdown"/>
+      </vbox>
+      <html:p class="wv-desc">Supported markdown: <html:strong>**bold**</html:strong>, <html:em>*italic*</html:em>, ~~strike~~, <html:span class="wv-mono">`code`</html:span>, <html:span class="wv-mono">[label](url)</html:span>. Pick which app-link schemes count in the section below.</html:p>
+
+      <separator class="thin"/>
+      <checkbox label="Icons over annotations in the Document view" native="true"
+        preference="extensions.zotero.weavero.enableReaderViewIcons"/>
+      <html:p class="wv-desc">Link / related-item badges drawn on the page over annotations that have a link or related items. Uncheck to keep the document free of overlays.</html:p>
+
+      <separator class="thin"/>
+      <label><html:h3>Apply to</html:h3></label>
+      <vbox class="indented-pref">
+        <checkbox label="Items list" native="true"
+          preference="extensions.zotero.weavero.enableItemsList"/>
+        <html:p class="wv-desc">Annotation rows under each item in the main library.</html:p>
+        <checkbox label="Annotations panel" native="true"
+          preference="extensions.zotero.weavero.enableRightPane"/>
+        <html:p class="wv-desc">The right pane when an item is selected.</html:p>
+        <checkbox label="Reader sidebar" native="true"
+          preference="extensions.zotero.weavero.enableReaderSidebar"/>
+        <html:p class="wv-desc">The annotation list on the left side of the reader.</html:p>
+        <checkbox label="Reader document view" native="true"
+          preference="extensions.zotero.weavero.enableReaderView"/>
+        <html:p class="wv-desc">In-document popups and link badges over annotation icons.</html:p>
+        <checkbox label="Notes" native="true"
+          preference="extensions.zotero.weavero.enableNotes"/>
+        <html:p class="wv-desc">Standalone and child notes across the items tree, the right-pane Notes section and the note editor. Default off.</html:p>
+      </vbox>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ App link schemes -->
+  <groupbox>
+    <label><html:h2>App link schemes</html:h2></label>
+    <html:p class="wv-desc" style="margin-inline-start:0">Which schemes Weavero recognises as app links in comments. Active only when <html:strong>App links</html:strong> is on above.</html:p>
+    <checkbox label="Open without confirmation dialog" native="true"
+      preference="extensions.zotero.weavero.enableAppLinksSkipConfirm"/>
+    <html:p class="wv-desc">Skip Firefox&#8217;s &#8220;Allow this site to open the … link?&#8221; prompt for the enabled schemes.</html:p>
+    <html:div class="wv-scheme-grid wv-mono">
+      <checkbox label="magnet:" native="true" tooltiptext="Torrent magnet links" preference="extensions.zotero.weavero.enableMagnetScheme"/>
+      <checkbox label="mailto:" native="true" tooltiptext="Email addresses" preference="extensions.zotero.weavero.enableMailtoScheme"/>
+      <checkbox label="skype:" native="true" tooltiptext="Skype calls / chats" preference="extensions.zotero.weavero.enableSkypeScheme"/>
+      <checkbox label="sms:" native="true" tooltiptext="SMS messages" preference="extensions.zotero.weavero.enableSmsScheme"/>
+      <checkbox label="spotify:" native="true" tooltiptext="Spotify tracks / playlists" preference="extensions.zotero.weavero.enableSpotifyScheme"/>
+      <checkbox label="tel:" native="true" tooltiptext="Phone numbers" preference="extensions.zotero.weavero.enableTelScheme"/>
+      <checkbox label="discord://" native="true" tooltiptext="Discord servers" preference="extensions.zotero.weavero.enableDiscordScheme"/>
+      <checkbox label="evernote://" native="true" tooltiptext="Evernote notes" preference="extensions.zotero.weavero.enableEvernoteScheme"/>
+      <checkbox label="figma://" native="true" tooltiptext="Figma files" preference="extensions.zotero.weavero.enableFigmaScheme"/>
+      <checkbox label="file://" native="true" tooltiptext="Local files" preference="extensions.zotero.weavero.enableFileScheme"/>
+      <checkbox label="ftp://" native="true" tooltiptext="FTP servers" preference="extensions.zotero.weavero.enableFtpScheme"/>
+      <checkbox label="msteams://" native="true" tooltiptext="Microsoft Teams" preference="extensions.zotero.weavero.enableMsteamsScheme"/>
+      <checkbox label="notion://" native="true" tooltiptext="Notion pages" preference="extensions.zotero.weavero.enableNotionScheme"/>
+      <checkbox label="obsidian://" native="true" tooltiptext="Obsidian notes" preference="extensions.zotero.weavero.enableObsidianScheme"/>
+      <checkbox label="slack://" native="true" tooltiptext="Slack channels" preference="extensions.zotero.weavero.enableSlackScheme"/>
+      <checkbox label="vscode://" native="true" tooltiptext="VS Code workspaces / files" preference="extensions.zotero.weavero.enableVscodeScheme"/>
+      <checkbox label="zoommtg://" native="true" tooltiptext="Zoom meetings" preference="extensions.zotero.weavero.enableZoomScheme"/>
+    </html:div>
+  </groupbox>
+
+  <!-- ============================ URI utilities -->
+  <groupbox>
+    <label><html:h2>URI utilities</html:h2></label>
+    <checkbox label="Enable URI utilities" native="true"
+      preference="extensions.zotero.weavero.enableUriUtilities"/>
+    <html:p class="wv-desc">Right-click items that copy <html:span class="wv-mono">zotero://</html:span> deep links to the clipboard.</html:p>
+    <vbox class="wv-children indented-pref" data-master="enableUriUtilities">
+      <checkbox label="“Copy Select Link” / “Copy Open Link” in the item menus" native="true"
+        preference="extensions.zotero.weavero.enableCopyItemLink"/>
+      <html:p class="wv-desc">Copies a <html:span class="wv-mono">zotero://select/…</html:span> link that navigates to the item.</html:p>
+      <checkbox label="“Copy Collection Link” / “Copy Saved Search Link”" native="true"
+        preference="extensions.zotero.weavero.enableCopyCollectionLink"/>
+      <html:p class="wv-desc">Adds a copy-link entry to the collections-tree right-click menu.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Relations and linked items -->
+  <groupbox>
+    <label><html:h2>Relations and linked items</html:h2></label>
+    <checkbox label="Enable relations and linked-items features" native="true"
+      preference="extensions.zotero.weavero.enableRelations"/>
+    <html:p class="wv-desc">Features built on Zotero&#8217;s related-items relations and the linked-items mechanism.</html:p>
+    <vbox class="wv-children indented-pref" data-master="enableRelations">
+      <checkbox label="“Add Related…” in the items-list menu" native="true"
+        preference="extensions.zotero.weavero.enableAddRelatedMenu"/>
+      <html:p class="wv-desc">Opens the select-items dialog and links the chosen items as related peers (multi-annotation aware).</html:p>
+      <checkbox label="Chain badge on annotation rows with related items" native="true"
+        preference="extensions.zotero.weavero.enableChainBadge"/>
+      <html:p class="wv-desc">A chain icon next to annotations that have related items; click it for the list.</html:p>
+      <checkbox label="“Open Related Item” submenu in the reader" native="true"
+        preference="extensions.zotero.weavero.enableOpenRelatedSubmenu"/>
+      <html:p class="wv-desc">Open in Reader / In New Window entries for each related item, in the annotation context menu.</html:p>
+      <checkbox label="Tint linked-libraries rows in the item pane" native="true"
+        preference="extensions.zotero.weavero.enableLibrariesHighlight"/>
+      <html:p class="wv-desc">Highlights the displayed item&#8217;s library row in the Libraries and Collections section.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Filters -->
+  <groupbox>
+    <label><html:h2>Filters</html:h2></label>
+    <checkbox label="Enable filters" native="true"
+      preference="extensions.zotero.weavero.enableFilters"/>
+    <html:p class="wv-desc">Master toggle for the filter features below.</html:p>
+    <vbox class="wv-children indented-pref" data-master="enableFilters">
+      <checkbox label="Items-tree filter pane" native="true"
+        preference="extensions.zotero.weavero.enableItemsTreeFilter"/>
+      <html:p class="wv-desc">The toolbar &#9662; button next to the search box, plus the filter popup (colour/type/file-type, tags, authors, collections, saved searches).</html:p>
+      <checkbox label="Selection Target tri-state" native="true"
+        preference="extensions.zotero.weavero.enableSelectionTarget"/>
+      <html:p class="wv-desc">Parent / Attachment / Annotation tickboxes that scope Ctrl+A and dim out-of-scope rows.</html:p>
+      <checkbox label="Tabs menu per-library filter" native="true"
+        preference="extensions.zotero.weavero.enableTabsLibraryFilter"/>
+      <html:p class="wv-desc">A tickbox next to each library header in the “List all tabs” popup, hiding those tabs.</html:p>
+      <checkbox label="Tabs menu file-type filter" native="true"
+        preference="extensions.zotero.weavero.enableTabsFileTypeFilter"/>
+      <html:p class="wv-desc">The funnel button in the “List all tabs” popup for a per-attachment-kind filter.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Bookmarks -->
+  <groupbox>
+    <label><html:h2>Bookmarks</html:h2></label>
+    <checkbox label="Enable bookmarks" native="true"
+      preference="extensions.zotero.weavero.enableBookmarks"/>
+    <html:p class="wv-desc">Master toggle for both bookmark scopes below.</html:p>
+    <html:p class="wv-note">Bookmarks don&#8217;t sync across computers yet — they&#8217;re stored locally in <html:span class="wv-mono">&lt;Zotero data dir&gt;/weavero/bookmarks.json</html:span>. (Will switch to Zotero&#8217;s plugin-managed synced storage once it ships.)</html:p>
+    <vbox class="wv-children indented-pref" data-master="enableBookmarks">
+      <checkbox label="Library bookmarks" native="true"
+        preference="extensions.zotero.weavero.enableLibraryBookmarks"/>
+      <html:p class="wv-desc">A Bookmarks dropdown on the collections-pane toolbar for items / collections / saved searches.</html:p>
+      <checkbox label="Document bookmarks" native="true"
+        preference="extensions.zotero.weavero.enableReaderBookmarks"/>
+      <html:p class="wv-desc">A Bookmarks tab in the reader sidebar for in-document locations. Drop an annotation or selection on it to bookmark.</html:p>
+      <checkbox label="Show Library bookmarks tab in the reader" native="true"
+        preference="extensions.zotero.weavero.showLibraryBookmarksInReader"/>
+      <html:p class="wv-desc">Browse library bookmarks alongside in-document ones (Ctrl-click to merge both views).</html:p>
+      <checkbox label="Auto-hide the Library button when empty" native="true"
+        preference="extensions.zotero.weavero.autoHideEmptyLibraryBookmarks"/>
+      <html:p class="wv-desc">Hide the toolbar Bookmarks button until the first library bookmark exists.</html:p>
+      <checkbox label="Auto-hide the reader tab when empty" native="true"
+        preference="extensions.zotero.weavero.autoHideEmptyReaderBookmarks"/>
+      <html:p class="wv-desc">Hide the reader Bookmarks tab until the current document has a bookmark.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Visual extras -->
+  <groupbox>
+    <label><html:h2>Visual extras</html:h2></label>
+    <checkbox label="Enable visual extras" native="true"
+      preference="extensions.zotero.weavero.enableVisualExtras"/>
+    <html:p class="wv-desc">Badges and columns attached to existing Zotero UI.</html:p>
+    <vbox class="wv-children indented-pref" data-master="enableVisualExtras">
+      <label><html:h3>Items-tree columns</html:h3></label>
+      <html:p class="wv-desc" style="margin-inline-start:0">Icon-only columns, hidden until you enable them from the column picker (right-click the items-tree header).</html:p>
+      <checkbox label="“Annotations” column" native="true"
+        preference="extensions.zotero.weavero.enableAnnotationsCountColumn"/>
+      <html:p class="wv-desc">Count of annotations on attachments (summed across attachments on regular items).</html:p>
+      <checkbox label="“Tags” column — add the automatic-tag count" native="true"
+        preference="extensions.zotero.weavero.enableTagsCountAuto"/>
+      <html:p class="wv-desc">Shows manual tags (blue) and automatic tags. Uncheck to show only the manual count.</html:p>
+      <checkbox label="“Related” column" native="true"
+        preference="extensions.zotero.weavero.enableRelatedColumn"/>
+      <html:p class="wv-desc">Count of related items per row.</html:p>
+
+      <separator class="thin"/>
+      <label><html:h3>Items list &amp; tabs</html:h3></label>
+      <checkbox label="Show Added By for annotations" native="true"
+        preference="extensions.zotero.weavero.enableAnnotationAddedBy"/>
+      <html:p class="wv-desc">In group libraries, a badge with the annotation&#8217;s creator next to its row.</html:p>
+      <checkbox label="Use a different colour per user in Added By" native="true"
+        preference="extensions.zotero.weavero.enableAddedByColors"/>
+      <html:p class="wv-desc">Tint the Added By text and badge with a per-user colour. Uncheck for the default text colour.</html:p>
+      <checkbox label="Group-library glyph + tooltip on tabs" native="true"
+        preference="extensions.zotero.weavero.enableGroupLibraryGlyph"/>
+      <html:p class="wv-desc">A cluster glyph on the file-type icon of tabs whose item is in a group library, plus a richer tooltip.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Window title bar -->
+  <groupbox>
+    <label><html:h2>Window title bar</html:h2></label>
+    <checkbox label="Hide title bar (Firefox-style)" native="true"
+      preference="extensions.zotero.weavero.compactTitleBar"/>
+    <html:p class="wv-desc">Replace the title bar with a browser-style bar — menus move out of the way (press Alt) and the window buttons move into the tab strip. Windows / Linux only. Default off.</html:p>
+    <vbox class="wv-children indented-pref" data-master="compactTitleBar">
+      <checkbox label="Main window" native="true"
+        preference="extensions.zotero.weavero.compactTitleBarMain"/>
+      <checkbox label="Separate reader window" native="true"
+        preference="extensions.zotero.weavero.compactTitleBarReader"/>
+      <checkbox label="Separate note window" native="true"
+        preference="extensions.zotero.weavero.compactTitleBarNote"/>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ External viewer -->
+  <groupbox>
+    <label><html:h2>External viewer</html:h2></label>
+    <checkbox label="“Open in External Viewer” in the item / tab menus" native="true"
+      preference="extensions.zotero.weavero.enableOpenExternalViewer"/>
+    <html:p class="wv-desc">Launch an item&#8217;s best attachment with the OS default app (PDF, EPUB, snapshot, image, …). Default off.</html:p>
+  </groupbox>
+
+  <!-- ============================ PDF reader outline -->
+  <groupbox>
+    <label><html:h2>PDF reader outline</html:h2></label>
+    <checkbox label="Highlight the heading text when clicking an outline entry" native="true"
+      preference="extensions.zotero.weavero.enableOutlineTextHighlight"/>
+    <html:p class="wv-desc">Flashes the actual heading text on click; for embedded outlines Weavero finds the heading on the page. Experimental; best-effort matching. Default off.</html:p>
+  </groupbox>
+
+  <!-- ============================ Multiple main windows -->
+  <groupbox>
+    <label><html:h2>Multiple main windows</html:h2></label>
+    <checkbox label="“New Main Window” in the tab right-click menu" native="true"
+      preference="extensions.zotero.weavero.devNewMainWindow"/>
+    <html:p class="wv-desc">Opens an independent second main window with its own tabs, columns, filters and pane widths; open windows are restored across restarts.</html:p>
+    <html:p class="wv-note">Experimental and incomplete — many tools and menus aren&#8217;t available in extra windows yet. Default off.</html:p>
+  </groupbox>
+
+  <!-- ============================ Debug -->
+  <groupbox>
+    <label><html:h2>Debug</html:h2></label>
+    <checkbox label="Enable debug logging" native="true"
+      preference="extensions.zotero.weavero.debug"/>
+    <html:p class="wv-desc">Emits detailed activity via Zotero.debug (Help → Debug Output Logging → View Output). Leave off for normal use.</html:p>
+  </groupbox>
+
+  <!-- ============================ About -->
+  <groupbox>
+    <label><html:h2>About</html:h2></label>
+    <html:div class="wv-links">
+      <label class="zotero-text-link keyboard-clickable" is="zotero-text-link" role="link"
+        href="https://github.com/mjthoraval/Weavero" value="Homepage — GitHub"/>
+      <label value="  |  "/>
+      <label class="zotero-text-link keyboard-clickable" is="zotero-text-link" role="link"
+        href="https://github.com/mjthoraval/Weavero/issues" value="Bug report / feature request"/>
+    </html:div>
+  </groupbox>
+
+</vbox>

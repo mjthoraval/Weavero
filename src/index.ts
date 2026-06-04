@@ -3195,6 +3195,8 @@ class WeaveroPlugin {
             // select in another window can't show its item pane here (applies to
             // every main window — the anchor leaks too; no-op single-window).
             try { this._wvGuardContextPaneCrossWindow(_window); } catch (e) {}
+            // Mark the My Library tab of the anchor (untagged) window.
+            try { this._wvUpdateMainWindowIndicator(_window); } catch (e) {}
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();

@@ -1534,6 +1534,8 @@ class _TabsMixin {
             if (oldest && oldest._wvManagedWindow) {
                 delete oldest._wvManagedWindow;
                 Zotero.debug("[Weavero] promoted new oldest window to anchor");
+                // The promoted window is now the anchor → give it the indicator.
+                try { this._wvUpdateMainWindowIndicator(oldest); } catch (e) {}
             }
         } catch (e) { Zotero.debug("[Weavero] _wvNormalizeAnchor err: " + e); }
     }
@@ -1859,8 +1861,38 @@ class _TabsMixin {
     _wvGuardAllContextPanes() {
         try {
             const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
-            for (const w of wins) { try { this._wvGuardContextPaneCrossWindow(w); } catch (e) {} }
+            for (const w of wins) {
+                try { this._wvGuardContextPaneCrossWindow(w); } catch (e) {}
+                try { this._wvUpdateMainWindowIndicator(w); } catch (e) {}
+            }
         } catch (e) {}
+    }
+
+    /** Mark the My Library tab of the ANCHOR window (the untagged primary) with
+     *  a small accent dot, so the user can tell at a glance which window is the
+     *  "main" one. Managed windows get no mark. Done with a window-root class +
+     *  a CSS rule targeting the stable `data-id` selector — NOT a class on the
+     *  tab element itself, which React re-renders would wipe. */
+    _wvUpdateMainWindowIndicator(win) {
+        try {
+            const d = win && win.document;
+            if (!d) return;
+            // Class/attribute-only selector (NO `html` element name): the main
+            // window's root is XUL <window>, so a type selector like `html` is in
+            // the wrong namespace and wouldn't match.
+            const css = `.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"] .tab-name::before{`
+                + `content:"";display:inline-block;width:6px;height:6px;margin-inline-end:5px;border-radius:50%;`
+                + `background:var(--color-accent,#4072e5);vertical-align:middle;flex:0 0 auto;}`;
+            let st: any = d.getElementById("wv-anchor-indicator-style");
+            if (!st) {
+                st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                st.id = "wv-anchor-indicator-style";
+                (d.head || d.documentElement).appendChild(st);
+            }
+            if (st.textContent !== css) st.textContent = css;   // refresh if rule changed
+            // Anchor = the untagged window; managed windows are tagged.
+            d.documentElement.classList.toggle("wv-anchor-window", !win._wvManagedWindow);
+        } catch (e) { Zotero.debug("[Weavero] _wvUpdateMainWindowIndicator err: " + e); }
     }
 
     _teardownTabBarLibraryDecoration(win) {

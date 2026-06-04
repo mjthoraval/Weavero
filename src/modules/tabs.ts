@@ -1878,6 +1878,50 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowSidebar err: " + e); }
     }
 
+    // ---- Per-window pane widths (pane.persist) -----------------------------
+    // ZoteroPane.unserializePersist reads the GLOBAL `pane.persist` pref once at
+    // pane init; serializePersist OVERWRITES that same global pref with THIS
+    // window's DOM widths at window destroy (zoteroPane.js). So closing a
+    // managed window clobbers the global with its pane widths and the anchor
+    // restores the wrong widths next session — cross-session contamination, not
+    // live. Fix (managed windows only): re-point serializePersist to write a
+    // per-window key, never the global. The READ stays global by design —
+    // managed windows inherit the anchor's widths when they open
+    // (unserializePersist runs at pane init, before onMainWindowLoad can wrap
+    // it, and the per-window key is fresh each session anyway). The anchor keeps
+    // writing the global (works without Weavero). Installed at open, long before
+    // the window's eventual destroy.
+    _wvApplyPerWindowPanePersist(win) {
+        try {
+            if (!win || !win._wvManagedWindow) return;
+            const zp: any = win.ZoteroPane;
+            if (!zp || zp._wvPanePersistIsolated) return;
+            if (typeof zp.serializePersist !== "function") return;
+            zp._wvPanePersistIsolated = true;
+            const key = "pane.persist.wv" + (this._wvPanePersistSeq = (this._wvPanePersistSeq || 0) + 1);
+            zp._wvPanePersistKey = key;
+            const doc = win.document;
+            zp.serializePersist = function () {
+                try {
+                    const serializedValues: any = {};
+                    const persisted = new Set();
+                    for (const el of doc.querySelectorAll("[zotero-persist]")) {
+                        if (!el.getAttribute) continue;
+                        const id = el.getAttribute("id");
+                        if (!id) continue;
+                        const elValues: any = {};
+                        for (const attr of (el.getAttribute("zotero-persist") || "").split(/[\s,]+/)) {
+                            if (el.hasAttribute(attr)) { elValues[attr] = el.getAttribute(attr); persisted.add(id); }
+                        }
+                        serializedValues[id] = elValues;
+                    }
+                    for (const i in serializedValues) { if (!persisted.has(i)) delete serializedValues[i]; }
+                    Zotero.Prefs.set(key, JSON.stringify(serializedValues));   // per-window key, NEVER the global
+                } catch (e) { Zotero.debug("[Weavero] serializePersist(wv) err: " + e); }
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowPanePersist err: " + e); }
+    }
+
     // ---- Context-pane cross-window leak guard ------------------------------
     // Zotero's context-pane element reacts to the GLOBAL 'tab' Notifier and
     // reads the tab TYPE from the event (`extraData[tabID].type`), never
@@ -1935,7 +1979,8 @@ class _TabsMixin {
             for (const w of wins) {
                 try { this._wvGuardContextPaneCrossWindow(w); } catch (e) {}
                 try { this._wvUpdateMainWindowIndicator(w); } catch (e) {}
-                try { this._wvApplyPerWindowSidebar(w); } catch (e) {}   // managed windows only (gated inside)
+                try { this._wvApplyPerWindowSidebar(w); } catch (e) {}       // managed windows only (gated inside)
+                try { this._wvApplyPerWindowPanePersist(w); } catch (e) {}   // managed windows only (gated inside)
             }
         } catch (e) {}
     }

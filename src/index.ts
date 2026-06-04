@@ -3185,6 +3185,9 @@ class WeaveroPlugin {
                     // Give this managed window its own items-tree column layout
                     // (else it shares/clobbers the primary's via treePrefs.json).
                     try { this._wvScheduleApplyPerWindowColumns(_window); } catch (e) {}
+                    // ...and its own reader/note sidebar state (else it shares the
+                    // global `sidebarState` pref with every other window).
+                    try { this._wvApplyPerWindowSidebar(_window); } catch (e) {}
                     // Chain the next queued dev window, if any. (We do NOT restore
                     // the cleared session pane state here — that re-populated it
                     // before the new window read it → the flash. It self-heals on

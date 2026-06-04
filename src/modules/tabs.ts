@@ -1838,6 +1838,46 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowColumns err: " + e); }
     }
 
+    // ---- Per-window reader/note sidebar state (consistency plan) ----------
+    // Zotero stores the reader/note sidebar (annotation panel) open+width per
+    // TAB TYPE in ONE global pref `sidebarState` (tabs.js _loadSidebarState /
+    // _saveSidebarState), shared by every window → resizing the sidebar in one
+    // window follows in the others. Fix (managed windows only): re-point those
+    // two methods to a per-window pref key, seeded once from the global. The
+    // anchor keeps the global `sidebarState` (works without Weavero). Lazy-
+    // loaded, so wrapping at onMainWindowLoad lands before first use.
+    _wvApplyPerWindowSidebar(win) {
+        try {
+            if (!win || !win._wvManagedWindow) return;
+            const tabs: any = win.Zotero_Tabs;
+            if (!tabs || tabs._wvSidebarIsolated) return;
+            if (typeof tabs._loadSidebarState !== "function" || typeof tabs._saveSidebarState !== "function") return;
+            tabs._wvSidebarIsolated = true;
+            const key = "sidebarState.wv" + (this._wvSidebarSeq = (this._wvSidebarSeq || 0) + 1);
+            tabs._wvSidebarKey = key;
+            const self = tabs;
+            tabs._loadSidebarState = function () {
+                let raw: any = Zotero.Prefs.get(key);
+                if (raw == null || raw === "" || raw === "{}") raw = Zotero.Prefs.get("sidebarState") || "{}";  // seed from global once
+                let st: any = {};
+                try {
+                    st = JSON.parse(raw) || {};
+                    for (const t in st) { if (typeof st[t].width !== "number" || st[t].width < 100) st[t].width = 300; }
+                } catch (e) { st = {}; }
+                self._sidebarState = st;
+            };
+            tabs._saveSidebarState = function () {
+                let s: any;
+                try { s = JSON.stringify(self._sidebarState); }
+                catch (e) { s = JSON.stringify({ reader: { width: 300, open: false }, note: { width: 300, open: false } }); }
+                Zotero.Prefs.set(key, s);
+            };
+            // If the sidebar state was already loaded from the global before we
+            // wrapped, persist it under our key so future reads use it.
+            if (self._sidebarState) { try { tabs._saveSidebarState(); } catch (e) {} }
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowSidebar err: " + e); }
+    }
+
     // ---- Context-pane cross-window leak guard ------------------------------
     // Zotero's context-pane element reacts to the GLOBAL 'tab' Notifier and
     // reads the tab TYPE from the event (`extraData[tabID].type`), never
@@ -1895,6 +1935,7 @@ class _TabsMixin {
             for (const w of wins) {
                 try { this._wvGuardContextPaneCrossWindow(w); } catch (e) {}
                 try { this._wvUpdateMainWindowIndicator(w); } catch (e) {}
+                try { this._wvApplyPerWindowSidebar(w); } catch (e) {}   // managed windows only (gated inside)
             }
         } catch (e) {}
     }

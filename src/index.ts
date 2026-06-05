@@ -1804,6 +1804,9 @@ class WeaveroPlugin {
                 // Compact title bar — master is OFF, but the per-window subs
                 // default ON (so enabling the master turns all three on).
                 "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
+                // Multiple main windows — feature master (devNewMainWindow) is
+                // OFF, but its restore-on-restart sub-option defaults ON.
+                "devSessionAutoReopen",
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",

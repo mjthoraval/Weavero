@@ -72,29 +72,37 @@
      *  blocks pointer events when its master pref is off. Native binding writes
      *  the master pref on toggle; a pref observer keeps the grey-out live. */
     function bindMasterDisable(doc) {
-        const groups = Array.from(
-            doc.querySelectorAll(".wv-children[data-master]")) as any[];
-        if (!groups.length) return;
+        // Two ways an element is gated by a master pref:
+        //   .wv-children[data-master]  — a section's own child container
+        //   [data-gated-by]            — a whole sub-section gated by another
+        //                                section's master (e.g. the Extras
+        //                                sub-sections under "Enable visual extras")
+        const items: any[] = [];
+        for (const el of Array.from(doc.querySelectorAll(".wv-children[data-master]")) as any[]) {
+            items.push({ el, pref: el.getAttribute("data-master") });
+        }
+        for (const el of Array.from(doc.querySelectorAll("[data-gated-by]")) as any[]) {
+            items.push({ el, pref: el.getAttribute("data-gated-by") });
+        }
+        if (!items.length) return;
         const win = doc.defaultView || (typeof window !== "undefined" ? window : null);
         const observers: any[] = [];
-        const sync = (el, master) => {
+        const sync = (el, pref) => {
             let on = true;
             try {
-                const v = Zotero.Prefs.get("weavero." + master);
+                const v = Zotero.Prefs.get("weavero." + pref);
                 on = v === undefined ? true : !!v;
             } catch (e) {}
             el.classList.toggle("wv-disabled", !on);
         };
-        for (const el of groups) {
-            if (el._wvMasterBound) continue;
+        for (const { el, pref } of items) {
+            if (!pref || el._wvMasterBound) continue;
             el._wvMasterBound = true;
-            const master = el.getAttribute("data-master");
-            if (!master) continue;
-            sync(el, master);
+            sync(el, pref);
             try {
-                const full = PREFIX + master;
+                const full = PREFIX + pref;
                 const obs = {
-                    observe: (_s, _t, data) => { if (data === full) sync(el, master); }
+                    observe: (_s, _t, data) => { if (data === full) sync(el, pref); }
                 };
                 Services.prefs.addObserver(full, obs, false);
                 observers.push({ full, obs });
@@ -109,10 +117,249 @@
         }
     }
 
+    /** Sticky section strip (the old design's tabs, as scroll-nav). The
+     *  `.wv-nav-tab` buttons each carry a `data-target` groupbox id; clicking
+     *  scrolls there. Every groupbox is mapped (by DOM order, between the
+     *  target ids) to one of the four groups, and an IntersectionObserver
+     *  highlights the tab of the topmost group currently in view. */
+    function bindSectionNav(doc) {
+        const nav: any = doc.querySelector(".wv-nav");
+        if (!nav || nav._wvNavBound) return;
+        const tabs = Array.from(nav.querySelectorAll(".wv-nav-tab")) as any[];
+        const mainSec = nav.parentElement;   // Weavero's own .main-section
+        if (!tabs.length || !mainSec) return;
+        nav._wvNavBound = true;
+        const targetIds = tabs.map(t => t.getAttribute("data-target"));
+        const groupboxes = Array.from(mainSec.children).filter(
+            (g: any) => g.localName === "groupbox") as any[];
+        // Assign each groupbox a group index = the most recent target id at/above it.
+        let gi = 0;
+        for (const gb of groupboxes) {
+            const idx = targetIds.indexOf(gb.id);
+            if (idx !== -1) gi = idx;
+            gb._wvGroup = gi;
+        }
+        // Click a tab -> scroll its target groupbox to the top.
+        tabs.forEach((t) => {
+            t.addEventListener("click", () => {
+                const tgt = doc.getElementById(t.getAttribute("data-target"));
+                if (tgt && tgt.scrollIntoView) {
+                    try { tgt.scrollIntoView({ block: "start", behavior: "smooth" }); }
+                    catch (e) { tgt.scrollIntoView(); }
+                }
+            });
+        });
+        // Master on/off status dot per tab: filled green when the section's
+        // master toggle is on, hollow when off. Derives the master pref from
+        // the target section's header checkbox, and tracks it live.
+        const view0: any = doc.defaultView;
+        const masterObs: any[] = [];
+        tabs.forEach((t) => {
+            const tgt = doc.getElementById(t.getAttribute("data-target"));
+            const cb: any = tgt && tgt.querySelector(".wv-tophead checkbox[preference]");
+            const master = cb ? (cb.getAttribute("preference") || "").replace(PREFIX, "") : "";
+            if (!master) return;
+            let dot: any = t.querySelector(".wv-nav-dot");
+            if (!dot) {
+                dot = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+                dot.className = "wv-nav-dot";
+                dot.setAttribute("aria-hidden", "true");
+                t.insertBefore(dot, t.firstChild);
+            }
+            const sync = () => {
+                let on = true;
+                try {
+                    const v = Zotero.Prefs.get("weavero." + master);
+                    on = v === undefined ? true : !!v;
+                } catch (e) {}
+                t.classList.toggle("wv-master-off", !on);
+            };
+            sync();
+            try {
+                const full = PREFIX + master;
+                const obs = { observe: (_s, _t, data) => { if (data === full) sync(); } };
+                Services.prefs.addObserver(full, obs, false);
+                masterObs.push({ full, obs });
+            } catch (e) { dbg("nav master observer err: " + e); }
+        });
+        if (view0 && masterObs.length) {
+            view0.addEventListener("unload", () => {
+                for (const o of masterObs) {
+                    try { Services.prefs.removeObserver(o.full, o.obs); } catch (e) {}
+                }
+            }, { once: true });
+        }
+        const setActive = (i) => tabs.forEach((t, k) => t.classList.toggle("is-active", k === i));
+        setActive(0);
+        // Scroll-sync: highlight the tab of the topmost group in view.
+        try {
+            const view: any = doc.defaultView;
+            if (view && view.IntersectionObserver) {
+                const visible = new Set<any>();
+                const io = new view.IntersectionObserver((entries) => {
+                    for (const e of entries) {
+                        if (e.isIntersecting) visible.add(e.target); else visible.delete(e.target);
+                    }
+                    for (const gb of groupboxes) {
+                        if (visible.has(gb)) { setActive(gb._wvGroup); break; }
+                    }
+                }, { rootMargin: "-50px 0px -60% 0px", threshold: 0 });
+                for (const gb of groupboxes) io.observe(gb);
+            }
+        } catch (e) { dbg("section nav observer err: " + e); }
+    }
+
+    /** Live preview of the over-annotation badges next to the "Icons over
+     *  annotations" toggle. Reuses the plugin's real icon builders
+     *  (_makeLinkSvg / _makeRelationsSvg) so the preview is pixel-identical to
+     *  what the reader draws. Theme: _makeLinkSvg keys off `wv-ui-dark` on the
+     *  documentElement, which the prefs window doesn't carry — so set it for
+     *  the build when the pane is dark, then restore. */
+    function bindReaderIconPreview(doc) {
+        const host: any = doc.querySelector(".wv-readericon-preview");
+        if (!host || host._wvIconsBuilt) return;
+        let plugin: any = null;
+        try { plugin = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) {}
+        if (!plugin || typeof plugin._makeLinkSvg !== "function") return;
+        host._wvIconsBuilt = true;
+        let dark = false;
+        try {
+            const win: any = doc.defaultView;
+            dark = !!(win && win.matchMedia && win.matchMedia("(prefers-color-scheme: dark)").matches);
+        } catch (e) {}
+        const root = doc.documentElement;
+        const added = dark && root && !root.classList.contains("wv-ui-dark");
+        if (added) { try { root.classList.add("wv-ui-dark"); } catch (e) {} }
+        try {
+            host.appendChild(plugin._makeLinkSvg(doc));
+            host.appendChild(plugin._makeRelationsSvg(doc));
+        } catch (e) { dbg("reader icon preview err: " + e); }
+        finally { if (added) { try { root.classList.remove("wv-ui-dark"); } catch (e) {} } }
+    }
+
+    /** Weavero's own `.main-section` (the prefs window has one per pane, and a
+     *  bare `.main-section` query returns the first/General one). Anchor on a
+     *  Weavero-specific element and climb to its section. */
+    function wvMainSection(doc) {
+        try {
+            const anchor = doc.getElementById("wv-sec-links") || doc.querySelector(".wv-nav");
+            if (!anchor) return null;
+            return anchor.closest ? anchor.closest(".main-section") : anchor.parentElement;
+        } catch (e) { return null; }
+    }
+
+    /** Per-section collapse arrow. prefs.js inserts a ▸ at the front of each
+     *  section header; clicking it (or the title, or Enter/Space when the arrow
+     *  is focused) collapses the whole section to just its header — its master
+     *  card, body, and any [data-gated-by] sub-sections below it. CSS hides
+     *  those while `.wv-collapsed` is set, EXCEPT when the pane carries
+     *  `.wv-searching` (see bindSearchExpand), so a search still reveals
+     *  everything. The master toggle (right end of the header) is left
+     *  untouched — collapsing is purely visual. Collapse state is persisted in
+     *  `weavero._prefsCollapsed` (comma-list of master pref names) and restored
+     *  on the next open. */
+    function bindCollapse(doc) {
+        const readSet = () => {
+            try {
+                const v = Zotero.Prefs.get("weavero._prefsCollapsed");
+                return new Set(v ? String(v).split(",").filter(Boolean) : []);
+            } catch (e) { return new Set(); }
+        };
+        const writeSet = (set) => {
+            try { Zotero.Prefs.set("weavero._prefsCollapsed", Array.from(set).join(",")); }
+            catch (e) { dbg("collapse persist err: " + e); }
+        };
+        const tops = Array.from(doc.querySelectorAll("groupbox.wv-top")) as any[];
+        for (const gb of tops) {
+            if (gb._wvCollapseBound) continue;
+            const head: any = gb.querySelector(".wv-tophead");
+            if (!head) continue;
+            gb._wvCollapseBound = true;
+            // The section's gated sub-sections (flat siblings) share the
+            // header checkbox's master pref via [data-gated-by].
+            const cb: any = head.querySelector("checkbox[preference]");
+            const master = cb ? (cb.getAttribute("preference") || "").replace(PREFIX, "") : "";
+            const sibs = master
+                ? (Array.from(doc.querySelectorAll('[data-gated-by="' + master + '"]')) as any[])
+                : [];
+            let arrow: any = head.querySelector(".wv-collapse-arrow");
+            if (!arrow) {
+                arrow = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+                arrow.className = "wv-collapse-arrow";
+                arrow.textContent = "▸";   // ▸
+                // Keyboard-operable: focusable + Enter/Space toggle (below).
+                arrow.setAttribute("tabindex", "0");
+                arrow.setAttribute("role", "button");
+                arrow.setAttribute("aria-label", "Collapse or expand this section");
+                head.insertBefore(arrow, head.firstChild);
+            }
+            const apply = (collapsed) => {
+                gb.classList.toggle("wv-collapsed", collapsed);
+                for (const s of sibs) s.classList.toggle("wv-collapsed-sib", collapsed);
+                arrow.setAttribute("aria-expanded", String(!collapsed));
+            };
+            // Restore persisted state on mount.
+            apply(master ? readSet().has(master) : false);
+            const toggle = () => {
+                const collapsed = !gb.classList.contains("wv-collapsed");
+                apply(collapsed);
+                if (master) {
+                    const set = readSet();
+                    if (collapsed) set.add(master); else set.delete(master);
+                    writeSet(set);
+                }
+            };
+            arrow.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+            arrow.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+                    e.preventDefault(); e.stopPropagation(); toggle();
+                }
+            });
+            const h2: any = head.querySelector("h2");
+            if (h2) h2.addEventListener("click", toggle);
+        }
+    }
+
+    /** Reveal matches inside a collapsed section. Zotero's search highlights a
+     *  match but never opens a <details>, so while the Settings search box has
+     *  text we force every `.wv-collapsible` open (App link schemes) AND mark
+     *  the pane `.wv-searching` so the collapse CSS stops hiding collapsed
+     *  sections; when it's cleared we undo both. `document` is the prefs window,
+     *  so the search field is reachable directly. */
+    function bindSearchExpand(doc) {
+        let sf: any = null;
+        try { sf = document.getElementById("prefs-search"); } catch (e) {}
+        if (!sf || sf._wvExpandBound) return;
+        sf._wvExpandBound = true;
+        const apply = () => {
+            try {
+                const active = !!(sf.value && String(sf.value).trim());
+                const ms = wvMainSection(doc);
+                if (ms) ms.classList.toggle("wv-searching", active);
+                const items = doc.querySelectorAll("details.wv-collapsible");
+                for (const dt of items as any) {
+                    if (active) {
+                        if (!dt.open) { dt.dataset.wvForcedOpen = "1"; dt.open = true; }
+                    } else if (dt.dataset.wvForcedOpen) {
+                        dt.open = false;
+                        delete dt.dataset.wvForcedOpen;
+                    }
+                }
+            } catch (e) { dbg("searchExpand err: " + e); }
+        };
+        sf.addEventListener("command", apply);
+        sf.addEventListener("input", apply);
+        apply();   // sync now in case the pane mounts with a search already typed
+    }
+
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
+        try { bindSectionNav(doc); } catch (e) { dbg("bindSectionNav err: " + e); }
+        try { bindCollapse(doc); } catch (e) { dbg("bindCollapse err: " + e); }
+        try { bindReaderIconPreview(doc); } catch (e) { dbg("bindReaderIconPreview err: " + e); }
+        try { bindSearchExpand(doc); } catch (e) { dbg("bindSearchExpand err: " + e); }
     }
 
     /** Zotero runs pane scripts BEFORE appending the pane fragment, so our

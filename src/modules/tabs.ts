@@ -783,6 +783,82 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
     }
 
+    /** Move a reader/note tab from one MAIN window's strip to another:
+     *  close it in the source window (flushing its state), then reopen it in
+     *  the target window at the drop slot, auto-pinning if it landed in the
+     *  pinned region. `Zotero.Reader.open` has no window param — it opens in
+     *  the most-recently-active main window (reader.js:2731) — so we focus the
+     *  target first; notes go through that window's own `ZoteroPane.openNote`.
+     *  Mirrors the reader-merge drop's place-and-pin poll. */
+    _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
+        try {
+            const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
+            if (itemID == null || !targetWin) return;
+            const isNote = payload.readerType === "note" || payload.tabType === "note";
+            // 1) Close the source tab in its own window (flushes its state).
+            try {
+                const srcTabs: any = srcWin && (srcWin as any).Zotero_Tabs;
+                if (srcTabs && payload.sourceTabId && typeof srcTabs.close === "function") {
+                    srcTabs.close(payload.sourceTabId);
+                }
+            } catch (e) {}
+            // 2) Focus the target so getMainWindow() resolves to it, then open.
+            try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+            const Z_Tabs: any = (targetWin as any).Zotero_Tabs;
+            const place = () => {
+                const startTs = Date.now();
+                const poll = () => {
+                    try {
+                        if (!Z_Tabs || !Z_Tabs._tabs) return;
+                        const tab = Z_Tabs._tabs.find((t: any) => t && t.data && t.data.itemID === itemID);
+                        if (!tab) {
+                            if (Date.now() - startTs < 2000) targetWin.setTimeout(poll, 80);
+                            return;
+                        }
+                        // Position the new tab at the drop slot.
+                        try {
+                            if (typeof Z_Tabs.move === "function") {
+                                const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
+                                Z_Tabs.move(tab.id, clamped);
+                            }
+                        } catch (e) {}
+                        // Auto-pin if dropped inside the pinned region.
+                        const curIdx = Z_Tabs._tabs.indexOf(tab);
+                        if (curIdx <= maxOtherPinned && curIdx > 0) {
+                            try {
+                                const item: any = Zotero.Items.get(itemID);
+                                if (item) {
+                                    this._pinnedTabsAdd(item.libraryID, item.key);
+                                    this._applyPinnedTabs(targetWin);
+                                }
+                            } catch (e) {}
+                        }
+                    } catch (e) {}
+                };
+                targetWin.setTimeout(poll, 200);
+            };
+            const open = () => {
+                try {
+                    if (isNote) {
+                        const ZP: any = (targetWin as any).ZoteroPane;
+                        if (ZP && typeof ZP.openNote === "function") ZP.openNote(itemID, { openInWindow: false });
+                        else if (ZP && typeof ZP.viewNote === "function") ZP.viewNote(itemID);
+                    } else {
+                        try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+                        (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true });
+                    }
+                } catch (e) { Zotero.debug("[Weavero] _wvMoveTabBetweenMains open err: " + e); }
+                place();
+            };
+            // Defer the open a tick so the source tab's final state write lands
+            // before the new tab reads it back (mirrors _moveReaderToTab's 120ms).
+            const st = (targetWin && targetWin.setTimeout) ? targetWin.setTimeout.bind(targetWin) : setTimeout;
+            st(open, 140);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvMoveTabBetweenMains err: " + e);
+        }
+    }
+
     /** Wire dragstart / dragend on the tab-bar container so dragging a
      *  regular tab INTO the pinned region pins it, and dragging a pinned
      *  tab OUT of the pinned region unpins it.
@@ -837,6 +913,37 @@ class _TabsMixin {
                         wasPinned: self._pinnedTabsHas(k.libraryID, k.itemKey),
                         initialIndex: Z_Tabs._tabs.indexOf(zotTab),
                     };
+                    // Cross-main-window move: stamp the drag so ANOTHER main
+                    // window's strip can absorb it. The merge ghost reads
+                    // `_wvMergeDragInfo`; the drop reads the MIME payload +
+                    // `_wvMainTabDragSourceWin` (to close the source tab).
+                    // Same-window drags carry it too, but dragover/drop ignore
+                    // it when source === target, so native reorder/pin is
+                    // untouched.
+                    try {
+                        const isNote = (zotTab.type === "note");
+                        const mergeRt = isNote ? "note" : (self._wvTabDrag.readerType || "");
+                        if (e.dataTransfer) {
+                            e.dataTransfer.setData("application/x-weavero-tab-move", JSON.stringify({
+                                itemID: self._wvTabDrag.itemID,
+                                readerType: mergeRt,
+                                tabType: zotTab.type || "",
+                                sourceTabId: tabID,
+                            }));
+                        }
+                        // Set on the LIVE plugin (not the closure `self`):
+                        // after a reload the old listeners keep firing with a
+                        // stale `self`, but every window reads the single live
+                        // Zotero.Weavero.plugin — so the source-window ref and
+                        // ghost info must live there to be seen cross-window.
+                        const lp: any = (Zotero as any).Weavero?.plugin || self;
+                        lp._wvMainTabDragSourceWin = win;
+                        lp._wvMergeDragInfo = {
+                            itemID: self._wvTabDrag.itemID,
+                            title: self._wvTabDrag.title || "",
+                            readerType: mergeRt,
+                        };
+                    } catch (er3) {}
                     // Mount the overlay on every standalone reader window
                     // for the duration of this drag — keeps the dragged tab
                     // from scrolling/jumping any reader-window content.
@@ -865,6 +972,42 @@ class _TabsMixin {
                     return "";
                 } catch (er) { return ""; }
             };
+            // Drop-position helpers (shared by the cross-main branch): the
+            // Z_Tabs index a drop at clientX targets, and the rightmost OTHER
+            // currently-pinned slot (≤ it → land in the pinned region → pin).
+            const dropTargetIndex = (clientX: number) => {
+                const Z_Tabs: any = (win as any).Zotero_Tabs;
+                let targetIndex = (Z_Tabs && Z_Tabs._tabs) ? Z_Tabs._tabs.length : 1;
+                try {
+                    const tabNodes = Array.from(doc.querySelectorAll(
+                        "#tab-bar-container .tab[data-id]")) as any[];
+                    for (let i = 0; i < tabNodes.length; i++) {
+                        const r = tabNodes[i].getBoundingClientRect();
+                        const mid = r.left + r.width / 2;
+                        if (clientX < mid) {
+                            const did = tabNodes[i].getAttribute("data-id");
+                            const z = Z_Tabs && Z_Tabs._tabs
+                                ? Z_Tabs._tabs.findIndex((t: any) => t && t.id === did) : i;
+                            targetIndex = z >= 0 ? z : i;
+                            break;
+                        }
+                    }
+                } catch (er) {}
+                return targetIndex;
+            };
+            const rightmostOtherPinned = () => {
+                const Z_Tabs: any = (win as any).Zotero_Tabs;
+                let maxOtherPinned = 0;
+                try {
+                    for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                        const t = Z_Tabs._tabs[i];
+                        const k = self._tabPinKey(t);
+                        if (!k) continue;
+                        if (self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
+                    }
+                } catch (er) {}
+                return maxOtherPinned;
+            };
             // Live preview during drag: as the dragged tab crosses into /
             // out of the pinned region (each Z_Tabs.move reflows the DOM),
             // toggle the data-wv-pin-preview attribute on its tab node.
@@ -881,7 +1024,16 @@ class _TabsMixin {
                     try {
                         const types = e.dataTransfer && e.dataTransfer.types;
                         const arr = types ? (Array.from(types) as string[]) : [];
-                        if (arr.indexOf("application/x-weavero-reader-merge") >= 0) {
+                        const liveP: any = (Zotero as any).Weavero?.plugin;
+                        const isReaderMerge = arr.indexOf("application/x-weavero-reader-merge") >= 0;
+                        // Cross-main move: a tab dragged from ANOTHER main
+                        // window's strip (source !== this window). Same-window
+                        // drags carry the MIME too, but are left to the native
+                        // reorder/pin path below.
+                        const isCrossMain = arr.indexOf("application/x-weavero-tab-move") >= 0
+                            && liveP && liveP._wvMainTabDragSourceWin
+                            && liveP._wvMainTabDragSourceWin !== win;
+                        if (isReaderMerge || isCrossMain) {
                             e.preventDefault();
                             e.dataTransfer.dropEffect = "move";
                             // Render a ghost tab at the drop position — same
@@ -1013,6 +1165,32 @@ class _TabsMixin {
                     clearMergeMarkers();
                     const types = e.dataTransfer && e.dataTransfer.types;
                     const arr = types ? (Array.from(types) as string[]) : [];
+                    // Cross-main-window move: a reader/note tab dragged from
+                    // ANOTHER main window's strip. Close it in its own window
+                    // and reopen it here at the drop slot. Same-window drags
+                    // (source === this window) fall through to native reorder.
+                    if (arr.indexOf("application/x-weavero-tab-move") >= 0) {
+                        const live: any = (Zotero as any).Weavero?.plugin;
+                        const srcWin = live && live._wvMainTabDragSourceWin;
+                        if (live && srcWin && srcWin !== win) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            // Mark so the source window's dragend skips its
+                            // tear-off path (drop fires before dragend).
+                            live._wvSuppressNextTearOff = true;
+                            let payload: any = null;
+                            try { payload = JSON.parse(e.dataTransfer.getData("application/x-weavero-tab-move")); }
+                            catch (er) {}
+                            if (payload && payload.itemID != null
+                                    && typeof live._wvMoveTabBetweenMains === "function") {
+                                const targetIndex = dropTargetIndex(e.clientX);
+                                const maxOtherPinned = rightmostOtherPinned();
+                                try { live._wvMoveTabBetweenMains(srcWin, win, payload, targetIndex, maxOtherPinned); }
+                                catch (er) {}
+                            }
+                            return;
+                        }
+                    }
                     if (arr.indexOf("application/x-weavero-reader-merge") < 0) return;
                     e.preventDefault();
                     e.stopPropagation();
@@ -1139,9 +1317,20 @@ class _TabsMixin {
                     for (const n of doc.querySelectorAll(".tab[data-wv-pin-preview]")) {
                         n.removeAttribute("data-wv-pin-preview");
                     }
+                    // Cross-main cleanup (runs on the SOURCE window's dragend).
+                    // Clear the shared drag state; if a cross-main drop already
+                    // handled this tab (it set the suppress flag and closed the
+                    // source tab), skip the tear-off/pin path below.
+                    const liveEnd: any = (Zotero as any).Weavero?.plugin;
+                    const suppress = !!(liveEnd && liveEnd._wvSuppressNextTearOff);
+                    if (liveEnd) {
+                        liveEnd._wvSuppressNextTearOff = false;
+                        liveEnd._wvMainTabDragSourceWin = null;
+                        liveEnd._wvMergeDragInfo = null;
+                    }
                     const drag = self._wvTabDrag;
                     self._wvTabDrag = null;
-                    if (!drag) return;
+                    if (!drag || suppress) return;
                     const verdict = computePreview(drag);
                     const Z_Tabs: any = (win as any).Zotero_Tabs;
                     if (!Z_Tabs) return;

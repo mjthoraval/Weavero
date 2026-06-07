@@ -2724,11 +2724,17 @@ class _ReaderMixin {
                 strip.className = "wv-window-tabstrip";
 
                 const tab: any = doc.createElementNS(HTML, "div");
-                tab.className = "wv-window-tab";
+                // Mark the single note tab active so it gets the tab background
+                // (it's the window's content) — without this it reads as plain
+                // text, not a tab.
+                tab.className = "wv-window-tab wv-active";
 
                 const iconEl: any = doc.createElementNS(HTML, "span");
                 iconEl.className = "wv-window-tab-icon";
                 iconEl.setAttribute("data-type", "note");
+                // Supply the note icon image via the .icon-css mechanism (same
+                // as reader tabs / the main window), not just data-type.
+                try { this._wvWTApplyTabIcon(iconEl, "note"); } catch (e) {}
                 tab.appendChild(iconEl);
 
                 const titleEl: any = doc.createElementNS(HTML, "span");

@@ -1816,6 +1816,8 @@ class WeaveroPlugin {
                 "enableAppLinks", "enableAppLinksSkipConfirm", "enableNotes",
                 "compactTitleBar", "enableOpenExternalViewer",
                 "enableOutlineTextHighlight", "devNewMainWindow", "debug",
+                // Experimental: item/context pane in standalone reader windows.
+                "readerItemPane",
                 // Optional URL schemes — all opt-in
                 "enableMagnetScheme", "enableMailtoScheme", "enableSkypeScheme",
                 "enableSmsScheme", "enableSpotifyScheme", "enableTelScheme",

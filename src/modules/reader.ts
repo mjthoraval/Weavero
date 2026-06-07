@@ -2805,6 +2805,29 @@ class _ReaderMixin {
                 if (titleEl && titleEl.textContent !== title) titleEl.textContent = title;
             }
 
+            // The note strip puts its single tab directly in the strip (the
+            // reader strip uses a flex:1 `.wv-window-tabs` container). Without a
+            // filler the hamburger + window controls cluster left of center, so
+            // add a flex-grow spacer after the tab to pin them flush right, and
+            // stop the tab from growing into that space. Idempotent.
+            try {
+                const tabEl: any = strip.querySelector(":scope > .wv-window-tab");
+                if (tabEl) tabEl.style.flexGrow = "0";
+                let fill: any = strip.querySelector(":scope > .wv-window-strip-fill");
+                if (!fill) {
+                    fill = doc.createElementNS(HTML, "div");
+                    fill.className = "wv-window-strip-fill";
+                    fill.style.flex = "1 1 auto";
+                    fill.style.minWidth = "0";
+                    try { fill.style.MozWindowDragging = "drag"; } catch (e) {}
+                }
+                if (tabEl) {
+                    if (fill.previousSibling !== tabEl) strip.insertBefore(fill, tabEl.nextSibling);
+                } else if (fill.parentNode !== strip) {
+                    strip.insertBefore(fill, strip.firstChild);
+                }
+            } catch (e) {}
+
             // Swap the title bar — collapse the native OS title bar so we
             // don't show both. Mirrors the reader-window flow.
             const stash: any = win._wvTabStrip || (win._wvTabStrip = {});

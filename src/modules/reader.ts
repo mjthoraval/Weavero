@@ -2239,7 +2239,9 @@ class _ReaderMixin {
                 try {
                     const plugin: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const d = plugin && plugin._wvTabDrag;
-                    return (d && d.tabType === "reader") ? d : null;
+                    // Accept reader AND note main-window tabs (notes mount a
+                    // note-editor tab via _wvWTHandleMainTabDrop -> _wvWTMountTab).
+                    return (d && (d.tabType === "reader" || d.tabType === "note")) ? d : null;
                 } catch (er) { return null; }
             };
             const onDragOver = (e) => {

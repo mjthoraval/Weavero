@@ -1740,6 +1740,8 @@ class _ReaderMixin {
             // buttons, and the menu bar is hidden. Self-gates on the reader
             // child of "Hide title bar (Firefox-style)".
             try { this._ensureReaderWindowTabStrip(reader); } catch (e) {}
+            // Optional item/context pane beside the reader (own pref, default off).
+            try { this._ensureReaderWindowItemPane(reader); } catch (e) {}
 
             // When the Firefox-style strip is active, the window already
             // shows a draggable tab — the user can drag it back to the main
@@ -1933,6 +1935,262 @@ class _ReaderMixin {
             try { this._wvEnsureReaderDragOverlay(win); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowTabStrip err: " + e);
+        }
+    }
+
+    /** Optional item/context pane in a standalone `zotero:reader` window
+     *  (pref `weavero.readerItemPane`, default off). Reuses Zotero's own
+     *  `item-details` + `item-pane-sidenav` — `item-details` guards its
+     *  `Zotero_Tabs` access, but the sidenav reads a few members unguarded, so
+     *  we install a minimal `Zotero_Tabs` shim on the reader window. The pane
+     *  sits in the reader's <hbox>, right of `#zotero-reader`, with `min-height:0`
+     *  so the inner section list scrolls. Bound to the active reader's parent
+     *  item via _wvReaderPaneSync (re-bound on tab switch from _wvWTRenderStrip). */
+    _ensureReaderWindowItemPane(reader) {
+        try {
+            const win = reader && reader._window;
+            if (!win || !win.document) return;
+            const doc = win.document;
+            if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
+            let on = false;
+            try { const v = Zotero.Prefs.get("weavero.readerItemPane"); on = v === undefined ? false : !!v; } catch (e) {}
+            const existing = doc.getElementById("wv-reader-pane");
+            if (!on) {
+                // Teardown (takes effect on the next reader render / reload).
+                if (existing) existing.remove();
+                const sp = doc.getElementById("wv-reader-pane-splitter"); if (sp) sp.remove();
+                return;
+            }
+            // Minimal Zotero_Tabs shim — the item-details section boxes + sidenav
+            // read these members (item-details guards its own access, but the
+            // section boxes / sidenav don't). Reader windows have no Zotero_Tabs.
+            // `_getTab` reports the active attachment so attachmentsBox's
+            // "secondary attachment" preview check works.
+            if (!win.Zotero_Tabs) {
+                win.Zotero_Tabs = {
+                    selectedType: "reader",
+                    selectedID: "wv-reader-item-pane",
+                    selectedIndex: 1,
+                    _tabs: [],
+                    deck: { children: [] },
+                    _getTab: (id: any) => ({
+                        tab: { id, type: "reader", data: { itemID: win._wvReaderPaneItemID } },
+                        tabIndex: 1,
+                    }),
+                    getTabInfo: () => ({ id: "wv-reader-item-pane", type: "reader", subType: "" }),
+                    parseTabType: (t: any) => ({ tabContentType: t || "reader", tabSubType: "" }),
+                    getSidebarState: () => ({}),
+                    hasContextPane: () => true,
+                    hasNoteContext: () => false,
+                    updateSidebarLayout: () => {},
+                    moveFocus: () => {},
+                    select: () => {},
+                    move: () => {},
+                    close: () => {},
+                };
+            }
+            // Minimal ZoteroContextPane shim — notesBox etc. call updateAddToNote;
+            // a few props are read. Reader windows have no ZoteroContextPane.
+            if (!win.ZoteroContextPane) {
+                win.ZoteroContextPane = {
+                    updateAddToNote: () => {},
+                    update: () => {},
+                    showLoadingMessage: () => {},
+                    context: null,
+                    splitter: null,
+                    sidenav: null,
+                };
+            }
+            // Minimal ZoteroPane shim — the header title field's context menu
+            // (Title Case / Sentence case / View As) calls
+            // ZoteroPane.buildFieldTransformMenu, which builds in the target's
+            // OWN document (`target.ownerDocument`), so the main window's
+            // implementation works here; reader.xhtml already has a <popupset>.
+            if (!win.ZoteroPane) {
+                try {
+                    const mw: any = Zotero.getMainWindow();
+                    const mzp: any = mw && mw.ZoteroPane;
+                    if (mzp && typeof mzp.buildFieldTransformMenu === "function") {
+                        win.ZoteroPane = { buildFieldTransformMenu: mzp.buildFieldTransformMenu.bind(mzp) };
+                    }
+                } catch (e) {}
+            }
+            if (existing) { try { this._wvReaderPaneSync(win); } catch (e) {} return; }
+            const readerVbox = doc.getElementById("zotero-reader");
+            const hbox: any = readerVbox ? readerVbox.parentNode : null;
+            if (!hbox) return;
+            // The reader hbox defaults to min-height:auto, so it would grow to
+            // the item pane's (tall) content height and push the reader + pane
+            // off the bottom of the window. Bound it so its flex:1 clamps it to
+            // the window; item-details then scrolls internally.
+            try { hbox.style.minHeight = "0"; hbox.style.minWidth = "0"; } catch (e) {}
+            // Item-pane icon sizing: reader.xhtml doesn't load the stylesheet
+            // that sizes `.icon-css` icons (so library / collection / item-type
+            // icons in the Libraries & Collections, Attachments and Related
+            // sections collapse to height 0 — background present, box empty).
+            // Supply the sizing for the pane.
+            try {
+                if (!doc.getElementById("wv-reader-pane-style")) {
+                    const st: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                    st.id = "wv-reader-pane-style";
+                    st.textContent =
+                        "#wv-reader-item-details .icon-css{display:inline-block;vertical-align:middle}"
+                        + "#wv-reader-item-details .icon-css.icon-library,"
+                        + "#wv-reader-item-details .icon-css.icon-library-group,"
+                        + "#wv-reader-item-details .icon-css.icon-collection,"
+                        + "#wv-reader-item-details .icon-css.icon-item-type{width:16px;height:16px}";
+                    doc.documentElement.appendChild(st);
+                }
+            } catch (e) {}
+            let width = 360;
+            try { const v = Zotero.Prefs.get("weavero.readerItemPaneWidth"); if (typeof v === "number" && v > 240) width = v; } catch (e) {}
+            const splitter = doc.createXULElement("splitter");
+            splitter.id = "wv-reader-pane-splitter";
+            splitter.className = "wv-reader-pane-splitter";
+            const pane = doc.createXULElement("hbox");
+            pane.id = "wv-reader-pane";
+            pane.style.cssText = "width:" + width + "px;min-width:280px;min-height:0;overflow:hidden;"
+                + "border-inline-start:1px solid var(--fill-quinary, rgba(128,128,128,0.3));";
+            const details = doc.createXULElement("item-details");
+            details.id = "wv-reader-item-details";
+            details.className = "zotero-item-pane-content";
+            details.style.cssText = "flex:1 1 0%;min-height:0;min-width:0;";
+            const sidenav = doc.createXULElement("item-pane-sidenav");
+            sidenav.id = "wv-reader-item-sidenav";
+            pane.appendChild(details);
+            pane.appendChild(sidenav);
+            hbox.appendChild(splitter);
+            hbox.appendChild(pane);
+            // Wire the sidenav's "toggle pane" button. Its native `_collapsed`
+            // delegates to a parent <item-pane>/<context-pane> (absent here), so
+            // the toggle no-ops. Override `_collapsed` on this item-details so
+            // the sidenav toggle (and section-icon clicks) collapse our pane to
+            // just the sidenav strip and restore it.
+            try {
+                let collapsed = false;
+                const applyCollapse = () => {
+                    try {
+                        details.style.display = collapsed ? "none" : "flex";
+                        splitter.style.display = collapsed ? "none" : "";
+                        if (collapsed) {
+                            pane.style.width = ""; pane.style.minWidth = "0";
+                        } else {
+                            let w = 360;
+                            try { const v = Zotero.Prefs.get("weavero.readerItemPaneWidth"); if (typeof v === "number" && v > 240) w = v; } catch (e) {}
+                            pane.style.width = w + "px"; pane.style.minWidth = "280px";
+                        }
+                    } catch (e) {}
+                };
+                Object.defineProperty(details, "_collapsed", {
+                    configurable: true,
+                    get: () => collapsed,
+                    set: (v) => { collapsed = !!v; applyCollapse(); },
+                });
+            } catch (e) {}
+            this._wvReaderPaneSync(win);
+            // Persist the user's width when the splitter is released.
+            try {
+                splitter.addEventListener("mouseup", () => {
+                    try { const w = pane.getBoundingClientRect().width; if (w > 240) Zotero.Prefs.set("weavero.readerItemPaneWidth", Math.round(w)); } catch (e) {}
+                });
+            } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _ensureReaderWindowItemPane err: " + e);
+        }
+    }
+
+    /** Bind the reader-window item pane to the active reader's parent item.
+     *  Active item = the _wvWT active tab's itemID (multi-tab windows) or the
+     *  window's single reader. No-op if already bound to that item. */
+    _wvReaderPaneSync(win) {
+        try {
+            if (!win || !win.document) return;
+            const doc = win.document;
+            const details: any = doc.getElementById("wv-reader-item-details");
+            if (!details) return;
+            const sidenav: any = doc.getElementById("wv-reader-item-sidenav");
+            let itemID: any = null;
+            try {
+                const wt = win._wvWT;
+                if (wt && wt.tabs && wt.activeId) {
+                    const t = wt.tabs.find((x: any) => x && x.id === wt.activeId);
+                    if (t) itemID = t.itemID;
+                }
+            } catch (e) {}
+            if (itemID == null) {
+                try {
+                    const rs: any[] = (Zotero.Reader as any)._readers || [];
+                    const r = rs.find((rr: any) => rr && (rr._window === win
+                        || (rr._iframeWindow && rr._iframeWindow.top === win)));
+                    if (r) itemID = r.itemID;
+                } catch (e) {}
+            }
+            if (itemID == null) return;
+            if (win._wvReaderPaneItemID === itemID) return;   // already bound
+            win._wvReaderPaneItemID = itemID;
+            const att: any = Zotero.Items.get(itemID);
+            if (!att) return;
+            const targetItem: any = att.parentID ? Zotero.Items.get(att.parentID) : att;
+            if (!targetItem) return;
+            let editable = false;
+            try {
+                const lib: any = Zotero.Libraries.get(targetItem.libraryID);
+                editable = !!(lib && lib.editable) && !targetItem.deleted && !att.deleted;
+            } catch (e) {}
+            details.editable = editable;
+            details.tabID = "wv-reader-item-pane";
+            details.tabType = "reader";
+            details.item = targetItem;
+            if (att.parentID) details.parentID = att.parentID;
+            if (sidenav && details.sidenav !== sidenav) details.sidenav = sidenav;
+            const rp = (typeof details.render === "function") ? details.render() : null;
+            Promise.resolve(rp).then(() => {
+                // The sidenav buttons start disabled (the "no content / default"
+                // state); in the main window ZoteroContextPane enables them via
+                // toggleDefaultStatus(false). There's no controller here, so do
+                // it ourselves — otherwise the sidenav is inert.
+                try {
+                    if (sidenav && typeof sidenav.toggleDefaultStatus === "function") {
+                        sidenav.toggleDefaultStatus(false);
+                    }
+                } catch (e) {}
+                // Detach per-section collapse persistence so collapsing a
+                // section here doesn't sync to the main window's item panes
+                // (Zotero persists `panes.<id>.open` globally + a live observer).
+                try { this._wvReaderPaneDetachSectionPersist(details); } catch (e) {}
+            }).catch(() => {});
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderPaneSync err: " + e);
+        }
+    }
+
+    /** Make the reader-window item pane's section collapse state independent of
+     *  the main window. Each collapsible-section persists open/closed to the
+     *  global pref `panes.<id>.open` and live-observes it, so collapsing a
+     *  section anywhere syncs everywhere. For the reader window we set
+     *  `_disableSavingOpenState` (stops the write) and unregister the section's
+     *  pref observer (stops the sync-in). Idempotent per section. */
+    _wvReaderPaneDetachSectionPersist(details) {
+        try {
+            const sections: any[] = Array.from(details.querySelectorAll("collapsible-section"));
+            for (const s of sections as any[]) {
+                if (s._wvPersistDetached) continue;
+                s._wvPersistDetached = true;
+                // `_disableSavingOpenState` is a getter (can't be set), so
+                // override the write method itself: never persist this reader
+                // window's section state to the global `panes.<id>.open` pref.
+                try { s._saveOpenState = function () {}; } catch (e) {}
+                // ...and unregister the pref observer so main-window collapses
+                // don't sync back in.
+                try {
+                    if (s._prefsObserverID != null) {
+                        Zotero.Prefs.unregisterObserver(s._prefsObserverID);
+                        s._prefsObserverID = null;
+                    }
+                } catch (e) {}
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderPaneDetachSectionPersist err: " + e);
         }
     }
 
@@ -3741,6 +3999,8 @@ class _ReaderMixin {
             } catch (e) {}
             // Keep the active tab visible when the strip is scrolled.
             try { if (st.activeId) this._wvWTScrollTabIntoView(win, st.activeId); } catch (e) {}
+            // Re-bind the optional item pane to the now-active tab's item.
+            try { this._wvReaderPaneSync(win); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTRenderStrip err: " + e); }
     }
 

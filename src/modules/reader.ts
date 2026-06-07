@@ -3734,10 +3734,14 @@ class _ReaderMixin {
                 return existing.id;
             }
 
-            const Base: any = this._wvWTReaderInstanceClass(win);
-            if (!Base) { Zotero.debug("[Weavero] _wvWTMountTab: ReaderInstance class unavailable"); return null; }
             const item = Zotero.Items.get(itemID);
             if (!item) return null;
+            // Notes mount a <note-editor> (no reader instance / reader.html).
+            if (typeof item.isNote === "function" && item.isNote()) {
+                return this._wvWTMountNoteTab(win, item, st, opts);
+            }
+            const Base: any = this._wvWTReaderInstanceClass(win);
+            if (!Base) { Zotero.debug("[Weavero] _wvWTMountTab: ReaderInstance class unavailable"); return null; }
             const doc: any = win.document;
             const vbox: any = doc.getElementById("zotero-reader");
             if (!vbox) return null;
@@ -3811,6 +3815,85 @@ class _ReaderMixin {
         }
     }
 
+    /** Mount `item` (a note) as a note tab: a <note-editor> sibling in the
+     *  reader vbox, collapsed until selected. Mirrors how the standalone note
+     *  window configures its editor (note.js): mode/viewMode, registerRoot,
+     *  .item, refresh. No reader instance — `tab.reader` is null and `_wvWT*`
+     *  guard on it. Returns the new tab id. */
+    _wvWTMountNoteTab(win: any, item: any, st: any, opts: any) {
+        try {
+            opts = opts || {};
+            const doc: any = win.document;
+            const vbox: any = doc.getElementById("zotero-reader");
+            if (!vbox) return null;
+            const seq = ++st.seq;
+            const id = "wvwt-" + seq;
+            const ed: any = doc.createXULElement("note-editor");
+            ed.id = "wv-wt-note-" + seq;
+            ed.setAttribute("class", "reader");
+            ed.setAttribute("flex", "1");
+            ed.collapsed = true;                 // mounted hidden; switch reveals
+            vbox.appendChild(ed);
+            let editable = true;
+            try {
+                const lib: any = Zotero.Libraries.get(item.libraryID);
+                editable = !!(lib && lib.editable) && !item.deleted;
+            } catch (e) {}
+            try { ed.mode = editable ? "edit" : "view"; } catch (e) {}
+            try { ed.viewMode = "window"; } catch (e) {}
+            try { (Zotero as any).UIProperties.registerRoot(ed); } catch (e) {}
+            try { ed.item = item; } catch (e) {}
+            try { if (typeof ed.refresh === "function") ed.refresh(); } catch (e) {}
+            let title = "";
+            try { title = (typeof item.getNoteTitle === "function") ? item.getNoteTitle() : ""; } catch (e) {}
+            const tab: any = {
+                id, itemID: item.id, type: "note",
+                reader: null, browser: ed, noteEditor: ed,
+                native: false, pinned: false, title: title || "Note",
+            };
+            st.tabs.push(tab);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+            if (opts.select !== false) this._wvWTSwitch(win, id);
+            return id;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWTMountNoteTab err: " + e);
+            return null;
+        }
+    }
+
+    /** Open the child notes of a reader tab's item (its parent item's notes,
+     *  plus the attachment's own notes) as note tabs in this reader window.
+     *  Already-open notes are de-duped by _wvWTMountTab. Returns the count. */
+    async _wvWTOpenChildNotes(win: any, itemID: any) {
+        try {
+            const att: any = Zotero.Items.get(itemID);
+            if (!att) return 0;
+            const parent: any = att.parentID ? Zotero.Items.get(att.parentID) : att;
+            const noteIDs: any[] = [];
+            const collect = (it: any) => {
+                try {
+                    for (const nid of (it.getNotes() || [])) {
+                        if (!noteIDs.includes(nid)) noteIDs.push(nid);
+                    }
+                } catch (e) {}
+            };
+            if (parent) collect(parent);
+            if (att && att !== parent) collect(att);
+            if (!noteIDs.length) return 0;
+            let firstId: any = null;
+            for (const nid of noteIDs) {
+                const id = await this._wvWTMountTab(win, nid, { select: false });
+                if (id && !firstId) firstId = id;
+            }
+            if (firstId) this._wvWTSwitch(win, firstId);
+            return noteIDs.length;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWTOpenChildNotes err: " + e);
+            return 0;
+        }
+    }
+
     /** Switch the active tab: collapse every reader browser except the
      *  target, update the window title, and focus the active reader. */
     _wvWTSwitch(win: any, tabId: any) {
@@ -3844,7 +3927,10 @@ class _ReaderMixin {
                 const t = this._wvWTTabTitle(tab);
                 if (t) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(t);
             } catch (e) {}
-            try { if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus(); } catch (e) {}
+            try {
+                if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus();
+                else if (tab.noteEditor && typeof tab.noteEditor.focus === "function") tab.noteEditor.focus();
+            } catch (e) {}
             try { this._wvWTPersistSaveDebounced(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTSwitch err: " + e); }
     }
@@ -3891,6 +3977,8 @@ class _ReaderMixin {
                 if (i >= 0) rs.splice(i, 1);
             } catch (e) {}
             try { if (tab.reader && typeof tab.reader.uninit === "function") tab.reader.uninit(); } catch (e) {}
+            // Flush any pending note edits before the editor is removed.
+            try { if (tab.noteEditor && typeof tab.noteEditor.saveSync === "function") tab.noteEditor.saveSync(); } catch (e) {}
             if (tab.native) {
                 // The native `#reader` browser belongs to reader.xhtml — hide it
                 // rather than remove it, and DON'T close the window (other tabs
@@ -5161,7 +5249,8 @@ class _ReaderMixin {
             }
             if (!itemID) return;
             const item = Zotero.Items.get(itemID);
-            if (!item || !item.attachmentReaderType) return;   // reader-able attachments only
+            // Reader-able attachments OR notes (notes mount a note-editor tab).
+            if (!item || !(item.attachmentReaderType || (typeof item.isNote === "function" && item.isNote()))) return;
 
             // Close the source main-window tab FIRST (saves its reader state and
             // defuses the main dragend tear-off), then clear the shared drag.
@@ -10426,9 +10515,29 @@ class _ReaderMixin {
                     } catch (e) {}
                 }, { icon: wvIcon, getVisible: () => this._getEnableCopyItemLink?.() ?? false });
 
+                // "Open Notes" — mount the item's (parent's) child notes as note
+                // tabs in this reader window. Shown only on non-note tabs whose
+                // item actually has child notes.
+                const openNotes = mkItem("Open Notes", () => {
+                    try { this._wvWTOpenChildNotes(win, targetItemID()); } catch (e) {}
+                }, { getVisible: () => {
+                    try {
+                        const t = targetTab();
+                        if (t && t.type === "note") return false;
+                        const it: any = Zotero.Items.get(targetItemID());
+                        if (!it) return false;
+                        const parent: any = it.parentID ? Zotero.Items.get(it.parentID) : it;
+                        let n = 0;
+                        try { n += (parent.getNotes() || []).length; } catch (e) {}
+                        if (it !== parent) { try { n += (it.getNotes() || []).length; } catch (e) {} }
+                        return n > 0;
+                    } catch (e) { return false; }
+                } });
+
                 // Order mirrors the main-window tab context menu.
                 menu.appendChild(showInLibrary);
                 menu.appendChild(externalViewer);
+                menu.appendChild(openNotes);
                 menu.appendChild(moveMenu);
                 menu.appendChild(duplicate);
                 menu.appendChild(pinTab);

@@ -5417,8 +5417,17 @@ class _ReaderMixin {
             const tab = st && st.tabs.find((t: any) => t.id === tabId);
             if (!tab) return;
             const itemID = tab.itemID;
+            const isNote = (tab.type === "note");
             const mainWin = Zotero.getMainWindow();
             try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+            // A note isn't reader-able — dock it as a main-window note tab
+            // (ZoteroPane.openNote) instead of Zotero.Reader.open, which would
+            // silently fail and leave the note nowhere.
+            if (isNote) {
+                try { this._moveNoteToTab(itemID); }
+                catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain note err: " + e); }
+                return;
+            }
             // Defer the open so the closing reader's debounced state write lands
             // first (mirrors _moveReaderToTab), preserving scroll position.
             const open = () => {

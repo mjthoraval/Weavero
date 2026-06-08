@@ -5159,16 +5159,22 @@ class _ReaderMixin {
             // tab), so they act on the correct document.
             if (tab.reader) {
                 try { this._ensureReaderWindowTabTooltip(tab.reader, el); } catch (e) {}
-                try { this._ensureReaderWindowTabContextMenu(tab.reader, el); } catch (e) {}
             }
+            // Context menu works for reader AND note tabs. A note tab has no
+            // reader instance, so pass null — the menu derives its window from
+            // the element. (Gating this on tab.reader left note tabs with no
+            // right-click menu.)
+            try { this._ensureReaderWindowTabContextMenu(tab.reader || null, el); } catch (e) {}
             // Every tab can be dragged out to the main window. The native tab
             // keeps the shipped path (docks via _moveReaderToTab → lands at the
-            // drop position + auto-pin). Mounted tabs route through
-            // _wvWTMoveTabToMain, which closes just that tab (and the window if
-            // it was the last) and lands the tab at the end.
-            if (tab.reader) {
-                if (tab.native) { try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {} }
-                else { try { this._wvWTWireTabDrag(win, el, tab); } catch (e) {} }
+            // drop position + auto-pin). Every other tab — mounted reader tabs
+            // AND note tabs — routes through _wvWTWireTabDrag → _wvWTMoveTabToMain,
+            // which closes just that tab (and the window if it was the last).
+            // (Gating this on tab.reader left note tabs not draggable at all.)
+            if (tab.native && tab.reader) {
+                try { this._wvWTWireNativeTabDrag(win, el, tab); } catch (e) {}
+            } else {
+                try { this._wvWTWireTabDrag(win, el, tab); } catch (e) {}
             }
             return el;
         } catch (e) { Zotero.debug("[Weavero] _wvWTBuildTabEl err: " + e); return null; }
@@ -10370,8 +10376,13 @@ class _ReaderMixin {
      *  main-window menu (gated by `_getEnableCopyItemLink`). */
     _ensureReaderWindowTabContextMenu(reader, tab) {
         try {
-            if (!reader || !tab) return;
-            const win = reader._window;
+            if (!tab) return;
+            // Note tabs pass a null reader — derive the window from the tab
+            // element instead. (targetTab()/targetItemID() resolve the
+            // right-clicked tab off win._wvWTCtxTabId, so `reader` is only a
+            // last-ditch fallback.)
+            const win = (reader && reader._window)
+                || (tab.ownerDocument && tab.ownerDocument.defaultView);
             if (!win || !win.document) return;
             const doc = win.document;
             const MENU_ID = "wv-window-tab-context-menu";

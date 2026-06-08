@@ -1927,8 +1927,14 @@ class WeaveroPlugin {
                 const self = this;
                 Notes.open = function (itemID: any, location: any, opts: any = {}) {
                     try {
+                        // The deck window IS a reader window with the Firefox-style
+                        // tab strip, so it only works when the reader window's title
+                        // bar is replaced (compactTitleBarReader). Without that the
+                        // window would have no visible tab strip — so fall through
+                        // to the stock note window.
                         if (opts && opts.openInWindow
-                                && Zotero.Prefs.get("weavero.noteOpenInDeckWindow")) {
+                                && Zotero.Prefs.get("weavero.noteOpenInDeckWindow")
+                                && Zotero.Prefs.get("weavero.compactTitleBarReader")) {
                             return (self as any)._wvOpenNoteInDeckWindow(
                                 itemID, Notes._wvOrigOpen.bind(Notes));
                         }

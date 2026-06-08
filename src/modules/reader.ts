@@ -5967,6 +5967,58 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvOpenFreshReaderWindowAndWait err: " + e); return null; }
     }
 
+    /** Reveal a deck window hidden by _wvOpenFreshReaderWindowHidden. Idempotent. */
+    _wvRevealDeckWindow(win: any) {
+        try {
+            if (!win || !win._wvNoteDeckHidden) return;
+            win._wvNoteDeckHidden = false;
+            try { if (win._wvNoteDeckRevealTimer) { win.clearTimeout(win._wvNoteDeckRevealTimer); win._wvNoteDeckRevealTimer = null; } } catch (e) {}
+            win.document.documentElement.style.visibility = "";
+        } catch (e) {}
+    }
+
+    /** Like _wvOpenFreshReaderWindowAndWait, but hides the window's content the
+     *  instant its reader.xhtml DOM is up — so the throwaway ANCHOR document never
+     *  paints (no flicker). The caller mounts the note, drops the anchor, then
+     *  calls _wvRevealDeckWindow to show the finished note view. A safety timer
+     *  reveals it anyway if the caller never does. Returns the (hidden) window. */
+    async _wvOpenFreshReaderWindowHidden(anchorID: any) {
+        try {
+            if (!Zotero.Items.exists(anchorID)) return null;
+            const before = new Set();
+            { const en = Services.wm.getEnumerator("zotero:reader"); while (en.hasMoreElements()) before.add(en.getNext()); }
+            (Zotero.Reader as any).open(anchorID, null, { openInWindow: true, allowDuplicate: true });
+            let win: any = null;
+            // Tight poll so we hide content before the anchor renders. Wait until
+            // reader.xhtml itself is loaded (#zotero-reader present), not just the
+            // window shell (about:blank), or the hide wouldn't stick.
+            for (let i = 0; i < 200; i++) {                  // ~4s at 20ms
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    if (before.has(w)) continue;
+                    try { if (w.document && w.document.getElementById("zotero-reader")) { win = w; break; } } catch (e) {}
+                }
+                if (win) break;
+                await new Promise((r) => setTimeout(r, 20));
+            }
+            if (!win) return null;
+            try {
+                win.document.documentElement.style.visibility = "hidden";
+                win._wvNoteDeckHidden = true;
+                // Backstop: never leave a window invisible if the flow stalls.
+                win._wvNoteDeckRevealTimer = win.setTimeout(() => {
+                    try { win.document.documentElement.style.visibility = ""; win._wvNoteDeckHidden = false; } catch (e) {}
+                }, 8000);
+            } catch (e) {}
+            for (let i = 0; i < 100; i++) {                  // ~10s for the deck
+                if (win._wvWT && win._wvWT.tabs && win._wvWT.tabs.length) return win;
+                await new Promise((r) => setTimeout(r, 100));
+            }
+            return win;
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenFreshReaderWindowHidden err: " + e); return null; }
+    }
+
     /** Open `noteID` in a tab-hosting reader-style window (see block comment).
      *  `origOpen` is the stock Zotero.Notes.open, used as the fallback. */
     async _wvOpenNoteInDeckWindow(noteID: any, origOpen: any) {
@@ -5983,16 +6035,20 @@ class _ReaderMixin {
             }
             const anchorID = await this._wvPickNoteDeckAnchor(note);
             if (anchorID == null) return fallback();             // no anchor → stock note window
-            const win: any = await this._wvOpenFreshReaderWindowAndWait(anchorID);
-            if (!win || !win._wvWT) return fallback();
+            // Open the anchor window with its content HIDDEN so the throwaway
+            // document never flickers into view.
+            const win: any = await this._wvOpenFreshReaderWindowHidden(anchorID);
+            if (!win || !win._wvWT) { try { this._wvRevealDeckWindow(win); } catch (e) {} return fallback(); }
             // Mount the note + show it (collapses the anchor), then drop the
-            // anchor's native tab so only the note remains.
+            // anchor's native tab so only the note remains — all while hidden.
             await this._wvWTMountTab(win, noteID, { allowDuplicate: false, select: true, await: true });
             try {
                 const st = win._wvWT;
                 const native = st && st.tabs.find((t: any) => t.native);
                 if (native) this._wvWTCloseTab(win, native.id);
             } catch (e) {}
+            // Reveal the finished note view in one repaint, then focus.
+            try { this._wvRevealDeckWindow(win); } catch (e) {}
             try { win.focus(); } catch (e) {}
             return win;
         } catch (e) {

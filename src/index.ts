@@ -1818,6 +1818,9 @@ class WeaveroPlugin {
                 "enableOutlineTextHighlight", "devNewMainWindow", "debug",
                 // Experimental: item/context pane in standalone reader windows.
                 "readerItemPane",
+                // Experimental: open a note "in a new window" as a tab-hosting
+                // reader-style window (so it can accept dragged-in tabs).
+                "noteOpenInDeckWindow",
                 // Optional URL schemes — all opt-in
                 "enableMagnetScheme", "enableMailtoScheme", "enableSkypeScheme",
                 "enableSmsScheme", "enableSpotifyScheme", "enableTelScheme",
@@ -1909,6 +1912,32 @@ class WeaveroPlugin {
             }
         } catch (e) {
             Zotero.debug("[Weavero] openPreferences patch err: " + e);
+        }
+
+        // Optional: open a note "in a new window" as a tab-hosting reader-style
+        // window so it can accept dragged-in tabs. Zotero.Notes.open is the single
+        // chokepoint (ZoteroPane.openNote delegates here); patch it to redirect
+        // only the openInWindow:true case when the `noteOpenInDeckWindow` pref is
+        // on. Falls back to the original whenever no anchor is available.
+        // Restored in destroy().
+        try {
+            const Notes: any = (Zotero as any).Notes;
+            if (Notes && typeof Notes.open === "function" && !Notes._wvOrigOpen) {
+                Notes._wvOrigOpen = Notes.open;
+                const self = this;
+                Notes.open = function (itemID: any, location: any, opts: any = {}) {
+                    try {
+                        if (opts && opts.openInWindow
+                                && Zotero.Prefs.get("weavero.noteOpenInDeckWindow")) {
+                            return (self as any)._wvOpenNoteInDeckWindow(
+                                itemID, Notes._wvOrigOpen.bind(Notes));
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] note-open redirect err: " + e); }
+                    return Notes._wvOrigOpen.call(Notes, itemID, location, opts);
+                };
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] Notes.open patch err: " + e);
         }
 
         // 0. Register default pref values so Zotero's pref-binding system can find them
@@ -3449,6 +3478,17 @@ class WeaveroPlugin {
             }
         } catch (e) {
             Zotero.debug("[Weavero] openPreferences un-patch err: " + e);
+        }
+
+        // 0b. Restore Zotero.Notes.open if we patched it (note-in-deck-window).
+        try {
+            const Notes: any = (Zotero as any).Notes;
+            if (Notes && Notes._wvOrigOpen) {
+                Notes.open = Notes._wvOrigOpen;
+                delete Notes._wvOrigOpen;
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] Notes.open un-patch err: " + e);
         }
 
         // 0c. Unregister Weavero pref pane(s). Without this, a

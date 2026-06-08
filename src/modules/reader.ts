@@ -5894,6 +5894,113 @@ class _ReaderMixin {
         }
     }
 
+    // ---- Open a note as a tab-hosting reader-style window --------------------
+    // A reader window must be born on a reader-able attachment (a note can't be
+    // one — Zotero.Reader.open on a note opens nothing). So to give a note a
+    // window that ACCEPTS MORE TABS, we bootstrap a reader window on a throwaway
+    // anchor attachment, mount the note (switching to it immediately so the
+    // anchor barely shows), then close the anchor's native tab — leaving a clean
+    // deck window hosting only the note. Gated by the `noteOpenInDeckWindow` pref
+    // (the Zotero.Notes.open patch in index.ts routes here). Falls back to the
+    // stock note window when no anchor exists.
+
+    /** The open standalone reader window whose deck currently holds `itemID` as
+     *  ANY tab (native or extra), or null. */
+    _wvReaderWindowHostingItem(itemID: any) {
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                const st = w && w._wvWT;
+                if (st && st.tabs && st.tabs.find((t: any) => t.itemID === itemID)) return w;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    /** Pick a reader-able attachment to bootstrap a deck window for `note`, never
+     *  one already shown in a reader window (so we don't hijack it). Prefers the
+     *  note's parent's best attachment, else any reader-able attachment in the
+     *  note's library. Returns an itemID or null. */
+    async _wvPickNoteDeckAnchor(note: any) {
+        const notOpen = (id: any) => { try { return !this._wvReaderWindowForNative(id); } catch (e) { return true; } };
+        try {
+            const parent: any = note.parentID ? Zotero.Items.get(note.parentID) : null;
+            if (parent) {
+                const att: any = (this as any)._wvGetBestAttachmentSync(parent);
+                if (att && att.attachmentReaderType && notOpen(att.id)) return att.id;
+            }
+        } catch (e) {}
+        try {
+            const ids: any[] = await Zotero.DB.columnQueryAsync(
+                "SELECT A.itemID FROM itemAttachments A JOIN items I ON A.itemID=I.itemID "
+                + "WHERE I.libraryID=? AND A.contentType IN "
+                + "('application/pdf','application/epub+zip','text/html') "
+                + "AND I.itemID NOT IN (SELECT itemID FROM deletedItems) LIMIT 30",
+                [note.libraryID]);
+            for (const id of (ids || [])) {
+                const it: any = Zotero.Items.get(id);
+                if (it && it.attachmentReaderType && notOpen(id)) return id;
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    /** Open a FRESH standalone reader window on `anchorID` (never reusing an
+     *  existing one) and wait, bounded, for its deck to come up. Returns the new
+     *  window or null. */
+    async _wvOpenFreshReaderWindowAndWait(anchorID: any) {
+        try {
+            if (!Zotero.Items.exists(anchorID)) return null;
+            const before = new Set();
+            { const en = Services.wm.getEnumerator("zotero:reader"); while (en.hasMoreElements()) before.add(en.getNext()); }
+            (Zotero.Reader as any).open(anchorID, null, { openInWindow: true, allowDuplicate: true });
+            for (let i = 0; i < 50; i++) {                       // ~5s budget
+                await new Promise((r) => setTimeout(r, 100));
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    if (!before.has(w) && w._wvWT && w._wvWT.tabs && w._wvWT.tabs.length) return w;
+                }
+            }
+            return null;
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenFreshReaderWindowAndWait err: " + e); return null; }
+    }
+
+    /** Open `noteID` in a tab-hosting reader-style window (see block comment).
+     *  `origOpen` is the stock Zotero.Notes.open, used as the fallback. */
+    async _wvOpenNoteInDeckWindow(noteID: any, origOpen: any) {
+        const fallback = () => { try { return origOpen ? origOpen(noteID, undefined, { openInWindow: true }) : null; } catch (e) { return null; } };
+        try {
+            const note: any = Zotero.Items.get(noteID);
+            if (!note || !(typeof note.isNote === "function" && note.isNote())) return fallback();
+            // Already hosted in a deck window? → focus + select it.
+            const existing: any = this._wvReaderWindowHostingItem(noteID);
+            if (existing) {
+                try { existing.focus(); } catch (e) {}
+                try { const st = existing._wvWT; const t = st && st.tabs.find((x: any) => x.itemID === noteID); if (t) this._wvWTSwitch(existing, t.id); } catch (e) {}
+                return existing;
+            }
+            const anchorID = await this._wvPickNoteDeckAnchor(note);
+            if (anchorID == null) return fallback();             // no anchor → stock note window
+            const win: any = await this._wvOpenFreshReaderWindowAndWait(anchorID);
+            if (!win || !win._wvWT) return fallback();
+            // Mount the note + show it (collapses the anchor), then drop the
+            // anchor's native tab so only the note remains.
+            await this._wvWTMountTab(win, noteID, { allowDuplicate: false, select: true, await: true });
+            try {
+                const st = win._wvWT;
+                const native = st && st.tabs.find((t: any) => t.native);
+                if (native) this._wvWTCloseTab(win, native.id);
+            } catch (e) {}
+            try { win.focus(); } catch (e) {}
+            return win;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvOpenNoteInDeckWindow err: " + e);
+            return fallback();
+        }
+    }
+
     /** Open Zotero's standard select-items dialog filtered to the
      *  annotation's library, then add a symmetric `dc:relation` triple
      *  between every picked item and every annotation in `annotations`.

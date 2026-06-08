@@ -2519,6 +2519,11 @@ class WeaveroPlugin {
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 .then(() => { try { this._wvSessionRestoreDevWindows(); } catch (e) {} })
                 .then(() => { try { this._wvSessionRestoreOrphanReaderWindows(); } catch (e) {} })
+                // Pull reader tabs that a previous DISABLE migrated into the main
+                // window back into their reader windows (consumes the hand-off
+                // file; no-op if absent). After the orphan restore so any windows
+                // it recreated are present to receive their tabs.
+                .then(() => this._wvEnablePullBackReaderTabs())
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 .catch(() => {});
         } catch (e) {}
@@ -3402,7 +3407,7 @@ class WeaveroPlugin {
         }
     }
 
-    destroy() {
+    destroy(reason) {
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during
@@ -3507,6 +3512,15 @@ class WeaveroPlugin {
         // making closed tabs reappear on next startup).
         try {
             if (!Services.startup.shuttingDown) {
+                // On a genuine plugin DISABLE/UNINSTALL (reason 4/6 — NOT a
+                // hot-reload/upgrade), rescue each reader window's extra tabs
+                // into main-window tabs first, recording a hand-off so the next
+                // enable pulls them back. Must run BEFORE the strip teardown.
+                try {
+                    if (reason === 4 /* ADDON_DISABLE */ || reason === 6 /* ADDON_UNINSTALL */) {
+                        this._wvDisableMigrateReaderTabs();
+                    }
+                } catch (e) { Zotero.debug("[Weavero] disable-migrate err: " + e); }
                 const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                 for (const w of wins) {
                     try { this._revertCompactTitleBar(w); } catch(e) {}
@@ -3972,8 +3986,8 @@ Zotero.Weavero = {
                 Zotero.debug("[Weavero] startup error: " + e);
             }
         },
-        onShutdown() {
-            if (_Weavero) { _Weavero.destroy(); _Weavero = null; }
+        onShutdown(reason) {
+            if (_Weavero) { _Weavero.destroy(reason); _Weavero = null; }
             Zotero.Weavero.plugin = null;
         },
         onMainWindowLoad(window) {

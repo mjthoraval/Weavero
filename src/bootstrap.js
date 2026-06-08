@@ -35,10 +35,14 @@ async function startup({ id, version, rootURI }) {
     }
 }
 
-function shutdown() {
+function shutdown(_data, reason) {
+    // `reason` is Zotero's numeric bootstrap code (ADDON_DISABLE=4,
+    // ADDON_UNINSTALL=6, APP_SHUTDOWN=2, ADDON_UPGRADE=7, …). Forwarded so the
+    // plugin can migrate reader tabs to the main window on a real disable but
+    // not on a hot-reload/upgrade or app-quit.
     if (Zotero.Weavero && Zotero.Weavero.hooks
             && Zotero.Weavero.hooks.onShutdown) {
-        Zotero.Weavero.hooks.onShutdown();
+        Zotero.Weavero.hooks.onShutdown(reason);
     }
     delete Zotero.Weavero;
 }

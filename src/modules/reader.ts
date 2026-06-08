@@ -5722,6 +5722,156 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvSessionRestoreOrphanReaderWindows err: " + e); }
     }
 
+    // ---- Disable→enable reader-tab round-trip --------------------------------
+    // On a genuine plugin DISABLE/UNINSTALL (NOT a hot-reload/upgrade or
+    // app-quit), a multi-tab reader window's extra tabs would become orphaned
+    // DOM with no UI to reach them. To avoid losing them, _wvDisableMigrateReaderTabs
+    // moves each extra into a MAIN-WINDOW tab and writes a hand-off file; on the
+    // next enable, _wvEnablePullBackReaderTabs re-mounts them into their reader
+    // windows and closes the main-window copies. The trigger is the bootstrap
+    // shutdown `reason` (ADDON_DISABLE/ADDON_UNINSTALL) — app-quit and dev
+    // reloads (ADDON_UPGRADE) are excluded, so the normal flows are untouched.
+
+    _wvMigrationStorePath() {
+        return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "reader-migration.json");
+    }
+
+    /** The open standalone reader window whose NATIVE tab is `itemID`, or null. */
+    _wvReaderWindowForNative(itemID: any) {
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                const st = w && w._wvWT;
+                if (st && st.tabs && st.tabs.find((t: any) => t.native && t.itemID === itemID)) return w;
+                try { const nr = this._wvWTFindNativeReader(w); if (nr && nr.itemID === itemID) return w; } catch (e) {}
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    /** Open `itemID` as a fresh standalone reader window and wait (bounded) for
+     *  its multi-tab state to come up. Returns the window or null. */
+    async _wvOpenReaderWindowAndWait(itemID: any) {
+        try {
+            if (!Zotero.Items.exists(itemID)) return null;
+            const existing = this._wvReaderWindowForNative(itemID);
+            if (existing) return existing;
+            (Zotero.Reader as any).open(itemID, null, { openInWindow: true, allowDuplicate: true });
+            for (let i = 0; i < 40; i++) {                       // ~4s budget
+                await new Promise((r) => setTimeout(r, 100));
+                const w: any = this._wvReaderWindowForNative(itemID);
+                if (w && w._wvWT && w._wvWT.tabs && w._wvWT.tabs.length) return w;
+            }
+            return this._wvReaderWindowForNative(itemID);
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenReaderWindowAndWait err: " + e); return null; }
+    }
+
+    /** DISABLE path: relocate every reader window's extra tabs into main-window
+     *  tabs and persist a hand-off record. Synchronous-ish (fire-and-forget
+     *  opens + one durable write); Zotero stays running, so the opens complete
+     *  even as Weavero unloads. Best-effort. */
+    _wvDisableMigrateReaderTabs() {
+        try {
+            const mainWin: any = Zotero.getMainWindow();
+            const ZP: any = mainWin && mainWin.ZoteroPane;
+            const records: any[] = [];
+            const wins: any[] = [];
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) wins.push(en.getNext());
+            for (const win of wins) {
+                try {
+                    const st = win && win._wvWT;
+                    if (!st || !st.tabs || !st.tabs.length) continue;
+                    const native = st.tabs.find((t: any) => t.native && t.itemID != null);
+                    const extras = st.tabs.filter((t: any) => !t.native && t.itemID != null);
+                    if (!extras.length) continue;
+                    // Which extra was active (so enable can re-activate it)?
+                    let activeItemID: any = null;
+                    const act = st.tabs.find((t: any) => t.id === st.activeId);
+                    if (act && !act.native) activeItemID = act.itemID;
+                    // Show the native reader so the window isn't left blank.
+                    try { if (native) this._wvWTSwitch(win, native.id); } catch (e) {}
+                    const exRec = extras.map((t: any) => ({ itemID: t.itemID, type: t.type || null, pinned: !!t.pinned }));
+                    // Close each extra here (uninits reader / saves note → Zotero
+                    // persists state), then re-open it in the main window. Close-
+                    // then-open preserves reader scroll, mirroring _wvWTMoveTabToMain.
+                    for (const t of extras) {
+                        const itemID = t.itemID; const isNote = (t.type === "note");
+                        try { this._wvWTCloseTab(win, t.id); } catch (e) {}
+                        try {
+                            if (isNote) { if (ZP && ZP.openNote) ZP.openNote(itemID, { openInWindow: false }); }
+                            else { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: false }); }
+                        } catch (e) {}
+                    }
+                    records.push({ nativeItemID: native ? native.itemID : null, orphan: !native, extras: exRec, activeItemID });
+                } catch (e) { Zotero.debug("[Weavero] migrate window err: " + e); }
+            }
+            if (records.length) {
+                try {
+                    const path = this._wvMigrationStorePath();
+                    const json = JSON.stringify({ version: 1, records });
+                    IOUtils.writeUTF8(path, json, { tmpPath: path + ".tmp" });   // durable; not awaited
+                } catch (e) { Zotero.debug("[Weavero] migration write err: " + e); }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvDisableMigrateReaderTabs err: " + e); }
+    }
+
+    /** ENABLE path: read the hand-off file, pull each migrated tab back into its
+     *  reader window (re-creating the window if it was closed), and close the
+     *  main-window copy. Consumes the file once. */
+    async _wvEnablePullBackReaderTabs() {
+        let text: any = null;
+        const path = this._wvMigrationStorePath();
+        try { text = await Zotero.File.getContentsAsync(path); } catch (e) { return; }   // no file → nothing
+        try { await IOUtils.remove(path, { ignoreAbsent: true }); } catch (e) {}         // consume once
+        let doc: any = null;
+        try { doc = JSON.parse(text); } catch (e) { return; }
+        const records: any[] = (doc && Array.isArray(doc.records)) ? doc.records : [];
+        if (!records.length) return;
+        const mainWin: any = Zotero.getMainWindow();
+        const Z_Tabs: any = mainWin && mainWin.Zotero_Tabs;
+        const closeMainTab = (itemID: any) => {
+            try { if (Z_Tabs && Z_Tabs.getTabIDByItemID) { const tid = Z_Tabs.getTabIDByItemID(itemID); if (tid) Z_Tabs.close(tid); } } catch (e) {}
+        };
+        for (const rec of records) {
+            try {
+                let extras: any[] = (rec.extras || []).filter((e: any) => e && e.itemID != null && Zotero.Items.exists(e.itemID));
+                // Resolve the target window: the still-open native window, else
+                // re-create one anchored on the native (or, for an orphan, the
+                // first reader-type extra — notes can't anchor a reader window).
+                let win: any = (rec.nativeItemID != null) ? this._wvReaderWindowForNative(rec.nativeItemID) : null;
+                if (!win) {
+                    let anchorID: any = (rec.nativeItemID != null && Zotero.Items.exists(rec.nativeItemID)) ? rec.nativeItemID : null;
+                    if (anchorID == null) {
+                        const firstReader = extras.find((e: any) => e.type !== "note");
+                        anchorID = firstReader ? firstReader.itemID : null;
+                    }
+                    if (anchorID == null) continue;                 // nothing reader-able to anchor → leave in main
+                    extras = extras.filter((e: any) => e.itemID !== anchorID);
+                    win = await this._wvOpenReaderWindowAndWait(anchorID);
+                    if (win) closeMainTab(anchorID);                // the anchor is now the window's native
+                }
+                if (!win) continue;
+                for (const ex of extras) {
+                    try {
+                        const newId = await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
+                        try { const st = win._wvWT; const t = st && st.tabs.find((x: any) => x.id === newId); if (t) t.pinned = !!ex.pinned; } catch (e) {}
+                        closeMainTab(ex.itemID);
+                    } catch (e) { Zotero.debug("[Weavero] pullback mount err: " + e); }
+                }
+                try { const st = win._wvWT; if (st) { this._wvWTStabilizePinned(st); this._wvWTRenderStrip(win); } } catch (e) {}
+                try {
+                    if (rec.activeItemID != null) {
+                        const st = win._wvWT;
+                        const t = st && st.tabs && st.tabs.find((x: any) => x.itemID === rec.activeItemID);
+                        if (t) this._wvWTSwitch(win, t.id);
+                    }
+                } catch (e) {}
+            } catch (e) { Zotero.debug("[Weavero] pullback rec err: " + e); }
+        }
+    }
+
     /** Open Zotero's standard select-items dialog filtered to the
      *  annotation's library, then add a symmetric `dc:relation` triple
      *  between every picked item and every annotation in `annotations`.

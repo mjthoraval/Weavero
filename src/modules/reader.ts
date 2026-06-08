@@ -2130,7 +2130,14 @@ class _ReaderMixin {
             win._wvReaderPaneItemID = itemID;
             const att: any = Zotero.Items.get(itemID);
             if (!att) return;
-            const targetItem: any = att.parentID ? Zotero.Items.get(att.parentID) : att;
+            // Mirror Zotero's contextPane._addItemContext: a note binds the
+            // pane to the NOTE ITSELF (item-details then shows its tags/related/
+            // collections — the note text stays in the editor tab); everything
+            // else binds to the parent bibliographic item.
+            const isNote = (typeof att.isNote === "function" && att.isNote());
+            const targetItem: any = isNote
+                ? att
+                : (att.parentID ? Zotero.Items.get(att.parentID) : att);
             if (!targetItem) return;
             let editable = false;
             try {

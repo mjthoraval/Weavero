@@ -547,12 +547,18 @@
       <html:p class="wv-master-desc">Replace the title bar with a browser-style bar — menus move out of the way (press Alt) and the window buttons move into the tab strip. Windows / Linux only. Default off.</html:p>
     </html:div>
     <vbox class="wv-children" data-master="compactTitleBar">
-      <checkbox label="Main window" native="true"
-        preference="extensions.zotero.weavero.compactTitleBarMain"/>
-      <checkbox label="Separate reader window" native="true"
-        preference="extensions.zotero.weavero.compactTitleBarReader"/>
-      <checkbox label="Separate note window" native="true"
-        preference="extensions.zotero.weavero.compactTitleBarNote"/>
+      <html:div class="wv-apply-row">
+        <html:span class="wv-apply-label">Apply to:</html:span>
+        <checkbox label="Main window" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarMain"/>
+        <checkbox label="Reader window" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarReader"/>
+        <checkbox label="Note window" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarNote"/>
+      </html:div>
+      <checkbox label="Open notes in a tab-hosting window" native="true"
+        preference="extensions.zotero.weavero.noteOpenInDeckWindow"/>
+      <html:p class="wv-desc">Opening a note in a new window uses a reader-style window that can accept dragged-in PDF / note tabs. Needs the reader window&#8217;s title bar replaced above. A standalone note (no parent) briefly shows a placeholder document as the window opens.</html:p>
     </vbox>
   </groupbox>
 
@@ -585,15 +591,6 @@
         preference="extensions.zotero.weavero.devSessionAutoReopen"/>
       <html:p class="wv-desc">Reopen the extra windows you had open when Zotero restarts.</html:p>
     </vbox>
-  </groupbox>
-
-  <!-- ============================ Note windows -->
-  <groupbox class="wv-subsec">
-    <label><html:h2>Note windows</html:h2></label>
-    <html:p class="wv-note" style="margin-inline-start:0; margin-inline-end:150px">Experimental and off by default.</html:p>
-    <checkbox label="Open notes in a tab-hosting window" native="true"
-      preference="extensions.zotero.weavero.noteOpenInDeckWindow"/>
-    <html:p class="wv-desc">When you open a note in a new window, use a reader-style window that can accept dragged-in PDF / note tabs. A standalone note (no parent) briefly shows a placeholder document as the window opens.</html:p>
   </groupbox>
 
   <!-- ============================ Debug (collapsible, very bottom) -->

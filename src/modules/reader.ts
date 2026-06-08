@@ -2038,7 +2038,14 @@ class _ReaderMixin {
                         + "#wv-reader-item-details .icon-css.icon-library,"
                         + "#wv-reader-item-details .icon-css.icon-library-group,"
                         + "#wv-reader-item-details .icon-css.icon-collection,"
-                        + "#wv-reader-item-details .icon-css.icon-item-type{width:16px;height:16px}";
+                        + "#wv-reader-item-details .icon-css.icon-item-type{width:16px;height:16px}"
+                        // A mounted note tab's editor shows its own tags/collections/
+                        // related footer (#links-container). When the item pane is
+                        // present it duplicates that metadata, so hide the footer and
+                        // let the pane own it. (Scoped to this style block, which only
+                        // exists when the item-pane feature is active — so with the
+                        // pane off, the note keeps its footer.)
+                        + "note-editor.wv-wt-note #links-container{display:none!important}";
                     doc.documentElement.appendChild(st);
                 }
             } catch (e) {}
@@ -3880,7 +3887,10 @@ class _ReaderMixin {
             const id = "wvwt-" + seq;
             const ed: any = doc.createXULElement("note-editor");
             ed.id = "wv-wt-note-" + seq;
-            ed.setAttribute("class", "reader");
+            // `wv-wt-note` lets the reader-pane stylesheet hide this editor's
+            // built-in tags/collections/related footer when the item pane owns
+            // that metadata (see wv-reader-pane-style).
+            ed.setAttribute("class", "reader wv-wt-note");
             ed.setAttribute("flex", "1");
             ed.collapsed = true;                 // mounted hidden; switch reveals
             vbox.appendChild(ed);

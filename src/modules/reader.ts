@@ -3969,6 +3969,13 @@ class _ReaderMixin {
                 if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus();
                 else if (tab.noteEditor && typeof tab.noteEditor.focus === "function") tab.noteEditor.focus();
             } catch (e) {}
+            // Re-bind the reader-window item pane to the now-active tab. This is
+            // the single chokepoint for activeId changes, so syncing here keeps
+            // the pane in step on every switch (click, mount, drop). Idempotent —
+            // _wvReaderPaneSync short-circuits when the bound item is unchanged.
+            // (Mount calls _wvWTRenderStrip BEFORE switching, so without this the
+            // pane stayed bound to the previously-active tab's item.)
+            try { this._wvReaderPaneSync(win); } catch (e) {}
             try { this._wvWTPersistSaveDebounced(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTSwitch err: " + e); }
     }

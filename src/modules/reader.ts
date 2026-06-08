@@ -2055,6 +2055,15 @@ class _ReaderMixin {
             details.id = "wv-reader-item-details";
             details.className = "zotero-item-pane-content";
             details.style.cssText = "flex:1 1 0%;min-height:0;min-width:0;";
+            // item-details observes 'select'/'tab' notifications and sets
+            // skipRender = !ids.includes(this.tabID). Our tabID
+            // ("wv-reader-item-pane") is never in the MAIN window's selected-tab
+            // ids, so every main-window tab switch flips skipRender=true and
+            // render() defers forever — the pane freezes on the previous item
+            // (e.g. after dropping a note it kept showing the prior tab's item).
+            // This pane is standalone and always visible, so the observer has no
+            // job here: neutralise it.
+            try { (details as any)._handleTabSelect = function () {}; } catch (e) {}
             const sidenav = doc.createXULElement("item-pane-sidenav");
             sidenav.id = "wv-reader-item-sidenav";
             pane.appendChild(details);
@@ -2150,6 +2159,9 @@ class _ReaderMixin {
             details.item = targetItem;
             if (att.parentID) details.parentID = att.parentID;
             if (sidenav && details.sidenav !== sidenav) details.sidenav = sidenav;
+            // Clear any deferred-render flag a stray tab-select left set, so this
+            // render isn't swallowed (see the _handleTabSelect note at creation).
+            try { (details as any).skipRender = false; } catch (e) {}
             const rp = (typeof details.render === "function") ? details.render() : null;
             Promise.resolve(rp).then(() => {
                 // The sidenav buttons start disabled (the "no content / default"

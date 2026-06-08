@@ -5808,6 +5808,50 @@ class _ReaderMixin {
                     const native = st.tabs.find((t: any) => t.native && t.itemID != null);
                     const extras = st.tabs.filter((t: any) => !t.native && t.itemID != null);
                     if (!extras.length) continue;
+                    // SPECIAL CASE — a window whose only content is a SINGLE NOTE
+                    // (no native attachment; e.g. one opened via noteOpenInDeckWindow).
+                    // Reopen it as a stock NOTE WINDOW (its own separate window),
+                    // preserving its "own window" nature, instead of docking the
+                    // note as a main-window tab. Recorded so enable can pull it back.
+                    if (!native && extras.length === 1 && extras[0].type === "note") {
+                        const tab = extras[0];
+                        const noteID = tab.itemID;
+                        // Save AND synchronously uninit the deck editor first. Its
+                        // viewMode:"window" EditorInstance otherwise lingers in
+                        // Zotero.Notes (the single-tab _wvWTCloseTab path just
+                        // win.close()s, unregistering only on async unload), and
+                        // Notes.open(openInWindow) — which forces allowDuplicate=
+                        // false — would dedup onto it and open NO real window.
+                        try {
+                            const ed: any = tab.noteEditor;
+                            if (ed) {
+                                if (typeof ed.saveSync === "function") ed.saveSync();
+                                const inst: any = (typeof ed.getCurrentInstance === "function") ? ed.getCurrentInstance() : null;
+                                if (inst && typeof inst.uninit === "function") inst.uninit();
+                            }
+                        } catch (e) {}
+                        try { this._wvWTCloseTab(win, tab.id); } catch (e) {}   // closes the now-empty window
+                        try {
+                            const Notes: any = (Zotero as any).Notes;
+                            // Use the UNPATCHED open so it lands in a real note
+                            // window (not back through our deck redirect).
+                            const opener = (Notes && Notes._wvOrigOpen) || (Notes && Notes.open);
+                            // DEFER the open until the deck window has fully closed
+                            // and its editor unregistered — otherwise Notes.open
+                            // dedups onto the closing instance and opens nothing
+                            // (mirrors _moveNoteToTab's deferred open). The callback
+                            // only touches Zotero core, so it's safe after unload.
+                            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+                            setT(() => {
+                                try {
+                                    if (opener) opener.call(Notes, noteID, undefined, { openInWindow: true });
+                                    else { const zp: any = mainWin && mainWin.ZoteroPane; if (zp && zp.openNote) zp.openNote(noteID, { openInWindow: true }); }
+                                } catch (e) {}
+                            }, 250);
+                        } catch (e) {}
+                        records.push({ noteWindow: true, noteID });
+                        continue;
+                    }
                     // Which extra was active (so enable can re-activate it)?
                     let activeItemID: any = null;
                     const act = st.tabs.find((t: any) => t.id === st.activeId);
@@ -5858,6 +5902,23 @@ class _ReaderMixin {
         };
         for (const rec of records) {
             try {
+                // A single-note window we turned into a stock note window on
+                // disable: if the deck feature is still on AND the user kept the
+                // note window open, pull it back into a deck window. If they
+                // closed it (or the feature is off), leave it be.
+                if (rec.noteWindow && rec.noteID != null) {
+                    if (!Zotero.Items.exists(rec.noteID)) continue;
+                    if (!Zotero.Prefs.get("weavero.noteOpenInDeckWindow")) continue;
+                    let noteWin: any = null;
+                    try {
+                        const en = Services.wm.getEnumerator("zotero:note");
+                        while (en.hasMoreElements()) { const w: any = en.getNext(); if (w.name === "zotero-note-" + rec.noteID) { noteWin = w; break; } }
+                    } catch (e) {}
+                    if (!noteWin) continue;                       // user closed it → respect that
+                    try { noteWin.close(); } catch (e) {}
+                    try { await this._wvOpenNoteInDeckWindow(rec.noteID, null); } catch (e) {}
+                    continue;
+                }
                 let extras: any[] = (rec.extras || []).filter((e: any) => e && e.itemID != null && Zotero.Items.exists(e.itemID));
                 // Resolve the target window: the still-open native window, else
                 // re-create one anchored on the native (or, for an orphan, the

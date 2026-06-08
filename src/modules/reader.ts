@@ -2270,8 +2270,22 @@ class _ReaderMixin {
                     return (d && (d.tabType === "reader" || d.tabType === "note")) ? d : null;
                 } catch (er) { return null; }
             };
+            // Only windows with the multi-tab deck (`#zotero-reader`) can host a
+            // dropped tab. Note windows share this absorber but have no deck, so
+            // mounting would fail — and the drop handler closes the SOURCE tab
+            // first, so accepting would lose it. Reject tab drags on such windows.
+            const canHost = () => {
+                try { return !!win.document.getElementById("zotero-reader"); } catch (er) { return false; }
+            };
             const onDragOver = (e) => {
                 const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                // Can't host (e.g. a note window) → refuse tab drags: forbidden
+                // cursor, no indicator, and crucially no drop fires here, so the
+                // source tab stays put instead of being closed-then-lost.
+                if (!canHost() && (mainTabDrag() || isMergeDrag(e))) {
+                    try { e.stopPropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = "none"; } catch (er) {}
+                    return;
+                }
                 // Main-window reader tab → this strip: accept (so drop fires).
                 if (mainTabDrag()) {
                     try {
@@ -2313,6 +2327,10 @@ class _ReaderMixin {
             };
             const onDrop = (e) => {
                 try { (Zotero as any).Weavero.plugin._wvWTHideDropIndicator(win); } catch (er) {}
+                // Defensive: a non-hosting window should never reach here for a
+                // tab drag (onDragOver didn't preventDefault), but guard anyway so
+                // the source tab can't be consumed/lost.
+                if (!canHost() && (mainTabDrag() || isMergeDrag(e))) { try { e.stopPropagation(); } catch (er) {} return; }
                 // Main-window reader tab dropped on the strip → mount it here as
                 // a new tab (and close the source main tab — move semantics).
                 const md = mainTabDrag();
@@ -5300,6 +5318,10 @@ class _ReaderMixin {
      *  attachments are accepted. */
     _wvWTHandleMainTabDrop(win: any, drag: any, clientX?: any) {
         try {
+            // Only a window with the multi-tab deck can host the dropped tab.
+            // Bail BEFORE closing the source (a note window has no #zotero-reader,
+            // so the mount would fail and the source tab would be lost).
+            try { if (!win || !win.document || !win.document.getElementById("zotero-reader")) return; } catch (e) { return; }
             // Did the user drop in the pinned region (left of the last pinned
             // tab's right edge)? Capture BEFORE the mount changes the layout.
             let wantPin = false;

@@ -5335,25 +5335,17 @@ class _ReaderMixin {
     }
 
     /** On a tab's dragend: if the drag wasn't consumed by any drop target
-     *  (dropEffect "none" — i.e. it wasn't dropped on a strip / main tab bar)
-     *  AND the pointer ended OUTSIDE the source window, tear the tab off into
-     *  its own window. Only from a multi-tab window; dropping on the source's
-     *  own content is a no-op. */
+     *  (dropEffect "none" — i.e. it wasn't dropped on a strip / main tab bar),
+     *  tear the tab off into its own window. Only from a multi-tab window.
+     *  Dropping anywhere that isn't a tab strip — the window's own content, the
+     *  desktop, another window's body — tears off (browser-style); a strip drop
+     *  reorders / moves instead and never reaches here. */
     _wvWTMaybeTearOff(win: any, tabId: any, e: any) {
         try {
             if (!e || !e.dataTransfer || e.dataTransfer.dropEffect !== "none") return;
             const st = this._wvWTState(win);
             if (!st || !st.tabs || st.tabs.length <= 1) return;       // need ≥2 tabs
             if (!st.tabs.find((t: any) => t.id === tabId)) return;     // already moved away
-            // Require the drop point to be OUTSIDE the source window — a real
-            // "drag out" — so a drop on the window's own content keeps the tab.
-            try {
-                const sx = e.screenX, sy = e.screenY;
-                const wx = win.screenX, wy = win.screenY, ww = win.outerWidth, wh = win.outerHeight;
-                if (typeof sx === "number" && ww) {
-                    if (sx >= wx && sx <= wx + ww && sy >= wy && sy <= wy + wh) return;   // inside → keep
-                }
-            } catch (er) {}
             this._wvWTTearOffTab(win, tabId);
         } catch (e2) { Zotero.debug("[Weavero] _wvWTMaybeTearOff err: " + e2); }
     }

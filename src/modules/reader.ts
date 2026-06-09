@@ -2444,6 +2444,34 @@ class _ReaderMixin {
                     }, true);
                 } catch (er) {}
             }
+            // A centered "release to open in its own window" cue. Shown over the
+            // content (the tear-out zone) only when the drag source is a multi-tab
+            // window — _wvShowReaderDragOverlays toggles its display. Lives inside
+            // the overlay so it's positioned over the reader content, away from
+            // the tab strip (which instead shows the reorder/insert indicator).
+            try {
+                if (!overlay.querySelector(":scope > #wv-tearout-hint")) {
+                    const SVGNS = "http://www.w3.org/2000/svg";
+                    const hint: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                    hint.id = "wv-tearout-hint";
+                    hint.style.cssText = "position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);"
+                        + "display:none; align-items:center; gap:10px; padding:13px 20px; border-radius:12px;"
+                        + "background:rgba(22,22,26,0.85); color:#fff; font-size:14px; font-weight:600;"
+                        + "box-shadow:0 4px 18px rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.16);"
+                        + "pointer-events:none; white-space:nowrap;";
+                    const svg: any = doc.createElementNS(SVGNS, "svg");
+                    svg.setAttribute("width", "22"); svg.setAttribute("height", "22");
+                    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "currentColor");
+                    const path: any = doc.createElementNS(SVGNS, "path");
+                    path.setAttribute("d", "M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z");
+                    svg.appendChild(path);
+                    hint.appendChild(svg);
+                    const label: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+                    label.textContent = "Open in its own window";
+                    hint.appendChild(label);
+                    overlay.appendChild(hint);
+                }
+            } catch (er) {}
             // Sync overlay rect to the current browser rect (resize-safe).
             const sync = () => {
                 try {
@@ -2582,6 +2610,10 @@ class _ReaderMixin {
                     }
                 } catch (er) {}
             }
+            // Show the "open in its own window" cue only when releasing would
+            // actually tear off — i.e. the drag started from a multi-tab window.
+            const srcWin: any = (this as any)._wvMergeDragSourceWin;
+            const tearOffHint = !!(srcWin && srcWin._wvWT && srcWin._wvWT.tabs && srcWin._wvWT.tabs.length > 1);
             // Standalone-window-only chrome bits: overlay + browser PE:none.
             // (No-op for in-tab readers; they don't need a forbidden cursor.)
             const en = (Services as any).wm.getEnumerator(null);
@@ -2601,6 +2633,10 @@ class _ReaderMixin {
                     if (!overlay) continue;
                     try { (w as any)._wvReaderDragOverlaySync?.(); } catch (er) {}
                     overlay.style.display = "block";
+                    try {
+                        const hint: any = overlay.querySelector(":scope > #wv-tearout-hint");
+                        if (hint) hint.style.display = tearOffHint ? "flex" : "none";
+                    } catch (er) {}
                     const browser: any = doc.getElementById("reader")
                         || doc.querySelector("browser[type='content']");
                     if (browser) {

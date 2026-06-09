@@ -2842,8 +2842,11 @@ class _ReaderMixin {
                 }
 
                 strip.appendChild(tab);
-                // Insert strip just above the menubar.
-                menubar.parentNode.insertBefore(strip, menubar);
+                // Insert the strip AFTER the menubar (not before it) so that when
+                // the user summons the menubar via Alt it appears ABOVE the strip
+                // — the Firefox/main-window layout — instead of sliding in as a
+                // row below it. Mirrors the reader-window strip placement.
+                menubar.parentNode.insertBefore(strip, menubar.nextSibling);
 
                 // Right-click context menu on the tab.
                 if (itemID) {
@@ -2907,6 +2910,21 @@ class _ReaderMixin {
             try { menubar.setAttribute("wv-compact-hidden", "true"); } catch (e) {}
             this._ensureNoteWindowMenubarStyles(doc);
 
+            // note.xhtml (unlike reader.xhtml) doesn't render the native title-
+            // bar app icon, so the Alt-revealed menubar would have no Zotero
+            // icon — add one at its left to match the main/reader windows.
+            // Idempotent.
+            try {
+                if (!menubar.querySelector(":scope > .wv-menubar-zicon")) {
+                    const zicon: any = doc.createElementNS(HTML, "div");
+                    zicon.className = "wv-menubar-zicon";
+                    zicon.style.cssText = "width:16px;height:16px;margin-inline:6px;flex:0 0 auto;"
+                        + "align-self:center;background:url('chrome://zotero/skin/z.svg') no-repeat center/16px 16px;"
+                        + "-moz-context-properties:fill;fill:currentColor;";
+                    menubar.insertBefore(zicon, menubar.firstChild);
+                }
+            } catch (e) {}
+
             // Alt-key reveal + window-control follow.
             try { this._wvWireNoteMenubarAltReveal(win, menubar); } catch (e) {}
             try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
@@ -2955,7 +2973,11 @@ class _ReaderMixin {
             } catch (e) {}
             try {
                 const menubar = doc.querySelector("menubar");
-                if (menubar) menubar.removeAttribute("wv-compact-hidden");
+                if (menubar) {
+                    menubar.removeAttribute("wv-compact-hidden");
+                    const zicon = menubar.querySelector(":scope > .wv-menubar-zicon");
+                    if (zicon) zicon.remove();
+                }
             } catch (e) {}
             try { (win as any)._wvNoteAltOff?.(); } catch (e) {}
             try { const strip = doc.querySelector(".wv-window-tabstrip"); if (strip) strip.remove(); } catch (e) {}

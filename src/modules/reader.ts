@@ -5410,19 +5410,6 @@ class _ReaderMixin {
             // Bail BEFORE closing the source (a note window has no #zotero-reader,
             // so the mount would fail and the source tab would be lost).
             try { if (!win || !win.document || !win.document.getElementById("zotero-reader")) return; } catch (e) { return; }
-            // Did the user drop in the pinned region (left of the last pinned
-            // tab's right edge)? Capture BEFORE the mount changes the layout.
-            let wantPin = false;
-            try {
-                const tabsBox: any = win.document.querySelector(".wv-window-tabs");
-                if (tabsBox && clientX != null) {
-                    const pinnedEls = Array.from(tabsBox.querySelectorAll(":scope > .wv-window-tab.wv-pinned")) as any[];
-                    const boundary = pinnedEls.length
-                        ? pinnedEls[pinnedEls.length - 1].getBoundingClientRect().right
-                        : tabsBox.getBoundingClientRect().left;
-                    wantPin = clientX < boundary;
-                }
-            } catch (e) {}
             let itemID = drag && drag.itemID;
             if (!itemID && drag && drag.libraryID && drag.itemKey) {
                 try {
@@ -5455,16 +5442,12 @@ class _ReaderMixin {
             const mount = async () => {
                 try {
                     const id = await this._wvWTMountTab(win, itemID, { select: true });
-                    // Dropped in the pinned region → pin the freshly-mounted tab.
-                    if (wantPin && id) {
-                        const stx = win._wvWT;
-                        const t = stx && stx.tabs.find((x: any) => x.id === id);
-                        if (t) {
-                            t.pinned = true;
-                            try { this._wvWTStabilizePinned(stx); } catch (e) {}
-                            try { this._wvWTRenderStrip(win); } catch (e) {}
-                            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
-                        }
+                    // Move the freshly-mounted tab (appended at the end) to the
+                    // DROP POSITION, and pin it if dropped in the pinned region —
+                    // _wvWTReorderTab does both from clientX, the same way an
+                    // in-window reorder drop does.
+                    if (id != null && clientX != null) {
+                        try { this._wvWTReorderTab(win, id, clientX); } catch (e) {}
                     }
                 } catch (e) {}
             };

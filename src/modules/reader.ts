@@ -5403,10 +5403,22 @@ class _ReaderMixin {
             const sourceTabId = info.sourceTabId;
             // Clear shared drag state first so neither window's dragend re-acts.
             try { plugin._wvMergeDragInfo = null; plugin._wvMergeDragSourceWin = null; } catch (e) {}
-            try { if (sourceTabId != null) this._wvWTCloseTab(srcWin, sourceTabId); } catch (e) {}
+            // Mount in the TARGET first, THEN close the source. Order matters: the
+            // target may be a note-only deck window with no reader of its own, so
+            // _wvWTReaderInstanceClass falls back to a live reader — and the source
+            // can be the only one. Closing it first emptied Zotero.Reader._readers,
+            // the class went unavailable, the mount failed, and the (already-closed)
+            // tab vanished. The mount's synchronous part runs before any await, so
+            // checking the target's tabs right after is reliable; only close the
+            // source once the item has actually landed there (never lose the tab).
             this._wvWTMountTab(targetWin, itemID, { allowDuplicate: false, select: true });
-            // Closing the source tab above removes its element before its dragend
-            // fires, so clear every window's drop ghost here too.
+            const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
+                && targetWin._wvWT.tabs.some((t: any) => t.itemID === itemID));
+            if (landed && sourceTabId != null) {
+                try { this._wvWTCloseTab(srcWin, sourceTabId); } catch (e) {}
+            }
+            // Closing the source tab removes its element before its dragend fires,
+            // so clear every window's drop ghost here too.
             try { this._wvWTHideAllDropIndicators(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTHandleCrossWindowDrop err: " + e); }
     }

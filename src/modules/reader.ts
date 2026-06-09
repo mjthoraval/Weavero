@@ -2317,10 +2317,22 @@ class _ReaderMixin {
                         }
                     }
                     else {
-                        // Reader area: block PDF.js from seeing the event so
-                        // it can't auto-scroll, but leave preventDefault
-                        // unset so the OS shows the forbidden cursor.
+                        // Reader content = the tear-out zone. Always block PDF.js
+                        // from seeing the event (no auto-scroll). If the drag is
+                        // from a MULTI-TAB window, accept it with a "copy" cursor
+                        // (a "+" badge — NOT the forbidden cursor) to signify
+                        // "release to open in its own window"; the drop tears it
+                        // off. From a single-tab window nothing can tear off, so
+                        // leave the forbidden cursor.
                         e.stopPropagation();
+                        try {
+                            const srcWin = P && P._wvMergeDragSourceWin;
+                            const canTearOff = !!(srcWin && srcWin._wvWT && srcWin._wvWT.tabs && srcWin._wvWT.tabs.length > 1);
+                            if (canTearOff) {
+                                e.preventDefault();
+                                if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+                            }
+                        } catch (er) {}
                         try { P && P._wvWTHideDropIndicator(win); } catch (er) {}
                     }
                 } catch (er) {}
@@ -2348,16 +2360,23 @@ class _ReaderMixin {
                 if (!isMergeDrag(e)) return;
                 try {
                     e.stopPropagation();
+                    const plugin: any = (Zotero as any).Weavero.plugin;
+                    const srcWin = plugin && plugin._wvMergeDragSourceWin;
+                    const info = plugin && plugin._wvMergeDragInfo;
                     if (isOverStrip(e)) {
                         e.preventDefault();
-                        const plugin: any = (Zotero as any).Weavero.plugin;
-                        const srcWin = plugin && plugin._wvMergeDragSourceWin;
                         if (srcWin === win) {
-                            const info = plugin._wvMergeDragInfo;
                             plugin._wvWTReorderTab(win, info && info.sourceTabId, e.clientX);
                         } else {
                             plugin._wvWTHandleCrossWindowDrop(win);
                         }
+                    } else if (srcWin && srcWin._wvWT && srcWin._wvWT.tabs
+                            && srcWin._wvWT.tabs.length > 1 && info && info.sourceTabId != null) {
+                        // Dropped on the reader content (the tear-out zone) → detach
+                        // the dragged tab into its own window. Matches the "copy"
+                        // cursor onDragOver shows for a multi-tab source.
+                        e.preventDefault();
+                        plugin._wvWTTearOffTab(srcWin, info.sourceTabId);
                     }
                 } catch (er) { Zotero.debug("[Weavero] strip drop err: " + er); }
             };
@@ -2444,34 +2463,6 @@ class _ReaderMixin {
                     }, true);
                 } catch (er) {}
             }
-            // A centered "release to open in its own window" cue. Shown over the
-            // content (the tear-out zone) only when the drag source is a multi-tab
-            // window — _wvShowReaderDragOverlays toggles its display. Lives inside
-            // the overlay so it's positioned over the reader content, away from
-            // the tab strip (which instead shows the reorder/insert indicator).
-            try {
-                if (!overlay.querySelector(":scope > #wv-tearout-hint")) {
-                    const SVGNS = "http://www.w3.org/2000/svg";
-                    const hint: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                    hint.id = "wv-tearout-hint";
-                    hint.style.cssText = "position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);"
-                        + "display:none; align-items:center; gap:10px; padding:13px 20px; border-radius:12px;"
-                        + "background:rgba(22,22,26,0.85); color:#fff; font-size:14px; font-weight:600;"
-                        + "box-shadow:0 4px 18px rgba(0,0,0,0.45); border:1px solid rgba(255,255,255,0.16);"
-                        + "pointer-events:none; white-space:nowrap;";
-                    const svg: any = doc.createElementNS(SVGNS, "svg");
-                    svg.setAttribute("width", "22"); svg.setAttribute("height", "22");
-                    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "currentColor");
-                    const path: any = doc.createElementNS(SVGNS, "path");
-                    path.setAttribute("d", "M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z");
-                    svg.appendChild(path);
-                    hint.appendChild(svg);
-                    const label: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-                    label.textContent = "Open in its own window";
-                    hint.appendChild(label);
-                    overlay.appendChild(hint);
-                }
-            } catch (er) {}
             // Sync overlay rect to the current browser rect (resize-safe).
             const sync = () => {
                 try {
@@ -2610,10 +2601,6 @@ class _ReaderMixin {
                     }
                 } catch (er) {}
             }
-            // Show the "open in its own window" cue only when releasing would
-            // actually tear off — i.e. the drag started from a multi-tab window.
-            const srcWin: any = (this as any)._wvMergeDragSourceWin;
-            const tearOffHint = !!(srcWin && srcWin._wvWT && srcWin._wvWT.tabs && srcWin._wvWT.tabs.length > 1);
             // Standalone-window-only chrome bits: overlay + browser PE:none.
             // (No-op for in-tab readers; they don't need a forbidden cursor.)
             const en = (Services as any).wm.getEnumerator(null);
@@ -2633,10 +2620,6 @@ class _ReaderMixin {
                     if (!overlay) continue;
                     try { (w as any)._wvReaderDragOverlaySync?.(); } catch (er) {}
                     overlay.style.display = "block";
-                    try {
-                        const hint: any = overlay.querySelector(":scope > #wv-tearout-hint");
-                        if (hint) hint.style.display = tearOffHint ? "flex" : "none";
-                    } catch (er) {}
                     const browser: any = doc.getElementById("reader")
                         || doc.querySelector("browser[type='content']");
                     if (browser) {
@@ -5298,7 +5281,9 @@ class _ReaderMixin {
             el.addEventListener("dragstart", (e: any) => {
                 try {
                     if (!e.dataTransfer) return;
-                    e.dataTransfer.effectAllowed = "move";
+                    // copyMove (not just move) so the content tear-out zone can
+                    // show a "copy" (+) cursor instead of the forbidden one.
+                    e.dataTransfer.effectAllowed = "copyMove";
                     const titleText = this._wvWTTabTitle(tab);
                     e.dataTransfer.setData(
                         "application/x-weavero-reader-merge",
@@ -5345,7 +5330,9 @@ class _ReaderMixin {
             el.addEventListener("dragstart", (e: any) => {
                 try {
                     if (!e.dataTransfer) return;
-                    e.dataTransfer.effectAllowed = "move";
+                    // copyMove (not just move) so the content tear-out zone can
+                    // show a "copy" (+) cursor instead of the forbidden one.
+                    e.dataTransfer.effectAllowed = "copyMove";
                     const titleText = this._wvWTTabTitle(tab);
                     const payload = { itemID, title: titleText, readerType: readerType || "", sourceTabId: tab.id, multiTab: true };
                     e.dataTransfer.setData("application/x-weavero-reader-merge", JSON.stringify(payload));

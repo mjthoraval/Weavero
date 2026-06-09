@@ -5624,7 +5624,12 @@ class _ReaderMixin {
                         const ei = extraTabs.findIndex((t: any) => t.id === st.activeId);
                         if (ei >= 0) activeIndex = ei + 1;
                     }
-                    out.push({ kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned });
+                    // Full tab order (itemIDs, incl. the native at its real slot)
+                    // so restore can put the native back where it sat — without
+                    // this, the native always restores first and an extra that was
+                    // BEFORE it (e.g. a note first, PDF second) lands after it.
+                    const order = realTabs.map((t: any) => t.itemID);
+                    out.push({ kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, order });
                 } else {
                     // ORPHAN window: the native tab was closed, so Zotero has no
                     // entry for it (it'd be lost). Weavero owns full recreation —
@@ -5671,7 +5676,7 @@ class _ReaderMixin {
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
                         if (g && g.kind === "reader" && g.nativeItemID != null) {
-                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned };
+                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, order: g.order };
                         } else if (g && g.kind === "reader-orphan" && Array.isArray(g.tabs) && g.tabs.length) {
                             // Orphan: recreate by opening the FIRST tab as a fresh
                             // reader window (it becomes the new native); the rest
@@ -5767,6 +5772,23 @@ class _ReaderMixin {
                             }
                         } catch (e) { Zotero.debug("[Weavero] restore mount err: " + e); }
                     }
+                    // Re-apply the saved tab order. Zotero restores the native tab
+                    // first and the extras mount after it, so an extra that sat
+                    // BEFORE the native (e.g. a note as the first tab, PDF second)
+                    // would otherwise come back after it. Reorder by itemID to the
+                    // captured order; leftovers (if any) keep their place at the end.
+                    try {
+                        const st2 = win._wvWT;
+                        if (st2 && Array.isArray(entry.order) && entry.order.length) {
+                            const ordered: any[] = [];
+                            for (const id of entry.order) {
+                                const t = st2.tabs.find((x: any) => x.itemID === id && ordered.indexOf(x) < 0);
+                                if (t) ordered.push(t);
+                            }
+                            for (const t of st2.tabs) if (ordered.indexOf(t) < 0) ordered.push(t);
+                            if (ordered.length === st2.tabs.length) st2.tabs = ordered;
+                        }
+                    } catch (e) {}
                     // Cluster the restored pinned tabs to the left + re-render.
                     try {
                         const st2 = win._wvWT;

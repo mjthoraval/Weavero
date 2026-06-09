@@ -1197,30 +1197,15 @@ class _TabsMixin {
                     const raw = e.dataTransfer.getData("application/x-weavero-reader-merge");
                     const data = raw ? JSON.parse(raw) : null;
                     const itemID = data && typeof data.itemID === "number" ? data.itemID : null;
-                    // Mounted (multi-tab) reader-window tab → route through
-                    // _wvWTMoveTabToMain so only THAT tab is closed (not the
-                    // whole window). Lands the tab at the end (skips the
-                    // reposition/pin below, which the native single-tab path
-                    // still uses).
-                    if (data && data.multiTab && data.sourceTabId != null) {
-                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                        const srcWin = live && live._wvMergeDragSourceWin;
-                        if (live && srcWin && typeof live._wvWTMoveTabToMain === "function") {
-                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId); } catch (er) {}
-                            return;
-                        }
-                    }
-                    const kind = data && data.readerType === "note" ? "note" : "reader";
-                    const mover = kind === "note"
-                        ? (self as any)._moveNoteToTab?.bind(self)
-                        : (self as any)._moveReaderToTab?.bind(self);
-                    if (itemID == null || typeof mover !== "function") return;
+                    if (itemID == null) return;
 
                     // Compute the drop position → tab index by finding which
-                    // existing-tab gap the cursor's clientX falls into. Uses
-                    // the same midpoint algorithm Zotero's handleTabBarDragOver
-                    // uses internally. The index is *where the new tab should
-                    // land*; tabs at or after that index shift right.
+                    // existing-tab gap the cursor's clientX falls into (the same
+                    // midpoint algorithm Zotero's handleTabBarDragOver uses), plus
+                    // the rightmost OTHER pinned slot (drop ≤ it → auto-pin).
+                    // Computed BEFORE any mover so BOTH the multi-tab and native
+                    // paths can reposition (previously the multi-tab path returned
+                    // early and the tab always landed at the end).
                     const Z_Tabs: any = (win as any).Zotero_Tabs;
                     let targetIndex = (Z_Tabs && Z_Tabs._tabs) ? Z_Tabs._tabs.length : 1;
                     try {
@@ -1230,8 +1215,6 @@ class _TabsMixin {
                             const r = tabNodes[i].getBoundingClientRect();
                             const mid = r.left + r.width / 2;
                             if (e.clientX < mid) {
-                                // Translate the DOM index to the Z_Tabs._tabs
-                                // index by mapping data-id to the tabs array.
                                 const did = tabNodes[i].getAttribute("data-id");
                                 const z = Z_Tabs && Z_Tabs._tabs
                                     ? Z_Tabs._tabs.findIndex((t: any) => t && t.id === did)
@@ -1241,10 +1224,6 @@ class _TabsMixin {
                             }
                         }
                     } catch (er) {}
-                    // Find the rightmost OTHER currently-pinned slot — anything
-                    // landing at index ≤ this means "inside the pinned region"
-                    // and should auto-pin. Captured BEFORE the merge so the
-                    // newly-arrived tab doesn't itself count.
                     let maxOtherPinned = 0;
                     try {
                         for (let i = 1; i < Z_Tabs._tabs.length; i++) {
@@ -1255,34 +1234,27 @@ class _TabsMixin {
                         }
                     } catch (er) {}
 
-                    // Run the merge, then move the new tab to the target slot
-                    // and (if applicable) auto-pin it. The mover branches on
-                    // readerType: "note" → _moveNoteToTab (ZoteroPane.openNote
-                    // with openInWindow:false), anything else → reader path.
-                    try { mover(itemID); } catch (er) {}
-                    // _moveReaderToTab defers the new tab's creation behind a
-                    // ~120 ms setTimeout (it lets the closing reader window
-                    // flush its state first). Poll briefly until the new tab
-                    // appears in Z_Tabs._tabs, then move it.
+                    // The movers create the new tab behind a deferred setTimeout
+                    // (they let the closing reader flush state first), so poll for
+                    // it, move it to the target slot, and auto-pin if dropped in
+                    // the pinned region.
                     const startTs = Date.now();
-                    const poll = () => {
+                    const positionNewTab = () => {
                         try {
                             const item = Zotero.Items.get(itemID);
                             if (!item) return;
                             const tab = Z_Tabs._tabs.find((t: any) =>
                                 t && t.data && t.data.itemID === itemID);
                             if (!tab) {
-                                if (Date.now() - startTs < 2000) win.setTimeout(poll, 80);
+                                if (Date.now() - startTs < 2000) win.setTimeout(positionNewTab, 80);
                                 return;
                             }
-                            // Position the new tab.
                             try {
                                 if (typeof Z_Tabs.move === "function") {
                                     const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
                                     Z_Tabs.move(tab.id, clamped);
                                 }
                             } catch (er) {}
-                            // Auto-pin if dropped inside the pinned region.
                             const curIdx = Z_Tabs._tabs.indexOf(tab);
                             if (curIdx <= maxOtherPinned && curIdx > 0) {
                                 try {
@@ -1292,7 +1264,28 @@ class _TabsMixin {
                             }
                         } catch (er) {}
                     };
-                    win.setTimeout(poll, 200);
+
+                    // Mounted (multi-tab) reader-window tab → route through
+                    // _wvWTMoveTabToMain so only THAT tab is closed (not the whole
+                    // window), THEN position it like the native path.
+                    if (data && data.multiTab && data.sourceTabId != null) {
+                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const srcWin = live && live._wvMergeDragSourceWin;
+                        if (live && srcWin && typeof live._wvWTMoveTabToMain === "function") {
+                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId); } catch (er) {}
+                            win.setTimeout(positionNewTab, 200);
+                            return;
+                        }
+                    }
+                    // Native single-tab reader / note → its dedicated mover, then
+                    // the same reposition. readerType "note" → _moveNoteToTab.
+                    const kind = data && data.readerType === "note" ? "note" : "reader";
+                    const mover = kind === "note"
+                        ? (self as any)._moveNoteToTab?.bind(self)
+                        : (self as any)._moveReaderToTab?.bind(self);
+                    if (typeof mover !== "function") return;
+                    try { mover(itemID); } catch (er) {}
+                    win.setTimeout(positionNewTab, 200);
                 } catch (er) {}
             }, true);
             // Clear merge-drop markers whenever the drag leaves the container

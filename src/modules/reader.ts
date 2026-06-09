@@ -5834,6 +5834,38 @@ class _ReaderMixin {
             for (const itemID of ids) {
                 try {
                     if (!Zotero.Items.exists(itemID)) continue;
+                    const item: any = Zotero.Items.get(itemID);
+                    // A NOTE head means a note-only / note-first deck window (e.g.
+                    // one opened via noteOpenInDeckWindow). Zotero.Reader.open on a
+                    // note opens nothing, so recreate it as a tab-hosting deck
+                    // window (anchor → mount note → drop anchor) and mount the
+                    // rest of its tabs.
+                    if (item && typeof item.isNote === "function" && item.isNote()) {
+                        if (this._wvReaderWindowHostingItem(itemID)) continue;   // already there (reload)
+                        const win: any = await this._wvOpenNoteInDeckWindow(itemID, null);
+                        if (win) {
+                            const entry: any = this._wvWTRestoreMap && this._wvWTRestoreMap[itemID];
+                            const extras: any[] = (entry && Array.isArray(entry.extras)) ? entry.extras : [];
+                            for (const ex of extras) {
+                                try {
+                                    if (ex && ex.itemID != null && Zotero.Items.exists(ex.itemID)) {
+                                        await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
+                                    }
+                                } catch (e) {}
+                            }
+                            // Re-activate the tab that was active (index into
+                            // [note-head, ...extras]).
+                            try {
+                                const ai = (entry && entry.activeIndex != null) ? entry.activeIndex : 0;
+                                const activeItemID = (ai === 0) ? itemID : ((extras[ai - 1] || {}).itemID);
+                                const st = win._wvWT;
+                                const t = st && st.tabs && st.tabs.find((x: any) => x.itemID === activeItemID);
+                                if (t) this._wvWTSwitch(win, t.id);
+                            } catch (e) {}
+                        }
+                        await new Promise((r) => setTimeout(r, 500));
+                        continue;
+                    }
                     if (this._wvReaderWindowOpenForItem(itemID)) continue;   // already open (e.g. reload)
                     (Zotero.Reader as any).open(itemID, null, { openInWindow: true, allowDuplicate: true });
                     // Space out window opens so each settles (and its restore runs)

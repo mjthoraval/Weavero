@@ -5283,7 +5283,8 @@ class _ReaderMixin {
                     try { this._wvShowReaderDragOverlays(); } catch (er2) {}
                 } catch (er) {}
             });
-            el.addEventListener("dragend", () => {
+            el.addEventListener("dragend", (e: any) => {
+                try { this._wvWTMaybeTearOff(win, tab.id, e); } catch (er) {}
                 try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
                 try { (this as any)._wvMergeDragSourceWin = null; } catch (er) {}
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
@@ -5323,13 +5324,63 @@ class _ReaderMixin {
                     try { this._wvShowReaderDragOverlays(); } catch (er2) {}
                 } catch (er) {}
             });
-            el.addEventListener("dragend", () => {
+            el.addEventListener("dragend", (e: any) => {
+                try { this._wvWTMaybeTearOff(win, tab.id, e); } catch (er) {}
                 try { (this as any)._wvMergeDragInfo = null; } catch (er) {}
                 try { (this as any)._wvMergeDragSourceWin = null; } catch (er) {}
                 try { this._wvHideReaderDragOverlays(); } catch (er) {}
                 try { this._wvWTHideAllDropIndicators(); } catch (er) {}
             });
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireTabDrag err: " + e); }
+    }
+
+    /** On a tab's dragend: if the drag wasn't consumed by any drop target
+     *  (dropEffect "none" — i.e. it wasn't dropped on a strip / main tab bar)
+     *  AND the pointer ended OUTSIDE the source window, tear the tab off into
+     *  its own window. Only from a multi-tab window; dropping on the source's
+     *  own content is a no-op. */
+    _wvWTMaybeTearOff(win: any, tabId: any, e: any) {
+        try {
+            if (!e || !e.dataTransfer || e.dataTransfer.dropEffect !== "none") return;
+            const st = this._wvWTState(win);
+            if (!st || !st.tabs || st.tabs.length <= 1) return;       // need ≥2 tabs
+            if (!st.tabs.find((t: any) => t.id === tabId)) return;     // already moved away
+            // Require the drop point to be OUTSIDE the source window — a real
+            // "drag out" — so a drop on the window's own content keeps the tab.
+            try {
+                const sx = e.screenX, sy = e.screenY;
+                const wx = win.screenX, wy = win.screenY, ww = win.outerWidth, wh = win.outerHeight;
+                if (typeof sx === "number" && ww) {
+                    if (sx >= wx && sx <= wx + ww && sy >= wy && sy <= wy + wh) return;   // inside → keep
+                }
+            } catch (er) {}
+            this._wvWTTearOffTab(win, tabId);
+        } catch (e2) { Zotero.debug("[Weavero] _wvWTMaybeTearOff err: " + e2); }
+    }
+
+    /** Detach a tab from a multi-tab window into its OWN new window: close it
+     *  here (the window stays — other tabs remain) and reopen the item
+     *  standalone. Readers → a fresh reader window; notes → openNote (a deck or
+     *  note window per the user's pref). Close-then-(deferred-)open mirrors
+     *  _wvWTMoveTabToMain so reader scroll / note state is preserved. */
+    _wvWTTearOffTab(win: any, tabId: any) {
+        try {
+            const st = this._wvWTState(win);
+            const tab = st && st.tabs.find((t: any) => t.id === tabId);
+            if (!tab || st.tabs.length <= 1) return;
+            const itemID = tab.itemID;
+            const isNote = (tab.type === "note");
+            const mainWin: any = Zotero.getMainWindow();
+            try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+            const open = () => {
+                try {
+                    if (isNote) { const ZP: any = mainWin && mainWin.ZoteroPane; if (ZP && ZP.openNote) ZP.openNote(itemID, { openInWindow: true }); }
+                    else { (Zotero.Reader as any).open(itemID, null, { openInWindow: true, allowDuplicate: true }); }
+                } catch (e) { Zotero.debug("[Weavero] tear-off open err: " + e); }
+            };
+            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            setT(open, 150);
+        } catch (e) { Zotero.debug("[Weavero] _wvWTTearOffTab err: " + e); }
     }
 
     /** Drop handler for a reader tab dragged from the main window's tab bar

@@ -542,11 +542,6 @@ class WeaveroPlugin {
 
     // ---- Settings ---------------------------------------------------------
 
-    _getShowTreeIcon() {
-        try { return !!Zotero.Prefs.get("weavero.showTreeIcon"); }
-        catch(e) { return false; }
-    }
-
     _getInlineLinks() {
         try {
             const v = Zotero.Prefs.get("weavero.inlineLinks");
@@ -1715,29 +1710,6 @@ class WeaveroPlugin {
      *  delete in a future cleanup. */
     _applyCommentMarkdownPref() {}
 
-    _applyTreeIconPref(show) {
-        Zotero.debug("[Weavero] _applyTreeIconPref called: " + show);
-        try {
-            const win = Zotero.getMainWindow();
-            const el = win.document.documentElement;
-            el.classList.toggle("wv-show-tree-icon", show);
-            this._dbg("[Weavero] wv-show-tree-icon class set to: " + show
-                + " (classList has it: " + el.classList.contains("wv-show-tree-icon") + ")");
-            this._dbg("[Weavero] documentElement diag: tagName=" + el.tagName
-                + " localName=" + el.localName
-                + " namespaceURI=" + el.namespaceURI);
-            if (show) {
-                // Immediate stamp pass
-                this._markCellLinks();
-                // Delayed stamp after tree re-renders settle (PDF open / item-select re-renders follow pref change)
-                win.setTimeout(() => {
-                    this._dbg("[Weavero] _applyTreeIconPref delayed _markCellLinks firing");
-                    this._markCellLinks();
-                }, 250);
-            }
-        } catch(e) { Zotero.debug("[Weavero] _applyTreeIconPref error: " + e); }
-    }
-
     async _registerPrefPane() {
         try {
             // De-dupe: dev iterations and hot-reloads can call
@@ -1962,10 +1934,6 @@ class WeaveroPlugin {
         }
 
         // 0. Register default pref values so Zotero's pref-binding system can find them
-        try {
-            Services.prefs.getDefaultBranch("extensions.zotero.")
-                .setBoolPref("weavero.showTreeIcon", false);
-        } catch(e) {}
         try {
             Services.prefs.getDefaultBranch("extensions.zotero.")
                 .setBoolPref("weavero.inlineLinks", true);
@@ -2662,7 +2630,6 @@ class WeaveroPlugin {
         } catch (e) {}
         // Items-list "Related" column.
         this._registerItemTreeColumns();
-        this._applyTreeIconPref(this._getShowTreeIcon());
         this._applyInlineLinksPref(this._getInlineLinks());
         this._applyCommentMarkdownPref();
         // Defensive: prune dead entries from `Zotero.Reader._readers`.
@@ -2763,9 +2730,6 @@ class WeaveroPlugin {
                 observe: (_s, _t, data) => {
                     if (data.includes("weavero")) {
                         this._dbg("[Weavero] pref changed at path: " + data);
-                    }
-                    if (data === "extensions.zotero.weavero.showTreeIcon") {
-                        this._applyTreeIconPref(this._getShowTreeIcon());
                     }
                     if (data === "extensions.zotero.weavero.inlineLinks") {
                         this._applyInlineLinksPref(this._getInlineLinks());
@@ -3311,7 +3275,7 @@ class WeaveroPlugin {
             Zotero.debug("[Weavero] pref observer registered on root branch");
         } catch(e) { Zotero.debug("[Weavero] pref observer error: " + e); }
 
-        Zotero.debug("[Weavero] initialized — showTreeIcon=" + this._getShowTreeIcon());
+        Zotero.debug("[Weavero] initialized");
     }
 
     /** Called by the bootstrap shim when a fresh main window opens. The
@@ -3427,7 +3391,6 @@ class WeaveroPlugin {
             this._setupTabsMenuLibrarySort(_window);
             this._setupLibrariesBoxHighlight(_window);
             // Re-apply CSS-class state (these set classes on root.documentElement).
-            this._applyTreeIconPref(this._getShowTreeIcon());
             this._applyInlineLinksPref(this._getInlineLinks());
             this._applyCommentMarkdownPref();
             this._applyUIThemeClass();
@@ -3680,7 +3643,7 @@ class WeaveroPlugin {
             const root = doc.documentElement;
 
             // Drop the mode classes we add to <html>
-            root.classList.remove("wv-show-tree-icon", "wv-icons-only", "wv-ui-dark");
+            root.classList.remove("wv-icons-only", "wv-ui-dark");
 
             // DIAG: pre-unwrap snapshot of related-box labels so we can
             // see the live state at disable-time.

@@ -144,7 +144,7 @@ class _AnnotationMixin {
      *  Used by the right pane, reader sidebar, and reader popup so that all
      *  three surfaces hide the icon when its only purpose has been satisfied
      *  by inline rendering. The items list uses CSS-based visibility driven
-     *  by :root classes (wv-icons-only, wv-md-disabled, wv-show-tree-icon)
+     *  by :root classes (wv-icons-only, wv-md-disabled)
      *  which encodes the same logic.
      *
      *  Returns true when:

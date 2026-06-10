@@ -1271,7 +1271,7 @@ class _PaneMixin {
                 wrap.setAttribute("data-render-mode", renderMode);
                 wrap.appendChild(frag);
 
-                // Real-DOM tree icon (display:none unless :root.wv-show-tree-icon)
+                // Real-DOM tree icon (shown in Icon & popup mode / on truncated rows)
                 const treeIcon = doc.createElement("span");
                 treeIcon.className = "wv-tree-icon";
                 this._applyIconState(treeIcon, text);

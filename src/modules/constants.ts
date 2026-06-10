@@ -432,7 +432,6 @@ export const PLUGIN_CSS = [
     ".wv-link-svg {",
     "  width: 1em; height: 1em; display: block; flex-shrink: 0;",
     "}",
-    ":root.wv-show-tree-icon .wv-tree-icon,",
     ":root.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-icon-wanted] .wv-tree-icon,",
     ".annotation-row.tight .cell.annotation-comment[data-truncated=\"true\"] .wv-tree-icon {",
     "  display: inline-block; cursor: pointer;",
@@ -445,12 +444,10 @@ export const PLUGIN_CSS = [
     // own variable resolves to ~5.88% alpha which is too subtle on
     // small icons. 7% / 8% gives a visible-but-restrained hover halo
     // that matches the inner-iframe values from _applyDynamicReaderTheme.
-    ":root.wv-show-tree-icon .wv-tree-icon:hover,",
     ":root.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-icon-wanted] .wv-tree-icon:hover,",
     ".annotation-row.tight .cell.annotation-comment[data-truncated=\"true\"] .wv-tree-icon:hover {",
     "  background: rgba(0, 0, 0, 0.07);",
     "}",
-    ":root.wv-ui-dark.wv-show-tree-icon .wv-tree-icon:hover,",
     ":root.wv-ui-dark.wv-icons-only .annotation-row.tight .cell.annotation-comment[data-icon-wanted] .wv-tree-icon:hover,",
     ":root.wv-ui-dark .annotation-row.tight .cell.annotation-comment[data-truncated=\"true\"] .wv-tree-icon:hover {",
     "  background: rgba(255, 255, 255, 0.08);",

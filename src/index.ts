@@ -736,10 +736,25 @@ class WeaveroPlugin {
      *  with a boolean — the normal path) OR a string (some external tools
      *  write `"true"` / `"false"`). Without the string check, `!!"false"`
      *  evaluates to `true` and the feature silently stays on. */
+    /** Section master for the "Tabs and Windows" settings group. Default ON.
+     *  Functionally gates every feature in that section (Hide Title Bar,
+     *  Multiple main windows, reader item pane) — turning it off disables
+     *  them all, mirroring how the other section masters behave. */
+    _getTabsAndWindowsMaster() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableTabsAndWindows");
+            if (v === undefined) return true;
+            if (typeof v === "string") return v.toLowerCase() !== "false";
+            return !!v;
+        } catch (e) { return true; }
+    }
+
     /** Master toggle for "Hide title bar (Firefox-style)". Default OFF —
-     *  opt-in. Scoped to a window type by the two child getters below. */
+     *  opt-in. Scoped to a window type by the two child getters below.
+     *  Cascades from the Tabs and Windows section master. */
     _getCompactTitleBar() {
         try {
+            if (!this._getTabsAndWindowsMaster()) return false;
             const v = Zotero.Prefs.get("weavero.compactTitleBar");
             if (v === undefined) return false;
             if (typeof v === "string") return v.toLowerCase() === "true";
@@ -1934,7 +1949,7 @@ class WeaveroPlugin {
                         // to the stock note window.
                         if (opts && opts.openInWindow
                                 && Zotero.Prefs.get("weavero.noteOpenInDeckWindow")
-                                && Zotero.Prefs.get("weavero.compactTitleBarReader")) {
+                                && (self as any)._getCompactTitleBarReader()) {
                             return (self as any)._wvOpenNoteInDeckWindow(
                                 itemID, Notes._wvOrigOpen.bind(Notes));
                         }
@@ -2791,7 +2806,8 @@ class WeaveroPlugin {
                     if (data === "extensions.zotero.weavero.compactTitleBar"
                             || data === "extensions.zotero.weavero.compactTitleBarMain"
                             || data === "extensions.zotero.weavero.compactTitleBarReader"
-                            || data === "extensions.zotero.weavero.compactTitleBarNote") {
+                            || data === "extensions.zotero.weavero.compactTitleBarNote"
+                            || data === "extensions.zotero.weavero.enableTabsAndWindows") {
                         try {
                             const onMain = this._getCompactTitleBarMain();
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
@@ -2820,6 +2836,19 @@ class WeaveroPlugin {
                                 }
                             } catch (e) {}
                         } catch (e) { Zotero.debug("[Weavero] compactTitleBar toggle err: " + e); }
+                    }
+                    // Reader item pane (Tabs and Windows section) — apply to the
+                    // open standalone reader windows immediately: the ensure
+                    // function self-gates on the pref (and the section master),
+                    // creating the pane when on and tearing it down when off.
+                    if (data === "extensions.zotero.weavero.readerItemPane"
+                            || data === "extensions.zotero.weavero.enableTabsAndWindows") {
+                        try {
+                            const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
+                            for (const r of readers) {
+                                try { this._ensureReaderWindowItemPane(r); } catch (e) {}
+                            }
+                        } catch (e) { Zotero.debug("[Weavero] readerItemPane toggle err: " + e); }
                     }
                     // Tags column auto-count toggle — (1) resize the
                     // column to fit one or two numbers, (2) re-render

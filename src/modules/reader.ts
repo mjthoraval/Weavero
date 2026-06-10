@@ -1954,11 +1954,16 @@ class _ReaderMixin {
             if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
             let on = false;
             try { const v = Zotero.Prefs.get("weavero.readerItemPane"); on = v === undefined ? false : !!v; } catch (e) {}
+            // Cascades from the Tabs and Windows section master.
+            try { if (on && !(this as any)._getTabsAndWindowsMaster()) on = false; } catch (e) {}
             const existing = doc.getElementById("wv-reader-pane");
             if (!on) {
                 // Teardown (takes effect on the next reader render / reload).
                 if (existing) existing.remove();
                 const sp = doc.getElementById("wv-reader-pane-splitter"); if (sp) sp.remove();
+                // Clear the bind cache so a re-enable rebinds the rebuilt pane
+                // (_wvReaderPaneSync short-circuits on this id).
+                try { delete win._wvReaderPaneItemID; } catch (e) {}
                 return;
             }
             // Minimal Zotero_Tabs shim — the item-details section boxes + sidenav

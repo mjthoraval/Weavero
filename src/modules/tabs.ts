@@ -1655,6 +1655,8 @@ class _TabsMixin {
                         try {
                             let on = false;
                             try { on = !!Zotero.Prefs.get("weavero.devNewMainWindow"); } catch (e) {}
+                            // Cascades from the Tabs and Windows section master.
+                            try { if (on && !(this as any)._getTabsAndWindowsMaster()) on = false; } catch (e) {}
                             // This is a WINDOW-level action — it does nothing to the
                             // item in a reader/note tab — so only offer it on the
                             // library tab, and only from a primary main window (never
@@ -1874,6 +1876,8 @@ class _TabsMixin {
             } catch (e) {}
             let featureOn = false;
             try { featureOn = !!Zotero.Prefs.get("weavero.devNewMainWindow"); } catch (e) {}
+            // Cascades from the Tabs and Windows section master.
+            try { if (featureOn && !(this as any)._getTabsAndWindowsMaster()) featureOn = false; } catch (e) {}
             if (!featureOn) return;
             let auto = true;
             try { const v = Zotero.Prefs.get("weavero.devSessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}

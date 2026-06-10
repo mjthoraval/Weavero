@@ -250,6 +250,13 @@ class _TabGroupsMixin {
     _applyTabGroups(win: any) {
         try {
             if (!win || !win.document) return;
+            // A native tab drag is in flight: HANDS OFF. Re-syncing member
+            // order / repositioning the chip here fights Zotero's live
+            // reorder — the layout shift moves the tab midpoints, Zotero
+            // recomputes, and the dragged tab flickers between positions
+            // (worst around the pinned region). Everything re-applies from
+            // the dragend membership pass.
+            if (win._wvTabGroupDragTabID != null) return;
             const doc = win.document;
             if (!this._getEnableTabGroups()) { this._stripTabGroups(win); return; }
             const Z_Tabs: any = win.Zotero_Tabs;
@@ -452,7 +459,7 @@ class _TabGroupsMixin {
                 pressed = false; dragged = false;
                 win._wvGroupDragSlot = null;
                 const p: any = live();
-                if (p) p._wvGroupDrag = null;
+                if (p) { p._wvGroupDrag = null; p._wvTabGroupHideAllDropGhosts(); }
             } catch (er) {}
         });
         chip.addEventListener("contextmenu", (e: any) => {
@@ -568,7 +575,7 @@ class _TabGroupsMixin {
      *  drag-into-group and the live preview "shipped" but never fired). */
     _wvWireTabGroupDnD(win: any) {
         try {
-            const WIRE_VERSION = 2;
+            const WIRE_VERSION = 3;
             const doc = win.document;
             const container = doc.getElementById("tab-bar-container");
             if (!container) return;
@@ -583,6 +590,7 @@ class _TabGroupsMixin {
             const hs: Array<[string, any]> = [
                 ["dragstart", mk("_wvTabGroupDnDDragStart")],
                 ["dragover", mk("_wvTabGroupDnDDragOver")],
+                ["dragleave", mk("_wvTabGroupDnDDragLeave")],
                 ["drop", mk("_wvTabGroupDnDDrop")],
                 ["dragend", mk("_wvTabGroupDnDDragEnd")],
             ];
@@ -629,7 +637,19 @@ class _TabGroupsMixin {
             if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
             if (gd.sourceWin === win) {
                 this._wvTabGroupLiveMoveGroup(win, gd.groupID, e.clientX);
+            } else {
+                // Cross-window: preview the landing slot with a ghost chip.
+                this._wvTabGroupShowDropGhost(win, gd.groupID, e.clientX, false);
             }
+        } catch (er) {}
+    }
+
+    /** Pointer left the tab bar mid-drag → drop the preview ghost. */
+    _wvTabGroupDnDDragLeave(win: any, e: any) {
+        try {
+            const container = win.document.getElementById("tab-bar-container");
+            if (e.relatedTarget && container && container.contains(e.relatedTarget)) return;
+            this._wvTabGroupHideDropGhost(win);
         } catch (er) {}
     }
 
@@ -640,6 +660,7 @@ class _TabGroupsMixin {
             e.preventDefault(); e.stopPropagation();
             (this as any)._wvGroupDrag = null;
             win._wvGroupDragSlot = null;
+            this._wvTabGroupHideAllDropGhosts();
             if (gd.sourceWin === win) {
                 this._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
             } else {
@@ -991,7 +1012,7 @@ class _TabGroupsMixin {
      *  same delegate pattern as the main wiring). */
     _wvWireTabGroupReaderDnD(win: any) {
         try {
-            const WIRE_VERSION = 1;
+            const WIRE_VERSION = 2;
             const strip = win.document.querySelector(".wv-window-tabstrip");
             if (!strip) return;
             if ((strip as any)._wvTabGroupDnDVer === WIRE_VERSION) return;
@@ -1004,6 +1025,7 @@ class _TabGroupsMixin {
             };
             const hs: Array<[string, any]> = [
                 ["dragover", mk("_wvTabGroupReaderDnDDragOver")],
+                ["dragleave", mk("_wvTabGroupReaderDnDDragLeave")],
                 ["drop", mk("_wvTabGroupReaderDnDDrop")],
             ];
             for (const [t, h] of hs) strip.addEventListener(t, h, true);
@@ -1022,6 +1044,18 @@ class _TabGroupsMixin {
             if (!gd) return;
             e.preventDefault(); e.stopPropagation();
             if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            if (gd.sourceWin !== win) {
+                // Cross-window: preview the landing slot with a ghost chip.
+                this._wvTabGroupShowDropGhost(win, gd.groupID, e.clientX, true);
+            }
+        } catch (er) {}
+    }
+
+    _wvTabGroupReaderDnDDragLeave(win: any, e: any) {
+        try {
+            const strip = win.document.querySelector(".wv-window-tabstrip");
+            if (e.relatedTarget && strip && strip.contains(e.relatedTarget)) return;
+            this._wvTabGroupHideDropGhost(win);
         } catch (er) {}
     }
 
@@ -1031,10 +1065,69 @@ class _TabGroupsMixin {
             if (!gd) return;
             e.preventDefault(); e.stopPropagation();
             (this as any)._wvGroupDrag = null;
+            this._wvTabGroupHideAllDropGhosts();
             if (gd.sourceWin === win) return;                     // own strip → no-op
             this._wvTGDbg("group drop on READER window from " + (this._wvTabGroupIsReaderWin(gd.sourceWin) ? "reader" : "main"));
             this._wvTabGroupMigrateGroup(gd.sourceWin, win, gd.groupID, e.clientX);
         } catch (er) {}
+    }
+
+    // ---- Cross-window drop ghost --------------------------------------------------
+
+    /** Show a ghost chip (the group's name/color at half opacity) at the slot
+     *  a cross-window group drop would land in — tabs shift aside, so the
+     *  target is visible BEFORE release. Inserted inline like a real chip;
+     *  slot-gated to avoid churn. `isReader` picks the container/tab selector. */
+    _wvTabGroupShowDropGhost(win: any, groupID: any, clientX: number, isReader: boolean) {
+        try {
+            const doc = win.document;
+            const box = isReader
+                ? doc.querySelector(".wv-window-tabstrip .wv-window-tabs")
+                : doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
+            if (!box) return;
+            const tabSel = isReader ? ".wv-window-tab" : ".tab[data-id]";
+            // Insertion node: first tab whose midpoint is right of the pointer.
+            let anchor: any = null, slot = -1, i = 0;
+            for (const node of box.querySelectorAll(":scope > " + tabSel)) {
+                const r = node.getBoundingClientRect();
+                i++;
+                if (clientX < r.left + r.width / 2) { anchor = node; slot = i; break; }
+            }
+            if (win._wvTGGhostSlot === slot && doc.getElementById("wv-tg-drop-ghost")) return;
+            win._wvTGGhostSlot = slot;
+            let ghost = doc.getElementById("wv-tg-drop-ghost");
+            if (!ghost) {
+                const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+                ghost = doc.createElementNS(HTML_NS, "div");
+                ghost.id = "wv-tg-drop-ghost";
+                ghost.className = "wv-tab-group-chip";
+                ghost.style.opacity = "0.55";
+                ghost.style.pointerEvents = "none";
+                ghost.style.setProperty("--wv-group-color", this._tabGroupColorHex(g && g.color));
+                const label = doc.createElementNS(HTML_NS, "span");
+                label.className = "wv-tgchip-label";
+                label.textContent = (g && g.name) || "Group";
+                ghost.appendChild(label);
+            }
+            if (anchor) box.insertBefore(ghost, anchor);
+            else box.appendChild(ghost);
+        } catch (e) {}
+    }
+
+    _wvTabGroupHideDropGhost(win: any) {
+        try {
+            win._wvTGGhostSlot = null;
+            const g = win.document.getElementById("wv-tg-drop-ghost");
+            if (g) g.remove();
+        } catch (e) {}
+    }
+
+    _wvTabGroupHideAllDropGhosts() {
+        try { for (const w of Zotero.getMainWindows()) this._wvTabGroupHideDropGhost(w); } catch (e) {}
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) this._wvTabGroupHideDropGhost(en.getNext());
+        } catch (e) {}
     }
 
     // ---- Cross-window group migration -------------------------------------------

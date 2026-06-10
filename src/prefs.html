@@ -292,9 +292,10 @@
 </html:style>
 
   <html:div class="wv-nav" no-highlight="true">
-    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-links">Enhanced Links and Relations</html:button>
+    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-links">Links and Relations</html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-filters">Filters</html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-bookmarks">Bookmarks</html:button>
+    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-tabswindows">Tabs and Windows</html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-extras">Extras</html:button>
   </html:div>
 
@@ -303,8 +304,8 @@
   <!-- ============================ Enhanced links and relations -->
   <groupbox id="wv-sec-links" class="wv-top">
     <html:div class="wv-tophead">
-      <html:h2>Enhanced links and relations</html:h2>
-      <checkbox aria-label="Enable enhanced links and relations" native="true"
+      <html:h2>Links and Relations</html:h2>
+      <checkbox aria-label="Enable links and relations" native="true"
         preference="extensions.zotero.weavero.enableLinksAndRelations"/>
     </html:div>
     <html:div class="wv-master-card">
@@ -499,6 +500,67 @@
     </vbox>
   </groupbox>
 
+  <!-- ============================ Tabs and Windows -->
+  <groupbox id="wv-sec-tabswindows" class="wv-top">
+    <html:div class="wv-tophead">
+      <html:h2>Tabs and Windows</html:h2>
+      <checkbox aria-label="Enable tabs and windows features" native="true"
+        preference="extensions.zotero.weavero.enableTabsAndWindows"/>
+    </html:div>
+    <html:div class="wv-master-card">
+      <html:p class="wv-master-desc">Browser-style window chrome, multiple main windows, and an item pane in separate reader windows. Each feature below is off by default.</html:p>
+    </html:div>
+  </groupbox>
+
+  <!-- ============================ Hide Title Bar -->
+  <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows">
+    <html:div class="wv-subhead">
+      <html:h2>Hide Title Bar</html:h2>
+      <checkbox aria-label="Hide title bar (Firefox-style)" native="true"
+        preference="extensions.zotero.weavero.compactTitleBar"/>
+    </html:div>
+    <html:div class="wv-master-card">
+      <html:p class="wv-master-desc">Replace the title bar with a browser-style bar — menus move out of the way (press Alt) and the window buttons move into the tab strip. Windows / Linux only. Default off.</html:p>
+    </html:div>
+    <vbox class="wv-children" data-master="compactTitleBar">
+      <html:div class="wv-apply-row">
+        <html:span class="wv-apply-label">Apply to:</html:span>
+        <checkbox label="Main window" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarMain"/>
+        <checkbox label="Reader window" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarReader"/>
+        <checkbox label="Note window" native="true"
+          preference="extensions.zotero.weavero.compactTitleBarNote"/>
+      </html:div>
+      <checkbox label="Open notes in a tab-hosting window" native="true"
+        preference="extensions.zotero.weavero.noteOpenInDeckWindow"/>
+      <html:p class="wv-desc">Opening a note in a new window uses a reader-style window that can accept dragged-in PDF / note tabs. Needs the reader window&#8217;s title bar replaced above. A standalone note (no parent) briefly shows a placeholder document as the window opens.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Multiple main windows -->
+  <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows">
+    <label><html:h2>Multiple main windows</html:h2></label>
+    <html:p class="wv-note" style="margin-inline-start:0; margin-inline-end:150px">Experimental and incomplete — many tools and menus aren&#8217;t available in extra windows yet. Default off.</html:p>
+    <checkbox label="“New Main Window” in the tab right-click menu" native="true"
+      preference="extensions.zotero.weavero.devNewMainWindow"/>
+    <html:p class="wv-desc">Opens an independent second main window with its own tabs, columns, filters and pane widths.</html:p>
+    <vbox class="wv-children" data-master="devNewMainWindow">
+      <checkbox label="Restore extra windows on restart" native="true"
+        preference="extensions.zotero.weavero.devSessionAutoReopen"/>
+      <html:p class="wv-desc">Reopen the extra windows you had open when Zotero restarts.</html:p>
+    </vbox>
+  </groupbox>
+
+  <!-- ============================ Item Pane in Separate Reader Windows -->
+  <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows">
+    <label><html:h2>Item Pane in Separate Reader Windows</html:h2></label>
+    <html:p class="wv-note" style="margin-inline-start:0; margin-inline-end:150px">Experimental and off by default.</html:p>
+    <checkbox label="Show an item pane beside the reader in separate windows" native="true"
+      preference="extensions.zotero.weavero.readerItemPane"/>
+    <html:p class="wv-desc">Adds the item info / context pane (sections, sidenav) to standalone reader windows, like the main window&#8217;s right pane.</html:p>
+  </groupbox>
+
   <!-- ============================ Visual extras -->
   <groupbox id="wv-sec-extras" class="wv-top">
     <html:div class="wv-tophead">
@@ -536,32 +598,6 @@
     </vbox>
   </groupbox>
 
-  <!-- ============================ Window title bar -->
-  <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
-    <html:div class="wv-subhead">
-      <html:h2>Window title bar</html:h2>
-      <checkbox aria-label="Hide title bar (Firefox-style)" native="true"
-        preference="extensions.zotero.weavero.compactTitleBar"/>
-    </html:div>
-    <html:div class="wv-master-card">
-      <html:p class="wv-master-desc">Replace the title bar with a browser-style bar — menus move out of the way (press Alt) and the window buttons move into the tab strip. Windows / Linux only. Default off.</html:p>
-    </html:div>
-    <vbox class="wv-children" data-master="compactTitleBar">
-      <html:div class="wv-apply-row">
-        <html:span class="wv-apply-label">Apply to:</html:span>
-        <checkbox label="Main window" native="true"
-          preference="extensions.zotero.weavero.compactTitleBarMain"/>
-        <checkbox label="Reader window" native="true"
-          preference="extensions.zotero.weavero.compactTitleBarReader"/>
-        <checkbox label="Note window" native="true"
-          preference="extensions.zotero.weavero.compactTitleBarNote"/>
-      </html:div>
-      <checkbox label="Open notes in a tab-hosting window" native="true"
-        preference="extensions.zotero.weavero.noteOpenInDeckWindow"/>
-      <html:p class="wv-desc">Opening a note in a new window uses a reader-style window that can accept dragged-in PDF / note tabs. Needs the reader window&#8217;s title bar replaced above. A standalone note (no parent) briefly shows a placeholder document as the window opens.</html:p>
-    </vbox>
-  </groupbox>
-
   <!-- ============================ External viewer -->
   <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
     <label><html:h2>External viewer</html:h2></label>
@@ -577,20 +613,6 @@
     <checkbox label="Highlight the heading text when clicking an outline entry" native="true"
       preference="extensions.zotero.weavero.enableOutlineTextHighlight"/>
     <html:p class="wv-desc">Flashes the actual heading text on click; for embedded outlines Weavero finds the heading on the page.</html:p>
-  </groupbox>
-
-  <!-- ============================ Multiple main windows -->
-  <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
-    <label><html:h2>Multiple main windows</html:h2></label>
-    <html:p class="wv-note" style="margin-inline-start:0; margin-inline-end:150px">Experimental and incomplete — many tools and menus aren&#8217;t available in extra windows yet. Default off.</html:p>
-    <checkbox label="“New Main Window” in the tab right-click menu" native="true"
-      preference="extensions.zotero.weavero.devNewMainWindow"/>
-    <html:p class="wv-desc">Opens an independent second main window with its own tabs, columns, filters and pane widths.</html:p>
-    <vbox class="wv-children" data-master="devNewMainWindow">
-      <checkbox label="Restore extra windows on restart" native="true"
-        preference="extensions.zotero.weavero.devSessionAutoReopen"/>
-      <html:p class="wv-desc">Reopen the extra windows you had open when Zotero restarts.</html:p>
-    </vbox>
   </groupbox>
 
   <!-- ============================ Debug (collapsible, very bottom) -->

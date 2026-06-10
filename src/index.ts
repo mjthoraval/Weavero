@@ -1781,7 +1781,7 @@ class WeaveroPlugin {
             const ON = [
                 // Group masters
                 "enableLinksAndRelations", "enableVisualExtras", "enableFilters",
-                "enableBookmarks", "enableUriUtilities", "enableRelations",
+                "enableBookmarks", "enableTabsAndWindows", "enableUriUtilities", "enableRelations",
                 // Display mode (true = Inline) + content sub-toggles
                 "inlineLinks",
                 "enableInlineUrls", "enableIconUrls", "enableCommentMarkdown",

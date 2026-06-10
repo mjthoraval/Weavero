@@ -2031,8 +2031,36 @@ class _ReaderMixin {
                         };
                     }
                     for (const m of ["loadURI", "viewAttachment",
-                        "canShowItemInFilesystem", "showItemsInFilesystem", "openNote"]) {
+                        "canShowItemInFilesystem", "showItemsInFilesystem", "openNote", "selectItem"]) {
                         if (!zp[m] && typeof mzp[m] === "function") zp[m] = mzp[m].bind(mzp);
+                    }
+                    // The Libraries and Collections section's rows call
+                    // ZoteroPane.collectionsView.selectByID(...) on click —
+                    // delegate to the main window's collections view (and bring
+                    // that window to front so the selection is actually seen).
+                    if (!("collectionsView" in zp)) {
+                        Object.defineProperty(zp, "collectionsView", {
+                            configurable: true,
+                            get: () => {
+                                try {
+                                    const mw2: any = Zotero.getMainWindow();
+                                    const cv: any = mw2 && mw2.ZoteroPane && mw2.ZoteroPane.collectionsView;
+                                    if (!cv) return cv;
+                                    return {
+                                        selectByID: async (id: any) => {
+                                            const r = await cv.selectByID(id);
+                                            try { mw2.focus(); } catch (e) {}
+                                            return r;
+                                        },
+                                        selectLibrary: async (id: any) => {
+                                            const r = await cv.selectLibrary(id);
+                                            try { mw2.focus(); } catch (e) {}
+                                            return r;
+                                        },
+                                    };
+                                } catch (e) { return undefined; }
+                            },
+                        });
                     }
                     // viewItems ("Open PDF in New Tab / New Window" in the Locate
                     // menu) needs a twist: for an attachment that's already open
@@ -2203,7 +2231,20 @@ class _ReaderMixin {
                 const zcp: any = win.ZoteroContextPane;
                 if (zcp) {
                     zcp.splitter = { getAttribute: () => "open", setAttribute: () => {} };
-                    zcp.context = { get mode() { return (deck.selectedPanel === notesCtx) ? "notes" : "item"; } };
+                    // mode needs a SETTER too: the note editor's return button
+                    // (notesContext._handleNoteEditorReturn) assigns
+                    // `ZoteroContextPane.context.mode = "notes"` — against a
+                    // getter-only property that assignment throws in strict mode
+                    // and the handler dies before switching back to the list.
+                    zcp.context = {
+                        get mode() { return (deck.selectedPanel === notesCtx) ? "notes" : "item"; },
+                        set mode(v) {
+                            try {
+                                if (v === "notes" && notesCtx) deck.selectedPanel = notesCtx;
+                                else if (v === "item") deck.selectedPanel = details;
+                            } catch (e) {}
+                        },
+                    };
                 }
             } catch (e) {}
             if (notesCtx) {

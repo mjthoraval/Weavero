@@ -151,9 +151,15 @@ class _TabGroupsMixin {
 
     _ensureTabGroupStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-tab-group-styles")) return;
+            const STYLE_VERSION = "3";
+            const old = doc.getElementById("wv-tab-group-styles");
+            if (old) {
+                if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
+                old.remove();                       // stale rules from a previous build
+            }
             const st = doc.createElementNS(HTML_NS, "style");
             st.id = "wv-tab-group-styles";
+            st.setAttribute("data-wv-ver", STYLE_VERSION);
             st.textContent = [
                 // Member underline — a ::after bar that extends LEFT across the
                 // 4px flex gap to the previous member (7px for the first member,
@@ -166,8 +172,23 @@ class _TabGroupsMixin {
                 "  pointer-events: none;",
                 "}",
                 "#tab-bar-container .tab.wv-group-first::after { left: -7px; }",
-                // Collapsed members disappear (kept in Zotero_Tabs; chip shows count).
-                "#tab-bar-container .tab.wv-group-hidden { display: none !important; }",
+                // Collapsed members: ZERO-WIDTH collapse, NOT display:none.
+                // A display:none tab has a 0x0 rect at the window origin, so
+                // Zotero's drag-midpoint math sees phantom tabs at the LEFT
+                // EDGE (the pinned region) and splices dragged tabs among the
+                // hidden members — the \"group jumps around during pin drags\"
+                // bug. Zero-width keeps them in flex flow at the collapse
+                // point, so drag math stays sane. The negative margin cancels
+                // the container's 4px flex gap per hidden tab.",
+                "#tab-bar-container .tab.wv-group-hidden,",
+                ".wv-window-tabs .wv-window-tab.wv-group-hidden {",
+                "  flex: 0 0 0px !important; width: 0 !important; min-width: 0 !important;",
+                "  padding: 0 !important; border: none !important; overflow: hidden !important;",
+                "  margin: 0 0 0 -4px !important; opacity: 0 !important;",
+                "  pointer-events: none !important;",
+                "}",
+                "#tab-bar-container .tab.wv-group-hidden::after,",
+                ".wv-window-tabs .wv-window-tab.wv-group-hidden::after { display: none !important; }",
                 // READER-window strip twins (Weavero-owned .wv-window-tab strip).
                 ".wv-window-tabs .wv-window-tab.wv-grouped-tab { position: relative; }",
                 ".wv-window-tabs .wv-window-tab.wv-grouped-tab::after {",
@@ -177,7 +198,6 @@ class _TabGroupsMixin {
                 "  pointer-events: none;",
                 "}",
                 ".wv-window-tabs .wv-window-tab.wv-group-first::after { left: -7px; }",
-                ".wv-window-tabs .wv-window-tab.wv-group-hidden { display: none !important; }",
                 // The chip.
                 ".wv-tab-group-chip {",
                 // CRITICAL: the tab bar doubles as the window-drag region
@@ -203,6 +223,18 @@ class _TabGroupsMixin {
                 "  font-weight: 600; opacity: 0.85;",
                 "}",
                 ".wv-tab-group-chip:hover { filter: brightness(1.12); }",
+                // Cross-window drop preview: skeleton tabs (one per migrating
+                // member) following the ghost chip — the strip shifts to show
+                // the final state before release.
+                ".wv-tg-ghost-tab {",
+                "  flex: 0 0 auto; align-self: stretch; max-width: 130px;",
+                "  margin: 2px 0; padding: 0 10px; border-radius: 4px;",
+                "  display: flex; align-items: center; overflow: hidden;",
+                "  white-space: nowrap; text-overflow: ellipsis;",
+                "  font-size: 12px; opacity: 0.55; pointer-events: none;",
+                "  background: rgba(127,127,127,0.25);",
+                "  box-shadow: inset 0 -2px 0 0 var(--wv-group-color, #4f7ce0);",
+                "}",
                 // Picker / editor panel internals.
                 ".wv-tg-panel-body {",
                 "  display: flex; flex-direction: column; gap: 6px;",
@@ -706,59 +738,57 @@ class _TabGroupsMixin {
             if (!key) { this._wvTGDbg("membership: no item key"); return; }
             const groups = this._tabGroupsGet();
             if (!groups.length) { this._wvTGDbg("membership: no groups"); return; }
-            const idx = Z_Tabs._tabs.indexOf(tab);
-            this._wvTGDbg("membership: tab=" + drag.tabID + " idx=" + idx + " lastX=" + win._wvTabDragLastX);
+            const lastX = win._wvTabDragLastX;
+            this._wvTGDbg("membership: tab=" + drag.tabID + " lastX=" + lastX);
             const apply = () => { this._wvTabGroupApplyEverywhere(); };
-            // Span of a group's OPEN members, excluding the dragged tab itself.
-            const spanOf = (g: any) => {
-                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
-                let min = Infinity, max = -Infinity;
-                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
-                    const t = Z_Tabs._tabs[i];
-                    if (!t || t.id === tab.id) continue;
-                    const k = (this as any)._tabPinKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
-                        if (i < min) min = i;
-                        if (i > max) max = i;
-                    }
-                }
-                return (max < 0) ? null : { min, max };
-            };
-            // Was the pointer left of the group chip's midpoint at drop time?
-            const leftOfChip = (g: any) => {
+            // GEOMETRIC rule (the Firefox feel): a group's region runs from its
+            // chip's LEFT edge to its last visible member's RIGHT edge. The tab
+            // joins the group whose region the pointer was over at release —
+            // index math was uselessly narrow (a 2-member group had exactly ONE
+            // joining slot; drops "onto" the group land adjacent, not inside).
+            const regionOf = (g: any) => {
                 try {
-                    const chip = win.document.getElementById("wv-tgchip-" + g.id);
-                    const lastX = win._wvTabDragLastX;
-                    if (!chip || typeof lastX !== "number") return false;
-                    const r = chip.getBoundingClientRect();
-                    return lastX < r.left + r.width / 2;
-                } catch (e) { return false; }
+                    const doc = win.document;
+                    const chip = doc.getElementById("wv-tgchip-" + g.id);
+                    let left = Infinity, right = -Infinity;
+                    if (chip) {
+                        const r = chip.getBoundingClientRect();
+                        if (r.width) { left = Math.min(left, r.left); right = Math.max(right, r.right); }
+                    }
+                    for (const node of doc.querySelectorAll(
+                        '#tab-bar-container .tab[data-wv-group="' + g.id + '"]')) {
+                        if (node.getAttribute("data-id") === tab.id) continue;
+                        const r = node.getBoundingClientRect();
+                        if (!r.width) continue;                   // zero-width collapsed member
+                        left = Math.min(left, r.left);
+                        right = Math.max(right, r.right);
+                    }
+                    return (right > -Infinity) ? { left, right } : null;
+                } catch (e) { return null; }
             };
+            if (typeof lastX !== "number") return;
             const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
-            // JOIN: dropped within another group's span.
+            // JOIN: pointer released over another group's region.
             for (const g of groups) {
                 if (curGroup && g.id === curGroup.id) continue;
-                const s = spanOf(g);
-                this._wvTGDbg("membership: group '" + (g.name || g.id) + "' span=" + JSON.stringify(s));
-                if (!s || idx < s.min || idx > s.max) continue;
-                if (idx === s.min && leftOfChip(g)) { this._wvTGDbg("membership: at min but left of chip → no join"); continue; }
+                const reg = regionOf(g);
+                this._wvTGDbg("membership: group '" + (g.name || g.id) + "' region=" + JSON.stringify(reg));
+                if (!reg || lastX < reg.left || lastX > reg.right) continue;
                 this._wvTGDbg("membership: JOIN '" + (g.name || g.id) + "'");
                 this._tabGroupAddKey(g.id, key);
                 apply();
                 return;
             }
-            // LEAVE: a member dragged outside its own group's span.
+            // LEAVE: a member released outside its own group's region.
             if (curGroup) {
-                const s = spanOf(curGroup);
-                if (!s) { apply(); return; }                     // sole member: group travels with it
-                const out = (idx > s.max + 1)
-                    || (idx < s.min)
-                    || (idx === s.min && leftOfChip(curGroup));
-                this._wvTGDbg("membership: own-group span=" + JSON.stringify(s) + " out=" + out);
+                const reg = regionOf(curGroup);
+                if (!reg) { apply(); return; }                   // sole member: group travels with it
+                const out = lastX < reg.left || lastX > reg.right;
+                this._wvTGDbg("membership: own-group region=" + JSON.stringify(reg) + " out=" + out);
                 if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
                 apply();
             } else {
-                this._wvTGDbg("membership: no join (outside every span), not a member");
+                this._wvTGDbg("membership: no join (outside every region), not a member");
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleNativeDragEnd err: " + e); }
     }
@@ -961,47 +991,45 @@ class _TabGroupsMixin {
             if (!key) return;
             const groups = this._tabGroupsGet();
             if (!groups.length) return;
-            const idx = st.tabs.indexOf(tab);
-            const spanOf = (g: any) => {
-                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
-                let min = Infinity, max = -Infinity;
-                for (let i = 0; i < st.tabs.length; i++) {
-                    const t = st.tabs[i];
-                    if (!t || t.id === tabId) continue;
-                    const k = this._wvTabGroupDeckKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
-                        if (i < min) min = i;
-                        if (i > max) max = i;
-                    }
-                }
-                return (max < 0) ? null : { min, max };
-            };
-            const leftOfChip = (g: any) => {
+            // Same GEOMETRIC rule as the main window: join the group whose
+            // pixel region (chip left → last member right) the drop x is over.
+            const regionOf = (g: any) => {
                 try {
-                    const chip = win.document.getElementById("wv-tgchip-" + g.id);
-                    if (!chip || typeof clientX !== "number") return false;
-                    const r = chip.getBoundingClientRect();
-                    return clientX < r.left + r.width / 2;
-                } catch (e) { return false; }
+                    const doc = win.document;
+                    const chip = doc.getElementById("wv-tgchip-" + g.id);
+                    let left = Infinity, right = -Infinity;
+                    if (chip) {
+                        const r = chip.getBoundingClientRect();
+                        if (r.width) { left = Math.min(left, r.left); right = Math.max(right, r.right); }
+                    }
+                    for (const node of doc.querySelectorAll(
+                        '.wv-window-tabs .wv-window-tab[data-wv-group="' + g.id + '"]')) {
+                        if (node.getAttribute("data-wv-tab-id") === String(tabId)) continue;
+                        const r = node.getBoundingClientRect();
+                        if (!r.width) continue;
+                        left = Math.min(left, r.left);
+                        right = Math.max(right, r.right);
+                    }
+                    return (right > -Infinity) ? { left, right } : null;
+                } catch (e) { return null; }
             };
+            if (typeof clientX !== "number") return;
             const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
-            this._wvTGDbg("reader membership: tab=" + tabId + " idx=" + idx);
+            this._wvTGDbg("reader membership: tab=" + tabId + " x=" + clientX);
             for (const g of groups) {
                 if (curGroup && g.id === curGroup.id) continue;
-                const s = spanOf(g);
-                if (!s || idx < s.min || idx > s.max) continue;
-                if (idx === s.min && leftOfChip(g)) continue;
+                const reg = regionOf(g);
+                if (!reg || clientX < reg.left || clientX > reg.right) continue;
                 this._wvTGDbg("reader membership: JOIN '" + (g.name || g.id) + "'");
                 this._tabGroupAddKey(g.id, key);
                 this._wvTabGroupApplyEverywhere();
                 return;
             }
             if (curGroup) {
-                const s = spanOf(curGroup);
-                if (!s) { this._wvTabGroupApplyEverywhere(); return; }
-                const out = (idx > s.max + 1) || (idx < s.min)
-                    || (idx === s.min && leftOfChip(curGroup));
-                this._wvTGDbg("reader membership: own span=" + JSON.stringify(s) + " out=" + out);
+                const reg = regionOf(curGroup);
+                if (!reg) { this._wvTabGroupApplyEverywhere(); return; }
+                const out = clientX < reg.left || clientX > reg.right;
+                this._wvTGDbg("reader membership: own region=" + JSON.stringify(reg) + " out=" + out);
                 if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
                 this._wvTabGroupApplyEverywhere();
             }
@@ -1086,7 +1114,7 @@ class _TabGroupsMixin {
                 : doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
             if (!box) return;
             const tabSel = isReader ? ".wv-window-tab" : ".tab[data-id]";
-            // Insertion node: first tab whose midpoint is right of the pointer.
+            // Insertion node: first REAL tab whose midpoint is right of the pointer.
             let anchor: any = null, slot = -1, i = 0;
             for (const node of box.querySelectorAll(":scope > " + tabSel)) {
                 const r = node.getBoundingClientRect();
@@ -1097,17 +1125,53 @@ class _TabGroupsMixin {
             win._wvTGGhostSlot = slot;
             let ghost = doc.getElementById("wv-tg-drop-ghost");
             if (!ghost) {
+                // Full final-state preview: the chip PLUS one skeleton tab per
+                // migrating member (open members of the SOURCE window), so the
+                // target strip shifts exactly as it will after the drop. The
+                // wrapper is display:contents — its children flow as flex items.
                 const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+                const hex = this._tabGroupColorHex(g && g.color);
                 ghost = doc.createElementNS(HTML_NS, "div");
                 ghost.id = "wv-tg-drop-ghost";
-                ghost.className = "wv-tab-group-chip";
-                ghost.style.opacity = "0.55";
-                ghost.style.pointerEvents = "none";
-                ghost.style.setProperty("--wv-group-color", this._tabGroupColorHex(g && g.color));
+                ghost.style.display = "contents";
+                const chip = doc.createElementNS(HTML_NS, "div");
+                chip.className = "wv-tab-group-chip";
+                chip.style.opacity = "0.55";
+                chip.style.pointerEvents = "none";
+                chip.style.setProperty("--wv-group-color", hex);
                 const label = doc.createElementNS(HTML_NS, "span");
                 label.className = "wv-tgchip-label";
                 label.textContent = (g && g.name) || "Group";
-                ghost.appendChild(label);
+                chip.appendChild(label);
+                ghost.appendChild(chip);
+                // Skeleton tabs with the member titles.
+                try {
+                    const gd = (this as any)._wvGroupDrag;
+                    const src = gd && gd.sourceWin;
+                    const titles: string[] = [];
+                    if (src && this._wvTabGroupIsReaderWin(src) && src._wvWT) {
+                        const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                        for (const t of src._wvWT.tabs) {
+                            const k = this._wvTabGroupDeckKey(t);
+                            if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                                titles.push((this as any)._wvWTTabTitle(t) || "");
+                            }
+                        }
+                    } else if (src && src.Zotero_Tabs) {
+                        const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                        for (const t of src.Zotero_Tabs._tabs) {
+                            const k = (this as any)._tabPinKey(t);
+                            if (k && ks.has(k.libraryID + ":" + k.itemKey)) titles.push(t.title || "");
+                        }
+                    }
+                    for (const title of titles) {
+                        const gt = doc.createElementNS(HTML_NS, "div");
+                        gt.className = "wv-tg-ghost-tab";
+                        gt.style.setProperty("--wv-group-color", hex);
+                        gt.textContent = title;
+                        ghost.appendChild(gt);
+                    }
+                } catch (e) {}
             }
             if (anchor) box.insertBefore(ghost, anchor);
             else box.appendChild(ghost);

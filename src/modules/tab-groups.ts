@@ -1245,7 +1245,9 @@ class _TabGroupsMixin {
                 ghost.style.display = "contents";
                 const chip = doc.createElementNS(HTML_NS, "div");
                 chip.className = "wv-tab-group-chip";
-                chip.style.opacity = "0.55";
+                chip.style.opacity = "0.8";
+                chip.style.outline = "2px dashed " + hex;
+                chip.style.outlineOffset = "1px";
                 chip.style.pointerEvents = "none";
                 chip.style.setProperty("--wv-group-color", hex);
                 const label = doc.createElementNS(HTML_NS, "span");
@@ -1370,8 +1372,14 @@ class _TabGroupsMixin {
                         try { tgtWin.focus(); } catch (e) {}      // Reader.open targets the focused main window
                         for (const en2 of entries) {
                             try {
-                                if (en2.isNote) tgtWin.ZoteroPane.openNote(en2.itemID, { openInWindow: false });
-                                else (Zotero.Reader as any).open(en2.itemID, null, { openInWindow: false, allowDuplicate: false });
+                                // openInBackground: arriving tabs must NOT grab the
+                                // selection — otherwise the last member becomes the
+                                // selected tab and a COLLAPSED group arrives looking
+                                // expanded (the selected member stays visible).
+                                // (ZoteroPane.openNote drops openInBackground — go
+                                // through Zotero.Notes.open directly.)
+                                if (en2.isNote) (Zotero as any).Notes.open(en2.itemID, undefined, { openInWindow: false, openInBackground: true });
+                                else (Zotero.Reader as any).open(en2.itemID, null, { openInWindow: false, allowDuplicate: false, openInBackground: true });
                             } catch (e) {}
                             await new Promise(r => setT(r, 120));
                         }

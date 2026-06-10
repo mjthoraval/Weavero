@@ -280,6 +280,9 @@ class _TabGroupsMixin {
                     if (chip) chip.remove();
                     continue;
                 }
+                // A chip surviving from a previous plugin instance has stale
+                // handlers — recreate it under this instance.
+                if (chip && (chip as any)._wvOwner !== this) { chip.remove(); chip = null; }
                 if (!chip) chip = this._wvTabGroupChipCreate(win, g.id);
                 this._wvTabGroupChipSync(win, chip, g, openMembers.length);
                 const firstNode = tabsBox.querySelector(
@@ -350,22 +353,32 @@ class _TabGroupsMixin {
         chip.id = "wv-tgchip-" + groupID;
         chip.className = "wv-tab-group-chip";
         chip.setAttribute("data-wv-group", groupID);
+        // Owner stamp: a chip created by a PREVIOUS plugin instance (hot
+        // reload) carries dead-closure handlers — _applyTabGroups checks this
+        // and recreates. (This was why the chip needed two clicks after a
+        // reload: the surviving chip still had the old instance's listeners.)
+        (chip as any)._wvOwner = this;
         const label = doc.createElementNS(HTML_NS, "span");
         label.className = "wv-tgchip-label";
         chip.appendChild(label);
         const count = doc.createElementNS(HTML_NS, "span");
         count.className = "wv-tgchip-count";
         chip.appendChild(count);
+        // Resolve the LIVE plugin at event time (never the creating closure —
+        // it goes stale across reloads).
+        const live = () => {
+            try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
+        };
         // Single click = collapse/expand; right-click = editor. Toggle on
         // MOUSEDOWN, not click: React's tab-bar rewrites fire our observer
         // between mousedown and click, and the re-apply can re-insert the
-        // chip — which cancels the synthesized click (so a `click` listener
-        // only fired on the second, settled press: double-click feel).
+        // chip — which cancels the synthesized click.
         chip.addEventListener("mousedown", (e: any) => {
             try {
                 if (e.button !== 0) return;
                 e.stopPropagation(); e.preventDefault();
-                this._wvTabGroupToggleCollapse(win, groupID);
+                const p: any = live();
+                if (p) p._wvTabGroupToggleCollapse(win, groupID);
             } catch (er) {}
         });
         // Swallow the residual click so nothing beneath reacts.
@@ -375,7 +388,8 @@ class _TabGroupsMixin {
         chip.addEventListener("contextmenu", (e: any) => {
             try {
                 e.stopPropagation(); e.preventDefault();
-                this._wvShowTabGroupEditor(win, groupID, chip);
+                const p: any = live();
+                if (p) p._wvShowTabGroupEditor(win, groupID, chip);
             } catch (er) {}
         });
         return chip;

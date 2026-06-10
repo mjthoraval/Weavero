@@ -4276,6 +4276,9 @@ class _ReaderMixin {
                     }
                 }
             } catch (e) {}
+            // Refresh group collapse visibility (a collapsed group keeps only
+            // its ACTIVE tab visible — selection just moved).
+            try { (this as any)._applyTabGroupsReader(win); } catch (e) {}
             try {
                 const t = this._wvWTTabTitle(tab);
                 if (t) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(t);
@@ -4449,6 +4452,8 @@ class _ReaderMixin {
             try { if (st.activeId) this._wvWTScrollTabIntoView(win, st.activeId); } catch (e) {}
             // Re-bind the optional item pane to the now-active tab's item.
             try { this._wvReaderPaneSync(win); } catch (e) {}
+            // Tab-group pass: chips + underlines + collapse for this strip.
+            try { (this as any)._applyTabGroupsReader(win); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTRenderStrip err: " + e); }
     }
 
@@ -5767,6 +5772,12 @@ class _ReaderMixin {
             st.tabs.splice(insertIdx, 0, moved);
             try { if (!isNaN(pinBoundary)) moved.pinned = clientX < pinBoundary; } catch (e) {}
             try { win._wvWTDragPinId = null; } catch (e) {}   // drop done → drop the preview box
+            // Tab-group membership from the landing position (join/leave) —
+            // BEFORE the re-render so the chips reflect the new membership.
+            try {
+                const lp: any = (Zotero as any).Weavero?.plugin;
+                if (lp && lp._wvTabGroupHandleReaderReorder) lp._wvTabGroupHandleReaderReorder(win, moved.id, clientX);
+            } catch (e) {}
             try { this._wvWTRenderStrip(win); } catch (e) {}
             try { this._wvWTScrollTabIntoView(win, moved.id); } catch (e) {}
             try { this._wvWTPersistSaveDebounced(); } catch (e) {}

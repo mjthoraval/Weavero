@@ -2011,15 +2011,43 @@ class _ReaderMixin {
             // ZoteroPane.buildFieldTransformMenu, which builds in the target's
             // OWN document (`target.ownerDocument`), so the main window's
             // implementation works here; reader.xhtml already has a <popupset>.
-            if (!win.ZoteroPane) {
-                try {
-                    const mw: any = Zotero.getMainWindow();
-                    const mzp: any = mw && mw.ZoteroPane;
-                    if (mzp && typeof mzp.buildFieldTransformMenu === "function") {
-                        win.ZoteroPane = { buildFieldTransformMenu: mzp.buildFieldTransformMenu.bind(mzp) };
+            try {
+                const mw: any = Zotero.getMainWindow();
+                const mzp: any = mw && mw.ZoteroPane;
+                if (mzp) {
+                    const zp: any = win.ZoteroPane || (win.ZoteroPane = {});
+                    if (!zp.buildFieldTransformMenu && typeof mzp.buildFieldTransformMenu === "function") {
+                        zp.buildFieldTransformMenu = mzp.buildFieldTransformMenu.bind(mzp);
                     }
-                } catch (e) {}
-            }
+                    // Members the sidenav's Locate menu (locateMenu.js) and the
+                    // notes context call. Item selection = the pane's bound item;
+                    // open/view actions delegate to the main window.
+                    if (!zp.getSelectedItems) {
+                        zp.getSelectedItems = () => {
+                            try {
+                                const d: any = win.document.getElementById("wv-reader-item-details");
+                                return (d && d.item) ? [d.item] : [];
+                            } catch (e) { return []; }
+                        };
+                    }
+                    for (const m of ["loadURI", "viewItems", "viewAttachment",
+                        "canShowItemInFilesystem", "showItemsInFilesystem", "openNote"]) {
+                        if (!zp[m] && typeof mzp[m] === "function") zp[m] = mzp[m].bind(mzp);
+                    }
+                    if (!win.ZoteroPane_Local) win.ZoteroPane_Local = zp;
+                }
+            } catch (e) {}
+            // The sidenav's Locate button calls Zotero_LocateMenu.buildLocateMenu,
+            // a per-window global from locateMenu.js that reader.xhtml never
+            // loads — without it the button silently no-ops. Load it into this
+            // window (it resolves document/ZoteroPane from the window scope, so
+            // the shims above supply what it needs).
+            try {
+                if (!win.Zotero_LocateMenu) {
+                    try { win.MozXULElement && win.MozXULElement.insertFTLIfNeeded && win.MozXULElement.insertFTLIfNeeded("zotero.ftl"); } catch (e) {}
+                    Services.scriptloader.loadSubScript("chrome://zotero/content/locateMenu.js", win);
+                }
+            } catch (e) { Zotero.debug("[Weavero] locateMenu load err: " + e); }
             if (existing) { try { this._wvReaderPaneSync(win); } catch (e) {} return; }
             const readerVbox = doc.getElementById("zotero-reader");
             const hbox: any = readerVbox ? readerVbox.parentNode : null;
@@ -2078,10 +2106,64 @@ class _ReaderMixin {
             try { (details as any)._handleTabSelect = function () {}; } catch (e) {}
             const sidenav = doc.createXULElement("item-pane-sidenav");
             sidenav.id = "wv-reader-item-sidenav";
-            pane.appendChild(details);
+            // Deck wrapping item-details + a notes-context, so the sidenav's
+            // Notes button can switch between the item pane and the notes list
+            // (the same structure ZoteroContextPane gives the main window —
+            // sidenav._contextNotesPaneVisible flips this deck's selectedPanel).
+            // notes-context is in Zotero's lazy custom-element registry, so
+            // createXULElement triggers its script load on first use.
+            const deck = doc.createXULElement("deck");
+            deck.id = "wv-reader-pane-deck";
+            deck.setAttribute("flex", "1");
+            deck.style.cssText = "flex:1 1 0%;min-height:0;min-width:0;";
+            deck.appendChild(details);
+            let notesCtx: any = null;
+            try {
+                notesCtx = doc.createXULElement("notes-context");
+                notesCtx.id = "wv-reader-notes-context";
+                notesCtx.style.cssText = "min-height:0;min-width:0;";
+                deck.appendChild(notesCtx);
+            } catch (e) { notesCtx = null; Zotero.debug("[Weavero] notes-context create err: " + e); }
+            deck.selectedPanel = details;
+            pane.appendChild(deck);
             pane.appendChild(sidenav);
             hbox.appendChild(splitter);
             hbox.appendChild(pane);
+            // notes-context reads ZoteroContextPane.splitter/context — give the
+            // shim real-enough values (splitter "open"; context.mode tracks
+            // which deck panel is showing).
+            try {
+                const zcp: any = win.ZoteroContextPane;
+                if (zcp) {
+                    zcp.splitter = { getAttribute: () => "open", setAttribute: () => {} };
+                    zcp.context = { get mode() { return (deck.selectedPanel === notesCtx) ? "notes" : "item"; } };
+                }
+            } catch (e) {}
+            if (notesCtx) {
+                // "Item notes" scoping: the stock lookup goes through
+                // Zotero.Reader.getByTabID(Zotero_Tabs.selectedID), which can't
+                // resolve a standalone window — resolve from our deck state (or
+                // the window's native reader) instead.
+                try {
+                    notesCtx._getCurrentAttachment = function () {
+                        try {
+                            const st = win._wvWT;
+                            const t = st && st.tabs && st.tabs.find((x: any) => x.id === st.activeId);
+                            if (t && t.itemID != null) {
+                                const it: any = Zotero.Items.get(t.itemID);
+                                if (it && it.isAttachment && it.isAttachment()) return it;
+                            }
+                            const r: any = ((Zotero.Reader as any)._readers || []).find((x: any) => x && x._window === win);
+                            if (r && r.itemID) return Zotero.Items.get(r.itemID);
+                        } catch (e) {}
+                        return null;
+                    };
+                } catch (e) {}
+                try { sidenav.contextNotesPane = notesCtx; } catch (e) {}
+            } else {
+                // No notes view available → hide the dead Notes button.
+                try { sidenav.contextNotesPaneEnabled = false; } catch (e) {}
+            }
             // Wire the sidenav's "toggle pane" button. Its native `_collapsed`
             // delegates to a parent <item-pane>/<context-pane> (absent here), so
             // the toggle no-ops. Override `_collapsed` on this item-details so
@@ -2091,7 +2173,7 @@ class _ReaderMixin {
                 let collapsed = false;
                 const applyCollapse = () => {
                     try {
-                        details.style.display = collapsed ? "none" : "flex";
+                        deck.style.display = collapsed ? "none" : "";
                         splitter.style.display = collapsed ? "none" : "";
                         if (collapsed) {
                             pane.style.width = ""; pane.style.minWidth = "0";
@@ -2171,6 +2253,14 @@ class _ReaderMixin {
             details.item = targetItem;
             if (att.parentID) details.parentID = att.parentID;
             if (sidenav && details.sidenav !== sidenav) details.sidenav = sidenav;
+            // Keep the notes-context (the sidenav Notes view) on the bound
+            // item's library so its list shows the right notes.
+            try {
+                const nc: any = doc.getElementById("wv-reader-notes-context");
+                if (nc && targetItem.libraryID != null && nc.libraryID !== targetItem.libraryID) {
+                    nc.libraryID = targetItem.libraryID;
+                }
+            } catch (e) {}
             // Clear any deferred-render flag a stray tab-select left set, so this
             // render isn't swallowed (see the _handleTabSelect note at creation).
             try { (details as any).skipRender = false; } catch (e) {}

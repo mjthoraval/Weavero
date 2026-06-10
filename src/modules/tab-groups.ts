@@ -639,6 +639,24 @@ class _TabGroupsMixin {
 
     // ---- Tab context menu entries ---------------------------------------------
 
+    /** Move our menuitem just above the native "Move Tab" submenu (found by
+     *  its localized label). No-op when Move Tab isn't in this popup. */
+    _wvTabGroupRepositionBeforeMove(menuElem: any) {
+        try {
+            const popup = menuElem && menuElem.parentNode;
+            if (!popup) return;
+            let moveLabel = "Move Tab";
+            try { moveLabel = Zotero.getString("tabs.move"); } catch (e) {}
+            let moveEl: any = null;
+            for (const ch of popup.querySelectorAll("menu, menuitem")) {
+                if (ch.getAttribute && ch.getAttribute("label") === moveLabel) { moveEl = ch; break; }
+            }
+            if (moveEl && menuElem.nextSibling !== moveEl) {
+                popup.insertBefore(menuElem, moveEl);
+            }
+        } catch (e) {}
+    }
+
     _registerTabGroupMenus() {
         try {
             if (!(Zotero.MenuManager && typeof Zotero.MenuManager.registerMenu === "function")) return;
@@ -660,6 +678,12 @@ class _TabGroupsMixin {
                                 if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
                                 ctx.setVisible(true);
                                 ctx.menuElem.setAttribute("label", "Add to Tab Group…");
+                                // MenuManager appends custom items after all
+                                // built-ins; the user wants this ABOVE "Move Tab".
+                                // Locate the Move Tab submenu by its localized
+                                // label and insert before it (same reposition
+                                // trick as Pin Tab; degrades gracefully).
+                                try { self._wvTabGroupRepositionBeforeMove(ctx.menuElem); } catch (e) {}
                             } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                         },
                         onCommand: (_ev: any, ctx: any) => {
@@ -687,6 +711,10 @@ class _TabGroupsMixin {
                                 if (!grouped) { ctx.setVisible(false); return; }
                                 ctx.setVisible(true);
                                 ctx.menuElem.setAttribute("label", "Remove from Tab Group");
+                                // Sits directly under "Add to Tab Group…" (that
+                                // item repositions first, so inserting before
+                                // Move Tab lands this one right after it).
+                                try { self._wvTabGroupRepositionBeforeMove(ctx.menuElem); } catch (e) {}
                             } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                         },
                         onCommand: (_ev: any, ctx: any) => {

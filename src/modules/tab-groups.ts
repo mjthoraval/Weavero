@@ -22,6 +22,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 declare const Zotero: any;
+declare const Services: any;
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -132,6 +133,20 @@ class _TabGroupsMixin {
         this._tabGroupsSet(groups);
     }
 
+    /** Re-render groups EVERYWHERE: every main window's tab bar and every
+     *  reader window's strip (the reader strip re-render includes its own
+     *  group pass). */
+    _wvTabGroupApplyEverywhere() {
+        try { for (const w of Zotero.getMainWindows()) this._applyTabGroups(w); } catch (e) {}
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (w._wvWT) { try { (this as any)._wvWTRenderStrip(w); } catch (e) {} }
+            }
+        } catch (e) {}
+    }
+
     // ---- Styles -------------------------------------------------------------
 
     _ensureTabGroupStyles(doc: any) {
@@ -153,6 +168,16 @@ class _TabGroupsMixin {
                 "#tab-bar-container .tab.wv-group-first::after { left: -7px; }",
                 // Collapsed members disappear (kept in Zotero_Tabs; chip shows count).
                 "#tab-bar-container .tab.wv-group-hidden { display: none !important; }",
+                // READER-window strip twins (Weavero-owned .wv-window-tab strip).
+                ".wv-window-tabs .wv-window-tab.wv-grouped-tab { position: relative; }",
+                ".wv-window-tabs .wv-window-tab.wv-grouped-tab::after {",
+                "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
+                "  left: -4px; right: 0; border-radius: 1px;",
+                "  background: var(--wv-group-color, #4f7ce0);",
+                "  pointer-events: none;",
+                "}",
+                ".wv-window-tabs .wv-window-tab.wv-group-first::after { left: -7px; }",
+                ".wv-window-tabs .wv-window-tab.wv-group-hidden { display: none !important; }",
                 // The chip.
                 ".wv-tab-group-chip {",
                 // CRITICAL: the tab bar doubles as the window-drag region
@@ -466,7 +491,7 @@ class _TabGroupsMixin {
             this._tabGroupsSet(groups);
             // No selection rescue: a collapsed group keeps its SELECTED tab
             // visible (the apply pass exempts it), matching Firefox.
-            for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+            this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupToggleCollapse err: " + e); }
     }
 
@@ -500,7 +525,7 @@ class _TabGroupsMixin {
                     Z_Tabs.move(tabID, target);
                 }
             } catch (e) {}
-            for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+            this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupAddTab err: " + e); }
     }
 
@@ -511,16 +536,24 @@ class _TabGroupsMixin {
             if (!g) return;
             const memberKeys = new Set((g.members || []).map(
                 (m: any) => m.libraryID + ":" + m.itemKey));
-            const Z_Tabs: any = win.Zotero_Tabs;
-            const ids: string[] = [];
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
-                const t = Z_Tabs._tabs[i];
-                const k = (this as any)._tabPinKey(t);
-                if (k && memberKeys.has(k.libraryID + ":" + k.itemKey)) ids.push(t.id);
+            if (this._wvTabGroupIsReaderWin(win) && win._wvWT) {
+                // Reader window: close the member DECK tabs.
+                const ids = win._wvWT.tabs
+                    .filter((t: any) => { const k = this._wvTabGroupDeckKey(t); return k && memberKeys.has(k.libraryID + ":" + k.itemKey); })
+                    .map((t: any) => t.id);
+                for (const id of ids) { try { (this as any)._wvWTCloseTab(win, id); } catch (e) {} }
+            } else {
+                const Z_Tabs: any = win.Zotero_Tabs;
+                const ids: string[] = [];
+                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    const t = Z_Tabs._tabs[i];
+                    const k = (this as any)._tabPinKey(t);
+                    if (k && memberKeys.has(k.libraryID + ":" + k.itemKey)) ids.push(t.id);
+                }
+                for (const id of ids) { try { Z_Tabs.close(id); } catch (e) {} }
             }
-            for (const id of ids) { try { Z_Tabs.close(id); } catch (e) {} }
             this._tabGroupDelete(groupID);
-            for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+            this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupCloseTabs err: " + e); }
     }
 
@@ -562,25 +595,39 @@ class _TabGroupsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWireTabGroupDnD err: " + e); }
     }
 
+    /** Debug logging for the group-DnD investigation: Zotero.debug + a capped
+     *  in-memory ring (Zotero._wvGroupDnDLog). */
+    _wvTGDbg(msg: string) {
+        try {
+            const line = "[Weavero][groupDnD] " + msg;
+            Zotero.debug(line);
+            const arr = ((Zotero as any)._wvGroupDnDLog = (Zotero as any)._wvGroupDnDLog || []);
+            arr.push(Date.now() % 1000000 + " " + msg);
+            if (arr.length > 120) arr.shift();
+        } catch (e) {}
+    }
+
     /** Remember which native tab a drag started from (independently of
      *  tabs.ts's `_wvTabDrag`, which its own dragend nulls before we run). */
     _wvTabGroupDnDDragStart(win: any, e: any) {
         try {
             const tabNode = e.target && e.target.closest && e.target.closest(".tab[data-id]");
             win._wvTabGroupDragTabID = tabNode ? tabNode.getAttribute("data-id") : null;
-        } catch (er) {}
+            this._wvTGDbg("dragstart tabID=" + win._wvTabGroupDragTabID + " target=" + (e.target && e.target.tagName) + "." + (e.target && e.target.className && String(e.target.className).split(" ")[0]));
+        } catch (er) { this._wvTGDbg("dragstart ERR=" + er); }
     }
 
     _wvTabGroupDnDDragOver(win: any, e: any) {
         try {
             win._wvTabDragLastX = e.clientX;
             const gd = (this as any)._wvGroupDrag;
-            if (gd && gd.sourceWin === win) {
-                // A group-chip drag: we own it — accept the drop, keep Zotero's
-                // strip logic out, and move the group under the pointer LIVE
-                // (slot-gated so React isn't re-rendered every pixel).
-                e.preventDefault(); e.stopPropagation();
-                if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            if (!gd) return;
+            // A group-chip drag: accept the drop and keep Zotero's strip logic
+            // out. Same-window drags also move the group under the pointer
+            // LIVE (slot-gated); cross-window drags just show the move cursor.
+            e.preventDefault(); e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            if (gd.sourceWin === win) {
                 this._wvTabGroupLiveMoveGroup(win, gd.groupID, e.clientX);
             }
         } catch (er) {}
@@ -589,11 +636,18 @@ class _TabGroupsMixin {
     _wvTabGroupDnDDrop(win: any, e: any) {
         try {
             const gd = (this as any)._wvGroupDrag;
-            if (!gd || gd.sourceWin !== win) return;
+            if (!gd) return;
             e.preventDefault(); e.stopPropagation();
             (this as any)._wvGroupDrag = null;
             win._wvGroupDragSlot = null;
-            this._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
+            if (gd.sourceWin === win) {
+                this._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
+            } else {
+                // Cross-window: migrate the whole group here (from another
+                // main window or from a reader window).
+                this._wvTGDbg("group drop on MAIN window from " + (this._wvTabGroupIsReaderWin(gd.sourceWin) ? "reader" : "main"));
+                this._wvTabGroupMigrateGroup(gd.sourceWin, win, gd.groupID, e.clientX);
+            }
         } catch (er) {}
     }
 
@@ -602,16 +656,17 @@ class _TabGroupsMixin {
      *  out). Deferred a tick so Zotero's own dragend (reorder, tear-off,
      *  cross-window move) settles first — a closed/moved tab simply isn't
      *  found anymore and the pass is a no-op. */
-    _wvTabGroupDnDDragEnd(win: any, _e: any) {
+    _wvTabGroupDnDDragEnd(win: any, e: any) {
         try {
             const tabID = win._wvTabGroupDragTabID;
             win._wvTabGroupDragTabID = null;
             win._wvGroupDragSlot = null;
+            this._wvTGDbg("dragend tabID=" + tabID + " clientX=" + (e && e.clientX) + " lastX=" + win._wvTabDragLastX);
             if (!tabID || tabID === "zotero-pane") return;
             win.setTimeout(() => {
-                try { this._wvTabGroupHandleNativeDragEnd(win, { tabID }); } catch (e) {}
+                try { this._wvTabGroupHandleNativeDragEnd(win, { tabID }); } catch (e2) {}
             }, 80);
-        } catch (er) {}
+        } catch (er) { this._wvTGDbg("dragend ERR=" + er); }
     }
 
     /** After a NATIVE tab drag settles (called from _wireTabBarDrag's dragend):
@@ -621,17 +676,18 @@ class _TabGroupsMixin {
      *  (left of the chip = outside, right = inside). */
     _wvTabGroupHandleNativeDragEnd(win: any, drag: any) {
         try {
-            if (!this._getEnableTabGroups()) return;
+            if (!this._getEnableTabGroups()) { this._wvTGDbg("membership: groups disabled"); return; }
             const Z_Tabs: any = win.Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs) return;
             const tab = Z_Tabs._tabs.find((t: any) => t && t.id === drag.tabID);
-            if (!tab) return;
+            if (!tab) { this._wvTGDbg("membership: tab gone (" + drag.tabID + ")"); return; }
             const key = (this as any)._tabPinKey(tab);
-            if (!key) return;
+            if (!key) { this._wvTGDbg("membership: no item key"); return; }
             const groups = this._tabGroupsGet();
-            if (!groups.length) return;
+            if (!groups.length) { this._wvTGDbg("membership: no groups"); return; }
             const idx = Z_Tabs._tabs.indexOf(tab);
-            const apply = () => { for (const w of Zotero.getMainWindows()) this._applyTabGroups(w); };
+            this._wvTGDbg("membership: tab=" + drag.tabID + " idx=" + idx + " lastX=" + win._wvTabDragLastX);
+            const apply = () => { this._wvTabGroupApplyEverywhere(); };
             // Span of a group's OPEN members, excluding the dragged tab itself.
             const spanOf = (g: any) => {
                 const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
@@ -662,8 +718,10 @@ class _TabGroupsMixin {
             for (const g of groups) {
                 if (curGroup && g.id === curGroup.id) continue;
                 const s = spanOf(g);
+                this._wvTGDbg("membership: group '" + (g.name || g.id) + "' span=" + JSON.stringify(s));
                 if (!s || idx < s.min || idx > s.max) continue;
-                if (idx === s.min && leftOfChip(g)) continue;   // landed before the chip
+                if (idx === s.min && leftOfChip(g)) { this._wvTGDbg("membership: at min but left of chip → no join"); continue; }
+                this._wvTGDbg("membership: JOIN '" + (g.name || g.id) + "'");
                 this._tabGroupAddKey(g.id, key);
                 apply();
                 return;
@@ -675,8 +733,11 @@ class _TabGroupsMixin {
                 const out = (idx > s.max + 1)
                     || (idx < s.min)
                     || (idx === s.min && leftOfChip(curGroup));
+                this._wvTGDbg("membership: own-group span=" + JSON.stringify(s) + " out=" + out);
                 if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
                 apply();
+            } else {
+                this._wvTGDbg("membership: no join (outside every span), not a member");
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleNativeDragEnd err: " + e); }
     }
@@ -731,7 +792,7 @@ class _TabGroupsMixin {
                     try { Z_Tabs.move(desired[i], i); } catch (e) {}
                 }
             }
-            for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+            this._wvTabGroupApplyEverywhere();
             return slot;
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveGroupTo err: " + e); return -1; }
     }
@@ -789,6 +850,273 @@ class _TabGroupsMixin {
             win._wvGroupDragSlot = slot;
             this._wvTabGroupMoveGroupTo(win, groupID, clientX);
         } catch (e) {}
+    }
+
+    // ---- Reader-window groups -------------------------------------------------
+
+    /** Item key for a reader-window deck tab. */
+    _wvTabGroupDeckKey(tab: any) {
+        try {
+            if (!tab || tab.itemID == null) return null;
+            const it: any = Zotero.Items.get(tab.itemID);
+            return it ? { libraryID: it.libraryID, itemKey: it.key } : null;
+        } catch (e) { return null; }
+    }
+
+    _wvTabGroupIsReaderWin(win: any) {
+        try { return win.document.documentElement.getAttribute("windowtype") === "zotero:reader"; } catch (e) { return false; }
+    }
+
+    /** Group pass for a READER window's strip — called at the end of
+     *  _wvWTRenderStrip (Weavero owns that renderer, so chips are rebuilt on
+     *  every render; no observer needed). Same visuals as the main window:
+     *  chip before the first member, colored underline, collapse hides
+     *  members except the active tab. */
+    _applyTabGroupsReader(win: any) {
+        try {
+            const doc = win.document;
+            const tabsBox = doc.querySelector(".wv-window-tabstrip .wv-window-tabs");
+            const st = win._wvWT;
+            if (!tabsBox || !st) return;
+            for (const c of tabsBox.querySelectorAll(":scope > .wv-tab-group-chip")) c.remove();
+            const stripClasses = () => {
+                for (const el of tabsBox.querySelectorAll(".wv-window-tab.wv-grouped-tab")) {
+                    el.classList.remove("wv-grouped-tab", "wv-group-hidden", "wv-group-first");
+                    el.removeAttribute("data-wv-group");
+                    el.style.removeProperty("--wv-group-color");
+                }
+            };
+            if (!this._getEnableTabGroups()) { stripClasses(); return; }
+            this._ensureTabGroupStyles(doc);
+            this._wvWireTabGroupReaderDnD(win);
+            const groups = this._tabGroupsGet();
+            stripClasses();
+            if (!groups.length) return;
+            const elById = new Map<string, any>();
+            for (const el of tabsBox.querySelectorAll(":scope > .wv-window-tab")) {
+                elById.set(el.getAttribute("data-wv-tab-id"), el);
+            }
+            for (const g of groups) {
+                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                const members: any[] = [];
+                for (const tab of st.tabs) {
+                    const k = this._wvTabGroupDeckKey(tab);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) members.push(tab);
+                }
+                if (!members.length) continue;
+                const hex = this._tabGroupColorHex(g.color);
+                for (let i = 0; i < members.length; i++) {
+                    const el = elById.get(String(members[i].id));
+                    if (!el) continue;
+                    el.classList.add("wv-grouped-tab");
+                    if (i === 0) el.classList.add("wv-group-first");
+                    el.style.setProperty("--wv-group-color", hex);
+                    el.setAttribute("data-wv-group", g.id);
+                    if (g.collapsed && members[i].id !== st.activeId) el.classList.add("wv-group-hidden");
+                }
+                const firstEl = elById.get(String(members[0].id));
+                if (firstEl) {
+                    // Chips are rebuilt each render, so always create fresh
+                    // (handlers come from the live instance via live()).
+                    const chip = this._wvTabGroupChipCreate(win, g.id);
+                    this._wvTabGroupChipSync(win, chip, g, members.length);
+                    tabsBox.insertBefore(chip, firstEl);
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _applyTabGroupsReader err: " + e); }
+    }
+
+    /** Reader-strip membership pass after a same-strip reorder drop: join the
+     *  group whose deck-span the tab landed in, or leave its own. Mirrors
+     *  _wvTabGroupHandleNativeDragEnd over `st.tabs`. */
+    _wvTabGroupHandleReaderReorder(win: any, tabId: any, clientX: any) {
+        try {
+            if (!this._getEnableTabGroups()) return;
+            const st = win._wvWT;
+            if (!st || !st.tabs) return;
+            const tab = st.tabs.find((t: any) => t.id === tabId);
+            if (!tab) return;
+            const key = this._wvTabGroupDeckKey(tab);
+            if (!key) return;
+            const groups = this._tabGroupsGet();
+            if (!groups.length) return;
+            const idx = st.tabs.indexOf(tab);
+            const spanOf = (g: any) => {
+                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                let min = Infinity, max = -Infinity;
+                for (let i = 0; i < st.tabs.length; i++) {
+                    const t = st.tabs[i];
+                    if (!t || t.id === tabId) continue;
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                        if (i < min) min = i;
+                        if (i > max) max = i;
+                    }
+                }
+                return (max < 0) ? null : { min, max };
+            };
+            const leftOfChip = (g: any) => {
+                try {
+                    const chip = win.document.getElementById("wv-tgchip-" + g.id);
+                    if (!chip || typeof clientX !== "number") return false;
+                    const r = chip.getBoundingClientRect();
+                    return clientX < r.left + r.width / 2;
+                } catch (e) { return false; }
+            };
+            const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
+            this._wvTGDbg("reader membership: tab=" + tabId + " idx=" + idx);
+            for (const g of groups) {
+                if (curGroup && g.id === curGroup.id) continue;
+                const s = spanOf(g);
+                if (!s || idx < s.min || idx > s.max) continue;
+                if (idx === s.min && leftOfChip(g)) continue;
+                this._wvTGDbg("reader membership: JOIN '" + (g.name || g.id) + "'");
+                this._tabGroupAddKey(g.id, key);
+                this._wvTabGroupApplyEverywhere();
+                return;
+            }
+            if (curGroup) {
+                const s = spanOf(curGroup);
+                if (!s) { this._wvTabGroupApplyEverywhere(); return; }
+                const out = (idx > s.max + 1) || (idx < s.min)
+                    || (idx === s.min && leftOfChip(curGroup));
+                this._wvTGDbg("reader membership: own span=" + JSON.stringify(s) + " out=" + out);
+                if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                this._wvTabGroupApplyEverywhere();
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleReaderReorder err: " + e); }
+    }
+
+    /** Reader-window strip accepts group-chip drops (versioned, reload-proof —
+     *  same delegate pattern as the main wiring). */
+    _wvWireTabGroupReaderDnD(win: any) {
+        try {
+            const WIRE_VERSION = 1;
+            const strip = win.document.querySelector(".wv-window-tabstrip");
+            if (!strip) return;
+            if ((strip as any)._wvTabGroupDnDVer === WIRE_VERSION) return;
+            try { (strip as any)._wvTabGroupDnDOff?.(); } catch (e) {}
+            const live = () => {
+                try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
+            };
+            const mk = (method: string) => (e: any) => {
+                try { const p: any = live(); if (p && p[method]) p[method](win, e); } catch (er) {}
+            };
+            const hs: Array<[string, any]> = [
+                ["dragover", mk("_wvTabGroupReaderDnDDragOver")],
+                ["drop", mk("_wvTabGroupReaderDnDDrop")],
+            ];
+            for (const [t, h] of hs) strip.addEventListener(t, h, true);
+            (strip as any)._wvTabGroupDnDVer = WIRE_VERSION;
+            (strip as any)._wvTabGroupDnDOff = () => {
+                try { for (const [t, h] of hs) strip.removeEventListener(t, h, true); } catch (e) {}
+                (strip as any)._wvTabGroupDnDVer = 0;
+            };
+        } catch (e) {}
+    }
+
+    _wvTabGroupReaderDnDDragOver(win: any, e: any) {
+        try {
+            win._wvTabDragLastX = e.clientX;
+            const gd = (this as any)._wvGroupDrag;
+            if (!gd) return;
+            e.preventDefault(); e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        } catch (er) {}
+    }
+
+    _wvTabGroupReaderDnDDrop(win: any, e: any) {
+        try {
+            const gd = (this as any)._wvGroupDrag;
+            if (!gd) return;
+            e.preventDefault(); e.stopPropagation();
+            (this as any)._wvGroupDrag = null;
+            if (gd.sourceWin === win) return;                     // own strip → no-op
+            this._wvTGDbg("group drop on READER window from " + (this._wvTabGroupIsReaderWin(gd.sourceWin) ? "reader" : "main"));
+            this._wvTabGroupMigrateGroup(gd.sourceWin, win, gd.groupID, e.clientX);
+        } catch (er) {}
+    }
+
+    // ---- Cross-window group migration -------------------------------------------
+
+    /** Move ALL of a group's open tabs from one window to another (any combo
+     *  of main/reader windows). Membership is item-keyed, so the group simply
+     *  re-renders in the target once its tabs live there. Close-then-reopen
+     *  per tab — the same semantics as the existing single-tab cross-window
+     *  drags (reader state saved on close, restored on open). */
+    async _wvTabGroupMigrateGroup(srcWin: any, tgtWin: any, groupID: any, clientX: any) {
+        try {
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (!g || !srcWin || !tgtWin || srcWin === tgtWin) return;
+            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            const srcIsReader = this._wvTabGroupIsReaderWin(srcWin);
+            const tgtIsReader = this._wvTabGroupIsReaderWin(tgtWin);
+            // Collect open members in SOURCE display order.
+            const entries: Array<{ itemID: number; isNote: boolean; srcTabID: any }> = [];
+            if (srcIsReader) {
+                const st = srcWin._wvWT;
+                for (const t of (st && st.tabs) || []) {
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                        entries.push({ itemID: t.itemID, isNote: t.type === "note", srcTabID: t.id });
+                    }
+                }
+            } else {
+                const Z: any = srcWin.Zotero_Tabs;
+                for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
+                    const t = Z._tabs[i];
+                    const k = (this as any)._tabPinKey(t);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                        entries.push({ itemID: t.data && t.data.itemID, isNote: t.type === "note", srcTabID: t.id });
+                    }
+                }
+            }
+            if (!entries.length) return;
+            this._wvTGDbg("migrate " + entries.length + " tab(s) " + (srcIsReader ? "reader" : "main")
+                + "→" + (tgtIsReader ? "reader" : "main"));
+            // Close all in the source first (saves reader/note state; the
+            // existing single-tab flows do the same close-then-open dance).
+            for (const en2 of entries) {
+                try {
+                    if (srcIsReader) this._wvWTCloseTab(srcWin, en2.srcTabID);
+                    else srcWin.Zotero_Tabs.close(en2.srcTabID);
+                } catch (e) {}
+            }
+            // Deferred reopen in the target, in order.
+            const setT = (tgtWin.setTimeout ? tgtWin.setTimeout.bind(tgtWin) : setTimeout);
+            setT(async () => {
+                try {
+                    if (tgtIsReader) {
+                        for (const en2 of entries) {
+                            try { await this._wvWTMountTab(tgtWin, en2.itemID, { allowDuplicate: false, select: false, await: true }); } catch (e) {}
+                        }
+                        try { this._wvWTRenderStrip(tgtWin); } catch (e) {}
+                    } else {
+                        try { tgtWin.focus(); } catch (e) {}      // Reader.open targets the focused main window
+                        for (const en2 of entries) {
+                            try {
+                                if (en2.isNote) tgtWin.ZoteroPane.openNote(en2.itemID, { openInWindow: false });
+                                else (Zotero.Reader as any).open(en2.itemID, null, { openInWindow: false, allowDuplicate: false });
+                            } catch (e) {}
+                            await new Promise(r => setT(r, 120));
+                        }
+                        // Position the arrived block at the drop slot once all
+                        // tabs exist (poll briefly), then let apply re-chip.
+                        const Z: any = tgtWin.Zotero_Tabs;
+                        const t0 = Date.now();
+                        const allPresent = () => entries.every(en3 =>
+                            Z._tabs.some((t: any) => t && t.data && t.data.itemID === en3.itemID));
+                        while (!allPresent() && Date.now() - t0 < 4000) {
+                            await new Promise(r => setT(r, 120));
+                        }
+                        if (typeof clientX === "number") {
+                            try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, clientX); } catch (e) {}
+                        }
+                    }
+                    this._wvTabGroupApplyEverywhere();
+                } catch (e) { Zotero.debug("[Weavero] migrate reopen err: " + e); }
+            }, 180);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMigrateGroup err: " + e); }
     }
 
     // ---- Panels (picker + editor) --------------------------------------------
@@ -852,14 +1180,14 @@ class _TabGroupsMixin {
             input.setAttribute("placeholder", "Group name");
             input.addEventListener("change", () => {
                 this._tabGroupUpdate(groupID, { name: input.value });
-                for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+                this._wvTabGroupApplyEverywhere();
             });
             input.addEventListener("keydown", (e: any) => {
                 if (e.key === "Enter") {
                     e.preventDefault();
                     this._tabGroupUpdate(groupID, { name: input.value });
                     try { panel.hidePopup(); } catch (er) {}
-                    for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+                    this._wvTabGroupApplyEverywhere();
                 }
             });
             nameRow.appendChild(input);
@@ -867,7 +1195,7 @@ class _TabGroupsMixin {
 
             body.appendChild(this._wvTabGroupSwatchRow(win, g.color, (c: string) => {
                 this._tabGroupUpdate(groupID, { color: c });
-                for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+                this._wvTabGroupApplyEverywhere();
             }));
 
             const sep = doc.createElementNS(HTML_NS, "div");
@@ -883,7 +1211,7 @@ class _TabGroupsMixin {
             ungroup.addEventListener("click", () => {
                 try { panel.hidePopup(); } catch (e) {}
                 this._tabGroupDelete(groupID);
-                for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+                this._wvTabGroupApplyEverywhere();
             });
             btnRow.appendChild(ungroup);
             const closeAll = doc.createElementNS(HTML_NS, "button");

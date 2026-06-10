@@ -290,9 +290,16 @@ class _TabGroupsMixin {
                 if (firstNode && (chip.parentNode !== tabsBox || chip.nextSibling !== firstNode)) {
                     try { tabsBox.insertBefore(chip, firstNode); } catch (e) {}
                 }
+                // A collapsed group hides its members EXCEPT the selected tab —
+                // Firefox keeps the active tab visible beside the chip. When the
+                // selection later moves elsewhere, the observer re-runs this and
+                // the tab folds away.
                 for (let i = 0; i < openMembers.length; i++) {
-                    wantClass.set(openMembers[i].tab.id, {
-                        group: g, hidden: !!g.collapsed, first: i === 0,
+                    const t = openMembers[i].tab;
+                    wantClass.set(t.id, {
+                        group: g,
+                        hidden: !!g.collapsed && t.id !== Z_Tabs.selectedID,
+                        first: i === 0,
                     });
                 }
             }
@@ -419,19 +426,8 @@ class _TabGroupsMixin {
             if (!g) return;
             g.collapsed = !g.collapsed;
             this._tabGroupsSet(groups);
-            // Collapsing the group that holds the SELECTED tab: move the
-            // selection somewhere visible first (Firefox does the same).
-            if (g.collapsed) {
-                try {
-                    const Z_Tabs: any = win.Zotero_Tabs;
-                    const sel = Z_Tabs && Z_Tabs._tabs.find((t: any) => t.id === Z_Tabs.selectedID);
-                    const k = sel && (this as any)._tabPinKey(sel);
-                    if (k && (g.members || []).some(
-                            (m: any) => m.libraryID === k.libraryID && m.itemKey === k.itemKey)) {
-                        Z_Tabs.select("zotero-pane");
-                    }
-                } catch (e) {}
-            }
+            // No selection rescue: a collapsed group keeps its SELECTED tab
+            // visible (the apply pass exempts it), matching Firefox.
             for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupToggleCollapse err: " + e); }
     }

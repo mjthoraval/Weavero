@@ -14,9 +14,10 @@
 //   - clicking the chip collapses/expands (members display:none);
 //     right-clicking it opens the editor panel (rename / recolor /
 //     ungroup / close group).
-// Group membership is managed from the tab context menu ("Add to Tab
-// Group…" → picker panel; "Remove from Tab Group"). v1 is menu-driven —
-// no drag-into-group gestures yet.
+// Group membership is managed from the tab context menu — a Firefox-style
+// "Add Tab to Group ▸" submenu (New Group + colored-dot entries per group;
+// rebuilt from the live list on every popupshowing) and "Remove from Tab
+// Group". v1 is menu-driven — no drag-into-group gestures yet.
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
@@ -518,78 +519,6 @@ class _TabGroupsMixin {
         return row;
     }
 
-    /** "Add to Tab Group…" picker: existing groups + new-group creator. */
-    _wvShowTabGroupPicker(win: any, tabID: any, anchorNode: any) {
-        try {
-            const doc = win.document;
-            const panel = this._wvTabGroupEnsurePanel(win, "wv-tab-group-picker");
-            const body = panel.querySelector(".wv-tg-panel-body");
-            while (body.firstChild) body.removeChild(body.firstChild);
-
-            const groups = this._tabGroupsGet();
-            if (groups.length) {
-                const title = doc.createElementNS(HTML_NS, "div");
-                title.className = "wv-tg-title";
-                title.textContent = "Add to group";
-                body.appendChild(title);
-                for (const g of groups) {
-                    const row = doc.createElementNS(HTML_NS, "div");
-                    row.className = "wv-tg-grouprow";
-                    const dot = doc.createElementNS(HTML_NS, "div");
-                    dot.className = "wv-tg-dot";
-                    dot.style.background = this._tabGroupColorHex(g.color);
-                    row.appendChild(dot);
-                    const name = doc.createElementNS(HTML_NS, "span");
-                    name.textContent = g.name || "(unnamed)";
-                    row.appendChild(name);
-                    row.addEventListener("click", () => {
-                        try { panel.hidePopup(); } catch (e) {}
-                        this._wvTabGroupAddTab(win, tabID, g.id);
-                    });
-                    body.appendChild(row);
-                }
-                const sep = doc.createElementNS(HTML_NS, "div");
-                sep.className = "wv-tg-sep";
-                body.appendChild(sep);
-            }
-
-            const title2 = doc.createElementNS(HTML_NS, "div");
-            title2.className = "wv-tg-title";
-            title2.textContent = groups.length ? "New group" : "New tab group";
-            body.appendChild(title2);
-            const nameRow = doc.createElementNS(HTML_NS, "div");
-            nameRow.className = "wv-tg-row";
-            const input = doc.createElementNS(HTML_NS, "input");
-            input.className = "wv-tg-name-input";
-            input.setAttribute("placeholder", "Name (optional)");
-            nameRow.appendChild(input);
-            body.appendChild(nameRow);
-            let color = WV_GROUP_COLORS[0].id;
-            body.appendChild(this._wvTabGroupSwatchRow(win, color, (c: string) => { color = c; }));
-            const btnRow = doc.createElementNS(HTML_NS, "div");
-            btnRow.className = "wv-tg-btnrow";
-            const create = doc.createElementNS(HTML_NS, "button");
-            create.className = "wv-tg-btn";
-            create.textContent = "Create";
-            const doCreate = () => {
-                try { panel.hidePopup(); } catch (e) {}
-                try {
-                    const g = this._tabGroupCreate(input.value, color);
-                    this._wvTabGroupAddTab(win, tabID, g.id);
-                } catch (e) { Zotero.debug("[Weavero] group create err: " + e); }
-            };
-            create.addEventListener("click", doCreate);
-            input.addEventListener("keydown", (e: any) => {
-                if (e.key === "Enter") { e.preventDefault(); doCreate(); }
-            });
-            btnRow.appendChild(create);
-            body.appendChild(btnRow);
-
-            panel.openPopup(anchorNode, "after_start", 0, 2, false, false);
-            try { win.setTimeout(() => input.focus(), 60); } catch (e) {}
-        } catch (e) { Zotero.debug("[Weavero] _wvShowTabGroupPicker err: " + e); }
-    }
-
     /** Chip right-click editor: rename / recolor / ungroup / close group. */
     _wvShowTabGroupEditor(win: any, groupID: any, anchorNode: any) {
         try {
@@ -659,6 +588,33 @@ class _TabGroupsMixin {
 
     // ---- Tab context menu entries ---------------------------------------------
 
+    /** A colored-circle icon (data URI) for group menu entries. */
+    _wvTabGroupDotImage(hex: string) {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">'
+            + '<circle cx="6" cy="6" r="5" fill="' + hex + '"/></svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    /** Firefox's "New Group" flow: create instantly (auto-cycled color, no
+     *  name), add the tab, then open the editor on the fresh chip so the
+     *  user can name/recolor it. */
+    _wvTabGroupNewFromTab(win: any, tabID: any) {
+        try {
+            const groups = this._tabGroupsGet();
+            const color = WV_GROUP_COLORS[groups.length % WV_GROUP_COLORS.length].id;
+            const g = this._tabGroupCreate("", color);
+            this._wvTabGroupAddTab(win, tabID, g.id);
+            try {
+                win.setTimeout(() => {
+                    try {
+                        const chip = win.document.getElementById("wv-tgchip-" + g.id);
+                        if (chip) this._wvShowTabGroupEditor(win, g.id, chip);
+                    } catch (e) {}
+                }, 120);
+            } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupNewFromTab err: " + e); }
+    }
+
     /** Move our menuitem just above the native "Move Tab" submenu (found by
      *  its localized label). No-op when Move Tab isn't in this popup. */
     _wvTabGroupRepositionBeforeMove(menuElem: any) {
@@ -688,7 +644,12 @@ class _TabGroupsMixin {
                 target: "main/tab",
                 menus: [
                     {
-                        menuType: "menuitem",
+                        // Firefox-style "Add Tab to Group ▸" SUBMENU: New Group +
+                        // the existing groups as colored-dot entries. The children
+                        // here are a placeholder — onShowing rebuilds the popup
+                        // from the live group list each time.
+                        menuType: "submenu",
+                        menus: [{ menuType: "menuitem", l10nID: "zotero-general-cancel" }],
                         onShowing: (_ev: any, ctx: any) => {
                             try {
                                 if (!self._getEnableTabGroups() || ctx.tabID === "zotero-pane") {
@@ -697,25 +658,42 @@ class _TabGroupsMixin {
                                 const item = ctx.items && ctx.items[0];
                                 if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
                                 ctx.setVisible(true);
-                                ctx.menuElem.setAttribute("label", "Add to Tab Group…");
-                                // MenuManager appends custom items after all
-                                // built-ins; the user wants this ABOVE "Move Tab".
-                                // Locate the Move Tab submenu by its localized
-                                // label and insert before it (same reposition
-                                // trick as Pin Tab; degrades gracefully).
+                                ctx.menuElem.setAttribute("label", "Add Tab to Group");
                                 try { self._wvTabGroupRepositionBeforeMove(ctx.menuElem); } catch (e) {}
+                                // Rebuild the submenu popup from the live groups.
+                                const doc = ctx.menuElem.ownerDocument;
+                                const win = doc.defaultView;
+                                const popup = ctx.menuElem.querySelector("menupopup");
+                                if (!popup) return;
+                                while (popup.firstChild) popup.removeChild(popup.firstChild);
+                                const tabID = ctx.tabID;
+                                const mkItem = (label: string, icon: string | null, fn: () => void) => {
+                                    const mi = doc.createXULElement("menuitem");
+                                    mi.setAttribute("label", label);
+                                    if (icon) {
+                                        mi.setAttribute("class", "menuitem-iconic");
+                                        mi.setAttribute("image", icon);
+                                    }
+                                    mi.addEventListener("command", (e: any) => {
+                                        try { e.stopPropagation(); fn(); } catch (er) {}
+                                    });
+                                    popup.appendChild(mi);
+                                    return mi;
+                                };
+                                mkItem("New Group", null, () => self._wvTabGroupNewFromTab(win, tabID));
+                                const groups = self._tabGroupsGet();
+                                // Don't offer the group the tab is already in.
+                                const cur = self._tabGroupOfKey(item.libraryID, item.key);
+                                const others = groups.filter((x: any) => !cur || x.id !== cur.id);
+                                if (others.length) {
+                                    popup.appendChild(doc.createXULElement("menuseparator"));
+                                    for (const g of others) {
+                                        mkItem(g.name || "Unnamed group",
+                                            self._wvTabGroupDotImage(self._tabGroupColorHex(g.color)),
+                                            () => self._wvTabGroupAddTab(win, tabID, g.id));
+                                    }
+                                }
                             } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
-                        },
-                        onCommand: (_ev: any, ctx: any) => {
-                            try {
-                                const win = ctx.menuElem && ctx.menuElem.ownerDocument
-                                    && ctx.menuElem.ownerDocument.defaultView;
-                                if (!win) return;
-                                const anchor = win.document.querySelector(
-                                    '#tab-bar-container .tab[data-id="' + ctx.tabID + '"]')
-                                    || win.document.getElementById("tab-bar-container");
-                                self._wvShowTabGroupPicker(win, ctx.tabID, anchor);
-                            } catch (e) { Zotero.debug("[Weavero] add-to-group cmd err: " + e); }
                         },
                     },
                     {
@@ -772,7 +750,7 @@ class _TabGroupsMixin {
                 try { this._stripTabGroups(w); } catch (e) {}
                 try {
                     const doc = w.document;
-                    for (const id of ["wv-tab-group-picker", "wv-tab-group-editor", "wv-tab-group-styles"]) {
+                    for (const id of ["wv-tab-group-editor", "wv-tab-group-styles"]) {
                         const el = doc.getElementById(id); if (el) el.remove();
                     }
                 } catch (e) {}

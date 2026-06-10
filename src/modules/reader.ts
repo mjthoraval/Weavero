@@ -2160,6 +2160,31 @@ class _ReaderMixin {
                     };
                 } catch (e) {}
                 try { sidenav.contextNotesPane = notesCtx; } catch (e) {}
+                // Keep the list fresh on note add/delete/modify — in the main
+                // window ZoteroContextPane's notify does this; nothing observes
+                // for this standalone pane. Mirrors contextPane._handleItemUpdate.
+                try {
+                    const notifierID = Zotero.Notifier.registerObserver({
+                        notify: (action: any, type: any, ids: any[], extraData: any) => {
+                            try {
+                                if (type !== "item" || !["add", "delete", "modify"].includes(action)) return;
+                                const libs: any[] = [];
+                                for (const id of (ids || [])) {
+                                    const it: any = Zotero.Items.get(id);
+                                    if (it && (it.isNote() || it.isRegularItem())) libs.push(it.libraryID);
+                                    else if (action === "delete" && extraData && extraData[id]) libs.push(extraData[id].libraryID);
+                                }
+                                if (libs.includes(notesCtx.libraryID)) {
+                                    notesCtx.affectedIDs = new Set([...notesCtx.affectedIDs, ...ids]);
+                                    notesCtx.update();
+                                }
+                            } catch (e) {}
+                        },
+                    }, ["item"], "weavero-reader-notes");
+                    win.addEventListener("unload", () => {
+                        try { Zotero.Notifier.unregisterObserver(notifierID); } catch (e) {}
+                    }, { once: true });
+                } catch (e) {}
             } else {
                 // No notes view available → hide the dead Notes button.
                 try { sidenav.contextNotesPaneEnabled = false; } catch (e) {}
@@ -2254,11 +2279,17 @@ class _ReaderMixin {
             if (att.parentID) details.parentID = att.parentID;
             if (sidenav && details.sidenav !== sidenav) details.sidenav = sidenav;
             // Keep the notes-context (the sidenav Notes view) on the bound
-            // item's library so its list shows the right notes.
+            // item's library so its list shows the right notes — and BUILD the
+            // list right away. In the main window ZoteroContextPane calls
+            // updateNotesListFromCache() on tab select; nothing does that here,
+            // so without it the Notes view opened empty until some notify
+            // happened to fire. (With an empty cache this does the full query.)
             try {
                 const nc: any = doc.getElementById("wv-reader-notes-context");
                 if (nc && targetItem.libraryID != null && nc.libraryID !== targetItem.libraryID) {
                     nc.libraryID = targetItem.libraryID;
+                    try { nc.cachedNotes = []; } catch (e) {}     // library changed → stale cache
+                    try { nc.updateNotesListFromCache(); } catch (e) {}
                 }
             } catch (e) {}
             // Clear any deferred-render flag a stray tab-select left set, so this

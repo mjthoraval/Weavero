@@ -657,9 +657,46 @@ class _TabGroupsMixin {
         } catch (er) { this._wvTGDbg("dragstart ERR=" + er); }
     }
 
+    /** Measure every group's pixel region (chip + visible members) RIGHT NOW.
+     *  Snapshotted on each dragover — the membership pass runs ~80ms after
+     *  the drop, when the layout has already shifted, so post-hoc measuring
+     *  compared a stale x against fresh rects and joins never matched. */
+    _wvTabGroupMeasureRegions(win: any, isReader: boolean, excludeTabID: any) {
+        const out: any = {};
+        try {
+            const doc = win.document;
+            for (const g of this._tabGroupsGet()) {
+                let left = Infinity, right = -Infinity;
+                const chip = doc.getElementById("wv-tgchip-" + g.id);
+                if (chip) {
+                    const r = chip.getBoundingClientRect();
+                    if (r.width) { left = Math.min(left, r.left); right = Math.max(right, r.right); }
+                }
+                const sel = isReader
+                    ? '.wv-window-tabs .wv-window-tab[data-wv-group="' + g.id + '"]'
+                    : '#tab-bar-container .tab[data-wv-group="' + g.id + '"]';
+                const idAttr = isReader ? "data-wv-tab-id" : "data-id";
+                for (const node of doc.querySelectorAll(sel)) {
+                    if (excludeTabID && node.getAttribute(idAttr) === String(excludeTabID)) continue;
+                    const r = node.getBoundingClientRect();
+                    if (!r.width) continue;
+                    left = Math.min(left, r.left);
+                    right = Math.max(right, r.right);
+                }
+                if (right > -Infinity) out[g.id] = { left, right };
+            }
+        } catch (e) {}
+        return out;
+    }
+
     _wvTabGroupDnDDragOver(win: any, e: any) {
         try {
             win._wvTabDragLastX = e.clientX;
+            // Native tab drag in flight → keep a live region snapshot for the
+            // dragend membership decision.
+            if (win._wvTabGroupDragTabID != null) {
+                win._wvTabGroupRegions = this._wvTabGroupMeasureRegions(win, false, win._wvTabGroupDragTabID);
+            }
             const gd = (this as any)._wvGroupDrag;
             if (!gd) return;
             // A group-chip drag: accept the drop and keep Zotero's strip logic
@@ -742,29 +779,17 @@ class _TabGroupsMixin {
             this._wvTGDbg("membership: tab=" + drag.tabID + " lastX=" + lastX);
             const apply = () => { this._wvTabGroupApplyEverywhere(); };
             // GEOMETRIC rule (the Firefox feel): a group's region runs from its
-            // chip's LEFT edge to its last visible member's RIGHT edge. The tab
-            // joins the group whose region the pointer was over at release —
-            // index math was uselessly narrow (a 2-member group had exactly ONE
-            // joining slot; drops "onto" the group land adjacent, not inside).
+            // chip's LEFT edge to its last visible member's RIGHT edge — the
+            // tab joins the group whose region the pointer was over at release.
+            // Regions come from the DRAG-TIME snapshot (taken on dragover):
+            // measuring here, ~80ms post-drop, compares the release x against
+            // already-shifted layout and never matches.
+            const snapshot = win._wvTabGroupRegions || null;
+            win._wvTabGroupRegions = null;
             const regionOf = (g: any) => {
-                try {
-                    const doc = win.document;
-                    const chip = doc.getElementById("wv-tgchip-" + g.id);
-                    let left = Infinity, right = -Infinity;
-                    if (chip) {
-                        const r = chip.getBoundingClientRect();
-                        if (r.width) { left = Math.min(left, r.left); right = Math.max(right, r.right); }
-                    }
-                    for (const node of doc.querySelectorAll(
-                        '#tab-bar-container .tab[data-wv-group="' + g.id + '"]')) {
-                        if (node.getAttribute("data-id") === tab.id) continue;
-                        const r = node.getBoundingClientRect();
-                        if (!r.width) continue;                   // zero-width collapsed member
-                        left = Math.min(left, r.left);
-                        right = Math.max(right, r.right);
-                    }
-                    return (right > -Infinity) ? { left, right } : null;
-                } catch (e) { return null; }
+                if (snapshot && snapshot[g.id]) return snapshot[g.id];
+                const live = this._wvTabGroupMeasureRegions(win, false, tab.id);
+                return live[g.id] || null;
             };
             if (typeof lastX !== "number") return;
             const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
@@ -776,6 +801,7 @@ class _TabGroupsMixin {
                 if (!reg || lastX < reg.left || lastX > reg.right) continue;
                 this._wvTGDbg("membership: JOIN '" + (g.name || g.id) + "'");
                 this._tabGroupAddKey(g.id, key);
+                this._wvTabGroupStabilize(win);
                 apply();
                 return;
             }
@@ -786,9 +812,12 @@ class _TabGroupsMixin {
                 const out = lastX < reg.left || lastX > reg.right;
                 this._wvTGDbg("membership: own-group region=" + JSON.stringify(reg) + " out=" + out);
                 if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                this._wvTabGroupStabilize(win);
                 apply();
             } else {
                 this._wvTGDbg("membership: no join (outside every region), not a member");
+                this._wvTabGroupStabilize(win);
+                apply();
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleNativeDragEnd err: " + e); }
     }
@@ -831,8 +860,10 @@ class _TabGroupsMixin {
                     if (j >= 0) { slot = j; break; }
                 }
             }
-            // Never before the library tab, never before a pinned tab.
+            // Never before the library tab, never before a pinned tab, never
+            // inside another group's run.
             slot = Math.max(this._wvTabGroupMinSlot(win, nonMembers), slot);
+            slot = this._wvTabGroupSlotSnap(win, nonMembers, slot);
             const desired = [
                 ...nonMembers.slice(0, slot), ...memberIDs, ...nonMembers.slice(slot),
             ];
@@ -862,6 +893,93 @@ class _TabGroupsMixin {
             }
         } catch (e) {}
         return min;
+    }
+
+    /** Snap an insertion slot OUT of any other group's interior — a group
+     *  (or its drop ghost) must never land between another group's members.
+     *  `nonMembers` are tab ids; a slot strictly inside another group's run
+     *  is pushed forward to the end of that run. */
+    _wvTabGroupSlotSnap(win: any, nonMembers: string[], slot: number) {
+        try {
+            const Z_Tabs: any = win.Zotero_Tabs;
+            const groupOf = (id: string) => {
+                const t = Z_Tabs._tabs.find((x: any) => x && x.id === id);
+                const k = t && (this as any)._tabPinKey(t);
+                const g = k && this._tabGroupOfKey(k.libraryID, k.itemKey);
+                return g ? g.id : null;
+            };
+            if (slot <= 0 || slot >= nonMembers.length) return slot;
+            const before = groupOf(nonMembers[slot - 1]);
+            const after = groupOf(nonMembers[slot]);
+            if (before && before === after) {
+                // Inside another group's run → push to the end of that run.
+                let s = slot;
+                while (s < nonMembers.length && groupOf(nonMembers[s]) === before) s++;
+                return s;
+            }
+            return slot;
+        } catch (e) { return slot; }
+    }
+
+    /** Re-cluster any group whose open members are no longer contiguous (tab
+     *  drags can split a group around a collapsed block). One-shot, called
+     *  after membership-changing operations — NOT from the observer (forced
+     *  positions there would fight user drags). */
+    _wvTabGroupStabilize(win: any) {
+        try {
+            const Z_Tabs: any = win.Zotero_Tabs;
+            if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return;
+            const groups = this._tabGroupsGet();
+            if (!groups.length) return;
+            const keyOf = (t: any) => {
+                const k = (this as any)._tabPinKey(t);
+                return k ? (k.libraryID + ":" + k.itemKey) : null;
+            };
+            const groupAt = (t: any) => {
+                const k = (this as any)._tabPinKey(t);
+                const g = k && this._tabGroupOfKey(k.libraryID, k.itemKey);
+                return g ? g.id : null;
+            };
+            // Detect non-contiguity: a group id that re-appears after a
+            // different id interrupted its run.
+            const seenClosed = new Set<string>();
+            let lastGid: string | null = null, broken = false;
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const gid = groupAt(Z_Tabs._tabs[i]);
+                if (gid !== lastGid) {
+                    if (lastGid) seenClosed.add(lastGid);
+                    if (gid && seenClosed.has(gid)) { broken = true; break; }
+                    lastGid = gid;
+                }
+            }
+            if (!broken) return;
+            this._wvTGDbg("stabilize: regrouping non-contiguous members");
+            // Rebuild the full order: walk tabs; when a group's FIRST member is
+            // hit, emit ALL its members in display order; skip later strays.
+            const emitted = new Set<string>();
+            const desired: string[] = [];
+            const membersOf = (gid: string) => {
+                const g = groups.find((x: any) => x.id === gid);
+                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                const out: string[] = [];
+                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    const t = Z_Tabs._tabs[i];
+                    const k = keyOf(t);
+                    if (k && ks.has(k)) out.push(t.id);
+                }
+                return out;
+            };
+            for (const t of Z_Tabs._tabs) {
+                if (!t || emitted.has(t.id)) continue;
+                const gid = groupAt(t);
+                if (gid) { for (const id of membersOf(gid)) { if (!emitted.has(id)) { desired.push(id); emitted.add(id); } } }
+                else { desired.push(t.id); emitted.add(t.id); }
+            }
+            for (let i = 0; i < desired.length; i++) {
+                const cur = Z_Tabs._tabs.findIndex((t: any) => t && t.id === desired[i]);
+                if (cur >= 0 && cur !== i) { try { Z_Tabs.move(desired[i], i); } catch (e) {} }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupStabilize err: " + e); }
     }
 
     /** Live preview during a chip drag: physically move the group under the
@@ -897,6 +1015,7 @@ class _TabGroupsMixin {
                 }
             }
             slot = Math.max(this._wvTabGroupMinSlot(win, nonMembers), slot);
+            slot = this._wvTabGroupSlotSnap(win, nonMembers, slot);
             if (slot === last) return;
             win._wvGroupDragSlot = slot;
             this._wvTabGroupMoveGroupTo(win, groupID, clientX);
@@ -992,26 +1111,14 @@ class _TabGroupsMixin {
             const groups = this._tabGroupsGet();
             if (!groups.length) return;
             // Same GEOMETRIC rule as the main window: join the group whose
-            // pixel region (chip left → last member right) the drop x is over.
+            // pixel region (chip left → last member right) the drop x is over,
+            // using the drag-time snapshot when available.
+            const snapshot = win._wvTabGroupRegionsReader || null;
+            win._wvTabGroupRegionsReader = null;
             const regionOf = (g: any) => {
-                try {
-                    const doc = win.document;
-                    const chip = doc.getElementById("wv-tgchip-" + g.id);
-                    let left = Infinity, right = -Infinity;
-                    if (chip) {
-                        const r = chip.getBoundingClientRect();
-                        if (r.width) { left = Math.min(left, r.left); right = Math.max(right, r.right); }
-                    }
-                    for (const node of doc.querySelectorAll(
-                        '.wv-window-tabs .wv-window-tab[data-wv-group="' + g.id + '"]')) {
-                        if (node.getAttribute("data-wv-tab-id") === String(tabId)) continue;
-                        const r = node.getBoundingClientRect();
-                        if (!r.width) continue;
-                        left = Math.min(left, r.left);
-                        right = Math.max(right, r.right);
-                    }
-                    return (right > -Infinity) ? { left, right } : null;
-                } catch (e) { return null; }
+                if (snapshot && snapshot[g.id]) return snapshot[g.id];
+                const live = this._wvTabGroupMeasureRegions(win, true, tabId);
+                return live[g.id] || null;
             };
             if (typeof clientX !== "number") return;
             const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
@@ -1068,6 +1175,8 @@ class _TabGroupsMixin {
     _wvTabGroupReaderDnDDragOver(win: any, e: any) {
         try {
             win._wvTabDragLastX = e.clientX;
+            // Keep a drag-time region snapshot for the reorder membership pass.
+            win._wvTabGroupRegionsReader = this._wvTabGroupMeasureRegions(win, true, null);
             const gd = (this as any)._wvGroupDrag;
             if (!gd) return;
             e.preventDefault(); e.stopPropagation();
@@ -1144,7 +1253,7 @@ class _TabGroupsMixin {
                 label.textContent = (g && g.name) || "Group";
                 chip.appendChild(label);
                 ghost.appendChild(chip);
-                // Skeleton tabs with the member titles.
+                // Member titles (the tabs that would migrate, in source order).
                 try {
                     const gd = (this as any)._wvGroupDrag;
                     const src = gd && gd.sourceWin;
@@ -1164,12 +1273,21 @@ class _TabGroupsMixin {
                             if (k && ks.has(k.libraryID + ":" + k.itemKey)) titles.push(t.title || "");
                         }
                     }
-                    for (const title of titles) {
-                        const gt = doc.createElementNS(HTML_NS, "div");
-                        gt.className = "wv-tg-ghost-tab";
-                        gt.style.setProperty("--wv-group-color", hex);
-                        gt.textContent = title;
-                        ghost.appendChild(gt);
+                    if (g && g.collapsed) {
+                        // A COLLAPSED group arrives collapsed — preview just the
+                        // chip with its tab count, no skeleton tabs.
+                        const count = doc.createElementNS(HTML_NS, "span");
+                        count.className = "wv-tgchip-count";
+                        count.textContent = String(titles.length);
+                        chip.appendChild(count);
+                    } else {
+                        for (const title of titles) {
+                            const gt = doc.createElementNS(HTML_NS, "div");
+                            gt.className = "wv-tg-ghost-tab";
+                            gt.style.setProperty("--wv-group-color", hex);
+                            gt.textContent = title;
+                            ghost.appendChild(gt);
+                        }
                     }
                 } catch (e) {}
             }

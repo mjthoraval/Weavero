@@ -1673,16 +1673,13 @@ class _TabsMixin {
                             try { if (on && !(this as any)._getTabsAndWindowsMaster()) on = false; } catch (e) {}
                             // This is a WINDOW-level action — it does nothing to the
                             // item in a reader/note tab — so only offer it on the
-                            // library tab, and only from a primary main window (never
-                            // from inside a Weavero-dev-spawned window).
-                            const win = ctx.menuElem && ctx.menuElem.ownerDocument
-                                && ctx.menuElem.ownerDocument.defaultView;
-                            const isManagedWin = !!(win && win._wvManagedWindow);
-                            if (!on || ctx.tabID !== "zotero-pane" || isManagedWin) {
+                            // library tab. Offered from EVERY main window (primary
+                            // or Weavero-spawned secondary alike).
+                            if (!on || ctx.tabID !== "zotero-pane") {
                                 ctx.setVisible(false); return;
                             }
                             ctx.setVisible(true);
-                            ctx.menuElem.setAttribute("label", "New Main Window (Weavero dev)");
+                            ctx.menuElem.setAttribute("label", "New Main Window");
                         } catch (e) {
                             try { ctx.setVisible(false); } catch (e2) {}
                         }

@@ -2195,13 +2195,28 @@ class _TabsMixin {
             // Class/attribute-only selector (NO `html` element name): the main
             // window's root is XUL <window>, so a type selector like `html` is in
             // the wrong namespace and wouldn't match.
-            // Dot at the RIGHT end of the library tab. `::after` on the flex
-            // `.tab` is its last flex item; the name grows (flex:1) and the close
-            // button is display:none on the library tab, so this lands at the far
-            // right. align-self:center keeps it vertically centered.
+            // ANCHOR icon at the RIGHT end of the library tab (an actual ⚓ —
+            // this window is the "anchor" window). `::after` on the flex `.tab`
+            // is its last flex item; the name grows (flex:1) and the close
+            // button is display:none on the library tab, so this lands at the
+            // far right. Drawn as an SVG mask so it tints with the accent color.
+            const anchorSvg = encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"'
+                + ' stroke="black" stroke-width="1.6" stroke-linecap="round">'
+                + '<circle cx="8" cy="3.2" r="1.7"/>'
+                + '<path d="M8 4.9 V 13.8"/>'
+                + '<path d="M4.8 7.2 h6.4"/>'
+                + '<path d="M2.3 9.5 a5.7 5.7 0 0 0 11.4 0"/>'
+                + "</svg>");
             const css = `.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
-                + `content:"";display:inline-block;width:6px;height:6px;margin-inline-start:6px;border-radius:50%;`
-                + `background:var(--color-accent,#4072e5);align-self:center;flex:0 0 auto;}`;
+                + `content:"";display:inline-block;width:13px;height:13px;margin-inline-start:6px;`
+                + `background-color:#3d6fe0;`
+                + `mask:url("data:image/svg+xml,${anchorSvg}") center/contain no-repeat;`
+                + `align-self:center;flex:0 0 auto;}`
+                // Dark UI: the accent blue is too dim against the dark tab bar —
+                // use a bright sky blue instead.
+                + `.wv-ui-dark.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
+                + `background-color:#9dbcff;}`;
             let st: any = d.getElementById("wv-anchor-indicator-style");
             if (!st) {
                 st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");

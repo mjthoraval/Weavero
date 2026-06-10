@@ -527,45 +527,91 @@ class _TabGroupsMixin {
     // ---- Drag & drop ----------------------------------------------------------
 
     /** Container-level DnD wiring (called from the tab-bar decoration setup).
-     *  Tracks the pointer x during any tab/group drag (for the chip-boundary
-     *  disambiguation) and accepts group-chip drops to move whole groups. */
+     *  The listeners are THIN DELEGATES to methods on the LIVE plugin —
+     *  reloads update behavior without rewiring — and the wiring itself is
+     *  VERSIONED + removable, so a reload that does change the listener set
+     *  replaces it instead of being skipped by a boolean guard (the stale
+     *  guard previously left dev.4 listeners running forever, which is why
+     *  drag-into-group and the live preview "shipped" but never fired). */
     _wvWireTabGroupDnD(win: any) {
         try {
+            const WIRE_VERSION = 2;
             const doc = win.document;
             const container = doc.getElementById("tab-bar-container");
-            if (!container || (container as any)._wvTabGroupDnDWired) return;
-            (container as any)._wvTabGroupDnDWired = true;
+            if (!container) return;
+            if ((container as any)._wvTabGroupDnDVer === WIRE_VERSION) return;
+            try { (container as any)._wvTabGroupDnDOff?.(); } catch (e) {}
             const live = () => {
                 try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
             };
-            container.addEventListener("dragover", (e: any) => {
-                try {
-                    win._wvTabDragLastX = e.clientX;
-                    const p: any = live();
-                    if (p && p._wvGroupDrag && p._wvGroupDrag.sourceWin === win) {
-                        // A group-chip drag: we own it — accept the drop and keep
-                        // Zotero's strip logic from misreading it.
-                        e.preventDefault(); e.stopPropagation();
-                        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                        // LIVE preview, like native tab dragging: physically move
-                        // the group to the slot under the pointer as it changes
-                        // (slot-gated so React isn't re-rendered every pixel).
-                        p._wvTabGroupLiveMoveGroup(win, p._wvGroupDrag.groupID, e.clientX);
-                    }
-                } catch (er) {}
-            }, true);
-            container.addEventListener("drop", (e: any) => {
-                try {
-                    const p: any = live();
-                    const gd = p && p._wvGroupDrag;
-                    if (!gd || gd.sourceWin !== win) return;
-                    e.preventDefault(); e.stopPropagation();
-                    p._wvGroupDrag = null;
-                    win._wvGroupDragSlot = null;
-                    p._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
-                } catch (er) {}
-            }, true);
+            const mk = (method: string) => (e: any) => {
+                try { const p: any = live(); if (p && p[method]) p[method](win, e); } catch (er) {}
+            };
+            const hs: Array<[string, any]> = [
+                ["dragstart", mk("_wvTabGroupDnDDragStart")],
+                ["dragover", mk("_wvTabGroupDnDDragOver")],
+                ["drop", mk("_wvTabGroupDnDDrop")],
+                ["dragend", mk("_wvTabGroupDnDDragEnd")],
+            ];
+            for (const [t, h] of hs) container.addEventListener(t, h, true);
+            (container as any)._wvTabGroupDnDVer = WIRE_VERSION;
+            (container as any)._wvTabGroupDnDOff = () => {
+                try { for (const [t, h] of hs) container.removeEventListener(t, h, true); } catch (e) {}
+                (container as any)._wvTabGroupDnDVer = 0;
+            };
         } catch (e) { Zotero.debug("[Weavero] _wvWireTabGroupDnD err: " + e); }
+    }
+
+    /** Remember which native tab a drag started from (independently of
+     *  tabs.ts's `_wvTabDrag`, which its own dragend nulls before we run). */
+    _wvTabGroupDnDDragStart(win: any, e: any) {
+        try {
+            const tabNode = e.target && e.target.closest && e.target.closest(".tab[data-id]");
+            win._wvTabGroupDragTabID = tabNode ? tabNode.getAttribute("data-id") : null;
+        } catch (er) {}
+    }
+
+    _wvTabGroupDnDDragOver(win: any, e: any) {
+        try {
+            win._wvTabDragLastX = e.clientX;
+            const gd = (this as any)._wvGroupDrag;
+            if (gd && gd.sourceWin === win) {
+                // A group-chip drag: we own it — accept the drop, keep Zotero's
+                // strip logic out, and move the group under the pointer LIVE
+                // (slot-gated so React isn't re-rendered every pixel).
+                e.preventDefault(); e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                this._wvTabGroupLiveMoveGroup(win, gd.groupID, e.clientX);
+            }
+        } catch (er) {}
+    }
+
+    _wvTabGroupDnDDrop(win: any, e: any) {
+        try {
+            const gd = (this as any)._wvGroupDrag;
+            if (!gd || gd.sourceWin !== win) return;
+            e.preventDefault(); e.stopPropagation();
+            (this as any)._wvGroupDrag = null;
+            win._wvGroupDragSlot = null;
+            this._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
+        } catch (er) {}
+    }
+
+    /** Native tab drag finished → update group membership from the final
+     *  position (join when dropped inside a group's span, leave when dragged
+     *  out). Deferred a tick so Zotero's own dragend (reorder, tear-off,
+     *  cross-window move) settles first — a closed/moved tab simply isn't
+     *  found anymore and the pass is a no-op. */
+    _wvTabGroupDnDDragEnd(win: any, _e: any) {
+        try {
+            const tabID = win._wvTabGroupDragTabID;
+            win._wvTabGroupDragTabID = null;
+            win._wvGroupDragSlot = null;
+            if (!tabID || tabID === "zotero-pane") return;
+            win.setTimeout(() => {
+                try { this._wvTabGroupHandleNativeDragEnd(win, { tabID }); } catch (e) {}
+            }, 80);
+        } catch (er) {}
     }
 
     /** After a NATIVE tab drag settles (called from _wireTabBarDrag's dragend):
@@ -673,7 +719,8 @@ class _TabGroupsMixin {
                     if (j >= 0) { slot = j; break; }
                 }
             }
-            slot = Math.max(1, slot);                             // never before the library tab
+            // Never before the library tab, never before a pinned tab.
+            slot = Math.max(this._wvTabGroupMinSlot(win, nonMembers), slot);
             const desired = [
                 ...nonMembers.slice(0, slot), ...memberIDs, ...nonMembers.slice(slot),
             ];
@@ -687,6 +734,22 @@ class _TabGroupsMixin {
             for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
             return slot;
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveGroupTo err: " + e); return -1; }
+    }
+
+    /** The minimum allowed insertion slot for a group within `nonMembers`:
+     *  after the library tab AND after every pinned tab — groups can't sit
+     *  before pinned tabs (Firefox rule; pins cluster at the left edge). */
+    _wvTabGroupMinSlot(win: any, nonMembers: string[]) {
+        let min = 1;
+        try {
+            const Z_Tabs: any = win.Zotero_Tabs;
+            for (let j = 1; j < nonMembers.length; j++) {
+                const t = Z_Tabs._tabs.find((x: any) => x && x.id === nonMembers[j]);
+                const k = t && (this as any)._tabPinKey(t);
+                if (k && (this as any)._pinnedTabsHas(k.libraryID, k.itemKey)) min = j + 1;
+            }
+        } catch (e) {}
+        return min;
     }
 
     /** Live preview during a chip drag: physically move the group under the
@@ -721,7 +784,7 @@ class _TabGroupsMixin {
                     if (j >= 0) { slot = j; break; }
                 }
             }
-            slot = Math.max(1, slot);
+            slot = Math.max(this._wvTabGroupMinSlot(win, nonMembers), slot);
             if (slot === last) return;
             win._wvGroupDragSlot = slot;
             this._wvTabGroupMoveGroupTo(win, groupID, clientX);

@@ -1380,15 +1380,8 @@ class _TabsMixin {
                         self._pinnedTabsRemove(drag.libraryID, drag.itemKey);
                         try { self._applyPinnedTabs(win); } catch (er) {}
                     }
-                    // Tab-group membership from the final position: dropped
-                    // inside a group's span → join; a member dragged out of its
-                    // span → leave. (Reads the LIVE plugin — survives reloads.)
-                    try {
-                        const lp: any = (Zotero as any).Weavero?.plugin || self;
-                        if (lp._wvTabGroupHandleNativeDragEnd) {
-                            lp._wvTabGroupHandleNativeDragEnd(win, drag);
-                        }
-                    } catch (er) {}
+                    // (Tab-group membership is handled by tab-groups.ts's own
+                    // container dragend — wired reload-proof there.)
                 } catch (er) {}
             }, true);
             (container as any)._wvPinDragWired = true;

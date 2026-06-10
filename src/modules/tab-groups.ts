@@ -139,10 +139,17 @@ class _TabGroupsMixin {
             const st = doc.createElementNS(HTML_NS, "style");
             st.id = "wv-tab-group-styles";
             st.textContent = [
-                // Member underline — inset shadow so it doesn't change layout.
-                "#tab-bar-container .tab.wv-grouped-tab {",
-                "  box-shadow: inset 0 -2px 0 0 var(--wv-group-color, #4f7ce0);",
+                // Member underline — a ::after bar that extends LEFT across the
+                // 4px flex gap to the previous member (7px for the first member,
+                // reaching the chip), so the group reads as ONE continuous line,
+                // like Firefox. (.tab is position:relative + overflow:visible.)
+                "#tab-bar-container .tab.wv-grouped-tab::after {",
+                "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
+                "  left: -4px; right: 0; border-radius: 1px;",
+                "  background: var(--wv-group-color, #4f7ce0);",
+                "  pointer-events: none;",
                 "}",
+                "#tab-bar-container .tab.wv-group-first::after { left: -7px; }",
                 // Collapsed members disappear (kept in Zotero_Tabs; chip shows count).
                 "#tab-bar-container .tab.wv-group-hidden { display: none !important; }",
                 // The chip.
@@ -231,7 +238,7 @@ class _TabGroupsMixin {
                 if (k && !openByKey.has(k)) openByKey.set(k, t);
             }
 
-            const wantClass = new Map<string, { group: any; hidden: boolean }>();   // tabID →
+            const wantClass = new Map<string, { group: any; hidden: boolean; first?: boolean }>();   // tabID →
             let prefDirty = false;
             for (const g of groups) {
                 // Split members into open (re-synced to display order) + closed.
@@ -279,8 +286,10 @@ class _TabGroupsMixin {
                 if (firstNode && (chip.parentNode !== tabsBox || chip.nextSibling !== firstNode)) {
                     try { tabsBox.insertBefore(chip, firstNode); } catch (e) {}
                 }
-                for (const m of openMembers) {
-                    wantClass.set(m.tab.id, { group: g, hidden: !!g.collapsed });
+                for (let i = 0; i < openMembers.length; i++) {
+                    wantClass.set(openMembers[i].tab.id, {
+                        group: g, hidden: !!g.collapsed, first: i === 0,
+                    });
                 }
             }
             if (prefDirty) this._tabGroupsSet(groups);
@@ -302,8 +311,11 @@ class _TabGroupsMixin {
                     if (want.hidden !== node.classList.contains("wv-group-hidden")) {
                         node.classList.toggle("wv-group-hidden", want.hidden);
                     }
+                    if (!!(want as any).first !== node.classList.contains("wv-group-first")) {
+                        node.classList.toggle("wv-group-first", !!(want as any).first);
+                    }
                 } else if (node.classList.contains("wv-grouped-tab")) {
-                    node.classList.remove("wv-grouped-tab", "wv-group-hidden");
+                    node.classList.remove("wv-grouped-tab", "wv-group-hidden", "wv-group-first");
                     node.removeAttribute("data-wv-group");
                     node.style.removeProperty("--wv-group-color");
                 }
@@ -322,7 +334,7 @@ class _TabGroupsMixin {
             if (!doc) return;
             for (const chip of doc.querySelectorAll(".wv-tab-group-chip")) chip.remove();
             for (const node of doc.querySelectorAll("#tab-bar-container .tab.wv-grouped-tab")) {
-                node.classList.remove("wv-grouped-tab", "wv-group-hidden");
+                node.classList.remove("wv-grouped-tab", "wv-group-hidden", "wv-group-first");
                 node.removeAttribute("data-wv-group");
                 node.style.removeProperty("--wv-group-color");
             }

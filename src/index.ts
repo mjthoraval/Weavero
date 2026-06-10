@@ -24,6 +24,7 @@ import { paneMethods } from "./modules/pane";
 import { filterMethods } from "./modules/filter";
 import { bookmarksMethods } from "./modules/bookmarks";
 import { readerPanelsMethods } from "./modules/reader-panels";
+import { tabGroupsMethods } from "./modules/tab-groups";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -1794,6 +1795,9 @@ class WeaveroPlugin {
                 // Multiple main windows — feature master (devNewMainWindow) is
                 // OFF, but its restore-on-restart sub-option defaults ON.
                 "devSessionAutoReopen",
+                // Tab groups (Firefox-style) — inert until a group is created,
+                // so it defaults ON.
+                "enableTabGroups",
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",
@@ -2524,6 +2528,8 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
+        // Firefox-style tab groups (chip + colored underline in the tab bar).
+        this._registerTabGroupMenus();
         // "New Main Window" entry — gated on the `weavero.devNewMainWindow`
         // pref (exposed in prefs.html under "Multiple main windows"; default
         // off — experimental).
@@ -2816,6 +2822,13 @@ class WeaveroPlugin {
                                 }
                             } catch (e) {}
                         } catch (e) { Zotero.debug("[Weavero] compactTitleBar toggle err: " + e); }
+                    }
+                    // Tab groups — re-apply (self-gates; strips when off).
+                    if (data === "extensions.zotero.weavero.enableTabGroups"
+                            || data === "extensions.zotero.weavero.enableTabsAndWindows") {
+                        try {
+                            for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+                        } catch (e) {}
                     }
                     // Reader item pane (Tabs and Windows section) — apply to the
                     // open standalone reader windows immediately: the ensure
@@ -3606,6 +3619,7 @@ class WeaveroPlugin {
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
         this._unregisterPinTabMenu();
+        try { this._teardownTabGroups(); } catch (e) {}
         this._unregisterDevNewWindowMenu();
         try { this._wvSessionUnregisterQuitFlush(); } catch (e) {}
         try { this._teardownThumbnailContextMenu(); } catch (e) {}
@@ -4016,6 +4030,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     readerPanelsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    tabGroupsMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================

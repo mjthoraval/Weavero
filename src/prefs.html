@@ -508,8 +508,13 @@
         preference="extensions.zotero.weavero.enableTabsAndWindows"/>
     </html:div>
     <html:div class="wv-master-card">
-      <html:p class="wv-master-desc">Browser-style window chrome, multiple main windows, and an item pane in separate reader windows. Each feature below is off by default.</html:p>
+      <html:p class="wv-master-desc">Tab groups, browser-style window chrome, multiple main windows, and an item pane in separate reader windows.</html:p>
     </html:div>
+    <vbox class="wv-children" data-master="enableTabsAndWindows">
+      <checkbox label="Tab groups in the tab bar" native="true"
+        preference="extensions.zotero.weavero.enableTabGroups"/>
+      <html:p class="wv-desc">Group tabs Firefox-style: right-click a tab &#8594; &#8220;Add to Tab Group&#8230;&#8221; for a named, coloured group. Click the group&#8217;s chip to collapse or expand it; right-click the chip to rename, recolour, ungroup or close the group. Groups persist across restarts.</html:p>
+    </vbox>
   </groupbox>
 
   <!-- ============================ Hide Title Bar -->

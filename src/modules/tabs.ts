@@ -594,6 +594,7 @@ class _TabsMixin {
         // applies to React-rendered .tab nodes the moment our observer
         // adds the wv-pinned-tab class.
         try { this._ensurePinnedTabStyles(doc); } catch (e) {}
+        try { this._ensureTabGroupStyles(doc); } catch (e) {}
         // Wire drag listeners on the tab-bar container so dragging a
         // regular tab into the pinned region pins it (and vice-versa).
         try { this._wireTabBarDrag(win); } catch (e) {}
@@ -602,6 +603,7 @@ class _TabsMixin {
         // sees decoration + pin state immediately on plugin install / Zotero open.
         try { this._decorateTabBar(win); } catch (e) {}
         try { this._applyPinnedTabs(win); } catch (e) {}
+        try { this._applyTabGroups(win); } catch (e) {}
 
         if (win._wvTabBarDecoMo) {
             try { win._wvTabBarDecoMo.disconnect(); } catch (e) {}
@@ -609,6 +611,7 @@ class _TabsMixin {
         const mo = new win.MutationObserver(() => {
             try { this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
+            try { this._applyTabGroups(win); } catch (e) {}
         });
         mo.observe(container, {
             childList: true,

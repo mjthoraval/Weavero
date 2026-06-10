@@ -382,30 +382,45 @@ class _TabGroupsMixin {
         // mouseup keeps the gesture unambiguous — nothing mutates between
         // press and release, so the release always lands on this same chip.
         chip.setAttribute("draggable", "true");
+        // DEBUG instrumentation for the single-click investigation: every chip
+        // event appends to Zotero._wvChipLog (capped) AND Zotero.debug.
+        const dbg = (msg: string) => {
+            try {
+                const line = "[Weavero][chip " + groupID + "] " + msg;
+                Zotero.debug(line);
+                const arr = ((Zotero as any)._wvChipLog = (Zotero as any)._wvChipLog || []);
+                arr.push(Date.now() % 1000000 + " " + line);
+                if (arr.length > 80) arr.shift();
+            } catch (e) {}
+        };
         let pressed = false, dragged = false;
         chip.addEventListener("mousedown", (e: any) => {
             try {
+                dbg("mousedown btn=" + e.button + " trusted=" + e.isTrusted);
                 if (e.button !== 0) return;
                 e.stopPropagation();          // keep Zotero's strip handlers out
                 pressed = true; dragged = false;
-            } catch (er) {}
+            } catch (er) { dbg("mousedown ERR=" + er); }
         });
         chip.addEventListener("mouseup", (e: any) => {
             try {
+                dbg("mouseup btn=" + e.button + " pressed=" + pressed + " dragged=" + dragged);
                 if (e.button !== 0 || !pressed) return;
                 pressed = false;
                 if (dragged) return;          // a drag, not a click
                 e.stopPropagation(); e.preventDefault();
                 const p: any = live();
+                dbg("TOGGLING via mouseup; livePlugin=" + !!p);
                 if (p) p._wvTabGroupToggleCollapse(win, groupID);
-            } catch (er) {}
+            } catch (er) { dbg("mouseup ERR=" + er); }
         });
         // Swallow the residual click so nothing beneath reacts.
         chip.addEventListener("click", (e: any) => {
-            try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+            try { dbg("click (swallowed)"); e.stopPropagation(); e.preventDefault(); } catch (er) {}
         });
         chip.addEventListener("dragstart", (e: any) => {
             try {
+                dbg("dragstart");
                 dragged = true;
                 const p: any = live();
                 if (!e.dataTransfer || !p) return;
@@ -454,6 +469,7 @@ class _TabGroupsMixin {
         try {
             const groups = this._tabGroupsGet();
             const g = groups.find((x: any) => x.id === groupID);
+            try { Zotero.debug("[Weavero][chip " + groupID + "] toggleCollapse: found=" + !!g + " collapsed(before)=" + (g && g.collapsed)); } catch (e) {}
             if (!g) return;
             g.collapsed = !g.collapsed;
             this._tabGroupsSet(groups);

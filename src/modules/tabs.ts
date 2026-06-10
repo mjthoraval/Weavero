@@ -598,6 +598,8 @@ class _TabsMixin {
         // Wire drag listeners on the tab-bar container so dragging a
         // regular tab into the pinned region pins it (and vice-versa).
         try { this._wireTabBarDrag(win); } catch (e) {}
+        // Tab-group DnD: pointer tracking + group-chip drops.
+        try { this._wvWireTabGroupDnD(win); } catch (e) {}
 
         // Initial pass before we attach the observer so the user
         // sees decoration + pin state immediately on plugin install / Zotero open.
@@ -1378,6 +1380,15 @@ class _TabsMixin {
                         self._pinnedTabsRemove(drag.libraryID, drag.itemKey);
                         try { self._applyPinnedTabs(win); } catch (er) {}
                     }
+                    // Tab-group membership from the final position: dropped
+                    // inside a group's span → join; a member dragged out of its
+                    // span → leave. (Reads the LIVE plugin — survives reloads.)
+                    try {
+                        const lp: any = (Zotero as any).Weavero?.plugin || self;
+                        if (lp._wvTabGroupHandleNativeDragEnd) {
+                            lp._wvTabGroupHandleNativeDragEnd(win, drag);
+                        }
+                    } catch (er) {}
                 } catch (er) {}
             }, true);
             (container as any)._wvPinDragWired = true;

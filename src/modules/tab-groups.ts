@@ -376,13 +376,25 @@ class _TabGroupsMixin {
         const live = () => {
             try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
         };
-        // Single click = collapse/expand; right-click = editor. Toggle on
-        // MOUSEDOWN, not click: React's tab-bar rewrites fire our observer
-        // between mousedown and click, and the re-apply can re-insert the
-        // chip — which cancels the synthesized click.
+        // Interaction model: PRESS + RELEASE (without a drag) toggles
+        // collapse; press + move drags the whole group (the chip is an HTML5
+        // drag source, so mousedown must NOT preventDefault). Toggling on
+        // mouseup keeps the gesture unambiguous — nothing mutates between
+        // press and release, so the release always lands on this same chip.
+        chip.setAttribute("draggable", "true");
+        let pressed = false, dragged = false;
         chip.addEventListener("mousedown", (e: any) => {
             try {
                 if (e.button !== 0) return;
+                e.stopPropagation();          // keep Zotero's strip handlers out
+                pressed = true; dragged = false;
+            } catch (er) {}
+        });
+        chip.addEventListener("mouseup", (e: any) => {
+            try {
+                if (e.button !== 0 || !pressed) return;
+                pressed = false;
+                if (dragged) return;          // a drag, not a click
                 e.stopPropagation(); e.preventDefault();
                 const p: any = live();
                 if (p) p._wvTabGroupToggleCollapse(win, groupID);
@@ -391,6 +403,25 @@ class _TabGroupsMixin {
         // Swallow the residual click so nothing beneath reacts.
         chip.addEventListener("click", (e: any) => {
             try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+        });
+        chip.addEventListener("dragstart", (e: any) => {
+            try {
+                dragged = true;
+                const p: any = live();
+                if (!e.dataTransfer || !p) return;
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("application/x-weavero-tabgroup", groupID);
+                p._wvGroupDrag = { groupID, sourceWin: win };
+                // Drag image: the chip itself (it's small and recognizable).
+                try { e.dataTransfer.setDragImage(chip, 10, 10); } catch (er2) {}
+            } catch (er) {}
+        });
+        chip.addEventListener("dragend", () => {
+            try {
+                pressed = false; dragged = false;
+                const p: any = live();
+                if (p) p._wvGroupDrag = null;
+            } catch (er) {}
         });
         chip.addEventListener("contextmenu", (e: any) => {
             try {
@@ -484,6 +515,164 @@ class _TabGroupsMixin {
             this._tabGroupDelete(groupID);
             for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupCloseTabs err: " + e); }
+    }
+
+    // ---- Drag & drop ----------------------------------------------------------
+
+    /** Container-level DnD wiring (called from the tab-bar decoration setup).
+     *  Tracks the pointer x during any tab/group drag (for the chip-boundary
+     *  disambiguation) and accepts group-chip drops to move whole groups. */
+    _wvWireTabGroupDnD(win: any) {
+        try {
+            const doc = win.document;
+            const container = doc.getElementById("tab-bar-container");
+            if (!container || (container as any)._wvTabGroupDnDWired) return;
+            (container as any)._wvTabGroupDnDWired = true;
+            const live = () => {
+                try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
+            };
+            container.addEventListener("dragover", (e: any) => {
+                try {
+                    win._wvTabDragLastX = e.clientX;
+                    const p: any = live();
+                    if (p && p._wvGroupDrag && p._wvGroupDrag.sourceWin === win) {
+                        // A group-chip drag: we own it — accept the drop and keep
+                        // Zotero's strip logic from misreading it.
+                        e.preventDefault(); e.stopPropagation();
+                        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                    }
+                } catch (er) {}
+            }, true);
+            container.addEventListener("drop", (e: any) => {
+                try {
+                    const p: any = live();
+                    const gd = p && p._wvGroupDrag;
+                    if (!gd || gd.sourceWin !== win) return;
+                    e.preventDefault(); e.stopPropagation();
+                    p._wvGroupDrag = null;
+                    p._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
+                } catch (er) {}
+            }, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvWireTabGroupDnD err: " + e); }
+    }
+
+    /** After a NATIVE tab drag settles (called from _wireTabBarDrag's dragend):
+     *  join the group whose span the tab now sits inside, or leave its own
+     *  group when dragged out of the span. Index-based, with the chip's
+     *  midpoint disambiguating the "just before the first member" slot
+     *  (left of the chip = outside, right = inside). */
+    _wvTabGroupHandleNativeDragEnd(win: any, drag: any) {
+        try {
+            if (!this._getEnableTabGroups()) return;
+            const Z_Tabs: any = win.Zotero_Tabs;
+            if (!Z_Tabs || !Z_Tabs._tabs) return;
+            const tab = Z_Tabs._tabs.find((t: any) => t && t.id === drag.tabID);
+            if (!tab) return;
+            const key = (this as any)._tabPinKey(tab);
+            if (!key) return;
+            const groups = this._tabGroupsGet();
+            if (!groups.length) return;
+            const idx = Z_Tabs._tabs.indexOf(tab);
+            const apply = () => { for (const w of Zotero.getMainWindows()) this._applyTabGroups(w); };
+            // Span of a group's OPEN members, excluding the dragged tab itself.
+            const spanOf = (g: any) => {
+                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                let min = Infinity, max = -Infinity;
+                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    const t = Z_Tabs._tabs[i];
+                    if (!t || t.id === tab.id) continue;
+                    const k = (this as any)._tabPinKey(t);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                        if (i < min) min = i;
+                        if (i > max) max = i;
+                    }
+                }
+                return (max < 0) ? null : { min, max };
+            };
+            // Was the pointer left of the group chip's midpoint at drop time?
+            const leftOfChip = (g: any) => {
+                try {
+                    const chip = win.document.getElementById("wv-tgchip-" + g.id);
+                    const lastX = win._wvTabDragLastX;
+                    if (!chip || typeof lastX !== "number") return false;
+                    const r = chip.getBoundingClientRect();
+                    return lastX < r.left + r.width / 2;
+                } catch (e) { return false; }
+            };
+            const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
+            // JOIN: dropped within another group's span.
+            for (const g of groups) {
+                if (curGroup && g.id === curGroup.id) continue;
+                const s = spanOf(g);
+                if (!s || idx < s.min || idx > s.max) continue;
+                if (idx === s.min && leftOfChip(g)) continue;   // landed before the chip
+                this._tabGroupAddKey(g.id, key);
+                apply();
+                return;
+            }
+            // LEAVE: a member dragged outside its own group's span.
+            if (curGroup) {
+                const s = spanOf(curGroup);
+                if (!s) { apply(); return; }                     // sole member: group travels with it
+                const out = (idx > s.max + 1)
+                    || (idx < s.min)
+                    || (idx === s.min && leftOfChip(curGroup));
+                if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                apply();
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleNativeDragEnd err: " + e); }
+    }
+
+    /** Move a whole group (all its open member tabs, keeping their order) to
+     *  the position the chip was dropped at. The target slot is the first tab
+     *  whose midpoint lies right of the drop x — computed over NON-member tabs
+     *  so the group's own tabs don't distort the target. */
+    _wvTabGroupMoveGroupTo(win: any, groupID: any, clientX: number) {
+        try {
+            const Z_Tabs: any = win.Zotero_Tabs;
+            const doc = win.document;
+            if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return;
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (!g) return;
+            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            const memberIDs: string[] = [];
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const t = Z_Tabs._tabs[i];
+                const k = (this as any)._tabPinKey(t);
+                if (k && ks.has(k.libraryID + ":" + k.itemKey)) memberIDs.push(t.id);
+            }
+            if (!memberIDs.length) return;
+            const memberSet = new Set(memberIDs);
+            // Build the DESIRED final order outright (incremental anchor moves
+            // are fragile against Z_Tabs.move's splice semantics — they
+            // reversed the members): non-members keep their relative order,
+            // the member block inserts at the slot the drop x points into.
+            const nonMembers: string[] = Z_Tabs._tabs
+                .map((t: any) => t && t.id)
+                .filter((id: any) => id && !memberSet.has(id));
+            let slot = nonMembers.length;                         // default: end
+            for (const node of doc.querySelectorAll("#tab-bar-container .tab[data-id]")) {
+                const id = node.getAttribute("data-id");
+                if (memberSet.has(id)) continue;
+                const r = node.getBoundingClientRect();
+                if (clientX < r.left + r.width / 2) {
+                    const j = nonMembers.indexOf(id);
+                    if (j >= 0) { slot = j; break; }
+                }
+            }
+            slot = Math.max(1, slot);                             // never before the library tab
+            const desired = [
+                ...nonMembers.slice(0, slot), ...memberIDs, ...nonMembers.slice(slot),
+            ];
+            // Settle each id at its exact index, left to right.
+            for (let i = 0; i < desired.length; i++) {
+                const cur = Z_Tabs._tabs.findIndex((t: any) => t && t.id === desired[i]);
+                if (cur >= 0 && cur !== i) {
+                    try { Z_Tabs.move(desired[i], i); } catch (e) {}
+                }
+            }
+            for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveGroupTo err: " + e); }
     }
 
     // ---- Panels (picker + editor) --------------------------------------------

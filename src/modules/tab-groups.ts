@@ -425,6 +425,7 @@ class _TabGroupsMixin {
         chip.addEventListener("dragend", () => {
             try {
                 pressed = false; dragged = false;
+                win._wvGroupDragSlot = null;
                 const p: any = live();
                 if (p) p._wvGroupDrag = null;
             } catch (er) {}
@@ -546,6 +547,10 @@ class _TabGroupsMixin {
                         // Zotero's strip logic from misreading it.
                         e.preventDefault(); e.stopPropagation();
                         if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                        // LIVE preview, like native tab dragging: physically move
+                        // the group to the slot under the pointer as it changes
+                        // (slot-gated so React isn't re-rendered every pixel).
+                        p._wvTabGroupLiveMoveGroup(win, p._wvGroupDrag.groupID, e.clientX);
                     }
                 } catch (er) {}
             }, true);
@@ -556,6 +561,7 @@ class _TabGroupsMixin {
                     if (!gd || gd.sourceWin !== win) return;
                     e.preventDefault(); e.stopPropagation();
                     p._wvGroupDrag = null;
+                    win._wvGroupDragSlot = null;
                     p._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
                 } catch (er) {}
             }, true);
@@ -630,16 +636,17 @@ class _TabGroupsMixin {
     }
 
     /** Move a whole group (all its open member tabs, keeping their order) to
-     *  the position the chip was dropped at. The target slot is the first tab
-     *  whose midpoint lies right of the drop x — computed over NON-member tabs
-     *  so the group's own tabs don't distort the target. */
+     *  the position pointed at by `clientX`. The target slot is the first
+     *  NON-member tab whose midpoint lies right of x (members are excluded so
+     *  the group's own tabs don't distort the target). Returns the slot used,
+     *  or -1 when nothing applies. */
     _wvTabGroupMoveGroupTo(win: any, groupID: any, clientX: number) {
         try {
             const Z_Tabs: any = win.Zotero_Tabs;
             const doc = win.document;
-            if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return;
+            if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return -1;
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            if (!g) return;
+            if (!g) return -1;
             const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             const memberIDs: string[] = [];
             for (let i = 1; i < Z_Tabs._tabs.length; i++) {
@@ -647,12 +654,12 @@ class _TabGroupsMixin {
                 const k = (this as any)._tabPinKey(t);
                 if (k && ks.has(k.libraryID + ":" + k.itemKey)) memberIDs.push(t.id);
             }
-            if (!memberIDs.length) return;
+            if (!memberIDs.length) return -1;
             const memberSet = new Set(memberIDs);
             // Build the DESIRED final order outright (incremental anchor moves
             // are fragile against Z_Tabs.move's splice semantics — they
             // reversed the members): non-members keep their relative order,
-            // the member block inserts at the slot the drop x points into.
+            // the member block inserts at the slot the pointer x points into.
             const nonMembers: string[] = Z_Tabs._tabs
                 .map((t: any) => t && t.id)
                 .filter((id: any) => id && !memberSet.has(id));
@@ -678,7 +685,47 @@ class _TabGroupsMixin {
                 }
             }
             for (const w of Zotero.getMainWindows()) this._applyTabGroups(w);
-        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveGroupTo err: " + e); }
+            return slot;
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveGroupTo err: " + e); return -1; }
+    }
+
+    /** Live preview during a chip drag: physically move the group under the
+     *  pointer, like native tab dragging — but only when the computed slot
+     *  actually changes, so dragover's event rate doesn't thrash React. */
+    _wvTabGroupLiveMoveGroup(win: any, groupID: any, clientX: number) {
+        try {
+            const last = win._wvGroupDragSlot;
+            // Cheap probe: recompute the slot the pointer is over without
+            // moving anything, then bail when unchanged.
+            const Z_Tabs: any = win.Zotero_Tabs;
+            const doc = win.document;
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (!Z_Tabs || !g) return;
+            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            const memberSet = new Set<string>();
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const t = Z_Tabs._tabs[i];
+                const k = (this as any)._tabPinKey(t);
+                if (k && ks.has(k.libraryID + ":" + k.itemKey)) memberSet.add(t.id);
+            }
+            const nonMembers: string[] = Z_Tabs._tabs
+                .map((t: any) => t && t.id)
+                .filter((id: any) => id && !memberSet.has(id));
+            let slot = nonMembers.length;
+            for (const node of doc.querySelectorAll("#tab-bar-container .tab[data-id]")) {
+                const id = node.getAttribute("data-id");
+                if (memberSet.has(id)) continue;
+                const r = node.getBoundingClientRect();
+                if (clientX < r.left + r.width / 2) {
+                    const j = nonMembers.indexOf(id);
+                    if (j >= 0) { slot = j; break; }
+                }
+            }
+            slot = Math.max(1, slot);
+            if (slot === last) return;
+            win._wvGroupDragSlot = slot;
+            this._wvTabGroupMoveGroupTo(win, groupID, clientX);
+        } catch (e) {}
     }
 
     // ---- Panels (picker + editor) --------------------------------------------

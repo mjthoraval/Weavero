@@ -355,13 +355,21 @@ class _TabGroupsMixin {
         const count = doc.createElementNS(HTML_NS, "span");
         count.className = "wv-tgchip-count";
         chip.appendChild(count);
-        // Click = collapse/expand; right-click = editor. Read group state
-        // fresh at event time (the chip outlives many pref writes).
-        chip.addEventListener("click", (e: any) => {
+        // Single click = collapse/expand; right-click = editor. Toggle on
+        // MOUSEDOWN, not click: React's tab-bar rewrites fire our observer
+        // between mousedown and click, and the re-apply can re-insert the
+        // chip — which cancels the synthesized click (so a `click` listener
+        // only fired on the second, settled press: double-click feel).
+        chip.addEventListener("mousedown", (e: any) => {
             try {
+                if (e.button !== 0) return;
                 e.stopPropagation(); e.preventDefault();
                 this._wvTabGroupToggleCollapse(win, groupID);
             } catch (er) {}
+        });
+        // Swallow the residual click so nothing beneath reacts.
+        chip.addEventListener("click", (e: any) => {
+            try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
         });
         chip.addEventListener("contextmenu", (e: any) => {
             try {

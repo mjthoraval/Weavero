@@ -2030,9 +2030,76 @@ class _ReaderMixin {
                             } catch (e) { return []; }
                         };
                     }
-                    for (const m of ["loadURI", "viewItems", "viewAttachment",
+                    for (const m of ["loadURI", "viewAttachment",
                         "canShowItemInFilesystem", "showItemsInFilesystem", "openNote"]) {
                         if (!zp[m] && typeof mzp[m] === "function") zp[m] = mzp[m].bind(mzp);
+                    }
+                    // viewItems ("Open PDF in New Tab / New Window" in the Locate
+                    // menu) needs a twist: for an attachment that's already open
+                    // in THIS window, Zotero.Reader.open dedups onto it and just
+                    // focuses the already-focused window — i.e. visibly nothing.
+                    // Open those explicitly with allowDuplicate so a real new
+                    // window/tab appears; everything else delegates to the main
+                    // window's ZoteroPane.
+                    if (!zp.viewItems && typeof mzp.viewItems === "function") {
+                        zp.viewItems = async (items: any[], event: any, options: any) => {
+                            const rest: any[] = [];
+                            const wantWindow = !!(options && options.forceAlternateWindowBehavior);
+                            for (const it of (items || [])) {
+                                let att: any = null;
+                                try {
+                                    att = (it.isAttachment && it.isAttachment()) ? it
+                                        : (it.isRegularItem && it.isRegularItem() ? await it.getBestAttachment() : null);
+                                } catch (e) {}
+                                let openHere = false;
+                                try {
+                                    openHere = !!(att && att.attachmentReaderType && (
+                                        (win._wvWT && win._wvWT.tabs && win._wvWT.tabs.some((t: any) => t.itemID === att.id))
+                                        || ((Zotero.Reader as any)._readers || []).some((r: any) => r && r._window === win && r.itemID === att.id)));
+                                } catch (e) {}
+                                if (openHere) {
+                                    if (wantWindow) {
+                                        // Reader.open's openInWindow branch IGNORES
+                                        // allowDuplicate (it always reuses the
+                                        // existing window — this one), so build the
+                                        // ReaderWindow directly, the way Reader.open
+                                        // itself does. The class isn't exported;
+                                        // reach it via this window's native reader.
+                                        try {
+                                            const nat: any = this._wvWTFindNativeReader(win)
+                                                || ((Zotero.Reader as any)._readers || []).find((r: any) => r && r._window === win && !r.tabID);
+                                            const Ctor: any = nat && nat.constructor;
+                                            const ZR: any = Zotero.Reader;
+                                            if (Ctor && ZR) {
+                                                const item: any = Zotero.Items.get(att.id);
+                                                let reader: any = null;
+                                                reader = new Ctor({
+                                                    item,
+                                                    location: null,
+                                                    sidebarWidth: ZR._sidebarWidth,
+                                                    sidebarOpen: ZR._sidebarOpen,
+                                                    bottomPlaceholderHeight: ZR._bottomPlaceholderHeight,
+                                                    onClose: () => {
+                                                        try { const i = ZR._readers.indexOf(reader); if (i >= 0) ZR._readers.splice(i, 1); } catch (e) {}
+                                                        try { (Zotero as any).Session.debounceSave(); } catch (e) {}
+                                                    },
+                                                });
+                                                ZR._readers.push(reader);
+                                                try { (Zotero as any).Session.debounceSave(); } catch (e) {}
+                                            }
+                                        } catch (e) { Zotero.debug("[Weavero] locate new-window err: " + e); }
+                                    } else {
+                                        // New tab: allowDuplicate IS honored here →
+                                        // a fresh main-window tab.
+                                        try { (Zotero.Reader as any).open(att.id, null, { openInWindow: false, allowDuplicate: true }); } catch (e) {}
+                                    }
+                                } else {
+                                    rest.push(it);
+                                }
+                            }
+                            if (rest.length) return mzp.viewItems(rest, event, options);
+                            return undefined;
+                        };
                     }
                     if (!win.ZoteroPane_Local) win.ZoteroPane_Local = zp;
                 }

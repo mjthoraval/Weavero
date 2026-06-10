@@ -2809,6 +2809,22 @@ class WeaveroPlugin {
                             || data === "extensions.zotero.weavero.compactTitleBarNote"
                             || data === "extensions.zotero.weavero.enableTabsAndWindows") {
                         try {
+                            // Reader-strip ON↔OFF transition: extra reader-window
+                            // tabs only exist under the strip, so losing it would
+                            // hide them. Mirror the plugin disable→enable round-trip:
+                            // ON→OFF rescues the extras into main-window tabs (and
+                            // writes the hand-off file) BEFORE the strip teardown
+                            // below; OFF→ON pulls them back into reader windows.
+                            try {
+                                const stripOn = this._getCompactTitleBarReader();
+                                const prev = (this as any)._wvPrevReaderStripOn;
+                                (this as any)._wvPrevReaderStripOn = stripOn;
+                                if (prev === true && !stripOn) {
+                                    try { this._wvDisableMigrateReaderTabs(); } catch (e) {}
+                                } else if (prev === false && stripOn) {
+                                    try { this._wvEnablePullBackReaderTabs(); } catch (e) {}
+                                }
+                            } catch (e) {}
                             const onMain = this._getCompactTitleBarMain();
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                             for (const w of wins) {
@@ -3288,6 +3304,10 @@ class WeaveroPlugin {
                 }
             };
             this._prefBranch.addObserver("", this._prefObserver, false);
+            // Seed the reader-strip state so the FIRST Hide-Title-Bar toggle is
+            // seen as a transition (extras migrate out / pull back — see the
+            // compactTitleBar observer branch).
+            try { (this as any)._wvPrevReaderStripOn = this._getCompactTitleBarReader(); } catch (e) {}
             Zotero.debug("[Weavero] pref observer registered on root branch");
         } catch(e) { Zotero.debug("[Weavero] pref observer error: " + e); }
 

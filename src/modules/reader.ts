@@ -6029,6 +6029,11 @@ class _ReaderMixin {
      *  reader window (re-creating the window if it was closed), and close the
      *  main-window copy. Consumes the file once. */
     async _wvEnablePullBackReaderTabs() {
+        // Reader windows can only host extra tabs when the reader strip is
+        // effective. If it's off (e.g. plugin re-enabled while Hide Title Bar is
+        // off), DON'T consume the hand-off — the strip's OFF→ON transition
+        // trigger will pull the tabs back later instead.
+        try { if (!(this as any)._getCompactTitleBarReader()) return; } catch (e) {}
         let text: any = null;
         const path = this._wvMigrationStorePath();
         try { text = await Zotero.File.getContentsAsync(path); } catch (e) { return; }   // no file → nothing

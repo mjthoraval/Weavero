@@ -151,7 +151,7 @@ class _TabGroupsMixin {
 
     _ensureTabGroupStyles(doc: any) {
         try {
-            const STYLE_VERSION = "18";
+            const STYLE_VERSION = "19";
             const old = doc.getElementById("wv-tab-group-styles");
             if (old) {
                 if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
@@ -315,6 +315,12 @@ class _TabGroupsMixin {
                 "}",
                 ".wv-tg-preview-title {",
                 "  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;",
+                "}",
+                // Context-fill tinting for chrome SVG icons in Weavero's
+                // reader-window tab menu (globe / folder-open adapt to theme).
+                "#wv-window-tab-context-menu .menu-iconic-icon {",
+                "  -moz-context-properties: fill, fill-opacity;",
+                "  fill: currentColor;",
                 "}",
                 // The chip.
                 ".wv-tab-group-chip {",

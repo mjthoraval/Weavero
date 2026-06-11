@@ -561,6 +561,10 @@ class _PaneMixin {
             };
             const viewOnlineEntry = {
                 menuType: "menuitem",
+                // Same glyphs as the items-list menu (scss/components/_menu:
+                // view-online -> globe, show-file -> folder-open).
+                icon: "chrome://zotero/skin/16/universal/globe.svg",
+                darkIcon: "chrome://zotero/skin/16/universal/globe.svg",
                 onShowing: (_ev, ctx) => {
                     try {
                         const item = ctx.items && ctx.items[0];
@@ -583,6 +587,8 @@ class _PaneMixin {
             };
             const showFileEntry = {
                 menuType: "menuitem",
+                icon: "chrome://zotero/skin/16/universal/folder-open.svg",
+                darkIcon: "chrome://zotero/skin/16/universal/folder-open.svg",
                 onShowing: (_ev, ctx) => {
                     try {
                         const item = ctx.items && ctx.items[0];

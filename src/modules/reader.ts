@@ -11281,7 +11281,7 @@ class _ReaderMixin {
             const MENU_ID = "wv-window-tab-context-menu";
             // Bump when the menu's structure changes — live windows keep the
             // old element otherwise (it's cached by id).
-            const MENU_VER = "2";
+            const MENU_VER = "3";
             let menu: any = doc.getElementById(MENU_ID);
             if (menu && menu.getAttribute("data-wv-menu-ver") !== MENU_VER) {
                 try { menu.remove(); } catch (e) {}
@@ -11357,6 +11357,49 @@ class _ReaderMixin {
                         return (it.isAttachment && it.isAttachment()) ? it : (this as any)._wvGetBestAttachmentSync(it);
                     } catch (e) { return null; }
                 };
+
+                // "View Online" + "Show File" — the items-list menu's pair
+                // (globe / folder-open icons), applied to the tab's item.
+                const targetViewOnlineURL = () => {
+                    try {
+                        const it: any = Zotero.Items.get(targetItemID());
+                        if (!it) return null;
+                        const att = (it.isAttachment && it.isAttachment()) ? it : null;
+                        const top = att && att.parentID ? Zotero.Items.get(att.parentID) : it;
+                        let url = (top && top.getField) ? (top.getField("url") || "") : "";
+                        if (!url && top && top.getField) {
+                            const doi = top.getField("DOI");
+                            const clean = doi && (Zotero.Utilities as any).cleanDOI
+                                ? (Zotero.Utilities as any).cleanDOI(doi) : null;
+                            if (clean) url = "https://doi.org/" + clean;
+                        }
+                        if (!url && att && att.getField) url = att.getField("url") || "";
+                        return url || null;
+                    } catch (e) { return null; }
+                };
+                const viewOnline = mkItem("View Online", () => {
+                    try {
+                        const url = targetViewOnlineURL();
+                        const mw: any = Zotero.getMainWindow();
+                        if (url && mw && mw.ZoteroPane) { mw.ZoteroPane.loadURI(url); mw.focus(); }
+                    } catch (e) {}
+                }, {
+                    icon: "chrome://zotero/skin/16/universal/globe.svg",
+                    getVisible: () => { try { return !!targetViewOnlineURL(); } catch (e) { return false; } },
+                });
+                const showFile = mkItem((Zotero as any).isMac ? "Show in Finder" : "Show File", async () => {
+                    try {
+                        const att: any = targetAttachment();
+                        const mw: any = Zotero.getMainWindow();
+                        if (att && mw && mw.ZoteroPane) await mw.ZoteroPane.showAttachmentInFilesystem(att.id);
+                    } catch (e) {}
+                }, {
+                    icon: "chrome://zotero/skin/16/universal/folder-open.svg",
+                    getVisible: () => {
+                        try { const a: any = targetAttachment(); return !!(a && a.isFileAttachment && a.isFileAttachment()); }
+                        catch (e) { return false; }
+                    },
+                });
 
                 // "Open in External Viewer" — launch the attachment in the OS app
                 // (Zotero.launchFile), gated by enableOpenExternalViewer. Same
@@ -11509,6 +11552,8 @@ class _ReaderMixin {
                 // Order mirrors the main-window tab context menu (group
                 // commands sit just above Move Tab, like the main window).
                 menu.appendChild(showInLibrary);
+                menu.appendChild(viewOnline);
+                menu.appendChild(showFile);
                 menu.appendChild(externalViewer);
                 menu.appendChild(openNotes);
                 menu.appendChild(groupMenu);

@@ -2872,9 +2872,12 @@ class _TabGroupsMixin {
     _wvWireTabMultiSelReader(win: any) {
         try {
             const WIRE_VERSION = 1;
-            if (win._wvWTMultiSelVer === WIRE_VERSION) return;
             const strip = win.document.querySelector(".wv-window-tabstrip");
             if (!strip) return;
+            // Version flag lives ON THE STRIP ELEMENT (like the DnD wiring):
+            // a window-level flag survives strip rebuilds and left the new
+            // strip without listeners ("can't multi-select in reader").
+            if ((strip as any)._wvWTMultiSelVer === WIRE_VERSION) return;
             if (win._wvWTMultiSelOff) { try { win._wvWTMultiSelOff(); } catch (e) {} }
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const onMouseDown = (e: any) => { const p: any = live(); if (p) p._wvWTMultiSelMouseDown(win, e); };
@@ -2884,9 +2887,10 @@ class _TabGroupsMixin {
             win._wvWTMultiSelOff = () => {
                 try { strip.removeEventListener("mousedown", onMouseDown, true); } catch (e) {}
                 try { strip.removeEventListener("click", onClick, true); } catch (e) {}
-                win._wvWTMultiSelVer = null;
+                try { (strip as any)._wvWTMultiSelVer = null; } catch (e) {}
             };
-            win._wvWTMultiSelVer = WIRE_VERSION;
+            (strip as any)._wvWTMultiSelVer = WIRE_VERSION;
+            win._wvWTMultiSelVer = WIRE_VERSION;   // kept for diagnostics only
         } catch (e) {}
     }
 

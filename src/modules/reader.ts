@@ -961,6 +961,41 @@ class _ReaderMixin {
             row.appendChild(iconEl);
             row.appendChild(titleEl);
 
+            // "âˆ’" remove button (hover-revealed) â€” the counterpart of the
+            // header's "+" (GitHub issue #9): removes the symmetric
+            // dc:relation between this annotation and the row's item, then
+            // rebuilds the popup in place.
+            const rmBtn = doc.createElementNS(ns, "span") as any;
+            rmBtn.className = "wv-rel-remove";
+            rmBtn.setAttribute("role", "button");
+            rmBtn.setAttribute("tabindex", "0");
+            rmBtn.setAttribute("aria-label", "Remove");
+            rmBtn.title = "Remove";
+            // Same glyph as the item pane's Related section remove button
+            // (toolbarbutton.zotero-clicky-minus â†’ minus-circle.svg).
+            try {
+                rmBtn.appendChild(this._makeChromeIcon(doc,
+                    "chrome://zotero/skin/16/universal/minus-circle.svg",
+                    "wv-rel-remove-icon"));
+            } catch (e) { rmBtn.textContent = "âˆ’"; }
+            const doRemove = (e) => {
+                try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                this._removeRelatedItem(annotationItem, item)
+                    .then(() => {
+                        // Re-render with the row gone; null the opened-for
+                        // marker so the same-anchor toggle guard doesn't
+                        // just close the popup.
+                        try { panel._wvOpenedFor = null; } catch (er) {}
+                        try { this.openRelationsPopup(annotationItem, opts); } catch (er) {}
+                    })
+                    .catch((err) => Zotero.debug("[Weavero] rel-popup remove err: " + err));
+            };
+            rmBtn.addEventListener("click", doRemove);
+            rmBtn.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" || e.key === " ") doRemove(e);
+            });
+            row.appendChild(rmBtn);
+
             const onActivate = async (e) => {
                 // Click inside a url-span in the title: open that URL
                 // instead of navigating to the related item.
@@ -999,8 +1034,15 @@ class _ReaderMixin {
                 // Intentionally keep the relations popup OPEN under
                 // the context menu — the user is choosing how to open
                 // THIS row's item; closing the popup discards their
-                // place in the relations list.
-                this._openRelatedItemContextMenu(item, e.screenX, e.screenY);
+                // place in the relations list. sourceItem enables the
+                // menu's "Remove Relation" entry (issue #9).
+                this._openRelatedItemContextMenu(item, e.screenX, e.screenY, {
+                    sourceItem: annotationItem,
+                    onRelationRemoved: () => {
+                        try { panel._wvOpenedFor = null; } catch (er) {}
+                        try { this.openRelationsPopup(annotationItem, opts); } catch (er) {}
+                    },
+                });
             });
             row.addEventListener("click", onActivate);
             row.addEventListener("keydown", (e) => {
@@ -6566,6 +6608,24 @@ class _ReaderMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _addRelatedItemDialog err: " + e.message);
         }
+    }
+
+    /** Remove the symmetric `dc:relation` between two items â€” the missing
+     *  counterpart of `_addRelatedItemDialog` (GitHub issue #9: relations
+     *  could be added to an annotation but never removed from it). Mirrors
+     *  upstream `relatedBox.js`'s `remove`: `removeRelatedItem` BOTH ways
+     *  inside one transaction; the resulting notify callbacks refresh the
+     *  relations icons across the sidebar / panes, same as the add flow. */
+    async _removeRelatedItem(itemA, itemB) {
+        if (!itemA || !itemB) return;
+        await Zotero.DB.executeTransaction(async () => {
+            if (itemA.removeRelatedItem(itemB)) {
+                await itemA.save({ skipDateModifiedUpdate: true });
+            }
+            if (itemB.removeRelatedItem(itemA)) {
+                await itemB.save({ skipDateModifiedUpdate: true });
+            }
+        });
     }
 
     // ============================================================================

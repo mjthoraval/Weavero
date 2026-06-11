@@ -912,6 +912,24 @@ class _AnnotationMixin {
                 Zotero.debug("[Weavero] add-related err: " + e);
             }
         }, { iconURL: ICON_LINK });
+        // "Remove Relation" — only when the menu was opened from a context
+        // that knows the OTHER side of the relation (the relations popup
+        // row passes its annotation as opts.sourceItem). GitHub issue #9.
+        if (opts.sourceItem && opts.sourceItem.id !== item.id) {
+            append("Remove Relation", () => {
+                try {
+                    (this as any)._removeRelatedItem(opts.sourceItem, item)
+                        .then(() => {
+                            try {
+                                if (typeof opts.onRelationRemoved === "function") {
+                                    opts.onRelationRemoved();
+                                }
+                            } catch (e) {}
+                        })
+                        .catch((e) => Zotero.debug("[Weavero] remove-related err: " + e));
+                } catch (e) {}
+            }, { iconURL: ICON_LINK });
+        }
 
         popupset.appendChild(popup);
         popup.addEventListener("popuphidden", () => {

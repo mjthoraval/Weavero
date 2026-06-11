@@ -4089,6 +4089,149 @@ class _PaneMixin {
             Zotero.debug("[Weavero] _ensureCompactTitleBarStyles err: " + e);
         }
     }
+
+    // ---- Plugins Manager search box -------------------------------------------
+    // Zotero's Plugins Manager (Tools â†’ Plugins) is Firefox's about:addons
+    // page inside a basicViewer window, with no way to filter a long plugin
+    // list. Inject a search box above the cards; Ctrl+F focuses it.
+
+    _registerPluginsSearch(this: any) {
+        try {
+            if (!this._getEnablePluginsSearch || !this._getEnablePluginsSearch()) return;
+            if (this._wvPMObserver) return;
+            const self = this;
+            const tryInject = (w: any) => { try { self._wvPMMaybeInject(w); } catch (e) {} };
+            const obs = {
+                observe(subject: any, topic: string) {
+                    if (topic !== "domwindowopened") return;
+                    try {
+                        subject.addEventListener("load", () => tryInject(subject), { once: true });
+                    } catch (e) {}
+                },
+            };
+            Services.obs.addObserver(obs as any, "domwindowopened");
+            this._wvPMObserver = obs;
+            // Manager may already be open (e.g. plugin reloaded from it).
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) tryInject(en.getNext());
+        } catch (e) { Zotero.debug("[Weavero] _registerPluginsSearch err: " + e); }
+    }
+
+    _teardownPluginsSearch(this: any) {
+        try {
+            if (this._wvPMObserver) {
+                try { Services.obs.removeObserver(this._wvPMObserver, "domwindowopened"); } catch (e) {}
+                this._wvPMObserver = null;
+            }
+            const en = Services.wm.getEnumerator(null);
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                try {
+                    const br = w.document && w.document.querySelector("browser");
+                    const cd = br && br.contentDocument;
+                    if (!cd) continue;
+                    const box = cd.getElementById("wv-pm-searchbox");
+                    if (box) box.remove();
+                    if (cd._wvPMKeyHandler) {
+                        try { cd.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
+                        try { w.document.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
+                        delete cd._wvPMKeyHandler;
+                    }
+                    if (cd._wvPMMo) { try { cd._wvPMMo.disconnect(); } catch (e) {} delete cd._wvPMMo; }
+                    for (const c of cd.querySelectorAll("addon-card[hidden]")) c.hidden = false;
+                } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    /** `win` just loaded â€” if it's a basicViewer hosting about:addons, inject
+     *  once its content finishes loading (the page loads async in a browser). */
+    _wvPMMaybeInject(this: any, win: any) {
+        try {
+            if (!win || !win.document || !win.location) return;
+            if (!String(win.location.href).includes("basicViewer")) return;
+            const self = this;
+            const check = () => {
+                try {
+                    const br = win.document.querySelector("browser");
+                    const cd = br && br.contentDocument;
+                    if (!cd || !String(cd.location && cd.location.href).includes("aboutaddons")) return false;
+                    if (cd.readyState !== "complete") return false;
+                    self._wvPMInject(win, cd);
+                    return true;
+                } catch (e) { return false; }
+            };
+            if (check()) return;
+            let tries = 0;
+            const t = win.setInterval(() => {
+                try { if (check() || ++tries > 40) win.clearInterval(t); } catch (e) {}
+            }, 250);
+        } catch (e) {}
+    }
+
+    _wvPMInject(this: any, win: any, doc: any) {
+        try {
+            if (doc.getElementById("wv-pm-searchbox")) return;
+            const main = doc.getElementById("main") || doc.body;
+            if (!main) return;
+            const wrap = doc.createElement("div");
+            wrap.id = "wv-pm-searchbox";
+            // z-index 1: above the scrolling cards, but BELOW the page's own
+            // popups (the gear menu opens over the bar, not under it).
+            wrap.style.cssText = "position: sticky; top: 0; z-index: 1; padding: 10px 16px 8px;"
+                + " background: var(--background-color, Window);";
+            const input = doc.createElement("input");
+            input.type = "search";
+            input.placeholder = "Search installed plugins  (Ctrl+F)";
+            input.style.cssText = "width: 100%; box-sizing: border-box; padding: 7px 12px;"
+                + " font-size: 14px; border-radius: 6px; color: inherit;"
+                + " border: 1px solid color-mix(in srgb, currentColor 30%, transparent);"
+                + " background: color-mix(in srgb, currentColor 6%, transparent);";
+            wrap.appendChild(input);
+            main.insertBefore(wrap, main.firstChild);
+            const apply = () => {
+                try {
+                    const q = String(input.value || "").trim().toLowerCase();
+                    for (const card of doc.querySelectorAll("addon-card")) {
+                        let txt = card.getAttribute("addon-id") || "";
+                        const n = card.querySelector(".addon-name");
+                        const d = card.querySelector(".addon-description");
+                        if (n) txt += " " + (n.textContent || "");
+                        if (d) txt += " " + (d.textContent || "");
+                        card.hidden = !!q && !txt.toLowerCase().includes(q);
+                    }
+                } catch (e) {}
+            };
+            input.addEventListener("input", apply);
+            input.addEventListener("keydown", (e: any) => {
+                if (e.key === "Escape" && input.value) {
+                    e.preventDefault(); e.stopPropagation();
+                    input.value = ""; apply();
+                }
+            });
+            // Cards render asynchronously (and re-render on enable/disable/
+            // install) â€” keep the filter applied. childList-only, so the
+            // hidden-attribute writes above can't retrigger it.
+            try {
+                const mo = new win.MutationObserver(() => { try { apply(); } catch (e) {} });
+                mo.observe(main, { childList: true, subtree: true });
+                doc._wvPMMo = mo;
+            } catch (e) {}
+            // Ctrl+F â†’ focus the box. Capture on both the content document
+            // and the chrome window so it works wherever focus sits.
+            const key = (e: any) => {
+                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey
+                        && String(e.key).toLowerCase() === "f") {
+                    e.preventDefault(); e.stopPropagation();
+                    try { input.focus(); input.select(); } catch (er) {}
+                }
+            };
+            doc.addEventListener("keydown", key, true);
+            win.document.addEventListener("keydown", key, true);
+            doc._wvPMKeyHandler = key;
+            try { input.focus(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvPMInject err: " + e); }
+    }
 }
 
 const _paneDescriptors = Object.getOwnPropertyDescriptors(_PaneMixin.prototype);

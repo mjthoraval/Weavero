@@ -1043,6 +1043,13 @@ class WeaveroPlugin {
             return v === undefined ? false : !!v;
         } catch (e) { return false; }
     }
+    _getEnablePluginsSearch() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enablePluginsSearch");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
 
     // ---- Group 2: Filters ----
     _getEnableFilters() {
@@ -1798,6 +1805,8 @@ class WeaveroPlugin {
                 // Tab groups (Firefox-style) — inert until a group is created,
                 // so it defaults ON.
                 "enableTabGroups",
+                // Plugins Manager search box — pure addition, defaults ON.
+                "enablePluginsSearch",
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",
@@ -2534,6 +2543,8 @@ class WeaveroPlugin {
         // pref (exposed in prefs.html under "Multiple main windows"; default
         // off — experimental).
         this._registerDevNewWindowMenu();
+        // Plugins Manager search box (Ctrl+F filter over installed plugins).
+        try { (this as any)._registerPluginsSearch(); } catch (e) {}
         // Unified Weavero session store (Phase 1): flush dev-window state on
         // quit, and once the UI is ready re-open the dev windows that were
         // open last time (gated by devNewMainWindow + devSessionAutoReopen).
@@ -3115,6 +3126,15 @@ class WeaveroPlugin {
                         catch (e) { Zotero.debug("[Weavero] re-bind colmenu err: " + e); }
                     }
 
+                    // Plugins Manager search box — live attach/detach.
+                    if (data === "extensions.zotero.weavero.enablePluginsSearch"
+                        || data === "extensions.zotero.weavero.enableVisualExtras") {
+                        try {
+                            if ((this as any)._getEnablePluginsSearch()) (this as any)._registerPluginsSearch();
+                            else (this as any)._teardownPluginsSearch();
+                        } catch (e) {}
+                    }
+
                     // Relations — chain badge + libraries highlight + columns.
                     if (data === "extensions.zotero.weavero.enableChainBadge"
                         || data === "extensions.zotero.weavero.enableRelations") {
@@ -3620,6 +3640,7 @@ class WeaveroPlugin {
         this._teardownTabContextMenu();
         this._unregisterPinTabMenu();
         try { this._teardownTabGroups(); } catch (e) {}
+        try { (this as any)._teardownPluginsSearch(); } catch (e) {}
         this._unregisterDevNewWindowMenu();
         try { this._wvSessionUnregisterQuitFlush(); } catch (e) {}
         try { this._teardownThumbnailContextMenu(); } catch (e) {}

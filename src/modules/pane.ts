@@ -527,6 +527,88 @@ class _PaneMixin {
                     }
                 },
             };
+            // "View Online" + "Show File" — the items-list context menu's
+            // pair, same labels and order, applied to the tab's item. The
+            // repositioner slots them right under "Show in Library".
+            const resolveTabAttachment = (item: any) => {
+                let att: any = null, top: any = null;
+                try {
+                    if (item.isAttachment && item.isAttachment()) {
+                        att = item;
+                        top = item.parentID ? Zotero.Items.get(item.parentID) : item;
+                    } else if (item.isRegularItem && item.isRegularItem()) {
+                        top = item;
+                        att = self._wvGetBestAttachmentSync(item);
+                    } else {
+                        top = item;
+                    }
+                } catch (e) {}
+                return { att, top };
+            };
+            const viewOnlineURL = (item: any) => {
+                try {
+                    const { att, top } = resolveTabAttachment(item);
+                    let url = (top && top.getField) ? (top.getField("url") || "") : "";
+                    if (!url && top && top.getField) {
+                        const doi = top.getField("DOI");
+                        const clean = doi && (Zotero.Utilities as any).cleanDOI
+                            ? (Zotero.Utilities as any).cleanDOI(doi) : null;
+                        if (clean) url = "https://doi.org/" + clean;
+                    }
+                    if (!url && att && att.getField) url = att.getField("url") || "";
+                    return url || null;
+                } catch (e) { return null; }
+            };
+            const viewOnlineEntry = {
+                menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        const item = ctx.items && ctx.items[0];
+                        if (!item || !viewOnlineURL(item)) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", "View Online");
+                        ctx.menuElem.setAttribute("data-wv-tab-viewonline", "1");
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev, ctx) => {
+                    try {
+                        const item = ctx.items && ctx.items[0];
+                        const url = item && viewOnlineURL(item);
+                        const w: any = Zotero.getMainWindow();
+                        if (url && w && w.ZoteroPane) w.ZoteroPane.loadURI(url);
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tab-menu viewOnline err: " + e);
+                    }
+                },
+            };
+            const showFileEntry = {
+                menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        const item = ctx.items && ctx.items[0];
+                        const att = item ? resolveTabAttachment(item).att : null;
+                        if (!(att && att.isFileAttachment && att.isFileAttachment())) {
+                            ctx.setVisible(false); return;
+                        }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label",
+                            (Zotero as any).isMac ? "Show in Finder" : "Show File");
+                        ctx.menuElem.setAttribute("data-wv-tab-showfile", "1");
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: async (_ev, ctx) => {
+                    try {
+                        const item = ctx.items && ctx.items[0];
+                        const att = item ? resolveTabAttachment(item).att : null;
+                        const w: any = Zotero.getMainWindow();
+                        if (att && w && w.ZoteroPane) {
+                            await w.ZoteroPane.showAttachmentInFilesystem(att.id);
+                        }
+                    } catch (e) {
+                        Zotero.debug("[Weavero] tab-menu showFile err: " + e);
+                    }
+                },
+            };
             const id = (Zotero as any).MenuManager.registerMenu({
                 menuID: "weavero-tab-copy-links",
                 pluginID: "weavero@mjthoraval",
@@ -535,6 +617,8 @@ class _PaneMixin {
                     makeEntry("select"),
                     makeEntry("open"),
                     externalEntry,
+                    viewOnlineEntry,
+                    showFileEntry,
                 ],
             });
             if (id) this._tabMenuID = id;
@@ -652,9 +736,18 @@ class _PaneMixin {
                         }
                     } catch (_) {}
 
-                    const mine = popup.querySelector("[data-wv-tab-external='1']");
-                    if (!mine || mine === first.nextElementSibling) return;
-                    first.after(mine);
+                    // Slot Weavero's entries right under "Show in Library",
+                    // mirroring the items-list menu order: View Online, then
+                    // Show File, then Open in External Viewer.
+                    let anchor: any = first;
+                    for (const sel of ["[data-wv-tab-viewonline='1']",
+                                       "[data-wv-tab-showfile='1']",
+                                       "[data-wv-tab-external='1']"]) {
+                        const el = popup.querySelector(sel);
+                        if (!el) continue;
+                        if (anchor.nextElementSibling !== el) anchor.after(el);
+                        anchor = el;
+                    }
                 } catch (e) {
                     Zotero.debug("[Weavero] tab popupshowing reposition err: " + e);
                 }
@@ -4091,7 +4184,7 @@ class _PaneMixin {
     }
 
     // ---- Plugins Manager search box -------------------------------------------
-    // Zotero's Plugins Manager (Tools â†’ Plugins) is Firefox's about:addons
+    // Zotero's Plugins Manager (Tools → Plugins) is Firefox's about:addons
     // page inside a basicViewer window, with no way to filter a long plugin
     // list. Inject a search box above the cards; Ctrl+F focuses it.
 
@@ -4144,7 +4237,7 @@ class _PaneMixin {
         } catch (e) {}
     }
 
-    /** `win` just loaded â€” if it's a basicViewer hosting about:addons, inject
+    /** `win` just loaded — if it's a basicViewer hosting about:addons, inject
      *  once its content finishes loading (the page loads async in a browser). */
     _wvPMMaybeInject(this: any, win: any) {
         try {
@@ -4210,14 +4303,14 @@ class _PaneMixin {
                 }
             });
             // Cards render asynchronously (and re-render on enable/disable/
-            // install) â€” keep the filter applied. childList-only, so the
+            // install) — keep the filter applied. childList-only, so the
             // hidden-attribute writes above can't retrigger it.
             try {
                 const mo = new win.MutationObserver(() => { try { apply(); } catch (e) {} });
                 mo.observe(main, { childList: true, subtree: true });
                 doc._wvPMMo = mo;
             } catch (e) {}
-            // Ctrl+F â†’ focus the box. Capture on both the content document
+            // Ctrl+F → focus the box. Capture on both the content document
             // and the chrome window so it works wherever focus sits.
             const key = (e: any) => {
                 if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey

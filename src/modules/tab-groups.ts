@@ -1911,8 +1911,6 @@ class _TabGroupsMixin {
                                 }
                             }
                         } catch (e) {}
-                        this._wvTGDbg("reader-migrate slot: clientX=" + clientX + " insertIdx=" + insertIdx
-                            + " deck=" + ((tgtWin._wvWT && tgtWin._wvWT.tabs.length) || 0));
                         // Place each tab at its slot AS IT MOUNTS (mounts
                         // append at the end; without this the group visibly
                         // stacks at the end for seconds before snapping to
@@ -1943,7 +1941,6 @@ class _TabGroupsMixin {
                                 }
                             } catch (e) {}
                         }
-                        this._wvTGDbg("reader-migrate placed " + placed + " at " + insertIdx + " (incremental)");
                         try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
                     } else {
                         try { tgtWin.focus(); } catch (e) {}      // Reader.open targets the focused main window

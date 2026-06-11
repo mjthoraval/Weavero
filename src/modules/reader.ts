@@ -961,7 +961,7 @@ class _ReaderMixin {
             row.appendChild(iconEl);
             row.appendChild(titleEl);
 
-            // "âˆ’" remove button (hover-revealed) â€” the counterpart of the
+            // "−" remove button (hover-revealed) — the counterpart of the
             // header's "+" (GitHub issue #9): removes the symmetric
             // dc:relation between this annotation and the row's item, then
             // rebuilds the popup in place.
@@ -972,12 +972,12 @@ class _ReaderMixin {
             rmBtn.setAttribute("aria-label", "Remove");
             rmBtn.title = "Remove";
             // Same glyph as the item pane's Related section remove button
-            // (toolbarbutton.zotero-clicky-minus â†’ minus-circle.svg).
+            // (toolbarbutton.zotero-clicky-minus → minus-circle.svg).
             try {
                 rmBtn.appendChild(this._makeChromeIcon(doc,
                     "chrome://zotero/skin/16/universal/minus-circle.svg",
                     "wv-rel-remove-icon"));
-            } catch (e) { rmBtn.textContent = "âˆ’"; }
+            } catch (e) { rmBtn.textContent = "−"; }
             const doRemove = (e) => {
                 try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
                 this._removeRelatedItem(annotationItem, item)
@@ -3930,17 +3930,20 @@ class _ReaderMixin {
      *  collapsing onto the existing one). The window's view state is
      *  flushed on close (and Zotero auto-saves it continuously anyway),
      *  so the new tab restores roughly where the window was. */
-    _moveReaderToTab(itemID) {
+    _moveReaderToTab(itemID, targetWin?: any) {
         try {
-            const win = Zotero.getMainWindow();
+            // `targetWin` picks which main window hosts the new tab; default
+            // anchor. Focus BEFORE open — Zotero.Reader.open has no window
+            // param, it opens in the most-recently-active main window.
+            const win = targetWin || Zotero.getMainWindow();
             const readers = (Zotero.Reader as any)._readers || [];
             // The standalone-window instance for this item (no tabID).
             const wReader = readers.find((r) => r && r.itemID === itemID && !r.tabID);
             try { if (wReader && typeof wReader.close === "function") wReader.close(); } catch (e) {}
             const open = () => {
+                try { if (win && win.focus) win.focus(); } catch (e) {}
                 try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); }
                 catch (e) { Zotero.debug("[Weavero] _moveReaderToTab open err: " + e); }
-                try { if (win && win.focus) win.focus(); } catch (e) {}
             };
             // Defer a tick so the closing window's final state write lands
             // before the new tab reads it back.
@@ -3955,9 +3958,9 @@ class _ReaderMixin {
      *  note as a tab in the main window. Mirror of `_moveReaderToTab` but
      *  for `zotero:note` windows — uses `ZoteroPane.openNote(itemID, {
      *  openInWindow: false })`. */
-    _moveNoteToTab(itemID) {
+    _moveNoteToTab(itemID, targetWin?: any) {
         try {
-            const mainWin = Zotero.getMainWindow();
+            const mainWin = targetWin || Zotero.getMainWindow();
             // Find + close the standalone note window for this itemID.
             try {
                 const en = (Services as any).wm.getEnumerator("zotero:note");
@@ -5170,6 +5173,11 @@ class _ReaderMixin {
                 }
             }
 
+            // Tab-group treatment, identical to the main window's tabs
+            // menu: nested group headers (count, twisty, independent
+            // collapse) + the "Tab Groups" summary section.
+            try { (this as any)._wvTabsMenuGroupsSection(panel); } catch (e) {}
+
             this._wvWTRefreshFunnelState(win);
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTRenderTabListPanel err: " + e);
@@ -5832,29 +5840,33 @@ class _ReaderMixin {
      *  then opens the item as a main-window tab. Works uniformly for the native
      *  and mounted tabs. Used by the per-tab context menu's "Move Tab to Main
      *  Window" (a non-drag way out for any tab). */
-    _wvWTMoveTabToMain(win: any, tabId: any) {
+    _wvWTMoveTabToMain(win: any, tabId: any, targetWin?: any) {
         try {
             const st = this._wvWTState(win);
             const tab = st && st.tabs.find((t: any) => t.id === tabId);
             if (!tab) return;
             const itemID = tab.itemID;
             const isNote = (tab.type === "note");
-            const mainWin = Zotero.getMainWindow();
+            // `targetWin` picks WHICH main window (a drop on a secondary main
+            // window passes it); default = the anchor, as before.
+            const mainWin = targetWin || Zotero.getMainWindow();
             try { this._wvWTCloseTab(win, tabId); } catch (e) {}
             // A note isn't reader-able — dock it as a main-window note tab
             // (ZoteroPane.openNote) instead of Zotero.Reader.open, which would
             // silently fail and leave the note nowhere.
             if (isNote) {
-                try { this._moveNoteToTab(itemID); }
+                try { this._moveNoteToTab(itemID, mainWin); }
                 catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain note err: " + e); }
                 return;
             }
             // Defer the open so the closing reader's debounced state write lands
             // first (mirrors _moveReaderToTab), preserving scroll position.
+            // Focus BEFORE open: Zotero.Reader.open has no window param and
+            // opens in the most-recently-active main window.
             const open = () => {
+                try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
                 try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); }
                 catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain open err: " + e); }
-                try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
             };
             const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
             setT(open, 150);
@@ -6610,7 +6622,7 @@ class _ReaderMixin {
         }
     }
 
-    /** Remove the symmetric `dc:relation` between two items â€” the missing
+    /** Remove the symmetric `dc:relation` between two items — the missing
      *  counterpart of `_addRelatedItemDialog` (GitHub issue #9: relations
      *  could be added to an annotation but never removed from it). Mirrors
      *  upstream `relatedBox.js`'s `remove`: `removeRelatedItem` BOTH ways
@@ -11267,10 +11279,18 @@ class _ReaderMixin {
             if (!win || !win.document) return;
             const doc = win.document;
             const MENU_ID = "wv-window-tab-context-menu";
+            // Bump when the menu's structure changes — live windows keep the
+            // old element otherwise (it's cached by id).
+            const MENU_VER = "2";
             let menu: any = doc.getElementById(MENU_ID);
+            if (menu && menu.getAttribute("data-wv-menu-ver") !== MENU_VER) {
+                try { menu.remove(); } catch (e) {}
+                menu = null;
+            }
             if (!menu) {
                 menu = doc.createXULElement("menupopup");
                 menu.id = MENU_ID;
+                menu.setAttribute("data-wv-menu-ver", MENU_VER);
 
                 const mkItem = (label: string, onClick: () => void, opts?: { icon?: string; getVisible?: () => boolean }) => {
                     const it = doc.createXULElement("menuitem");
@@ -11358,6 +11378,28 @@ class _ReaderMixin {
                             return !!targetAttachment();
                         } catch (e) { return false; }
                     },
+                });
+
+                // "Add Tab(s) to Group" submenu + "Remove from Tab Group" —
+                // group commands for deck tabs, multi-select aware. The popup
+                // is rebuilt per popupshowing from the LIVE plugin (reload-safe).
+                const groupMenu: any = doc.createXULElement("menu");
+                groupMenu.setAttribute("label", "Add Tab to Group");
+                const groupPopup: any = doc.createXULElement("menupopup");
+                groupMenu.appendChild(groupPopup);
+                const removeFromGroup = mkItem("Remove from Tab Group", () => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero?.plugin;
+                        const st = win._wvWT;
+                        if (!lp || !st) return;
+                        for (const id of lp._wvWTMultiSelTargets(win, win._wvWTCtxTabId)) {
+                            const t = st.tabs.find((x: any) => String(x.id) === String(id));
+                            const k = t && lp._wvTabGroupDeckKey(t);
+                            if (k) lp._tabGroupRemoveKey(k.libraryID, k.itemKey);
+                        }
+                        lp._wvWTMultiSelClear(win);
+                        lp._wvTabGroupApplyEverywhere();
+                    } catch (e) {}
                 });
 
                 // "Move Tab" submenu — Move to Start / Move to End (reorder within
@@ -11464,10 +11506,13 @@ class _ReaderMixin {
                     } catch (e) { return false; }
                 } });
 
-                // Order mirrors the main-window tab context menu.
+                // Order mirrors the main-window tab context menu (group
+                // commands sit just above Move Tab, like the main window).
                 menu.appendChild(showInLibrary);
                 menu.appendChild(externalViewer);
                 menu.appendChild(openNotes);
+                menu.appendChild(groupMenu);
+                menu.appendChild(removeFromGroup);
                 menu.appendChild(moveMenu);
                 menu.appendChild(duplicate);
                 menu.appendChild(pinTab);
@@ -11485,6 +11530,57 @@ class _ReaderMixin {
                         for (const child of Array.from(menu.children) as any[]) {
                             if (typeof child._wvGetVisible === "function") child.hidden = !child._wvGetVisible();
                         }
+                        // Group commands: label by selection size, popup rebuilt
+                        // from the live group list.
+                        try {
+                            const lp: any = (Zotero as any).Weavero?.plugin;
+                            const en = !!(lp && lp._getEnableTabGroups && lp._getEnableTabGroups());
+                            let grouped = false;
+                            if (en) {
+                                const st2 = win._wvWT;
+                                const ctxId = win._wvWTCtxTabId;
+                                const ctxTab = st2 && st2.tabs.find((x: any) => String(x.id) === String(ctxId));
+                                const ctxKey = ctxTab && lp._wvTabGroupDeckKey(ctxTab);
+                                const curGroup = ctxKey && lp._tabGroupOfKey(ctxKey.libraryID, ctxKey.itemKey);
+                                grouped = !!curGroup;
+                                const targets = lp._wvWTMultiSelTargets(win, ctxId);
+                                groupMenu.setAttribute("label", targets.length > 1
+                                    ? "Add " + targets.length + " Tabs to Group" : "Add Tab to Group");
+                                removeFromGroup.setAttribute("label", targets.length > 1
+                                    ? "Remove " + targets.length + " Tabs from Group" : "Remove from Tab Group");
+                                while (groupPopup.firstChild) groupPopup.removeChild(groupPopup.firstChild);
+                                const mkG = (label: string, icon: string | null, fn: () => void) => {
+                                    const mi = doc.createXULElement("menuitem");
+                                    mi.setAttribute("label", label);
+                                    if (icon) { mi.setAttribute("class", "menuitem-iconic"); mi.setAttribute("image", icon); }
+                                    mi.addEventListener("command", (ev: any) => {
+                                        try { ev.stopPropagation(); fn(); } catch (er) {}
+                                    });
+                                    groupPopup.appendChild(mi);
+                                };
+                                mkG("New Group", null, () => lp._wvTabGroupNewFromDeckTabs(win, targets));
+                                const groups = lp._tabGroupsGet();
+                                const others = groups.filter((x: any) =>
+                                    !(targets.length === 1 && curGroup && x.id === curGroup.id));
+                                if (others.length) {
+                                    groupPopup.appendChild(doc.createXULElement("menuseparator"));
+                                    for (const g of others) {
+                                        mkG(g.name || "Unnamed group",
+                                            lp._wvTabGroupDotImage(lp._tabGroupColorHex(g.color)),
+                                            () => {
+                                                targets.forEach((id: any, i: number) => {
+                                                    win.setTimeout(() => {
+                                                        try { lp._wvTabGroupAddDeckTab(win, id, g.id); } catch (e) {}
+                                                    }, i * 170);
+                                                });
+                                                lp._wvWTMultiSelClear(win);
+                                            });
+                                    }
+                                }
+                            }
+                            groupMenu.hidden = !en;
+                            removeFromGroup.hidden = !(en && grouped);
+                        } catch (e) {}
                         try { reopen.setAttribute("disabled", String(!(win._wvWTClosed && win._wvWTClosed.length))); } catch (e) {}
                         try { const t = targetTab(); pinTab.setAttribute("label", (t && t.pinned) ? "Unpin Tab" : "Pin Tab"); } catch (e) {}
                         try {

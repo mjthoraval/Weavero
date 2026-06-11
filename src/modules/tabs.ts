@@ -97,6 +97,12 @@ class _TabsMixin {
             catch (e) {
                 Zotero.debug("[Weavero] tabs-menu library sort err: " + e);
             }
+            // "Tab Groups" footer (focus / reopen saved groups) — resolve the
+            // LIVE plugin so reloads pick up new code without re-patching.
+            try {
+                const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
+            } catch (e) {}
         };
         // The panel may already have content from an earlier open
         // before the patch landed — refresh it now so the header
@@ -178,7 +184,7 @@ class _TabsMixin {
                 || panel.querySelector("#zotero-tabs-menu-list");
             if (list) {
                 for (const h of list.querySelectorAll(
-                    ".wv-tabs-menu-library-header")) h.remove();
+                    ".wv-tabs-menu-library-header, .wv-tgmenu-header, .wv-tgmenu-row")) h.remove();
             }
             panel.classList.remove("wv-tabs-menu-grouped");
             panel.classList.remove("wv-tabs-menu-wide");
@@ -600,6 +606,8 @@ class _TabsMixin {
         try { this._wireTabBarDrag(win); } catch (e) {}
         // Tab-group DnD: pointer tracking + group-chip drops.
         try { this._wvWireTabGroupDnD(win); } catch (e) {}
+        // Ctrl/Shift+click multi-selection (for group commands on several tabs).
+        try { (this as any)._wvWireTabMultiSel(win); } catch (e) {}
 
         // Initial pass before we attach the observer so the user
         // sees decoration + pin state immediately on plugin install / Zotero open.
@@ -1277,7 +1285,10 @@ class _TabsMixin {
                         const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         const srcWin = live && live._wvMergeDragSourceWin;
                         if (live && srcWin && typeof live._wvWTMoveTabToMain === "function") {
-                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId); } catch (er) {}
+                            // Pass THIS window: the movers default to the anchor
+                            // main window, so a drop on a secondary main window
+                            // used to land the tab in the wrong window.
+                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId, win); } catch (er) {}
                             win.setTimeout(positionNewTab, 200);
                             return;
                         }
@@ -1289,7 +1300,7 @@ class _TabsMixin {
                         ? (self as any)._moveNoteToTab?.bind(self)
                         : (self as any)._moveReaderToTab?.bind(self);
                     if (typeof mover !== "function") return;
-                    try { mover(itemID); } catch (er) {}
+                    try { mover(itemID, win); } catch (er) {}
                     win.setTimeout(positionNewTab, 200);
                 } catch (er) {}
             }, true);
@@ -1349,10 +1360,34 @@ class _TabsMixin {
                     try {
                         const strip = doc.getElementById("zotero-title-bar");
                         const rect = strip && strip.getBoundingClientRect();
-                        const cx = e.clientX, cy = e.clientY;
+                        // dragend reports (0,0) BOTH for off-window drops AND
+                        // for in-window drops nothing accepted (e.g. the empty
+                        // title-bar area right of the last tab) — so on (0,0),
+                        // fall back to the pointer position tracked during
+                        // dragover. Only a genuinely unknown position (no
+                        // tracked point either) still reads as off-window.
+                        let cx = e.clientX, cy = e.clientY;
+                        if (cx === 0 && cy === 0
+                                && typeof (win as any)._wvTabDragLastX === "number"
+                                && typeof (win as any)._wvTabDragLastY === "number") {
+                            cx = (win as any)._wvTabDragLastX;
+                            cy = (win as any)._wvTabDragLastY;
+                        }
                         const offWindow = (cx === 0 && cy === 0);
                         const outsideStrip = rect && (cx < rect.left || cx > rect.right
                             || cy < rect.top || cy > rect.bottom);
+                        // Dropped INSIDE the strip but right of the last tab →
+                        // "move to the end", not a tear-off.
+                        if (!offWindow && !outsideStrip) {
+                            try {
+                                const tabEls = doc.querySelectorAll("#tab-bar-container .tab[data-id]");
+                                const lastEl: any = tabEls[tabEls.length - 1];
+                                const lr = lastEl && lastEl.getBoundingClientRect();
+                                if (lr && cx > lr.right && typeof Z_Tabs.move === "function") {
+                                    Z_Tabs.move(tab.id, Z_Tabs._tabs.length - 1);
+                                }
+                            } catch (er) {}
+                        }
                         if (offWindow || outsideStrip) {
                             const tabContentType = Z_Tabs.parseTabType
                                 ? Z_Tabs.parseTabType(tab.type).tabContentType

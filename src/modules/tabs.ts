@@ -435,9 +435,10 @@ class _TabsMixin {
                 // Re-run grouping so the visibility update lands
                 // immediately. Re-using `panel.refreshList` would
                 // also work but rebuilds rows from scratch — going
-                // directly through this method preserves the
-                // selection / focus state of existing row nodes.
-                this._groupTabsMenuByLibrary(panel);
+                // directly through this preserves the selection /
+                // focus state of existing row nodes. Must regroup
+                // BOTH library + tab-group sections (see helper).
+                this._wvRegroupTabsMenu(panel);
             });
             header.appendChild(tick);
 
@@ -488,6 +489,21 @@ class _TabsMixin {
             menuBtn.classList.toggle("wv-tabs-menu-filter-active",
                 anyFiltered);
         }
+    }
+
+    /** Re-apply BOTH passes the open tabs-menu needs: the per-library grouping
+     *  AND the tab-group sections. `_groupTabsMenuByLibrary` replaceChildren()s
+     *  the list, so any interactive caller (filter ticks, file-type popup) MUST
+     *  re-run the group sections afterwards too — otherwise the group headers /
+     *  footer vanish on the first filter toggle and never come back (even on
+     *  unfilter). Mirrors the refreshList wrapper's post-orig() sequence. */
+    _wvRegroupTabsMenu(panel) {
+        try { this._groupTabsMenuByLibrary(panel); }
+        catch (e) { Zotero.debug("[Weavero] tabs-menu library sort err: " + e); }
+        try {
+            const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+            if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
+        } catch (e) {}
     }
 
     /** Build (or update) a stylesheet that hides tabs in the main
@@ -2866,8 +2882,7 @@ class _TabsMixin {
             }
             renderButtons();
             this._refreshFileTypeFilterButtonState(panel);
-            try { this._groupTabsMenuByLibrary(panel); }
-            catch (e) {}
+            this._wvRegroupTabsMenu(panel);
         };
 
         const renderButtons = () => {
@@ -2941,8 +2956,7 @@ class _TabsMixin {
                 }
                 renderButtons();
                 this._refreshFileTypeFilterButtonState(panel);
-                try { this._groupTabsMenuByLibrary(panel); }
-                catch (err) {}
+                this._wvRegroupTabsMenu(panel);
             };
             const makeOpt = (val, label, opts) => {
                 const b = doc.createElementNS(NS_HTML, "button");

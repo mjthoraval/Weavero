@@ -2467,16 +2467,18 @@ class _TabGroupsMixin {
                         // flicker. Keep them suppressed, then do ONE settling apply
                         // once the burst lands (React has rendered the new nodes).
                         (this as any)._wvSuppressGroupApply = true;
+                        const arrivedIDs: string[] = [];
                         if (Z && typeof Z.add === "function") {
                             for (const en2 of entries) {
                                 try {
                                     if (!Zotero.Items.exists(en2.itemID)) continue;
-                                    Z.add({
+                                    const r = Z.add({
                                         type: en2.isNote ? "note-unloaded" : "reader-unloaded",
                                         data: { itemID: en2.itemID },
                                         select: false,
                                         preventJumpback: true,
                                     });
+                                    if (r && r.id) arrivedIDs.push(r.id);
                                 } catch (e) {}
                             }
                         }
@@ -2484,20 +2486,18 @@ class _TabGroupsMixin {
                         if (typeof clientX === "number") {
                             try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, clientX); } catch (e) {}
                         }
-                        // Settle once after the notifier cascade lands: drop both
-                        // guards and apply a single time. reopen guard stays on
-                        // until here so the group isn't emptied mid-burst.
-                        setT(() => {
-                            try {
-                                (this as any)._wvSuppressGroupApply = false;
-                                reopenSet.delete(groupID);
-                                this._wvTabGroupApplyEverywhere();
-                            } catch (e) {
-                                (this as any)._wvSuppressGroupApply = false;
-                                reopenSet.delete(groupID);
-                            }
-                        }, 260);
-                        return;   // main-target settles itself via the timer above
+                        // Settle the instant the arrived tabs paint (the bar
+                        // renders ~2 frames after Z.add) instead of after a fixed
+                        // 260ms — that quarter-second was the "tabs first, group
+                        // second" flicker. Still a SINGLE apply once ALL arrived
+                        // nodes exist, so there's no per-tab re-chip churn. The
+                        // reopen guard stays on until the apply so the group isn't
+                        // emptied mid-burst.
+                        this._wvTabGroupSettleMainArrival(tgtWin, groupID, arrivedIDs, () => {
+                            (this as any)._wvSuppressGroupApply = false;
+                            reopenSet.delete(groupID);
+                        });
+                        return;   // main-target settles itself via the poll above
                     }
                     // Reader-target landed → drop the guard and re-sync: the members
                     // are now open in the target, so _applyTabGroups keeps them and
@@ -2512,6 +2512,46 @@ class _TabGroupsMixin {
                 }
             }, 180);
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMigrateGroup err: " + e); }
+    }
+
+    /** Drop the migrate guards and chip the group ONCE, the moment every
+     *  just-arrived member tab (`arrivedIDs` = the tab ids Z.add returned) has
+     *  rendered in the main bar. Zotero renders the bar asynchronously (~2
+     *  frames / ~10ms after Z.add), so a fixed settle delay either flickered
+     *  (too short → re-chip churn as tabs trickle in) or showed the group
+     *  ungrouped for a beat (260ms). Polling on animation frames applies a
+     *  SINGLE time as the tabs paint — grouped on arrival, no churn. A 600ms
+     *  cap guarantees the guards always drop even if a node never resolves. */
+    _wvTabGroupSettleMainArrival(tgtWin: any, groupID: any, arrivedIDs: string[], dropGuards: () => void) {
+        try {
+            const doc = tgtWin.document;
+            const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
+            const raf = tgtWin.requestAnimationFrame ? tgtWin.requestAnimationFrame.bind(tgtWin) : null;
+            const setT = tgtWin.setTimeout ? tgtWin.setTimeout.bind(tgtWin) : setTimeout;
+            const clock = () => (tgtWin.performance && tgtWin.performance.now) ? tgtWin.performance.now() : Date.now();
+            const start = clock();
+            const ready = () => {
+                if (!tabsBox) return false;
+                for (const id of arrivedIDs) {
+                    if (!tabsBox.querySelector('.tab[data-id="' + id + '"]')) return false;
+                }
+                return true;
+            };
+            const done = () => {
+                try { dropGuards(); } catch (e) {}
+                try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+            };
+            const tick = () => {
+                try {
+                    if (ready() || (clock() - start) > 600) { done(); return; }
+                    if (raf) raf(tick); else setT(tick, 16);
+                } catch (e) { done(); }
+            };
+            tick();
+        } catch (e) {
+            try { dropGuards(); } catch (e2) {}
+            try { this._wvTabGroupApplyEverywhere(); } catch (e2) {}
+        }
     }
 
     // ---- Save & Close / Reopen / Move to New Window ---------------------------

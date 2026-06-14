@@ -2803,18 +2803,21 @@ class _TabGroupsMixin {
             const homeIsReader = this._wvTabGroupIsReaderWin(home);
             // Collect the group's OPEN members (in display order) from the home
             // window, with their source tab ids so we can close them.
-            const open: Array<{ itemID: any; isNote: boolean; srcTabID: any }> = [];
+            const open: Array<{ itemID: any; isNote: boolean; srcTabID: any; tabType?: any }> = [];
+            // note-aware of BOTH loaded ("note") and unloaded ("note-unloaded")
+            // tab types — t.type === "note" alone misses unloaded note tabs.
+            const tabIsNote = (t: any) => String(t && t.type || "").startsWith("note");
             if (homeIsReader) {
                 for (const t of (home._wvWT && home._wvWT.tabs) || []) {
                     const k = this._wvTabGroupDeckKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) open.push({ itemID: t.itemID, isNote: t.type === "note", srcTabID: t.id });
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) open.push({ itemID: t.itemID, isNote: tabIsNote(t), srcTabID: t.id, tabType: t.type });
                 }
             } else {
                 const Z: any = home.Zotero_Tabs;
                 for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
                     const t = Z._tabs[i];
                     const k = (this as any)._tabPinKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) open.push({ itemID: t.data && t.data.itemID, isNote: t.type === "note", srcTabID: t.id });
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) open.push({ itemID: t.data && t.data.itemID, isNote: tabIsNote(t), srcTabID: t.id, tabType: t.type });
                 }
             }
             // Entries to open in the new reader window. For an OPEN group, those
@@ -2832,20 +2835,60 @@ class _TabGroupsMixin {
                 }
             }
             entries = entries.filter((e) => e.itemID != null);
-            if (!entries.length) return;
+            // ── move-group diagnostics (debugging a vanishing group) ─────────
+            try {
+                const dbg = open.map((o: any) => {
+                    let rt = "?", isN = "?", itype = "?";
+                    try { const it: any = Zotero.Items.get(o.itemID); if (it) { rt = String(it.attachmentReaderType || "(none)"); isN = String(!!(it.isNote && it.isNote())); itype = it.itemType; } } catch (e) {}
+                    return { itemID: o.itemID, tabType: o.tabType, flaggedNote: !!o.isNote, attachmentReaderType: rt, realIsNote: isN, itemType: itype };
+                });
+                Zotero.debug("[Weavero][move-group] START groupID=" + groupID + " name=\"" + (g.name || "") + "\" homeIsReader=" + homeIsReader + " openCount=" + open.length + " members=" + JSON.stringify(dbg));
+            } catch (eLog) {}
+            if (!entries.length) { Zotero.debug("[Weavero][move-group] ABORT — no openable entries (group left intact)"); return; }
             // Keep the group alive across the close→reopen gap (closing the last
             // member would otherwise delete it before the new window opens).
             reopenSet.add(groupID);
             // MOVE: close the open members in their home window first.
+            Zotero.debug("[Weavero][move-group] closing " + open.length + " source tab(s) in " + (homeIsReader ? "reader" : "main") + " window");
             for (const o of open) {
-                try { if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID); else home.Zotero_Tabs.close(o.srcTabID); } catch (e) {}
+                try { if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID); else home.Zotero_Tabs.close(o.srcTabID); }
+                catch (e) { Zotero.debug("[Weavero][move-group] close err tab=" + o.srcTabID + ": " + e); }
             }
             // Open them together in ONE new reader window (membership preserved →
             // they regroup there). _wvOpenItemsInNewReaderWindow focuses it.
-            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); } catch (e) {}
+            Zotero.debug("[Weavero][move-group] opening " + entries.length + " entr(ies) in a new reader window: " + JSON.stringify(entries));
+            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); }
+            catch (e) { Zotero.debug("[Weavero][move-group] _wvOpenItemsInNewReaderWindow THREW: " + e); }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveToNewWindow err: " + e); }
         finally {
             reopenSet.delete(groupID);
+            try {
+                const grp = this._tabGroupsGet().find((x: any) => x.id === groupID);
+                const cnt = grp ? this._wvTabGroupOpenCount(groupID) : -1;
+                Zotero.debug("[Weavero][move-group] FINALLY — group " + (grp ? "EXISTS" : "GONE") + " openCount=" + cnt);
+                // Safety net: the move closed the source tabs but the new window
+                // never materialised (some member couldn't be opened), so the
+                // group has 0 open tabs and the empty-group sweep below would
+                // delete it. Reopen its members (unloaded) in the main window so
+                // the group is NEVER silently lost — better a recovered group in
+                // the original window than a vanished one.
+                if (grp && cnt === 0) {
+                    const mw: any = Zotero.getMainWindow();
+                    const Z: any = mw && mw.Zotero_Tabs;
+                    if (Z && typeof Z.add === "function") {
+                        for (const m of (grp.members || [])) {
+                            try {
+                                const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey);
+                                if (!it) continue;
+                                const isN = !!(it.isNote && it.isNote());
+                                if (!isN && !it.attachmentReaderType) continue;
+                                Z.add({ type: isN ? "note-unloaded" : "reader-unloaded", data: { itemID: it.id }, select: false, preventJumpback: true });
+                            } catch (e) {}
+                        }
+                        Zotero.debug("[Weavero][move-group] RECOVERED — reopened members in the main window");
+                    }
+                }
+            } catch (eLog) {}
             try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
             // Re-apply once the new window's React strip has rendered the tabs.
             try { const mw: any = Zotero.getMainWindow(); const st = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout; st(() => { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }, 220); } catch (e) {}

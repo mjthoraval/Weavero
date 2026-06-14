@@ -5867,16 +5867,42 @@ class _ReaderMixin {
                 return out;
             };
             const before = new Set(readerWins());
-            // Create the window from a reader-able item (so it has the multi-tab
-            // strip); fall back to the first entry if the selection is all notes.
-            let firstIdx = entries.findIndex((e: any) => !e.isNote);
+            // ── new-window diagnostics ───────────────────────────────────────
+            try {
+                const dbg = entries.map((e: any) => {
+                    let rt = "?", isN = "?", itype = "?";
+                    try { const it: any = Zotero.Items.get(e.itemID); if (it) { rt = String(it.attachmentReaderType || "(none)"); isN = String(!!(it.isNote && it.isNote())); itype = it.itemType; } } catch (er) {}
+                    return { itemID: e.itemID, flaggedNote: !!e.isNote, attachmentReaderType: rt, realIsNote: isN, itemType: itype };
+                });
+                Zotero.debug("[Weavero][new-window] entries=" + JSON.stringify(dbg));
+            } catch (eLog) {}
+            // Create the window from a genuinely READER-ABLE item (one with an
+            // attachmentReaderType) so it gets the multi-tab strip. Decide by
+            // the live item, NOT the caller's `isNote` flag: that flag is
+            // computed from tab.type === "note", which misses UNLOADED note
+            // tabs ("note-unloaded"). A mis-flagged note reaching Reader.open
+            // throws "Unsupported attachment type", the window never opens, and
+            // (the source tabs already closed) the group vanishes. Fall back to
+            // a note window only when there's no reader-able item at all.
+            const isReaderable = (id: any) => {
+                try { const it: any = Zotero.Items.get(id); return !!(it && it.attachmentReaderType); }
+                catch (e) { return false; }
+            };
+            let firstIdx = entries.findIndex((e: any) => isReaderable(e.itemID));
             if (firstIdx < 0) firstIdx = 0;
             const first = entries[firstIdx];
-            if (first.isNote) {
-                const ZP: any = mainWin && mainWin.ZoteroPane;
-                if (ZP && ZP.openNote) ZP.openNote(first.itemID, { openInWindow: true });
-            } else {
-                (Zotero.Reader as any).open(first.itemID, null, { openInWindow: true, allowDuplicate: true });
+            const firstReaderable = isReaderable(first.itemID);
+            Zotero.debug("[Weavero][new-window] creating window from firstIdx=" + firstIdx + " itemID=" + first.itemID + " readerable=" + firstReaderable);
+            try {
+                if (!firstReaderable) {
+                    const ZP: any = mainWin && mainWin.ZoteroPane;
+                    if (ZP && ZP.openNote) ZP.openNote(first.itemID, { openInWindow: true });
+                } else {
+                    (Zotero.Reader as any).open(first.itemID, null, { openInWindow: true, allowDuplicate: true });
+                }
+            } catch (eOpen) {
+                Zotero.debug("[Weavero][new-window] FAILED to create window for itemID=" + first.itemID + ": " + eOpen);
+                return;
             }
             if (entries.length === 1) return;          // single tear-off: nothing else to mount
             // Find the freshly-created reader window, then wait for Weavero to
@@ -5887,7 +5913,7 @@ class _ReaderMixin {
                 await new Promise(r => setT(r, 100));
                 for (const w of readerWins()) { if (!before.has(w)) { newWin = w; break; } }
             }
-            if (!newWin) return;
+            if (!newWin) { Zotero.debug("[Weavero][new-window] new reader window never appeared (6s timeout)"); return; }
             const t1 = Date.now();
             while (!newWin._wvWT && Date.now() - t1 < 4000) { await new Promise(r => setT(r, 80)); }
             for (let i = 0; i < entries.length; i++) {

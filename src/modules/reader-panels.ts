@@ -437,6 +437,13 @@ const RP_BM_CSS = [
     // Dim folders shown only because of a matching descendant (the folder
     // itself doesn't match the search query) so direct matches stand out.
     ".wv-bm-reader-row.wv-bm-dimmed{opacity:.55;}",
+    // Orphan bookmark (Zotero target deleted/purged): dim + strike the label +
+    // a ⚠ badge; clicking flashes the row instead of silently doing nothing.
+    ".wv-bm-reader-row.wv-bm-missing{opacity:.55;}",
+    ".wv-bm-reader-row.wv-bm-missing .wv-bm-reader-label{text-decoration:line-through;text-decoration-color:rgba(224,72,59,.55);}",
+    ".wv-bm-reader-missing-badge{flex:0 0 auto;margin-left:2px;color:#e0483b;font-size:11px;line-height:1;}",
+    "@keyframes wv-bm-reader-pulse{0%,100%{background:transparent;}30%{background:rgba(224,72,59,.30);}}",
+    ".wv-bm-reader-row.wv-bm-reader-flash{animation:wv-bm-reader-pulse .6s ease;}",
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     // Inherit the 20×20 svg size from the .wv-bm-actionbar rule above;
     // the previous 15×15 override forced 15/16 sub-pixel scaling on a
@@ -2332,7 +2339,7 @@ class _ReaderPanelsMixin {
                     this._wvWireScopeBtnDrop(b, scope, reader, idoc);
                     scopeGroup.appendChild(b);
                 };
-                mkScope("Reader", "document");
+                mkScope("Document", "document");
                 if (this._getShowLibraryBookmarksInReader()) {
                     mkScope("Library", "library");
                 } else {
@@ -3496,7 +3503,20 @@ class _ReaderPanelsMixin {
         // Drop the plain HTML tooltip in favour of the rich hover card wired
         // below — the two would otherwise both fire on hover.
         row.appendChild(ic); row.appendChild(label);
-        row.addEventListener("click", (e: any) => this._bmActivateBookmark(bm, e));
+        // Orphan bookmark — Zotero target deleted/purged. Mark + flash on click.
+        const missing = this._bmTargetMissing(bm);
+        if (missing) {
+            row.classList.add("wv-bm-missing");
+            const warn = idoc.createElementNS(NS, "span");
+            warn.className = "wv-bm-reader-missing-badge";
+            warn.textContent = "⚠";
+            warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete to remove it.");
+            row.appendChild(warn);
+        }
+        row.addEventListener("click", (e: any) => {
+            if (missing) { this._bmFlashMissingRow(row, "wv-bm-reader-flash"); return; }
+            this._bmActivateBookmark(bm, e);
+        });
         this._wvReaderWireRowHover(reader, idoc, row, bm);
         this._wvReaderWireLibRowDrag(reader, idoc, row, bm, depth, false);
         return row;
@@ -4245,7 +4265,21 @@ class _ReaderPanelsMixin {
         // No inline rename/delete buttons on hover (user preference) —
         // both actions live in the right-click context menu instead.
         row.appendChild(ic); row.appendChild(label); row.appendChild(page);
-        row.addEventListener("click", (e: any) => this._wvNavigateReaderBookmark(reader, bm, e));
+        // Orphan bookmark — its Zotero target was deleted/purged. Mark the row
+        // (dim + strikethrough) + ⚠ badge; clicking flashes instead of no-op.
+        const missing = this._bmTargetMissing(bm);
+        if (missing) {
+            row.classList.add("wv-bm-missing");
+            const warn = idoc.createElementNS(NS, "span");
+            warn.className = "wv-bm-reader-missing-badge";
+            warn.textContent = "⚠";
+            warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete to remove it.");
+            row.appendChild(warn);
+        }
+        row.addEventListener("click", (e: any) => {
+            if (missing) { this._bmFlashMissingRow(row, "wv-bm-reader-flash"); return; }
+            this._wvNavigateReaderBookmark(reader, bm, e);
+        });
         this._wvReaderWireRowDrag(reader, idoc, att, row, bm,
             section || (this._wvReaderBookmarkIsLocal(reader, bm) ? "local" : "global"), false);
         this._wvReaderWireRowHover(reader, idoc, row, bm);
@@ -4493,13 +4527,38 @@ class _ReaderPanelsMixin {
             // card lives inside the panel widget (same coord system as the row;
             // popup-hide auto-removes the card). Reader iframe case: append to
             // the iframe's body where the row also lives.
-            let parent: any = null;
-            try {
-                if (rowEl && rowEl.closest) {
-                    parent = rowEl.closest("#wv-bm-list-inner") || rowEl.closest(".wv-bm-flyout-inner");
-                }
-            } catch (_) {}
-            (parent || idoc.body || idoc.documentElement).appendChild(card);
+            // Where to host the card:
+            //  • Inside a folder FLYOUT (a small, clipped native panel) → give the
+            //    card its OWN XUL panel anchored to the RIGHT of the row, so it
+            //    floats BESIDE the flyout instead of on top of its rows.
+            //  • Main library list / reader iframe → inline, positioned in the
+            //    same scroll container (existing behaviour).
+            const flyoutInner: any = (rowEl && rowEl.closest) ? rowEl.closest(".wv-bm-flyout-inner") : null;
+            let hostPanel: any = null;
+            if (flyoutInner && idoc.createXULElement) {
+                try {
+                    const stale = idoc.getElementById("wv-bm-hovercard-panel");
+                    if (stale) stale.remove();
+                    hostPanel = idoc.createXULElement("panel");
+                    hostPanel.id = "wv-bm-hovercard-panel";
+                    hostPanel.setAttribute("animate", "false");
+                    hostPanel.setAttribute("noautohide", "true");
+                    hostPanel.setAttribute("consumeoutsideclicks", "false");
+                    card.style.position = "static";   // let the panel size to the card
+                    hostPanel.appendChild(card);
+                    const phost = idoc.getElementById("mainPopupSet") || idoc.documentElement;
+                    phost.appendChild(hostPanel);
+                } catch (_) { hostPanel = null; }
+            }
+            if (!hostPanel) {
+                let parent: any = null;
+                try {
+                    if (rowEl && rowEl.closest) {
+                        parent = rowEl.closest("#wv-bm-list-inner") || rowEl.closest(".wv-bm-flyout-inner");
+                    }
+                } catch (_) {}
+                (parent || idoc.body || idoc.documentElement).appendChild(card);
+            }
             if (body.scrollHeight > body.clientHeight + 2) {
                 body.appendChild(mk("wv-hc-fade"));
                 const btn: any = idoc.createElementNS(NS, "button");
@@ -4522,7 +4581,13 @@ class _ReaderPanelsMixin {
             const win = idoc.defaultView;
             card.addEventListener("mouseenter", () => { try { if (this._wvBmHoverHideTimer) { win.clearTimeout(this._wvBmHoverHideTimer); this._wvBmHoverHideTimer = null; } } catch (_) {} });
             card.addEventListener("mouseleave", () => this._wvReaderScheduleHideBmHoverCard(idoc));
-            this._wvReaderPositionBmHoverCard(card, rowEl, idoc);
+            if (hostPanel) {
+                // Float the card panel just past the flyout row's right edge,
+                // top-aligned with it — beside the flyout, never over its rows.
+                try { hostPanel.openPopup(rowEl, "end_before", 0, 0, false, false); } catch (_) {}
+            } else {
+                this._wvReaderPositionBmHoverCard(card, rowEl, idoc);
+            }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderShowBmHoverCard err: " + e); }
     }
 
@@ -4530,6 +4595,11 @@ class _ReaderPanelsMixin {
         try { if (this._wvBmHoverHideTimer && idoc.defaultView) idoc.defaultView.clearTimeout(this._wvBmHoverHideTimer); } catch (_) {}
         this._wvBmHoverHideTimer = null;
         try { const c = idoc.querySelector(".wv-bm-hovercard"); if (c) c.remove(); } catch (_) {}
+        // Flyout case: the card lives in its own anchored panel — close + drop it.
+        try {
+            const pnl = idoc.getElementById && idoc.getElementById("wv-bm-hovercard-panel");
+            if (pnl) { try { pnl.hidePopup(); } catch (_) {} try { pnl.remove(); } catch (_) {} }
+        } catch (_) {}
     }
 
     /** Drag/drop wiring for bookmark + folder rows. The row is a NATIVE HTML5

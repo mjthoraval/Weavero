@@ -303,6 +303,19 @@ const BM_POPUP_CSS = [
     " .wv-bm-label.wv-link-app{color:#c084fc;}",
     "}",
     ".wv-bm-empty{padding:8px 10px;opacity:.6;font-size:.9em;}",
+    // Orphan bookmark (its Zotero target was deleted/purged): dim the row,
+    // strike the label, and show a ⚠ badge. Clicking flashes the row (the
+    // click feedback for a missing target) instead of silently doing nothing.
+    ".wv-bm-row.wv-bm-missing{opacity:.55;}",
+    ".wv-bm-row.wv-bm-missing .wv-bm-label{text-decoration:line-through;text-decoration-color:rgba(224,72,59,.55);}",
+    ".wv-bm-missing-badge{flex:0 0 auto;margin-left:4px;color:#e0483b;font-size:11px;line-height:1;cursor:help;}",
+    "@keyframes wv-bm-missing-pulse{0%,100%{background:transparent;}30%{background:rgba(224,72,59,.30);}}",
+    ".wv-bm-row.wv-bm-flash{animation:wv-bm-missing-pulse .6s ease;}",
+    // The folder-flyout hover card lives in its OWN XUL panel (so it floats
+    // beside the clipped flyout, not over its rows). Strip the panel's native
+    // chrome so only the card's own bordered/shadowed box shows; a small
+    // shadow-margin keeps the card's box-shadow from being clipped.
+    "#wv-bm-hovercard-panel{appearance:none;background:transparent;border:0;box-shadow:none;--panel-padding:0;--panel-background:transparent;--panel-border-color:transparent;--panel-shadow-margin:6px;-moz-window-shadow:none;}",
 ].join("");
 
 class _BookmarksMixin {
@@ -1747,6 +1760,61 @@ class _BookmarksMixin {
      *    • Shift-click     → open in a new window
      *    • Ctrl/Cmd-click  → show in library (reveal, don't open)
      *  Targets with nothing to open fall back to showing in the library. */
+    /** True if a bookmark points at a Zotero object that no longer exists
+     *  (annotation / item / collection / library purged, or a cross-document
+     *  location whose source attachment is gone). URL / folder bookmarks, and
+     *  LOCAL in-document location bookmarks, have no external target and are
+     *  never "missing". Drives the orphan-row marking + click feedback — see the
+     *  "Bookmark integrity when the target is deleted" TODO, option (b). */
+    _bmTargetMissing(bm: any): boolean {
+        try {
+            if (!bm) return false;
+            switch (bm.type) {
+                case "folder":
+                case "url":
+                    return false;
+                case "collection": {
+                    if (!bm.collectionKey) return false;
+                    let c: any = null;
+                    try { c = Zotero.Collections.getByLibraryAndKey(bm.libraryID, bm.collectionKey); } catch (_) {}
+                    return !c;
+                }
+                case "library":
+                    try { return !Zotero.Libraries.get(bm.libraryID); } catch (_) { return true; }
+                case "item":
+                    return !Zotero.Items.getIDFromLibraryAndKey(bm.libraryID, bm.itemKey);
+                case "position":
+                case "page":
+                case "text":
+                    // Only a CROSS-document location bookmark has an external
+                    // target (its source attachment); a local one's target is
+                    // the document it's listed under, present by definition.
+                    if (bm.srcItemKey) return !Zotero.Items.getIDFromLibraryAndKey(bm.srcLibraryID, bm.srcItemKey);
+                    return false;
+                default:
+                    return false;
+            }
+        } catch (_) { return false; }
+    }
+
+    /** Brief red pulse on a bookmark row whose target is gone — the click
+     *  feedback for an orphan bookmark (instead of a silent no-op). Works in
+     *  any document (library popup or reader iframe); the `.wv-bm-flash` /
+     *  `.wv-rb-flash` keyframes live in each surface's stylesheet. */
+    _bmFlashMissingRow(row: any, cls?: string) {
+        try {
+            if (!row) return;
+            const c = cls || "wv-bm-flash";
+            row.classList.remove(c);
+            // Force reflow so re-adding the class restarts the animation.
+            try { void row.offsetWidth; } catch (_) {}
+            row.classList.add(c);
+            const win = row.ownerDocument && row.ownerDocument.defaultView;
+            const t = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            t(() => { try { row.classList.remove(c); } catch (_) {} }, 650);
+        } catch (_) {}
+    }
+
     async _bmActivateBookmark(bm: any, event: any) {
         try {
             if (!bm) return;
@@ -1924,6 +1992,41 @@ class _BookmarksMixin {
         try {
             const t = await this._bmResolveOpenTarget(bm);
             if (!t) return;
+            // The target may be open ONLY in a Weavero multi-tab reader WINDOW
+            // (its strip tabs host base ReaderInstances, which Zotero.Reader.open
+            // can't focus — it just navigates a hidden background reader, so the
+            // click appears to do nothing). On a plain click, when the item isn't
+            // in any main-window tab, route to that reader window: raise it,
+            // switch the strip to the tab, then navigate.
+            if (!openInWindow && t.attachment && this._wvWTFindTabForItem) {
+                let inMainTab = false;
+                try {
+                    for (const mw of (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()])) {
+                        const ZT: any = mw && (mw as any).Zotero_Tabs;
+                        if (ZT && typeof ZT.getTabIDByItemID === "function" && ZT.getTabIDByItemID(t.attachment.id)) { inMainTab = true; break; }
+                    }
+                } catch (_) {}
+                if (!inMainTab) {
+                    const hosted = this._wvWTFindTabForItem(t.attachment.id);
+                    if (hosted && hosted.win && hosted.tab) {
+                        try { hosted.win.focus(); } catch (_) {}
+                        try { this._wvWTSwitch(hosted.win, hosted.tab.id); } catch (_) {}
+                        const navTab = hosted.tab;
+                        const doNav = () => {
+                            try { if (navTab.reader && t.location && typeof navTab.reader.navigate === "function") navTab.reader.navigate(t.location); } catch (_) {}
+                            if (bm && bm.type === "position" && bm.position && navTab.reader) {
+                                try { this._wvShowPinWhenReady(navTab.reader, bm.position, bm.id); } catch (_) {}
+                            }
+                        };
+                        // _wvWTSwitch realizes a lazy tab (async document load) —
+                        // navigate immediately if already loaded, else after a tick.
+                        const w2: any = hosted.win;
+                        const st2 = (w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout;
+                        if (navTab.reader && navTab.reader._internalReader) doNav(); else st2(doNav, 200);
+                        return;
+                    }
+                }
+            }
             const opened: any = await Zotero.Reader.open(t.attachment.id, t.location || null,
                 { openInWindow: !!openInWindow });
             // Position bookmarks drop a 📌 marker — show it after the
@@ -2776,6 +2879,20 @@ class _BookmarksMixin {
         row.appendChild(icon);
         row.appendChild(label);
 
+        // Orphan bookmark — its Zotero target was deleted/purged. Mark the row
+        // (dim + strikethrough via CSS) and append a ⚠ badge; clicking flashes
+        // instead of silently no-opping. Remove via the right-click menu.
+        const missing = this._bmTargetMissing(bm);
+        if (missing) {
+            row.classList.add("wv-bm-missing");
+            const warn = doc.createElementNS(NS_HTML, "span");
+            warn.className = "wv-bm-missing-badge";
+            warn.textContent = "⚠";
+            warn.setAttribute("title", "This bookmark's target no longer exists. Right-click → Delete Bookmark to remove it.");
+            row.appendChild(warn);
+            label.setAttribute("title", (label.getAttribute("title") || labelText) + " — target no longer exists");
+        }
+
         // Hovering a non-folder cancels any pending sibling-folder open.
         row.addEventListener("mouseenter", () => this._bmCancelOpenTimer());
         // Rich hover card (same look as the reader bookmarks pane). Show on
@@ -2793,6 +2910,8 @@ class _BookmarksMixin {
             try { this._wvReaderScheduleHideBmHoverCard(doc); } catch (_) {}
         });
         row.addEventListener("click", (e: any) => {
+            // Orphan target → flash the row as feedback, keep the popup open.
+            if (missing) { this._bmFlashMissingRow(row); return; }
             this._bmActivateBookmark(bm, e);
             this._bmHidePopup(win);
         });

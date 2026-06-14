@@ -4106,6 +4106,12 @@ class _PaneMixin {
                 "#titlebar:has(#toolbar-menubar[wv-compact-hidden='true']) {",
                 "  height: 0 !important; min-height: 0 !important;",
                 "  overflow: hidden !important;",
+                /* Kill #titlebar's 1px border-bottom too. Its content collapses
+                   to 0, but that border (a light rgba(255,255,255,.18) divider)
+                   keeps rendering as a stray 1px highlight line floating at the
+                   very top of the window above the dark tab bar — the "top 1px
+                   bar" that should vanish WITH the hidden title bar, not linger. */
+                "  border-width: 0 !important;",
                 "}",
                 /* Buttonbox: absolute-positioned over the right edge of the
                    tab strip. Flex layout fights us (tab-bar-container is

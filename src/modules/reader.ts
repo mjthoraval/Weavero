@@ -3379,17 +3379,16 @@ class _ReaderMixin {
                    own tab bar. */
                 ".wv-window-tabstrip {",
                 "  display: flex; align-items: stretch; box-sizing: border-box;",
-                // Geometry mirrors the main window's title region exactly (border-box):
-                //   • 1px dark TOP row  — padding-top:1px over the --material-tabbar
-                //     background; the twin of the main window's collapsed-menubar
-                //     #titlebar strip (y:0-1, also --material-tabbar dark).
+                // Geometry mirrors the main window's title region (border-box):
                 //   • 36px tab area     — content box; tabs align-self:center -> 4px in.
                 //   • 1px BOTTOM border — --material-panedivider, the divider line
-                //     under #zotero-title-bar (the line that was missing).
-                // Net: focused tab lands at y:5 and the divider at y:37-38, matching
-                // the main window — vs the old 36px flush-at-y:0 strip that sat 1px
-                // too high with no bottom line. 4px inline padding insets the tabs.
-                "  height: 38px; padding: 1px 4px 0 4px;",
+                //     under #zotero-title-bar.
+                // Net: focused tab lands at y:4 and the divider at y:36-37. The old
+                // 1px dark TOP row (padding-top:1px) twinned the main window's
+                // collapsed-menubar #titlebar strip — removed in lockstep with that
+                // strip's 1px border so neither window shows a top 1px row.
+                // 4px inline padding insets the tabs.
+                "  height: 37px; padding: 0 4px;",
                 "  background: var(--material-tabbar);",
                 "  border-bottom: var(--material-panedivider);",
                 "  -moz-window-dragging: drag;",

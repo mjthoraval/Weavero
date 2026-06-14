@@ -71,10 +71,14 @@ class _TabGroupsMixin {
         return (c || WV_GROUP_COLORS[0]).hex;
     }
 
-    /** The group containing (libraryID, itemKey), or null. */
+    /** The LIVE group containing (libraryID, itemKey), or null. SAVED (parked)
+     *  groups are deliberately EXCLUDED: a saved group's membership is a stored
+     *  snapshot, fully decoupled from open tabs — an open tab whose item is a
+     *  saved member is NOT "in" the group (no chip, not nested in the tabs menu).
+     *  Persistence/reopen still read `g.members` directly. */
     _tabGroupOfKey(libraryID: any, itemKey: any) {
         const groups = this._tabGroupsGet();
-        return groups.find((g: any) => (g.members || []).some(
+        return groups.find((g: any) => !(g as any).saved && (g.members || []).some(
             (m: any) => m.libraryID === libraryID && m.itemKey === itemKey)) || null;
     }
 
@@ -120,6 +124,20 @@ class _TabGroupsMixin {
         this._tabGroupsSet(groups);
     }
 
+    /** Cross-window move / tear-out: a tab leaving its window leaves its group
+     *  (Firefox model — the group doesn't follow the tab to the new window).
+     *  Call this BEFORE closing the source tab so the close doesn't park it as
+     *  recently-closed (and the reopen in the other window doesn't rejoin it).
+     *  Also clears any stale recently-closed record. */
+    _wvForgetTabGroupForItem(itemID: any) {
+        try {
+            const it: any = (itemID != null) && Zotero.Items.get(itemID);
+            if (!it) return;
+            this._tabGroupRemoveKey(it.libraryID, it.key);
+            this._wvForgetClosed(it.libraryID, it.key);
+        } catch (e) {}
+    }
+
     /** Delete a group (tabs stay open — "Ungroup"). */
     _tabGroupDelete(groupID: any) {
         this._tabGroupsSet(this._tabGroupsGet().filter((g: any) => g.id !== groupID));
@@ -151,7 +169,7 @@ class _TabGroupsMixin {
 
     _ensureTabGroupStyles(doc: any) {
         try {
-            const STYLE_VERSION = "19";
+            const STYLE_VERSION = "20";
             const old = doc.getElementById("wv-tab-group-styles");
             if (old) {
                 if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
@@ -224,6 +242,13 @@ class _TabGroupsMixin {
                 "  box-shadow: inset 0 0 0 2px var(--accent-blue, #4072e5) !important;",
                 "  background: color-mix(in srgb, var(--accent-blue, #4072e5) 18%, transparent) !important;",
                 "  border-radius: 6px;",
+                "}",
+                // Drag a tab onto a COLLAPSED group's chip (middle third) →
+                // releasing joins it; the chip lights up in the group colour.
+                "#tab-bar-container .wv-tab-group-chip.wv-tg-join-target {",
+                "  outline: 2px solid var(--wv-group-color, #4072e5);",
+                "  outline-offset: 1px;",
+                "  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wv-group-color, #4072e5) 35%, transparent);",
                 "}",
                 // Editor panel, Firefox "Manage tab group" layout.
                 ".wv-tg-title { text-align: center; font-weight: 600; font-size: inherit; padding: 2px 0 4px; }",
@@ -410,6 +435,12 @@ class _TabGroupsMixin {
     _applyTabGroups(win: any) {
         try {
             if (!win || !win.document) return;
+            // Batched mutation in flight (e.g. a group migrate adding many
+            // unloaded tabs): skip the per-event re-chip churn — the orchestrator
+            // does ONE settling apply when the batch ends. Without this, each
+            // Z.add fires the tab notifier → _applyTabGroups, re-chipping the bar
+            // 8+ times in a burst (visible flicker).
+            if ((this as any)._wvSuppressGroupApply) return;
             // A native tab drag is in flight: HANDS OFF. Re-syncing member
             // order / repositioning the chip here fights Zotero's live
             // reorder — the layout shift moves the tab midpoints, Zotero
@@ -440,7 +471,7 @@ class _TabGroupsMixin {
             const Z_Tabs: any = win.Zotero_Tabs;
             const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
             if (!Z_Tabs || !Z_Tabs._tabs || !tabsBox) return;
-            const groups = this._tabGroupsGet();
+            let groups = this._tabGroupsGet();
             if (!groups.length) { this._stripTabGroups(win); return; }
 
             // Open tabs by key, in Zotero's display order.
@@ -454,39 +485,93 @@ class _TabGroupsMixin {
                 const k = t && keyOf(t);
                 if (k && !openByKey.has(k)) openByKey.set(k, t);
             }
+            // Open members across ALL windows (a group can live in another main
+            // or reader window), so the per-window re-sync never drops a member
+            // that is merely open elsewhere. Globally-empty groups are deleted.
+            const globalOpen = this._wvGlobalOpenKeys();
+            const emptyGroupIds = new Set<string>();
 
             const wantClass = new Map<string, { group: any; hidden: boolean; first?: boolean }>();   // tabID →
             let prefDirty = false;
+            // Rejoin a recently-closed member that has just reopened (undo-close,
+            // or reopened within the window) to its original group, before each
+            // group is re-synced below. A transient absence self-heals here too.
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const t = Z_Tabs._tabs[i];
+                const pk = t && (this as any)._tabPinKey(t);
+                if (!pk) continue;
+                if (this._tabGroupOfKey(pk.libraryID, pk.itemKey)) continue;       // already grouped
+                const gid = this._wvRecentClosedGroup(pk.libraryID, pk.itemKey);
+                if (!gid) continue;
+                const tg = groups.find((x: any) => x.id === gid);
+                if (tg) {
+                    tg.members = (tg.members || []).concat([{ libraryID: pk.libraryID, itemKey: pk.itemKey }]);
+                    this._wvForgetClosed(pk.libraryID, pk.itemKey);
+                    prefDirty = true;
+                }
+            }
             for (const g of groups) {
+                // Explicitly SAVED group ("Save and close group"): keep ALL its
+                // members for reopening — never drop them or delete the group.
+                // It shows no chip and lives only in the tabs-menu footer until
+                // reopened (which clears the flag, via _wvTabGroupReopen). Firefox
+                // model: filing a tab into a saved group adds it as a member AND
+                // closes the tab (see _wvTabGroupAddTab), so a parked group never
+                // has open tabs to chip here — it's skipped entirely.
+                if ((g as any).saved) {
+                    const sc = doc.getElementById("wv-tgchip-" + g.id);
+                    if (sc) sc.remove();
+                    continue;
+                }
                 // Split members into open (re-synced to display order) + closed.
                 const memberKeys = new Set((g.members || []).map(
                     (m: any) => m.libraryID + ":" + m.itemKey));
                 const openMembers: any[] = [];
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
+                    if ((t as any)._wvGroupExcluded) continue;   // per-tab: a separate copy kept OUT of the group
                     const k = t && keyOf(t);
                     if (k && memberKeys.has(k)) openMembers.push({ tab: t, key: k });
                 }
-                // Re-sync member order: open members first in display order,
-                // then closed members (kept; they re-join when reopened).
+                // Re-sync to the OPEN members in display order. Firefox model:
+                // a closed member LEAVES the group (the group shrinks — no
+                // lingering "saved" members inside a live group).
                 const openSet = new Set(openMembers.map(m => m.key));
+                // While a saved group is being reopened, keep ALL its members
+                // (some haven't reopened yet) and don't delete it — so members
+                // group as each tab appears instead of all-at-once at the end.
+                const reopening = this._wvReopeningGroups().has(g.id);
                 const newMembers = openMembers.map((m) => {
                     const pk = (this as any)._tabPinKey(m.tab);
                     return { libraryID: pk.libraryID, itemKey: pk.itemKey };
                 });
                 for (const m of (g.members || [])) {
-                    if (!openSet.has(m.libraryID + ":" + m.itemKey)) {
-                        // Keep closed members only while the item still exists.
-                        try {
-                            if (Zotero.Items.getIDFromLibraryAndKey(m.libraryID, m.itemKey)) {
-                                newMembers.push(m);
-                            } else prefDirty = true;
-                        } catch (e) { newMembers.push(m); }
+                    const mk = m.libraryID + ":" + m.itemKey;
+                    if (openSet.has(mk)) continue;          // already added (open in THIS window)
+                    if (globalOpen.has(mk) || reopening) {  // open elsewhere, or mid-reopen → keep
+                        newMembers.push({ libraryID: m.libraryID, itemKey: m.itemKey });
+                        continue;
                     }
+                    // Globally closed. Park the association briefly so RESTORING
+                    // the tab (undo-close, or reopening within the window)
+                    // rejoins its original group — see the rejoin pass above; a
+                    // transient absence self-heals the same way. Otherwise the
+                    // member just leaves the group (Firefox model).
+                    this._wvRecordClosedFromGroup(m.libraryID, m.itemKey, g.id);
+                    prefDirty = true;
                 }
                 if (JSON.stringify(newMembers) !== JSON.stringify(g.members)) {
                     g.members = newMembers;
                     prefDirty = true;
+                }
+                // Globally empty (no member open in any window) → delete the
+                // group (pure Firefox: closing the last tab removes the group).
+                // Never while it's mid-reopen (transiently has no tabs yet).
+                if (!newMembers.length && !reopening) {
+                    const dead = doc.getElementById("wv-tgchip-" + g.id);
+                    if (dead) dead.remove();
+                    emptyGroupIds.add(g.id);
+                    continue;
                 }
 
                 // Chip + member classes.
@@ -518,6 +603,11 @@ class _TabGroupsMixin {
                         first: i === 0,
                     });
                 }
+            }
+            // Drop groups that emptied out everywhere (Firefox: no last tab → no group).
+            if (emptyGroupIds.size) {
+                groups = groups.filter((g: any) => !emptyGroupIds.has(g.id));
+                prefDirty = true;
             }
             if (prefDirty) this._tabGroupsSet(groups);
 
@@ -572,6 +662,78 @@ class _TabGroupsMixin {
                 node.style.removeProperty("--wv-group-color");
             }
         } catch (e) {}
+    }
+
+    // ---- Recently-closed → group memory -------------------------------------
+    // Firefox model: closing a grouped tab removes it from the group. To let a
+    // RESTORED tab (undo-close, or reopened soon after) rejoin its original
+    // group, the {item → group} association is parked here for a short window.
+    // Stored on the Zotero global so it survives plugin reloads.
+
+    _wvRecentClosedMap(): any {
+        const z: any = Zotero;
+        return (z._wvRecentClosedGroups = z._wvRecentClosedGroups || {});
+    }
+    _wvRecordClosedFromGroup(libraryID: any, itemKey: any, groupID: any) {
+        try {
+            const m = this._wvRecentClosedMap();
+            m[libraryID + ":" + itemKey] = { groupID, ts: Date.now() };
+            const keys = Object.keys(m);
+            if (keys.length > 80) {            // keep only the 80 most recent
+                keys.map((k) => [k, m[k].ts] as [string, number])
+                    .sort((a, b) => a[1] - b[1])
+                    .slice(0, keys.length - 80)
+                    .forEach(([k]) => { delete m[k]; });
+            }
+        } catch (e) {}
+    }
+    _wvRecentClosedGroup(libraryID: any, itemKey: any): any {
+        try {
+            const m = this._wvRecentClosedMap();
+            const rec = m[libraryID + ":" + itemKey];
+            if (!rec) return null;
+            if (Date.now() - rec.ts > 30 * 60 * 1000) { delete m[libraryID + ":" + itemKey]; return null; }  // 30-min window
+            if (!this._tabGroupsGet().some((g: any) => g.id === rec.groupID)) { delete m[libraryID + ":" + itemKey]; return null; }
+            return rec.groupID;
+        } catch (e) { return null; }
+    }
+    _wvForgetClosed(libraryID: any, itemKey: any) {
+        try { delete this._wvRecentClosedMap()[libraryID + ":" + itemKey]; } catch (e) {}
+    }
+
+    /** Keys ("lib:key") of every item open as a tab in ANY window — main tab
+     *  bars and Weavero reader-window strips. Used so a per-window group re-sync
+     *  never drops a member that's merely open in a different window. */
+    _wvGlobalOpenKeys(): Set<string> {
+        const s = new Set<string>();
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                const Z: any = (w as any).Zotero_Tabs;
+                for (const t of (Z && Z._tabs) || []) {
+                    const k = (this as any)._tabPinKey(t);
+                    if (k) s.add(k.libraryID + ":" + k.itemKey);
+                }
+            }
+        } catch (e) {}
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (!w || !w._wvWT) continue;
+                for (const t of w._wvWT.tabs || []) {
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (k) s.add(k.libraryID + ":" + k.itemKey);
+                }
+            }
+        } catch (e) {}
+        return s;
+    }
+
+    /** Group ids currently being reopened from a saved state — _applyTabGroups
+     *  keeps their members and won't delete them while their tabs come back. */
+    _wvReopeningGroups(): Set<string> {
+        const z: any = Zotero;
+        return (z._wvReopeningGroups = z._wvReopeningGroups || new Set<string>());
     }
 
     // ---- Chip ---------------------------------------------------------------
@@ -809,6 +971,17 @@ class _TabGroupsMixin {
             const tab = Z_Tabs && Z_Tabs._tabs.find((t: any) => t.id === tabID);
             const key = tab && (this as any)._tabPinKey(tab);
             if (!key) return;
+            // Firefox model for a SAVED (parked) group (tabbrowser.js
+            // `addTabsToSavedGroup`): file the tab into the group's stored members
+            // and CLOSE it — the group stays parked. The tab returns only when the
+            // whole group is reopened; we never reopen the group on add.
+            const savedGrp = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (savedGrp && (savedGrp as any).saved) {
+                this._tabGroupAddKey(groupID, key);
+                try { Z_Tabs.close(tabID); } catch (e) {}
+                try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+                return;
+            }
             const home = this._wvTabGroupHomeWin(groupID);
             if (home && home !== win) {
                 this._wvTabGroupSendTabToWin(win, tabID, home, groupID);
@@ -923,6 +1096,21 @@ class _TabGroupsMixin {
         try {
             const tabNode = e.target && e.target.closest && e.target.closest(".tab[data-id]");
             win._wvTabGroupDragTabID = tabNode ? tabNode.getAttribute("data-id") : null;
+            // Firefox-style sliding gap. We never reorder during the drag (that
+            // races the chip system and corrupts groups); instead dragover
+            // slides the other tabs aside (transforms only) to open a gap at the
+            // cursor, and the real move commits on drop. Capture the grab offset
+            // + width for the cursor→slot math (deferred to after the multi-drag
+            // stow below, so stowed followers are excluded from the geometry).
+            win._wvDragGrab = null;
+            win._wvDragWidth = null;
+            if (tabNode && win._wvTabGroupDragTabID && win._wvTabGroupDragTabID !== "zotero-pane") {
+                try {
+                    const r = tabNode.getBoundingClientRect();
+                    win._wvDragGrab = e.clientX - r.left;
+                    win._wvDragWidth = r.width;
+                } catch (erG) {}
+            }
             // Multi-tab drag (Firefox): dragging a tab that's part of the
             // multi-selection takes the WHOLE selection along. The others are
             // stowed (zero-width) for the drag and re-clustered after the
@@ -944,6 +1132,14 @@ class _TabGroupsMixin {
                     }
                 }
             } catch (er2) {}
+            // Give the drag a proper ghost (a tab image that follows the
+            // cursor), then collapse the dragged slot and snapshot the bar so
+            // dragover can slide a gap open. Done after the multi-drag stow so
+            // followers (now zero-width) are excluded from the geometry.
+            if (tabNode && win._wvTabGroupDragTabID && win._wvTabGroupDragTabID !== "zotero-pane") {
+                try { this._wvSuppressOSGhost(win, e); } catch (erI) {}
+                try { this._wvDragCacheGeom(win, win._wvTabGroupDragTabID, win._wvDragGrab, win._wvDragWidth); } catch (erC) {}
+            }
             this._wvTGDbg("dragstart tabID=" + win._wvTabGroupDragTabID
                 + " multi=" + (win._wvMultiDragIDs ? win._wvMultiDragIDs.length : 0)
                 + " target=" + (e.target && e.target.tagName) + "." + (e.target && e.target.className && String(e.target.className).split(" ")[0]));
@@ -1085,8 +1281,23 @@ class _TabGroupsMixin {
             // group-creation dwell (Firefox: hover another tab's center,
             // it highlights, drop to group the two).
             if (win._wvTabGroupDragTabID != null) {
-                win._wvTabGroupRegions = this._wvTabGroupMeasureRegions(win, false, win._wvTabGroupDragTabID);
                 try { this._wvTabGroupDwellTrack(win, e); } catch (er) {}
+                // Slide a gap open at the cursor (transforms only — NO reorder,
+                // so groups can't corrupt; the move commits on drop). Then BLOCK
+                // Zotero's own dragover handler — its index math mis-fires with
+                // collapsed groups (moves the model index nowhere near the
+                // cursor, only transforms the tab visually → the gap opens in
+                // the wrong place and groups appear split). Our listener is
+                // capture-phase on #tab-bar-container (an ancestor of React's
+                // root), so stopPropagation keeps the event from reaching
+                // Zotero's bubble-phase handler.
+                try { this._wvOpenGap(win, e.clientX); } catch (er) {}
+                try {
+                    e.preventDefault();
+                    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                    e.stopPropagation();
+                } catch (er) {}
+                return;
             }
             const gd = (this as any)._wvGroupDrag;
             if (!gd) return;
@@ -1206,6 +1417,27 @@ class _TabGroupsMixin {
             win._wvMultiDragIDs = null;
             win._wvGroupDragSlot = null;
             this._wvTabGroupDwellClear(win);
+            // Close the visual gap (un-collapse the dragged slot, drop the
+            // transforms) before committing the real move. Keeps _wvGapResult.
+            try { this._wvClearGap(win); } catch (eG) {}
+            // Reliable drop X: the dragleave handler nulls _wvTabDragLastX
+            // whenever the pointer grazes outside the bar, which happens even on
+            // an in-bar drop — so trust the dragend release point when it's
+            // inside the bar, falling back to the last tracked dragover x. Stays
+            // null only for a genuine tear-off (released off the bar).
+            let dropX: number | null = null;
+            try {
+                const cont = win.document.getElementById("tab-bar-container");
+                const cr = cont && cont.getBoundingClientRect();
+                if (e && typeof e.clientX === "number" && cr
+                        && e.clientX >= cr.left && e.clientX <= cr.right
+                        && e.clientY >= cr.top && e.clientY <= cr.bottom) {
+                    dropX = e.clientX;
+                } else if (typeof win._wvTabDragLastX === "number") {
+                    dropX = win._wvTabDragLastX;
+                }
+            } catch (ex) {}
+            win._wvTabDropX = dropX;
             this._wvTGDbg("dragend tabID=" + tabID + " clientX=" + (e && e.clientX)
                 + " lastX=" + win._wvTabDragLastX + " multi=" + (multi ? multi.length : 0)
                 + " createTarget=" + createTarget);
@@ -1221,7 +1453,9 @@ class _TabGroupsMixin {
                 }, 60);
             } else {
                 win.setTimeout(() => {
-                    try { this._wvTabGroupHandleNativeDragEnd(win, { tabID }); } catch (e2) {}
+                    // Commit the previewed gap slot + membership (in-bar drop
+                    // only — a tear-off leaves _wvTabDropX null).
+                    try { if (typeof win._wvTabDropX === "number") this._wvCommitGapDrop(win, tabID); } catch (e3) {}
                 }, 80);
             }
             if (multi && multi.length) {
@@ -1232,6 +1466,239 @@ class _TabGroupsMixin {
                 }, 150);
             }
         } catch (er) { this._wvTGDbg("dragend ERR=" + er); }
+    }
+
+    /** Hide the OS drag ghost (an empty dashed box in the title-bar strip —
+     *  Gecko won't render a useful one there). The dragged tab itself follows
+     *  the cursor via our own transform in _wvOpenGap, so we want the OS ghost
+     *  gone: a 1×1 transparent canvas does it. */
+    _wvSuppressOSGhost(win: any, e: any) {
+        try {
+            if (!e || !e.dataTransfer || typeof e.dataTransfer.setDragImage !== "function") return;
+            const c = win.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
+            c.width = 1; c.height = 1;
+            e.dataTransfer.setDragImage(c, 0, 0);
+        } catch (er) {}
+    }
+
+    /** Snapshot the bar for the sliding-gap drag. We do NOT collapse or reorder
+     *  anything (that races the chip system): the dragged tab stays in place and
+     *  is lifted (z-index, transform→cursor) so it floats like Firefox's tab;
+     *  the OTHER tabs shift to close its origin slot and open the landing gap.
+     *  Record the dragged tab's origin edges, every other tab/chip's NATURAL
+     *  left, and group-aware "units" (a collapsed group = one block). Cached
+     *  once — only transforms change during the drag, so positions stay valid. */
+    _wvDragCacheGeom(win: any, tabID: any, grab: any, width: any) {
+        try {
+            const Z: any = win.Zotero_Tabs;
+            const doc = win.document;
+            const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs")
+                || doc.querySelector("#tab-bar-container .tabs");
+            if (!Z || !Z._tabs || !tabsBox) { win._wvDragGeom = null; return; }
+            const draggedEl = tabsBox.querySelector('.tab[data-id="' + tabID + '"]');
+            if (!draggedEl) { win._wvDragGeom = null; return; }
+            const dr = draggedEl.getBoundingClientRect();
+            const gapWidth = (typeof width === "number" && width) || dr.width;
+            // Lift the dragged tab: floats above, follows the cursor instantly
+            // (no transition), and doesn't intercept dragover hit-testing.
+            draggedEl.style.transition = "none";
+            draggedEl.style.zIndex = "10";
+            draggedEl.style.position = "relative";
+            draggedEl.style.pointerEvents = "none";
+            const groupOf = (t: any) => { const k = (this as any)._tabPinKey(t); return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null; };
+            const groups = this._tabGroupsGet();
+            const groupById: any = {};
+            for (const g of groups) groupById[g.id] = g;
+            // First open-member Z._tabs index per group (where its chip sits).
+            const firstZIdxOf: any = {};
+            for (let i = 1; i < Z._tabs.length; i++) {
+                const t = Z._tabs[i]; if (!t || t.id === tabID) continue;
+                const g = groupOf(t); if (g && firstZIdxOf[g.id] === undefined) firstZIdxOf[g.id] = i;
+            }
+            // First non-pinned slot (a normal tab can't land before the pinned region).
+            let firstNonPinnedZIdx = 1;
+            while (firstNonPinnedZIdx < Z._tabs.length) {
+                const t = Z._tabs[firstNonPinnedZIdx];
+                const el = t && tabsBox.querySelector('.tab[data-id="' + t.id + '"]');
+                if (el && el.classList.contains("wv-pinned-tab")) firstNonPinnedZIdx++; else break;
+            }
+            // Sliding elements (transforms) + Firefox-style drop elements (cursor
+            // hit-test), in DOM order, excluding the dragged tab + hidden members.
+            // Chips are first-class drop targets — a group "label" (Firefox's
+            // dragAndDropElements). "After a chip" = first position INSIDE its group.
+            const elems: Array<{ el: any; left: number }> = [];
+            const dropEls: any[] = [];
+            for (const el of Array.prototype.slice.call(tabsBox.children)) {
+                if (el === draggedEl) continue;
+                const isTabEl = !!(el.classList && el.classList.contains("tab"));
+                const isChipEl = !!(el.classList && el.classList.contains("wv-tab-group-chip"));
+                if (!isTabEl && !isChipEl) continue;
+                const r = el.getBoundingClientRect();
+                if (isTabEl && r.width < 1) continue;       // hidden collapsed member
+                elems.push({ el, left: r.left });
+                if (isTabEl) {
+                    const id = el.getAttribute("data-id");
+                    const zi = Z._tabs.findIndex((t: any) => t && t.id === id);
+                    const t = zi >= 0 ? Z._tabs[zi] : null;
+                    const g = t && groupOf(t);
+                    dropEls.push({ left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "tab", zIdx: zi, groupId: g ? g.id : null, pinned: el.classList.contains("wv-pinned-tab") });
+                } else {
+                    const gid = el.getAttribute("data-wv-group");
+                    const g = groupById[gid];
+                    dropEls.push({ left: r.left, right: r.right, mid: (r.left + r.right) / 2, kind: "chip", groupId: gid, collapsed: !!(g && g.collapsed), firstZIdx: firstZIdxOf[gid] });
+                }
+            }
+            for (const e of elems) e.el.style.transition = "transform 0.12s ease";
+            win._wvDragGeom = {
+                gapWidth, grab: (typeof grab === "number" ? grab : gapWidth / 2), width: gapWidth,
+                originLeft: dr.left, originRight: dr.right, elems, dropEls, draggedEl,
+                endSlot: Z._tabs.length, draggedPinned: draggedEl.classList.contains("wv-pinned-tab"), firstNonPinnedZIdx,
+            };
+            win._wvGapResult = null;
+        } catch (e) { win._wvDragGeom = null; }
+    }
+
+    /** Firefox-faithful drop resolution (mirrors Firefox's `_getDropIndex` in
+     *  drag-and-drop.js): use the CURSOR over the element it is hovering — before
+     *  or after that element's MIDDLE — NOT the dragged tab's center (which
+     *  drifts for a wide tab over a narrow chip). Chips (group labels) are
+     *  first-class drop elements, so "after a group's chip" lands the tab at the
+     *  group's FIRST position, inside it. Positions are read in the origin-closed
+     *  (effective) layout the user actually sees. Returns
+     *  { slot, joinGroupId, collapsedJoin, insertionX }. */
+    _wvComputeDrop(win: any, clientX: number) {
+        const g = win._wvDragGeom;
+        if (!g) return null;
+        const eff = (d: any) => { const sh = (d.left >= g.originRight - 1) ? g.gapWidth : 0; return { left: d.left - sh, right: d.right - sh, mid: d.mid - sh }; };
+        // A collapsed group's chip stands for the whole group: cursor over its
+        // left half drops before it (outside), over its right half joins it.
+        for (const d of g.dropEls) {
+            if (d.kind !== "chip" || !d.collapsed) continue;
+            const e = eff(d);
+            if (clientX >= e.left && clientX <= e.right) {
+                const slot = (d.firstZIdx != null ? d.firstZIdx : g.endSlot);
+                if (clientX < e.mid) return { slot, joinGroupId: null, collapsedJoin: false, insertionX: d.left };
+                return { slot, joinGroupId: d.groupId, collapsedJoin: true, insertionX: d.left };
+            }
+        }
+        // Insertion index = number of element-middles left of the cursor.
+        let insIdx = 0;
+        for (const d of g.dropEls) { if (eff(d).mid < clientX) insIdx++; else break; }
+        const prevEl = insIdx > 0 ? g.dropEls[insIdx - 1] : null;
+        const nextEl = insIdx < g.dropEls.length ? g.dropEls[insIdx] : null;
+        let slot;
+        if (!nextEl) slot = g.endSlot;
+        else if (nextEl.kind === "tab") slot = nextEl.zIdx;
+        else slot = (nextEl.firstZIdx != null ? nextEl.firstZIdx : g.endSlot);   // before a chip → before its group
+        if (!g.draggedPinned && slot < g.firstNonPinnedZIdx) slot = g.firstNonPinnedZIdx;
+        // Membership: inside group G iff the insertion sits between G's
+        // chip-or-member and one of G's members ("after the chip, before
+        // member 1" = first position in the group).
+        let joinGroupId: any = null;
+        if (nextEl && nextEl.kind === "tab" && nextEl.groupId) {
+            if (prevEl && prevEl.groupId === nextEl.groupId) joinGroupId = nextEl.groupId;
+        }
+        const insertionX = nextEl ? nextEl.left : (g.dropEls.length ? g.dropEls[g.dropEls.length - 1].right : -1);
+        return { slot, joinGroupId, collapsedJoin: false, insertionX };
+    }
+
+    /** dragover: lift the dragged tab to the cursor and slide the others to open
+     *  the gap at the cursor (transforms only — NO reorder). Uses _wvComputeDrop
+     *  for the Firefox-style slot/membership, stores it in _wvGapResult, and
+     *  tints the target group's chip. */
+    _wvOpenGap(win: any, clientX: number) {
+        try {
+            const geom = win._wvDragGeom;
+            if (!geom) return;
+            const doc = win.document;
+            const res = this._wvComputeDrop(win, clientX);
+            if (!res) return;
+            win._wvGapResult = res;
+            // Lift the dragged tab under the cursor (grab-anchored).
+            if (geom.draggedEl) {
+                const tx = Math.round((clientX - geom.grab) - geom.originLeft);
+                const tf = "translateX(" + tx + "px)";
+                if (geom.draggedEl.style.transform !== tf) geom.draggedEl.style.transform = tf;
+            }
+            // Tint the target group's chip when releasing would join it.
+            const wantChip = res.joinGroupId ? ("wv-tgchip-" + res.joinGroupId) : null;
+            if (win._wvJoinTargetChip && win._wvJoinTargetChip !== wantChip) {
+                const pc = doc.getElementById(win._wvJoinTargetChip);
+                if (pc) pc.classList.remove("wv-tg-join-target");
+                win._wvJoinTargetChip = null;
+            }
+            if (wantChip) {
+                const chip = doc.getElementById(wantChip);
+                if (chip) { chip.classList.add("wv-tg-join-target"); win._wvJoinTargetChip = wantChip; }
+            }
+            // Slide the others: close the origin slot; open the landing gap
+            // unless we're merging into a COLLAPSED group (no in-line gap then).
+            const openLanding = !res.collapsedJoin && res.insertionX >= 0;
+            for (const e of geom.elems) {
+                let dx = 0;
+                if (e.left >= geom.originRight - 1) dx -= geom.gapWidth;                 // fill the origin slot
+                if (openLanding && e.left >= res.insertionX - 1) dx += geom.gapWidth;    // open the landing gap
+                const tf = dx ? ("translateX(" + dx + "px)") : "";
+                if (e.el.style.transform !== tf) e.el.style.transform = tf;
+            }
+        } catch (e) {}
+    }
+
+    /** Drop/cancel: remove all gap transforms and un-lift the dragged tab.
+     *  Leaves _wvGapResult in place for the commit. */
+    _wvClearGap(win: any) {
+        try {
+            const geom = win._wvDragGeom;
+            if (geom) {
+                for (const e of geom.elems) { try { e.el.style.transform = ""; e.el.style.transition = ""; } catch (er) {} }
+                if (geom.draggedEl) {
+                    try {
+                        const s = geom.draggedEl.style;
+                        s.transform = ""; s.transition = ""; s.zIndex = ""; s.position = ""; s.pointerEvents = "";
+                    } catch (er) {}
+                }
+            }
+            win._wvDragGeom = null;
+            if (win._wvJoinTargetChip) {
+                const c = win.document.getElementById(win._wvJoinTargetChip);
+                if (c) c.classList.remove("wv-tg-join-target");
+                win._wvJoinTargetChip = null;
+            }
+        } catch (e) {}
+    }
+
+    /** Commit the previewed gap: move the dragged tab to the slot the gap showed
+     *  and apply the previewed membership (join res.joinGroupId, or leave any
+     *  group when dropped outside). Now that the drag is over nothing races the
+     *  reorder. Zotero_Tabs.move() compensates for the removal internally
+     *  (`if (newIndex > tabIndex) newIndex--`), so the insertion index is passed
+     *  straight through (may be _tabs.length to append). */
+    _wvCommitGapDrop(win: any, tabID: any) {
+        try {
+            const Z: any = win.Zotero_Tabs;
+            const res = win._wvGapResult; win._wvGapResult = null;
+            if (!Z || !Z._tabs || typeof Z.move !== "function" || !res) return;
+            const di = Z._tabs.findIndex((t: any) => t && t.id === tabID);
+            if (di < 0) return;
+            const target = Math.max(1, Math.min(res.slot, Z._tabs.length));
+            if (target !== di) Z.move(tabID, target);
+            // Membership straight from the previewed result (the gap already
+            // showed it): join res.joinGroupId, else leave any current group.
+            const t = Z._tabs.find((x: any) => x && x.id === tabID);
+            const k = t && (this as any)._tabPinKey(t);
+            if (k) {
+                const cur = this._tabGroupOfKey(k.libraryID, k.itemKey);
+                if (res.joinGroupId) {
+                    if (cur && cur.id !== res.joinGroupId) this._tabGroupRemoveKey(k.libraryID, k.itemKey);
+                    if (!cur || cur.id !== res.joinGroupId) this._tabGroupAddKey(res.joinGroupId, k);
+                } else if (cur) {
+                    this._tabGroupRemoveKey(k.libraryID, k.itemKey);
+                }
+            }
+            this._wvTabGroupStabilize(win);
+            this._wvTabGroupApplyEverywhere();
+            this._wvTGDbg("gapDrop: → idx " + target + " (from " + di + ") join=" + (res.joinGroupId || "-"));
+        } catch (e) { this._wvTGDbg("gapDrop ERR=" + e); }
     }
 
     _wvMultiDragUnstow(win: any) {
@@ -1297,50 +1764,52 @@ class _TabGroupsMixin {
             if (!key) { this._wvTGDbg("membership: no item key"); return; }
             const groups = this._tabGroupsGet();
             if (!groups.length) { this._wvTGDbg("membership: no groups"); return; }
-            const lastX = win._wvTabDragLastX;
-            this._wvTGDbg("membership: tab=" + drag.tabID + " lastX=" + lastX);
-            const apply = () => { this._wvTabGroupApplyEverywhere(); };
-            // GEOMETRIC rule (the Firefox feel): a group's region runs from its
-            // chip's LEFT edge to its last visible member's RIGHT edge — the
-            // tab joins the group whose region the pointer was over at release.
-            // Regions come from the DRAG-TIME snapshot (taken on dragover):
-            // measuring here, ~80ms post-drop, compares the release x against
-            // already-shifted layout and never matches.
-            const snapshot = win._wvTabGroupRegions || null;
-            win._wvTabGroupRegions = null;
-            const regionOf = (g: any) => {
-                if (snapshot && snapshot[g.id]) return snapshot[g.id];
-                const live = this._wvTabGroupMeasureRegions(win, false, tab.id);
-                return live[g.id] || null;
-            };
+            const lastX = win._wvTabDropX;
+            win._wvTabGroupRegions = null;            // clear the drag-time snapshot
+            // Tear-off (dragged out of the window) leaves no in-bar position;
+            // don't reconcile on a stale point — the target window owns it.
             if (typeof lastX !== "number") return;
+            this._wvTGDbg("membership: tab=" + drag.tabID + " lastX=" + lastX);
+            // MODEL rule (robust). The old geometric chip-region test compared
+            // the release x against a layout that the mid-drag re-clustering had
+            // already shifted, so the join silently missed and the group split.
+            // Instead: the dragged tab JOINS a group iff it came to rest BETWEEN
+            // two members of the SAME group — both its immediate neighbours in
+            // the tab model belong to one group. Dropping at a group's edge (one
+            // neighbour in it) or in open water leaves it ungrouped.
+            // _wvTabGroupStabilize then heals any group the drag split by
+            // passing the tab through it, preserving the dropped position
+            // (membersOf() clusters in current model order).
+            const di = Z_Tabs._tabs.findIndex((t: any) => t && t.id === drag.tabID);
+            const groupOfTab = (t: any) => {
+                if (!t || t.id === "zotero-pane") return null;
+                const k = (this as any)._tabPinKey(t);
+                return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
+            };
+            const prevG = di > 0 ? groupOfTab(Z_Tabs._tabs[di - 1]) : null;
+            const nextG = (di >= 0 && di + 1 < Z_Tabs._tabs.length) ? groupOfTab(Z_Tabs._tabs[di + 1]) : null;
             const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
-            // JOIN: pointer released over another group's region.
-            for (const g of groups) {
-                if (curGroup && g.id === curGroup.id) continue;
-                const reg = regionOf(g);
-                this._wvTGDbg("membership: group '" + (g.name || g.id) + "' region=" + JSON.stringify(reg));
-                if (!reg || lastX < reg.left || lastX > reg.right) continue;
-                this._wvTGDbg("membership: JOIN '" + (g.name || g.id) + "'");
-                this._tabGroupAddKey(g.id, key);
-                this._wvTabGroupStabilize(win);
-                apply();
-                return;
+            const targetG = (prevG && nextG && prevG.id === nextG.id) ? prevG : null;
+            this._wvTGDbg("membership(model): prev=" + (prevG && prevG.id) + " next=" + (nextG && nextG.id)
+                + " cur=" + (curGroup && curGroup.id) + " → target=" + (targetG && targetG.id));
+            if (targetG) {
+                if (!curGroup || curGroup.id !== targetG.id) {
+                    if (curGroup) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                    this._tabGroupAddKey(targetG.id, key);
+                    this._wvTGDbg("membership: JOIN '" + (targetG.name || targetG.id) + "' (between its members)");
+                }
+            } else if (curGroup) {
+                // Left its group's interior. A sole-member group travels with its
+                // only tab (don't dissolve it); otherwise the tab leaves.
+                const openCount = (curGroup.members || []).reduce((n: number, m: any) =>
+                    n + (Z_Tabs._tabs.some((t: any) => { const k = (this as any)._tabPinKey(t); return !!(k && k.libraryID === m.libraryID && k.itemKey === m.itemKey); }) ? 1 : 0), 0);
+                if (openCount > 1) {
+                    this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                    this._wvTGDbg("membership: LEAVE '" + (curGroup.name || curGroup.id) + "' (dropped outside its members)");
+                }
             }
-            // LEAVE: a member released outside its own group's region.
-            if (curGroup) {
-                const reg = regionOf(curGroup);
-                if (!reg) { apply(); return; }                   // sole member: group travels with it
-                const out = lastX < reg.left || lastX > reg.right;
-                this._wvTGDbg("membership: own-group region=" + JSON.stringify(reg) + " out=" + out);
-                if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
-                this._wvTabGroupStabilize(win);
-                apply();
-            } else {
-                this._wvTGDbg("membership: no join (outside every region), not a member");
-                this._wvTabGroupStabilize(win);
-                apply();
-            }
+            this._wvTabGroupStabilize(win);
+            this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleNativeDragEnd err: " + e); }
     }
 
@@ -1595,9 +2064,11 @@ class _TabGroupsMixin {
                 elById.set(el.getAttribute("data-wv-tab-id"), el);
             }
             for (const g of groups) {
+                if ((g as any).saved) continue;   // parked group: no chip in the reader strip (decoupled from open tabs)
                 const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
                 const members: any[] = [];
                 for (const tab of st.tabs) {
+                    if ((tab as any)._wvGroupExcluded) continue;   // a separate copy kept OUT of the group
                     const k = this._wvTabGroupDeckKey(tab);
                     if (k && ks.has(k.libraryID + ":" + k.itemKey)) members.push(tab);
                 }
@@ -1883,19 +2354,39 @@ class _TabGroupsMixin {
             if (!entries.length) return;
             this._wvTGDbg("migrate " + entries.length + " tab(s) " + (srcIsReader ? "reader" : "main")
                 + "→" + (tgtIsReader ? "reader" : "main"));
+            // Keep the group alive across the close→reopen gap. Closing ALL its
+            // members empties it, and the Firefox close-model in _applyTabGroups
+            // would DELETE the group (and park members as recently-closed) before
+            // the deferred reopen re-establishes it — the tabs then arrive
+            // UNGROUPED in the target ("the group disappeared"). The reopening
+            // guard makes _applyTabGroups keep the members + the group until we
+            // clear it after the reopen lands.
+            const reopenSet = this._wvReopeningGroups();
+            reopenSet.add(groupID);
             // Close all in the source first (saves reader/note state; the
             // existing single-tab flows do the same close-then-open dance).
-            for (const en2 of entries) {
-                try {
-                    if (srcIsReader) this._wvWTCloseTab(srcWin, en2.srcTabID);
-                    else srcWin.Zotero_Tabs.close(en2.srcTabID);
-                } catch (e) {}
+            // Suppress the per-close main-bar re-chip during the batch (each
+            // close otherwise fires the tab notifier → _applyTabGroups).
+            (this as any)._wvSuppressGroupApply = true;
+            try {
+                for (const en2 of entries) {
+                    try {
+                        if (srcIsReader) this._wvWTCloseTab(srcWin, en2.srcTabID);
+                        else srcWin.Zotero_Tabs.close(en2.srcTabID);
+                    } catch (e) {}
+                }
+            } finally {
+                (this as any)._wvSuppressGroupApply = false;
             }
             // Deferred reopen in the target, in order.
             const setT = (tgtWin.setTimeout ? tgtWin.setTimeout.bind(tgtWin) : setTimeout);
             setT(async () => {
                 try {
                     if (tgtIsReader) {
+                        // Surface the arriving group — without this the reader
+                        // window stays behind the main window and the migrated
+                        // group looks like it vanished.
+                        try { tgtWin.focus(); } catch (e) {}
                         // Drop slot from the pointer, computed against the
                         // PRE-mount deck (mounts append at the end, so the
                         // pre-existing indices stay valid).
@@ -1949,35 +2440,66 @@ class _TabGroupsMixin {
                         }
                         try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
                     } else {
-                        try { tgtWin.focus(); } catch (e) {}      // Reader.open targets the focused main window
-                        for (const en2 of entries) {
-                            try {
-                                // openInBackground: arriving tabs must NOT grab the
-                                // selection — otherwise the last member becomes the
-                                // selected tab and a COLLAPSED group arrives looking
-                                // expanded (the selected member stays visible).
-                                // (ZoteroPane.openNote drops openInBackground — go
-                                // through Zotero.Notes.open directly.)
-                                if (en2.isNote) (Zotero as any).Notes.open(en2.itemID, undefined, { openInWindow: false, openInBackground: true });
-                                else (Zotero.Reader as any).open(en2.itemID, null, { openInWindow: false, allowDuplicate: false, openInBackground: true });
-                            } catch (e) {}
-                            await new Promise(r => setT(r, 120));
-                        }
-                        // Position the arrived block at the drop slot once all
-                        // tabs exist (poll briefly), then let apply re-chip.
+                        // Re-open each member as an UNLOADED main-window tab —
+                        // synchronous, no document load, appended contiguously,
+                        // mirroring _wvTabGroupReopen. This is what kills the
+                        // flicker: the old staggered background Reader.open + 120ms
+                        // loop loaded each member's document and popped it into the
+                        // bar one at a time (re-rendering repeatedly); unloaded adds
+                        // appear at once and load lazily only when selected. We never
+                        // select a member, so a COLLAPSED group stays collapsed.
+                        try { tgtWin.focus(); } catch (e) {}
                         const Z: any = tgtWin.Zotero_Tabs;
-                        const t0 = Date.now();
-                        const allPresent = () => entries.every(en3 =>
-                            Z._tabs.some((t: any) => t && t.data && t.data.itemID === en3.itemID));
-                        while (!allPresent() && Date.now() - t0 < 4000) {
-                            await new Promise(r => setT(r, 120));
+                        // Suppress per-event re-chips while the whole group's
+                        // unloaded tabs are added + positioned. Each Z.add fires
+                        // the tab notifier → _applyTabGroups, and the cascade re-
+                        // chips the bar 8× over a few hundred ms — that was the
+                        // flicker. Keep them suppressed, then do ONE settling apply
+                        // once the burst lands (React has rendered the new nodes).
+                        (this as any)._wvSuppressGroupApply = true;
+                        if (Z && typeof Z.add === "function") {
+                            for (const en2 of entries) {
+                                try {
+                                    if (!Zotero.Items.exists(en2.itemID)) continue;
+                                    Z.add({
+                                        type: en2.isNote ? "note-unloaded" : "reader-unloaded",
+                                        data: { itemID: en2.itemID },
+                                        select: false,
+                                        preventJumpback: true,
+                                    });
+                                } catch (e) {}
+                            }
                         }
+                        // Position the arrived (contiguous) block at the drop slot.
                         if (typeof clientX === "number") {
                             try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, clientX); } catch (e) {}
                         }
+                        // Settle once after the notifier cascade lands: drop both
+                        // guards and apply a single time. reopen guard stays on
+                        // until here so the group isn't emptied mid-burst.
+                        setT(() => {
+                            try {
+                                (this as any)._wvSuppressGroupApply = false;
+                                reopenSet.delete(groupID);
+                                this._wvTabGroupApplyEverywhere();
+                            } catch (e) {
+                                (this as any)._wvSuppressGroupApply = false;
+                                reopenSet.delete(groupID);
+                            }
+                        }, 260);
+                        return;   // main-target settles itself via the timer above
                     }
+                    // Reader-target landed → drop the guard and re-sync: the members
+                    // are now open in the target, so _applyTabGroups keeps them and
+                    // re-chips the group there.
+                    reopenSet.delete(groupID);
                     this._wvTabGroupApplyEverywhere();
-                } catch (e) { Zotero.debug("[Weavero] migrate reopen err: " + e); }
+                } catch (e) {
+                    (this as any)._wvSuppressGroupApply = false;
+                    reopenSet.delete(groupID);
+                    try { this._wvTabGroupApplyEverywhere(); } catch (e2) {}
+                    Zotero.debug("[Weavero] migrate reopen err: " + e);
+                }
             }, 180);
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMigrateGroup err: " + e); }
     }
@@ -1992,12 +2514,17 @@ class _TabGroupsMixin {
         try {
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (!g) return 0;
+            // A SAVED (parked) group has NO live open members by definition — its
+            // membership is decoupled from open tabs. Report 0 so the tabs-menu
+            // footer reads "saved" and clicking the row REOPENS (not focuses).
+            if ((g as any).saved) return 0;
             const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             let n = 0;
             try {
                 for (const w of Zotero.getMainWindows()) {
                     const Z: any = (w as any).Zotero_Tabs;
                     for (const t of (Z && Z._tabs) || []) {
+                        if ((t as any)._wvGroupExcluded) continue;   // a separate copy kept out of the group
                         const k = (this as any)._tabPinKey(t);
                         if (k && ks.has(k.libraryID + ":" + k.itemKey)) n++;
                     }
@@ -2025,6 +2552,12 @@ class _TabGroupsMixin {
             const g = groups.find((x: any) => x.id === groupID);
             if (!g) return;
             const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            // Mark saved + persist BEFORE closing the tabs, so the
+            // close-triggered _applyTabGroups pass already sees the flag and
+            // preserves the group (otherwise it would drop every member and then
+            // delete the now-empty group).
+            (g as any).saved = true;
+            this._tabGroupsSet(groups);
             for (const w of Zotero.getMainWindows()) {
                 try {
                     const Z: any = (w as any).Zotero_Tabs;
@@ -2048,8 +2581,6 @@ class _TabGroupsMixin {
                     for (const id of ids) { try { (this as any)._wvWTCloseTab(w, id); } catch (e) {} }
                 }
             } catch (e) {}
-            (g as any).saved = true;
-            this._tabGroupsSet(groups);
             this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupSaveAndClose err: " + e); }
     }
@@ -2057,47 +2588,92 @@ class _TabGroupsMixin {
     /** Reopen a saved/dormant group's tabs in `targetWin` (background-opened,
      *  staggered, then clustered). Mirrors the migrate flow's reopen branch. */
     async _wvTabGroupReopen(targetWin: any, groupID: any) {
+        const reopenSet = this._wvReopeningGroups();
         try {
-            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            const members = (g && g.members) || [];
+            const g0 = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            const members = (g0 && g0.members) || [];
             if (!members.length) return;
             try { targetWin.focus(); } catch (e) {}   // Reader.open targets the focused main window
             const setT = (targetWin.setTimeout ? targetWin.setTimeout.bind(targetWin) : setTimeout);
             const Z: any = targetWin.Zotero_Tabs;
-            const wanted: number[] = [];
-            for (const m of members) {
-                try {
-                    const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey);
-                    if (!it) continue;                 // item deleted since saving
-                    const already = Z && Z._tabs.some((t: any) => {
-                        const k = (this as any)._tabPinKey(t);
-                        return k && k.libraryID === m.libraryID && k.itemKey === m.itemKey;
-                    });
-                    if (already) continue;
-                    if (typeof it.isNote === "function" && it.isNote()) {
-                        (Zotero as any).Notes.open(it.id, undefined, { openInWindow: false, openInBackground: true });
-                    } else if (it.attachmentReaderType) {
-                        (Zotero.Reader as any).open(it.id, null, { openInWindow: false, allowDuplicate: false, openInBackground: true });
-                    } else {
-                        continue;
-                    }
-                    wanted.push(it.id);
-                } catch (e) {}
-                await new Promise(r => setT(r, 120));
+            // Clear the saved flag + mark the group reopening BEFORE opening, so
+            // each tab gets grouped the moment it appears (no ungrouped flash, no
+            // all-at-once regroup at the end) and the group isn't deleted while
+            // it transiently has no open tabs.
+            reopenSet.add(groupID);
+            {
+                const groups = this._tabGroupsGet();
+                const g1 = groups.find((x: any) => x.id === groupID);
+                if (g1 && (g1 as any).saved) { delete (g1 as any).saved; this._tabGroupsSet(groups); }
             }
-            // Wait for the tabs to exist, then cluster + re-chip.
-            const t0 = Date.now();
-            const allPresent = () => wanted.every(id =>
-                Z && Z._tabs.some((t: any) => t && t.data && t.data.itemID === id));
-            while (!allPresent() && Date.now() - t0 < 5000) {
-                await new Promise(r => setT(r, 150));
+            // Restore each closed member as an UNLOADED tab entry: created
+            // synchronously, appended contiguously, with NO document loaded into
+            // memory. Zotero derives the title and loads the document lazily only
+            // when the tab is SELECTED — exactly how its own session restore
+            // works (the reader-unloaded / note-unloaded types). So the whole
+            // group reappears near-instantly and stays light; only the first tab
+            // (selected below for feedback + scroll-into-view) loads its document.
+            let firstId: any = null;
+            if (Z && typeof Z.add === "function") {
+                for (const m of members) {
+                    try {
+                        const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey);
+                        if (!it) continue;             // item deleted since saving
+                        const isNote = (typeof it.isNote === "function" && it.isNote());
+                        if (!isNote && !it.attachmentReaderType) continue;   // not openable as a tab
+                        // Complete decoupling (per-tab membership): any tab ALREADY
+                        // open for this item stays a SEPARATE, ungrouped tab — flag
+                        // it excluded so the grouping (which keys off the item) won't
+                        // pull it in — then open a FRESH copy as the group's own tab.
+                        for (const t of Z._tabs) {
+                            const k = (this as any)._tabPinKey(t);
+                            if (k && k.libraryID === m.libraryID && k.itemKey === m.itemKey) {
+                                try { (t as any)._wvGroupExcluded = true; } catch (e) {}
+                            }
+                        }
+                        const res = Z.add({
+                            type: isNote ? "note-unloaded" : "reader-unloaded",
+                            data: { itemID: it.id },
+                            select: false,
+                            preventJumpback: true,
+                        });
+                        if (res && res.id && !firstId) firstId = res.id;
+                    } catch (e) {}
+                }
             }
-            const groups = this._tabGroupsGet();
-            const g2 = groups.find((x: any) => x.id === groupID);
-            if (g2 && (g2 as any).saved) { delete (g2 as any).saved; this._tabGroupsSet(groups); }
+            // They were appended consecutively, so the group is already
+            // contiguous — cluster (no-op) + chip, then select the first tab so
+            // the strip scrolls to it (feedback) and only that one loads.
+            try { this._wvTabGroupStabilize(targetWin); } catch (e) {}
+            try { this._applyTabGroups(targetWin); } catch (e) {}
+            if (firstId) { try { Z.select(firstId); } catch (e) {} }
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupReopen err: " + e); }
+        finally {
+            reopenSet.delete(groupID);
             try { this._wvTabGroupStabilize(targetWin); } catch (e) {}
             this._wvTabGroupApplyEverywhere();
-        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupReopen err: " + e); }
+            try { this._wvTabGroupFocusFirst(targetWin, groupID); } catch (e) {}
+            // The synchronous passes above may run before React has rendered the
+            // new tab nodes — re-apply once they exist so the group chips/classes
+            // settle and the first tab is scrolled into view.
+            try { targetWin.setTimeout(() => { try { this._wvTabGroupStabilize(targetWin); this._wvTabGroupApplyEverywhere(); this._wvTabGroupFocusFirst(targetWin, groupID); } catch (e) {} }, 60); } catch (e) {}
+        }
+    }
+
+    /** Select a group's first member tab (Zotero then scrolls it into view). */
+    _wvTabGroupFocusFirst(win: any, groupID: any) {
+        try {
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            const m0 = g && (g.members || [])[0];
+            if (!m0) return;
+            const Z: any = win.Zotero_Tabs;
+            if (!Z || !Z._tabs) return;
+            const t = Z._tabs.find((x: any) => {
+                const k = (this as any)._tabPinKey(x);
+                return k && k.libraryID === m0.libraryID && k.itemKey === m0.itemKey;
+            });
+            if (t) { try { Z.select(t.id); } catch (e) {} }
+        } catch (e) {}
     }
 
     /** Reopen a saved/dormant group's tabs into a READER window's deck
@@ -2112,12 +2688,16 @@ class _TabGroupsMixin {
                 try {
                     const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey);
                     if (!it) continue;
-                    const already = (win._wvWT.tabs || []).some((t: any) => {
+                    // Complete decoupling: any reader tab ALREADY open for this item
+                    // stays a SEPARATE, ungrouped tab — flag it excluded — then mount
+                    // a FRESH copy as the group's tab.
+                    for (const t of (win._wvWT.tabs || [])) {
                         const k = this._wvTabGroupDeckKey(t);
-                        return k && k.libraryID === m.libraryID && k.itemKey === m.itemKey;
-                    });
-                    if (already) continue;
-                    await (this as any)._wvWTMountTab(win, it.id, { allowDuplicate: false, select: false, await: true });
+                        if (k && k.libraryID === m.libraryID && k.itemKey === m.itemKey) {
+                            try { (t as any)._wvGroupExcluded = true; } catch (e) {}
+                        }
+                    }
+                    await (this as any)._wvWTMountTab(win, it.id, { allowDuplicate: true, select: false, await: true });
                 } catch (e) {}
             }
             const groups = this._tabGroupsGet();
@@ -2156,39 +2736,70 @@ class _TabGroupsMixin {
         } catch (e) { return false; }
     }
 
-    /** Firefox's "Move group to new window": open a fresh main window and
-     *  migrate the whole group there once its tab bar is ready. */
-    _wvTabGroupMoveToNewWindow(win: any, groupID: any) {
+    /** "Move group to new window": move the whole group into ONE new READER
+     *  window (a multi-tab reader window), keeping it grouped. (The old version
+     *  spawned a new MAIN window via openMainWindow(), which restored the entire
+     *  session — every tab — into it; only the group should move.) Closes the
+     *  group's open tabs in their home window and reopens the items together in
+     *  the fresh reader window; the group's membership is preserved (NOT
+     *  forgotten, unlike a tear-out), so the new window chips them as one group. */
+    async _wvTabGroupMoveToNewWindow(win: any, groupID: any) {
+        const reopenSet = this._wvReopeningGroups();
         try {
             const home = this._wvTabGroupHomeWin(groupID) || win;
-            const before = new Set(Zotero.getMainWindows());
-            (Zotero as any).openMainWindow();
-            const t0 = Date.now();
-            const poll = () => {
-                try {
-                    const fresh: any = Zotero.getMainWindows().find(
-                        (w: any) => !before.has(w) && w.Zotero_Tabs && w.document
-                            && w.document.readyState === "complete");
-                    if (fresh) {
-                        // Small grace so the React tab bar finishes mounting.
-                        // Saved groups (no open tabs) REOPEN into the new
-                        // window; open groups MIGRATE there.
-                        fresh.setTimeout(() => {
-                            try {
-                                if (this._wvTabGroupOpenCount(groupID) > 0) {
-                                    this._wvTabGroupMigrateGroup(home, fresh, groupID, 1e6);
-                                } else {
-                                    this._wvTabGroupReopen(fresh, groupID);
-                                }
-                            } catch (e) {}
-                        }, 600);
-                        return;
-                    }
-                    if (Date.now() - t0 < 10000) win.setTimeout(poll, 250);
-                } catch (e) {}
-            };
-            win.setTimeout(poll, 400);
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (!g) return;
+            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            const homeIsReader = this._wvTabGroupIsReaderWin(home);
+            // Collect the group's OPEN members (in display order) from the home
+            // window, with their source tab ids so we can close them.
+            const open: Array<{ itemID: any; isNote: boolean; srcTabID: any }> = [];
+            if (homeIsReader) {
+                for (const t of (home._wvWT && home._wvWT.tabs) || []) {
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) open.push({ itemID: t.itemID, isNote: t.type === "note", srcTabID: t.id });
+                }
+            } else {
+                const Z: any = home.Zotero_Tabs;
+                for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
+                    const t = Z._tabs[i];
+                    const k = (this as any)._tabPinKey(t);
+                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) open.push({ itemID: t.data && t.data.itemID, isNote: t.type === "note", srcTabID: t.id });
+                }
+            }
+            // Entries to open in the new reader window. For an OPEN group, those
+            // are the open members; for a SAVED group (none open) reopen all its
+            // stored members and clear the saved flag.
+            let entries: Array<{ itemID: any; isNote: boolean }> = [];
+            if (open.length) {
+                entries = open.map((o) => ({ itemID: o.itemID, isNote: o.isNote }));
+            } else {
+                const groups = this._tabGroupsGet();
+                const g1 = groups.find((x: any) => x.id === groupID);
+                if (g1 && (g1 as any).saved) { delete (g1 as any).saved; this._tabGroupsSet(groups); }
+                for (const m of (g.members || [])) {
+                    try { const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey); if (it && (it.attachmentReaderType || (it.isNote && it.isNote()))) entries.push({ itemID: it.id, isNote: !!(it.isNote && it.isNote()) }); } catch (e) {}
+                }
+            }
+            entries = entries.filter((e) => e.itemID != null);
+            if (!entries.length) return;
+            // Keep the group alive across the close→reopen gap (closing the last
+            // member would otherwise delete it before the new window opens).
+            reopenSet.add(groupID);
+            // MOVE: close the open members in their home window first.
+            for (const o of open) {
+                try { if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID); else home.Zotero_Tabs.close(o.srcTabID); } catch (e) {}
+            }
+            // Open them together in ONE new reader window (membership preserved →
+            // they regroup there). _wvOpenItemsInNewReaderWindow focuses it.
+            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveToNewWindow err: " + e); }
+        finally {
+            reopenSet.delete(groupID);
+            try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+            // Re-apply once the new window's React strip has rendered the tabs.
+            try { const mw: any = Zotero.getMainWindow(); const st = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout; st(() => { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }, 220); } catch (e) {}
+        }
     }
 
     /** Open the group in `win`: reopen if saved, focus if already here,
@@ -2268,10 +2879,12 @@ class _TabGroupsMixin {
                 if (isReader) {
                     const st = win._wvWT;
                     const t = st && st.tabs.find((x: any) => String(x.id) === String(id));
+                    if (t && (t as any)._wvGroupExcluded) return null;   // separate copy kept out
                     const k = t && this._wvTabGroupDeckKey(t);
                     return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
                 }
                 const tab = Z._tabs.find((t: any) => t && t.id === id);
+                if (tab && (tab as any)._wvGroupExcluded) return null;   // separate copy kept out
                 const k = tab && (this as any)._tabPinKey(tab);
                 return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
             };
@@ -2382,19 +2995,17 @@ class _TabGroupsMixin {
             list.appendChild(header);
             for (const g of groups) {
                 const open = this._wvTabGroupOpenCount(g.id);
-                const total = (g.members || []).length;
                 const row = doc.createElementNS(HTML_NS, "div");
                 row.className = "wv-tgmenu-row";
-                row.setAttribute("title", open
-                    ? "Go to this group"
-                    : "Reopen this group's " + total + " tab" + (total === 1 ? "" : "s"));
+                // open===0 now only happens for an explicitly SAVED group.
+                row.setAttribute("title", open ? "Go to this group" : "Reopen this saved group");
                 const hex = this._tabGroupColorHex(g.color);
                 const dot = doc.createElementNS(HTML_NS, "span");
                 dot.className = "wv-tgmenu-dot";
                 if (open) {
-                    dot.style.background = hex;          // open: filled square
+                    dot.style.background = hex;             // live: filled square
                 } else {
-                    dot.style.background = "transparent"; // saved: outline only
+                    dot.style.background = "transparent";   // saved: outline only
                     dot.style.border = "2px solid " + hex;
                 }
                 row.appendChild(dot);
@@ -2404,7 +3015,7 @@ class _TabGroupsMixin {
                 row.appendChild(name);
                 const count = doc.createElementNS(HTML_NS, "span");
                 count.className = "wv-tgmenu-count";
-                count.textContent = open ? (open + "/" + total + " open") : "saved";
+                count.textContent = open ? (open + (open === 1 ? " tab" : " tabs")) : "saved";
                 row.appendChild(count);
                 const gid = g.id;
                 row.addEventListener("click", (e: any) => {
@@ -2731,9 +3342,15 @@ class _TabGroupsMixin {
     // ---- Tab context menu entries ---------------------------------------------
 
     /** A colored-circle icon (data URI) for group menu entries. */
-    _wvTabGroupDotImage(hex: string) {
+    /** A 12px group-colour dot for menus. `outline` draws the SAVED-group
+     *  variant — a hollow ring (transparent centre + coloured stroke), matching
+     *  the tabs-menu list's saved-group dot; otherwise a filled circle. */
+    _wvTabGroupDotImage(hex: string, outline?: boolean) {
+        const circle = outline
+            ? '<circle cx="6" cy="6" r="4" fill="none" stroke="' + hex + '" stroke-width="2"/>'
+            : '<circle cx="6" cy="6" r="5" fill="' + hex + '"/>';
         const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">'
-            + '<circle cx="6" cy="6" r="5" fill="' + hex + '"/></svg>';
+            + circle + '</svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
@@ -2994,6 +3611,16 @@ class _TabGroupsMixin {
             const tab = st && st.tabs.find((t: any) => String(t.id) === String(tabId));
             const key = tab && this._wvTabGroupDeckKey(tab);
             if (!key) return;
+            // Firefox model for a SAVED (parked) group: file the tab into the
+            // group's stored members and CLOSE it; the group stays parked (no
+            // reopen). It returns only when the whole group is reopened.
+            const savedGrp = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (savedGrp && (savedGrp as any).saved) {
+                this._tabGroupAddKey(groupID, key);
+                try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+                try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+                return;
+            }
             const home = this._wvTabGroupHomeWin(groupID);
             if (home && home !== win) { this._wvTabGroupSendDeckTabToWin(win, tab, home, groupID); return; }
             this._tabGroupAddKey(groupID, key);
@@ -3203,8 +3830,12 @@ class _TabGroupsMixin {
                                 if (others.length) {
                                     popup.appendChild(doc.createXULElement("menuseparator"));
                                     for (const g of others) {
-                                        mkItem(g.name || "Unnamed group",
-                                            self._wvTabGroupDotImage(self._tabGroupColorHex(g.color)),
+                                        // Saved (parked) group → match the tabs-menu
+                                        // list's design: a hollow group-colour dot and
+                                        // a right-aligned "saved" label.
+                                        const parked = self._wvTabGroupOpenCount(g.id) === 0;
+                                        const gmi = mkItem(g.name || "Unnamed group",
+                                            self._wvTabGroupDotImage(self._tabGroupColorHex(g.color), parked),
                                             () => {
                                                 // Staggered: cross-window adds migrate
                                                 // tabs (close + deferred reopen), and
@@ -3216,6 +3847,7 @@ class _TabGroupsMixin {
                                                 });
                                                 self._wvTabMultiSelClear(win);
                                             });
+                                        if (parked) { try { gmi.setAttribute("acceltext", "saved"); } catch (e) {} }
                                     }
                                 }
                             } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }

@@ -802,12 +802,22 @@ class _TabGroupsMixin {
                 try { e.dataTransfer.setDragImage(chip, 10, 10); } catch (er2) {}
             } catch (er) {}
         });
-        chip.addEventListener("dragend", () => {
+        chip.addEventListener("dragend", (e: any) => {
             try {
                 pressed = false; dragged = false;
                 chip.classList.remove("wv-tg-dragging");
                 win._wvGroupDragSlot = null;
                 const p: any = live();
+                // Tear-out: every strip drop handler (main + reader, same- and
+                // cross-window) consumes _wvGroupDrag before this dragend fires,
+                // so its survival means the chip was released off ALL strips —
+                // empty space. Mirror Firefox's drag-group-label-out gesture and
+                // pop the whole group into its own new window. Skip on ESC/cancel.
+                const gd = p && (p as any)._wvGroupDrag;
+                const cancelled = !!(e && e.dataTransfer && e.dataTransfer.mozUserCancelled);
+                if (gd && gd.groupID === groupID && !cancelled) {
+                    try { p._wvTabGroupMoveToNewWindow(win, groupID); } catch (er2) {}
+                }
                 if (p) { p._wvGroupDrag = null; p._wvTabGroupHideAllDropGhosts(); }
             } catch (er) {}
         });

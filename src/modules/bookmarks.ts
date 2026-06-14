@@ -330,6 +330,9 @@ const BM_EDITDLG_CSS = [
     // base — same trick the reader's filter/settings popups use — or content
     // shows through the bare appearance:none panel.
     ".wv-bm-editdlg{display:flex;flex-direction:column;gap:6px;padding:14px;min-width:320px;max-width:460px;background-color:var(--material-sidepane,var(--material-background,#fff));background-image:linear-gradient(var(--material-menu),var(--material-menu));color:var(--fill-primary);border:1px solid var(--material-panedivider,rgba(127,127,127,.4));border-radius:8px;box-shadow:0 6px 22px rgba(0,0,0,.28);}",
+    // Draggable title bar — grab it to move the dialog (panel.moveTo). Full-bleed
+    // to the box edges via negative margins; the rest of the box keeps its pad.
+    ".wv-bm-editdlg-header{margin:-14px -14px 6px -14px;padding:8px 14px;font-size:12px;font-weight:600;opacity:.9;cursor:move;-moz-user-select:none;user-select:none;border-bottom:1px solid var(--material-panedivider,rgba(127,127,127,.4));border-radius:8px 8px 0 0;background:var(--fill-quinary,rgba(127,127,127,.06));}",
     ".wv-bm-editdlg-caption{font-size:10px;font-weight:600;opacity:.65;text-transform:uppercase;letter-spacing:.04em;margin-top:2px;}",
     ".wv-bm-editdlg-input,.wv-bm-editdlg-textarea{box-sizing:border-box;width:100%;font:inherit;font-size:13px;padding:6px 8px;border-radius:5px;border:1px solid var(--material-panedivider,rgba(127,127,127,.4));background:var(--fill-quinary,rgba(127,127,127,.06));color:inherit;}",
     ".wv-bm-editdlg-textarea{resize:vertical;min-height:68px;line-height:1.4;}",
@@ -1845,6 +1848,33 @@ class _BookmarksMixin {
                 return c;
             };
 
+            // Draggable title bar — the panel has no OS chrome, so grab the
+            // header to move it. moveTo() takes screen coords; accumulate the
+            // pointer's screen-coord deltas onto the open position. Pointer
+            // capture keeps the drag tracking even when the cursor leaves the
+            // header (or the panel moves out from under it).
+            const pos = { x: 0, y: 0 };
+            const header = doc.createElementNS(NS_HTML, "div");
+            header.className = "wv-bm-editdlg-header";
+            header.textContent = opts.dialogTitle || "Edit Bookmark";
+            box.appendChild(header);
+            let dragging = false, lastX = 0, lastY = 0;
+            header.addEventListener("pointerdown", (e: any) => {
+                if (e.button !== 0) return;
+                dragging = true; lastX = e.screenX; lastY = e.screenY;
+                try { header.setPointerCapture(e.pointerId); } catch (_) {}
+                e.preventDefault();
+            });
+            header.addEventListener("pointermove", (e: any) => {
+                if (!dragging) return;
+                pos.x += e.screenX - lastX; pos.y += e.screenY - lastY;
+                lastX = e.screenX; lastY = e.screenY;
+                try { panel.moveTo(pos.x, pos.y); } catch (_) {}
+            });
+            const endDrag = (e: any) => { dragging = false; try { header.releasePointerCapture(e.pointerId); } catch (_) {} };
+            header.addEventListener("pointerup", endDrag);
+            header.addEventListener("pointercancel", endDrag);
+
             box.appendChild(cap(opts.titleCaption || "Title"));
             const titleInput = doc.createElementNS(NS_HTML, "input");
             titleInput.className = "wv-bm-editdlg-input";
@@ -1895,6 +1925,7 @@ class _BookmarksMixin {
 
             const sx = win.screenX + Math.round(win.outerWidth / 2) - 180;
             const sy = win.screenY + Math.round(win.outerHeight / 2) - 130;
+            pos.x = sx; pos.y = sy;   // seed the drag accumulator at the open position
             panel.openPopupAtScreen(sx, sy, false);
             win.setTimeout(() => { try { titleInput.focus(); titleInput.select(); } catch (_) {} }, 50);
         } catch (e) {

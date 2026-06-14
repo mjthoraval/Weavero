@@ -5612,6 +5612,49 @@ class _ReaderPanelsMixin {
         } catch (_) { return url; }
     }
 
+    /** Reader-sidebar "Edit Bookmark…": title + comment together in one panel
+     *  (the shared `_bmShowEditDialog`), replacing the old two sequential
+     *  prompts. The comment is the annotation's comment for annotation
+     *  bookmarks, or the location bookmark's own free-text comment for
+     *  text/position entries; other types get the title field only. Hosted in
+     *  the reader's chrome window so it appears over the reader. */
+    async _wvReaderEditBookmarkDialog(reader: any, att: any, entry: any, reRender: any) {
+        try {
+            const win = reader && reader._window;
+            if (!win || !win.document || !entry) return;
+            const ann = await this._bmAnnotationItem(entry);
+            // In-document location bookmarks (text selection, pinned position,
+            // whole page) carry their own free-text comment.
+            const isLocBm = entry.type === "text" || entry.type === "position" || entry.type === "page";
+            let commentValue: string | null = null;
+            if (ann) { try { commentValue = String(ann.annotationComment || ""); } catch (_) { commentValue = ""; } }
+            else if (isLocBm) { commentValue = String(entry.comment || ""); }
+            this._bmShowEditDialog(win.document, win, {
+                titleValue: entry.label || "",
+                commentValue,
+                onSave: async (newTitle: string, newComment: string | null) => {
+                    if (newTitle && newTitle !== entry.label) {
+                        try { await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newTitle); } catch (_) {}
+                    }
+                    if (ann && newComment != null) {
+                        let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
+                        if (newComment !== cur) {
+                            try { ann.annotationComment = newComment; await ann.saveTx(); }
+                            catch (e) { Zotero.debug("[Weavero] reader bm comment save err: " + e); }
+                        }
+                    } else if (isLocBm && newComment != null) {
+                        if (newComment !== (entry.comment || "")) {
+                            try { await this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment }); } catch (_) {}
+                        }
+                    }
+                    try { reRender(); } catch (_) {}
+                },
+            });
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderEditBookmarkDialog err: " + e);
+        }
+    }
+
     /** Firefox-bookmarks-style right-click menu for the reader Bookmarks pane:
      *  Add Bookmark / New Folder always; Open / Rename / Delete when the click
      *  was on a row. New folders land in the section that was right-clicked. */
@@ -5693,23 +5736,9 @@ class _ReaderPanelsMixin {
                     // target IS the open document, so there's nothing distinct
                     // to reveal (kept only for "Elsewhere in Zotero" items).
                     sep();
-                    // Unified edit: rename + (for text/position) edit comment.
+                    // Unified edit: title + comment together in one dialog.
                     item("Edit Bookmark…", RP_RENAME_SVG, () => {
-                        const win = Zotero.getMainWindow();
-                        const newName = this._bmPromptName(win, "Edit Bookmark — Name", entry.label || "");
-                        if (newName === null) return;
-                        const renameP = (newName && newName !== entry.label)
-                            ? this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newName)
-                            : Promise.resolve();
-                        if (entry.type === "text" || entry.type === "position") {
-                            const newComment = this._bmPromptName(win, "Edit Bookmark — Comment (optional)", entry.comment || "");
-                            const commentP = (newComment !== null && newComment !== (entry.comment || ""))
-                                ? this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment })
-                                : Promise.resolve();
-                            Promise.all([renameP, commentP]).then(reRender);
-                        } else {
-                            renameP.then(reRender);
-                        }
+                        this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
                     {
                         const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
@@ -5741,23 +5770,9 @@ class _ReaderPanelsMixin {
                         this._bmShowInLibraryIcon({ libraryID: entry.srcLibraryID || entry.libraryID || att.libraryID }, Zotero.getMainWindow()),
                         () => this._wvNavigateReaderBookmark(reader, entry, { ctrlKey: true }));
                     sep();
-                    // Unified edit: rename + (for text/position) edit comment.
+                    // Unified edit: title + comment together in one dialog.
                     item("Edit Bookmark…", RP_RENAME_SVG, () => {
-                        const win = Zotero.getMainWindow();
-                        const newName = this._bmPromptName(win, "Edit Bookmark — Name", entry.label || "");
-                        if (newName === null) return;
-                        const renameP = (newName && newName !== entry.label)
-                            ? this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newName)
-                            : Promise.resolve();
-                        if (entry.type === "text" || entry.type === "position") {
-                            const newComment = this._bmPromptName(win, "Edit Bookmark — Comment (optional)", entry.comment || "");
-                            const commentP = (newComment !== null && newComment !== (entry.comment || ""))
-                                ? this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment })
-                                : Promise.resolve();
-                            Promise.all([renameP, commentP]).then(reRender);
-                        } else {
-                            renameP.then(reRender);
-                        }
+                        this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
                     {
                         const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
@@ -5857,9 +5872,11 @@ class _ReaderPanelsMixin {
                         this._wvEditUrlBookmark(reader, idoc, entry, reRender);
                     });
                 } else {
-                    item("Rename…", RP_RENAME_SVG, () => {
-                        const n = this._bmPromptName(win, "Rename Bookmark", entry.label || "");
-                        if (n) this._bmRenameBookmark(entry.id, n).then(reRender);
+                    // Title + (annotation bookmarks) the annotation comment,
+                    // together — same combined dialog as the library popup.
+                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                        const rw = (reader && reader._window) || win;
+                        this._bmEditBookmarkDialog(rw, entry, reRender);
                     });
                 }
                 item("Delete Bookmark", RP_DELETE_SVG, () => this._bmRemove(entry.id).then(reRender));

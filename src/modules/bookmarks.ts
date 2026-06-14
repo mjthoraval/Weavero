@@ -316,8 +316,14 @@ const BM_POPUP_CSS = [
     // chrome so only the card's own bordered/shadowed box shows; a small
     // shadow-margin keeps the card's box-shadow from being clipped.
     "#wv-bm-hovercard-panel{appearance:none;background:transparent;border:0;box-shadow:none;--panel-padding:0;--panel-background:transparent;--panel-border-color:transparent;--panel-shadow-margin:6px;-moz-window-shadow:none;}",
-    // Edit-bookmark dialog: title + (for annotation bookmarks) the annotation
-    // comment, edited together. A bare XUL <panel> hosting HTML fields.
+].join("");
+
+// Edit-bookmark dialog: title + (for annotation/location bookmarks) the
+// comment, edited together. A bare XUL <panel> hosting HTML fields. Kept in
+// its own stylesheet (injected by _bmEnsureEditDialogStyles) so it can also
+// be hosted in the reader-window bookmark sidebar's document, not just the
+// main-window bookmarks popup.
+const BM_EDITDLG_CSS = [
     "#wv-bm-editdlg-panel{appearance:none;--panel-padding:0;}",
     // Opaque background: --material-menu is translucent (meant to overlay a
     // panel's own backdrop), so layer it over an opaque --material-sidepane
@@ -334,6 +340,7 @@ const BM_POPUP_CSS = [
     ".wv-bm-editdlg-btn-primary{background:var(--color-accent,#4072e5);border-color:var(--color-accent,#4072e5);color:#fff;}",
     ".wv-bm-editdlg-btn-primary:hover{filter:brightness(1.08);}",
 ].join("");
+const BM_EDITDLG_STYLE_ID = "wv-bm-editdlg-style";
 
 class _BookmarksMixin {
     [k: string]: any;
@@ -1796,19 +1803,33 @@ class _BookmarksMixin {
         } catch (_) { return null; }
     }
 
-    /** Edit a bookmark's title and — for bookmarks that point to a PDF
-     *  annotation — the annotation's comment, together in one panel. Saving
-     *  renames the bookmark (label) and writes the comment back to the live
-     *  Zotero annotation (saveTx → reflected everywhere). Non-annotation
-     *  bookmarks show the title field only. */
-    async _bmEditBookmarkDialog(win: any, bm: any) {
+    /** Inject the edit-dialog stylesheet into `doc` (idempotent; re-assigns
+     *  textContent so a plugin reload picks up changes). Works for the main
+     *  window AND the reader-window bookmark sidebar's document. */
+    _bmEnsureEditDialogStyles(doc: any) {
         try {
-            await this._bmInit();
-            const doc: any = win.document;
-            this._bmEnsurePopupStyles(doc);   // self-sufficient: inject CSS even if opened without the popup
-            const ann = await this._bmAnnotationItem(bm);
-            let curComment = "";
-            if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) {} }
+            let style: any = doc.getElementById(BM_EDITDLG_STYLE_ID);
+            if (!style) {
+                style = doc.createElementNS(NS_HTML, "style");
+                style.id = BM_EDITDLG_STYLE_ID;
+                (doc.documentElement || doc).appendChild(style);
+            }
+            style.textContent = BM_EDITDLG_CSS;
+        } catch (_) {}
+    }
+
+    /** Generic two-field bookmark editor: a Title input plus an optional
+     *  Comment textarea, together in one centered XUL <panel>. Builds in `doc`
+     *  (the main window OR the reader-window bookmark sidebar) and positions
+     *  using `win`. `commentValue === null` hides the comment field. On Save,
+     *  awaits `opts.onSave(newTitle, newComment)` — the caller owns persistence
+     *  and re-render. Enter saves from the title; Ctrl/⌘-Enter from anywhere;
+     *  Escape cancels. */
+    _bmShowEditDialog(doc: any, win: any, opts: any) {
+        try {
+            if (!doc || !win) return;
+            this._bmEnsureEditDialogStyles(doc);
+            const hasComment = opts.commentValue != null;
             doc.getElementById("wv-bm-editdlg-panel")?.remove();
             const panel = doc.createXULElement("panel");
             panel.id = "wv-bm-editdlg-panel";
@@ -1817,27 +1838,27 @@ class _BookmarksMixin {
             panel.setAttribute("consumeoutsideclicks", "false");
             const box = doc.createElementNS(NS_HTML, "div");
             box.className = "wv-bm-editdlg";
+            const cap = (text: string) => {
+                const c = doc.createElementNS(NS_HTML, "div");
+                c.className = "wv-bm-editdlg-caption";
+                c.textContent = text;
+                return c;
+            };
 
-            const titleCap = doc.createElementNS(NS_HTML, "div");
-            titleCap.className = "wv-bm-editdlg-caption";
-            titleCap.textContent = "Title";
+            box.appendChild(cap(opts.titleCaption || "Title"));
             const titleInput = doc.createElementNS(NS_HTML, "input");
             titleInput.className = "wv-bm-editdlg-input";
             titleInput.setAttribute("type", "text");
-            titleInput.value = bm.label || bm.itemKey || bm.collectionKey || "";
-            box.appendChild(titleCap);
+            titleInput.value = String(opts.titleValue || "");
             box.appendChild(titleInput);
 
             let commentInput: any = null;
-            if (ann) {
-                const cCap = doc.createElementNS(NS_HTML, "div");
-                cCap.className = "wv-bm-editdlg-caption";
-                cCap.textContent = "Comment";
+            if (hasComment) {
+                box.appendChild(cap(opts.commentCaption || "Comment"));
                 commentInput = doc.createElementNS(NS_HTML, "textarea");
                 commentInput.className = "wv-bm-editdlg-textarea";
                 commentInput.setAttribute("rows", "4");
-                commentInput.value = curComment;
-                box.appendChild(cCap);
+                commentInput.value = String(opts.commentValue || "");
                 box.appendChild(commentInput);
             }
 
@@ -1858,19 +1879,11 @@ class _BookmarksMixin {
             host.appendChild(panel);
             const close = () => { try { panel.remove(); } catch (_) {} };
             const doSave = async () => {
-                const newLabel = (titleInput.value || "").trim();
-                if (newLabel && newLabel !== bm.label) {
-                    try { await this._bmRenameBookmark(bm.id, newLabel); } catch (_) {}
-                }
-                if (ann && commentInput) {
-                    const newComment = String(commentInput.value || "");
-                    if (newComment !== curComment) {
-                        try { ann.annotationComment = newComment; await ann.saveTx(); }
-                        catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
-                    }
-                }
+                const newTitle = (titleInput.value || "").trim();
+                const newComment = hasComment ? String(commentInput.value || "") : null;
                 close();
-                this._bmRenderPopupList(win);
+                try { if (opts.onSave) await opts.onSave(newTitle, newComment); }
+                catch (e) { Zotero.debug("[Weavero] bm edit save err: " + e); }
             };
             cancelBtn.addEventListener("click", close);
             saveBtn.addEventListener("click", () => { doSave(); });
@@ -1884,6 +1897,40 @@ class _BookmarksMixin {
             const sy = win.screenY + Math.round(win.outerHeight / 2) - 130;
             panel.openPopupAtScreen(sx, sy, false);
             win.setTimeout(() => { try { titleInput.focus(); titleInput.select(); } catch (_) {} }, 50);
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmShowEditDialog err: " + e);
+        }
+    }
+
+    /** Edit a library-popup bookmark's title and — for bookmarks that point to
+     *  a PDF annotation — the annotation's comment, together. Saving renames
+     *  the bookmark and writes the comment back to the live Zotero annotation
+     *  (saveTx → reflected everywhere). Non-annotation bookmarks show the title
+     *  field only. */
+    async _bmEditBookmarkDialog(win: any, bm: any, onDone?: any) {
+        try {
+            await this._bmInit();
+            const ann = await this._bmAnnotationItem(bm);
+            let curComment: string | null = null;
+            if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) { curComment = ""; } }
+            this._bmShowEditDialog(win.document, win, {
+                titleValue: bm.label || bm.itemKey || bm.collectionKey || "",
+                commentValue: curComment,
+                onSave: async (newTitle: string, newComment: string | null) => {
+                    if (newTitle && newTitle !== bm.label) {
+                        try { await this._bmRenameBookmark(bm.id, newTitle); } catch (_) {}
+                    }
+                    if (ann && newComment != null) {
+                        let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
+                        if (newComment !== cur) {
+                            try { ann.annotationComment = newComment; await ann.saveTx(); }
+                            catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
+                        }
+                    }
+                    if (onDone) { try { onDone(); } catch (_) {} }
+                    else this._bmRenderPopupList(win);
+                },
+            });
         } catch (e) {
             Zotero.debug("[Weavero] _bmEditBookmarkDialog err: " + e);
         }

@@ -909,15 +909,15 @@ class WeaveroPlugin {
     /** When ON, hide the Reader Bookmarks tab while the current
      *  attachment has zero bookmarks (combined across the local
      *  "In this document" and global "Elsewhere in Zotero" sections).
-     *  Default ON — keeps the sidebar uncluttered for documents the
-     *  user hasn't bookmarked into; flip OFF to keep the tab as a
-     *  permanent drop target. */
+     *  Default OFF — the reader Bookmarks tab stays as a permanent drop
+     *  target even when empty; flip ON to hide it until the current
+     *  document has a bookmark. */
     _getAutoHideEmptyReaderBookmarks() {
         if (!this._getEnableReaderBookmarks()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.autoHideEmptyReaderBookmarks");
-            return v === undefined ? true : !!v;
-        } catch (e) { return true; }
+            return v === undefined ? false : !!v;
+        } catch (e) { return false; }
     }
 
     /** When ON, hide the collections-pane toolbar Bookmarks button
@@ -1810,7 +1810,6 @@ class WeaveroPlugin {
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",
-                "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks",
             ];
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm", "enableNotes",
@@ -1828,6 +1827,10 @@ class WeaveroPlugin {
                 "enableFileScheme", "enableFtpScheme", "enableMsteamsScheme",
                 "enableNotionScheme", "enableObsidianScheme", "enableSlackScheme",
                 "enableVscodeScheme", "enableZoomScheme",
+                // Bookmarks auto-hide — both default OFF: the toolbar button and
+                // the reader Bookmarks tab stay visible even when empty unless
+                // the user opts into hiding them.
+                "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks",
             ];
             for (const n of ON) branch.setBoolPref(P + n, true);
             for (const n of OFF) branch.setBoolPref(P + n, false);

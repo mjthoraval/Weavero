@@ -352,6 +352,39 @@
         apply();   // sync now in case the pane mounts with a search already typed
     }
 
+    /** Don't toggle a checkbox / radio when the user was SELECTING its label
+     *  text (drag-to-select, so it can be copied). Native XUL toggles on the
+     *  mouseup `click`; if the gesture moved the pointer or left a non-empty
+     *  selection, swallow that click in CAPTURE phase (on the pane root, before
+     *  it reaches the checkbox) so the toggle is suppressed but the selection
+     *  stays. A plain click (no movement, collapsed selection) still toggles. */
+    function bindLabelClickGuard(doc) {
+        const root = doc.querySelector(".main-section") || doc.documentElement;
+        if (!root || root._wvLabelGuard) return;
+        root._wvLabelGuard = true;
+        let downX = 0, downY = 0, onLabel = false;
+        root.addEventListener("mousedown", (e: any) => {
+            try {
+                downX = e.screenX; downY = e.screenY;
+                onLabel = !!(e.target && e.target.closest
+                    && e.target.closest(".checkbox-label, .radio-label"));
+            } catch (er) { onLabel = false; }
+        }, true);
+        root.addEventListener("click", (e: any) => {
+            if (!onLabel) return;
+            let moved = 999, hasSel = false;
+            try { moved = Math.abs(e.screenX - downX) + Math.abs(e.screenY - downY); } catch (er) {}
+            try {
+                const sel = (doc.defaultView || (typeof window !== "undefined" ? window : null));
+                const s = sel && sel.getSelection && sel.getSelection();
+                hasSel = !!(s && !s.isCollapsed && String(s).length);
+            } catch (er) {}
+            if (moved > 4 || hasSel) {
+                try { e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); } catch (er) {}
+            }
+        }, true);
+    }
+
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
@@ -360,6 +393,7 @@
         try { bindCollapse(doc); } catch (e) { dbg("bindCollapse err: " + e); }
         try { bindReaderIconPreview(doc); } catch (e) { dbg("bindReaderIconPreview err: " + e); }
         try { bindSearchExpand(doc); } catch (e) { dbg("bindSearchExpand err: " + e); }
+        try { bindLabelClickGuard(doc); } catch (e) { dbg("bindLabelClickGuard err: " + e); }
     }
 
     /** Zotero runs pane scripts BEFORE appending the pane fragment, so our

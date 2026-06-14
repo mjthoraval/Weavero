@@ -44,10 +44,14 @@
   }
   .wv-mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   /* Let the explanatory text be selected and copied — chrome prefs panes are
-     non-selectable by default, so force it on our text. */
+     non-selectable by default, so force it on our text. Also the checkbox /
+     radio LABELS (native XUL renders them as `.checkbox-label` / `.radio-label`
+     children that default to non-selectable), so the toggle names can be
+     copied too. */
   .wv-desc, .wv-note, .wv-master-desc,
   .wv-tophead h2, .wv-subhead h2, .wv-subsec h2, .wv-children h3,
-  summary.wv-sec-summary h2 {
+  summary.wv-sec-summary h2,
+  checkbox .checkbox-label, radio .radio-label {
     user-select: text;
     -moz-user-select: text;
   }
@@ -108,6 +112,10 @@
   /* Dependent toggles under a sub-section's master toggle sit one level in,
      to read as lower-level than the sub-section header. */
   .wv-subsec .wv-children { margin-inline-start: 22px; }
+  /* A single dependent toggle nested directly under the checkbox above it
+     (e.g. an "auto-hide" option that only applies once its feature is on).
+     Same 22px step-in as sub-section children; greyed via [data-gated-by]. */
+  .wv-dep { margin-inline-start: 22px; }
   /* Grey-out: prefs.js toggles `.wv-disabled` on a container when its
      governing master pref is off — a section's own .wv-children[data-master]
      or a whole [data-gated-by] sub-section (the Extras sub-sections). */
@@ -485,18 +493,20 @@
       <checkbox label="Library bookmarks" native="true"
         preference="extensions.zotero.weavero.enableLibraryBookmarks"/>
       <html:p class="wv-desc">A Bookmarks dropdown on the collections-pane toolbar for items / collections / saved searches.</html:p>
+      <vbox class="wv-dep" data-gated-by="enableLibraryBookmarks">
+        <checkbox label="Auto-hide the library bookmarks button when empty" native="true"
+          preference="extensions.zotero.weavero.autoHideEmptyLibraryBookmarks"/>
+      </vbox>
       <checkbox label="Document bookmarks" native="true"
         preference="extensions.zotero.weavero.enableReaderBookmarks"/>
       <html:p class="wv-desc">A Bookmarks tab in the reader sidebar for in-document locations. Drop an annotation or selection on it to bookmark.</html:p>
-      <checkbox label="Show Library bookmarks tab in the reader" native="true"
-        preference="extensions.zotero.weavero.showLibraryBookmarksInReader"/>
-      <html:p class="wv-desc">Browse library bookmarks alongside in-document ones (Ctrl-click to merge both views).</html:p>
-      <checkbox label="Auto-hide the Library button when empty" native="true"
-        preference="extensions.zotero.weavero.autoHideEmptyLibraryBookmarks"/>
-      <html:p class="wv-desc">Hide the toolbar Bookmarks button until the first library bookmark exists.</html:p>
-      <checkbox label="Auto-hide the reader tab when empty" native="true"
-        preference="extensions.zotero.weavero.autoHideEmptyReaderBookmarks"/>
-      <html:p class="wv-desc">Hide the reader Bookmarks tab until the current document has a bookmark.</html:p>
+      <vbox class="wv-dep" data-gated-by="enableReaderBookmarks">
+        <checkbox label="Auto-hide the document bookmarks tab when empty" native="true"
+          preference="extensions.zotero.weavero.autoHideEmptyReaderBookmarks"/>
+        <checkbox label="Show Library bookmarks tab in the reader" native="true"
+          preference="extensions.zotero.weavero.showLibraryBookmarksInReader"/>
+        <html:p class="wv-desc">Browse library bookmarks alongside in-document ones (Ctrl-click to merge both views).</html:p>
+      </vbox>
     </vbox>
   </groupbox>
 

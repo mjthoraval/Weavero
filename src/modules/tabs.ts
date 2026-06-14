@@ -808,6 +808,8 @@ class _TabsMixin {
             const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
             if (itemID == null || !targetWin) return;
             const isNote = payload.readerType === "note" || payload.tabType === "note";
+            // Leaving the window leaves the group (don't carry it to the target).
+            try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             // 1) Close the source tab in its own window (flushes its state).
             try {
                 const srcTabs: any = srcWin && (srcWin as any).Zotero_Tabs;
@@ -870,6 +872,31 @@ class _TabsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvMoveTabBetweenMains err: " + e);
         }
+    }
+
+    /** Multi-select main→main: move EVERY selected source tab to the target main
+     *  window, landing them contiguously from the drop slot (Firefox-style).
+     *  Snapshots payloads up front (each single move closes a source tab and
+     *  rewrites the list), then loops _wvMoveTabBetweenMains with an incrementing
+     *  target index so the group keeps its source order. */
+    _wvMoveSelectionBetweenMains(srcWin, targetWin, ids, targetIndex, maxOtherPinned) {
+        try {
+            const ZT: any = srcWin && (srcWin as any).Zotero_Tabs;
+            if (!ZT || !ZT._tabs || !targetWin || !ids || !ids.length) return;
+            const payloads: any[] = [];
+            for (const id of ids) {
+                const t = ZT._tabs.find((x: any) => x && x.id === id);
+                const iid = t && t.data && t.data.itemID;
+                if (iid != null) payloads.push({ itemID: iid, sourceTabId: id, tabType: t.type || "", readerType: t.type === "note" ? "note" : "" });
+            }
+            if (!payloads.length) return;
+            try { if (srcWin._wvSelTabIDs && srcWin._wvSelTabIDs.clear) srcWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcWin); } catch (e) {}
+            let idx = (typeof targetIndex === "number") ? targetIndex : 1;
+            for (const pl of payloads) {
+                try { this._wvMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
+                idx++;   // keep the group's source order at the drop slot
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMoveSelectionBetweenMains err: " + e); }
     }
 
     /** Wire dragstart / dragend on the tab-bar container so dragging a
@@ -1198,8 +1225,16 @@ class _TabsMixin {
                                     && typeof live._wvMoveTabBetweenMains === "function") {
                                 const targetIndex = dropTargetIndex(e.clientX);
                                 const maxOtherPinned = rightmostOtherPinned();
-                                try { live._wvMoveTabBetweenMains(srcWin, win, payload, targetIndex, maxOtherPinned); }
-                                catch (er) {}
+                                // Multi-select: move the whole selection together.
+                                const ids = (live._wvTabMultiSelTargets && payload.sourceTabId != null)
+                                    ? live._wvTabMultiSelTargets(srcWin, payload.sourceTabId) : null;
+                                if (ids && ids.length > 1 && typeof live._wvMoveSelectionBetweenMains === "function") {
+                                    try { live._wvMoveSelectionBetweenMains(srcWin, win, ids, targetIndex, maxOtherPinned); }
+                                    catch (er) {}
+                                } else {
+                                    try { live._wvMoveTabBetweenMains(srcWin, win, payload, targetIndex, maxOtherPinned); }
+                                    catch (er) {}
+                                }
                             }
                             return;
                         }
@@ -1285,6 +1320,14 @@ class _TabsMixin {
                         const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         const srcWin = live && live._wvMergeDragSourceWin;
                         if (live && srcWin && typeof live._wvWTMoveTabToMain === "function") {
+                            // Multi-select: move every selected reader tab into this
+                            // main window together (Firefox-style); else just the one.
+                            const ids = (live._wvWTMultiSelTargets)
+                                ? live._wvWTMultiSelTargets(srcWin, data.sourceTabId) : [data.sourceTabId];
+                            if (ids && ids.length > 1 && typeof live._wvWTMoveSelectionToMain === "function") {
+                                try { live._wvWTMoveSelectionToMain(srcWin, ids, win); } catch (er) {}
+                                return;
+                            }
                             // Pass THIS window: the movers default to the anchor
                             // main window, so a drop on a secondary main window
                             // used to land the tab in the wrong window.
@@ -1389,6 +1432,20 @@ class _TabsMixin {
                             } catch (er) {}
                         }
                         if (offWindow || outsideStrip) {
+                            // Multi-select tear-out: if several tabs are selected
+                            // (and the dragged one is part of the set), tear them ALL
+                            // out into one new reader window (Firefox-style). Else
+                            // fall through to Zotero's native single-tab
+                            // moveToNewWindow hook (preserves the tab's reader state).
+                            try {
+                                const lp: any = (Zotero as any).Weavero?.plugin || self;
+                                const targets = lp._wvTabMultiSelTargets
+                                    ? lp._wvTabMultiSelTargets(win, tab.id) : [tab.id];
+                                if (targets && targets.length > 1) {
+                                    lp._wvMainTearOffTabs(win, targets);
+                                    return;
+                                }
+                            } catch (er) {}
                             const tabContentType = Z_Tabs.parseTabType
                                 ? Z_Tabs.parseTabType(tab.type).tabContentType
                                 : null;

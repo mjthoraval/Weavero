@@ -2649,10 +2649,19 @@ class _ReaderMixin {
                     } else if (srcWin && srcWin._wvWT && srcWin._wvWT.tabs
                             && srcWin._wvWT.tabs.length > 1 && info && info.sourceTabId != null) {
                         // Dropped on the reader content (the tear-out zone) → detach
-                        // the dragged tab into its own window. Matches the "copy"
+                        // into its own window. If a multi-selection is active and the
+                        // dragged tab is part of it, tear out ALL selected tabs at once
+                        // (Firefox-style); otherwise just this one. Matches the "copy"
                         // cursor onDragOver shows for a multi-tab source.
                         e.preventDefault();
-                        plugin._wvWTTearOffTab(srcWin, info.sourceTabId);
+                        const tearTargets = (plugin._wvWTMultiSelTargets)
+                            ? plugin._wvWTMultiSelTargets(srcWin, info.sourceTabId)
+                            : [info.sourceTabId];
+                        if (tearTargets && tearTargets.length > 1) {
+                            plugin._wvWTTearOffTabs(srcWin, tearTargets);
+                        } else {
+                            plugin._wvWTTearOffTab(srcWin, info.sourceTabId);
+                        }
                     }
                 } catch (er) { Zotero.debug("[Weavero] strip drop err: " + er); }
             };
@@ -4106,6 +4115,25 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWTWireWindowTeardown err: " + e); }
     }
 
+    /** Find the Weavero reader-WINDOW strip tab hosting `itemID`, or null.
+     *  Returns `{ win, tab }`. These tabs host base ReaderInstances that
+     *  Zotero.Reader.open can't focus (not ReaderTab/ReaderWindow), so callers
+     *  that need to navigate to such an item (e.g. a bookmark whose target PDF
+     *  is open only in a multi-tab reader window) route through here instead. */
+    _wvWTFindTabForItem(itemID: any): any {
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                const st = w && w._wvWT;
+                if (!st || !st.tabs) continue;
+                const tab = st.tabs.find((t: any) => t.itemID === itemID);
+                if (tab) return { win: w, tab };
+            }
+        } catch (_) {}
+        return null;
+    }
+
     /** Mount `itemID` as an additional tab in reader window `win`, reusing
      *  the base `ReaderInstance._open` (which assembles file/annotations and
      *  wires every reader callback for us). Returns the new tab id, or the
@@ -4210,6 +4238,101 @@ class _ReaderMixin {
         }
     }
 
+    /** Realize a LAZY reader tab (one created by restore with no reader
+     *  instance yet): build its ReaderInstance + <browser> and load the
+     *  document, filling tab.reader/browser/type/_popupset and clearing
+     *  tab.lazy. The synchronous prefix (instance + browser) runs before the
+     *  first await, so a caller (e.g. _wvWTSwitch) can reveal the tab
+     *  immediately — the document loads in place. Returns a promise resolving
+     *  when _open() completes; no-op (resolves true) if already realized. */
+    _wvWTRealizeReaderTab(win: any, tab: any, opts?: any): Promise<boolean> {
+        opts = opts || {};
+        try {
+            if (!win || !tab) return Promise.resolve(false);
+            if (tab.reader || tab.browser) { tab.lazy = false; return Promise.resolve(true); }
+            const item = Zotero.Items.get(tab.itemID);
+            if (!item) return Promise.resolve(false);
+            const Base: any = this._wvWTReaderInstanceClass(win);
+            if (!Base) { Zotero.debug("[Weavero] _wvWTRealizeReaderTab: ReaderInstance class unavailable"); return Promise.resolve(false); }
+            const doc: any = win.document;
+            const vbox: any = doc.getElementById("zotero-reader");
+            if (!vbox) return Promise.resolve(false);
+            const inst: any = new Base({ item });
+            inst._window = win;
+            inst._sidebarWidth = 240;
+            inst._sidebarOpen = false;
+            inst._contextPaneOpen = false;
+            inst._bottomPlaceholderHeight = 0;
+            inst._showContextPaneToggle = false;
+            inst._setTitleValue = function () {};
+            const nb: any = doc.createXULElement("browser");
+            nb.id = "wv-wt-browser-" + String(tab.id).replace(/^wvwt-/, "");
+            nb.setAttribute("class", "reader");
+            nb.setAttribute("type", "content");
+            nb.setAttribute("flex", "1");
+            nb.setAttribute("transparent", "true");
+            nb.collapsed = true;                 // realized hidden; switch reveals
+            vbox.appendChild(nb);
+            inst._iframe = nb;
+            const ps: any = doc.createXULElement("popupset");
+            vbox.appendChild(ps);
+            inst._popupset = ps;
+            tab.reader = inst; tab.browser = nb; tab._popupset = ps;
+            tab.type = inst._type || tab.type || null;
+            tab.lazy = false;
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            return new Promise<boolean>((resolve) => {
+                const onLoad = (ev: any) => {
+                    try {
+                        if (nb.contentDocument && ev.target === nb.contentDocument) {
+                            const cw = nb.contentWindow;
+                            if (cw && cw.wrappedJSObject && typeof cw.wrappedJSObject.createReader === "function") {
+                                nb.removeEventListener("DOMContentLoaded", onLoad, true);
+                                inst._iframeWindow = cw;
+                                inst._open({}).then(() => {
+                                    try {
+                                        const rs = (Zotero.Reader as any)._readers || [];
+                                        if (!rs.includes(inst)) rs.push(inst);
+                                    } catch (e) {}
+                                    tab.type = inst._type || tab.type;
+                                    try { this._wvWTRenderStrip(win); } catch (e) {}
+                                    resolve(true);
+                                }).catch((e: any) => { Zotero.debug("[Weavero] _wvWTRealizeReaderTab _open err: " + e); resolve(false); });
+                            }
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] _wvWTRealizeReaderTab onLoad err: " + e); resolve(false); }
+                };
+                nb.addEventListener("DOMContentLoaded", onLoad, true);
+                nb.setAttribute("src", "resource://zotero/reader/reader.html");
+            });
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWTRealizeReaderTab err: " + e);
+            return Promise.resolve(false);
+        }
+    }
+
+    /** Create a LAZY reader tab — a strip entry only, with NO ReaderInstance
+     *  and NO document load — for fast session restore. It realizes (loads its
+     *  document) the first time it's switched to (_wvWTSwitch →
+     *  _wvWTRealizeReaderTab). Notes are NOT lazy (their editor is cheap, and
+     *  mounts via _wvWTMountNoteTab); only reader-able attachments use this.
+     *  Returns the new tab id. */
+    _wvWTAddLazyReaderTab(win: any, itemID: any) {
+        try {
+            const st = this._wvWTEnsureNativeTab(win);
+            if (!st) return null;
+            const item = Zotero.Items.get(itemID);
+            if (!item) return null;
+            const seq = ++st.seq;
+            const id = "wvwt-" + seq;
+            const tab: any = { id, itemID, type: (item.attachmentReaderType || null), reader: null, browser: null, native: false, pinned: false, lazy: true, _popupset: null };
+            st.tabs.push(tab);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+            return id;
+        } catch (e) { Zotero.debug("[Weavero] _wvWTAddLazyReaderTab err: " + e); return null; }
+    }
+
     /** Mount `item` (a note) as a note tab: a <note-editor> sibling in the
      *  reader vbox, collapsed until selected. Mirrors how the standalone note
      *  window configures its editor (note.js): mode/viewMode, registerRoot,
@@ -4300,6 +4423,12 @@ class _ReaderMixin {
             if (!st) return;
             const tab = st.tabs.find((t: any) => t.id === tabId);
             if (!tab) return;
+            // Lazy (unloaded) tab → build its reader instance now. The realize's
+            // synchronous prefix creates the <browser>, so the collapse toggle
+            // below has something to reveal; the document loads in place.
+            if (tab.lazy && !tab.reader && !tab.browser) {
+                try { this._wvWTRealizeReaderTab(win, tab); } catch (e) {}
+            }
             for (const t of st.tabs) {
                 try { t.browser.collapsed = (t.id !== tabId); } catch (e) {}
             }
@@ -5658,8 +5787,114 @@ class _ReaderMixin {
             const st = this._wvWTState(win);
             if (!st || !st.tabs || st.tabs.length <= 1) return;       // need ≥2 tabs
             if (!st.tabs.find((t: any) => t.id === tabId)) return;     // already moved away
-            this._wvWTTearOffTab(win, tabId);
+            // Firefox: dragging the multi-selection out tears out ALL of them
+            // into the new window; a plain drag tears out just this tab.
+            const targets = (this as any)._wvWTMultiSelTargets
+                ? (this as any)._wvWTMultiSelTargets(win, tabId) : [tabId];
+            this._wvWTTearOffTabs(win, (targets && targets.length) ? targets : [tabId]);
         } catch (e2) { Zotero.debug("[Weavero] _wvWTMaybeTearOff err: " + e2); }
+    }
+
+    /** Tear out one OR MANY reader-strip tabs into a single new reader window
+     *  (Firefox-style). Captures the items, closes them here (this window keeps
+     *  any unselected tabs), then opens them together in a fresh window. */
+    _wvWTTearOffTabs(win: any, tabIds: any[]) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st || !st.tabs || !tabIds || !tabIds.length) return;
+            const entries: any[] = [];
+            for (const id of tabIds) {
+                const t = st.tabs.find((x: any) => x.id === id);
+                if (t && t.itemID != null) entries.push({ itemID: t.itemID, isNote: t.type === "note" });
+            }
+            if (!entries.length) return;
+            // Torn-out tabs leave their group (don't carry it to the new window).
+            for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
+            try { if (win._wvSelWTabIDs && win._wvSelWTabIDs.clear) win._wvSelWTabIDs.clear(); } catch (e) {}
+            for (const id of tabIds) { try { this._wvWTCloseTab(win, id); } catch (e) {} }
+            this._wvOpenItemsInNewReaderWindow(entries);
+        } catch (e) { Zotero.debug("[Weavero] _wvWTTearOffTabs err: " + e); }
+    }
+
+    /** Tear out one OR MANY MAIN-WINDOW tabs into a single new reader window
+     *  (Firefox-style multi-select tear-out). Mirrors _wvWTTearOffTabs but
+     *  operates on the main window's Zotero_Tabs: captures the items, closes
+     *  the source tabs, then opens them together in a fresh reader window.
+     *  Used by the main-tab drag-out and the "Move N tabs to new window" menu. */
+    _wvMainTearOffTabs(win: any, tabIDs: any[]) {
+        try {
+            const Z_Tabs: any = win && (win as any).Zotero_Tabs;
+            if (!Z_Tabs || !Z_Tabs._tabs || !tabIDs || !tabIDs.length) return;
+            const entries: any[] = [];
+            for (const id of tabIDs) {
+                const t = Z_Tabs._tabs.find((x: any) => x && x.id === id);
+                const iid = t && t.data && t.data.itemID;
+                if (iid != null) entries.push({ itemID: iid, isNote: t.type === "note" });
+            }
+            if (!entries.length) return;
+            // Torn-out tabs leave their group (don't carry it to the new window).
+            for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
+            try { if (win._wvSelTabIDs && win._wvSelTabIDs.clear) win._wvSelTabIDs.clear(); } catch (e) {}
+            try { this._wvTabMultiSelSync(win); } catch (e) {}
+            try { Z_Tabs.close(tabIDs); } catch (e) {}
+            this._wvOpenItemsInNewReaderWindow(entries);
+        } catch (e) { Zotero.debug("[Weavero] _wvMainTearOffTabs err: " + e); }
+    }
+
+    /** Open a set of items together in ONE new reader window with the multi-tab
+     *  strip. The first reader-able item creates the window; the rest mount into
+     *  it. Used by every "tear out / move to new window" path (reader strip OR
+     *  main bar, drag OR menu). `entries`: [{ itemID, isNote }]. */
+    async _wvOpenItemsInNewReaderWindow(entries: any[]) {
+        try {
+            if (!entries || !entries.length) return;
+            const mainWin: any = Zotero.getMainWindow();
+            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            const readerWins = () => {
+                const out: any[] = [];
+                try { const en = Services.wm.getEnumerator("zotero:reader"); while (en.hasMoreElements()) out.push(en.getNext()); } catch (e) {}
+                return out;
+            };
+            const before = new Set(readerWins());
+            // Create the window from a reader-able item (so it has the multi-tab
+            // strip); fall back to the first entry if the selection is all notes.
+            let firstIdx = entries.findIndex((e: any) => !e.isNote);
+            if (firstIdx < 0) firstIdx = 0;
+            const first = entries[firstIdx];
+            if (first.isNote) {
+                const ZP: any = mainWin && mainWin.ZoteroPane;
+                if (ZP && ZP.openNote) ZP.openNote(first.itemID, { openInWindow: true });
+            } else {
+                (Zotero.Reader as any).open(first.itemID, null, { openInWindow: true, allowDuplicate: true });
+            }
+            if (entries.length === 1) return;          // single tear-off: nothing else to mount
+            // Find the freshly-created reader window, then wait for Weavero to
+            // wire its strip before mounting the remaining tabs into it.
+            let newWin: any = null;
+            const t0 = Date.now();
+            while (!newWin && Date.now() - t0 < 6000) {
+                await new Promise(r => setT(r, 100));
+                for (const w of readerWins()) { if (!before.has(w)) { newWin = w; break; } }
+            }
+            if (!newWin) return;
+            const t1 = Date.now();
+            while (!newWin._wvWT && Date.now() - t1 < 4000) { await new Promise(r => setT(r, 80)); }
+            for (let i = 0; i < entries.length; i++) {
+                if (i === firstIdx) continue;
+                try { await this._wvWTMountTab(newWin, entries[i].itemID, { select: false }); } catch (e) {}
+                await new Promise(r => setT(r, 60));
+            }
+            try { this._wvWTRenderStrip(newWin); } catch (e) {}
+            // Raise/focus the new window. Mounting the rest + closing the source
+            // tabs runs on the MAIN window, which otherwise leaves the freshly
+            // created reader window behind; focus once now and again on a short
+            // delay to win against any late focus-steal from that work.
+            try {
+                newWin.focus();
+                const fT = (newWin.setTimeout) ? newWin.setTimeout.bind(newWin) : setT;
+                fT(() => { try { newWin.focus(); } catch (e) {} }, 80);
+            } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenItemsInNewReaderWindow err: " + e); }
     }
 
     /** Detach a tab from a multi-tab window into its OWN new window: close it
@@ -5675,6 +5910,8 @@ class _ReaderMixin {
             const itemID = tab.itemID;
             const isNote = (tab.type === "note");
             const mainWin: any = Zotero.getMainWindow();
+            // Torn-out tab leaves its group (don't carry it to the new window).
+            try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             try { this._wvWTCloseTab(win, tabId); } catch (e) {}
             const open = () => {
                 try {
@@ -5699,6 +5936,20 @@ class _ReaderMixin {
             // Bail BEFORE closing the source (a note window has no #zotero-reader,
             // so the mount would fail and the source tab would be lost).
             try { if (!win || !win.document || !win.document.getElementById("zotero-reader")) return; } catch (e) { return; }
+            // Multi-select: if the source main window has several tabs selected
+            // (incl. the dragged one), mount them ALL here and close them all
+            // there (Firefox-style). Otherwise fall through to the single path.
+            try {
+                const plugin: any = (Zotero as any).Weavero.plugin;
+                const srcMainWin = plugin && plugin._wvMainTabDragSourceWin;
+                if (srcMainWin && (srcMainWin as any).Zotero_Tabs && plugin._wvTabMultiSelTargets && drag && drag.tabID != null) {
+                    const ids = plugin._wvTabMultiSelTargets(srcMainWin, drag.tabID);
+                    if (ids && ids.length > 1) {
+                        this._wvWTMountMainSelectionHere(win, srcMainWin, ids, drag.tabID, clientX);
+                        return;
+                    }
+                }
+            } catch (e) {}
             let itemID = drag && drag.itemID;
             if (!itemID && drag && drag.libraryID && drag.itemKey) {
                 try {
@@ -5711,6 +5962,8 @@ class _ReaderMixin {
             // Reader-able attachments OR notes (notes mount a note-editor tab).
             if (!item || !(item.attachmentReaderType || (typeof item.isNote === "function" && item.isNote()))) return;
 
+            // Leaving the window leaves the group (don't carry it to the target).
+            try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             // Close the source main-window tab FIRST (saves its reader state and
             // defuses the main dragend tear-off), then clear the shared drag.
             try {
@@ -5747,6 +6000,90 @@ class _ReaderMixin {
         }
     }
 
+    /** Multi-select main→reader: mount EVERY selected main-window tab into this
+     *  reader window and close them all in the source main window. Snapshots the
+     *  items up front (closing rewrites the source tab list), closes the sources
+     *  first (frees their readers + defuses the main dragend tear-off), then
+     *  mounts here after a tick so the closing readers flush their state. */
+    async _wvWTMountMainSelectionHere(targetWin: any, srcMainWin: any, ids: any[], draggedId: any, clientX?: any) {
+        try {
+            const ZT: any = srcMainWin && (srcMainWin as any).Zotero_Tabs;
+            if (!ZT || !ZT._tabs || !ids || !ids.length) return;
+            const moves: any[] = [];
+            for (const id of ids) {
+                const t = ZT._tabs.find((x: any) => x && x.id === id);
+                const iid = t && t.data && t.data.itemID;
+                if (iid != null) moves.push({ id, itemID: iid });
+            }
+            if (!moves.length) return;
+            // Leaving the window leaves the group (don't carry it to the target).
+            for (const m of moves) { try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {} }
+            try { if (srcMainWin._wvSelTabIDs && srcMainWin._wvSelTabIDs.clear) srcMainWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcMainWin); } catch (e) {}
+            try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvTabDrag = null; } catch (e) {}
+            try { ZT.close(moves.map((m: any) => m.id)); } catch (e) {}
+            const setT = (targetWin && targetWin.setTimeout) ? targetWin.setTimeout.bind(targetWin) : setTimeout;
+            await new Promise(r => setT(r, 150));   // let the closing readers flush state
+            let draggedMountId: any = null;
+            for (const m of moves) {
+                try {
+                    const mid = await this._wvWTMountTab(targetWin, m.itemID, { select: m.id === draggedId });
+                    if (m.id === draggedId) draggedMountId = mid;
+                } catch (e) {}
+                await new Promise(r => setT(r, 60));
+            }
+            if (draggedMountId != null && clientX != null) {
+                try { this._wvWTReorderTab(targetWin, draggedMountId, clientX); } catch (e) {}
+            }
+            try { this._wvWTRenderStrip(targetWin); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWTMountMainSelectionHere err: " + e); }
+    }
+
+    /** Multi-select reader→main: move EVERY selected reader-strip tab into the
+     *  target main window's tab bar (Firefox-style). Snapshots items first, then
+     *  closes all source tabs and reopens them in the main window (deferred so the
+     *  closing readers flush state), preserving strip order. Mirrors looping
+     *  _wvWTMoveTabToMain but batches the close/open for a clean group move. */
+    _wvWTMoveSelectionToMain(srcWin: any, ids: any[], targetMainWin: any) {
+        try {
+            const st = this._wvWTState(srcWin);
+            if (!st || !st.tabs || !ids || !ids.length) return;
+            const moves: any[] = [];
+            for (const id of ids) {
+                const t = st.tabs.find((x: any) => x.id === id);
+                if (t && t.itemID != null) moves.push({ id, itemID: t.itemID, isNote: t.type === "note" });
+            }
+            if (!moves.length) return;
+            const mainWin = targetMainWin || Zotero.getMainWindow();
+            // Leaving the window leaves the group (don't carry it to the main bar).
+            for (const m of moves) { try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {} }
+            try { if (srcWin._wvSelWTabIDs && srcWin._wvSelWTabIDs.clear) srcWin._wvSelWTabIDs.clear(); this._wvWTMultiSelSync(srcWin); } catch (e) {}
+            for (const m of moves) { try { this._wvWTCloseTab(srcWin, m.id); } catch (e) {} }
+            const open = () => {
+                try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
+                // Add each as an UNLOADED main-window tab — synchronous + reliable.
+                // The old loop fired N concurrent (un-awaited) Zotero.Reader.open
+                // calls that raced and clobbered each other, so only one tab
+                // survived and the rest were lost. Unloaded Z.add can't race (it's
+                // synchronous); the document loads lazily when the tab is selected.
+                const Z: any = mainWin && (mainWin as any).Zotero_Tabs;
+                if (!Z || typeof Z.add !== "function") return;
+                moves.forEach((m: any, idx: number) => {
+                    try {
+                        if (!Zotero.Items.exists(m.itemID)) return;
+                        Z.add({
+                            type: m.isNote ? "note-unloaded" : "reader-unloaded",
+                            data: { itemID: m.itemID },
+                            select: idx === 0,          // load + show the first so the move is visible
+                            preventJumpback: true,
+                        });
+                    } catch (e) { Zotero.debug("[Weavero] _wvWTMoveSelectionToMain open err: " + e); }
+                });
+            };
+            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            setT(open, 150);
+        } catch (e) { Zotero.debug("[Weavero] _wvWTMoveSelectionToMain err: " + e); }
+    }
+
     /** Drop handler for a tab dragged from ANOTHER reader window onto this
      *  window's strip: move it here — mount in the target window and close it
      *  in the source window (which closes that window if it was its last tab).
@@ -5759,23 +6096,43 @@ class _ReaderMixin {
             const srcWin = plugin && plugin._wvMergeDragSourceWin;
             if (!info || info.itemID == null) return;
             if (!srcWin || srcWin === targetWin) return;     // own strip → stay
-            const itemID = info.itemID;
             const sourceTabId = info.sourceTabId;
-            // Clear shared drag state first so neither window's dragend re-acts.
+            // Multi-select: move ALL selected source tabs together (Firefox-style);
+            // a plain drag moves just the one. Snapshot {id,itemID} in strip order
+            // BEFORE mutating anything (closing a tab rewrites srcWin._wvWT.tabs).
+            const ids = (plugin._wvWTMultiSelTargets)
+                ? plugin._wvWTMultiSelTargets(srcWin, sourceTabId) : [sourceTabId];
+            const sst = srcWin._wvWT;
+            const moves: any[] = [];
+            for (const id of ids) {
+                const t = sst && sst.tabs && sst.tabs.find((x: any) => x.id === id);
+                if (t && t.itemID != null) moves.push({ id, itemID: t.itemID });
+            }
+            if (!moves.length) moves.push({ id: sourceTabId, itemID: info.itemID });
+            // Leaving the window leaves the group — drop membership BEFORE mounting
+            // in the target / closing the source, so the group doesn't follow.
+            for (const m of moves) { try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {} }
+            // Clear shared drag + source selection first so neither window's dragend
+            // re-acts and the source highlight clears.
             try { plugin._wvMergeDragInfo = null; plugin._wvMergeDragSourceWin = null; } catch (e) {}
-            // Mount in the TARGET first, THEN close the source. Order matters: the
-            // target may be a note-only deck window with no reader of its own, so
-            // _wvWTReaderInstanceClass falls back to a live reader — and the source
-            // can be the only one. Closing it first emptied Zotero.Reader._readers,
-            // the class went unavailable, the mount failed, and the (already-closed)
-            // tab vanished. The mount's synchronous part runs before any await, so
-            // checking the target's tabs right after is reliable; only close the
-            // source once the item has actually landed there (never lose the tab).
-            this._wvWTMountTab(targetWin, itemID, { allowDuplicate: false, select: true });
-            const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
-                && targetWin._wvWT.tabs.some((t: any) => t.itemID === itemID));
-            if (landed && sourceTabId != null) {
-                try { this._wvWTCloseTab(srcWin, sourceTabId); } catch (e) {}
+            try { if (srcWin._wvSelWTabIDs && srcWin._wvSelWTabIDs.clear) srcWin._wvSelWTabIDs.clear(); plugin._wvWTMultiSelSync(srcWin); } catch (e) {}
+            // Mount ALL into the TARGET first, THEN close the sources. Order matters:
+            // the target may be a note-only deck window with no reader of its own, so
+            // _wvWTReaderInstanceClass falls back to a live reader — and a source can
+            // be the only one. Closing first emptied Zotero.Reader._readers, the class
+            // went unavailable, the mount failed, and the (already-closed) tab
+            // vanished. The mount's synchronous part runs before any await, so the
+            // target's tabs are reliable right after; close each source only once its
+            // item has actually landed (never lose a tab).
+            for (const m of moves) {
+                try { this._wvWTMountTab(targetWin, m.itemID, { allowDuplicate: false, select: m.id === sourceTabId }); } catch (e) {}
+            }
+            for (const m of moves) {
+                const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
+                    && targetWin._wvWT.tabs.some((t: any) => t.itemID === m.itemID));
+                if (landed && m.id != null) {
+                    try { this._wvWTCloseTab(srcWin, m.id); } catch (e) {}
+                }
             }
             // Closing the source tab removes its element before its dragend fires,
             // so clear every window's drop ghost here too.
@@ -5850,6 +6207,8 @@ class _ReaderMixin {
             // `targetWin` picks WHICH main window (a drop on a secondary main
             // window passes it); default = the anchor, as before.
             const mainWin = targetWin || Zotero.getMainWindow();
+            // Leaving the window leaves the group (don't carry it to the main bar).
+            try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             try { this._wvWTCloseTab(win, tabId); } catch (e) {}
             // A note isn't reader-able — dock it as a main-window note tab
             // (ZoteroPane.openNote) instead of Zotero.Reader.open, which would
@@ -6059,7 +6418,17 @@ class _ReaderMixin {
                     for (const ex of norm) {
                         try {
                             if (Zotero.Items.exists(ex.itemID)) {
-                                const newId = await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
+                                // Lazy-restore reader-able attachments — strip entry
+                                // only, no document load (they realize on first
+                                // click). Notes mount fully (their editor is cheap).
+                                // The active tab is loaded below via _wvWTSwitch.
+                                // This makes restore near-instant regardless of how
+                                // many tabs the window had.
+                                const it: any = Zotero.Items.get(ex.itemID);
+                                const isNote = !!(it && typeof it.isNote === "function" && it.isNote());
+                                const newId = isNote
+                                    ? await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true })
+                                    : this._wvWTAddLazyReaderTab(win, ex.itemID);
                                 restoreOrderIds.push(newId);
                                 try {
                                     const st1 = win._wvWT;
@@ -6153,7 +6522,12 @@ class _ReaderMixin {
                             for (const ex of extras) {
                                 try {
                                     if (ex && ex.itemID != null && Zotero.Items.exists(ex.itemID)) {
-                                        await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
+                                        // Lazy-restore reader-able extras (load on
+                                        // first click); notes mount fully.
+                                        const exit: any = Zotero.Items.get(ex.itemID);
+                                        const exIsNote = !!(exit && typeof exit.isNote === "function" && exit.isNote());
+                                        if (exIsNote) await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
+                                        else this._wvWTAddLazyReaderTab(win, ex.itemID);
                                     }
                                 } catch (e) {}
                             }
@@ -11602,6 +11976,7 @@ class _ReaderMixin {
                                         try { ev.stopPropagation(); fn(); } catch (er) {}
                                     });
                                     groupPopup.appendChild(mi);
+                                    return mi;
                                 };
                                 mkG("New Group", null, () => lp._wvTabGroupNewFromDeckTabs(win, targets));
                                 const groups = lp._tabGroupsGet();
@@ -11610,8 +11985,11 @@ class _ReaderMixin {
                                 if (others.length) {
                                     groupPopup.appendChild(doc.createXULElement("menuseparator"));
                                     for (const g of others) {
-                                        mkG(g.name || "Unnamed group",
-                                            lp._wvTabGroupDotImage(lp._tabGroupColorHex(g.color)),
+                                        // Saved (parked) group → tabs-menu-list design:
+                                        // hollow group-colour dot + right-aligned "saved".
+                                        const parked = lp._wvTabGroupOpenCount(g.id) === 0;
+                                        const gmi = mkG(g.name || "Unnamed group",
+                                            lp._wvTabGroupDotImage(lp._tabGroupColorHex(g.color), parked),
                                             () => {
                                                 targets.forEach((id: any, i: number) => {
                                                     win.setTimeout(() => {
@@ -11620,6 +11998,7 @@ class _ReaderMixin {
                                                 });
                                                 lp._wvWTMultiSelClear(win);
                                             });
+                                        if (parked && gmi) { try { gmi.setAttribute("acceltext", "saved"); } catch (e) {} }
                                     }
                                 }
                             }

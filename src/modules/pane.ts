@@ -4113,6 +4113,14 @@ class _PaneMixin {
                    bar" that should vanish WITH the hidden title bar, not linger. */
                 "  border-width: 0 !important;",
                 "}",
+                /* When the menubar IS summoned (Alt), give #titlebar the same
+                   --material-panedivider bottom line the tab strip carries —
+                   a clearly visible divider, uniform with the reader-window
+                   menubar. The XUL default is a near-invisible light hairline
+                   (rgba(255,255,255,.18)), which read as "missing". */
+                "#titlebar:has(#toolbar-menubar:not([wv-compact-hidden='true'])) {",
+                "  border-bottom: var(--material-panedivider) !important;",
+                "}",
                 /* Buttonbox: absolute-positioned over the right edge of the
                    tab strip. Flex layout fights us (tab-bar-container is
                    sized to its content width and won't shrink even with

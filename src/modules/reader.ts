@@ -3307,6 +3307,18 @@ class _ReaderMixin {
                 "  height: 0 !important; min-height: 0 !important;",
                 "  overflow: hidden !important;",
                 "}",
+                /* When summoned via Alt, style the menubar bar like the main
+                   window's title region. The menubar is a bare child of
+                   <window>, so by default it shows the lighter window
+                   background (rgb(48,48,48)) with no divider — a mismatched
+                   lighter bar. Dark --material-tabbar fill + a
+                   --material-panedivider bottom line make it uniform with the
+                   main-window menubar (#titlebar) and the tab strip below. */
+                "menubar:not([wv-compact-hidden='true']) {",
+                "  background: var(--material-tabbar) !important;",
+                "  border-bottom: var(--material-panedivider) !important;",
+                "  box-sizing: border-box;",
+                "}",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
         } catch (e) {
@@ -12204,6 +12216,17 @@ class _ReaderMixin {
                 "  position: relative;",
                 /* Draggable like a title bar (the controls + menus opt out). */
                 "  -moz-window-dragging: drag;",
+                "}",
+                /* Visible state, cont. — fill + bottom line matching the main
+                   window's #titlebar menubar row and the tab strip below, so the
+                   Alt-summoned bar is uniform across windows. A bare <menubar>
+                   child of <window> otherwise shows the lighter window background
+                   (rgb(48,48,48)) with no divider — a mismatched lighter bar.
+                   Scoped to :not(hidden) so the 1px line never lingers over the
+                   collapsed (height:0) bar. */
+                "menubar:not([wv-compact-hidden='true']) {",
+                "  background: var(--material-tabbar) !important;",
+                "  border-bottom: var(--material-panedivider) !important;",
                 "}",
                 "menubar menu, menubar menuitem { -moz-window-dragging: no-drag; }",
                 /* The injected Z icon — absolute-positioned so XUL

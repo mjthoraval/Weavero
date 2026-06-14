@@ -5623,12 +5623,11 @@ class _ReaderPanelsMixin {
             const win = reader && reader._window;
             if (!win || !win.document || !entry) return;
             const ann = await this._bmAnnotationItem(entry);
-            // In-document location bookmarks (text selection, pinned position,
-            // whole page) carry their own free-text comment.
-            const isLocBm = entry.type === "text" || entry.type === "position" || entry.type === "page";
-            let commentValue: string | null = null;
-            if (ann) { try { commentValue = String(ann.annotationComment || ""); } catch (_) { commentValue = ""; } }
-            else if (isLocBm) { commentValue = String(entry.comment || ""); }
+            // EVERY bookmark gets a comment: the annotation's comment for
+            // annotation bookmarks, else the entry's own free-text comment.
+            let commentValue = "";
+            if (ann) { try { commentValue = String(ann.annotationComment || ""); } catch (_) {} }
+            else { commentValue = String(entry.comment || ""); }
             this._bmShowEditDialog(win.document, win, {
                 titleValue: entry.label || "",
                 commentValue,
@@ -5636,14 +5635,14 @@ class _ReaderPanelsMixin {
                     if (newTitle && newTitle !== entry.label) {
                         try { await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newTitle); } catch (_) {}
                     }
-                    if (ann && newComment != null) {
-                        let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
-                        if (newComment !== cur) {
-                            try { ann.annotationComment = newComment; await ann.saveTx(); }
-                            catch (e) { Zotero.debug("[Weavero] reader bm comment save err: " + e); }
-                        }
-                    } else if (isLocBm && newComment != null) {
-                        if (newComment !== (entry.comment || "")) {
+                    if (newComment != null) {
+                        if (ann) {
+                            let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
+                            if (newComment !== cur) {
+                                try { ann.annotationComment = newComment; await ann.saveTx(); }
+                                catch (e) { Zotero.debug("[Weavero] reader bm comment save err: " + e); }
+                            }
+                        } else if (newComment !== String(entry.comment || "")) {
                             try { await this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment }); } catch (_) {}
                         }
                     }

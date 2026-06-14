@@ -1933,17 +1933,27 @@ class _BookmarksMixin {
         }
     }
 
-    /** Edit a library-popup bookmark's title and — for bookmarks that point to
-     *  a PDF annotation — the annotation's comment, together. Saving renames
-     *  the bookmark and writes the comment back to the live Zotero annotation
-     *  (saveTx → reflected everywhere). Non-annotation bookmarks show the title
-     *  field only. */
+    /** Set a (non-annotation) bookmark entry's own free-text comment. */
+    async _bmSetComment(id: string, comment: string) {
+        await this._bmInit();
+        const loc = this._bmLocate(id);
+        if (!loc || !loc.entry || loc.entry.type === "folder") return;
+        loc.entry.comment = comment || "";
+        await this._bmPersist();
+    }
+
+    /** Edit a library-popup bookmark's title and comment together. EVERY
+     *  bookmark gets a comment field: for bookmarks that point to a PDF
+     *  annotation it's the annotation's live comment (saveTx → reflected
+     *  everywhere); for all other bookmarks it's the bookmark's own free-text
+     *  comment, stored on the entry. */
     async _bmEditBookmarkDialog(win: any, bm: any, onDone?: any) {
         try {
             await this._bmInit();
             const ann = await this._bmAnnotationItem(bm);
-            let curComment: string | null = null;
-            if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) { curComment = ""; } }
+            let curComment = "";
+            if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) {} }
+            else { curComment = String(bm.comment || ""); }
             this._bmShowEditDialog(win.document, win, {
                 titleValue: bm.label || bm.itemKey || bm.collectionKey || "",
                 commentValue: curComment,
@@ -1951,11 +1961,15 @@ class _BookmarksMixin {
                     if (newTitle && newTitle !== bm.label) {
                         try { await this._bmRenameBookmark(bm.id, newTitle); } catch (_) {}
                     }
-                    if (ann && newComment != null) {
-                        let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
-                        if (newComment !== cur) {
-                            try { ann.annotationComment = newComment; await ann.saveTx(); }
-                            catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
+                    if (newComment != null) {
+                        if (ann) {
+                            let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
+                            if (newComment !== cur) {
+                                try { ann.annotationComment = newComment; await ann.saveTx(); }
+                                catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
+                            }
+                        } else if (newComment !== String(bm.comment || "")) {
+                            try { await this._bmSetComment(bm.id, newComment); } catch (_) {}
                         }
                     }
                     if (onDone) { try { onDone(); } catch (_) {} }
@@ -3090,12 +3104,14 @@ class _BookmarksMixin {
         } else {
             label.setAttribute("title", labelText);
         }
-        // Annotation bookmark: surface the annotation's comment in the row
-        // tooltip (edited via right-click → Edit Bookmark…).
+        // Surface the bookmark's comment in the row tooltip — the annotation's
+        // comment for annotation bookmarks, else the bookmark's own comment
+        // (both edited via right-click → Edit Bookmark…).
         try {
-            const annComment = this._bmAnnotationCommentSync(bm);
-            if (annComment) {
-                label.setAttribute("title", (label.getAttribute("title") || labelText) + "\n\n" + annComment);
+            let cmt = this._bmAnnotationCommentSync(bm);
+            if (!cmt && bm.comment) cmt = String(bm.comment).trim() || null;
+            if (cmt) {
+                label.setAttribute("title", (label.getAttribute("title") || labelText) + "\n\n" + cmt);
             }
         } catch (_) {}
 

@@ -316,6 +316,23 @@ const BM_POPUP_CSS = [
     // chrome so only the card's own bordered/shadowed box shows; a small
     // shadow-margin keeps the card's box-shadow from being clipped.
     "#wv-bm-hovercard-panel{appearance:none;background:transparent;border:0;box-shadow:none;--panel-padding:0;--panel-background:transparent;--panel-border-color:transparent;--panel-shadow-margin:6px;-moz-window-shadow:none;}",
+    // Edit-bookmark dialog: title + (for annotation bookmarks) the annotation
+    // comment, edited together. A bare XUL <panel> hosting HTML fields.
+    "#wv-bm-editdlg-panel{appearance:none;--panel-padding:0;}",
+    // Opaque background: --material-menu is translucent (meant to overlay a
+    // panel's own backdrop), so layer it over an opaque --material-sidepane
+    // base — same trick the reader's filter/settings popups use — or content
+    // shows through the bare appearance:none panel.
+    ".wv-bm-editdlg{display:flex;flex-direction:column;gap:6px;padding:14px;min-width:320px;max-width:460px;background-color:var(--material-sidepane,var(--material-background,#fff));background-image:linear-gradient(var(--material-menu),var(--material-menu));color:var(--fill-primary);border:1px solid var(--material-panedivider,rgba(127,127,127,.4));border-radius:8px;box-shadow:0 6px 22px rgba(0,0,0,.28);}",
+    ".wv-bm-editdlg-caption{font-size:10px;font-weight:600;opacity:.65;text-transform:uppercase;letter-spacing:.04em;margin-top:2px;}",
+    ".wv-bm-editdlg-input,.wv-bm-editdlg-textarea{box-sizing:border-box;width:100%;font:inherit;font-size:13px;padding:6px 8px;border-radius:5px;border:1px solid var(--material-panedivider,rgba(127,127,127,.4));background:var(--fill-quinary,rgba(127,127,127,.06));color:inherit;}",
+    ".wv-bm-editdlg-textarea{resize:vertical;min-height:68px;line-height:1.4;}",
+    ".wv-bm-editdlg-input:focus,.wv-bm-editdlg-textarea:focus{outline:none;border-color:var(--color-accent,#4072e5);}",
+    ".wv-bm-editdlg-buttons{display:flex;justify-content:flex-end;gap:8px;margin-top:8px;}",
+    ".wv-bm-editdlg-btn{font:inherit;font-size:12px;padding:5px 14px;border-radius:5px;border:1px solid var(--material-panedivider,rgba(127,127,127,.4));background:var(--fill-quinary,rgba(127,127,127,.08));color:inherit;cursor:pointer;}",
+    ".wv-bm-editdlg-btn:hover{background:var(--fill-quarternary,rgba(127,127,127,.16));}",
+    ".wv-bm-editdlg-btn-primary{background:var(--color-accent,#4072e5);border-color:var(--color-accent,#4072e5);color:#fff;}",
+    ".wv-bm-editdlg-btn-primary:hover{filter:brightness(1.08);}",
 ].join("");
 
 class _BookmarksMixin {
@@ -1752,6 +1769,126 @@ class _BookmarksMixin {
         }
     }
 
+    /** A bookmark's target annotation item (loaded), or null if the bookmark
+     *  doesn't point to an annotation. */
+    async _bmAnnotationItem(bm: any): Promise<any> {
+        try {
+            if (!bm || bm.type !== "item") return null;
+            const iid = Zotero.Items.getIDFromLibraryAndKey(bm.libraryID, bm.itemKey);
+            if (!iid) return null;
+            let item: any = null;
+            try { item = await Zotero.Items.getAsync(iid); } catch (_) { return null; }
+            if (!item || !(item.isAnnotation && item.isAnnotation())) return null;
+            try { if (item.loadAllData) await item.loadAllData(); } catch (_) {}
+            return item;
+        } catch (_) { return null; }
+    }
+
+    /** Synchronous read of a bookmark's annotation comment (for the row
+     *  tooltip). Returns null when not an annotation, unloaded, or empty. */
+    _bmAnnotationCommentSync(bm: any): string | null {
+        try {
+            if (!bm || bm.type !== "item") return null;
+            const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+            if (!it || !(it.isAnnotation && it.isAnnotation())) return null;
+            const c = String(it.annotationComment || "").trim();
+            return c || null;
+        } catch (_) { return null; }
+    }
+
+    /** Edit a bookmark's title and — for bookmarks that point to a PDF
+     *  annotation — the annotation's comment, together in one panel. Saving
+     *  renames the bookmark (label) and writes the comment back to the live
+     *  Zotero annotation (saveTx → reflected everywhere). Non-annotation
+     *  bookmarks show the title field only. */
+    async _bmEditBookmarkDialog(win: any, bm: any) {
+        try {
+            await this._bmInit();
+            const doc: any = win.document;
+            this._bmEnsurePopupStyles(doc);   // self-sufficient: inject CSS even if opened without the popup
+            const ann = await this._bmAnnotationItem(bm);
+            let curComment = "";
+            if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) {} }
+            doc.getElementById("wv-bm-editdlg-panel")?.remove();
+            const panel = doc.createXULElement("panel");
+            panel.id = "wv-bm-editdlg-panel";
+            panel.setAttribute("animate", "false");
+            panel.setAttribute("noautohide", "true");
+            panel.setAttribute("consumeoutsideclicks", "false");
+            const box = doc.createElementNS(NS_HTML, "div");
+            box.className = "wv-bm-editdlg";
+
+            const titleCap = doc.createElementNS(NS_HTML, "div");
+            titleCap.className = "wv-bm-editdlg-caption";
+            titleCap.textContent = "Title";
+            const titleInput = doc.createElementNS(NS_HTML, "input");
+            titleInput.className = "wv-bm-editdlg-input";
+            titleInput.setAttribute("type", "text");
+            titleInput.value = bm.label || bm.itemKey || bm.collectionKey || "";
+            box.appendChild(titleCap);
+            box.appendChild(titleInput);
+
+            let commentInput: any = null;
+            if (ann) {
+                const cCap = doc.createElementNS(NS_HTML, "div");
+                cCap.className = "wv-bm-editdlg-caption";
+                cCap.textContent = "Comment";
+                commentInput = doc.createElementNS(NS_HTML, "textarea");
+                commentInput.className = "wv-bm-editdlg-textarea";
+                commentInput.setAttribute("rows", "4");
+                commentInput.value = curComment;
+                box.appendChild(cCap);
+                box.appendChild(commentInput);
+            }
+
+            const btns = doc.createElementNS(NS_HTML, "div");
+            btns.className = "wv-bm-editdlg-buttons";
+            const cancelBtn = doc.createElementNS(NS_HTML, "button");
+            cancelBtn.className = "wv-bm-editdlg-btn";
+            cancelBtn.textContent = "Cancel";
+            const saveBtn = doc.createElementNS(NS_HTML, "button");
+            saveBtn.className = "wv-bm-editdlg-btn wv-bm-editdlg-btn-primary";
+            saveBtn.textContent = "Save";
+            btns.appendChild(cancelBtn);
+            btns.appendChild(saveBtn);
+            box.appendChild(btns);
+            panel.appendChild(box);
+
+            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            host.appendChild(panel);
+            const close = () => { try { panel.remove(); } catch (_) {} };
+            const doSave = async () => {
+                const newLabel = (titleInput.value || "").trim();
+                if (newLabel && newLabel !== bm.label) {
+                    try { await this._bmRenameBookmark(bm.id, newLabel); } catch (_) {}
+                }
+                if (ann && commentInput) {
+                    const newComment = String(commentInput.value || "");
+                    if (newComment !== curComment) {
+                        try { ann.annotationComment = newComment; await ann.saveTx(); }
+                        catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
+                    }
+                }
+                close();
+                this._bmRenderPopupList(win);
+            };
+            cancelBtn.addEventListener("click", close);
+            saveBtn.addEventListener("click", () => { doSave(); });
+            panel.addEventListener("keydown", (e: any) => {
+                if (e.key === "Escape") { e.preventDefault(); close(); }
+                else if (e.key === "Enter" && e.target === titleInput) { e.preventDefault(); doSave(); }
+                else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doSave(); }
+            });
+
+            const sx = win.screenX + Math.round(win.outerWidth / 2) - 180;
+            const sy = win.screenY + Math.round(win.outerHeight / 2) - 130;
+            panel.openPopupAtScreen(sx, sy, false);
+            win.setTimeout(() => { try { titleInput.focus(); titleInput.select(); } catch (_) {} }, 50);
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmEditBookmarkDialog err: " + e);
+        }
+    }
+
     // ---- Navigation / opening ---------------------------------------------
 
     /** Row click. Modifiers pick the destination without the context menu
@@ -2875,6 +3012,14 @@ class _BookmarksMixin {
         } else {
             label.setAttribute("title", labelText);
         }
+        // Annotation bookmark: surface the annotation's comment in the row
+        // tooltip (edited via right-click → Edit Bookmark…).
+        try {
+            const annComment = this._bmAnnotationCommentSync(bm);
+            if (annComment) {
+                label.setAttribute("title", (label.getAttribute("title") || labelText) + "\n\n" + annComment);
+            }
+        } catch (_) {}
 
         row.appendChild(icon);
         row.appendChild(label);
@@ -3018,10 +3163,8 @@ class _BookmarksMixin {
                 this._bmHidePopup(win);
             }, this._bmShowInLibraryIcon(bm, win));
             menu.appendChild(doc.createXULElement("menuseparator"));
-            add("Rename…", () => {
-                const cur = bm.label || bm.itemKey || bm.collectionKey || "";
-                const name = this._bmPromptName(win, "Rename Bookmark", cur);
-                if (name) this._bmRenameBookmark(bm.id, name).then(() => this._bmRenderPopupList(win));
+            add("Edit Bookmark…", () => {
+                this._bmEditBookmarkDialog(win, bm);
             }, BM_RENAME_ICON);
             add("Delete Bookmark", () => {
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));

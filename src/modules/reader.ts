@@ -7462,6 +7462,396 @@ class _ReaderMixin {
         return handler;
     }
 
+    /** Promise-based sleep on the main window's timer (falls back to the
+     *  bare global). Used by the reader link-click navigation helpers. */
+    _wvSleep(ms) {
+        const win = (Zotero.getMainWindow && Zotero.getMainWindow()) || null;
+        return new Promise<void>((resolve) => {
+            try {
+                if (win && typeof win.setTimeout === "function") win.setTimeout(resolve, ms);
+                else setTimeout(resolve, ms);
+            } catch (e) { setTimeout(resolve, ms); }
+        });
+    }
+
+    /** Navigate one PDF view to `location` (a `{ position }` accepted by
+     *  `PDFView.navigate`). Waits for the view's pdf.js viewer to load,
+     *  then tries the reader's own `navigate()` (precise + target
+     *  highlight). On a freshly-created secondary pane / new window that
+     *  scroll can no-op, so we verify the landing page and fall back to
+     *  the reliable pdf.js `currentPageNumber` setter. */
+    async _wvNavigateView(view, location) {
+        try {
+            if (!view) return;
+            const target = (location && location.position
+                && Number.isInteger(location.position.pageIndex))
+                ? location.position.pageIndex
+                : (location && Number.isInteger(location.pageIndex)
+                    ? location.pageIndex : null);
+            let viewer = null;
+            for (let i = 0; i < 100; i++) {
+                viewer = view._iframeWindow
+                    && view._iframeWindow.PDFViewerApplication
+                    && view._iframeWindow.PDFViewerApplication.pdfViewer;
+                if (viewer && viewer.pagesCount > 0) break;
+                await this._wvSleep(50);
+            }
+            try { if (view.initializedPromise) await view.initializedPromise; }
+            catch (e) {}
+            try { if (typeof view.navigate === "function") await view.navigate(location); }
+            catch (e) {}
+            if (viewer && target != null) {
+                await this._wvSleep(120);
+                if (viewer.currentPageNumber !== target + 1) {
+                    try { viewer.currentPageNumber = target + 1; } catch (e) {}
+                }
+            }
+            // Flash-highlight the target like a native click-navigate. The
+            // position came from another view's compartment, so we hand the
+            // reader a plain copy cloned into THIS view's iframe — passing a
+            // foreign-compartment object makes `_highlightPosition` silently
+            // no-op (the cross-compartment gotcha). Done after the scroll so
+            // the destination page is laid out when the flash renders.
+            try {
+                const src = location && location.position;
+                if (view._iframeWindow && src && Number.isInteger(src.pageIndex)) {
+                    const rects = (src.rects || []).map((r) => [r[0], r[1], r[2], r[3]]);
+                    const plain = { pageIndex: src.pageIndex, rects };
+                    let hlPos = plain;
+                    try {
+                        if (typeof Components !== "undefined" && Components.utils
+                            && typeof Components.utils.cloneInto === "function") {
+                            hlPos = Components.utils.cloneInto(plain, view._iframeWindow);
+                        }
+                    } catch (e) {}
+                    await this._wvSleep(150);
+                    if (typeof view._highlightPosition === "function") {
+                        view._highlightPosition(hlPos);
+                    }
+                }
+            } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvNavigateView err: " + e);
+        }
+    }
+
+    /** Wait for a reader's primary view + pdf.js viewer to be ready, then
+     *  navigate it. Used for the duplicate window / its source. */
+    async _wvNavigateReaderPrimary(rd, location) {
+        try {
+            if (!rd) return;
+            try { if (typeof rd._waitForReader === "function") await rd._waitForReader(); }
+            catch (e) {}
+            let pv = null;
+            for (let i = 0; i < 100; i++) {
+                pv = rd._internalReader && rd._internalReader._primaryView;
+                const viewer = pv && pv._iframeWindow
+                    && pv._iframeWindow.PDFViewerApplication
+                    && pv._iframeWindow.PDFViewerApplication.pdfViewer;
+                if (viewer && viewer.pagesCount > 0) break;
+                await this._wvSleep(50);
+            }
+            await this._wvNavigateView(pv, location);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvNavigateReaderPrimary err: " + e);
+        }
+    }
+
+    /** True while `rd` is a live, open reader (tab or window). */
+    _wvReaderAlive(rd) {
+        try {
+            return !!(rd && Zotero.Reader && Zotero.Reader._readers
+                && Zotero.Reader._readers.indexOf(rd) !== -1);
+        } catch (e) { return false; }
+    }
+
+    /** Ctrl/Cmd+click in-window navigation. From the primary pane, open or
+     *  reuse a vertical split and send the target to the secondary pane;
+     *  from the secondary pane (the reverse), send it to the primary. The
+     *  source pane keeps its reading position either way. */
+    async _wvCtrlNavigate(reader, sourceIsPrimary, location) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir) return;
+            if (sourceIsPrimary) {
+                if (!ir.splitType && typeof ir.toggleVerticalSplit === "function") {
+                    ir.toggleVerticalSplit(true);
+                }
+                let sv = null;
+                for (let i = 0; i < 100; i++) {
+                    sv = ir._secondaryView;
+                    if (sv && sv._iframeWindow) break;
+                    await this._wvSleep(50);
+                }
+                if (!sv) return;
+                // Wire the secondary pane too, so a reverse Ctrl+click there
+                // sends the target back to the primary pane.
+                try { this._wvWireReaderLinkClicks(reader, sv); } catch (e) {}
+                await this._wvNavigateView(sv, location);
+            }
+            else {
+                // Reverse: clicked in the secondary pane -> drive the primary.
+                await this._wvNavigateView(ir._primaryView, location);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvCtrlNavigate err: " + e);
+        }
+    }
+
+    /** Shift+click duplicate-window navigation. From the original reader,
+     *  open (or reuse, across clicks) a separate duplicate reader window of
+     *  the same PDF and send the target there; from within that duplicate
+     *  (the reverse), send the target back to the original. */
+    async _wvOpenInDupWindow(reader, location) {
+        try {
+            const itemID = reader.itemID;
+            // Find the coupled reader. Prefer a remembered link, but fall back
+            // to ANY other open reader of the same item — so the coupling
+            // survives the duplicate being dragged to another window (which
+            // recreates its instance and drops our remembered reference).
+            // This also makes the pair symmetric: a Shift+click in either
+            // reader sends the target to the other.
+            let partner: any = null;
+            const remembered =
+                (this._wvReaderAlive(reader._wvDupReader) && reader._wvDupReader)
+                || (this._wvReaderAlive(reader._wvDupSource) && reader._wvDupSource)
+                || null;
+            if (remembered) {
+                partner = remembered;
+            }
+            else {
+                const others = (Zotero.Reader._readers || []).filter((r) =>
+                    r !== reader && r.itemID === itemID && this._wvReaderAlive(r));
+                if (others.length) partner = others[others.length - 1];
+            }
+            if (partner) {
+                // (Re)establish the link both ways and make sure the partner's
+                // own link clicks are wired — it may be a moved/new instance.
+                reader._wvDupReader = partner;
+                partner._wvDupSource = reader;
+                try { this._wvSetupReaderLinkClicks(partner); } catch (e) {}
+                await this._wvNavigateReaderPrimary(partner, location);
+                return;
+            }
+            // No coupled reader open -> create a duplicate window.
+            const dup: any = await Zotero.Reader.open(itemID, location,
+                { openInWindow: true, allowDuplicate: true });
+            if (dup) {
+                reader._wvDupReader = dup;
+                dup._wvDupSource = reader;
+                try {
+                    if (typeof dup._waitForReader === "function") await dup._waitForReader();
+                } catch (e) {}
+                try { this._wvSetupReaderLinkClicks(dup); } catch (e) {}
+                await this._wvNavigateReaderPrimary(dup, location);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvOpenInDupWindow err: " + e);
+        }
+    }
+
+    /** Wire internal-link click handling onto one PDF view's pdf.js iframe.
+     *
+     *  Ctrl/Cmd+click an internal link (figure / section ref) or citation ->
+     *  open the target in the OTHER split pane (and the reverse, from the
+     *  secondary pane back to the primary). Shift+click -> open it in a
+     *  duplicate reader window (and the reverse, from the duplicate back to
+     *  the original). The source pane never moves.
+     *
+     *  Built on zotero/reader's PDFView (AGPL-3.0): reuses
+     *  `pointerEventToPosition` + `_getSelectableOverlay` (the reader's own
+     *  hit-test). Capture-phase on the pdf.js iframe so it pre-empts the
+     *  reader's bubble-phase `_handlePointerUp` (reader/src/pdf/pdf-view.js);
+     *  we don't block that handler (it resets selection state) — we only
+     *  no-op the source view's `navigate()` for that one pass so the source
+     *  pane stays put. Idempotent per iframe via `win._wvLinkClicksWired`. */
+    _wvWireReaderLinkClicks(reader, view) {
+        try {
+            if (!reader || !view) return;
+            const win = view._iframeWindow;
+            if (!win || win._wvLinkClicksWired) return;
+            const handler = (event) => {
+                try {
+                    if (event.button !== 0) return;
+                    // Ctrl on Win/Linux, Cmd (meta) on macOS (where Ctrl+click
+                    // is the OS context-menu gesture); Shift for the window
+                    // variant. Require exactly one (ignore neither / both).
+                    const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
+                    const shift = event.shiftKey;
+                    if (ctrl === shift) return;
+                    // Closures go stale across a hot-reload — resolve the live
+                    // plugin instance at event time.
+                    const plugin = (Zotero.Weavero && Zotero.Weavero.plugin) || this;
+                    const ir = reader._internalReader;
+                    if (!ir) return;
+                    // Identify the source pane (the view that owns this iframe).
+                    // Compare against the same `_iframeWindow` property we wired,
+                    // so the match is wrapper-consistent.
+                    let sourceView = null, sourceIsPrimary = false;
+                    if (ir._primaryView && ir._primaryView._iframeWindow === win) {
+                        sourceView = ir._primaryView; sourceIsPrimary = true;
+                    }
+                    else if (ir._secondaryView && ir._secondaryView._iframeWindow === win) {
+                        sourceView = ir._secondaryView; sourceIsPrimary = false;
+                    }
+                    else return;
+                    // PDF-only hit-test API; absent on EPUB/snapshot views and
+                    // on older readers -> fall through to normal navigation.
+                    if (typeof sourceView.pointerEventToPosition !== "function"
+                        || typeof sourceView._getSelectableOverlay !== "function") return;
+                    let pos;
+                    try { pos = sourceView.pointerEventToPosition(event); } catch (e) { return; }
+                    if (!pos) return;
+                    let overlay, downOverlay;
+                    try {
+                        overlay = sourceView._getSelectableOverlay(pos);
+                        downOverlay = sourceView.pointerDownPosition
+                            ? sourceView._getSelectableOverlay(sourceView.pointerDownPosition)
+                            : overlay;
+                    } catch (e) { return; }
+                    // Mirror the reader's click-not-drag check.
+                    if (!overlay || overlay !== downOverlay) return;
+                    // Resolve the target: internal-link (figures / section refs)
+                    // and citation (in-text references).
+                    let targetLoc = null;
+                    if (overlay.type === "internal-link" && overlay.destinationPosition) {
+                        targetLoc = { position: overlay.destinationPosition };
+                    }
+                    else if (overlay.type === "citation"
+                        && overlay.references && overlay.references[0]
+                        && overlay.references[0].position) {
+                        targetLoc = { position: overlay.references[0].position };
+                    }
+                    if (!targetLoc) return;
+                    // Keep the source pane put: no-op its navigate() for this
+                    // one synchronous pointerup pass (the reader's handler still
+                    // runs and resets selection state), restoring it next tick.
+                    const origNavigate = sourceView.navigate;
+                    sourceView.navigate = function () {};
+                    const restore = () => { try { sourceView.navigate = origNavigate; } catch (er) {} };
+                    try {
+                        if (win && typeof win.setTimeout === "function") win.setTimeout(restore, 0);
+                        else setTimeout(restore, 0);
+                    } catch (er) { restore(); }
+                    // The reader starts/extends a text selection on pointer-DOWN
+                    // (Shift+click EXTENDS the previous selection), and its
+                    // pointerdown handler is registered before ours, so we can't
+                    // pre-empt it. Clear the source pane's selection after this
+                    // pass so a modified link-click never leaves stray selected
+                    // text behind (this is what made a 2nd Shift+click look like
+                    // it "only selects text").
+                    const clearSourceSelection = () => {
+                        try {
+                            if (typeof sourceView._setSelectionRanges === "function") {
+                                sourceView._setSelectionRanges();
+                                if (typeof sourceView._render === "function") sourceView._render();
+                            }
+                        } catch (er) {}
+                        try {
+                            const sel = win.getSelection && win.getSelection();
+                            if (sel && typeof sel.removeAllRanges === "function") sel.removeAllRanges();
+                        } catch (er) {}
+                    };
+                    try {
+                        if (win && typeof win.setTimeout === "function") win.setTimeout(clearSourceSelection, 0);
+                        else setTimeout(clearSourceSelection, 0);
+                    } catch (er) { clearSourceSelection(); }
+                    if (ctrl) plugin._wvCtrlNavigate(reader, sourceIsPrimary, targetLoc);
+                    else plugin._wvOpenInDupWindow(reader, targetLoc);
+                } catch (e) {
+                    Zotero.debug("[Weavero] reader link-click handler err: " + e);
+                }
+            };
+            win.addEventListener("pointerup", handler, true);
+            win._wvLinkClicksWired = true;
+            win._wvLinkClicksHandler = handler;
+            this._dbg("[Weavero] reader link-clicks: wired a pdf.js iframe");
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireReaderLinkClicks err: " + e);
+        }
+    }
+
+    /** Set up internal-link click handling for a reader: wire the primary
+     *  pane now, wire the secondary pane if a split is already open
+     *  (restored on open), and wrap the split toggles so the secondary pane
+     *  gets wired whenever a split is opened later — including via the
+     *  reader's OWN UI (appearance popup / context menu), not just our
+     *  Ctrl+click. */
+    async _wvSetupReaderLinkClicks(reader) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir) return;
+            // Wrap toggles first so any split opened (even during our poll)
+            // gets its secondary pane wired.
+            this._wvWrapSplitToggles(reader);
+            // Poll for the primary view's pdf.js iframe to be ready before
+            // wiring. At reader-open `_primaryView._iframeWindow` may not be
+            // assigned yet; a one-shot attempt would silently skip it and
+            // leave Ctrl/Shift+click dead in the primary pane.
+            for (let i = 0; i < 100; i++) {
+                const pv = ir._primaryView;
+                if (pv && pv._iframeWindow) {
+                    this._wvWireReaderLinkClicks(reader, pv);
+                    break;
+                }
+                await this._wvSleep(50);
+            }
+            // Wire the secondary too if a split is already open (restored).
+            if (ir._secondaryView && ir._secondaryView._iframeWindow) {
+                this._wvWireReaderLinkClicks(reader, ir._secondaryView);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSetupReaderLinkClicks err: " + e);
+        }
+    }
+
+    /** Wrap the internal reader's `toggleVerticalSplit`/`toggleHorizontalSplit`
+     *  so that after any split is opened — by us or by the reader's own UI —
+     *  we wire the freshly-created secondary pane. Idempotent per reader via
+     *  `ir._wvSplitTogglesWrapped`. */
+    _wvWrapSplitToggles(reader) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir || ir._wvSplitTogglesWrapped) return;
+            const self = this;
+            const wrap = (name) => {
+                const orig = ir[name];
+                if (typeof orig !== "function") return;
+                ir[name] = function () {
+                    const ret = orig.apply(this, arguments);
+                    try {
+                        const plugin = (Zotero.Weavero && Zotero.Weavero.plugin) || self;
+                        plugin._wvWireSecondaryWhenReady(reader);
+                    } catch (e) {}
+                    return ret;
+                };
+            };
+            wrap("toggleVerticalSplit");
+            wrap("toggleHorizontalSplit");
+            ir._wvSplitTogglesWrapped = true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWrapSplitToggles err: " + e);
+        }
+    }
+
+    /** Poll briefly for the secondary pane to exist after a split opens, then
+     *  wire its pdf.js iframe (so a reverse Ctrl+click there works). Bails if
+     *  the split was actually closed. */
+    async _wvWireSecondaryWhenReady(reader) {
+        try {
+            const ir = reader && reader._internalReader;
+            if (!ir) return;
+            for (let i = 0; i < 40; i++) {
+                const sv = ir._secondaryView;
+                if (sv && sv._iframeWindow) { this._wvWireReaderLinkClicks(reader, sv); return; }
+                if (!ir.splitType && i > 2) return;
+                await this._wvSleep(50);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireSecondaryWhenReady err: " + e);
+        }
+    }
+
     async _setupReaderObserver(reader) {
         if (this._readerObservers.has(reader)) return;
         try {
@@ -10298,6 +10688,14 @@ class _ReaderMixin {
                     data.dragEndPointerUp = dragEndPointerUp;
                     data.dragEndPointerUpWindow = innerWin;
                 }
+
+                // Ctrl/Cmd+click (-> split pane) and Shift+click (-> duplicate
+                // window) on internal PDF links. Wires the primary pane now and
+                // arranges for the secondary pane to be wired whenever a split
+                // opens — including via the reader's own UI. See
+                // _wvSetupReaderLinkClicks.
+                try { this._wvSetupReaderLinkClicks(reader); }
+                catch (e) { Zotero.debug("[Weavero] link-clicks setup err: " + e); }
 
                 this._readerObservers.set(reader, data);
                 this._dbg("[Weavero] inner wireUp: observer attached");

@@ -812,6 +812,155 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
     }
 
+    /** Dispatcher for moving a reader/note tab between main windows. When the
+     *  hidden `weavero.swapMoveReader` pref is ON, a PDF reader is moved
+     *  WITHOUT reloading — its live docshell is swapped into the target window
+     *  (Firefox-style; see `_wvSwapMoveToMain`). Notes, pref-off, or any
+     *  pre-commit failure fall back to the classic close+reopen. */
+    _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
+        let swapMove = false;
+        try { swapMove = !!Zotero.Prefs.get("weavero.swapMoveReader"); } catch (e) {}
+        const isNote = payload && (payload.readerType === "note" || payload.tabType === "note");
+        if (swapMove && !isNote && payload && typeof payload.itemID === "number") {
+            const classic = () => {
+                try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned); }
+                catch (e) { Zotero.debug("[Weavero] classic move fallback err: " + e); }
+            };
+            Promise.resolve()
+                .then(() => this._wvSwapMoveToMain(srcWin, targetWin, payload, targetIndex, maxOtherPinned))
+                .then((ok) => { if (!ok) classic(); })
+                .catch((e) => { Zotero.debug("[Weavero] swap-move err, classic fallback: " + e); classic(); });
+            return;
+        }
+        this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned);
+    }
+
+    /** EXPERIMENTAL (hidden pref `weavero.swapMoveReader`): move a live PDF
+     *  reader to another main window WITHOUT reloading, à la Firefox.
+     *  Opens a donor reader in the target window, swaps the source reader's
+     *  live docshell into the donor's `<browser>` via `swapDocShells` (the
+     *  same primitive Firefox's adoptTab uses), then RE-HOMES the source
+     *  ReaderInstance onto the donor's shell. The instance's callbacks read
+     *  `this._window` / `this._iframeWindow` dynamically, so updating those
+     *  fields re-targets everything to the new window — no per-callback
+     *  surgery. The donor instance is then discarded (its shell kept) and the
+     *  source tab closed. Returns true on success, false (only before any
+     *  mutation) to fall back to the classic move.
+     *
+     *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
+     *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0).
+     *
+     *  Prototype scope: single PDF tab, main→main only. Known gap: the
+     *  discarded donor's pref observers aren't torn down (minor leak). */
+    async _wvSwapMoveToMain(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
+        const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
+        if (itemID == null || !srcWin || !targetWin) return false;
+        const Reader: any = Zotero.Reader;
+        // Resolve the live, swappable source reader.
+        let S: any = null;
+        try { if (typeof Reader.getByTabID === "function") S = Reader.getByTabID(payload.sourceTabId); } catch (e) {}
+        if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === payload.sourceTabId);
+        const liveInner = S && S._internalReader;
+        if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !liveInner) return false;
+
+        const sleep = (ms: number) => new Promise<void>((res) => {
+            try { if (targetWin.setTimeout) targetWin.setTimeout(res, ms); else setTimeout(res, ms); }
+            catch (e) { setTimeout(res, ms); }
+        });
+
+        // --- Pre-commit: open a donor reader in the target window and wait for
+        //     its shell. Any failure here is safe to fall back from (we only
+        //     opened a donor, which we close).
+        let donor: any = null;
+        try {
+            try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+            donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true });
+            let okShell = false;
+            for (let i = 0; i < 90; i++) {
+                if (donor && donor._iframe && donor._iframe.contentWindow && donor.tabID && donor._tabContainer) { okShell = true; break; }
+                await sleep(120);
+            }
+            if (!okShell) throw new Error("donor shell not ready");
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSwapMoveToMain pre-commit err: " + e);
+            try { if (donor && donor.tabID) targetWin.Zotero_Tabs.close(donor.tabID); } catch (er) {}
+            return false;
+        }
+
+        // --- Committed from here: swap + re-home + teardown. Never fall back now
+        //     (that would double-move); best-effort on any post-swap error.
+        const donorTabId = donor.tabID;
+        try {
+            const oldSIframe = S._iframe;
+            S._iframe.swapDocShells(donor._iframe);
+            await sleep(120);
+
+            // Re-home S onto the donor's shell (target window). Callbacks read
+            // this._window / this._iframeWindow dynamically, so updating the
+            // fields re-targets them. Content-window listeners (error /
+            // customEvent) ride along with the swapped docshell; the window
+            // listeners and the element-level contextmenu listener are re-bound
+            // explicitly below.
+            try { srcWin.removeEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
+            try { srcWin.removeEventListener("pointerup", S._handlePointerUp); } catch (e) {}
+            try { srcWin.removeEventListener("DOMContentLoaded", S._handleLoad); } catch (e) {}
+            S._iframe = donor._iframe;
+            S._iframeWindow = donor._iframe.contentWindow;
+            S._tabContainer = donor._tabContainer;
+            S._popupset = donor._popupset;
+            S._window = targetWin;
+            S.tabID = donorTabId;
+            S._internalReader = liveInner;
+            try { targetWin.addEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
+            try { targetWin.addEventListener("pointerup", S._handlePointerUp); } catch (e) {}
+            try { targetWin.addEventListener("DOMContentLoaded", S._handleLoad); } catch (e) {}
+
+            // FULLY dispose the donor INSTANCE while keeping its shell (now S's).
+            // The critical part is unregistering the donor's pref observers +
+            // listeners so they never fire again on the shell S now owns —
+            // leaving them registered is what corrupted readers in earlier
+            // testing. We deliberately do NOT call donor.close()/uninit()
+            // (those close the tab and flush now-stale state).
+            try { donor._isUninitialized = true; } catch (e) {}
+            try { if (donor._prefObserverIDs) donor._prefObserverIDs.forEach((id: any) => Zotero.Prefs.unregisterObserver(id)); } catch (e) {}
+            try { if (donor._customEventHandler && donor._iframeWindow) donor._iframeWindow.removeEventListener("customEvent", donor._customEventHandler); } catch (e) {}
+            try { if (donor._iframe && donor._handleReaderTextboxContextMenuOpen) donor._iframe.removeEventListener("contextmenu", donor._handleReaderTextboxContextMenuOpen); } catch (e) {}
+            try { targetWin.removeEventListener("pointerdown", donor._handlePointerDown); } catch (e) {}
+            try { targetWin.removeEventListener("pointerup", donor._handlePointerUp); } catch (e) {}
+            try { targetWin.removeEventListener("DOMContentLoaded", donor._handleLoad); } catch (e) {}
+            try { const i = Reader._readers.indexOf(donor); if (i >= 0) Reader._readers.splice(i, 1); } catch (e) {}
+
+            // Re-bind S's element-level contextmenu listener onto the new shell.
+            // It lives on the <browser> element, so it did NOT ride the docshell
+            // swap; the new shell currently carries the donor's (removed above).
+            try { if (oldSIframe && S._handleReaderTextboxContextMenuOpen) oldSIframe.removeEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
+            try { if (S._iframe && S._handleReaderTextboxContextMenuOpen) S._iframe.addEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
+
+            // Close the source tab (now holding the donor's throwaway content).
+            try { srcWin.Zotero_Tabs.close(payload.sourceTabId); } catch (e) {}
+            try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
+
+            // Position + pin at the drop slot (mirror the classic place()).
+            await sleep(150);
+            const Z: any = targetWin.Zotero_Tabs;
+            if (Z && Z._tabs && typeof Z.move === "function") {
+                const tab = Z._tabs.find((t: any) => t && t.id === donorTabId);
+                if (tab) {
+                    const clamped = Math.max(1, Math.min(targetIndex, Z._tabs.length - 1));
+                    Z.move(donorTabId, clamped);
+                    const curIdx = Z._tabs.indexOf(tab);
+                    if (curIdx <= maxOtherPinned && curIdx > 0) {
+                        const item: any = Zotero.Items.get(itemID);
+                        if (item) { this._pinnedTabsAdd(item.libraryID, item.key); this._applyPinnedTabs(targetWin); }
+                    }
+                }
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSwapMoveToMain post-commit err: " + e);
+        }
+        return true;
+    }
+
     /** Move a reader/note tab from one MAIN window's strip to another:
      *  close it in the source window (flushing its state), then reopen it in
      *  the target window at the drop slot, auto-pinning if it landed in the
@@ -819,7 +968,7 @@ class _TabsMixin {
      *  the most-recently-active main window (reader.js:2731) — so we focus the
      *  target first; notes go through that window's own `ZoteroPane.openNote`.
      *  Mirrors the reader-merge drop's place-and-pin poll. */
-    _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
+    _wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
         try {
             const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
             if (itemID == null || !targetWin) return;
@@ -909,7 +1058,7 @@ class _TabsMixin {
             try { if (srcWin._wvSelTabIDs && srcWin._wvSelTabIDs.clear) srcWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcWin); } catch (e) {}
             let idx = (typeof targetIndex === "number") ? targetIndex : 1;
             for (const pl of payloads) {
-                try { this._wvMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
+                try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
                 idx++;   // keep the group's source order at the drop slot
             }
         } catch (e) { Zotero.debug("[Weavero] _wvMoveSelectionBetweenMains err: " + e); }

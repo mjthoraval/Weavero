@@ -962,7 +962,7 @@ class _TabGroupsMixin {
                     }
                 } catch (e) {}
                 const payload = { itemID, sourceTabId: tabID, readerType: isNote ? "note" : undefined };
-                (this as any)._wvMoveTabBetweenMains(srcWin, tgtWin, payload, targetIndex, 0);
+                (this as any)._wvClassicMoveTabBetweenMains(srcWin, tgtWin, payload, targetIndex, 0);
                 tgtWin.setTimeout(() => {
                     try { this._wvTabGroupStabilize(tgtWin); } catch (e) {}
                     try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
@@ -1387,7 +1387,7 @@ class _TabGroupsMixin {
                                             const prim = TZ ? TZ._tabs.findIndex((t: any) =>
                                                 t && t.data && t.data.itemID === primaryItemID) : -1;
                                             if (prim >= 0) idx = prim + 1 + i;
-                                            (this as any)._wvMoveTabBetweenMains(srcWin, win, m, idx, 0);
+                                            (this as any)._wvClassicMoveTabBetweenMains(srcWin, win, m, idx, 0);
                                         } catch (er3) {}
                                     }, 220 * (i + 1));
                                 });

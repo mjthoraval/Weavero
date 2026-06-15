@@ -1044,7 +1044,7 @@ class _TabsMixin {
      *  Snapshots payloads up front (each single move closes a source tab and
      *  rewrites the list), then loops _wvMoveTabBetweenMains with an incrementing
      *  target index so the group keeps its source order. */
-    _wvMoveSelectionBetweenMains(srcWin, targetWin, ids, targetIndex, maxOtherPinned) {
+    async _wvMoveSelectionBetweenMains(srcWin, targetWin, ids, targetIndex, maxOtherPinned) {
         try {
             const ZT: any = srcWin && (srcWin as any).Zotero_Tabs;
             if (!ZT || !ZT._tabs || !targetWin || !ids || !ids.length) return;
@@ -1056,9 +1056,21 @@ class _TabsMixin {
             }
             if (!payloads.length) return;
             try { if (srcWin._wvSelTabIDs && srcWin._wvSelTabIDs.clear) srcWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcWin); } catch (e) {}
+            let swapMove = false;
+            try { swapMove = !!Zotero.Prefs.get("weavero.swapMoveReader"); } catch (e) {}
             let idx = (typeof targetIndex === "number") ? targetIndex : 1;
             for (const pl of payloads) {
-                try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
+                const isNote = pl.readerType === "note" || pl.tabType === "note";
+                // No-reload swap per tab when enabled; awaited so the per-tab
+                // donor-open/swap/close don't race. Classic fallback per tab.
+                if (swapMove && !isNote) {
+                    let ok = false;
+                    try { ok = await this._wvSwapMoveToMain(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
+                    if (!ok) { try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {} }
+                }
+                else {
+                    try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
+                }
                 idx++;   // keep the group's source order at the drop slot
             }
         } catch (e) { Zotero.debug("[Weavero] _wvMoveSelectionBetweenMains err: " + e); }
@@ -2391,10 +2403,16 @@ class _TabsMixin {
                 cp._handleTabSelect = async function (action, type, ids, extraData) {
                     try {
                         const tabID = ids && ids[0];
-                        if (tabID && win.Zotero_Tabs) {
-                            const found = win.Zotero_Tabs._getTab(tabID);
-                            if (!found || !found.tab) return;   // another window's tab → ignore
-                        }
+                        // Only react to events about THIS window's CURRENTLY-selected
+                        // tab. The old check used _getTab(tabID) ("is the tab local?"),
+                        // but the library tab shares the id "zotero-pane" across ALL
+                        // windows — so a library-tab select in ANOTHER window passed the
+                        // check here and collapsed this window's reader pane. selectedID
+                        // is per-window, so this correctly ignores other windows'
+                        // selections (e.g. a cross-window reader move closing the source
+                        // tab selects that window's library tab → must not collapse the
+                        // destination window's pane).
+                        if (tabID && win.Zotero_Tabs && win.Zotero_Tabs.selectedID !== tabID) return;
                     } catch (e) {}
                     return orig(action, type, ids, extraData);
                 };

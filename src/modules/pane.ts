@@ -111,6 +111,24 @@ class _PaneMixin {
         } catch (_) { return null; }
     }
 
+    /** Internal helper to create a XUL menuitem with consistent styling. */
+    _createXULMenuItem(doc: Document, options: {
+        id: string,
+        label: string,
+        image?: string,
+        classList?: string[]
+    }): any {
+        const mi = doc.createXULElement("menuitem");
+        mi.id = options.id;
+        mi.setAttribute("label", options.label);
+        if (options.image) {
+            mi.classList.add("menuitem-iconic");
+            mi.setAttribute("image", options.image);
+        }
+        if (options.classList) options.classList.forEach(c => mi.classList.add(c));
+        return mi;
+    }
+
     /** Hook the items-tree right-click menu (`#zotero-itemmenu`) and
      *  insert "Add related item…" when the right-clicked selection
      *  contains at least one annotation. Mirrors the entry the plugin
@@ -155,79 +173,13 @@ class _PaneMixin {
             const onShowing = () => {
                 try {
                     // Remove any prior entries before re-adding.
-                    for (const id of ALL_IDS) {
-                        const stale = doc.getElementById(id);
-                        if (stale) stale.remove();
-                    }
+                    this._clearStaleMenuIds(doc, ALL_IDS);
+
                     const zp = win.ZoteroPane;
                     const selected = (zp && typeof zp.getSelectedItems === "function")
                         ? zp.getSelectedItems() : [];
 
-                    // "Open in External Viewer" — sits below Show File,
-                    // shown when the selection contains at least one
-                    // stored file (attachment row OR a regular item with
-                    // a file child). Independent of `targets` (the
-                    // relatable filter governs Copy/Add Related entries,
-                    // which appear at the bottom of the menu). Icon
-                    // mirrors the representative attachment's type.
-                    if (this._getEnableOpenExternalViewer()) {
-                        try {
-                            const showFile = menu.querySelector(".zotero-menuitem-show-file");
-                            if (showFile) {
-                                // Pick a representative attachment for
-                                // the icon. Uses the same ordering as
-                                // Zotero's `getBestAttachments()` SQL
-                                // (PDF first, URL-match second,
-                                // dateAdded oldest third) so the icon
-                                // matches what "Open PDF in New Tab"
-                                // would target. Sync (popupshowing
-                                // can't await).
-                                let repAtt: any = null;
-                                let any = false;
-                                for (const it of selected) {
-                                    const att = this._wvGetBestAttachmentSync(it);
-                                    if (!att) continue;
-                                    any = true;
-                                    if (!repAtt) repAtt = att;
-                                }
-                                if (any) {
-                                    const mi = doc.createXULElement("menuitem");
-                                    mi.id = EXTV_ID;
-                                    mi.classList.add("menuitem-iconic");
-                                    mi.setAttribute("label", "Open in External Viewer");
-                                    try {
-                                        const img = this._wvAttachmentIconURL(repAtt);
-                                        if (img) mi.setAttribute("image", img);
-                                    } catch (_) {}
-                                    mi.addEventListener("command", async () => {
-                                        try {
-                                            const zp2 = win.ZoteroPane;
-                                            const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
-                                                ? zp2.getSelectedItems() : [];
-                                            // Launch each selected item's best attachment via
-                                            // `Zotero.launchFile` — the API Open PDF for
-                                            // Zotero uses; bypasses `fileHandler.<kind>`
-                                            // prefs so it really opens in the OS app.
-                                            for (const it of sel2) {
-                                                const best = this._wvGetBestAttachmentSync(it);
-                                                if (!best) continue;
-                                                let path = null;
-                                                try { path = await best.getFilePathAsync(); } catch (_) {}
-                                                if (!path) continue;
-                                                try { Zotero.launchFile(path); }
-                                                catch (e) { Zotero.debug("[Weavero] launchFile err: " + e); }
-                                            }
-                                        } catch (cmdErr) {
-                                            Zotero.debug("[Weavero] open-external cmd err: " + cmdErr);
-                                        }
-                                    });
-                                    showFile.after(mi);
-                                }
-                            }
-                        } catch (extErr) {
-                            Zotero.debug("[Weavero] open-external inject err: " + extErr);
-                        }
-                    }
+                    this._appendExternalViewerToItemsMenu(doc, menu, selected, win);
 
                     const targets = selected.filter(isRelatable);
                     if (!targets.length) return;
@@ -247,14 +199,7 @@ class _PaneMixin {
 
                     // Separator above the whole block (skip if the
                     // native menu already ends with one).
-                    {
-                        const last = menu.lastElementChild as any;
-                        if (!last || last.localName !== "menuseparator") {
-                            const sep = doc.createXULElement("menuseparator");
-                            sep.id = SEP_ID;
-                            menu.appendChild(sep);
-                        }
-                    }
+                    this._appendSeparatorIfMissing(doc, menu, SEP_ID);
 
                     // --- Copy Select / Open Link entries ---------
                     // Zotero exposes none of these in the items-tree
@@ -355,7 +300,7 @@ class _PaneMixin {
                                 ? zp2.getSelectedItems() : [];
                             const fresh = sel2.filter(isRelatable);
                             if (!fresh.length) return;
-                            await this._addRelatedItemDialog(fresh);
+                            this._addRelatedItemDialog(fresh);
                         } catch (cmdErr) {
                             Zotero.debug(
                                 "[Weavero] itemmenu add-related cmd err: " + cmdErr);
@@ -377,10 +322,7 @@ class _PaneMixin {
                 // issue #8.
                 if (!ev || ev.target !== menu) return;
                 try {
-                    for (const id of ALL_IDS) {
-                        const el = doc.getElementById(id);
-                        if (el) el.remove();
-                    }
+                    this._clearStaleMenuIds(doc, ALL_IDS);
                 } catch (e) {}
             };
             const onShowingGuarded = (ev: any) => {
@@ -403,14 +345,77 @@ class _PaneMixin {
             const { menu, onShowing, onHidden } = this._itemMenuHandlers;
             try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
             try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
-            try {
-                for (const id of ["wv-itemmenu-add-related", "wv-itemmenu-copy-select", "wv-itemmenu-copy-select-sep", "wv-itemmenu-copy-open", "wv-itemmenu-separator"]) {
-                    const stale = menu.ownerDocument.getElementById(id);
-                    if (stale) stale.remove();
-                }
-            } catch (e) {}
+            this._clearStaleMenuIds(menu.ownerDocument, [
+                "wv-itemmenu-add-related", "wv-itemmenu-copy-select", 
+                "wv-itemmenu-copy-select-sep", "wv-itemmenu-copy-open", 
+                "wv-itemmenu-separator", "wv-itemmenu-open-external"
+            ]);
         } catch (e) {}
         this._itemMenuHandlers = null;
+    }
+
+    _clearStaleMenuIds(doc: Document, ids: string[]) {
+        for (const id of ids) {
+            const stale = doc.getElementById(id);
+            if (stale) stale.remove();
+        }
+    }
+
+    _appendSeparatorIfMissing(doc: Document, menu: Element, id: string) {
+        const last = menu.lastElementChild as any;
+        if (!last || last.localName !== "menuseparator") {
+            const sep = doc.createXULElement("menuseparator");
+            sep.id = id;
+            menu.appendChild(sep);
+        }
+    }
+
+    /** Logic for "Open in External Viewer" inside the items context menu. */
+    _appendExternalViewerToItemsMenu(doc: Document, menu: Element, selected: any[], win: any) {
+        if (!this._getEnableOpenExternalViewer()) return;
+        try {
+            const showFile = menu.querySelector(".zotero-menuitem-show-file");
+            if (!showFile) return;
+
+            // Pick a representative attachment for the icon using Zotero's ordering.
+            let repAtt: any = null;
+            for (const it of selected) {
+                const att = this._wvGetBestAttachmentSync(it);
+                if (!att) continue;
+                if (!repAtt) repAtt = att;
+            }
+
+            if (repAtt) {
+                const EXTV_ID = "wv-itemmenu-open-external";
+                const mi = this._createXULMenuItem(doc, {
+                    id: EXTV_ID,
+                    label: "Open in External Viewer",
+                    image: this._wvAttachmentIconURL(repAtt) || undefined
+                });
+
+                mi.addEventListener("command", async () => {
+                    try {
+                        const zp2 = win.ZoteroPane;
+                        const sel2 = (zp2 && typeof zp2.getSelectedItems === "function")
+                            ? zp2.getSelectedItems() : [];
+                        for (const it of sel2) {
+                            const best = this._wvGetBestAttachmentSync(it);
+                            if (!best) continue;
+                            const path = await best.getFilePathAsync().catch(() => null);
+                            if (path) {
+                                try { Zotero.launchFile(path); }
+                                catch (e) { Zotero.debug("[Weavero] launchFile err: " + e); }
+                            }
+                        }
+                    } catch (cmdErr) {
+                        Zotero.debug("[Weavero] open-external cmd err: " + cmdErr);
+                    }
+                });
+                showFile.after(mi);
+            }
+        } catch (extErr) {
+            Zotero.debug("[Weavero] open-external inject err: " + extErr);
+        }
     }
 
     /** Register the reader-tab right-click menu entries via Zotero's

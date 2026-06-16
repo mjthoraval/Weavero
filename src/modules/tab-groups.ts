@@ -482,8 +482,6 @@ class _TabGroupsMixin {
             }
             const doc = win.document;
             if (!this._getEnableTabGroups()) { this._stripTabGroups(win); return; }
-            // Migrate legacy item-key groups → per-tab stamps once per session.
-            try { this._wvTabGroupMigrateToStamps(); } catch (e) {}
             const Z_Tabs: any = win.Zotero_Tabs;
             const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
             if (!Z_Tabs || !Z_Tabs._tabs || !tabsBox) return;
@@ -567,13 +565,11 @@ class _TabGroupsMixin {
                     if (!reopening && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
                     continue;
                 }
-                // Keep a light item-key shadow (saved-group snapshot / restart
-                // fallback only — NOT used for live membership).
-                const shadow = openMembers.map((m: any) => {
-                    const pk = (this as any)._tabPinKey(m.tab);
-                    return pk ? { libraryID: pk.libraryID, itemKey: pk.itemKey } : null;
-                }).filter(Boolean);
-                if (JSON.stringify(shadow) !== JSON.stringify(g.members || [])) { g.members = shadow; prefDirty = true; }
+                // NOTE: `g.members` is the persistent item-key snapshot, kept
+                // intact (NOT re-synced from open tabs here) so a member that
+                // hasn't restored yet isn't dropped before it reappears — the
+                // claim pass re-stamps it when it does. Live membership is the
+                // stamp; members is only the snapshot the claim pass reads.
 
                 // Chip + member classes.
                 const chipID = "wv-tgchip-" + g.id;
@@ -2094,40 +2090,6 @@ class _TabGroupsMixin {
         return found;
     }
 
-    /** One-time migration: legacy groups stored membership as item keys in
-     *  `g.members`; per-tab grouping needs the stamp on each tab. For every LIVE
-     *  group, stamp the FIRST open tab per member key (duplicates stay out), then
-     *  clear the live group's `members` (membership now lives on the tabs; saved
-     *  groups keep their snapshot). Idempotent: a group already carrying stamps
-     *  is left alone. Runs once per session (flag on the Zotero global). */
-    _wvTabGroupMigrateToStamps() {
-        try {
-            if ((Zotero as any)._wvTabGroupsMigrated) return;
-            const groups = this._tabGroupsGet();
-            if (!groups.length) { (Zotero as any)._wvTabGroupsMigrated = true; return; }
-            // Already-stamped tabs → these groups are migrated; skip those ids.
-            const stamped = new Set<string>();
-            this._wvTabGroupForEachOpenTab((t) => { const s = this._wvTabGroupStamp(t); if (s) stamped.add(s); });
-            let dirty = false;
-            for (const g of groups) {
-                if ((g as any).saved) continue;                 // saved keeps its snapshot
-                if (stamped.has(g.id)) { if ((g.members || []).length) { g.members = []; dirty = true; } continue; }
-                const want = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
-                if (!want.size) continue;
-                const claimed = new Set<string>();
-                this._wvTabGroupForEachOpenTab((t) => {
-                    if (this._wvTabGroupStamp(t)) return;
-                    const k = this._wvTabGroupDeckKey(t);
-                    if (!k) return;
-                    const kk = k.libraryID + ":" + k.itemKey;
-                    if (want.has(kk) && !claimed.has(kk)) { this._wvTabGroupSetStamp(t, g.id); claimed.add(kk); }
-                });
-                if ((g.members || []).length) { g.members = []; dirty = true; }   // membership now on tabs
-            }
-            if (dirty) this._tabGroupsSet(groups);
-            (Zotero as any)._wvTabGroupsMigrated = true;
-        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMigrateToStamps err: " + e); }
-    }
 
     _wvTabGroupIsReaderWin(win: any) {
         try { return win.document.documentElement.getAttribute("windowtype") === "zotero:reader"; } catch (e) { return false; }
@@ -2194,7 +2156,6 @@ class _TabGroupsMixin {
                     this._wvTabGroupSetStamp(tab, g.id); set.add(kk);
                 }
             }
-            let readerPrefDirty = false;
             const readerGroups = this._tabGroupsGet();
             for (const g of readerGroups) {
                 if ((g as any).saved) continue;   // parked group: no chip in the reader strip (decoupled from open tabs)
@@ -2204,10 +2165,6 @@ class _TabGroupsMixin {
                     if (this._wvTabGroupStamp(tab) === g.id) members.push(tab);
                 }
                 if (!members.length) continue;
-                // Keep the item-key shadow current so a restart can re-stamp the
-                // re-mounted reader tabs (they don't ride Zotero's session).
-                const shadow = members.map((t: any) => { const k = this._wvTabGroupDeckKey(t); return k ? { libraryID: k.libraryID, itemKey: k.itemKey } : null; }).filter(Boolean);
-                if (JSON.stringify(shadow) !== JSON.stringify(g.members || [])) { g.members = shadow; readerPrefDirty = true; }
                 const hex = this._tabGroupColorHex(g.color);
                 for (let i = 0; i < members.length; i++) {
                     const el = elById.get(String(members[i].id));
@@ -2227,7 +2184,6 @@ class _TabGroupsMixin {
                     tabsBox.insertBefore(chip, firstEl);
                 }
             }
-            if (readerPrefDirty) this._tabGroupsSet(readerGroups);
         } catch (e) { Zotero.debug("[Weavero] _applyTabGroupsReader err: " + e); }
     }
 

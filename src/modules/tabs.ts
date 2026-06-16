@@ -849,6 +849,38 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    /** Rename a MAIN-window tab's id (Zotero_Tabs) in place, so a moved tab can
+     *  keep its ORIGINAL id across a no-reload swap (the swap re-homes onto a
+     *  donor with a fresh id; this renames it back once the source id is free).
+     *  A tab id lives in: the model `_tabs[].id`, the deck panel element
+     *  `<tab-content id=…>` (tabs.js add:652-654), `_selectedID`, the reader
+     *  instance's `.tabID`, and Weavero's multi-select set. Update all, then
+     *  `_update()` to re-render. No-op on a missing tab or an id collision. */
+    _wvRenameTab(win, oldId, newId) {
+        try {
+            if (!win || !newId || oldId === newId) return false;
+            const ZT: any = win.Zotero_Tabs;
+            if (!ZT || !ZT._tabs) return false;
+            const tab = ZT._tabs.find((t: any) => t && t.id === oldId);
+            if (!tab) return false;
+            if (ZT._tabs.some((t: any) => t && t.id === newId)) return false;   // collision
+            try { const c = win.document.getElementById(oldId); if (c) c.id = newId; } catch (e) {}
+            tab.id = newId;
+            if (ZT._selectedID === oldId) ZT._selectedID = newId;
+            try {
+                const R: any = Zotero.Reader;
+                const r = (R._readers || []).find((x: any) => x && x.tabID === oldId);
+                if (r) r.tabID = newId;
+            } catch (e) {}
+            try { if (typeof ZT._update === "function") ZT._update(); } catch (e) {}
+            try {
+                const sel: any = win._wvSelTabIDs;
+                if (sel && sel.has && sel.has(oldId)) { sel.delete(oldId); sel.add(newId); }
+            } catch (e) {}
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvRenameTab err: " + e); return false; }
+    }
+
     /** Multi-tab drag ghost: when the grabbed tab is part of a multi-selection,
      *  build a small semi-transparent STACK of every selected tab so the cursor
      *  ghost shows all the tabs being dragged, not just the one grabbed. (Firefox's
@@ -1057,6 +1089,16 @@ class _TabsMixin {
                     }
                 }
             }
+
+            // Preserve the ORIGINAL tab id across the move: the swap re-homed S
+            // onto the donor (donorTabId); the source tab is now closed (its id is
+            // free), so rename the donor back to the source's id — the tab keeps
+            // its identity through the move.
+            try {
+                if (payload && payload.sourceTabId && payload.sourceTabId !== donorTabId) {
+                    this._wvRenameTab(targetWin, donorTabId, payload.sourceTabId);
+                }
+            } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvSwapCommitDonor post-commit err: " + e);
         }

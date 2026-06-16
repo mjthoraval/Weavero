@@ -2650,29 +2650,13 @@ class _TabGroupsMixin {
             // membership is decoupled from open tabs. Report 0 so the tabs-menu
             // footer reads "saved" and clicking the row REOPENS (not focuses).
             if ((g as any).saved) return 0;
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            // Count by per-tab STAMP (exact members; a duplicate copy of a
+            // member's item is NOT counted).
             let n = 0;
-            try {
-                for (const w of Zotero.getMainWindows()) {
-                    const Z: any = (w as any).Zotero_Tabs;
-                    for (const t of (Z && Z._tabs) || []) {
-                        if ((t as any)._wvGroupExcluded) continue;   // a separate copy kept out of the group
-                        const k = (this as any)._tabPinKey(t);
-                        if (k && ks.has(k.libraryID + ":" + k.itemKey)) n++;
-                    }
-                }
-            } catch (e) {}
-            try {
-                const en = Services.wm.getEnumerator("zotero:reader");
-                while (en.hasMoreElements()) {
-                    const w: any = en.getNext();
-                    if (!w || !w._wvWT) continue;
-                    for (const t of w._wvWT.tabs || []) {
-                        const k = this._wvTabGroupDeckKey(t);
-                        if (k && ks.has(k.libraryID + ":" + k.itemKey)) n++;
-                    }
-                }
-            } catch (e) {}
+            this._wvTabGroupForEachOpenTab((t) => {
+                if ((t as any)._wvGroupExcluded) return;
+                if (this._wvTabGroupStamp(t) === groupID) n++;
+            });
             return n;
         } catch (e) { return 0; }
     }

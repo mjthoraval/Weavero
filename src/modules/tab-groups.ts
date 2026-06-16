@@ -1350,6 +1350,21 @@ class _TabGroupsMixin {
 
     _wvTabGroupDnDDrop(win: any, e: any) {
         try {
+            // A tab-move drop that reaches THIS capture-phase handler landed
+            // inside #tab-bar-container (it's the only element it's wired on), so
+            // the tab landed on a strip — never a tear-off. Suppress the source
+            // window's dragend tear-off unconditionally here. This is what fixes
+            // "drag out over another window and back, then drop on the original
+            // strip → splits into a reader window": the per-window cross-main drop
+            // handler only sets the flag when src !== win, and the dragend
+            // coordinate fallback is unreliable once the cursor has left and
+            // re-entered the bar (dragleave nulled _wvTabDragLastX/Y).
+            try {
+                const t0 = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
+                if (t0.indexOf("application/x-weavero-tab-move") >= 0) {
+                    (this as any)._wvSuppressNextTearOff = true;
+                }
+            } catch (er0) {}
             // Multi-tab drag arriving from ANOTHER main window: the legacy
             // per-window drop handler moves the DRAGGED tab; bring the rest
             // of the source window's selection along, each placed after it.

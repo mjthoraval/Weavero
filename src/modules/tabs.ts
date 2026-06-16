@@ -1148,8 +1148,9 @@ class _TabsMixin {
      *  become the window's reader, with `ReaderWindow`'s window-only glue grafted
      *  on (the same identity-carrying idea as `_wvRenameTab`, across the class
      *  boundary). `opts.detachSource(sourceTabId)` removes the now-empty source
-     *  tab (default: close it on the main window). Returns true on success, or
-     *  false BEFORE any mutation to fall back to the classic (reload) tear-off.
+     *  tab (default: close it on the main window). Returns the new standalone
+     *  window on success (truthy), or false BEFORE any mutation so the caller can
+     *  fall back to the classic (reload) tear-off.
      *
      *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
      *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0). */
@@ -1282,7 +1283,9 @@ class _TabsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvSwapTearOffToWindow commit err: " + e);
         }
-        return true;
+        // Return the new standalone window (truthy = success; callers that only
+        // need a boolean still work). Multi-tab tear-off mounts the rest into it.
+        return donorWin;
     }
 
     /** Move ONE live PDF reader to another main window WITHOUT reloading, à la

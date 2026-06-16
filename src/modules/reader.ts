@@ -6005,14 +6005,68 @@ class _ReaderMixin {
             const entries: any[] = [];
             for (const id of tabIds) {
                 const t = st.tabs.find((x: any) => x.id === id);
-                if (t && t.itemID != null) entries.push({ itemID: t.itemID, isNote: t.type === "note" });
+                if (t && t.itemID != null) entries.push({ id, itemID: t.itemID, isNote: t.type === "note", reader: t.reader });
             }
             if (!entries.length) return;
-            // Torn-out tabs leave their group (don't carry it to the new window).
-            for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
-            try { if (win._wvSelWTabIDs && win._wvSelWTabIDs.clear) win._wvSelWTabIDs.clear(); } catch (e) {}
-            for (const id of tabIds) { try { this._wvWTCloseTab(win, id); } catch (e) {} }
-            this._wvOpenItemsInNewReaderWindow(entries);
+
+            const classic = () => {
+                for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
+                try { if (win._wvSelWTabIDs && win._wvSelWTabIDs.clear) win._wvSelWTabIDs.clear(); } catch (e) {}
+                for (const id of tabIds) { try { this._wvWTCloseTab(win, id); } catch (e) {} }
+                this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote })));
+            };
+
+            const swappable = (S: any) => !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
+            const seedIdx = entries.findIndex((e: any) => !e.isNote && swappable(e.reader));
+            if (seedIdx < 0 || !(this as any)._wvSwapTearOffToWindow) { classic(); return; }
+
+            (async () => {
+                const seed = entries[seedIdx];
+                try { (this as any)._wvForgetTabGroupForItem(seed.itemID); } catch (e) {}
+                let newWin: any = null;
+                try {
+                    newWin = await (this as any)._wvSwapTearOffToWindow(win, seed.reader, seed.itemID, {
+                        detachSource: () => { try { this._wvWTDetachTabKeepReader(win, seed.id); } catch (e) {} }
+                    });
+                } catch (e) { Zotero.debug("[Weavero] _wvWTTearOffTabs seed err: " + e); }
+                if (!newWin) { classic(); return; }
+                const rest = entries.filter((_: any, i: number) => i !== seedIdx);
+                if (!rest.length) return;
+                try {
+                    const setT = (newWin.setTimeout) ? newWin.setTimeout.bind(newWin) : setTimeout;
+                    const t0 = Date.now();
+                    while (!newWin._wvWT && Date.now() - t0 < 4000) { await new Promise(r => setT(r, 80)); }
+                    // Per remaining tab: swap it into the new window + detach from
+                    // this window (reader→reader), keeping its live state. Notes /
+                    // non-swappable → classic close-here + mount-fresh.
+                    for (const m of rest) {
+                        const sst = this._wvWTState(win);
+                        const stab = sst && sst.tabs && sst.tabs.find((x: any) => x.id === m.id);
+                        const S = stab && stab.reader;
+                        let done = false;
+                        if (!m.isNote && swappable(S)) {
+                            let newId: any = null;
+                            try { newId = await this._wvWTSwapInReader(newWin, S, m.itemID, { select: false }); } catch (e) {}
+                            if (newId != null) {
+                                try { this._wvWTDetachTabKeepReader(win, m.id); } catch (e) {}
+                                try { this._wvWTRenameTab(newWin, newId, m.id); } catch (e) {}
+                                try { const R2: any = Zotero.Reader; if (S && !R2._readers.includes(S)) R2._readers.push(S); } catch (e) {}
+                                try { (newWin.setTimeout || setTimeout)(() => { try { const R2: any = Zotero.Reader; if (S && !R2._readers.includes(S)) R2._readers.push(S); } catch (e) {} }, 500); } catch (e) {}
+                                done = true;
+                            }
+                        }
+                        if (!done) {
+                            try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {}
+                            try { this._wvWTCloseTab(win, m.id); } catch (e) {}
+                            await new Promise(r => setT(r, 120));
+                            try { await this._wvWTMountTab(newWin, m.itemID, { select: false }); } catch (e) {}
+                        }
+                        await new Promise(r => setT(r, 40));
+                    }
+                    try { this._wvWTRenderStrip(newWin); } catch (e) {}
+                    try { this._wvWTRenderStrip(win); } catch (e) {}
+                } catch (e) { Zotero.debug("[Weavero] _wvWTTearOffTabs mount-rest err: " + e); }
+            })();
         } catch (e) { Zotero.debug("[Weavero] _wvWTTearOffTabs err: " + e); }
     }
 
@@ -6025,19 +6079,59 @@ class _ReaderMixin {
         try {
             const Z_Tabs: any = win && (win as any).Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs || !tabIDs || !tabIDs.length) return;
+            const Reader: any = Zotero.Reader;
             const entries: any[] = [];
             for (const id of tabIDs) {
                 const t = Z_Tabs._tabs.find((x: any) => x && x.id === id);
                 const iid = t && t.data && t.data.itemID;
-                if (iid != null) entries.push({ itemID: iid, isNote: t.type === "note" });
+                if (iid != null) entries.push({ id, itemID: iid, isNote: t.type === "note" });
             }
             if (!entries.length) return;
-            // Torn-out tabs leave their group (don't carry it to the new window).
-            for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
-            try { if (win._wvSelTabIDs && win._wvSelTabIDs.clear) win._wvSelTabIDs.clear(); } catch (e) {}
-            try { this._wvTabMultiSelSync(win); } catch (e) {}
-            try { Z_Tabs.close(tabIDs); } catch (e) {}
-            this._wvOpenItemsInNewReaderWindow(entries);
+
+            const classic = () => {
+                for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
+                try { if (win._wvSelTabIDs && win._wvSelTabIDs.clear) win._wvSelTabIDs.clear(); } catch (e) {}
+                try { this._wvTabMultiSelSync(win); } catch (e) {}
+                try { Z_Tabs.close(tabIDs); } catch (e) {}
+                this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote })));
+            };
+
+            // No-reload path: SEED a new standalone window by tearing off the first
+            // live, swappable reader tab, then swap-mount the rest into it (each
+            // PDF keeps its live state). Needs at least one swappable seed; else
+            // fall back to the classic close+reopen-all.
+            const resolveS = (tabId: any) => {
+                let S: any = null;
+                try { if (Reader.getByTabID) S = Reader.getByTabID(tabId); } catch (e) {}
+                if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === tabId);
+                return (S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader) ? S : null;
+            };
+            const seedIdx = entries.findIndex((e: any) => !e.isNote && resolveS(e.id));
+            if (seedIdx < 0 || !(this as any)._wvSwapTearOffToWindow) { classic(); return; }
+
+            (async () => {
+                const seed = entries[seedIdx];
+                const seedS = resolveS(seed.id);
+                // Defuse this window's own dragend tear-off (the swaps are async).
+                try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvSuppressNextTearOff = true; } catch (e) {}
+                try { (this as any)._wvForgetTabGroupForItem(seed.itemID); } catch (e) {}
+                let newWin: any = null;
+                try { newWin = await (this as any)._wvSwapTearOffToWindow(win, seedS, seed.itemID); }
+                catch (e) { Zotero.debug("[Weavero] _wvMainTearOffTabs seed err: " + e); }
+                // false = nothing moved (pre-mutation bail) → safe to classic-all.
+                if (!newWin) { classic(); return; }
+                const restIds = entries.filter((_: any, i: number) => i !== seedIdx).map((e: any) => e.id);
+                if (!restIds.length) return;
+                try {
+                    const setT = (newWin.setTimeout) ? newWin.setTimeout.bind(newWin) : setTimeout;
+                    const t0 = Date.now();
+                    while (!newWin._wvWT && Date.now() - t0 < 4000) { await new Promise(r => setT(r, 80)); }
+                    // Reuse the main→reader multi-mount: per tab, swap into newWin +
+                    // close the source main tab (or classic-mount if not swappable).
+                    // draggedId=null → none force-selected, the seed stays active.
+                    await this._wvWTMountMainSelectionHere(newWin, win, restIds, null);
+                } catch (e) { Zotero.debug("[Weavero] _wvMainTearOffTabs mount-rest err: " + e); }
+            })();
         } catch (e) { Zotero.debug("[Weavero] _wvMainTearOffTabs err: " + e); }
     }
 

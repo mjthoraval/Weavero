@@ -1819,13 +1819,19 @@ class _TabsMixin {
                     // source tab), skip the tear-off/pin path below.
                     const liveEnd: any = (Zotero as any).Weavero?.plugin;
                     const suppress = !!(liveEnd && liveEnd._wvSuppressNextTearOff);
+                    // Read the drag BEFORE clearing the mirrors. On a fresh restart
+                    // `self` IS the live plugin, so nulling `liveEnd._wvTabDrag`
+                    // below would ALSO null `self._wvTabDrag`, and the tear-off/pin
+                    // path would then see no drag — every dragend bailed and tabs
+                    // never tore out. (On a hot-reload `self` is the old instance,
+                    // so it survived; that's why this only bit after a restart.)
+                    const drag = self._wvTabDrag || (liveEnd && liveEnd._wvTabDrag);
                     if (liveEnd) {
                         liveEnd._wvSuppressNextTearOff = false;
                         liveEnd._wvMainTabDragSourceWin = null;
                         liveEnd._wvMergeDragInfo = null;
                         liveEnd._wvTabDrag = null;   // mirror cleared (see dragstart)
                     }
-                    const drag = self._wvTabDrag;
                     self._wvTabDrag = null;
                     if (!drag || suppress) return;
                     const verdict = computePreview(drag);

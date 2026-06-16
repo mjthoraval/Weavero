@@ -4387,6 +4387,33 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWTDetachTabKeepReader err: " + e); return false; }
     }
 
+    /** Rename a `_wvWT` tab's id in place, so a moved tab keeps its ORIGINAL id
+     *  across a no-reload swap into THIS reader window (the swap registers the
+     *  tab under a fresh `wvwt-N` id; this renames it back to the source id once
+     *  that id is free). The `_wvWT` tab id lives in `st.tabs[].id`, `st.activeId`,
+     *  the reader's `.tabID`, and the reader-window multi-select set; the strip
+     *  re-render picks up `data-wv-tab-id`. If the new id is itself a `wvwt-N`,
+     *  bump `st.seq` past it so a future mount can't regenerate the same id.
+     *  No-op on a missing tab or id collision. */
+    _wvWTRenameTab(win: any, oldId: any, newId: any) {
+        try {
+            if (!win || !newId || oldId === newId) return false;
+            const st = win._wvWT;
+            if (!st || !st.tabs) return false;
+            const tab = st.tabs.find((t: any) => t && t.id === oldId);
+            if (!tab) return false;
+            if (st.tabs.some((t: any) => t && t.id === newId)) return false;   // collision
+            tab.id = newId;
+            if (st.activeId === oldId) st.activeId = newId;
+            try { if (tab.reader) tab.reader.tabID = newId; } catch (e) {}
+            try { const sel: any = win._wvSelWTabIDs; if (sel && sel.has && sel.has(oldId)) { sel.delete(oldId); sel.add(newId); } } catch (e) {}
+            try { const m = /^wvwt-(\d+)$/.exec(String(newId)); if (m) st.seq = Math.max(st.seq || 0, parseInt(m[1], 10)); } catch (e) {}
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvWTRenameTab err: " + e); return false; }
+    }
+
     /** Realize a LAZY reader tab (one created by restore with no reader
      *  instance yet): build its ReaderInstance + <browser> and load the
      *  document, filling tab.reader/browser/type/_popupset and clearing
@@ -6191,7 +6218,12 @@ class _ReaderMixin {
                                     try { owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
                                 }
                             } catch (e) {}
-                            if (clientX != null) { try { this._wvWTReorderTab(win, id, clientX); } catch (e) {} }
+                            // Preserve the original tab id: the source main tab is
+                            // now closed (id free), so rename the new _wvWT tab back
+                            // to it.
+                            let landId = id;
+                            try { if (this._wvWTRenameTab(win, id, dragTabId)) landId = dragTabId; } catch (e) {}
+                            if (clientX != null) { try { this._wvWTReorderTab(win, landId, clientX); } catch (e) {} }
                         } else {
                             // Pre-commit swap failure → classic mount fallback.
                             try { const owner = findOwner(); if (owner) owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
@@ -6289,7 +6321,11 @@ class _ReaderMixin {
                 const S = m.isNote ? null : resolveMainS(m.id);
                 if (S) {
                     try { newId = await this._wvWTSwapInReader(targetWin, S, m.itemID, { select: m.id === draggedId }); } catch (e) {}
-                    if (newId != null) safeClose(m.id);
+                    if (newId != null) {
+                        safeClose(m.id);   // frees the source id
+                        // Preserve the original tab id: rename the new _wvWT tab back to it.
+                        try { if (this._wvWTRenameTab(targetWin, newId, m.id)) newId = m.id; } catch (e) {}
+                    }
                 }
                 if (newId == null) {
                     safeClose(m.id);
@@ -6406,7 +6442,12 @@ class _ReaderMixin {
                         this._wvWTDbg("reader→reader move item=" + m.itemID + " swappable=" + swappable + " detachable=" + detachable);
                         if (swappable && detachable) {
                             const newId = await this._wvWTSwapInReader(targetWin, S, m.itemID, { select: m.id === sourceTabId });
-                            if (newId != null) { this._wvWTDetachTabKeepReader(srcWin, m.id); done = true; }
+                            if (newId != null) {
+                                this._wvWTDetachTabKeepReader(srcWin, m.id);   // frees the source id
+                                // Preserve the original tab id across the move.
+                                try { this._wvWTRenameTab(targetWin, newId, m.id); } catch (e) {}
+                                done = true;
+                            }
                         }
                     } catch (e) { this._wvWTDbg("reader→reader swap err " + e); }
                     if (!done) {

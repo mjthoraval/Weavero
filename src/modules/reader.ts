@@ -6140,8 +6140,10 @@ class _ReaderMixin {
      *  it. Used by every "tear out / move to new window" path (reader strip OR
      *  main bar, drag OR menu). `entries`: [{ itemID, isNote }]. */
     async _wvOpenItemsInNewReaderWindow(entries: any[]) {
+        const glog = (m: string) => { try { const a: any = ((Zotero as any)._wvGrpDbg = (Zotero as any)._wvGrpDbg || []); a.push((Date.now() % 100000) + " [neww] " + m); if (a.length > 400) a.shift(); } catch (e) {} };
         try {
-            if (!entries || !entries.length) return;
+            if (!entries || !entries.length) { glog("ABORT: no entries"); return; }
+            glog("START n=" + entries.length + " items=" + JSON.stringify(entries.map((e: any) => e.itemID)));
             const mainWin: any = Zotero.getMainWindow();
             const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
             const readerWins = () => {
@@ -6150,6 +6152,7 @@ class _ReaderMixin {
                 return out;
             };
             const before = new Set(readerWins());
+            glog("readerWinsBefore=" + before.size);
             // ── new-window diagnostics ───────────────────────────────────────
             try {
                 const dbg = entries.map((e: any) => {
@@ -6175,6 +6178,8 @@ class _ReaderMixin {
             if (firstIdx < 0) firstIdx = 0;
             const first = entries[firstIdx];
             const firstReaderable = isReaderable(first.itemID);
+            let compactReader = "?"; try { compactReader = String((this as any)._getCompactTitleBarReader()); } catch (e) {}
+            glog("create firstIdx=" + firstIdx + " itemID=" + first.itemID + " readerable=" + firstReaderable + " compactReader=" + compactReader);
             Zotero.debug("[Weavero][new-window] creating window from firstIdx=" + firstIdx + " itemID=" + first.itemID + " readerable=" + firstReaderable);
             try {
                 if (!firstReaderable) {
@@ -6184,10 +6189,12 @@ class _ReaderMixin {
                     (Zotero.Reader as any).open(first.itemID, null, { openInWindow: true, allowDuplicate: true });
                 }
             } catch (eOpen) {
+                glog("create THREW: " + eOpen);
                 Zotero.debug("[Weavero][new-window] FAILED to create window for itemID=" + first.itemID + ": " + eOpen);
                 return;
             }
-            if (entries.length === 1) return;          // single tear-off: nothing else to mount
+            glog("create issued ok");
+            if (entries.length === 1) { glog("single entry → done (no mount)"); return; }   // single tear-off: nothing else to mount
             // Find the freshly-created reader window, then wait for Weavero to
             // wire its strip before mounting the remaining tabs into it.
             let newWin: any = null;
@@ -6196,14 +6203,17 @@ class _ReaderMixin {
                 await new Promise(r => setT(r, 100));
                 for (const w of readerWins()) { if (!before.has(w)) { newWin = w; break; } }
             }
-            if (!newWin) { Zotero.debug("[Weavero][new-window] new reader window never appeared (6s timeout)"); return; }
+            if (!newWin) { glog("newWin TIMEOUT (6s) — window never appeared"); Zotero.debug("[Weavero][new-window] new reader window never appeared (6s timeout)"); return; }
+            glog("newWin appeared after " + (Date.now() - t0) + "ms title=" + (() => { try { return (newWin.document.title || "").slice(0, 20); } catch (e) { return "?"; } })());
             const t1 = Date.now();
             while (!newWin._wvWT && Date.now() - t1 < 4000) { await new Promise(r => setT(r, 80)); }
+            glog("_wvWT " + (newWin._wvWT ? ("ready after " + (Date.now() - t1) + "ms nativeTabs=" + newWin._wvWT.tabs.length) : "TIMEOUT (4s) — strip never wired"));
             for (let i = 0; i < entries.length; i++) {
                 if (i === firstIdx) continue;
-                try { await this._wvWTMountTab(newWin, entries[i].itemID, { select: false }); } catch (e) {}
+                try { await this._wvWTMountTab(newWin, entries[i].itemID, { select: false }); glog("mounted " + entries[i].itemID); } catch (e) { glog("mount ERR " + entries[i].itemID + ": " + e); }
                 await new Promise(r => setT(r, 60));
             }
+            glog("DONE tabsInNewWin=" + (newWin._wvWT ? newWin._wvWT.tabs.length : "?"));
             try { this._wvWTRenderStrip(newWin); } catch (e) {}
             // Raise/focus the new window. Mounting the rest + closing the source
             // tabs runs on the MAIN window, which otherwise leaves the freshly

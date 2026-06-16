@@ -1055,6 +1055,12 @@ class _TabsMixin {
             try { targetWin.removeEventListener("pointerup", donor._handlePointerUp); } catch (e) {}
             try { targetWin.removeEventListener("DOMContentLoaded", donor._handleLoad); } catch (e) {}
             try { const i = Reader._readers.indexOf(donor); if (i >= 0) Reader._readers.splice(i, 1); } catch (e) {}
+            // Ensure the surviving (re-homed) reader is registered. For main→main
+            // S was already in _readers, but a re-homed reader-window instance
+            // (e.g. a restored ReaderWindow moved to main) may not be — without
+            // this it works visually but getByTabID can't find it, so closing it
+            // leaks and a later move reloads instead of swapping.
+            try { if (!Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}
 
             // Re-bind S's element-level contextmenu listener onto the new shell.
             // It lives on the <browser> element, so it did NOT ride the docshell
@@ -1093,9 +1099,13 @@ class _TabsMixin {
             // Preserve the ORIGINAL tab id across the move: the swap re-homed S
             // onto the donor (donorTabId); the source tab is now closed (its id is
             // free), so rename the donor back to the source's id — the tab keeps
-            // its identity through the move.
+            // its identity through the move. Only carry over a REAL Zotero tab id
+            // (`tab-…`); a reader window's synthetic id (`wvwt-native`/`wvwt-N`)
+            // isn't a meaningful main-window id (and `wvwt-native` isn't unique),
+            // so leave the fresh donor id in that case.
             try {
-                if (payload && payload.sourceTabId && payload.sourceTabId !== donorTabId) {
+                if (payload && payload.sourceTabId && payload.sourceTabId !== donorTabId
+                        && /^tab-/.test(String(payload.sourceTabId))) {
                     this._wvRenameTab(targetWin, donorTabId, payload.sourceTabId);
                 }
             } catch (e) {}

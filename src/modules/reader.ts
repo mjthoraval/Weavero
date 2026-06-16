@@ -4373,7 +4373,28 @@ class _ReaderMixin {
             const idx = st.tabs.findIndex((t: any) => t.id === tabId);
             if (idx < 0) return false;
             const tab = st.tabs[idx];
-            if (tab.native || st.tabs.length === 1) return false;   // caller falls back to _wvWTCloseTab
+
+            // LAST tab → the window becomes empty: close it WITHOUT disposing the
+            // (already re-homed) reader. Three things would otherwise dispose it
+            // or close the wrong window, so neutralize them first:
+            //   • reader.xhtml's `onclose="reader.close()"` (close() = uninit() +
+            //     window.close() + onClose()) — remove the attr + stub `reader`;
+            //   • the _wvWT unload teardown — it already SKIPS native and we've
+            //     emptied st.tabs, so nothing is left to uninit.
+            // (Zotero.Reader.notify only disposes on MAIN-tab 'close', not here.)
+            if (st.tabs.length === 1) {
+                st.tabs.splice(idx, 1);
+                try { (win as any).reader = { close() {}, uninit() {} }; } catch (e) {}
+                try { win.document.documentElement.removeAttribute("onclose"); } catch (e) {}
+                try { win.close(); } catch (e) {}
+                try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+                return true;
+            }
+            // A native tab that is NOT the last → would leave the window without
+            // its own reader (a weird state); let the caller use the classic path.
+            if (tab.native) return false;
+
+            // Non-native, non-last → drop just this tab, keep the window.
             try { if (tab.browser && tab.browser.remove) tab.browser.remove(); } catch (e) {}
             try { if (tab._popupset && tab._popupset.remove) tab._popupset.remove(); } catch (e) {}
             st.tabs.splice(idx, 1);
@@ -5880,15 +5901,14 @@ class _ReaderMixin {
                     // show a "copy" (+) cursor instead of the forbidden one.
                     e.dataTransfer.effectAllowed = "copyMove";
                     const titleText = this._wvWTTabTitle(tab);
-                    e.dataTransfer.setData(
-                        "application/x-weavero-reader-merge",
-                        JSON.stringify({ itemID: reader.itemID, title: titleText, readerType: readerType || "" })
-                    );
-                    // sourceTabId + source window enable cross-window moves
-                    // (drop on another reader window's strip). The JSON payload
-                    // deliberately omits multiTab so the MAIN window's drop keeps
-                    // using the native _moveReaderToTab path (drop-position + pin).
-                    (this as any)._wvMergeDragInfo = { itemID: reader.itemID, title: titleText, readerType: readerType || "", sourceTabId: tab.id };
+                    // multiTab:true routes the MAIN window's drop through
+                    // _wvWTMoveTabToMain, which now no-reload-swaps the native tab
+                    // too (and closes this single-tab window) instead of the
+                    // classic _moveReaderToTab reload. Positioning + pin still
+                    // happen (the drop handler runs positionNewTab afterward).
+                    const payload = { itemID: reader.itemID, title: titleText, readerType: readerType || "", sourceTabId: tab.id, multiTab: true };
+                    e.dataTransfer.setData("application/x-weavero-reader-merge", JSON.stringify(payload));
+                    (this as any)._wvMergeDragInfo = payload;
                     (this as any)._wvMergeDragSourceWin = win;
                     try {
                         const img: any = doc.createElementNS(HTML, "img");
@@ -6438,14 +6458,20 @@ class _ReaderMixin {
                         const stab = sst && sst.tabs && sst.tabs.find((t: any) => t.id === m.id);
                         const S = stab && stab.reader;
                         const swappable = !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
-                        const detachable = !!(stab && !stab.native && sst.tabs.length > 1);
+                        // Detachable when it's the LAST tab (window closes, handled
+                        // by _wvWTDetachTabKeepReader) or a non-native tab.
+                        const detachable = !!(stab && sst && sst.tabs && (sst.tabs.length === 1 || !stab.native));
                         this._wvWTDbg("reader→reader move item=" + m.itemID + " swappable=" + swappable + " detachable=" + detachable);
                         if (swappable && detachable) {
                             const newId = await this._wvWTSwapInReader(targetWin, S, m.itemID, { select: m.id === sourceTabId });
                             if (newId != null) {
-                                this._wvWTDetachTabKeepReader(srcWin, m.id);   // frees the source id
+                                this._wvWTDetachTabKeepReader(srcWin, m.id);   // frees the source id (closes the window if last)
                                 // Preserve the original tab id across the move.
                                 try { this._wvWTRenameTab(targetWin, newId, m.id); } catch (e) {}
+                                // If that closed the source window, it removed the
+                                // re-homed reader from _readers — re-register it.
+                                try { const R2: any = Zotero.Reader; if (S && !R2._readers.includes(S)) R2._readers.push(S); } catch (e) {}
+                                try { (targetWin.setTimeout || setTimeout)(() => { try { const R2: any = Zotero.Reader; if (S && !R2._readers.includes(S)) R2._readers.push(S); } catch (e) {} }, 500); } catch (e) {}
                                 done = true;
                             }
                         }
@@ -6540,7 +6566,9 @@ class _ReaderMixin {
             // window-close handling, done with the tear-offs.)
             const S = tab.reader;
             const swappable = !isNote && !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
-            const detachable = !!(st && !tab.native && st.tabs.length > 1);
+            // Detachable when it's the LAST tab (source window closes) or a
+            // non-native tab — _wvWTDetachTabKeepReader handles both.
+            const detachable = !!(st && st.tabs && (st.tabs.length === 1 || !tab.native));
             if (swappable && detachable && mainWin) {
                 this._wvWTDbg("reader→main: swapping item=" + itemID + " srcTab=" + tabId);
                 try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
@@ -6559,12 +6587,21 @@ class _ReaderMixin {
                             try { const TZ: any = mainWin.Zotero_Tabs; targetIndex = TZ && TZ._tabs ? TZ._tabs.length : 1; } catch (e) {}
                             await (this as any)._wvSwapCommitDonor(win, mainWin, S, donor, { itemID, sourceTabId: tabId }, targetIndex, 0,
                                 { detachSource: () => this._wvWTDetachTabKeepReader(win, tabId) });
+                            // Closing the source reader window removes its (now
+                            // re-homed, still-live) reader from Zotero.Reader._readers
+                            // — re-register it so getByTabID finds it (else the tab
+                            // leaks on close and a future move reloads). Sync re-add
+                            // + a deferred one in case the window close is async.
+                            const R: any = Zotero.Reader;
+                            try { if (S && !R._readers.includes(S)) R._readers.push(S); } catch (e) {}
+                            try { (mainWin.setTimeout || setTimeout)(() => { try { if (S && !R._readers.includes(S)) R._readers.push(S); } catch (e) {} }, 500); } catch (e) {}
                             try { if (mainWin.focus) mainWin.focus(); if (mainWin.Zotero_Tabs && donorTabId) mainWin.Zotero_Tabs.select(donorTabId); } catch (e) {}
                             ok = true;
-                            this._wvWTDbg("reader→main: swap done item=" + itemID);
+                            this._wvWTDbg("reader→main: swap done item=" + itemID + " ctor=" + (S && S.constructor && S.constructor.name) + " includesS=" + (R._readers || []).includes(S) + " count=" + (R._readers || []).length);
                         }
                     } catch (e) { this._wvWTDbg("reader→main swap err " + e); }
                     if (!ok) {
+                        this._wvWTDbg("reader→main: classic fallback (donor failed)");
                         // Pre-commit donor failure → classic close+reopen.
                         try { this._wvWTCloseTab(win, tabId); } catch (e) {}
                         try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
@@ -6573,6 +6610,7 @@ class _ReaderMixin {
                 })();
                 return;
             }
+            this._wvWTDbg("reader→main: CLASSIC path (not swap) swappable=" + swappable + " detachable=" + detachable + " isNote=" + isNote);
 
             // Leaving the window leaves the group (don't carry it to the main bar).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}

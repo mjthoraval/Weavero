@@ -975,7 +975,7 @@ class _TabsMixin {
      *
      *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
      *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0). */
-    async _wvSwapCommitDonor(srcWin, targetWin, S, donor, payload, targetIndex, maxOtherPinned) {
+    async _wvSwapCommitDonor(srcWin, targetWin, S, donor, payload, targetIndex, maxOtherPinned, opts?: any) {
         const Reader: any = Zotero.Reader;
         const itemID = payload && payload.itemID;
         const liveInner = S && S._internalReader;
@@ -1030,9 +1030,16 @@ class _TabsMixin {
             try { if (oldSIframe && S._handleReaderTextboxContextMenuOpen) oldSIframe.removeEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
             try { if (S._iframe && S._handleReaderTextboxContextMenuOpen) S._iframe.addEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
 
-            // Close the source tab (now holding the donor's throwaway content).
-            this._wvSafeguardSourceSelectionBeforeClose(srcWin, payload.sourceTabId);
-            try { srcWin.Zotero_Tabs.close(payload.sourceTabId); } catch (e) {}
+            // Detach the source (now holding the donor's throwaway content). A
+            // custom `opts.detachSource` handles non-main sources (e.g. a reader
+            // window's _wvWT tab, which has no Zotero_Tabs); default = close the
+            // source main tab (safeguarding its selection first).
+            if (opts && typeof opts.detachSource === "function") {
+                try { opts.detachSource(); } catch (e) {}
+            } else {
+                this._wvSafeguardSourceSelectionBeforeClose(srcWin, payload.sourceTabId);
+                try { srcWin.Zotero_Tabs.close(payload.sourceTabId); } catch (e) {}
+            }
             try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
 
             // Position + pin at the drop slot (mirror the classic place()).
@@ -1354,6 +1361,14 @@ class _TabsMixin {
                         // ghost info must live there to be seen cross-window.
                         const lp: any = (Zotero as any).Weavero?.plugin || self;
                         lp._wvMainTabDragSourceWin = win;
+                        // Mirror _wvTabDrag onto the LIVE plugin too: a reader
+                        // window's drop reads `Zotero.Weavero.plugin._wvTabDrag`
+                        // (mainTabDrag()), but after a hot-reload this dragstart's
+                        // `self` is the OLD instance, so a self-only write left the
+                        // live plugin's _wvTabDrag null → main→reader drops were
+                        // misrouted to the reader↔reader path (Base mount, source
+                        // not closed → tear-off into a new window).
+                        lp._wvTabDrag = self._wvTabDrag;
                         lp._wvMergeDragInfo = {
                             itemID: self._wvTabDrag.itemID,
                             title: self._wvTabDrag.title || "",
@@ -1766,6 +1781,7 @@ class _TabsMixin {
                         liveEnd._wvSuppressNextTearOff = false;
                         liveEnd._wvMainTabDragSourceWin = null;
                         liveEnd._wvMergeDragInfo = null;
+                        liveEnd._wvTabDrag = null;   // mirror cleared (see dragstart)
                     }
                     const drag = self._wvTabDrag;
                     self._wvTabDrag = null;

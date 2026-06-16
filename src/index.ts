@@ -745,17 +745,39 @@ class WeaveroPlugin {
         } catch (e) { return true; }
     }
 
-    /** Master toggle for "Hide title bar (Firefox-style)". Default OFF —
-     *  opt-in. Scoped to a window type by the two child getters below.
+    /** Master toggle for "Hide title bar (Firefox-style)". Default ON.
+     *  Scoped to a window type by the two child getters below.
      *  Cascades from the Tabs and Windows section master. */
     _getCompactTitleBar() {
         try {
             if (!this._getTabsAndWindowsMaster()) return false;
             const v = Zotero.Prefs.get("weavero.compactTitleBar");
-            if (v === undefined) return false;
-            if (typeof v === "string") return v.toLowerCase() === "true";
+            if (v === undefined) return true;
+            if (typeof v === "string") return v.toLowerCase() !== "false";
             return !!v;
         } catch (e) { return false; }
+    }
+
+    /** "Open notes in a tab-hosting window" (child of Hide Title Bar). Default
+     *  ON. Read at the note-open redirect + session restore. */
+    _getNoteOpenInDeckWindow() {
+        try {
+            const v = Zotero.Prefs.get("weavero.noteOpenInDeckWindow");
+            if (v === undefined) return true;
+            if (typeof v === "string") return v.toLowerCase() !== "false";
+            return !!v;
+        } catch (e) { return true; }
+    }
+
+    /** "New Main Window" entry in the tab menu (Multiple main windows). Default
+     *  ON. Callers still cascade from the Tabs and Windows section master. */
+    _getDevNewMainWindow() {
+        try {
+            const v = Zotero.Prefs.get("weavero.devNewMainWindow");
+            if (v === undefined) return true;
+            if (typeof v === "string") return v.toLowerCase() !== "false";
+            return !!v;
+        } catch (e) { return true; }
     }
 
     /** Child pref read: master must be on AND the named child not explicitly
@@ -1936,7 +1958,7 @@ class WeaveroPlugin {
                         // window would have no visible tab strip — so fall through
                         // to the stock note window.
                         if (opts && opts.openInWindow
-                                && Zotero.Prefs.get("weavero.noteOpenInDeckWindow")
+                                && (self as any)._getNoteOpenInDeckWindow()
                                 && (self as any)._getCompactTitleBarReader()) {
                             return (self as any)._wvOpenNoteInDeckWindow(
                                 itemID, Notes._wvOrigOpen.bind(Notes));

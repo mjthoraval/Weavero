@@ -1995,7 +1995,7 @@ class _ReaderMixin {
             const doc = win.document;
             if (doc.documentElement.getAttribute("windowtype") !== "zotero:reader") return;
             let on = false;
-            try { const v = Zotero.Prefs.get("weavero.readerItemPane"); on = v === undefined ? false : !!v; } catch (e) {}
+            try { const v = Zotero.Prefs.get("weavero.readerItemPane"); on = v === undefined ? true : !!v; } catch (e) {}
             // Cascades from the Tabs and Windows section master.
             try { if (on && !(this as any)._getTabsAndWindowsMaster()) on = false; } catch (e) {}
             const existing = doc.getElementById("wv-reader-pane");
@@ -7271,7 +7271,7 @@ class _ReaderMixin {
                 // closed it (or the feature is off), leave it be.
                 if (rec.noteWindow && rec.noteID != null) {
                     if (!Zotero.Items.exists(rec.noteID)) continue;
-                    if (!Zotero.Prefs.get("weavero.noteOpenInDeckWindow")) continue;
+                    if (!(this as any)._getNoteOpenInDeckWindow()) continue;
                     let noteWin: any = null;
                     try {
                         const en = Services.wm.getEnumerator("zotero:note");

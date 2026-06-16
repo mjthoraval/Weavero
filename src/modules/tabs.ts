@@ -2569,7 +2569,7 @@ class _TabsMixin {
                     onShowing: (_ev, ctx) => {
                         try {
                             let on = false;
-                            try { on = !!Zotero.Prefs.get("weavero.devNewMainWindow"); } catch (e) {}
+                            try { on = (this as any)._getDevNewMainWindow(); } catch (e) {}
                             // Cascades from the Tabs and Windows section master.
                             try { if (on && !(this as any)._getTabsAndWindowsMaster()) on = false; } catch (e) {}
                             // This is a WINDOW-level action — it does nothing to the
@@ -2787,7 +2787,7 @@ class _TabsMixin {
                 while (en.hasMoreElements()) { if ((en.getNext() as any)._wvManagedWindow) return; }
             } catch (e) {}
             let featureOn = false;
-            try { featureOn = !!Zotero.Prefs.get("weavero.devNewMainWindow"); } catch (e) {}
+            try { featureOn = (this as any)._getDevNewMainWindow(); } catch (e) {}
             // Cascades from the Tabs and Windows section master.
             try { if (featureOn && !(this as any)._getTabsAndWindowsMaster()) featureOn = false; } catch (e) {}
             if (!featureOn) return;

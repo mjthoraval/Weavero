@@ -1522,9 +1522,54 @@ class _TabsMixin {
      *  We use dragend (not dragover/Z_Tabs.move) so the decision runs
      *  once on the final position — Zotero fires many move() calls during
      *  a drag for live preview. */
+    /** Wrap a main window's `moveToNewWindow` reader hook so the tab context
+     *  menu's "Move to New Window" goes through the no-reload tear-off (single
+     *  tab) or multi-tab tear-off (when the target is part of a multi-selection),
+     *  falling back to the original (reload) hook for notes / non-swappable /
+     *  failure. The wrapper delegates to the LIVE plugin, so it stays correct
+     *  across hot-reloads; idempotent per window's hook table. */
+    _wvWrapMoveToNewWindowHook(win: any) {
+        try {
+            const ZT: any = win && (win as any).Zotero_Tabs;
+            const hooks: any = ZT && ZT.tabHooks && ZT.tabHooks.moveToNewWindow;
+            if (!hooks || hooks._wvWrapped) return;
+            const origReader = hooks.reader;
+            if (typeof origReader !== "function") return;
+            hooks._wvOrigReader = origReader;
+            hooks.reader = async (tab: any, tabIndex: any) => {
+                try {
+                    const lp: any = (Zotero as any).Weavero?.plugin;
+                    if (lp && tab && tab.id) {
+                        // Multi-select aware: if the target is one of several
+                        // selected tabs, tear them ALL out together (like the drag).
+                        const targets = lp._wvTabMultiSelTargets ? lp._wvTabMultiSelTargets(win, tab.id) : [tab.id];
+                        if (targets && targets.length > 1 && lp._wvMainTearOffTabs) {
+                            lp._wvMainTearOffTabs(win, targets);
+                            return;
+                        }
+                        const Reader: any = Zotero.Reader;
+                        let S: any = null;
+                        try { if (Reader.getByTabID) S = Reader.getByTabID(tab.id); } catch (e) {}
+                        const iid = tab.data && tab.data.itemID;
+                        if (lp._wvSwapTearOffToWindow && S && S._iframe
+                                && typeof S._iframe.swapDocShells === "function" && S._internalReader && iid != null) {
+                            const newWin = await lp._wvSwapTearOffToWindow(win, S, iid);
+                            if (newWin) return;       // no-reload succeeded
+                        }
+                    }
+                } catch (e) { Zotero.debug("[Weavero] moveToNewWindow wrap err: " + e); }
+                return origReader(tab, tabIndex);     // classic fallback
+            };
+            hooks._wvWrapped = true;
+        } catch (e) { Zotero.debug("[Weavero] _wvWrapMoveToNewWindowHook err: " + e); }
+    }
+
     _wireTabBarDrag(win) {
         try {
             if (!win || !win.document) return;
+            // Make the tab context menu's "Move to New Window" no-reload too (it
+            // calls the moveToNewWindow hook directly, bypassing the dragend path).
+            try { this._wvWrapMoveToNewWindowHook(win); } catch (e) {}
             const doc = win.document;
             const container = doc.getElementById("tab-bar-container");
             if (!container || (container as any)._wvPinDragWired) return;

@@ -2540,6 +2540,8 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
+        // Make the "Move Tab" submenu multi-select aware ("Move Tabs").
+        this._registerMoveTabsMenu();
         // Firefox-style tab groups (chip + colored underline in the tab bar).
         this._registerTabGroupMenus();
         // "New Main Window" entry — gated on the `weavero.devNewMainWindow`
@@ -3642,6 +3644,7 @@ class WeaveroPlugin {
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
         this._unregisterPinTabMenu();
+        this._unregisterMoveTabsMenu();
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
         this._unregisterDevNewWindowMenu();

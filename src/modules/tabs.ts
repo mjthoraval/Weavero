@@ -2434,6 +2434,106 @@ class _TabsMixin {
         this._pinTabMenuID = null;
     }
 
+    /** Make the native tab context menu's "Move Tab" submenu multi-select aware.
+     *  When several tabs are selected and the right-clicked tab is one of them,
+     *  relabel it "Move Tabs" and make Move to Start / Move to End operate on the
+     *  WHOLE selection (Move to New Window is already multi-aware via the wrapped
+     *  moveToNewWindow hook). Implemented as a hidden MenuManager item whose
+     *  onShowing tweaks the popup the native code just built — fires during
+     *  popupshowing, before paint. */
+    _registerMoveTabsMenu() {
+        try {
+            const MM: any = (Zotero as any).MenuManager;
+            if (!MM || typeof MM.registerMenu !== "function") return;
+            const self = this;
+            const id = MM.registerMenu({
+                menuID: "weavero-move-tabs",
+                target: "main/tab",
+                menus: [{
+                    menuType: "menuitem",
+                    onShowing: (_ev: any, ctx: any) => {
+                        try {
+                            ctx.setVisible(false);   // side-effect only — never shown
+                            const popup = ctx.menuElem && ctx.menuElem.parentNode;
+                            const win: any = ctx.menuElem && ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
+                            const tabID = ctx.tabID;
+                            if (!popup || !win || !tabID || tabID === "zotero-pane") return;
+                            const targets = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(win, tabID) : [tabID];
+                            if (!targets || targets.length <= 1) return;   // single → leave native
+                            self._wvMakeMoveTabMenuMulti(win, popup, targets);
+                        } catch (e) {}
+                    },
+                }],
+            });
+            if (id) this._moveTabsMenuID = id;
+        } catch (e) { Zotero.debug("[Weavero] _registerMoveTabsMenu err: " + e); }
+    }
+
+    _unregisterMoveTabsMenu() {
+        try {
+            if (this._moveTabsMenuID && (Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.unregisterMenu === "function") {
+                (Zotero as any).MenuManager.unregisterMenu(this._moveTabsMenuID);
+            }
+        } catch (e) {}
+        this._moveTabsMenuID = null;
+    }
+
+    /** Relabel the native "Move Tab" submenu to "Move Tabs" and rebind its
+     *  Move to Start / Move to End items to move the whole `targets` selection.
+     *  The native items carry single-tab `command` listeners (added via
+     *  addEventListener, so not cloneable-away by attribute) — clone each item to
+     *  drop them, then attach a multi-select handler. */
+    _wvMakeMoveTabMenuMulti(win: any, popup: any, targets: any[]) {
+        try {
+            const self = this;
+            const moveLabel = Zotero.getString("tabs.move");
+            let moveMenu: any = null;
+            for (const m of popup.querySelectorAll("menu")) {
+                if (m.getAttribute && m.getAttribute("label") === moveLabel) { moveMenu = m; break; }
+            }
+            if (!moveMenu) return;
+            moveMenu.setAttribute("label", "Move Tabs");
+            const submenu = moveMenu.querySelector("menupopup");
+            if (!submenu) return;
+            const startLabel = Zotero.getString("tabs.moveToStart");
+            const endLabel = Zotero.getString("tabs.moveToEnd");
+            for (const mi of Array.from(submenu.querySelectorAll("menuitem")) as any[]) {
+                const lbl = mi.getAttribute && mi.getAttribute("label");
+                if (lbl !== startLabel && lbl !== endLabel) continue;   // leave Move to New Window
+                const toEnd = (lbl === endLabel);
+                const clone = mi.cloneNode(true);      // drops the native command listener
+                clone.removeAttribute("disabled");
+                mi.replaceWith(clone);
+                clone.addEventListener("command", () => {
+                    try { self._wvMoveSelectedTabsToEdge(win, targets, toEnd); } catch (e) {}
+                });
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMakeMoveTabMenuMulti err: " + e); }
+    }
+
+    /** Move every tab in `ids` to the start (just after the library tab) or the
+     *  end of the bar, preserving their relative order. Forward order → end and
+     *  reverse order → position 1 each keep the group's internal order intact
+     *  given Zotero_Tabs.move's splice-and-reinsert semantics. */
+    _wvMoveSelectedTabsToEdge(win: any, ids: any[], toEnd: boolean) {
+        try {
+            const ZT: any = win && (win as any).Zotero_Tabs;
+            if (!ZT || !ZT._tabs || typeof ZT.move !== "function") return;
+            const ordered = (ids || [])
+                .map((id: any) => ({ id, idx: ZT._tabs.findIndex((t: any) => t && t.id === id) }))
+                .filter((o: any) => o.idx > 0)             // skip not-found + the library tab
+                .sort((a: any, b: any) => a.idx - b.idx)
+                .map((o: any) => o.id);
+            if (!ordered.length) return;
+            if (toEnd) {
+                for (const id of ordered) { try { ZT.move(id, ZT._tabs.length); } catch (e) {} }
+            } else {
+                for (let i = ordered.length - 1; i >= 0; i--) { try { ZT.move(ordered[i], 1); } catch (e) {} }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMoveSelectedTabsToEdge err: " + e); }
+    }
+
     /** Add a "New Main Window" entry to the tab context menu, gated on the
      *  pref `weavero.devNewMainWindow` (default OFF — exposed in prefs.html
      *  under "Multiple main windows", flagged experimental). Lets the user

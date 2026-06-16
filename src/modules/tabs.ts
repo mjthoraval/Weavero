@@ -1040,6 +1040,9 @@ class _TabsMixin {
             try { targetWin.addEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
             try { targetWin.addEventListener("pointerup", S._handlePointerUp); } catch (e) {}
             try { targetWin.addEventListener("DOMContentLoaded", S._handleLoad); } catch (e) {}
+            // If S arrives grafted (a torn-off standalone window moving back to a
+            // tab), restore its tab-aware prototype methods.
+            try { this._wvUngraftWindowGlue(S); } catch (e) {}
 
             // FULLY dispose the donor INSTANCE while keeping its shell (now S's).
             // The critical part is unregistering the donor's pref observers +
@@ -1111,6 +1114,173 @@ class _TabsMixin {
             } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvSwapCommitDonor post-commit err: " + e);
+        }
+        return true;
+    }
+
+    /** Undo the window-glue graft applied by `_wvSwapTearOffToWindow`: a torn-off
+     *  reader is a `ReaderTab` wearing `ReaderWindow` clothing (instance props
+     *  shadowing its prototype). When it later moves back into a tab (main bar or
+     *  a reader-window strip), delete those props so the prototype's tab-aware
+     *  `_setTitleValue` / `close` take over again. No-op if not grafted. */
+    _wvUngraftWindowGlue(S: any) {
+        try {
+            if (!S || !S._wvGrafted) return;
+            try { delete S._setTitleValue; } catch (e) {}
+            try { delete S._switchReaderSubtype; } catch (e) {}
+            try { delete S.close; } catch (e) {}
+            try { delete S._onClose; } catch (e) {}
+            S._wvGrafted = false;
+            S._wvGraftWin = null;
+        } catch (e) { Zotero.debug("[Weavero] _wvUngraftWindowGlue err: " + e); }
+    }
+
+    /** No-reload TEAR-OFF: move ONE live reader into a BRAND-NEW standalone
+     *  reader window without reloading. Opens a donor `ReaderWindow`, trades the
+     *  live source docshell into its `<browser>` via `swapDocShells`, re-homes
+     *  the source instance onto the donor window, then GRAFTS the ReaderWindow
+     *  window-glue (menus, title, close) onto it.
+     *
+     *  Why graft: every in-window swap keeps the SAME instance alive and re-homes
+     *  it, which works because both ends use the same class. A standalone window
+     *  expects a `ReaderWindow`, but the live instance is a `ReaderTab` whose
+     *  pdf.js callbacks are bound to it and can't be transplanted — so it must
+     *  become the window's reader, with `ReaderWindow`'s window-only glue grafted
+     *  on (the same identity-carrying idea as `_wvRenameTab`, across the class
+     *  boundary). `opts.detachSource(sourceTabId)` removes the now-empty source
+     *  tab (default: close it on the main window). Returns true on success, or
+     *  false BEFORE any mutation to fall back to the classic (reload) tear-off.
+     *
+     *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
+     *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0). */
+    async _wvSwapTearOffToWindow(srcWin: any, S: any, itemID: any, opts?: any) {
+        const Reader: any = Zotero.Reader;
+        if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !S._internalReader) return false;
+        if (itemID == null) return false;
+        const sleep = (ms: number) => new Promise<void>((res) => {
+            try { if (srcWin && srcWin.setTimeout) srcWin.setTimeout(res, ms); else setTimeout(res, ms); }
+            catch (e) { setTimeout(res, ms); }
+        });
+        let donor: any = null;
+        try {
+            donor = await Reader.open(itemID, null, { openInWindow: true, allowDuplicate: true });
+        } catch (e) { Zotero.debug("[Weavero] tear-off donor open err: " + e); return false; }
+        if (!donor) return false;
+        // Wait for the donor WINDOW shell (its DOMContentLoaded sets these async).
+        let ready = false;
+        for (let i = 0; i < 90; i++) {
+            if (donor._window && donor._iframe && donor._iframe.contentWindow && donor._popupset) { ready = true; break; }
+            await sleep(120);
+        }
+        if (!ready) { try { if (donor.close) donor.close(); } catch (e) {} return false; }
+
+        const liveInner = S._internalReader;
+        const oldSIframe = S._iframe;
+        const oldSWin = S._window;
+        const donorWin = donor._window;
+        const sourceTabId = S.tabID;
+        try {
+            S._iframe.swapDocShells(donor._iframe);
+            await sleep(120);
+
+            // S was a tab: drop its main-window listeners. A reader window has no
+            // Zotero_Tabs, so its pointer handlers would throw — don't re-add.
+            try { oldSWin.removeEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
+            try { oldSWin.removeEventListener("pointerup", S._handlePointerUp); } catch (e) {}
+            try { oldSWin.removeEventListener("DOMContentLoaded", S._handleLoad); } catch (e) {}
+
+            // Re-home S onto the donor window's shell.
+            S._iframe = donor._iframe;
+            S._iframeWindow = donor._iframe.contentWindow;
+            S._popupset = donor._popupset;
+            S._window = donorWin;
+            S._internalReader = liveInner;
+
+            // GRAFT ReaderWindow window-glue. The window's menu/close globals were
+            // bound to the donor (a ReaderWindow); rebind them to its prototype
+            // methods bound to S, which carries the base fields they read
+            // (_item / _type / _internalReader / _window). `close` is a custom,
+            // failure-tolerant version of ReaderWindow.close so a throwing uninit
+            // can't strand the window open.
+            const RW = Object.getPrototypeOf(donor);   // ReaderWindow.prototype
+            try { donorWin.reader = S; } catch (e) {}
+            try { donorWin.onFileMenuOpen = RW._onFileMenuOpen.bind(S); } catch (e) {}
+            try { donorWin.onEditMenuOpen = RW._onEditMenuOpen.bind(S); } catch (e) {}
+            try { donorWin.onGoMenuOpen = RW._onGoMenuOpen.bind(S); } catch (e) {}
+            try { donorWin.onViewMenuOpen = RW._onViewMenuOpen.bind(S); } catch (e) {}
+            try { donorWin.onWindowMenuOpen = RW._onWindowMenuOpen.bind(S); } catch (e) {}
+            S._wvGrafted = true;
+            S._wvGraftWin = donorWin;
+            try { S._setTitleValue = RW._setTitleValue.bind(S); } catch (e) {}
+            try { S._switchReaderSubtype = RW._switchReaderSubtype.bind(S); } catch (e) {}
+            S._onClose = () => {
+                try { const i = Reader._readers.indexOf(S); if (i >= 0) Reader._readers.splice(i, 1); } catch (e) {}
+                try { Zotero.Session.debounceSave(); } catch (e) {}
+            };
+            S.close = () => {
+                try { S.uninit(); } catch (e) { Zotero.debug("[Weavero] tear-off S.uninit err: " + e); }
+                try { if (S._window && S._window.close) S._window.close(); } catch (e) {}
+                try { S._onClose(); } catch (e) {}
+            };
+            try { S._setTitleValue(S._title); } catch (e) {}
+            try { S._switchReaderSubtype(S._type); } catch (e) {}
+
+            // The element-level contextmenu listener lives on the <browser> and so
+            // did NOT ride the docshell swap — re-bind it onto the new shell.
+            try { if (oldSIframe && S._handleReaderTextboxContextMenuOpen) oldSIframe.removeEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
+            try { if (S._iframe && S._handleReaderTextboxContextMenuOpen) S._iframe.addEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
+
+            // Dispose the donor INSTANCE while keeping its window + shell (now S's):
+            // unregister its observers/listeners and drop it from _readers, but do
+            // NOT call donor.close()/uninit() (those close the window / touch the
+            // shared iframe). Its throwaway content was swapped into the source tab
+            // and dies with it.
+            try { donor._isUninitialized = true; } catch (e) {}
+            try { if (donor._prefObserverIDs) donor._prefObserverIDs.forEach((id: any) => Zotero.Prefs.unregisterObserver(id)); } catch (e) {}
+            try { const i = Reader._readers.indexOf(donor); if (i >= 0) Reader._readers.splice(i, 1); } catch (e) {}
+            try { if (!Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}
+
+            // If Weavero already wired the donor window's multi-tab strip, point
+            // its native-tab entry at S (it was captured as the donor). If not yet
+            // wired, _wvWTEnsureNativeTab will later find S via _wvWTFindNativeReader.
+            try {
+                const st = donorWin._wvWT;
+                if (st && st.tabs) {
+                    const nat = st.tabs.find((t: any) => t && t.native);
+                    if (nat) { nat.reader = S; nat.itemID = itemID; nat.type = S._type || nat.type; }
+                }
+            } catch (e) {}
+
+            // Wire the reader-window chrome (Firefox-style tab strip + window
+            // controls + item pane + the _wvWT model). Weavero normally does this
+            // from the reader's `renderToolbar` event, which fires when content
+            // LOADS — but our swap moves ALREADY-rendered content in, so that event
+            // never fires for this window. Wire it explicitly so the torn-off
+            // window matches a normally-opened reader window. Re-run on a short
+            // delay so any late DOM settling is picked up.
+            const wireChrome = () => {
+                try { (this as any)._ensureReaderWindowTabStrip(S); } catch (e) {}
+                try { (this as any)._ensureReaderWindowItemPane(S); } catch (e) {}
+                try { (this as any)._wvWTRenderStrip(donorWin); } catch (e) {}
+            };
+            try { wireChrome(); } catch (e) {}
+            try { (donorWin.setTimeout || setTimeout)(wireChrome, 150); } catch (e) {}
+
+            // S is no longer a tab: clear its tabID so getByTabID / a stray
+            // tab-close can't match (and uninit) it.
+            try { S.tabID = null; } catch (e) {}
+
+            // Remove the now-empty source tab WITHOUT disposing S.
+            if (opts && typeof opts.detachSource === "function") {
+                try { opts.detachSource(sourceTabId); } catch (e) {}
+            } else {
+                this._wvSafeguardSourceSelectionBeforeClose(srcWin, sourceTabId);
+                try { srcWin.Zotero_Tabs.close(sourceTabId); } catch (e) {}
+            }
+            try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
+            try { donorWin.focus(); } catch (e) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSwapTearOffToWindow commit err: " + e);
         }
         return true;
     }
@@ -1904,6 +2074,33 @@ class _TabsMixin {
                                     ? lp._wvTabMultiSelTargets(win, tab.id) : [tab.id];
                                 if (targets && targets.length > 1) {
                                     lp._wvMainTearOffTabs(win, targets);
+                                    return;
+                                }
+                            } catch (er) {}
+                            // No-reload tear-off: if the tab has a live, swappable
+                            // reader, move it into a NEW standalone reader window via
+                            // a docshell swap (preserves scroll/zoom/selection). Fall
+                            // back to the classic moveToNewWindow hook (reload) for
+                            // notes / unloaded tabs / on failure (returns false only
+                            // before any mutation, so the tab is intact to fall back).
+                            try {
+                                const lp: any = (Zotero as any).Weavero?.plugin || self;
+                                const Rdr: any = Zotero.Reader;
+                                let liveS: any = null;
+                                try { if (Rdr && Rdr.getByTabID) liveS = Rdr.getByTabID(tab.id); } catch (er) {}
+                                const iid = tab.data && tab.data.itemID;
+                                if (liveS && liveS._iframe && typeof liveS._iframe.swapDocShells === "function"
+                                        && liveS._internalReader && iid != null && lp._wvSwapTearOffToWindow) {
+                                    lp._wvSwapTearOffToWindow(win, liveS, iid).then((ok: any) => {
+                                        if (ok) return;
+                                        try {
+                                            const ct = Z_Tabs.parseTabType ? Z_Tabs.parseTabType(tab.type).tabContentType : null;
+                                            if (ct && Z_Tabs._hasHook && Z_Tabs._hasHook(ct, "moveToNewWindow")) {
+                                                const h = Z_Tabs._getHook(ct, "moveToNewWindow");
+                                                if (h) Promise.resolve(h(tab, Z_Tabs._tabs.indexOf(tab))).catch((e2: any) => Zotero.debug("[Weavero] tear-off err: " + e2));
+                                            }
+                                        } catch (e2) {}
+                                    }).catch((er: any) => Zotero.debug("[Weavero] no-reload tear-off err: " + er));
                                     return;
                                 }
                             } catch (er) {}

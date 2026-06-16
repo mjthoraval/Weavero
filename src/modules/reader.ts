@@ -4329,6 +4329,9 @@ class _ReaderMixin {
             S._window = win;
             S._tabContainer = vbox;
             S.tabID = id;
+            // If S arrives grafted (a torn-off standalone window moving into this
+            // strip), drop the window-glue before applying the mounted-tab glue.
+            try { (this as any)._wvUngraftWindowGlue(S); } catch (e) {}
             try { S._setTitleValue = function () {}; } catch (e) {}
             try { S._showContextPaneToggle = false; } catch (e) {}
             // Do NOT re-add the ReaderTab window listeners (pointerdown/up/load)
@@ -6133,17 +6136,32 @@ class _ReaderMixin {
             const itemID = tab.itemID;
             const isNote = (tab.type === "note");
             const mainWin: any = Zotero.getMainWindow();
-            // Torn-out tab leaves its group (don't carry it to the new window).
-            try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
-            try { this._wvWTCloseTab(win, tabId); } catch (e) {}
-            const open = () => {
-                try {
-                    if (isNote) { const ZP: any = mainWin && mainWin.ZoteroPane; if (ZP && ZP.openNote) ZP.openNote(itemID, { openInWindow: true }); }
-                    else { (Zotero.Reader as any).open(itemID, null, { openInWindow: true, allowDuplicate: true }); }
-                } catch (e) { Zotero.debug("[Weavero] tear-off open err: " + e); }
-            };
             const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
-            setT(open, 150);
+            const classic = () => {
+                try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
+                try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+                const open = () => {
+                    try {
+                        if (isNote) { const ZP: any = mainWin && mainWin.ZoteroPane; if (ZP && ZP.openNote) ZP.openNote(itemID, { openInWindow: true }); }
+                        else { (Zotero.Reader as any).open(itemID, null, { openInWindow: true, allowDuplicate: true }); }
+                    } catch (e) { Zotero.debug("[Weavero] tear-off open err: " + e); }
+                };
+                setT(open, 150);
+            };
+            // No-reload tear-off for a live, swappable reader: docshell-swap it into
+            // a fresh standalone window (this window keeps its other tabs). Notes /
+            // non-swappable readers fall back to the classic (reload) path.
+            const S: any = tab.reader;
+            if (!isNote && S && S._iframe && typeof S._iframe.swapDocShells === "function"
+                    && S._internalReader && (this as any)._wvSwapTearOffToWindow) {
+                try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
+                (this as any)._wvSwapTearOffToWindow(win, S, itemID, {
+                    detachSource: () => { try { this._wvWTDetachTabKeepReader(win, tabId); } catch (e) {} }
+                }).then((ok: any) => { if (!ok) classic(); })
+                  .catch((er: any) => { Zotero.debug("[Weavero] _wvWTTearOffTab swap err: " + er); classic(); });
+                return;
+            }
+            classic();
         } catch (e) { Zotero.debug("[Weavero] _wvWTTearOffTab err: " + e); }
     }
 

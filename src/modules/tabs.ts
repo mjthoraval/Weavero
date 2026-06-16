@@ -812,16 +812,13 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
     }
 
-    /** Dispatcher for moving a reader/note tab between main windows. When the
-     *  hidden `weavero.swapMoveReader` pref is ON, a PDF reader is moved
-     *  WITHOUT reloading — its live docshell is swapped into the target window
-     *  (Firefox-style; see `_wvSwapMoveToMain`). Notes, pref-off, or any
+    /** Dispatcher for moving a reader/note tab between main windows. A PDF
+     *  reader is moved WITHOUT reloading — its live docshell is swapped into the
+     *  target window (Firefox-style; see `_wvSwapMoveToMain`). Notes or any
      *  pre-commit failure fall back to the classic close+reopen. */
     _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
-        let swapMove = false;
-        try { swapMove = !!Zotero.Prefs.get("weavero.swapMoveReader"); } catch (e) {}
         const isNote = payload && (payload.readerType === "note" || payload.tabType === "note");
-        if (swapMove && !isNote && payload && typeof payload.itemID === "number") {
+        if (!isNote && payload && typeof payload.itemID === "number") {
             const classic = () => {
                 try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned); }
                 catch (e) { Zotero.debug("[Weavero] classic move fallback err: " + e); }
@@ -835,60 +832,157 @@ class _TabsMixin {
         this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned);
     }
 
-    /** EXPERIMENTAL (hidden pref `weavero.swapMoveReader`): move a live PDF
-     *  reader to another main window WITHOUT reloading, à la Firefox.
-     *  Opens a donor reader in the target window, swaps the source reader's
-     *  live docshell into the donor's `<browser>` via `swapDocShells` (the
-     *  same primitive Firefox's adoptTab uses), then RE-HOMES the source
-     *  ReaderInstance onto the donor's shell. The instance's callbacks read
-     *  `this._window` / `this._iframeWindow` dynamically, so updating those
-     *  fields re-targets everything to the new window — no per-callback
-     *  surgery. The donor instance is then discarded (its shell kept) and the
-     *  source tab closed. Returns true on success, false (only before any
-     *  mutation) to fall back to the classic move.
-     *
-     *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
-     *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0).
-     *
-     *  Prototype scope: single PDF tab, main→main only. Known gap: the
-     *  discarded donor's pref observers aren't torn down (minor leak). */
-    async _wvSwapMoveToMain(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
-        const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
-        if (itemID == null || !srcWin || !targetWin) return false;
-        const Reader: any = Zotero.Reader;
-        // Resolve the live, swappable source reader.
-        let S: any = null;
-        try { if (typeof Reader.getByTabID === "function") S = Reader.getByTabID(payload.sourceTabId); } catch (e) {}
-        if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === payload.sourceTabId);
-        const liveInner = S && S._internalReader;
-        if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !liveInner) return false;
+    /** Before closing a source tab during a cross-window move: if it's the source
+     *  window's SELECTED tab, move selection to the always-loaded library tab
+     *  first. Otherwise Zotero auto-selects a neighbour on close, and if that
+     *  neighbour is an UNLOADED reader it loads — but with the TARGET window
+     *  focused, the new ReaderInstance reads getMostRecentWindow() = target and
+     *  binds _tabContainer against the wrong window (reader.js:1808/1815), so it
+     *  hangs at "Loading…". Selecting a loaded tab first means the close never
+     *  triggers that stray load. */
+    _wvSafeguardSourceSelectionBeforeClose(srcWin, sourceTabId) {
+        try {
+            const SZT: any = srcWin && srcWin.Zotero_Tabs;
+            if (SZT && SZT.selectedID === sourceTabId && typeof SZT.select === "function") {
+                SZT.select("zotero-pane");
+            }
+        } catch (e) {}
+    }
 
+    /** Multi-tab drag ghost: when the grabbed tab is part of a multi-selection,
+     *  build a small semi-transparent STACK of every selected tab so the cursor
+     *  ghost shows all the tabs being dragged, not just the one grabbed. (Firefox's
+     *  literal cursor image is a single page thumbnail; this gives clearer "N tabs
+     *  moving" feedback in its spirit.) The stack is appended INSIDE
+     *  #tab-bar-container (so the clones inherit the real tab styling) and
+     *  positioned `fixed` right under the cursor where the OS ghost renders —
+     *  on-screen so Gecko actually snapshots it (it ignores off-screen elements),
+     *  yet coincident with the ghost so there's no flash. Returns
+     *  { el, offsetX, offsetY } — the offset puts the cursor at the grab point on
+     *  the top (dragged) tab — or null when it isn't a multi-selection. The caller
+     *  removes `el` after the drag snapshot is taken. */
+    _wvBuildMultiTabDragImage(win, draggedTabId, grabX, grabY) {
+        try {
+            const sel = win && win._wvSelTabIDs;
+            if (!sel || sel.size < 2 || !sel.has(draggedTabId)) return null;
+            const doc = win.document;
+            const container = doc.querySelector("#tab-bar-container");
+            if (!container) return null;
+            const all: any[] = Array.from(container.querySelectorAll(".tab[data-id]"));
+            const selected = all.filter((el) => sel.has(el.getAttribute("data-id")));
+            if (selected.length < 2) return null;
+            // Strip order, with the grabbed tab moved last so it paints on top.
+            const ordered = selected.filter((el) => el.getAttribute("data-id") !== draggedTabId);
+            const draggedEl = selected.find((el) => el.getAttribute("data-id") === draggedTabId);
+            if (draggedEl) ordered.push(draggedEl);
+
+            const STEP = 8;   // px each stacked tab is offset down-right
+            const baseRect = (draggedEl || ordered[0]).getBoundingClientRect();
+            const w = baseRect.width, h = baseRect.height;
+
+            const stack = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            stack.style.position = "fixed";
+            stack.style.margin = "0";
+            stack.style.padding = "0";
+            stack.style.pointerEvents = "none";
+            stack.style.opacity = "0.85";
+            stack.style.zIndex = "2147483647";
+            stack.style.width = (w + (ordered.length - 1) * STEP) + "px";
+            stack.style.height = (h + (ordered.length - 1) * STEP) + "px";
+
+            ordered.forEach((el, i) => {
+                const r = el.getBoundingClientRect();
+                const clone = el.cloneNode(true) as any;
+                clone.classList.remove("wv-multisel");
+                clone.style.position = "absolute";
+                clone.style.left = (i * STEP) + "px";
+                clone.style.top = (i * STEP) + "px";
+                clone.style.width = r.width + "px";
+                clone.style.height = r.height + "px";
+                clone.style.margin = "0";
+                clone.style.boxShadow = "0 1px 4px rgba(0,0,0,0.35)";
+                stack.appendChild(clone);
+            });
+
+            // Cursor offset = grab point on the top (dragged) tab, which sits at
+            // ((n-1)*STEP, (n-1)*STEP) within the stack.
+            const topOff = (ordered.length - 1) * STEP;
+            let withinX = 20, withinY = 12;
+            if (draggedEl) {
+                const dr = draggedEl.getBoundingClientRect();
+                withinX = Math.max(0, Math.min(dr.width, grabX - dr.left));
+                withinY = Math.max(0, Math.min(dr.height, grabY - dr.top));
+            }
+            const offsetX = topOff + withinX, offsetY = topOff + withinY;
+            // Position the stack (fixed = viewport coords) exactly where the OS
+            // drag image will render — under the cursor at this same offset. That
+            // keeps it ON-screen so Gecko reliably snapshots it (off-screen
+            // elements are NOT captured by setDragImage), while coinciding with
+            // the ghost so there's no visible flash. It stays a DOM descendant of
+            // #tab-bar-container, so the clones inherit the real tab styling.
+            stack.style.left = (grabX - offsetX) + "px";
+            stack.style.top = (grabY - offsetY) + "px";
+            container.appendChild(stack);
+            return { el: stack, offsetX, offsetY };
+        } catch (e) { return null; }
+    }
+
+    /** Pre-commit half of the no-reload swap: open a donor reader in the target
+     *  window and resolve once its `<browser>` shell is ready. Returns the donor
+     *  ReaderInstance, or null (safe to fall back to classic — we only opened a
+     *  throwaway donor, which we close). `background` opens it unselected so it
+     *  doesn't steal the target's active tab (Firefox adopts non-active tabs
+     *  "without switching"). */
+    async _wvSwapOpenDonor(targetWin, itemID, background) {
+        const Reader: any = Zotero.Reader;
+        let donor: any = null;
+        try {
+            try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+            donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: background });
+            if (await this._wvSwapWaitShell(donor, targetWin)) return donor;
+            try { if (donor && donor.tabID) targetWin.Zotero_Tabs.close(donor.tabID); } catch (er) {}
+            return null;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSwapOpenDonor err: " + e);
+            try { if (donor && donor.tabID) targetWin.Zotero_Tabs.close(donor.tabID); } catch (er) {}
+            return null;
+        }
+    }
+
+    /** Poll a freshly-opened donor until its shell (iframe + content window +
+     *  tab container) is ready for a docshell swap. Returns false on timeout. */
+    async _wvSwapWaitShell(donor, targetWin) {
         const sleep = (ms: number) => new Promise<void>((res) => {
             try { if (targetWin.setTimeout) targetWin.setTimeout(res, ms); else setTimeout(res, ms); }
             catch (e) { setTimeout(res, ms); }
         });
-
-        // --- Pre-commit: open a donor reader in the target window and wait for
-        //     its shell. Any failure here is safe to fall back from (we only
-        //     opened a donor, which we close).
-        let donor: any = null;
-        try {
-            try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
-            donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true });
-            let okShell = false;
-            for (let i = 0; i < 90; i++) {
-                if (donor && donor._iframe && donor._iframe.contentWindow && donor.tabID && donor._tabContainer) { okShell = true; break; }
-                await sleep(120);
-            }
-            if (!okShell) throw new Error("donor shell not ready");
-        } catch (e) {
-            Zotero.debug("[Weavero] _wvSwapMoveToMain pre-commit err: " + e);
-            try { if (donor && donor.tabID) targetWin.Zotero_Tabs.close(donor.tabID); } catch (er) {}
-            return false;
+        for (let i = 0; i < 90; i++) {
+            if (donor && donor._iframe && donor._iframe.contentWindow && donor.tabID && donor._tabContainer) return true;
+            await sleep(120);
         }
+        return false;
+    }
 
-        // --- Committed from here: swap + re-home + teardown. Never fall back now
-        //     (that would double-move); best-effort on any post-swap error.
+    /** Committed half of the no-reload swap: trade the live source reader's
+     *  docshell into the donor's `<browser>` via `swapDocShells` (the same
+     *  primitive Firefox's adoptTab uses), RE-HOME the source ReaderInstance
+     *  onto the donor's shell (its callbacks read `this._window` /
+     *  `this._iframeWindow` dynamically, so updating those fields re-targets
+     *  everything — no per-callback surgery), discard the donor instance
+     *  (keeping its shell), close the source tab, and position/pin at the drop
+     *  slot. Never falls back from here (that would double-move); best-effort on
+     *  any post-swap error. Returns true.
+     *
+     *  Built on the docshell-swap mechanism Firefox uses for cross-window tab
+     *  moves (browser/components/tabbrowser/content/tabbrowser.js, AGPL-3.0). */
+    async _wvSwapCommitDonor(srcWin, targetWin, S, donor, payload, targetIndex, maxOtherPinned) {
+        const Reader: any = Zotero.Reader;
+        const itemID = payload && payload.itemID;
+        const liveInner = S && S._internalReader;
+        const sleep = (ms: number) => new Promise<void>((res) => {
+            try { if (targetWin.setTimeout) targetWin.setTimeout(res, ms); else setTimeout(res, ms); }
+            catch (e) { setTimeout(res, ms); }
+        });
         const donorTabId = donor.tabID;
         try {
             const oldSIframe = S._iframe;
@@ -937,6 +1031,7 @@ class _TabsMixin {
             try { if (S._iframe && S._handleReaderTextboxContextMenuOpen) S._iframe.addEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
 
             // Close the source tab (now holding the donor's throwaway content).
+            this._wvSafeguardSourceSelectionBeforeClose(srcWin, payload.sourceTabId);
             try { srcWin.Zotero_Tabs.close(payload.sourceTabId); } catch (e) {}
             try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
 
@@ -956,9 +1051,31 @@ class _TabsMixin {
                 }
             }
         } catch (e) {
-            Zotero.debug("[Weavero] _wvSwapMoveToMain post-commit err: " + e);
+            Zotero.debug("[Weavero] _wvSwapCommitDonor post-commit err: " + e);
         }
         return true;
+    }
+
+    /** Move ONE live PDF reader to another main window WITHOUT reloading, à la
+     *  Firefox. Resolves the live source reader, opens a donor in the target
+     *  window, then commits the docshell swap. Returns true on success, false
+     *  (only before any mutation) to fall back to the classic move.
+     *  `opts.background` opens the donor unselected. (Multi-select uses
+     *  _wvMoveSelectionBetweenMains, which opens every donor up front so the tabs
+     *  appear together, then commits.) */
+    async _wvSwapMoveToMain(srcWin, targetWin, payload, targetIndex, maxOtherPinned, opts?: any) {
+        const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
+        if (itemID == null || !srcWin || !targetWin) return false;
+        const background = !!(opts && opts.background);
+        const Reader: any = Zotero.Reader;
+        // Resolve the live, swappable source reader.
+        let S: any = null;
+        try { if (typeof Reader.getByTabID === "function") S = Reader.getByTabID(payload.sourceTabId); } catch (e) {}
+        if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === payload.sourceTabId);
+        if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !S._internalReader) return false;
+        const donor = await this._wvSwapOpenDonor(targetWin, itemID, background);
+        if (!donor) return false;
+        return this._wvSwapCommitDonor(srcWin, targetWin, S, donor, payload, targetIndex, maxOtherPinned);
     }
 
     /** Move a reader/note tab from one MAIN window's strip to another:
@@ -976,6 +1093,7 @@ class _TabsMixin {
             // Leaving the window leaves the group (don't carry it to the target).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             // 1) Close the source tab in its own window (flushes its state).
+            this._wvSafeguardSourceSelectionBeforeClose(srcWin, payload.sourceTabId);
             try {
                 const srcTabs: any = srcWin && (srcWin as any).Zotero_Tabs;
                 if (srcTabs && payload.sourceTabId && typeof srcTabs.close === "function") {
@@ -1041,10 +1159,15 @@ class _TabsMixin {
 
     /** Multi-select main→main: move EVERY selected source tab to the target main
      *  window, landing them contiguously from the drop slot (Firefox-style).
-     *  Snapshots payloads up front (each single move closes a source tab and
-     *  rewrites the list), then loops _wvMoveTabBetweenMains with an incrementing
-     *  target index so the group keeps its source order. */
-    async _wvMoveSelectionBetweenMains(srcWin, targetWin, ids, targetIndex, maxOtherPinned) {
+     *  With the no-reload swap on it runs in three phases, all hidden so nothing
+     *  half-loaded ever flashes: PHASE 1 opens every donor in the BACKGROUND (the
+     *  target's current active tab keeps showing); PHASE 2 commits the docshell
+     *  swaps sequentially behind the scenes and closes the sources; PHASE 3
+     *  reveals — selects the DRAGGED tab (now holding live content) and restores
+     *  the multi-selection on the moved tabs. Mirrors Firefox's <tabs> drop
+     *  handler, which selects the dragged tab and re-ranges the selection
+     *  (addRangeToMultiSelectedTabs). */
+    async _wvMoveSelectionBetweenMains(srcWin, targetWin, ids, targetIndex, maxOtherPinned, draggedId?: any) {
         try {
             const ZT: any = srcWin && (srcWin as any).Zotero_Tabs;
             if (!ZT || !ZT._tabs || !targetWin || !ids || !ids.length) return;
@@ -1055,24 +1178,100 @@ class _TabsMixin {
                 if (iid != null) payloads.push({ itemID: iid, sourceTabId: id, tabType: t.type || "", readerType: t.type === "note" ? "note" : "" });
             }
             if (!payloads.length) return;
+            // On a DRAG-DROP, Firefox makes the *dragged* tab the destination's
+            // active tab — `adoptTab(tab, {selectTab: tab == draggedTab})` in the
+            // <tabs> drop handler (tabs.js). (That's distinct from the context-menu
+            // "Move to New Window" command, replaceTabsWithWindow, which keeps the
+            // source's active tab.) So swap the dragged tab foreground and adopt
+            // the rest in the background "without switching". Fall back to the
+            // source-active tab, then the first, if no dragged id was passed.
+            let activeId: any = draggedId;
+            if (!payloads.some((p) => p.sourceTabId === activeId)) {
+                try { activeId = ZT.selectedID; } catch (e) { activeId = null; }
+            }
+            if (!payloads.some((p) => p.sourceTabId === activeId)) activeId = payloads[0].sourceTabId;
             try { if (srcWin._wvSelTabIDs && srcWin._wvSelTabIDs.clear) srcWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcWin); } catch (e) {}
-            let swapMove = false;
-            try { swapMove = !!Zotero.Prefs.get("weavero.swapMoveReader"); } catch (e) {}
-            let idx = (typeof targetIndex === "number") ? targetIndex : 1;
+
+            // Assign each tab its drop-slot index in source order.
+            const baseIdx = (typeof targetIndex === "number") ? targetIndex : 1;
+            payloads.forEach((p: any, i: number) => { p._idx = baseIdx + i; });
+
+            const Reader: any = Zotero.Reader;
+            const resolveSrc = (tabId: any) => {
+                let S: any = null;
+                try { if (typeof Reader.getByTabID === "function") S = Reader.getByTabID(tabId); } catch (e) {}
+                if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === tabId);
+                return (S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader) ? S : null;
+            };
+
+            // Partition into no-reload-swappable jobs vs. classic (notes or no
+            // live source) which go through close+reopen.
+            const swapJobs: any[] = [];
+            const classicPls: any[] = [];
             for (const pl of payloads) {
                 const isNote = pl.readerType === "note" || pl.tabType === "note";
-                // No-reload swap per tab when enabled; awaited so the per-tab
-                // donor-open/swap/close don't race. Classic fallback per tab.
-                if (swapMove && !isNote) {
-                    let ok = false;
-                    try { ok = await this._wvSwapMoveToMain(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
-                    if (!ok) { try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {} }
-                }
-                else {
-                    try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, idx, maxOtherPinned); } catch (e) {}
-                }
-                idx++;   // keep the group's source order at the drop slot
+                const S = !isNote ? resolveSrc(pl.sourceTabId) : null;
+                if (S) swapJobs.push({ pl, S }); else classicPls.push(pl);
             }
+
+            const newSelIds: any[] = [];   // new tab ids to re-multi-select in the target
+            let activeNewId: any = null;   // new id of the dragged tab → becomes active
+
+            // PHASE 1 — open every donor in the BACKGROUND so the target's current
+            // active tab keeps showing: no half-loaded reader ever flashes (that
+            // was the flicker). Each Reader.open creates its tab element this task
+            // turn and only then loads async (reader.js: `await waitForDataLoad`
+            // then `new ReaderTab`), so firing them all without awaiting between
+            // makes them appear in one paint. Then wait for each shell.
+            if (swapJobs.length) {
+                for (const job of swapJobs) {
+                    try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+                    try { job.donorPromise = Reader.open(job.pl.itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: true }); }
+                    catch (e) { job.donorPromise = Promise.resolve(null); }
+                }
+                for (const job of swapJobs) {
+                    try { job.donor = await job.donorPromise; } catch (e) { job.donor = null; }
+                    job.ready = job.donor ? await this._wvSwapWaitShell(job.donor, targetWin) : false;
+                    if (job.donor && !job.ready) { try { targetWin.Zotero_Tabs.close(job.donor.tabID); } catch (e) {} }
+                }
+                // PHASE 2 — commit the swaps SEQUENTIALLY (concurrent docshell
+                // surgery corrupts readers) while every tab stays HIDDEN: swap the
+                // live content in, close each source, slide to the drop slot. The
+                // target's pre-existing active tab is still what's on screen, so
+                // none of this is visible — no flicker. Commit in source order.
+                for (const job of swapJobs) {
+                    if (job.ready && job.donor) {
+                        try {
+                            await this._wvSwapCommitDonor(srcWin, targetWin, job.S, job.donor, job.pl, job.pl._idx, maxOtherPinned);
+                            newSelIds.push(job.donor.tabID);
+                            if (job.pl.sourceTabId === activeId) activeNewId = job.donor.tabID;
+                        } catch (e) {}
+                    } else {
+                        try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, job.pl, job.pl._idx, maxOtherPinned); } catch (e) {}
+                    }
+                }
+            }
+
+            // Classic moves (notes / swap-off / no live source).
+            for (const pl of classicPls) {
+                try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, pl, pl._idx, maxOtherPinned); } catch (e) {}
+            }
+
+            // PHASE 3 — reveal. Select the dragged tab (now holding its live
+            // content → one clean switch, no flash) and RESTORE the multi-selection
+            // on the moved tabs, mirroring Firefox's drop handler, which both
+            // selects the dragged tab and re-ranges the selection
+            // (addRangeToMultiSelectedTabs).
+            try {
+                const ZTt: any = targetWin.Zotero_Tabs;
+                if (activeNewId && ZTt && typeof ZTt.select === "function") ZTt.select(activeNewId);
+                if (newSelIds.length > 1) {
+                    if (!targetWin._wvSelTabIDs) targetWin._wvSelTabIDs = new Set();
+                    targetWin._wvSelTabIDs.clear();
+                    for (const nid of newSelIds) targetWin._wvSelTabIDs.add(nid);
+                    this._wvTabMultiSelSync(targetWin);
+                }
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvMoveSelectionBetweenMains err: " + e); }
     }
 
@@ -1161,6 +1360,17 @@ class _TabsMixin {
                             readerType: mergeRt,
                         };
                     } catch (er3) {}
+                    // Multi-select: show ALL selected tabs as the drag ghost (a
+                    // small stack), so dragging N tabs shows N ghosts — not just
+                    // the one grabbed (the browser's default single-element image).
+                    try {
+                        const di: any = self._wvBuildMultiTabDragImage(win, tabID, e.clientX, e.clientY);
+                        if (di && di.el && e.dataTransfer && typeof e.dataTransfer.setDragImage === "function") {
+                            e.dataTransfer.setDragImage(di.el, di.offsetX, di.offsetY);
+                            const rm = () => { try { di.el.remove(); } catch (er) {} };
+                            if (win.setTimeout) win.setTimeout(rm, 0); else setTimeout(rm, 0);
+                        }
+                    } catch (er4) {}
                     // Mount the overlay on every standalone reader window
                     // for the duration of this drag — keeps the dragged tab
                     // from scrolling/jumping any reader-window content.
@@ -1406,7 +1616,7 @@ class _TabsMixin {
                                 const ids = (live._wvTabMultiSelTargets && payload.sourceTabId != null)
                                     ? live._wvTabMultiSelTargets(srcWin, payload.sourceTabId) : null;
                                 if (ids && ids.length > 1 && typeof live._wvMoveSelectionBetweenMains === "function") {
-                                    try { live._wvMoveSelectionBetweenMains(srcWin, win, ids, targetIndex, maxOtherPinned); }
+                                    try { live._wvMoveSelectionBetweenMains(srcWin, win, ids, targetIndex, maxOtherPinned, payload.sourceTabId); }
                                     catch (er) {}
                                 } else {
                                     try { live._wvMoveTabBetweenMains(srcWin, win, payload, targetIndex, maxOtherPinned); }

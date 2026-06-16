@@ -6318,6 +6318,32 @@ class _ReaderMixin {
      *  items up front (closing rewrites the source tab list), closes the sources
      *  first (frees their readers + defuses the main dragend tear-off), then
      *  mounts here after a tick so the closing readers flush their state. */
+    /** Close a MAIN-window tab and resolve only AFTER its `close` notify has been
+     *  delivered. `Zotero_Tabs.close` splices the tab synchronously but fires the
+     *  notify async (tabs.js:783); `Zotero.Reader.notify` then uninits whatever
+     *  `getByTabID(id)` returns. When we move a tab's live reader into a strip and
+     *  RENAME its id back to the source id, doing the rename before that async
+     *  notify lets it match (and uninit) the re-homed reader. Awaiting the notify
+     *  first lets it run while the reader still carries its temporary id (no match),
+     *  so the rename afterwards is safe. */
+    _wvCloseMainTabAndAwait(win: any, tabId: any) {
+        const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+        return new Promise<void>((resolve) => {
+            let nid: any = null, done = false;
+            const finish = () => { if (done) return; done = true; try { if (nid != null) Zotero.Notifier.unregisterObserver(nid); } catch (e) {} resolve(); };
+            try {
+                nid = Zotero.Notifier.registerObserver({
+                    notify: (ev: any, ty: any, nids: any) => {
+                        if (ty === "tab" && ev === "close" && nids && nids.indexOf(tabId) !== -1) setT(finish, 0);
+                    }
+                } as any, ["tab"], "wv-wt-tabclose");
+            } catch (e) {}
+            try { const p: any = (Zotero as any).Weavero.plugin; p && p._wvSafeguardSourceSelectionBeforeClose(win, tabId); } catch (e) {}
+            try { win.Zotero_Tabs.close(tabId); } catch (e) {}
+            setT(finish, 1200);   // fallback if the notify never arrives
+        });
+    }
+
     async _wvWTMountMainSelectionHere(targetWin: any, srcMainWin: any, ids: any[], draggedId: any, clientX?: any) {
         try {
             const ZT: any = srcMainWin && (srcMainWin as any).Zotero_Tabs;
@@ -6360,9 +6386,14 @@ class _ReaderMixin {
                 if (S) {
                     try { newId = await this._wvWTSwapInReader(targetWin, S, m.itemID, { select: m.id === draggedId }); } catch (e) {}
                     if (newId != null) {
-                        safeClose(m.id);   // frees the source id
+                        // Close the source tab and WAIT for its close notify before
+                        // renaming — otherwise the async notify uninits the re-homed
+                        // reader once its id is back to m.id (see _wvCloseMainTabAndAwait).
+                        await this._wvCloseMainTabAndAwait(srcMainWin, m.id);
                         // Preserve the original tab id: rename the new _wvWT tab back to it.
                         try { if (this._wvWTRenameTab(targetWin, newId, m.id)) newId = m.id; } catch (e) {}
+                        // Belt: re-register in case the notify still slipped through.
+                        try { const R2: any = Zotero.Reader; if (S && !R2._readers.includes(S)) R2._readers.push(S); } catch (e) {}
                     }
                 }
                 if (newId == null) {

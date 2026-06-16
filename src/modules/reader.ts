@@ -12772,26 +12772,65 @@ class _ReaderMixin {
                 moveMenu.setAttribute("label", str("tabs.move", "Move Tab"));
                 const movePopup: any = doc.createXULElement("menupopup");
                 moveMenu.appendChild(movePopup);
-                const moveToEnd = (toEnd: boolean) => {
+                // Multi-select aware: when several strip tabs are selected, every
+                // option here acts on the WHOLE selection (and the submenu relabels
+                // to "Move Tabs" / "Move Tabs to Main Window" in popupshowing).
+                const moveSelIDs = (): any[] => {
                     try {
-                        const t = targetTab(); const stx = win._wvWT;
-                        if (!t || !stx) return;
-                        const from = stx.tabs.findIndex((x: any) => x.id === t.id);
-                        if (from < 0) return;
-                        const [m] = stx.tabs.splice(from, 1);
-                        stx.tabs.splice(toEnd ? stx.tabs.length : 0, 0, m);
+                        const sel = this._wvWTMultiSelTargets ? this._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
+                        if (sel && sel.length) return sel;
+                    } catch (e) {}
+                    const t = targetTab();
+                    return t ? [t.id] : [];
+                };
+                const moveToEdge = (toEnd: boolean) => {
+                    try {
+                        const stx = win._wvWT;
+                        if (!stx) return;
+                        const ids = moveSelIDs();
+                        if (!ids.length) return;
+                        const sel = stx.tabs.filter((x: any) => ids.indexOf(x.id) !== -1);   // strip order
+                        if (!sel.length) return;
+                        stx.tabs = stx.tabs.filter((x: any) => ids.indexOf(x.id) === -1);
+                        if (toEnd) stx.tabs.push(...sel); else stx.tabs.unshift(...sel);
                         this._wvWTRenderStrip(win);
-                        this._wvWTScrollTabIntoView(win, m.id);
+                        try { this._wvWTScrollTabIntoView(win, sel[0].id); } catch (e) {}
                         this._wvWTPersistSaveDebounced();
                     } catch (e) {}
                 };
-                const moveStartItem = mkItem(str("tabs.moveToStart", "Move to Start"), () => moveToEnd(false));
-                const moveEndItem = mkItem(str("tabs.moveToEnd", "Move to End"), () => moveToEnd(true));
+                const moveStartItem = mkItem(str("tabs.moveToStart", "Move to Start"), () => moveToEdge(false));
+                const moveEndItem = mkItem(str("tabs.moveToEnd", "Move to End"), () => moveToEdge(true));
                 movePopup.appendChild(moveStartItem);
                 movePopup.appendChild(moveEndItem);
-                movePopup.appendChild(mkItem("Move Tab to Main Window", () => {
-                    try { const t = targetTab(); if (t) this._wvWTMoveTabToMain(win, t.id); } catch (e) {}
-                }));
+                const moveToMain = mkItem("Move Tab to Main Window", () => {
+                    try {
+                        const ids = moveSelIDs();
+                        if (!ids.length) return;
+                        if (ids.length === 1) { this._wvWTMoveTabToMain(win, ids[0]); return; }
+                        // Several tabs: sequence the no-reload single mover (spaced so
+                        // each docshell swap finishes before the next starts). Process
+                        // the NATIVE tab LAST — a native tab only moves no-reload when
+                        // it's the window's last tab (then its move also closes the
+                        // window); moving it earlier would reload it.
+                        const stx = win._wvWT;
+                        const ordered = ids.slice().sort((a: any, b: any) => {
+                            const ta = stx && stx.tabs.find((x: any) => x.id === a);
+                            const tb = stx && stx.tabs.find((x: any) => x.id === b);
+                            return ((ta && ta.native) ? 1 : 0) - ((tb && tb.native) ? 1 : 0);
+                        });
+                        const mainWin = Zotero.getMainWindow();
+                        const setT = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                        let i = 0;
+                        const step = () => {
+                            if (i >= ordered.length) return;
+                            const id = ordered[i++];
+                            try { this._wvWTMoveTabToMain(win, id, mainWin); } catch (e) {}
+                            if (i < ordered.length) setT(step, 500);
+                        };
+                        step();
+                    } catch (e) {}
+                });
+                movePopup.appendChild(moveToMain);
 
                 // "Duplicate Tab" — open the same document in another reader tab.
                 const duplicate = mkItem(str("tabs.duplicate", "Duplicate Tab"), () => {
@@ -12895,6 +12934,15 @@ class _ReaderMixin {
                         for (const child of Array.from(menu.children) as any[]) {
                             if (typeof child._wvGetVisible === "function") child.hidden = !child._wvGetVisible();
                         }
+                        // Move submenu: multi-select label ("Move Tabs" / "Move Tabs
+                        // to Main Window") when >1 strip tab is selected.
+                        try {
+                            const lpMv: any = (Zotero as any).Weavero?.plugin;
+                            const selMv = lpMv && lpMv._wvWTMultiSelTargets ? lpMv._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
+                            const multiMv = !!(selMv && selMv.length > 1);
+                            moveMenu.setAttribute("label", multiMv ? "Move Tabs" : str("tabs.move", "Move Tab"));
+                            moveToMain.setAttribute("label", multiMv ? "Move Tabs to Main Window" : "Move Tab to Main Window");
+                        } catch (e) {}
                         // Group commands: label by selection size, popup rebuilt
                         // from the live group list.
                         try {

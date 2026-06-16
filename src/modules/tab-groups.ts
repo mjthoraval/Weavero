@@ -2049,6 +2049,47 @@ class _TabGroupsMixin {
         } catch (e) { return null; }
     }
 
+    // ---- Per-tab membership (Firefox-style) --------------------------------
+    // A tab's group is stamped ON THE TAB, not derived from its item key, so
+    // duplicate tabs of the same item are independent members (fixes the
+    // group spanning windows / partial-move mess). Main-window tabs carry the
+    // stamp in `data.wvGroupId` (Zotero's session round-trips `tab.data`, so it
+    // survives restart — the analogue of Firefox's per-tab `tabGroupId`);
+    // reader-window (`_wvWT`) tabs carry it as `wvGroupId` (Weavero restores
+    // those itself). Legacy item-key membership (`g.members`) is kept as the
+    // fallback + the saved-group snapshot during migration.
+
+    /** Read a tab's group-id stamp (main: `data.wvGroupId`; reader: `wvGroupId`). */
+    _wvTabGroupStamp(tab: any): any {
+        if (!tab) return null;
+        return tab.data ? (tab.data.wvGroupId || null) : (tab.wvGroupId || null);
+    }
+
+    /** Set/clear a tab's group-id stamp. Pass null/"" to clear. */
+    _wvTabGroupSetStamp(tab: any, groupID: any) {
+        if (!tab) return;
+        if (tab.data) {
+            if (groupID) tab.data.wvGroupId = groupID; else { try { delete tab.data.wvGroupId; } catch (e) { tab.data.wvGroupId = undefined; } }
+        } else {
+            if (groupID) tab.wvGroupId = groupID; else { try { delete tab.wvGroupId; } catch (e) { tab.wvGroupId = undefined; } }
+        }
+    }
+
+    /** The LIVE group a TAB belongs to (per-tab). Its own stamp wins (precise
+     *  for duplicates); falls back to legacy item-key membership for tabs that
+     *  predate the stamp (migration / not-yet-stamped). Saved groups excluded. */
+    _wvTabGroupOfTab(tab: any) {
+        try {
+            const gid = this._wvTabGroupStamp(tab);
+            if (gid) {
+                const g = this._tabGroupsGet().find((x: any) => !(x as any).saved && x.id === gid);
+                if (g) return g;
+            }
+            const k = this._wvTabGroupDeckKey(tab);
+            return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
+        } catch (e) { return null; }
+    }
+
     _wvTabGroupIsReaderWin(win: any) {
         try { return win.document.documentElement.getAttribute("windowtype") === "zotero:reader"; } catch (e) { return false; }
     }
@@ -2809,6 +2850,8 @@ class _TabGroupsMixin {
      *  the fresh reader window; the group's membership is preserved (NOT
      *  forgotten, unlike a tear-out), so the new window chips them as one group. */
     async _wvTabGroupMoveToNewWindow(win: any, groupID: any) {
+        const glog = (m: string) => { try { const a: any = ((Zotero as any)._wvGrpDbg = (Zotero as any)._wvGrpDbg || []); a.push((Date.now() % 100000) + " [grp] " + m); if (a.length > 400) a.shift(); } catch (e) {} };
+        glog("ENTER group=" + groupID);
         const reopenSet = this._wvReopeningGroups();
         try {
             const home = this._wvTabGroupHomeWin(groupID) || win;
@@ -2859,27 +2902,31 @@ class _TabGroupsMixin {
                 });
                 Zotero.debug("[Weavero][move-group] START groupID=" + groupID + " name=\"" + (g.name || "") + "\" homeIsReader=" + homeIsReader + " openCount=" + open.length + " members=" + JSON.stringify(dbg));
             } catch (eLog) {}
-            if (!entries.length) { Zotero.debug("[Weavero][move-group] ABORT — no openable entries (group left intact)"); return; }
+            glog("START name=\"" + (g.name || "") + "\" homeIsReader=" + homeIsReader + " open=" + open.length + " entries=" + JSON.stringify(entries.map((e: any) => e.itemID)));
+            if (!entries.length) { glog("ABORT no openable entries"); Zotero.debug("[Weavero][move-group] ABORT — no openable entries (group left intact)"); return; }
             // Keep the group alive across the close→reopen gap (closing the last
             // member would otherwise delete it before the new window opens).
             reopenSet.add(groupID);
             // MOVE: close the open members in their home window first.
             Zotero.debug("[Weavero][move-group] closing " + open.length + " source tab(s) in " + (homeIsReader ? "reader" : "main") + " window");
+            glog("closing " + open.length + " src tabs (" + (homeIsReader ? "reader" : "main") + ")");
             for (const o of open) {
                 try { if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID); else home.Zotero_Tabs.close(o.srcTabID); }
-                catch (e) { Zotero.debug("[Weavero][move-group] close err tab=" + o.srcTabID + ": " + e); }
+                catch (e) { glog("close ERR tab=" + o.srcTabID + ": " + e); Zotero.debug("[Weavero][move-group] close err tab=" + o.srcTabID + ": " + e); }
             }
             // Open them together in ONE new reader window (membership preserved →
             // they regroup there). _wvOpenItemsInNewReaderWindow focuses it.
             Zotero.debug("[Weavero][move-group] opening " + entries.length + " entr(ies) in a new reader window: " + JSON.stringify(entries));
-            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); }
-            catch (e) { Zotero.debug("[Weavero][move-group] _wvOpenItemsInNewReaderWindow THREW: " + e); }
+            glog("→ _wvOpenItemsInNewReaderWindow(" + entries.length + ")");
+            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); glog("← openItems returned"); }
+            catch (e) { glog("openItems THREW: " + e); Zotero.debug("[Weavero][move-group] _wvOpenItemsInNewReaderWindow THREW: " + e); }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveToNewWindow err: " + e); }
         finally {
             reopenSet.delete(groupID);
             try {
                 const grp = this._tabGroupsGet().find((x: any) => x.id === groupID);
                 const cnt = grp ? this._wvTabGroupOpenCount(groupID) : -1;
+                glog("FINALLY group=" + (grp ? "EXISTS" : "GONE") + " openCount=" + cnt);
                 Zotero.debug("[Weavero][move-group] FINALLY — group " + (grp ? "EXISTS" : "GONE") + " openCount=" + cnt);
                 // Safety net: the move closed the source tabs but the new window
                 // never materialised (some member couldn't be opened), so the

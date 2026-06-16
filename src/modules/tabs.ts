@@ -1267,16 +1267,26 @@ class _TabsMixin {
             try { wireChrome(); } catch (e) {}
             try { (donorWin.setTimeout || setTimeout)(wireChrome, 150); } catch (e) {}
 
-            // S is no longer a tab: clear its tabID so getByTabID / a stray
-            // tab-close can't match (and uninit) it.
+            // S is no longer the SOURCE tab: clear its tabID so getByTabID / a
+            // stray async tab-close notify can't match (and uninit) it while the
+            // source tab closes.
             try { S.tabID = null; } catch (e) {}
 
-            // Remove the now-empty source tab WITHOUT disposing S.
+            // Remove the now-empty source tab WITHOUT disposing S, then carry the
+            // source tab's REAL id onto the new window's native tab so the tab
+            // keeps its identity through the tear-off (Firefox-style). Do the
+            // rename only AFTER the source close notify is delivered — otherwise
+            // getByTabID(sourceTabId) would match the re-homed reader and uninit
+            // it (the same async-notify race as the mount path). A synthetic
+            // reader-window id (`wvwt-native`) carries nothing, so skip it.
+            const realId = /^tab-/.test(String(sourceTabId));
             if (opts && typeof opts.detachSource === "function") {
                 try { opts.detachSource(sourceTabId); } catch (e) {}
+                // A _wvWT detach doesn't go through Zotero_Tabs/notify → no race.
+                if (realId) { try { (this as any)._wvWTRenameTab(donorWin, "wvwt-native", sourceTabId); } catch (e) {} }
             } else {
-                this._wvSafeguardSourceSelectionBeforeClose(srcWin, sourceTabId);
-                try { srcWin.Zotero_Tabs.close(sourceTabId); } catch (e) {}
+                try { await (this as any)._wvCloseMainTabAndAwait(srcWin, sourceTabId); } catch (e) {}
+                if (realId) { try { (this as any)._wvWTRenameTab(donorWin, "wvwt-native", sourceTabId); } catch (e) {} }
             }
             try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
             try { donorWin.focus(); } catch (e) {}

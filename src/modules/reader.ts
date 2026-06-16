@@ -4249,6 +4249,144 @@ class _ReaderMixin {
         }
     }
 
+    /** Debug trace for the no-reload reader-window swap (Zotero.debug, gated by
+     *  Zotero's debug-output pref). */
+    _wvWTDbg(msg: string) {
+        try { Zotero.debug("[Weavero][wtswap] " + msg); } catch (e) {}
+    }
+
+    /** No-reload TARGET=reader-window swap: transplant a LIVE source reader `S`
+     *  into THIS reader window as a new `_wvWT` tab, WITHOUT reloading the PDF.
+     *  Creates a bare donor `<browser>` shell (just to get a docshell), swaps S's
+     *  live docshell into it via `swapDocShells` (the same primitive Firefox's
+     *  adoptTab uses), re-homes S onto the shell + this window, and registers the
+     *  tab with S as its reader. The CALLER then detaches the source tab WITHOUT
+     *  uniniting S (it lives on here). Returns the new tab id, or null (only
+     *  before any mutation) to fall back to the classic mount+reload.
+     *
+     *  S must be a live swappable reader (`_iframe.swapDocShells` + `_internalReader`).
+     *  Main-tab-only wiring that assumes `_window.Zotero_Tabs` (absent in reader
+     *  windows) is neutralized — the `_wvWT` system owns title + layout. */
+    async _wvWTSwapInReader(win: any, S: any, itemID: any, opts?: any) {
+        opts = opts || {};
+        try {
+            if (!win || !win.document) return null;
+            if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !S._internalReader) return null;
+            const st = this._wvWTEnsureNativeTab(win);
+            if (!st) return null;
+            this._wvWTWireWindowTeardown(win);
+            const doc: any = win.document;
+            const vbox: any = doc.getElementById("zotero-reader");
+            if (!vbox) return null;
+            this._wvWTDbg("swap-in START item=" + itemID + " S=" + (S.constructor && S.constructor.name) + " tabsBefore=" + st.tabs.length);
+
+            const sleep = (ms: number) => new Promise<void>((res) => {
+                try { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }
+                catch (e) { setTimeout(res, ms); }
+            });
+
+            // Donor shell: a bare <browser> only to obtain a docshell to receive
+            // the swap (no Base instance, no reader.html _open — we transplant S).
+            const seq = ++st.seq;
+            const id = "wvwt-" + seq;
+            const nb: any = doc.createXULElement("browser");
+            nb.id = "wv-wt-browser-" + seq;
+            nb.setAttribute("class", "reader");
+            nb.setAttribute("type", "content");
+            nb.setAttribute("flex", "1");
+            nb.setAttribute("transparent", "true");
+            const priorActive = st.activeId;
+            // Keep the donor VISIBLE (full-size) for the swap. A collapsed 0-size
+            // browser makes pdf.js relayout the swapped-in content to nothing,
+            // losing scroll position + text selection (the main→main swap keeps
+            // scroll precisely because its donor is full-size). Collapse the OTHER
+            // tabs so the donor is the sole full-size browser; the live content
+            // lands at full size and keeps its view state. _wvWTSwitch below sets
+            // the final visibility.
+            nb.collapsed = false;
+            vbox.appendChild(nb);
+            const ps: any = doc.createXULElement("popupset");
+            vbox.appendChild(ps);
+            for (const t of st.tabs) { try { if (t.browser) t.browser.collapsed = true; } catch (e) {} }
+            try { nb.setAttribute("src", "about:blank"); } catch (e) {}
+            let ready = false;
+            for (let i = 0; i < 90; i++) { if (nb.contentWindow) { ready = true; break; } await sleep(60); }
+            if (!ready) { this._wvWTDbg("donor shell NOT ready → null (classic fallback)"); try { nb.remove(); } catch (e) {} try { ps.remove(); } catch (e) {} return null; }
+            this._wvWTDbg("donor shell ready id=" + id + " → swapDocShells");
+
+            // --- Commit: swap S's live docshell into the donor, re-home S.
+            const oldSIframe = S._iframe;
+            const oldWin = S._window;
+            S._iframe.swapDocShells(nb);
+            await sleep(60);
+            this._wvWTDbg("swapDocShells done; re-homing S → this window");
+            try { oldWin && oldWin.removeEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
+            try { oldWin && oldWin.removeEventListener("pointerup", S._handlePointerUp); } catch (e) {}
+            try { oldWin && oldWin.removeEventListener("DOMContentLoaded", S._handleLoad); } catch (e) {}
+            S._iframe = nb;
+            S._iframeWindow = nb.contentWindow;
+            S._popupset = ps;
+            S._window = win;
+            S._tabContainer = vbox;
+            S.tabID = id;
+            try { S._setTitleValue = function () {}; } catch (e) {}
+            try { S._showContextPaneToggle = false; } catch (e) {}
+            // Do NOT re-add the ReaderTab window listeners (pointerdown/up/load)
+            // here: they read `this._window.Zotero_Tabs.selectedID` (reader.js
+            // 1923/1935), which a reader window LACKS, so they throw on every
+            // pointer event and break scroll/interaction for ALL tabs in the
+            // window. The `_wvWT` base/ReaderWindow tabs never add them; the
+            // reader content drives its own pointer/scroll inside the docshell.
+            // Element-level contextmenu listener doesn't ride the docshell swap.
+            try { oldSIframe && S._handleReaderTextboxContextMenuOpen && oldSIframe.removeEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
+            try { S._handleReaderTextboxContextMenuOpen && nb.addEventListener("contextmenu", S._handleReaderTextboxContextMenuOpen); } catch (e) {}
+
+            const tab: any = { id, itemID, type: S._type || null, reader: S, browser: nb, native: false, pinned: false, _popupset: ps };
+            st.tabs.push(tab);
+            try { const rs = (Zotero.Reader as any)._readers || []; if (!rs.includes(S)) rs.push(S); } catch (e) {}
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+            this._wvWTDbg("tab registered id=" + id + " tabsNow=" + st.tabs.length + "; switching=" + (opts.select !== false));
+            if (opts.select !== false) this._wvWTSwitch(win, id);
+            else if (priorActive && priorActive !== id) this._wvWTSwitch(win, priorActive);
+            this._wvWTDbg("swap-in DONE id=" + id);
+            return id;
+        } catch (e) {
+            this._wvWTDbg("swap-in ERR " + e);
+            Zotero.debug("[Weavero] _wvWTSwapInReader err: " + e);
+            return null;
+        }
+    }
+
+    /** Detach a `_wvWT` tab from `win` WITHOUT uniniting its reader — used after
+     *  the reader has been re-homed elsewhere via a no-reload swap. Removes the
+     *  tab from the model + its now-throwaway `<browser>`/popupset (the swap left
+     *  the donor's discarded docshell there) and switches to a neighbour, but
+     *  does NOT uninit `tab.reader` or drop it from `Zotero.Reader._readers` (the
+     *  reader lives on in its new window). Returns false for the NATIVE tab or the
+     *  LAST tab (they need window-level close handling) so the caller can fall
+     *  back to the classic close+reopen. */
+    _wvWTDetachTabKeepReader(win: any, tabId: any) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st) return false;
+            const idx = st.tabs.findIndex((t: any) => t.id === tabId);
+            if (idx < 0) return false;
+            const tab = st.tabs[idx];
+            if (tab.native || st.tabs.length === 1) return false;   // caller falls back to _wvWTCloseTab
+            try { if (tab.browser && tab.browser.remove) tab.browser.remove(); } catch (e) {}
+            try { if (tab._popupset && tab._popupset.remove) tab._popupset.remove(); } catch (e) {}
+            st.tabs.splice(idx, 1);
+            try { this._wvWTRenderStrip(win); } catch (e) {}
+            if (st.activeId === tabId) {
+                const next = st.tabs[Math.min(idx, st.tabs.length - 1)];
+                if (next) this._wvWTSwitch(win, next.id);
+            }
+            try { this._wvWTPersistSaveDebounced(); } catch (e) {}
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvWTDetachTabKeepReader err: " + e); return false; }
+    }
+
     /** Realize a LAZY reader tab (one created by restore with no reader
      *  instance yet): build its ReaderInstance + <browser> and load the
      *  document, filling tab.reader/browser/type/_popupset and clearing
@@ -4434,6 +4572,7 @@ class _ReaderMixin {
             if (!st) return;
             const tab = st.tabs.find((t: any) => t.id === tabId);
             if (!tab) return;
+            try { this._wvWTDbg("SWITCH → " + tabId + " native=" + !!tab.native + " ctor=" + (tab.reader && tab.reader.constructor && tab.reader.constructor.name) + " activeWas=" + st.activeId); } catch (e) {}
             // Lazy (unloaded) tab → build its reader instance now. The realize's
             // synchronous prefix creates the <browser>, so the collapse toggle
             // below has something to reveal; the document loads in place.
@@ -4469,9 +4608,9 @@ class _ReaderMixin {
                 if (t) win.document.title = (Zotero as any).Utilities.Internal.renderItemTitle(t);
             } catch (e) {}
             try {
-                if (tab.reader && typeof tab.reader.focus === "function") tab.reader.focus();
+                if (tab.reader && typeof tab.reader.focus === "function") { tab.reader.focus(); this._wvWTDbg("focus() ok tab=" + tabId); }
                 else if (tab.noteEditor && typeof tab.noteEditor.focus === "function") tab.noteEditor.focus();
-            } catch (e) {}
+            } catch (e) { this._wvWTDbg("focus() ERR tab=" + tabId + " " + e); }
             // Re-bind the reader-window item pane to the now-active tab. This is
             // the single chokepoint for activeId changes, so syncing here keeps
             // the pane in step on every switch (click, mount, drop). Idempotent —
@@ -5999,6 +6138,73 @@ class _ReaderMixin {
             // Reader-able attachments OR notes (notes mount a note-editor tab).
             if (!item || !(item.attachmentReaderType || (typeof item.isNote === "function" && item.isNote()))) return;
 
+            // No-reload path: if the dragged main tab has a LIVE reader, SWAP its
+            // docshell into this reader window instead of close+reopen. Notes and
+            // any pre-commit failure fall back to the classic mount below.
+            const isNoteItem = (typeof item.isNote === "function" && item.isNote());
+            this._wvWTDbg("MAIN-DROP item=" + itemID + " srcTab=" + (drag && drag.tabID) + " isNote=" + isNoteItem);
+            if (!isNoteItem) {
+                let srcMainWin: any = null, srcS: any = null;
+                try {
+                    const plugin: any = (Zotero as any).Weavero.plugin;
+                    srcMainWin = plugin && plugin._wvMainTabDragSourceWin;
+                    const Reader: any = Zotero.Reader;
+                    if (drag && drag.tabID != null) {
+                        if (typeof Reader.getByTabID === "function") srcS = Reader.getByTabID(drag.tabID);
+                        if (!srcS) srcS = (Reader._readers || []).find((r: any) => r && r.tabID === drag.tabID);
+                    }
+                } catch (e) {}
+                const swappable = !!(srcS && srcS._iframe && typeof srcS._iframe.swapDocShells === "function" && srcS._internalReader);
+                this._wvWTDbg("MAIN-DROP srcS=" + (srcS && srcS.constructor && srcS.constructor.name) + " swappable=" + swappable);
+                if (swappable) {
+                    // Defuse the main window's dragend tear-off SYNCHRONOUSLY. The
+                    // swap below is async, so (unlike the classic path, which closes
+                    // the source tab before returning) the source main tab is still
+                    // open when the main window's dragend fires — without this it
+                    // tears the tab off into a NEW reader window.
+                    try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvSuppressNextTearOff = true; } catch (e) {}
+                    this._wvWTDbg("main→reader: live source found, swapping item=" + itemID + " srcTab=" + drag.tabID);
+                    try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
+                    try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvTabDrag = null; } catch (e) {}
+                    const dragTabId = drag.tabID;
+                    const findOwner = () => {
+                        try {
+                            if (srcMainWin && srcMainWin.Zotero_Tabs
+                                && srcMainWin.Zotero_Tabs._tabs.some((t: any) => t && t.id === dragTabId)) return srcMainWin;
+                            const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
+                            return wins.find((mw: any) => mw && mw.Zotero_Tabs && mw.Zotero_Tabs._tabs.some((t: any) => t && t.id === dragTabId)) || null;
+                        } catch (e) { return null; }
+                    };
+                    (async () => {
+                        const id = await this._wvWTSwapInReader(win, srcS, itemID, { select: true });
+                        this._wvWTDbg("main→reader: swap returned id=" + id);
+                        if (id != null) {
+                            // Detach the source main tab WITHOUT uniniting S — S's
+                            // tabID moved to the reader window, so the close finds no
+                            // reader for the old id. Safeguard the source selection
+                            // so the close doesn't strand an unloaded neighbour.
+                            try {
+                                const owner = findOwner();
+                                if (owner) {
+                                    const p: any = (Zotero as any).Weavero.plugin;
+                                    try { p && p._wvSafeguardSourceSelectionBeforeClose(owner, dragTabId); } catch (e) {}
+                                    try { owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
+                                }
+                            } catch (e) {}
+                            if (clientX != null) { try { this._wvWTReorderTab(win, id, clientX); } catch (e) {} }
+                        } else {
+                            // Pre-commit swap failure → classic mount fallback.
+                            try { const owner = findOwner(); if (owner) owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
+                            try {
+                                const mid = await this._wvWTMountTab(win, itemID, { select: true });
+                                if (mid != null && clientX != null) { try { this._wvWTReorderTab(win, mid, clientX); } catch (e) {} }
+                            } catch (e) {}
+                        }
+                    })();
+                    return;
+                }
+            }
+
             // Leaving the window leaves the group (don't carry it to the target).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             // Close the source main-window tab FIRST (saves its reader state and
@@ -6046,30 +6252,55 @@ class _ReaderMixin {
         try {
             const ZT: any = srcMainWin && (srcMainWin as any).Zotero_Tabs;
             if (!ZT || !ZT._tabs || !ids || !ids.length) return;
+            const Reader: any = Zotero.Reader;
             const moves: any[] = [];
             for (const id of ids) {
                 const t = ZT._tabs.find((x: any) => x && x.id === id);
                 const iid = t && t.data && t.data.itemID;
-                if (iid != null) moves.push({ id, itemID: iid });
+                if (iid != null) moves.push({ id, itemID: iid, isNote: t.type === "note" });
             }
             if (!moves.length) return;
             // Leaving the window leaves the group (don't carry it to the target).
             for (const m of moves) { try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {} }
             try { if (srcMainWin._wvSelTabIDs && srcMainWin._wvSelTabIDs.clear) srcMainWin._wvSelTabIDs.clear(); this._wvTabMultiSelSync(srcMainWin); } catch (e) {}
             try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvTabDrag = null; } catch (e) {}
-            try { ZT.close(moves.map((m: any) => m.id)); } catch (e) {}
+            // Defuse the source main window's dragend tear-off SYNCHRONOUSLY — the
+            // per-tab swaps below are async, so the source tabs are still open when
+            // the main dragend fires (see the single-tab path).
+            try { const p: any = (Zotero as any).Weavero.plugin; if (p) p._wvSuppressNextTearOff = true; } catch (e) {}
+
+            const resolveMainS = (tabId: any) => {
+                let S: any = null;
+                try { if (typeof Reader.getByTabID === "function") S = Reader.getByTabID(tabId); } catch (e) {}
+                if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === tabId);
+                return (S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader) ? S : null;
+            };
             const setT = (targetWin && targetWin.setTimeout) ? targetWin.setTimeout.bind(targetWin) : setTimeout;
-            await new Promise(r => setT(r, 150));   // let the closing readers flush state
-            let draggedMountId: any = null;
+            const safeClose = (id: any) => {
+                try { const p: any = (Zotero as any).Weavero.plugin; p && p._wvSafeguardSourceSelectionBeforeClose(srcMainWin, id); } catch (e) {}
+                try { srcMainWin.Zotero_Tabs.close(id); } catch (e) {}
+            };
+
+            // Per tab: no-reload swap (close source after, no uninit), else classic
+            // close+mount. Sequential so concurrent docshell surgery can't corrupt.
+            let draggedNewId: any = null;
             for (const m of moves) {
-                try {
-                    const mid = await this._wvWTMountTab(targetWin, m.itemID, { select: m.id === draggedId });
-                    if (m.id === draggedId) draggedMountId = mid;
-                } catch (e) {}
-                await new Promise(r => setT(r, 60));
+                let newId: any = null;
+                const S = m.isNote ? null : resolveMainS(m.id);
+                if (S) {
+                    try { newId = await this._wvWTSwapInReader(targetWin, S, m.itemID, { select: m.id === draggedId }); } catch (e) {}
+                    if (newId != null) safeClose(m.id);
+                }
+                if (newId == null) {
+                    safeClose(m.id);
+                    await new Promise(r => setT(r, 120));
+                    try { newId = await this._wvWTMountTab(targetWin, m.itemID, { select: m.id === draggedId }); } catch (e) {}
+                }
+                if (m.id === draggedId) draggedNewId = newId;
+                await new Promise(r => setT(r, 40));
             }
-            if (draggedMountId != null && clientX != null) {
-                try { this._wvWTReorderTab(targetWin, draggedMountId, clientX); } catch (e) {}
+            if (draggedNewId != null && clientX != null) {
+                try { this._wvWTReorderTab(targetWin, draggedNewId, clientX); } catch (e) {}
             }
             try { this._wvWTRenderStrip(targetWin); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWTMountMainSelectionHere err: " + e); }
@@ -6161,19 +6392,34 @@ class _ReaderMixin {
             // vanished. The mount's synchronous part runs before any await, so the
             // target's tabs are reliable right after; close each source only once its
             // item has actually landed (never lose a tab).
-            for (const m of moves) {
-                try { this._wvWTMountTab(targetWin, m.itemID, { allowDuplicate: false, select: m.id === sourceTabId }); } catch (e) {}
-            }
-            for (const m of moves) {
-                const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
-                    && targetWin._wvWT.tabs.some((t: any) => t.itemID === m.itemID));
-                if (landed && m.id != null) {
-                    try { this._wvWTCloseTab(srcWin, m.id); } catch (e) {}
+            // No-reload swap per move when possible (non-native, non-last source
+            // tab with a live reader), else classic mount+close. Sequential
+            // (await) so concurrent docshell surgery can't corrupt readers.
+            (async () => {
+                for (const m of moves) {
+                    let done = false;
+                    try {
+                        const stab = sst && sst.tabs && sst.tabs.find((t: any) => t.id === m.id);
+                        const S = stab && stab.reader;
+                        const swappable = !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
+                        const detachable = !!(stab && !stab.native && sst.tabs.length > 1);
+                        this._wvWTDbg("reader→reader move item=" + m.itemID + " swappable=" + swappable + " detachable=" + detachable);
+                        if (swappable && detachable) {
+                            const newId = await this._wvWTSwapInReader(targetWin, S, m.itemID, { select: m.id === sourceTabId });
+                            if (newId != null) { this._wvWTDetachTabKeepReader(srcWin, m.id); done = true; }
+                        }
+                    } catch (e) { this._wvWTDbg("reader→reader swap err " + e); }
+                    if (!done) {
+                        try { this._wvWTMountTab(targetWin, m.itemID, { allowDuplicate: false, select: m.id === sourceTabId }); } catch (e) {}
+                        const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
+                            && targetWin._wvWT.tabs.some((t: any) => t.itemID === m.itemID));
+                        if (landed && m.id != null) { try { this._wvWTCloseTab(srcWin, m.id); } catch (e) {} }
+                    }
                 }
-            }
-            // Closing the source tab removes its element before its dragend fires,
-            // so clear every window's drop ghost here too.
-            try { this._wvWTHideAllDropIndicators(); } catch (e) {}
+                // Closing the source tab removes its element before its dragend
+                // fires, so clear every window's drop ghost here too.
+                try { this._wvWTHideAllDropIndicators(); } catch (e) {}
+            })();
         } catch (e) { Zotero.debug("[Weavero] _wvWTHandleCrossWindowDrop err: " + e); }
     }
 
@@ -6244,6 +6490,49 @@ class _ReaderMixin {
             // `targetWin` picks WHICH main window (a drop on a secondary main
             // window passes it); default = the anchor, as before.
             const mainWin = targetWin || Zotero.getMainWindow();
+
+            // No-reload path: a live, swappable reader on a non-native, non-last
+            // tab → swap its docshell into a main-window donor (so the PDF moves
+            // without reloading), detaching the source _wvWT tab WITHOUT uniniting
+            // the reader. Notes, the native tab, the last tab, or no live reader
+            // fall through to the classic close+reopen below. (Native/last need
+            // window-close handling, done with the tear-offs.)
+            const S = tab.reader;
+            const swappable = !isNote && !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
+            const detachable = !!(st && !tab.native && st.tabs.length > 1);
+            if (swappable && detachable && mainWin) {
+                this._wvWTDbg("reader→main: swapping item=" + itemID + " srcTab=" + tabId);
+                try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
+                (async () => {
+                    let ok = false;
+                    try {
+                        // Open the donor in the BACKGROUND: a foreground Reader.open
+                        // donor renders pdf.js with focus and clears the incoming
+                        // text selection on swap. Background keeps it closer to the
+                        // bare-browser donor the main→reader path uses (which keeps
+                        // the selection); we select the tab after the swap.
+                        const donor = await (this as any)._wvSwapOpenDonor(mainWin, itemID, true);
+                        if (donor) {
+                            const donorTabId = donor.tabID;
+                            let targetIndex = 1;
+                            try { const TZ: any = mainWin.Zotero_Tabs; targetIndex = TZ && TZ._tabs ? TZ._tabs.length : 1; } catch (e) {}
+                            await (this as any)._wvSwapCommitDonor(win, mainWin, S, donor, { itemID, sourceTabId: tabId }, targetIndex, 0,
+                                { detachSource: () => this._wvWTDetachTabKeepReader(win, tabId) });
+                            try { if (mainWin.focus) mainWin.focus(); if (mainWin.Zotero_Tabs && donorTabId) mainWin.Zotero_Tabs.select(donorTabId); } catch (e) {}
+                            ok = true;
+                            this._wvWTDbg("reader→main: swap done item=" + itemID);
+                        }
+                    } catch (e) { this._wvWTDbg("reader→main swap err " + e); }
+                    if (!ok) {
+                        // Pre-commit donor failure → classic close+reopen.
+                        try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+                        try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
+                        try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); } catch (e) {}
+                    }
+                })();
+                return;
+            }
+
             // Leaving the window leaves the group (don't carry it to the main bar).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             try { this._wvWTCloseTab(win, tabId); } catch (e) {}

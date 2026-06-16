@@ -468,111 +468,98 @@ class _TabGroupsMixin {
             }
             const doc = win.document;
             if (!this._getEnableTabGroups()) { this._stripTabGroups(win); return; }
+            // Migrate legacy item-key groups → per-tab stamps once per session.
+            try { this._wvTabGroupMigrateToStamps(); } catch (e) {}
             const Z_Tabs: any = win.Zotero_Tabs;
             const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
             if (!Z_Tabs || !Z_Tabs._tabs || !tabsBox) return;
             let groups = this._tabGroupsGet();
             if (!groups.length) { this._stripTabGroups(win); return; }
 
-            // Open tabs by key, in Zotero's display order.
-            const keyOf = (tab: any) => {
-                const k = (this as any)._tabPinKey(tab);
-                return k ? (k.libraryID + ":" + k.itemKey) : null;
-            };
-            const openByKey = new Map<string, any>();
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
-                const t = Z_Tabs._tabs[i];
-                const k = t && keyOf(t);
-                if (k && !openByKey.has(k)) openByKey.set(k, t);
-            }
-            // Open members across ALL windows (a group can live in another main
-            // or reader window), so the per-window re-sync never drops a member
-            // that is merely open elsewhere. Globally-empty groups are deleted.
-            const globalOpen = this._wvGlobalOpenKeys();
             const emptyGroupIds = new Set<string>();
-
             const wantClass = new Map<string, { group: any; hidden: boolean; first?: boolean }>();   // tabID →
             let prefDirty = false;
-            // Rejoin a recently-closed member that has just reopened (undo-close,
-            // or reopened within the window) to its original group, before each
-            // group is re-synced below. A transient absence self-heals here too.
+            // Rejoin: an open, UNSTAMPED tab whose item was recently closed from a
+            // group (undo-close / reopened soon after) rejoins it by re-stamping.
             for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
+                if (this._wvTabGroupStamp(t)) continue;            // already grouped
                 const pk = t && (this as any)._tabPinKey(t);
                 if (!pk) continue;
-                if (this._tabGroupOfKey(pk.libraryID, pk.itemKey)) continue;       // already grouped
                 const gid = this._wvRecentClosedGroup(pk.libraryID, pk.itemKey);
                 if (!gid) continue;
-                const tg = groups.find((x: any) => x.id === gid);
-                if (tg) {
-                    tg.members = (tg.members || []).concat([{ libraryID: pk.libraryID, itemKey: pk.itemKey }]);
-                    this._wvForgetClosed(pk.libraryID, pk.itemKey);
-                    prefDirty = true;
+                const tg = groups.find((x: any) => x.id === gid && !(x as any).saved);
+                if (tg) { this._wvTabGroupSetStamp(t, gid); this._wvForgetClosed(pk.libraryID, pk.itemKey); }
+            }
+            // Claim pass: stamp any UNSTAMPED open tab whose item is in a live
+            // group's item-key shadow (covers add paths that only wrote the
+            // shadow — drag-create, drop-into-group, cross-window send arrival).
+            // First-come per item-key, so a DUPLICATE copy of an already-claimed
+            // item stays OUT. Single-window: only claim into a group whose home is
+            // THIS window (or one with no stamped tab anywhere yet, i.e. freshly
+            // created here).
+            {
+                const claimedByGroup = new Map<string, Set<string>>();
+                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    const t = Z_Tabs._tabs[i];
+                    const s = this._wvTabGroupStamp(t);
+                    if (!s) continue;
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (!k) continue;
+                    let set = claimedByGroup.get(s); if (!set) { set = new Set(); claimedByGroup.set(s, set); }
+                    set.add(k.libraryID + ":" + k.itemKey);
+                }
+                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    const t = Z_Tabs._tabs[i];
+                    if (this._wvTabGroupStamp(t) || (t as any)._wvGroupExcluded) continue;
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (!k) continue;
+                    const kk = k.libraryID + ":" + k.itemKey;
+                    const g = groups.find((x: any) => !(x as any).saved
+                        && (x.members || []).some((m: any) => m.libraryID === k.libraryID && m.itemKey === k.itemKey));
+                    if (!g) continue;
+                    const home = this._wvTabGroupHomeWin(g.id);
+                    if (home && home !== win) continue;                 // group lives elsewhere (single-window)
+                    let set = claimedByGroup.get(g.id); if (!set) { set = new Set(); claimedByGroup.set(g.id, set); }
+                    if (set.has(kk)) continue;                          // duplicate copy stays out
+                    this._wvTabGroupSetStamp(t, g.id); set.add(kk);
                 }
             }
             for (const g of groups) {
-                // Explicitly SAVED group ("Save and close group"): keep ALL its
-                // members for reopening — never drop them or delete the group.
-                // It shows no chip and lives only in the tabs-menu footer until
-                // reopened (which clears the flag, via _wvTabGroupReopen). Firefox
-                // model: filing a tab into a saved group adds it as a member AND
-                // closes the tab (see _wvTabGroupAddTab), so a parked group never
-                // has open tabs to chip here — it's skipped entirely.
+                // SAVED (parked) group ("Save and close group"): keeps its item-key
+                // snapshot to reopen, shows no chip, never auto-deleted here.
                 if ((g as any).saved) {
                     const sc = doc.getElementById("wv-tgchip-" + g.id);
                     if (sc) sc.remove();
                     continue;
                 }
-                // Split members into open (re-synced to display order) + closed.
-                const memberKeys = new Set((g.members || []).map(
-                    (m: any) => m.libraryID + ":" + m.itemKey));
+                // Members = OPEN tabs in THIS window STAMPED with this group, in
+                // display order. Per-tab: a duplicate copy of a member's item that
+                // wasn't itself added is NOT a member (the point of the rewrite).
                 const openMembers: any[] = [];
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
-                    if ((t as any)._wvGroupExcluded) continue;   // per-tab: a separate copy kept OUT of the group
-                    const k = t && keyOf(t);
-                    if (k && memberKeys.has(k)) openMembers.push({ tab: t, key: k });
+                    if ((t as any)._wvGroupExcluded) continue;
+                    if (this._wvTabGroupStamp(t) === g.id) openMembers.push({ tab: t });
                 }
-                // Re-sync to the OPEN members in display order. Firefox model:
-                // a closed member LEAVES the group (the group shrinks — no
-                // lingering "saved" members inside a live group).
-                const openSet = new Set(openMembers.map(m => m.key));
-                // While a saved group is being reopened, keep ALL its members
-                // (some haven't reopened yet) and don't delete it — so members
-                // group as each tab appears instead of all-at-once at the end.
                 const reopening = this._wvReopeningGroups().has(g.id);
-                const newMembers = openMembers.map((m) => {
-                    const pk = (this as any)._tabPinKey(m.tab);
-                    return { libraryID: pk.libraryID, itemKey: pk.itemKey };
-                });
-                for (const m of (g.members || [])) {
-                    const mk = m.libraryID + ":" + m.itemKey;
-                    if (openSet.has(mk)) continue;          // already added (open in THIS window)
-                    if (globalOpen.has(mk) || reopening) {  // open elsewhere, or mid-reopen → keep
-                        newMembers.push({ libraryID: m.libraryID, itemKey: m.itemKey });
-                        continue;
-                    }
-                    // Globally closed. Park the association briefly so RESTORING
-                    // the tab (undo-close, or reopening within the window)
-                    // rejoins its original group — see the rejoin pass above; a
-                    // transient absence self-heals the same way. Otherwise the
-                    // member just leaves the group (Firefox model).
-                    this._wvRecordClosedFromGroup(m.libraryID, m.itemKey, g.id);
-                    prefDirty = true;
-                }
-                if (JSON.stringify(newMembers) !== JSON.stringify(g.members)) {
-                    g.members = newMembers;
-                    prefDirty = true;
-                }
-                // Globally empty (no member open in any window) → delete the
-                // group (pure Firefox: closing the last tab removes the group).
-                // Never while it's mid-reopen (transiently has no tabs yet).
-                if (!newMembers.length && !reopening) {
-                    const dead = doc.getElementById("wv-tgchip-" + g.id);
-                    if (dead) dead.remove();
-                    emptyGroupIds.add(g.id);
+                if (!openMembers.length) {
+                    const sc = doc.getElementById("wv-tgchip-" + g.id);
+                    if (sc) sc.remove();
+                    // Globally empty (no tab stamped this group in ANY window) and
+                    // not mid-reopen → delete it (Firefox: last tab closed → no
+                    // group). Single-window model: a live group has tabs in exactly
+                    // one window, so other windows just skip it.
+                    if (!reopening && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
                     continue;
                 }
+                // Keep a light item-key shadow (saved-group snapshot / restart
+                // fallback only — NOT used for live membership).
+                const shadow = openMembers.map((m: any) => {
+                    const pk = (this as any)._tabPinKey(m.tab);
+                    return pk ? { libraryID: pk.libraryID, itemKey: pk.itemKey } : null;
+                }).filter(Boolean);
+                if (JSON.stringify(shadow) !== JSON.stringify(g.members || [])) { g.members = shadow; prefDirty = true; }
 
                 // Chip + member classes.
                 const chipID = "wv-tgchip-" + g.id;
@@ -872,39 +859,17 @@ class _TabGroupsMixin {
 
     // ---- Group membership commands ------------------------------------------
 
-    /** The window where a group currently "lives" — the main or reader window
-     *  with the most open member tabs (null if none are open anywhere). */
+    /** The window where a group currently "lives" — the window with the most
+     *  open tabs STAMPED with this group (null if none are open anywhere).
+     *  Per-tab / single-window model: a live group's tabs are all in one window. */
     _wvTabGroupHomeWin(groupID: any) {
         try {
-            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            if (!g) return null;
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
-            if (!ks.size) return null;
             let best: any = null, bestCount = 0;
-            try {
-                for (const w of Zotero.getMainWindows()) {
-                    let n = 0;
-                    const Z: any = (w as any).Zotero_Tabs;
-                    for (const t of (Z && Z._tabs) || []) {
-                        const k = (this as any)._tabPinKey(t);
-                        if (k && ks.has(k.libraryID + ":" + k.itemKey)) n++;
-                    }
-                    if (n > bestCount) { best = w; bestCount = n; }
-                }
-            } catch (e) {}
-            try {
-                const en = Services.wm.getEnumerator("zotero:reader");
-                while (en.hasMoreElements()) {
-                    const w: any = en.getNext();
-                    if (!w || !w._wvWT) continue;
-                    let n = 0;
-                    for (const t of w._wvWT.tabs || []) {
-                        const k = this._wvTabGroupDeckKey(t);
-                        if (k && ks.has(k.libraryID + ":" + k.itemKey)) n++;
-                    }
-                    if (n > bestCount) { best = w; bestCount = n; }
-                }
-            } catch (e) {}
+            const counts = new Map<any, number>();
+            this._wvTabGroupForEachOpenTab((t, w) => {
+                if (this._wvTabGroupStamp(t) === groupID) counts.set(w, (counts.get(w) || 0) + 1);
+            });
+            for (const [w, n] of counts) { if (n > bestCount) { best = w; bestCount = n; } }
             return best;
         } catch (e) { return null; }
     }
@@ -997,19 +962,15 @@ class _TabGroupsMixin {
                 this._wvTabGroupSendTabToWin(win, tabID, home, groupID);
                 return;
             }
-            this._tabGroupAddKey(groupID, key);
+            this._wvTabGroupSetStamp(tab, groupID);   // per-tab membership (authoritative)
+            this._tabGroupAddKey(groupID, key);       // item-key shadow (saved/restart fallback)
             // Position: directly after the group's last open member.
             try {
-                const groups = this._tabGroupsGet();
-                const g = groups.find((x: any) => x.id === groupID);
-                const memberKeys = new Set((g.members || []).map(
-                    (m: any) => m.libraryID + ":" + m.itemKey));
                 let lastIdx = -1, curIdx = -1;
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
                     if (t.id === tabID) { curIdx = i; continue; }   // exclude self
-                    const k = (this as any)._tabPinKey(t);
-                    if (k && memberKeys.has(k.libraryID + ":" + k.itemKey)) lastIdx = i;
+                    if (this._wvTabGroupStamp(t) === groupID) lastIdx = i;
                 }
                 if (lastIdx >= 0 && typeof Z_Tabs.move === "function") {
                     let target = lastIdx + 1;
@@ -2088,6 +2049,71 @@ class _TabGroupsMixin {
             const k = this._wvTabGroupDeckKey(tab);
             return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
         } catch (e) { return null; }
+    }
+
+    /** Iterate every open tab in every window (main bars + reader strips),
+     *  calling fn(tab, win). The single place that knows both tab universes, so
+     *  stamp scans don't have to special-case them everywhere. */
+    _wvTabGroupForEachOpenTab(fn: (tab: any, win: any) => void) {
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                const Z: any = (w as any).Zotero_Tabs;
+                const tabs = (Z && Z._tabs) || [];
+                for (let i = 1; i < tabs.length; i++) { try { fn(tabs[i], w); } catch (e) {} }
+            }
+        } catch (e) {}
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                const st = w && w._wvWT;
+                for (const t of (st && st.tabs) || []) { try { fn(t, w); } catch (e) {} }
+            }
+        } catch (e) {}
+    }
+
+    /** True if ANY open tab (any window) is stamped with this group — the
+     *  stamp-based "is this group still alive" test (replaces the item-key
+     *  globalOpen check). */
+    _wvTabGroupOpenAnywhere(groupID: any): boolean {
+        let found = false;
+        this._wvTabGroupForEachOpenTab((t) => { if (!found && this._wvTabGroupStamp(t) === groupID) found = true; });
+        return found;
+    }
+
+    /** One-time migration: legacy groups stored membership as item keys in
+     *  `g.members`; per-tab grouping needs the stamp on each tab. For every LIVE
+     *  group, stamp the FIRST open tab per member key (duplicates stay out), then
+     *  clear the live group's `members` (membership now lives on the tabs; saved
+     *  groups keep their snapshot). Idempotent: a group already carrying stamps
+     *  is left alone. Runs once per session (flag on the Zotero global). */
+    _wvTabGroupMigrateToStamps() {
+        try {
+            if ((Zotero as any)._wvTabGroupsMigrated) return;
+            const groups = this._tabGroupsGet();
+            if (!groups.length) { (Zotero as any)._wvTabGroupsMigrated = true; return; }
+            // Already-stamped tabs → these groups are migrated; skip those ids.
+            const stamped = new Set<string>();
+            this._wvTabGroupForEachOpenTab((t) => { const s = this._wvTabGroupStamp(t); if (s) stamped.add(s); });
+            let dirty = false;
+            for (const g of groups) {
+                if ((g as any).saved) continue;                 // saved keeps its snapshot
+                if (stamped.has(g.id)) { if ((g.members || []).length) { g.members = []; dirty = true; } continue; }
+                const want = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+                if (!want.size) continue;
+                const claimed = new Set<string>();
+                this._wvTabGroupForEachOpenTab((t) => {
+                    if (this._wvTabGroupStamp(t)) return;
+                    const k = this._wvTabGroupDeckKey(t);
+                    if (!k) return;
+                    const kk = k.libraryID + ":" + k.itemKey;
+                    if (want.has(kk) && !claimed.has(kk)) { this._wvTabGroupSetStamp(t, g.id); claimed.add(kk); }
+                });
+                if ((g.members || []).length) { g.members = []; dirty = true; }   // membership now on tabs
+            }
+            if (dirty) this._tabGroupsSet(groups);
+            (Zotero as any)._wvTabGroupsMigrated = true;
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMigrateToStamps err: " + e); }
     }
 
     _wvTabGroupIsReaderWin(win: any) {
@@ -3862,7 +3888,7 @@ class _TabGroupsMixin {
             for (const id of tabIds) {
                 const t = st && st.tabs.find((x: any) => String(x.id) === String(id));
                 const k = t && this._wvTabGroupDeckKey(t);
-                if (k) { this._tabGroupAddKey(g.id, k); members.push(t); }
+                if (k) { this._wvTabGroupSetStamp(t, g.id); this._tabGroupAddKey(g.id, k); members.push(t); }
             }
             // Cluster the members contiguously at the first member's slot.
             if (st && members.length > 1) {

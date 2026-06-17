@@ -1630,6 +1630,10 @@ class _TabGroupsMixin {
             // unless we're merging into a COLLAPSED group (no in-line gap then).
             const openLanding = !res.collapsedJoin && res.insertionX >= 0;
             for (const e of geom.elems) {
+                // The Library tab is pinned at index 0 — never slide it (the drop
+                // slot is already clamped past it in _wvComputeDrop, but the gap
+                // preview would otherwise shove it right when the cursor goes far left).
+                try { if (e.el && e.el.getAttribute && e.el.getAttribute("data-id") === "zotero-pane") continue; } catch (er) {}
                 let dx = 0;
                 if (e.left >= geom.originRight - 1) dx -= geom.gapWidth;                 // fill the origin slot
                 if (openLanding && e.left >= res.insertionX - 1) dx += geom.gapWidth;    // open the landing gap

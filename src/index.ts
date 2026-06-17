@@ -591,14 +591,13 @@ class WeaveroPlugin {
     }
     /** Notes — standalone + child note items across every surface
      *  (items-tree note rows, right-pane Notes box, the note editor
-     *  in both the right pane and the pop-out note window). Defaults
-     *  OFF so existing users don't see new clickable spans on notes
-     *  they've already curated until they explicitly opt in. */
+     *  in both the right pane and the pop-out note window). Default ON
+     *  (cascades from the Links and Relations section master). */
     _getEnableNotes() {
         if (!this._getEnableLinksAndRelations()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableNotes");
-            return v === undefined ? false : !!v;
+            return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
     /** Reader sidebar — the annotation list on the left side of the
@@ -1804,9 +1803,9 @@ class WeaveroPlugin {
                 "enableInlineUrls", "enableIconUrls", "enableCommentMarkdown",
                 "enableIconMarkdown", "enableIconAppLinks", "enableZoteroLinks",
                 "enableReaderViewIcons",
-                // Apply-to surfaces
+                // Apply-to surfaces (incl. notes — default ON)
                 "enableItemsList", "enableRightPane", "enableReaderSidebar",
-                "enableReaderView",
+                "enableReaderView", "enableNotes",
                 // URI utilities + relations
                 "enableCopyItemLink", "enableCopyCollectionLink",
                 "enableAddRelatedMenu", "enableChainBadge",
@@ -1835,7 +1834,7 @@ class WeaveroPlugin {
                 "showLibraryBookmarksInReader",
             ];
             const OFF = [
-                "enableAppLinks", "enableAppLinksSkipConfirm", "enableNotes",
+                "enableAppLinks", "enableAppLinksSkipConfirm",
                 "enableOpenExternalViewer",
                 "enableOutlineTextHighlight", "debug",
                 // Optional URL schemes — all opt-in
@@ -2048,23 +2047,15 @@ class WeaveroPlugin {
             Services.prefs.getDefaultBranch("extensions.zotero.")
                 .setBoolPref("weavero.inlineLinks", true);
         } catch(e) {}
-        // Per-surface enable prefs — default to true so the four core
-        // surfaces are decorated out of the box. (Notes default OFF —
-        // see below.)
+        // Per-surface enable prefs — default to true so every surface
+        // (including notes) is decorated out of the box.
         for (const k of ["enableItemsList", "enableRightPane",
-                         "enableReaderSidebar", "enableReaderView"]) {
+                         "enableReaderSidebar", "enableReaderView", "enableNotes"]) {
             try {
                 Services.prefs.getDefaultBranch("extensions.zotero.")
                     .setBoolPref("weavero." + k, true);
             } catch(e) {}
         }
-        // Notes default to OFF — it's a new surface (post-v0.3.42) and
-        // we don't want to surprise existing users with new clickable
-        // spans / formatting on notes they've already curated.
-        try {
-            Services.prefs.getDefaultBranch("extensions.zotero.")
-                .setBoolPref("weavero.enableNotes", false);
-        } catch(e) {}
         // Migration: if the old enablePdfReader pref was explicitly set
         // (rare — user disabled the reader integration), mirror its value
         // into the new sidebar+view keys the first time we run with them

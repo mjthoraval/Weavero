@@ -1818,15 +1818,16 @@ class WeaveroPlugin {
                 "enableAnnotationsCountColumn", "enableTagsCountAuto",
                 "enableRelatedColumn", "enableGroupLibraryGlyph",
                 "enableAnnotationAddedBy", "enableAddedByColors",
-                // Compact title bar — master is OFF, but the per-window subs
-                // default ON (so enabling the master turns all three on).
-                "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
-                // Multiple main windows — feature master (devNewMainWindow) is
-                // OFF, but its restore-on-restart sub-option defaults ON.
-                "devSessionAutoReopen",
-                // Tab groups (Firefox-style) — inert until a group is created,
-                // so it defaults ON.
+                // "Tabs and Windows" — the WHOLE section defaults ON (user choice,
+                // v0.14.1): tab groups, the title-bar replacement + its surfaces,
+                // multiple main windows + restore, note-in-deck-window, reader item
+                // pane. `_wvMigrateTabsWindowsDefaults` applies these to existing
+                // installs (whose stored user values would otherwise mask them).
                 "enableTabGroups",
+                "compactTitleBar", "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
+                "noteOpenInDeckWindow",
+                "devNewMainWindow", "devSessionAutoReopen",
+                "readerItemPane",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
                 // Bookmarks
@@ -1835,13 +1836,8 @@ class WeaveroPlugin {
             ];
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm", "enableNotes",
-                "compactTitleBar", "enableOpenExternalViewer",
-                "enableOutlineTextHighlight", "devNewMainWindow", "debug",
-                // Experimental: item/context pane in standalone reader windows.
-                "readerItemPane",
-                // Experimental: open a note "in a new window" as a tab-hosting
-                // reader-style window (so it can accept dragged-in tabs).
-                "noteOpenInDeckWindow",
+                "enableOpenExternalViewer",
+                "enableOutlineTextHighlight", "debug",
                 // Optional URL schemes — all opt-in
                 "enableMagnetScheme", "enableMailtoScheme", "enableSkypeScheme",
                 "enableSmsScheme", "enableSpotifyScheme", "enableTelScheme",

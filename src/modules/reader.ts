@@ -12841,6 +12841,18 @@ class _ReaderMixin {
                     } catch (e) {}
                 });
                 movePopup.appendChild(moveToMain);
+                // "Move to New Window" — tear the tab(s) out into a fresh standalone
+                // reader window (no-reload). Multi-select aware. Hidden when this is
+                // the only tab (it's already its own window) — toggled in popupshowing.
+                const moveToNewWin = mkItem("Move to New Window", () => {
+                    try {
+                        const ids = moveSelIDs();
+                        if (!ids.length) return;
+                        if (ids.length === 1) this._wvWTTearOffTab(win, ids[0]);
+                        else this._wvWTTearOffTabs(win, ids);
+                    } catch (e) {}
+                });
+                movePopup.appendChild(moveToNewWin);
 
                 // "Duplicate Tab" — open the same document in another reader tab.
                 const duplicate = mkItem(str("tabs.duplicate", "Duplicate Tab"), () => {
@@ -12952,6 +12964,9 @@ class _ReaderMixin {
                             const multiMv = !!(selMv && selMv.length > 1);
                             moveMenu.setAttribute("label", multiMv ? "Move Tabs" : str("tabs.move", "Move Tab"));
                             moveToMain.setAttribute("label", multiMv ? "Move Tabs to Main Window" : "Move Tab to Main Window");
+                            moveToNewWin.setAttribute("label", multiMv ? "Move Tabs to New Window" : "Move to New Window");
+                            // Tearing out needs >1 tab (a single-tab window already is its own).
+                            moveToNewWin.hidden = !(win._wvWT && win._wvWT.tabs && win._wvWT.tabs.length > 1);
                         } catch (e) {}
                         // Group commands: label by selection size, popup rebuilt
                         // from the live group list.

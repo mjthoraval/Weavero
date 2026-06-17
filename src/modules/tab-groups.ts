@@ -3476,6 +3476,12 @@ class _TabGroupsMixin {
             mkSep();
             mkItem("Move group to new window",
                 () => this._wvTabGroupMoveToNewWindow(win, groupID));
+            // In a separate reader window, also offer moving the whole group back
+            // into the main window (the migrate now keeps the group intact).
+            if (this._wvTabGroupIsReaderWin(win)) {
+                mkItem("Move group to main window",
+                    () => { try { this._wvTabGroupMigrateGroup(win, Zotero.getMainWindow(), groupID, 1e6); } catch (e) {} });
+            }
             // "Copy N links in group" — zotero://open links for every member
             // (Weavero's copy-link feature), like Firefox's copy-links entry.
             if ((this as any)._getEnableCopyItemLink && (this as any)._getEnableCopyItemLink()) {

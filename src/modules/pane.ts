@@ -4306,7 +4306,6 @@ class _PaneMixin {
                 + " border: 1px solid color-mix(in srgb, currentColor 30%, transparent);"
                 + " background: color-mix(in srgb, currentColor 6%, transparent);";
             wrap.appendChild(input);
-            main.insertBefore(wrap, main.firstChild);
             const apply = () => {
                 try {
                     const q = String(input.value || "").trim().toLowerCase();
@@ -4327,13 +4326,31 @@ class _PaneMixin {
                     input.value = ""; apply();
                 }
             });
-            // Cards render asynchronously (and re-render on enable/disable/
-            // install) — keep the filter applied. childList-only, so the
-            // hidden-attribute writes above can't retrigger it.
+            // about:addons re-renders #main on every view switch. Show the box ONLY
+            // on the LIST view (an <addon-list> is present); on a single-plugin
+            // DETAIL view there's nothing to search, so remove it — it returns when
+            // you go back to the list. Observe a STABLE ancestor (body) so we catch
+            // #main itself being replaced. The insert/remove are guarded (only on a
+            // state change) so they can't loop; the filter writes `hidden` (an
+            // attribute), not childList, so it can't retrigger either.
             try {
-                const mo = new win.MutationObserver(() => { try { apply(); } catch (e) {} });
-                mo.observe(main, { childList: true, subtree: true });
+                const sync = () => {
+                    try {
+                        const isList = !!doc.querySelector("addon-list");
+                        const box = doc.getElementById("wv-pm-searchbox");
+                        if (isList) {
+                            const m = doc.getElementById("main") || doc.body;
+                            if (!box && m) m.insertBefore(wrap, m.firstChild);
+                            apply();   // keep the filter applied as cards (re)render
+                        } else if (box) {
+                            box.remove();   // detail view → nothing to search
+                        }
+                    } catch (e) {}
+                };
+                const mo = new win.MutationObserver(() => { try { sync(); } catch (e) {} });
+                mo.observe(doc.body || main, { childList: true, subtree: true });
                 doc._wvPMMo = mo;
+                sync();   // set the correct initial state (inserts on the list view)
             } catch (e) {}
             // Ctrl+F → focus the box. Capture on both the content document
             // and the chrome window so it works wherever focus sits.

@@ -6005,7 +6005,7 @@ class _ReaderMixin {
             const entries: any[] = [];
             for (const id of tabIds) {
                 const t = st.tabs.find((x: any) => x.id === id);
-                if (t && t.itemID != null) entries.push({ id, itemID: t.itemID, isNote: t.type === "note", reader: t.reader });
+                if (t && t.itemID != null) entries.push({ id, itemID: t.itemID, isNote: t.type === "note", reader: t.reader, native: !!t.native });
             }
             if (!entries.length) return;
 
@@ -6017,7 +6017,9 @@ class _ReaderMixin {
             };
 
             const swappable = (S: any) => !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
-            const seedIdx = entries.findIndex((e: any) => !e.isNote && swappable(e.reader));
+            // Seed from a NON-native swappable tab: the seed is torn out by swap,
+            // and swapping the source's native tab would orphan its `#reader` pane.
+            const seedIdx = entries.findIndex((e: any) => !e.isNote && !e.native && swappable(e.reader));
             if (seedIdx < 0 || !(this as any)._wvSwapTearOffToWindow) { classic(); return; }
 
             (async () => {
@@ -6044,7 +6046,9 @@ class _ReaderMixin {
                         const stab = sst && sst.tabs && sst.tabs.find((x: any) => x.id === m.id);
                         const S = stab && stab.reader;
                         let done = false;
-                        if (!m.isNote && swappable(S)) {
+                        // A native source tab can't be swapped out (orphans `#reader`)
+                        // → classic close-here (collapses it) + mount-fresh below.
+                        if (!m.isNote && !(stab && stab.native) && swappable(S)) {
                             let newId: any = null;
                             try { newId = await this._wvWTSwapInReader(newWin, S, m.itemID, { select: false }); } catch (e) {}
                             if (newId != null) {
@@ -6254,9 +6258,13 @@ class _ReaderMixin {
             };
             // No-reload tear-off for a live, swappable reader: docshell-swap it into
             // a fresh standalone window (this window keeps its other tabs). Notes /
-            // non-swappable readers fall back to the classic (reload) path.
+            // non-swappable readers fall back to the classic (reload) path. The
+            // NATIVE tab is excluded: its content lives in the window's shared
+            // `#reader` browser, so swapping it out orphans that pane (empty center
+            // in the source window) — classic close collapses `#reader` + switches
+            // to another tab instead.
             const S: any = tab.reader;
-            if (!isNote && S && S._iframe && typeof S._iframe.swapDocShells === "function"
+            if (!isNote && !tab.native && S && S._iframe && typeof S._iframe.swapDocShells === "function"
                     && S._internalReader && (this as any)._wvSwapTearOffToWindow) {
                 try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
                 (this as any)._wvSwapTearOffToWindow(win, S, itemID, {

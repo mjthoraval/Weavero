@@ -8129,6 +8129,11 @@ class _ReaderMixin {
     async _wvNavigateView(view, location) {
         try {
             if (!view) return;
+            // EPUB / snapshot (DOM views) have no pdf.js position API — navigate
+            // them via their own href / hash / selector instead of the PDF path.
+            if (typeof view.navigateToPosition !== "function") {
+                return this._wvNavigateDomView(view, location);
+            }
             // Immediately STOP any current highlight (and cancel its clear timer)
             // the instant a new link is clicked — the new target is painted once
             // its page has rendered below, with a fresh full-duration timer.
@@ -8228,6 +8233,95 @@ class _ReaderMixin {
         }
     }
 
+    /** Navigate an EPUB / snapshot (DOM) view to an internal-link target.
+     *  EPUB resolves `{ href }` through its own navigate() (scrolls + highlights
+     *  the destination via the reader's spotlight); snapshot's navigate() ignores
+     *  href, so scroll its `{ hash }` anchor into view directly.
+     *
+     *  Two robustness measures:
+     *   1. The location object MUST be cloned into the view's content compartment
+     *      — a chrome-side object reaches content `navigate()` as an opaque wrapper
+     *      it can't read, so the scroll silently no-ops (same Xray gotcha as the
+     *      PDF highlight).
+     *   2. Navigate, then VERIFY the target actually landed in view and re-issue
+     *      the (instant) navigation until it does. A freshly-created pane (a split,
+     *      or a just-opened duplicate window) races with the reader's OWN initial
+     *      navigation and keeps re-laying-out as content settles, so a single
+     *      navigate often gets overridden or lands against a stale layout — this
+     *      is what made the FIRST Shift+click sometimes fail to scroll. */
+    async _wvNavigateDomView(view, location) {
+        try {
+            if (!view || !location) return;
+            const win = view._iframeWindow;
+            const landed = (el) => {
+                try {
+                    if (!el || typeof el.getBoundingClientRect !== "function") return false;
+                    const rect = el.getBoundingClientRect();
+                    const h = win ? win.innerHeight : 0;
+                    return rect.top >= -4 && rect.top <= Math.max(80, h * 0.6);
+                } catch (e) { return false; }
+            };
+            if (location.href && typeof view.navigate === "function") {
+                const getTarget = () => {
+                    try { return view._getHrefTarget ? view._getHrefTarget(location.href) : null; }
+                    catch (e) { return null; }
+                };
+                // Wait for the target to exist (sections may not be rendered yet).
+                for (let i = 0; i < 80 && !getTarget(); i++) await this._wvSleep(50);
+                // Navigate (instant), verify, re-issue until it lands.
+                for (let attempt = 0; attempt < 8; attempt++) {
+                    view.navigate(
+                        this._wvCloneIntoView({ href: location.href }, view),
+                        this._wvCloneIntoView({ behavior: "auto", block: "start" }, view));
+                    await this._wvSleep(attempt === 0 ? 250 : 180);
+                    if (landed(getTarget())) break;
+                }
+            }
+            else if (location.hash) {
+                const id = location.hash.charAt(0) === "#" ? location.hash.slice(1) : location.hash;
+                const getEl = () => {
+                    try {
+                        const doc = view._iframeDocument;
+                        return (doc.getElementById && doc.getElementById(id))
+                            || (doc.getElementsByName && doc.getElementsByName(id)[0])
+                            || null;
+                    } catch (e) { return null; }
+                };
+                for (let i = 0; i < 80 && !getEl(); i++) await this._wvSleep(50);
+                for (let attempt = 0; attempt < 8; attempt++) {
+                    const el = getEl();
+                    if (el && typeof el.scrollIntoView === "function") {
+                        el.scrollIntoView({ block: "start", behavior: "auto" });
+                    }
+                    else {
+                        try { view._iframeDocument.location.hash = location.hash; } catch (e) {}
+                    }
+                    await this._wvSleep(attempt === 0 ? 250 : 180);
+                    if (landed(getEl())) break;
+                }
+            }
+            else if (location.position && typeof view.navigate === "function") {
+                view.navigate(this._wvCloneIntoView({ position: location.position }, view));
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvNavigateDomView err: " + e);
+        }
+    }
+
+    /** Clone a plain object into a view's content (iframe) compartment so the
+     *  reader's own content-side code can read it. Chrome-created objects reach
+     *  content methods as opaque wrappers; without this the read silently fails. */
+    _wvCloneIntoView(obj, view) {
+        try {
+            const win = view && view._iframeWindow;
+            if (win && typeof Components !== "undefined" && Components.utils
+                && typeof Components.utils.cloneInto === "function") {
+                return Components.utils.cloneInto(obj, win);
+            }
+        } catch (e) {}
+        return obj;
+    }
+
     /** Make a PDF view's `_highlightPosition` clear-timer RESETTABLE (idempotent
      *  per view). The stock reader version (pdf-view.js) arms a fresh,
      *  uncancellable `setTimeout(..., 2000)` on every call that nulls
@@ -8321,10 +8415,14 @@ class _ReaderMixin {
             let pv = null;
             for (let i = 0; i < 100; i++) {
                 pv = rd._internalReader && rd._internalReader._primaryView;
-                const viewer = pv && pv._iframeWindow
-                    && pv._iframeWindow.PDFViewerApplication
-                    && pv._iframeWindow.PDFViewerApplication.pdfViewer;
-                if (viewer && viewer.pagesCount > 0) break;
+                if (pv && pv._iframeWindow) {
+                    // DOM view (EPUB/snapshot): no pdf.js viewer — ready once the
+                    // iframe window exists (the reader was already awaited above).
+                    if (typeof pv.navigateToPosition !== "function") break;
+                    const viewer = pv._iframeWindow.PDFViewerApplication
+                        && pv._iframeWindow.PDFViewerApplication.pdfViewer;
+                    if (viewer && viewer.pagesCount > 0) break;
+                }
                 await this._wvSleep(50);
             }
             await this._wvNavigateView(pv, location);
@@ -8434,12 +8532,22 @@ class _ReaderMixin {
                 await this._wvNavigateReaderPrimary(partner, location);
                 return;
             }
-            // No coupled reader open -> create a duplicate window. Open it WITHOUT
-            // a location: passing one makes the reader navigate-with-flash on open,
-            // arming the NATIVE uncancellable 2s highlight timer (before our
-            // resettable patch is applied) — which then wipes the NEXT click's
-            // highlight. We navigate + highlight it ourselves below instead.
-            const dup: any = await Zotero.Reader.open(itemID, null,
+            // No coupled reader open -> create a duplicate window.
+            //  • PDF: open WITHOUT a location — passing one makes the reader
+            //    navigate-with-flash on open, arming the NATIVE uncancellable 2s
+            //    highlight timer (before our resettable patch is applied), which
+            //    then wipes the NEXT click's highlight. We navigate + highlight it
+            //    ourselves below instead.
+            //  • EPUB: open already pointed AT the target. A freshly-opened window
+            //    races with the reader's own initial navigation and keeps
+            //    re-laying-out as content settles, so navigating after the fact
+            //    (below) sometimes got overridden — the "first Shift+click fails to
+            //    scroll" bug. Letting the reader's own (robust) initial positioning
+            //    land the target sidesteps the race entirely.
+            //  • snapshot: open at the top and scroll the #anchor in below (its
+            //    init navigate() ignores href/hash, so the open-location is moot).
+            const openLoc = (reader.type === "epub") ? location : null;
+            const dup: any = await Zotero.Reader.open(itemID, openLoc,
                 { openInWindow: true, allowDuplicate: true });
             if (dup) {
                 reader._wvDupReader = dup;
@@ -8474,6 +8582,13 @@ class _ReaderMixin {
     _wvWireReaderLinkClicks(reader, view) {
         try {
             if (!reader || !view) return;
+            // EPUB / snapshot (DOM) views have no pdf.js hit-test API — wire the
+            // DOM link-click handler instead and stop here (the PDF path below uses
+            // pointerEventToPosition / _getSelectableOverlay, absent on DOM views).
+            if (typeof view.navigateToPosition !== "function") {
+                this._wvWireReaderDomLinkClicks(reader, view);
+                return;
+            }
             // Make this view's native highlight clear-timer RESETTABLE up front, so
             // EVERY native-navigate highlight (internal links, bookmarks, annotation
             // jumps) gets the fix — not just our Ctrl/Shift navigation. Idempotent.
@@ -8652,6 +8767,76 @@ class _ReaderMixin {
             this._dbg("[Weavero] reader link-clicks: wired a pdf.js iframe");
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireReaderLinkClicks err: " + e);
+        }
+    }
+
+    /** Ctrl/Cmd+click (-> split pane) / Shift+click (-> duplicate window) on an
+     *  internal link in an EPUB / snapshot (DOM) view — the DOM counterpart of
+     *  _wvWireReaderLinkClicks. The reader follows internal links via a bubble-
+     *  phase `click` on the iframe window that always preventDefault()s; a
+     *  capture-phase listener here pre-empts it, so the SOURCE pane stays put and
+     *  we drive the OTHER pane (or a duplicate window) instead. EPUB resolves a
+     *  section href via `_getInternalLinkHref`; snapshot links are bare same-doc
+     *  `#fragment`s. Idempotent per iframe via `win._wvDomLinkClicksWired`. */
+    _wvWireReaderDomLinkClicks(reader, view) {
+        try {
+            if (!reader || !view) return;
+            const win = view._iframeWindow;
+            if (!win || win._wvDomLinkClicksWired) return;
+            const handler = (event) => {
+                try {
+                    if (event.button !== 0) return;
+                    const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
+                    const shift = event.shiftKey;
+                    if (ctrl === shift) return;   // exactly one modifier
+                    // Closures go stale across a hot-reload — resolve live.
+                    const plugin = (Zotero.Weavero && Zotero.Weavero.plugin) || this;
+                    const ir = reader._internalReader;
+                    if (!ir) return;
+                    // Identify the source pane (the view owning this iframe).
+                    let sourceView = null, sourceIsPrimary = false;
+                    if (ir._primaryView && ir._primaryView._iframeWindow === win) {
+                        sourceView = ir._primaryView; sourceIsPrimary = true;
+                    }
+                    else if (ir._secondaryView && ir._secondaryView._iframeWindow === win) {
+                        sourceView = ir._secondaryView; sourceIsPrimary = false;
+                    }
+                    else return;
+                    const t = event.target;
+                    const link = (t && typeof t.closest === "function") ? t.closest("a") : null;
+                    if (!link) return;
+                    // Internal links only — external ones open in the browser.
+                    let external = false;
+                    try { external = !!(sourceView._isExternalLink && sourceView._isExternalLink(link)); }
+                    catch (e) {}
+                    if (external) return;
+                    // Resolve the target location.
+                    let location = null;
+                    if (typeof sourceView._getInternalLinkHref === "function") {   // EPUB
+                        let href = null;
+                        try { href = sourceView._getInternalLinkHref(link); } catch (e) {}
+                        if (href) location = { href };
+                    }
+                    else {   // snapshot — same-document hash anchor
+                        const h = link.getAttribute && link.getAttribute("href");
+                        if (h && h.charAt(0) === "#") location = { hash: h };
+                    }
+                    if (!location) return;
+                    // Keep the source pane put: pre-empt the reader's own bubble-
+                    // phase click handler AND the default link navigation.
+                    try { event.preventDefault(); event.stopImmediatePropagation(); } catch (e) {}
+                    if (ctrl) plugin._wvCtrlNavigate(reader, sourceIsPrimary, location);
+                    else plugin._wvOpenInDupWindow(reader, location);
+                } catch (e) {
+                    Zotero.debug("[Weavero] DOM reader link-click handler err: " + e);
+                }
+            };
+            win.addEventListener("click", handler, true);
+            win._wvDomLinkClicksWired = true;
+            win._wvDomLinkClicksHandler = handler;
+            this._dbg("[Weavero] reader link-clicks: wired a DOM iframe");
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireReaderDomLinkClicks err: " + e);
         }
     }
 
@@ -11047,6 +11232,12 @@ class _ReaderMixin {
 
             // Initial placement.
             this._processDomViewAnnotationIcons(innerDoc, reader);
+
+            // Ctrl/Cmd+click (-> split pane) / Shift+click (-> duplicate window)
+            // on internal links — the same interlinked navigation as PDF, for EPUB
+            // & snapshot. _wvWireReaderLinkClicks branches to the DOM handler.
+            try { this._wvSetupReaderLinkClicks(reader); }
+            catch (e) { Zotero.debug("[Weavero] DOM link-clicks setup err: " + e); }
 
             this._dbg("[Weavero] DOM-view wireUp: observer + listeners attached");
         } catch(e) {

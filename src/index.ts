@@ -600,6 +600,14 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
+    /** Ctrl/Cmd+click split orientation when no split is open yet:
+     *  "horizontal" (default) or "vertical". */
+    _getCtrlClickSplit() {
+        try {
+            const v = Zotero.Prefs.get("weavero.ctrlClickSplit");
+            return v === "vertical" ? "vertical" : "horizontal";
+        } catch (e) { return "horizontal"; }
+    }
     /** Reader sidebar — the annotation list on the left side of the
      *  reader. Format-agnostic (PDF / EPUB / snapshot). */
     _getEnableReaderSidebar() {
@@ -1851,6 +1859,9 @@ class WeaveroPlugin {
             ];
             for (const n of ON) branch.setBoolPref(P + n, true);
             for (const n of OFF) branch.setBoolPref(P + n, false);
+            // Ctrl/Cmd+click split orientation when no split is open yet:
+            // "horizontal" (default) or "vertical".
+            try { branch.setCharPref(P + "ctrlClickSplit", "horizontal"); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvRegisterDefaultPrefs err: " + e);
         }

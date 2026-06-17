@@ -8342,16 +8342,27 @@ class _ReaderMixin {
     }
 
     /** Ctrl/Cmd+click in-window navigation. From the primary pane, open or
-     *  reuse a vertical split and send the target to the secondary pane;
-     *  from the secondary pane (the reverse), send it to the primary. The
-     *  source pane keeps its reading position either way. */
+     *  reuse a split and send the target to the secondary pane; from the
+     *  secondary pane (the reverse), send it to the primary. The source pane
+     *  keeps its reading position either way. When no split is open yet, the
+     *  orientation follows the `weavero.ctrlClickSplit` pref (horizontal by
+     *  default; an existing split of either orientation is reused as-is). */
     async _wvCtrlNavigate(reader, sourceIsPrimary, location) {
         try {
             const ir = reader && reader._internalReader;
             if (!ir) return;
             if (sourceIsPrimary) {
-                if (!ir.splitType && typeof ir.toggleVerticalSplit === "function") {
-                    ir.toggleVerticalSplit(true);
+                if (!ir.splitType) {
+                    const vertical = this._getCtrlClickSplit() === "vertical";
+                    if (vertical && typeof ir.toggleVerticalSplit === "function") {
+                        ir.toggleVerticalSplit(true);
+                    }
+                    else if (typeof ir.toggleHorizontalSplit === "function") {
+                        ir.toggleHorizontalSplit(true);
+                    }
+                    else if (typeof ir.toggleVerticalSplit === "function") {
+                        ir.toggleVerticalSplit(true);
+                    }
                 }
                 let sv = null;
                 for (let i = 0; i < 100; i++) {

@@ -8129,6 +8129,18 @@ class _ReaderMixin {
     async _wvNavigateView(view, location) {
         try {
             if (!view) return;
+            // Immediately STOP any current highlight (and cancel its clear timer)
+            // the instant a new link is clicked — the new target is painted once
+            // its page has rendered below, with a fresh full-duration timer.
+            try {
+                this._wvEnsureResettableHighlight(view);
+                const iwin0 = view._iframeWindow;
+                if (view._wvHlTimer && iwin0 && iwin0.clearTimeout) iwin0.clearTimeout(view._wvHlTimer);
+                view._wvHlTimer = null;
+                view._highlightedPosition = null;
+                if (typeof view._render === "function") view._render();
+                this._wvClearReaderDot(view);   // also drop any red target dot
+            } catch (e) {}
             const target = (location && location.position
                 && Number.isInteger(location.position.pageIndex))
                 ? location.position.pageIndex
@@ -8144,20 +8156,33 @@ class _ReaderMixin {
             }
             try { if (view.initializedPromise) await view.initializedPromise; }
             catch (e) {}
-            try { if (typeof view.navigate === "function") await view.navigate(location); }
-            catch (e) {}
+            try {
+                if (location && location.position && typeof view.navigateToPosition === "function") {
+                    // Scroll like navigate() but WITHOUT its native _highlightPosition
+                    // call — that arms an uncancellable 2s timer that would later
+                    // wipe our own (resettable) highlight on the next click. We own
+                    // the highlight below. Mirror navigate()'s manual-nav prep.
+                    try { if (typeof view._onManualNavigation === "function") view._onManualNavigation(); } catch (e) {}
+                    try { view._lastNavigationTime = Date.now(); } catch (e) {}
+                    view.navigateToPosition(location.position);
+                } else if (typeof view.navigate === "function") {
+                    await view.navigate(location);
+                }
+            } catch (e) {}
             if (viewer && target != null) {
                 await this._wvSleep(120);
                 if (viewer.currentPageNumber !== target + 1) {
                     try { viewer.currentPageNumber = target + 1; } catch (e) {}
                 }
             }
-            // Flash-highlight the target like a native click-navigate. The
-            // position came from another view's compartment, so we hand the
-            // reader a plain copy cloned into THIS view's iframe — passing a
-            // foreign-compartment object makes `_highlightPosition` silently
-            // no-op (the cross-compartment gotcha). Done after the scroll so
-            // the destination page is laid out when the flash renders.
+            // Flash the target with the reader's NATIVE highlight (works on every
+            // click + identical visual), but first make its clear timer RESETTABLE
+            // (see _wvEnsureResettableHighlight): the stock `_highlightPosition`
+            // arms a fresh, uncancellable 2s timer every call, so a prior click's
+            // timer wipes a later highlight (Zotero forums #122030). The position
+            // came from another view's compartment, so hand the reader a copy
+            // cloned into THIS view's iframe (cross-compartment gotcha). Done after
+            // the page has rendered so the flash lands.
             try {
                 const src = location && location.position;
                 if (view._iframeWindow && src && Number.isInteger(src.pageIndex)) {
@@ -8170,15 +8195,120 @@ class _ReaderMixin {
                             hlPos = Components.utils.cloneInto(plain, view._iframeWindow);
                         }
                     } catch (e) {}
-                    await this._wvSleep(150);
-                    if (typeof view._highlightPosition === "function") {
-                        view._highlightPosition(hlPos);
+                    // Wait for the destination page to finish rendering (renderingState
+                    // 3) so the flash lands — consistent across a fresh pane / window.
+                    const app2 = view._iframeWindow && view._iframeWindow.PDFViewerApplication;
+                    for (let i = 0; i < 60; i++) {
+                        let ready = false;
+                        try {
+                            const pView = app2 && app2.pdfViewer && app2.pdfViewer._pages
+                                && app2.pdfViewer._pages[src.pageIndex];
+                            ready = !!(pView && pView.viewport && pView.div && pView.renderingState === 3);
+                        } catch (e) {}
+                        if (ready) break;
+                        await this._wvSleep(80);
+                    }
+                    // When the dest has no precise text region (a bare-point / tiny
+                    // rect — the reader can't highlight it visibly), show a red dot
+                    // at the point instead, matching Zotero's preview-popup marker.
+                    const r0 = rects[0];
+                    const pointish = r0 && (Math.abs(r0[2] - r0[0]) < 5 || Math.abs(r0[3] - r0[1]) < 5);
+                    if (pointish) {
+                        this._wvShowReaderDot(view, src.pageIndex, r0);
+                    } else {
+                        this._wvEnsureResettableHighlight(view);
+                        if (typeof view._highlightPosition === "function") {
+                            view._highlightPosition(hlPos);
+                        }
                     }
                 }
             } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvNavigateView err: " + e);
         }
+    }
+
+    /** Make a PDF view's `_highlightPosition` clear-timer RESETTABLE (idempotent
+     *  per view). The stock reader version (pdf-view.js) arms a fresh,
+     *  uncancellable `setTimeout(..., 2000)` on every call that nulls
+     *  `_highlightedPosition` — so an earlier highlight's timer wipes a later one
+     *  (Zotero forums #122030). We replace it with the SAME behaviour (set
+     *  `_highlightedPosition` + `_render`, identical visual) but storing the timer
+     *  handle and clearing the prior one first, so each highlight gets its full
+     *  display time. Runs the timer on the view's own iframe window. */
+    _wvEnsureResettableHighlight(view) {
+        try {
+            if (!view || view._wvHlPatched) return;
+            if (typeof view._highlightPosition !== "function") return;
+            const iwin = view._iframeWindow;
+            const setT = (iwin && iwin.setTimeout) ? iwin.setTimeout.bind(iwin) : setTimeout;
+            const clearT = (iwin && iwin.clearTimeout) ? iwin.clearTimeout.bind(iwin) : clearTimeout;
+            view._wvHlPatched = true;
+            view._highlightPosition = function (position) {
+                try {
+                    this._highlightedPosition = position;
+                    if (typeof this._render === "function") this._render();
+                    if (this._wvHlTimer) { try { clearT(this._wvHlTimer); } catch (e) {} }
+                    const self = this;
+                    this._wvHlTimer = setT(function () {
+                        try {
+                            self._highlightedPosition = null;
+                            if (typeof self._render === "function") self._render();
+                        } catch (e) {}
+                        self._wvHlTimer = null;
+                    }, 2000);
+                } catch (e) {}
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvEnsureResettableHighlight err: " + e); }
+    }
+
+    /** Remove this view's red target dot + cancel its fade timer. */
+    _wvClearReaderDot(view) {
+        try {
+            const win = view && view._iframeWindow;
+            if (view._wvDotTimer && win && win.clearTimeout) win.clearTimeout(view._wvDotTimer);
+            view._wvDotTimer = null;
+            if (view._wvDotEl) { try { view._wvDotEl.remove(); } catch (e) {} view._wvDotEl = null; }
+        } catch (e) {}
+    }
+
+    /** Drop a red target dot at a PDF point (page-space `rect` = [x0,y0,x1,y1]),
+     *  for an internal-link target with no precise text region — mirrors Zotero's
+     *  preview-popup marker (#f57b7b, ~7pt, multiply blend). Pops in, then fades
+     *  after 2s; a new navigation removes it (single dot per view). */
+    _wvShowReaderDot(view, pageIndex, rect) {
+        try {
+            const win = view && view._iframeWindow;
+            const app = win && win.PDFViewerApplication;
+            const pageView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+            if (!pageView || !pageView.div || !pageView.viewport || !rect) return;
+            this._wvClearReaderDot(view);
+            const cx = (rect[0] + rect[2]) / 2, cy = (rect[1] + rect[3]) / 2;
+            const vp = pageView.viewport.convertToViewportPoint(cx, cy);
+            const doc = win.document;
+            const R = 8;   // ~Zotero's 7pt dot, a touch larger for screen
+            const dot = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            dot.className = "wv-reader-target-dot";
+            dot.style.cssText = "position:absolute;z-index:2147483646;pointer-events:none;"
+                + "width:" + (R * 2) + "px;height:" + (R * 2) + "px;border-radius:50%;"
+                + "background:#f57b7b;mix-blend-mode:multiply;"
+                + "left:" + vp[0] + "px;top:" + vp[1] + "px;"
+                + "transform:translate(-50%,-50%) scale(.4);opacity:0;"
+                + "transition:opacity .15s ease-out,transform .15s ease-out;";
+            pageView.div.appendChild(dot);
+            const raf = win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : ((f) => win.setTimeout(f, 16));
+            raf(() => { try { dot.style.opacity = "1"; dot.style.transform = "translate(-50%,-50%) scale(1)"; } catch (e) {} });
+            view._wvDotEl = dot;
+            const setT = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            view._wvDotTimer = setT(() => {
+                try {
+                    dot.style.transition = "opacity .25s ease-out,transform .25s ease-out";
+                    dot.style.opacity = "0"; dot.style.transform = "translate(-50%,-50%) scale(.6)";
+                } catch (e) {}
+                setT(() => { try { dot.remove(); } catch (e) {} }, 280);
+                view._wvDotEl = null; view._wvDotTimer = null;
+            }, 2000);
+        } catch (e) { Zotero.debug("[Weavero] _wvShowReaderDot err: " + e); }
     }
 
     /** Wait for a reader's primary view + pdf.js viewer to be ready, then
@@ -8251,6 +8381,19 @@ class _ReaderMixin {
     async _wvOpenInDupWindow(reader, location) {
         try {
             const itemID = reader.itemID;
+            // Bring a coupled reader to the FRONT so the navigation is actually
+            // visible — a separate reader window can be hidden behind another app
+            // (or another window), making the Shift+click land on a window the
+            // user can't see. Restore if minimized; select the tab for a tab reader.
+            const raise = (rd) => {
+                try {
+                    const w = rd && rd._window;
+                    if (!w) return;
+                    try { if (w.windowState === 2 /* STATE_MINIMIZED */ && typeof w.restore === "function") w.restore(); } catch (e) {}
+                    try { w.focus(); } catch (e) {}
+                    try { if (rd.tabID && w.Zotero_Tabs && typeof w.Zotero_Tabs.select === "function") w.Zotero_Tabs.select(rd.tabID); } catch (e) {}
+                } catch (e) {}
+            };
             // Find the coupled reader. Prefer a remembered link, but fall back
             // to ANY other open reader of the same item — so the coupling
             // survives the duplicate being dragged to another window (which
@@ -8276,11 +8419,16 @@ class _ReaderMixin {
                 reader._wvDupReader = partner;
                 partner._wvDupSource = reader;
                 try { this._wvSetupReaderLinkClicks(partner); } catch (e) {}
+                raise(partner);   // bring it to front BEFORE navigating so it's visible
                 await this._wvNavigateReaderPrimary(partner, location);
                 return;
             }
-            // No coupled reader open -> create a duplicate window.
-            const dup: any = await Zotero.Reader.open(itemID, location,
+            // No coupled reader open -> create a duplicate window. Open it WITHOUT
+            // a location: passing one makes the reader navigate-with-flash on open,
+            // arming the NATIVE uncancellable 2s highlight timer (before our
+            // resettable patch is applied) — which then wipes the NEXT click's
+            // highlight. We navigate + highlight it ourselves below instead.
+            const dup: any = await Zotero.Reader.open(itemID, null,
                 { openInWindow: true, allowDuplicate: true });
             if (dup) {
                 reader._wvDupReader = dup;
@@ -8290,6 +8438,7 @@ class _ReaderMixin {
                 } catch (e) {}
                 try { this._wvSetupReaderLinkClicks(dup); } catch (e) {}
                 await this._wvNavigateReaderPrimary(dup, location);
+                raise(dup);   // ensure the new window is on top
             }
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenInDupWindow err: " + e);
@@ -8314,6 +8463,10 @@ class _ReaderMixin {
     _wvWireReaderLinkClicks(reader, view) {
         try {
             if (!reader || !view) return;
+            // Make this view's native highlight clear-timer RESETTABLE up front, so
+            // EVERY native-navigate highlight (internal links, bookmarks, annotation
+            // jumps) gets the fix — not just our Ctrl/Shift navigation. Idempotent.
+            try { this._wvEnsureResettableHighlight(view); } catch (e) {}
             const win = view._iframeWindow;
             if (!win || win._wvLinkClicksWired) return;
             const handler = (event) => {
@@ -8409,6 +8562,80 @@ class _ReaderMixin {
                 }
             };
             win.addEventListener("pointerup", handler, true);
+            // Suppress the reader's native internal-link / citation PREVIEW popup
+            // while Ctrl/Cmd or Shift is held: it renders over the link and would
+            // eat the modified click meant for the split/dup navigation above.
+            // Wrap the view's popup callback to drop popups while a modifier is
+            // down, and hide any visible popup the moment one is pressed. Normal
+            // (no-modifier) hover previews are unaffected.
+            try {
+                if (typeof view._onSetOverlayPopup === "function") {
+                    const origSet = view._onSetOverlayPopup;
+                    const hide = () => {
+                        try { if (view._overlayPopupDelayer) view._overlayPopupDelayer.close(() => {}); } catch (e) {}
+                        // Reset the reader's selected-overlay so a later no-modifier
+                        // hover re-opens the preview (the reader skips re-opening
+                        // while `_selectedOverlay === overlay`).
+                        try { view._selectedOverlay = null; } catch (e) {}
+                        try { origSet.call(view, null); } catch (e) {}
+                    };
+                    view._onSetOverlayPopup = function (popup) {
+                        try { return origSet.call(view, win._wvLinkMod ? null : popup); } catch (e) {}
+                    };
+                    const track = (e) => {
+                        try {
+                            const mod = !!((Zotero.isMac ? e.metaKey : e.ctrlKey) || e.shiftKey);
+                            win._wvLinkMod = mod;
+                            if (mod && (view._overlayPopup || view._selectedOverlay)) hide();
+                        } catch (er) {}
+                    };
+                    win.addEventListener("keydown", track, true);
+                    win.addEventListener("keyup", track, true);
+                    win.addEventListener("pointermove", track, true);
+                    win._wvOverlayPopupTrack = track;
+                }
+            } catch (e) {}
+            // Kill the flash of extended text-selection on a MODIFIED click that
+            // lands on a link/citation overlay. On Shift+pointerdown the reader
+            // EXTENDS the prior selection and paints it (pdf-view.js
+            // _handlePointerDown -> selectText -> getModifiedSelectionRanges ->
+            // _render), so an earlier click + our Shift+click selected all the text
+            // in between. We can't pre-empt the reader's handler (registered first,
+            // same window/capture), and we can't hit-test inside a getActionAtPosition
+            // wrap: the reader passes content-side `position`/`event` across the
+            // chrome/content compartment boundary, where `pointerEventToPosition`
+            // returns null and the passed-in position throws in `_getSelectableOverlay`.
+            // So we use our OWN pointerdown/mousedown listener — it runs right AFTER
+            // the reader's, in the SAME event dispatch, before the frame paints — and
+            // hit-test with a FRESH position (the reliable path our pointerup nav
+            // handler already uses). If it's a link/citation, wipe the just-extended
+            // selection synchronously so it never renders. Mirrors the nav handler's
+            // "exactly one of Ctrl/Shift" gate.
+            const clearSelIfModLink = (event) => {
+                try {
+                    if (event.button !== 0) return;
+                    const ctrl = Zotero.isMac ? event.metaKey : event.ctrlKey;
+                    const shift = event.shiftKey;
+                    if (ctrl === shift) return;   // need exactly one modifier
+                    if (typeof view.pointerEventToPosition !== "function"
+                        || typeof view._getSelectableOverlay !== "function") return;
+                    let pos;
+                    try { pos = view.pointerEventToPosition(event); } catch (e) { return; }
+                    if (!pos) return;
+                    let ov;
+                    try { ov = view._getSelectableOverlay(pos); } catch (e) { return; }
+                    if (!ov || (ov.type !== "internal-link" && ov.type !== "citation")) return;
+                    // Wipe the reader's selection model + re-render in this same
+                    // dispatch (our _render runs last -> the extended range never paints).
+                    try { if (typeof view._setSelectionRanges === "function") view._setSelectionRanges(); } catch (e) {}
+                    try { view._selectionRanges = []; } catch (e) {}
+                    try { if (typeof view._render === "function") view._render(); } catch (e) {}
+                    try { const s = win.getSelection && win.getSelection(); if (s && s.removeAllRanges) s.removeAllRanges(); } catch (e) {}
+                } catch (e) {}
+            };
+            win.addEventListener("mousedown", clearSelIfModLink, true);
+            win.addEventListener("pointerdown", clearSelIfModLink, true);
+            win._wvSelClearHandler = clearSelIfModLink;
             win._wvLinkClicksWired = true;
             win._wvLinkClicksHandler = handler;
             this._dbg("[Weavero] reader link-clicks: wired a pdf.js iframe");

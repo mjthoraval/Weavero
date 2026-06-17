@@ -2013,8 +2013,14 @@ class _TabGroupsMixin {
     /** Item key for a reader-window deck tab. */
     _wvTabGroupDeckKey(tab: any) {
         try {
-            if (!tab || tab.itemID == null) return null;
-            const it: any = Zotero.Items.get(tab.itemID);
+            if (!tab) return null;
+            // A reader-window `_wvWT` tab carries `.itemID`; a MAIN Zotero tab
+            // carries `.data.itemID`. Handle both — using only `.itemID` made
+            // every key lookup return null for main tabs, so the claim pass never
+            // stamped them (migrated/drag-created groups silently vanished).
+            const itemID = (tab.itemID != null) ? tab.itemID : (tab.data && tab.data.itemID);
+            if (itemID == null) return null;
+            const it: any = Zotero.Items.get(itemID);
             return it ? { libraryID: it.libraryID, itemKey: it.key } : null;
         } catch (e) { return null; }
     }

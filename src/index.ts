@@ -1971,6 +1971,48 @@ class WeaveroPlugin {
             Zotero.debug("[Weavero] Notes.open patch err: " + e);
         }
 
+        // Route "open item" to an existing reader-WINDOW tab. Zotero's own
+        // "focus the already-open tab" (getTabIDByItemID) only checks MAIN-window
+        // tabs, so an item open ONLY in a separate reader window would open a
+        // duplicate in the main bar. If it's hosted in a _wvWT reader window (and
+        // not in a main tab), raise that window + switch to the tab instead.
+        // Restored in destroy().
+        try {
+            const Reader: any = (Zotero as any).Reader;
+            if (Reader && typeof Reader.open === "function" && !Reader._wvOrigOpen) {
+                Reader._wvOrigOpen = Reader.open;
+                const self = this;
+                Reader.open = function (itemID: any, location: any, opts: any = {}) {
+                    try {
+                        if (opts && !opts.allowDuplicate && !opts.openInWindow && (self as any)._wvWTFindTabForItem) {
+                            let inMain = false;
+                            for (const mw of (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()])) {
+                                const ZT: any = mw && (mw as any).Zotero_Tabs;
+                                if (ZT && typeof ZT.getTabIDByItemID === "function" && ZT.getTabIDByItemID(itemID)) { inMain = true; break; }
+                            }
+                            if (!inMain) {
+                                const hosted = (self as any)._wvWTFindTabForItem(itemID);
+                                if (hosted && hosted.win && hosted.tab) {
+                                    try { hosted.win.focus(); } catch (e) {}
+                                    try { (self as any)._wvWTSwitch(hosted.win, hosted.tab.id); } catch (e) {}
+                                    if (location) {
+                                        const navTab = hosted.tab, w2: any = hosted.win;
+                                        const st2 = (w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout;
+                                        const doNav = () => { try { if (navTab.reader && typeof navTab.reader.navigate === "function") navTab.reader.navigate(location); } catch (e) {} };
+                                        if (navTab.reader && navTab.reader._internalReader) doNav(); else st2(doNav, 200);
+                                    }
+                                    return Promise.resolve(undefined);   // handled — don't open a duplicate
+                                }
+                            }
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] reader-open redirect err: " + e); }
+                    return Reader._wvOrigOpen.call(Reader, itemID, location, opts);
+                };
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] Reader.open patch err: " + e);
+        }
+
         // 0. Register default pref values so Zotero's pref-binding system can find them
         try {
             Services.prefs.getDefaultBranch("extensions.zotero.")
@@ -2562,8 +2604,9 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
-        // Make the "Move Tab" submenu multi-select aware ("Move Tabs").
-        this._registerMoveTabsMenu();
+        // (The "Move Tab"→"Move Tabs" multi-select relabel is folded into the
+        // pin menu's onShowing — see _registerPinTabMenu — since a standalone
+        // hidden MenuManager item never relabeled reliably.)
         // Firefox-style tab groups (chip + colored underline in the tab bar).
         this._registerTabGroupMenus();
         // "New Main Window" entry — gated on the `weavero.devNewMainWindow`
@@ -3568,6 +3611,15 @@ class WeaveroPlugin {
         } catch (e) {
             Zotero.debug("[Weavero] Notes.open un-patch err: " + e);
         }
+        try {
+            const Reader: any = (Zotero as any).Reader;
+            if (Reader && Reader._wvOrigOpen) {
+                Reader.open = Reader._wvOrigOpen;
+                delete Reader._wvOrigOpen;
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] Reader.open un-patch err: " + e);
+        }
 
         // 0c. Unregister Weavero pref pane(s). Without this, a
         //     plugin reload (or any flow that calls destroy then
@@ -3666,7 +3718,6 @@ class WeaveroPlugin {
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
         this._unregisterPinTabMenu();
-        this._unregisterMoveTabsMenu();
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
         this._unregisterDevNewWindowMenu();

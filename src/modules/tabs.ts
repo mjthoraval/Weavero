@@ -2397,6 +2397,19 @@ class _TabsMixin {
                                 if (dup && dup.nextSibling !== ctx.menuElem) {
                                     popup.insertBefore(ctx.menuElem, dup.nextSibling);
                                 }
+                                // Multi-select: relabel the native "Move Tab" submenu
+                                // to "Move Tabs" and make Move to Start/End act on the
+                                // whole selection. Folded into this (proven-firing)
+                                // onShowing — the standalone hidden-item registration
+                                // never relabeled reliably.
+                                try {
+                                    const win2: any = ctx.menuElem.ownerDocument && ctx.menuElem.ownerDocument.defaultView;
+                                    const tabID2 = ctx.tabID;
+                                    if (win2 && tabID2 && tabID2 !== "zotero-pane" && self._wvTabMultiSelTargets) {
+                                        const tg = self._wvTabMultiSelTargets(win2, tabID2);
+                                        if (tg && tg.length > 1) self._wvMakeMoveTabMenuMulti(win2, popup, tg);
+                                    }
+                                } catch (e) {}
                             } catch (e) {}
                         } catch (e) {
                             try { ctx.setVisible(false); } catch (e2) {}

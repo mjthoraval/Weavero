@@ -11647,9 +11647,14 @@ class _ReaderMixin {
      *  apply path). */
     _applyReaderCompactMenubar(reader) {
         try {
-            if (!reader || reader.tabID) return;   // window-mode only
+            if (!reader || !reader._window) return;
             const win = reader._window;
             if (!win || !win.document) return;
+            // Reader WINDOWS only (not a reader TAB in the main window). Gate on
+            // the window type, NOT on tabID being unset: a reader instance moved
+            // in by a no-reload swap carries a synthetic `wvwt-…` tabID, which
+            // used to make this bail → the menubar stayed visible in those windows.
+            try { if (win.document.documentElement.getAttribute("windowtype") !== "zotero:reader") return; } catch (e) { return; }
             if ((Zotero as any).isMac) return;
             if (win._wvCompactMenubar) return;
             const doc = win.document;

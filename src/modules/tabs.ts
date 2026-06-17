@@ -778,14 +778,27 @@ class _TabsMixin {
             // user re-opens them). Stale pins (item gone) are dropped.
             const openSet = new Set<string>();
             for (const p of pinnedOpenInOrder) openSet.add(p.libraryID + ":" + p.itemKey);
+            // itemIDs of ALL open tabs (incl. ones whose item isn't cached yet on
+            // restart) — lets us tell a still-open-but-unloaded pinned tab from a
+            // genuinely CLOSED one.
+            const openTabItemIDs = new Set<number>();
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const iid = Z_Tabs._tabs[i] && Z_Tabs._tabs[i].data && Z_Tabs._tabs[i].data.itemID;
+                if (iid != null) openTabItemIDs.add(iid);
+            }
+            const quitting = !!(this as any)._wvQuitting;
             const newPref: Array<{ libraryID: number, itemKey: string }> = pinnedOpenInOrder
                 .map(p => ({ libraryID: p.libraryID, itemKey: p.itemKey }));
             for (const p of pinPref) {
                 if (openSet.has(p.libraryID + ":" + p.itemKey)) continue;
-                // Pin with no open tab: keep IF the item still exists.
+                // A pin with no MATCHED open tab. DROP it (Zotero-like: a closed
+                // pinned tab is forgotten, no ghost entries) UNLESS a tab for the
+                // item is still open but its item isn't cached yet (restart), or
+                // we're quitting (keep so it restores pinned next launch).
                 try {
                     const id = Zotero.Items.getIDFromLibraryAndKey(p.libraryID, p.itemKey);
-                    if (id) newPref.push(p);
+                    if (!id) continue;                          // item gone → drop
+                    if (quitting || openTabItemIDs.has(id)) newPref.push(p);
                 } catch (e) {}
             }
             // Persist only if the array changed (order or content).

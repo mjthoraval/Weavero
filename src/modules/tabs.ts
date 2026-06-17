@@ -1355,6 +1355,12 @@ class _TabsMixin {
                             if (Date.now() - startTs < 2000) targetWin.setTimeout(poll, 80);
                             return;
                         }
+                        // Preserve the source tab's id across the (reload) move — only a
+                        // real `tab-…` id (the source's synthetic ids aren't meaningful).
+                        try {
+                            const sid = payload && payload.sourceTabId;
+                            if (sid && sid !== tab.id && /^tab-/.test(String(sid))) this._wvRenameTab(targetWin, tab.id, sid);
+                        } catch (e) {}
                         // Position the new tab at the drop slot.
                         try {
                             if (typeof Z_Tabs.move === "function") {
@@ -2407,7 +2413,10 @@ class _TabsMixin {
                                     const tabID2 = ctx.tabID;
                                     if (win2 && tabID2 && tabID2 !== "zotero-pane" && self._wvTabMultiSelTargets) {
                                         const tg = self._wvTabMultiSelTargets(win2, tabID2);
-                                        if (tg && tg.length > 1) self._wvMakeMoveTabMenuMulti(win2, popup, tg);
+                                        if (tg && tg.length > 1) {
+                                            self._wvMakeMoveTabMenuMulti(win2, popup, tg);
+                                            self._wvMakeCloseTabsMenuMulti(win2, popup, tg);
+                                        }
                                     }
                                 } catch (e) {}
                             } catch (e) {}
@@ -2535,6 +2544,25 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvMakeMoveTabMenuMulti err: " + e); }
     }
 
+    /** Relabel the native "Close" menuitem to "Close N Tabs" and rebind it to
+     *  close the whole `targets` selection (Firefox's "Close N Tabs"). Only the
+     *  plain Close item — "Close Other Tabs" has a distinct label. */
+    _wvMakeCloseTabsMenuMulti(win: any, popup: any, targets: any[]) {
+        try {
+            const closeLabel = Zotero.getString("general.close");
+            for (const mi of Array.from(popup.querySelectorAll("menuitem")) as any[]) {
+                if (!mi.getAttribute || mi.getAttribute("label") !== closeLabel) continue;
+                const clone = mi.cloneNode(true);   // drops the native single-tab command listener
+                clone.setAttribute("label", "Close " + targets.length + " Tabs");
+                mi.replaceWith(clone);
+                clone.addEventListener("command", () => {
+                    try { const ZT: any = win && (win as any).Zotero_Tabs; if (ZT && typeof ZT.close === "function") ZT.close(targets.slice()); } catch (e) {}
+                });
+                break;   // only the first plain "Close" (not "Close Other Tabs")
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMakeCloseTabsMenuMulti err: " + e); }
+    }
+
     /** Move every tab in `ids` to the start (just after the library tab) or the
      *  end of the bar, preserving their relative order. Forward order → end and
      *  reverse order → position 1 each keep the group's internal order intact
@@ -2627,6 +2655,52 @@ class _TabsMixin {
             }
         } catch (e) {}
         this._devNewWindowMenuID = null;
+    }
+
+    /** Main-window tab context-menu item: "Reopen Closed Window / Group". Shown
+     *  only when Weavero's closed-stack has a (live) reader-window/group entry —
+     *  Zotero's own "Reopen Closed Tab" still covers closed tabs. Same
+     *  `target: "main/tab"` mechanism as the Pin and New-Main-Window entries. */
+    _registerReopenClosedMenu() {
+        try {
+            if (!((Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.registerMenu === "function")) return;
+            this._unregisterReopenClosedMenu();
+            const id = (Zotero as any).MenuManager.registerMenu({
+                menuID: "weavero-reopen-closed",
+                pluginID: "weavero@mjthoraval",
+                target: "main/tab",
+                menus: [{
+                    menuType: "menuitem",
+                    onShowing: (_ev: any, ctx: any) => {
+                        try {
+                            const label = this._wvClosedTopLabel();
+                            if (!label) { ctx.setVisible(false); return; }
+                            ctx.setVisible(true);
+                            ctx.menuElem.setAttribute("label", label);
+                        } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                    },
+                    onCommand: (_ev: any, ctx: any) => {
+                        try {
+                            const win = ctx && ctx.menuElem && ctx.menuElem.ownerDocument
+                                ? ctx.menuElem.ownerDocument.defaultView : Zotero.getMainWindow();
+                            this._wvClosedReopenLast(win);
+                        } catch (e) { Zotero.debug("[Weavero] reopen-closed cmd err: " + e); }
+                    },
+                }],
+            });
+            if (id) this._reopenClosedMenuID = id;
+        } catch (e) { Zotero.debug("[Weavero] _registerReopenClosedMenu err: " + e); }
+    }
+
+    _unregisterReopenClosedMenu() {
+        try {
+            if (this._reopenClosedMenuID && (Zotero as any).MenuManager
+                && typeof (Zotero as any).MenuManager.unregisterMenu === "function") {
+                (Zotero as any).MenuManager.unregisterMenu(this._reopenClosedMenuID);
+            }
+        } catch (e) {}
+        this._reopenClosedMenuID = null;
     }
 
     /** Keep the invariant "the OLDEST navigator:browser window is the untagged
@@ -2859,7 +2933,13 @@ class _TabsMixin {
         try {
             if (this._wvSessionQuitObserver) return;
             const self = this;
-            const obs = { observe() { try { self._wvSessionSaveSync(); } catch (e) {} } };
+            const obs = { observe() {
+                // Mark that we're quitting BEFORE windows tear down, so reader-window
+                // unload handlers don't PARK their groups (that's only for a genuine
+                // mid-session close — at quit the windows are restored next launch).
+                try { (self as any)._wvQuitting = true; } catch (e) {}
+                try { self._wvSessionSaveSync(); } catch (e) {}
+            } };
             this._wvSessionQuitObserver = obs;
             Services.obs.addObserver(obs, "quit-application-granted", false);
         } catch (e) { Zotero.debug("[Weavero] _wvSessionRegisterQuitFlush err: " + e); }
@@ -2872,6 +2952,183 @@ class _TabsMixin {
                 this._wvSessionQuitObserver = null;
             }
         } catch (e) {}
+    }
+
+    // ---- Recently-closed reader windows / groups (Reopen, Ctrl+Shift+T) ------
+    // Zotero natively tracks closed MAIN-WINDOW TABS (Zotero_Tabs.undoClose,
+    // Ctrl+Shift+T via zoteroPane.js captureKeyDown, "Reopen Closed Tab" menu).
+    // Weavero adds the things Zotero misses: closed separate READER WINDOWS and
+    // closed GROUPS. A small LIFO stack; Ctrl+Shift+T reopens Weavero's newest
+    // entry first, FALLING THROUGH to Zotero's tab-undo when our stack is empty.
+
+    _wvClosedPush(entry: any) {
+        try {
+            if (!entry) return;
+            const stack: any[] = ((this as any)._wvClosedStack = (this as any)._wvClosedStack || []);
+            entry.seq = ((this as any)._wvClosedSeq = ((this as any)._wvClosedSeq || 0) + 1);
+            stack.push(entry);
+            while (stack.length > 25) { const ev = stack.shift(); this._wvClosedEvict(ev); }
+        } catch (e) {}
+    }
+
+    /** When a closed-window entry leaves the stack WITHOUT being reopened (capped
+     *  off, or pruned as stale), delete the groups its close had PARKED if they're
+     *  still parked + unopened — so window-close groups don't pile up in the
+     *  saved-groups list forever (Firefox bounds closed windows + cleans up).
+     *  Explicitly-saved groups ("Save and close group") are NOT touched. */
+    _wvClosedEvict(entry: any) {
+        try {
+            if (!entry || entry.kind !== "readerWindow" || !entry.groupIds || !entry.groupIds.length) return;
+            const groups = (this as any)._tabGroupsGet();
+            const keep: any[] = [];
+            let dirty = false;
+            for (const g of groups) {
+                if (entry.groupIds.indexOf(g.id) >= 0 && (g as any).saved
+                        && (this as any)._wvTabGroupOpenCount(g.id) === 0) { dirty = true; continue; }
+                keep.push(g);
+            }
+            if (dirty) (this as any)._tabGroupsSet(keep);
+        } catch (e) {}
+    }
+
+    /** A group was reopened DIRECTLY from the saved-groups list — Firefox then
+     *  removes it (and its tabs) from any closed-window entry, so reopening that
+     *  window later doesn't DUPLICATE the now-open group. Strip the group's tabs
+     *  from each closed-window entry; drop an entry that held only this group. */
+    _wvClosedForgetGroup(groupID: any) {
+        try {
+            const stack: any[] = (this as any)._wvClosedStack;
+            if (!Array.isArray(stack) || !groupID) return;
+            for (let i = stack.length - 1; i >= 0; i--) {
+                const e = stack[i];
+                if (!e || e.kind !== "readerWindow" || !e.groupIds || e.groupIds.indexOf(groupID) < 0) continue;
+                e.groupIds = e.groupIds.filter((g: any) => g !== groupID);
+                e.tabs = (e.tabs || []).filter((t: any) => t.grp !== groupID);
+                if (!e.tabs.length) stack.splice(i, 1);   // window held only this group → drop it
+            }
+        } catch (e) {}
+    }
+
+    /** Is a stack entry still reopenable? readerWindow: any item still exists;
+     *  group: members still resolve AND it isn't already open. */
+    _wvClosedEntryLive(entry: any): boolean {
+        try {
+            if (!entry) return false;
+            if (entry.kind === "readerWindow") {
+                return (entry.tabs || []).some((t: any) => { try { return Zotero.Items.exists(t.itemID); } catch (e) { return false; } });
+            }
+            if (entry.kind === "group") {
+                const g = (this as any)._tabGroupsGet().find((x: any) => x.id === entry.groupID);
+                if (g && (this as any)._wvTabGroupOpenCount(entry.groupID) > 0) return false;   // already open
+                return (entry.members || []).some((m: any) => { try { return !!Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey); } catch (e) { return false; } });
+            }
+            return false;
+        } catch (e) { return false; }
+    }
+
+    /** Top non-stale entry (pruning stale ones in place), without removing it. */
+    _wvClosedPeek(): any {
+        const stack: any[] = (this as any)._wvClosedStack || [];
+        while (stack.length) {
+            const top = stack[stack.length - 1];
+            if (this._wvClosedEntryLive(top)) return top;
+            this._wvClosedEvict(stack.pop());   // prune stale + clean its parked groups
+        }
+        return null;
+    }
+
+    /** Menu label for the top entry, or null if nothing of ours to reopen. */
+    _wvClosedTopLabel(): string | null {
+        const top = this._wvClosedPeek();
+        if (!top) return null;
+        if (top.kind === "group") return "Reopen Closed Group";
+        if (top.kind === "readerWindow") {
+            const n = (top.tabs || []).filter((t: any) => { try { return Zotero.Items.exists(t.itemID); } catch (e) { return false; } }).length;
+            return n > 1 ? "Reopen Closed Window (" + n + " Tabs)" : "Reopen Closed Window";
+        }
+        return null;
+    }
+
+    /** Reopen Weavero's most-recently-closed entry (reader window / group).
+     *  Returns true if it handled something (caller then suppresses the native
+     *  tab-undo). `win` = where the action was triggered (group reopens there if
+     *  it's a reader window, else in the main window). */
+    _wvClosedReopenLast(win: any): boolean {
+        try {
+            const stack: any[] = (this as any)._wvClosedStack || [];
+            let top: any = null;
+            while (stack.length) { const t = stack[stack.length - 1]; if (this._wvClosedEntryLive(t)) { top = t; break; } this._wvClosedEvict(stack.pop()); }
+            if (!top) return false;
+            stack.pop();
+            if (top.kind === "readerWindow") {
+                const entries = (top.tabs || []).filter((t: any) => { try { return Zotero.Items.exists(t.itemID); } catch (e) { return false; } });
+                if (!entries.length) return false;
+                // Un-park the groups this window's close had saved — reopening the
+                // window RESTORES them into it and removes them from the saved list
+                // (Firefox consumes the saved group on reopen). The grouping itself
+                // is restored from each entry's `grp` by _wvOpenItemsInNewReaderWindow.
+                try {
+                    const groups = (this as any)._tabGroupsGet();
+                    let dirty = false;
+                    for (const gid of (top.groupIds || [])) { const g = groups.find((x: any) => x.id === gid); if (g && (g as any).saved) { delete (g as any).saved; dirty = true; } }
+                    if (dirty) (this as any)._tabGroupsSet(groups);
+                } catch (e) {}
+                try { (this as any)._wvOpenItemsInNewReaderWindow(entries); } catch (e) {}
+                return true;
+            }
+            if (top.kind === "group") {
+                let gid = top.groupID;
+                // If the group was DELETED (not just parked), recreate its def from
+                // the captured snapshot so it can be reopened.
+                let g = (this as any)._tabGroupsGet().find((x: any) => x.id === gid);
+                if (!g) {
+                    try {
+                        const ng = (this as any)._tabGroupCreate(top.name || "", top.color || "blue");
+                        gid = ng.id;
+                        for (const m of (top.members || [])) (this as any)._tabGroupAddKey(gid, { libraryID: m.libraryID, itemKey: m.itemKey });
+                    } catch (e) { return false; }
+                }
+                const target = (this._wvTabGroupIsReaderWin && this._wvTabGroupIsReaderWin(win)) ? win : Zotero.getMainWindow();
+                try { (this as any)._wvTabGroupOpenInWindow(target, gid); } catch (e) {}
+                return true;
+            }
+            return false;
+        } catch (e) { Zotero.debug("[Weavero] _wvClosedReopenLast err: " + e); return false; }
+    }
+
+    /** Ctrl/Cmd+Shift+T → reopen last closed. Weavero entries take priority; an
+     *  empty stack lets the event fall through to Zotero's native tab-undo (main
+     *  window). WINDOW-level CAPTURE runs before Zotero's document-level
+     *  captureKeyDown (zoteroPane.js), so suppressing it stops the double-handle.
+     *  Idempotent per window. */
+    _wvWireReopenClosedShortcut(win: any) {
+        try {
+            if (!win || win._wvReopenShortcutWired) return;
+            win._wvReopenShortcutWired = true;
+            const suppress = (e: any) => { e.preventDefault(); try { e.stopImmediatePropagation(); } catch (er) { try { e.stopPropagation(); } catch (er2) {} } };
+            const handler = (e: any) => {
+                try {
+                    const accel = (Zotero as any).isMac ? e.metaKey : e.ctrlKey;
+                    if (!accel || !e.shiftKey || e.altKey) return;
+                    if (String(e.key || "").toLowerCase() !== "t") return;
+                    // 1) Weavero's closed reader-window / group stack (priority).
+                    if (this._wvClosedPeek()) { suppress(e); this._wvClosedReopenLast(win); return; }
+                    // 2) Reader window: its own closed-TAB stack (no native undo here).
+                    try {
+                        if (this._wvTabGroupIsReaderWin && this._wvTabGroupIsReaderWin(win) && win._wvWTClosed && win._wvWTClosed.length) {
+                            suppress(e);
+                            const last = win._wvWTClosed.pop();
+                            if (last && last.itemID != null) (this as any)._wvWTMountTab(win, last.itemID, { allowDuplicate: true, select: true });
+                            return;
+                        }
+                    } catch (er) {}
+                    // 3) Main window, empty Weavero stack → fall through to Zotero's
+                    //    native captureKeyDown (reopen closed tab). Do nothing here.
+                } catch (er) {}
+            };
+            win.addEventListener("keydown", handler, true);
+            win._wvReopenShortcutHandler = handler;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireReopenClosedShortcut err: " + e); }
     }
 
     // ---- Per-window items-tree column isolation (interim) ------------------

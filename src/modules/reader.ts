@@ -1771,6 +1771,17 @@ class _ReaderMixin {
     _toolbarHandlerImpl(event) {
         try {
             const { reader, doc, append } = event || {};
+            // Wire the per-window dead-reader cleanup for ANY reader window as
+            // early as its first toolbar render — independent of the title-bar
+            // pref, of `_wvWT`, and of the standalone-vs-tab check below (a
+            // re-homed reader carries a synthetic tabID, so don't gate on it).
+            try {
+                const rw = reader && reader._window;
+                if (rw && rw.document && rw.document.documentElement.getAttribute("windowtype") === "zotero:reader") {
+                    this._wvWireReaderWindowReadersCleanup(rw);
+                    try { (this as any)._wvWireReopenClosedShortcut(rw); } catch (e2) {}   // Ctrl+Shift+T
+                }
+            } catch (e) {}
             if (typeof append !== "function" || !doc) return;
             // Standalone reader windows have no `tabID` (ReaderTab does).
             if (!reader || reader.tabID) return;
@@ -4036,8 +4047,67 @@ class _ReaderMixin {
     /** Get (creating if needed) the per-window multi-tab state. */
     _wvWTState(win: any) {
         if (!win) return null;
-        if (!win._wvWT) win._wvWT = { tabs: [], activeId: null, seq: 0 };
+        if (!win._wvWT) {
+            win._wvWT = { tabs: [], activeId: null, seq: 0 };
+            try { this._wvWireReaderWindowReadersCleanup(win); } catch (e) {}
+        }
         return win._wvWT;
+    }
+
+    /** Attach a one-time `unload` listener so that when this reader window
+     *  closes, any `Zotero.Reader._readers` entry STILL pointing at it is
+     *  spliced out and a session save is triggered. Without this, a no-reload
+     *  move/close that empties a window can leave an un-spliced ReaderWindow;
+     *  once the window is nuked that entry becomes a dead cross-compartment
+     *  Proxy that wedges `Reader.open` and freezes `Session.save` (see the
+     *  dev.44/45 purge wraps — this is the proactive half that stops the dead
+     *  entry forming at all). A reader RE-HOMED to another window points its
+     *  `_window` elsewhere, so it's correctly left alone; only orphans of THIS
+     *  dying window are removed. Idempotent per window. */
+    _wvWireReaderWindowReadersCleanup(win: any) {
+        try {
+            if (!win || win._wvReadersCleanupWired) return;
+            win._wvReadersCleanupWired = true;
+            const onUnload = (e: any) => {
+                try { if (e.target !== win.document) return; } catch (er) { return; }
+                // Mid-session close: PARK (save) any group whose only members live in
+                // this closing window, so it persists for next launch instead of
+                // being deleted by the next main-window apply (Firefox saved-group
+                // behaviour). Skipped at quit (`_wvQuitting`), where the window is
+                // restored next launch and the group must stay live. Runs BEFORE the
+                // reader splice below, while this window's `_wvWT` tabs still exist.
+                let parkedGroupIds: any[] = [];
+                try { parkedGroupIds = (this as any)._wvTabGroupParkClosingWindowGroups(win) || []; } catch (er) {}
+                // Record this closing reader window for "Reopen Closed Window"
+                // (Ctrl+Shift+T). Skipped at quit (the window is restored next
+                // launch). Captured here while `win._wvWT.tabs` still exists. Each
+                // tab keeps its group stamp (`grp`) and the entry remembers which
+                // groups this close PARKED, so reopen restores the grouping AND
+                // un-parks them (Firefox: reopening consumes the saved group).
+                try {
+                    if (!(this as any)._wvQuitting) {
+                        const st = win._wvWT;
+                        const tabs = ((st && st.tabs) ? st.tabs : [])
+                            .filter((t: any) => t && t.itemID != null)
+                            .map((t: any) => ({ itemID: t.itemID, isNote: t.type === "note", id: t.id, grp: t.wvGroupId || null }));
+                        if (tabs.length) (this as any)._wvClosedPush({ kind: "readerWindow", tabs, groupIds: parkedGroupIds });
+                    }
+                } catch (er) {}
+                try {
+                    const rs: any[] = (Zotero.Reader as any)._readers || [];
+                    let removed = 0;
+                    for (let i = rs.length - 1; i >= 0; i--) {
+                        const r = rs[i];
+                        let belongs = false;
+                        // A dead Proxy throws on any access → treat as orphan, drop it.
+                        try { belongs = !!r && r._window === win; } catch (er) { belongs = true; }
+                        if (belongs) { rs.splice(i, 1); removed++; }
+                    }
+                    if (removed) { try { (Zotero as any).Session.debounceSave(); } catch (er) {} }
+                } catch (er) {}
+            };
+            win.addEventListener("unload", onUnload, { once: true });
+        } catch (e) { Zotero.debug("[Weavero] _wvWireReaderWindowReadersCleanup err: " + e); }
     }
 
     /** Stable-partition `st.tabs` so pinned tabs cluster at the left, each
@@ -6013,7 +6083,7 @@ class _ReaderMixin {
                 for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
                 try { if (win._wvSelWTabIDs && win._wvSelWTabIDs.clear) win._wvSelWTabIDs.clear(); } catch (e) {}
                 for (const id of tabIds) { try { this._wvWTCloseTab(win, id); } catch (e) {} }
-                this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote })));
+                this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote, id: e.id })));
             };
 
             const swappable = (S: any) => !!(S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader);
@@ -6063,7 +6133,10 @@ class _ReaderMixin {
                             try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {}
                             try { this._wvWTCloseTab(win, m.id); } catch (e) {}
                             await new Promise(r => setT(r, 120));
-                            try { await this._wvWTMountTab(newWin, m.itemID, { select: false }); } catch (e) {}
+                            // allowDuplicate: this is a MOVE (source already closed) of an
+                            // explicit user tab — if the target already shows this item
+                            // (duplicate tabs), dedup-merging would silently lose the tab.
+                            try { const nid = await this._wvWTMountTab(newWin, m.itemID, { allowDuplicate: true, select: false }); if (nid != null) this._wvWTRenameTab(newWin, nid, m.id); } catch (e) {}
                         }
                         await new Promise(r => setT(r, 40));
                     }
@@ -6097,7 +6170,7 @@ class _ReaderMixin {
                 try { if (win._wvSelTabIDs && win._wvSelTabIDs.clear) win._wvSelTabIDs.clear(); } catch (e) {}
                 try { this._wvTabMultiSelSync(win); } catch (e) {}
                 try { Z_Tabs.close(tabIDs); } catch (e) {}
-                this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote })));
+                this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote, id: e.id })));
             };
 
             // No-reload path: SEED a new standalone window by tearing off the first
@@ -6144,10 +6217,8 @@ class _ReaderMixin {
      *  it. Used by every "tear out / move to new window" path (reader strip OR
      *  main bar, drag OR menu). `entries`: [{ itemID, isNote }]. */
     async _wvOpenItemsInNewReaderWindow(entries: any[]) {
-        const glog = (m: string) => { try { const a: any = ((Zotero as any)._wvGrpDbg = (Zotero as any)._wvGrpDbg || []); a.push((Date.now() % 100000) + " [neww] " + m); if (a.length > 400) a.shift(); } catch (e) {} };
         try {
-            if (!entries || !entries.length) { glog("ABORT: no entries"); return; }
-            glog("START n=" + entries.length + " items=" + JSON.stringify(entries.map((e: any) => e.itemID)));
+            if (!entries || !entries.length) return;
             const mainWin: any = Zotero.getMainWindow();
             const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
             const readerWins = () => {
@@ -6156,7 +6227,6 @@ class _ReaderMixin {
                 return out;
             };
             const before = new Set(readerWins());
-            glog("readerWinsBefore=" + before.size);
             // ── new-window diagnostics ───────────────────────────────────────
             try {
                 const dbg = entries.map((e: any) => {
@@ -6183,7 +6253,6 @@ class _ReaderMixin {
             const first = entries[firstIdx];
             const firstReaderable = isReaderable(first.itemID);
             let compactReader = "?"; try { compactReader = String((this as any)._getCompactTitleBarReader()); } catch (e) {}
-            glog("create firstIdx=" + firstIdx + " itemID=" + first.itemID + " readerable=" + firstReaderable + " compactReader=" + compactReader);
             Zotero.debug("[Weavero][new-window] creating window from firstIdx=" + firstIdx + " itemID=" + first.itemID + " readerable=" + firstReaderable);
             try {
                 if (!firstReaderable) {
@@ -6193,12 +6262,10 @@ class _ReaderMixin {
                     (Zotero.Reader as any).open(first.itemID, null, { openInWindow: true, allowDuplicate: true });
                 }
             } catch (eOpen) {
-                glog("create THREW: " + eOpen);
                 Zotero.debug("[Weavero][new-window] FAILED to create window for itemID=" + first.itemID + ": " + eOpen);
                 return;
             }
-            glog("create issued ok");
-            if (entries.length === 1) { glog("single entry → done (no mount)"); return; }   // single tear-off: nothing else to mount
+            if (entries.length === 1) return;   // single tear-off: nothing else to mount
             // Find the freshly-created reader window, then wait for Weavero to
             // wire its strip before mounting the remaining tabs into it.
             let newWin: any = null;
@@ -6207,18 +6274,26 @@ class _ReaderMixin {
                 await new Promise(r => setT(r, 100));
                 for (const w of readerWins()) { if (!before.has(w)) { newWin = w; break; } }
             }
-            if (!newWin) { glog("newWin TIMEOUT (6s) — window never appeared"); Zotero.debug("[Weavero][new-window] new reader window never appeared (6s timeout)"); return; }
-            glog("newWin appeared after " + (Date.now() - t0) + "ms title=" + (() => { try { return (newWin.document.title || "").slice(0, 20); } catch (e) { return "?"; } })());
+            if (!newWin) { Zotero.debug("[Weavero][new-window] new reader window never appeared (6s timeout)"); return; }
             const t1 = Date.now();
             while (!newWin._wvWT && Date.now() - t1 < 4000) { await new Promise(r => setT(r, 80)); }
-            glog("_wvWT " + (newWin._wvWT ? ("ready after " + (Date.now() - t1) + "ms nativeTabs=" + newWin._wvWT.tabs.length) : "TIMEOUT (4s) — strip never wired"));
+            // Preserve the seed tab's id + group stamp on the new window's native
+            // tab (group stamp only set when reopening a closed window — entries
+            // from tear-off / group-migrate carry no `grp`, so this is a no-op there).
+            try { if (first && first.id && newWin._wvWT) this._wvWTRenameTab(newWin, "wvwt-native", first.id); } catch (e) {}
+            try { if (first && first.grp && newWin._wvWT) { const nat = newWin._wvWT.tabs.find((t: any) => t.native); if (nat) nat.wvGroupId = first.grp; } } catch (e) {}
             for (let i = 0; i < entries.length; i++) {
                 if (i === firstIdx) continue;
-                try { await this._wvWTMountTab(newWin, entries[i].itemID, { select: false }); glog("mounted " + entries[i].itemID); } catch (e) { glog("mount ERR " + entries[i].itemID + ": " + e); }
+                try {
+                    const nid = await this._wvWTMountTab(newWin, entries[i].itemID, { allowDuplicate: true, select: false });
+                    if (nid != null && entries[i].id) this._wvWTRenameTab(newWin, nid, entries[i].id);   // keep tab id
+                    if (entries[i].grp) { try { const t = newWin._wvWT && newWin._wvWT.tabs.find((x: any) => x.id === (entries[i].id || nid)); if (t) t.wvGroupId = entries[i].grp; } catch (e2) {} }   // restore group stamp
+                } catch (e) {}
                 await new Promise(r => setT(r, 60));
             }
-            glog("DONE tabsInNewWin=" + (newWin._wvWT ? newWin._wvWT.tabs.length : "?"));
             try { this._wvWTRenderStrip(newWin); } catch (e) {}
+            // Render group chips for any restored group stamps (reopen-closed-window).
+            try { (this as any)._applyTabGroupsReader && (this as any)._applyTabGroupsReader(newWin); } catch (e) {}
             // Raise/focus the new window. Mounting the rest + closing the source
             // tabs runs on the MAIN window, which otherwise leaves the freshly
             // created reader window behind; focus once now and again on a short
@@ -6378,7 +6453,9 @@ class _ReaderMixin {
                             // Pre-commit swap failure → classic mount fallback.
                             try { const owner = findOwner(); if (owner) owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
                             try {
-                                const mid = await this._wvWTMountTab(win, itemID, { select: true });
+                                let mid = await this._wvWTMountTab(win, itemID, { allowDuplicate: true, select: true });
+                                // Preserve the source tab's id across this (reload) fallback.
+                                try { if (mid != null && this._wvWTRenameTab(win, mid, dragTabId)) mid = dragTabId; } catch (e) {}
                                 if (mid != null && clientX != null) { try { this._wvWTReorderTab(win, mid, clientX); } catch (e) {} }
                             } catch (e) {}
                         }
@@ -6408,7 +6485,7 @@ class _ReaderMixin {
             // _moveReaderToTab), preserving scroll position.
             const mount = async () => {
                 try {
-                    const id = await this._wvWTMountTab(win, itemID, { select: true });
+                    const id = await this._wvWTMountTab(win, itemID, { allowDuplicate: true, select: true });
                     // Move the freshly-mounted tab (appended at the end) to the
                     // DROP POSITION, and pin it if dropped in the pinned region —
                     // _wvWTReorderTab does both from clientX, the same way an
@@ -6511,7 +6588,13 @@ class _ReaderMixin {
                 if (newId == null) {
                     safeClose(m.id);
                     await new Promise(r => setT(r, 120));
-                    try { newId = await this._wvWTMountTab(targetWin, m.itemID, { select: m.id === draggedId }); } catch (e) {}
+                    // allowDuplicate: source tab already closed; merging onto an existing
+                    // same-item tab would lose this one (duplicate-tab tear-off/move).
+                    try {
+                        newId = await this._wvWTMountTab(targetWin, m.itemID, { allowDuplicate: true, select: m.id === draggedId });
+                        // Preserve the original tab id across this (reload) fallback.
+                        if (newId != null && this._wvWTRenameTab(targetWin, newId, m.id)) newId = m.id;
+                    } catch (e) {}
                 }
                 if (m.id === draggedId) draggedNewId = newId;
                 await new Promise(r => setT(r, 40));
@@ -6638,9 +6721,15 @@ class _ReaderMixin {
                         }
                     } catch (e) { this._wvWTDbg("reader→reader swap err " + e); }
                     if (!done) {
-                        try { this._wvWTMountTab(targetWin, m.itemID, { allowDuplicate: false, select: m.id === sourceTabId }); } catch (e) {}
+                        // allowDuplicate: a MOVE of an explicit tab — if the target already
+                        // shows this item, dedup-merging then closing the source loses it.
+                        const before = (targetWin._wvWT && targetWin._wvWT.tabs) ? targetWin._wvWT.tabs.length : 0;
+                        let mid: any = null;
+                        try { mid = await this._wvWTMountTab(targetWin, m.itemID, { allowDuplicate: true, select: m.id === sourceTabId }); } catch (e) {}
+                        // Preserve the original tab id across this (reload) fallback.
+                        try { if (mid != null) this._wvWTRenameTab(targetWin, mid, m.id); } catch (e) {}
                         const landed = !!(targetWin._wvWT && targetWin._wvWT.tabs
-                            && targetWin._wvWT.tabs.some((t: any) => t.itemID === m.itemID));
+                            && targetWin._wvWT.tabs.length > before);
                         if (landed && m.id != null) { try { this._wvWTCloseTab(srcWin, m.id); } catch (e) {} }
                     }
                 }
@@ -6766,7 +6855,11 @@ class _ReaderMixin {
                         // Pre-commit donor failure → classic close+reopen.
                         try { this._wvWTCloseTab(win, tabId); } catch (e) {}
                         try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
-                        try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); } catch (e) {}
+                        try {
+                            const rd: any = await (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true });
+                            // Preserve the tab id if the reader tab carried a real `tab-…` id.
+                            try { if (rd && rd.tabID && /^tab-/.test(String(tabId))) (this as any)._wvRenameTab(mainWin, rd.tabID, tabId); } catch (e) {}
+                        } catch (e) {}
                     }
                 })();
                 return;
@@ -6790,7 +6883,12 @@ class _ReaderMixin {
             // opens in the most-recently-active main window.
             const open = () => {
                 try { if (mainWin && mainWin.focus) mainWin.focus(); } catch (e) {}
-                try { (Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }); }
+                try {
+                    Promise.resolve((Zotero.Reader as any).open(itemID, null, { openInWindow: false, allowDuplicate: true }))
+                        // Preserve the tab id if the reader tab carried a real `tab-…` id.
+                        .then((rd: any) => { try { if (rd && rd.tabID && /^tab-/.test(String(tabId))) (this as any)._wvRenameTab(mainWin, rd.tabID, tabId); } catch (e) {} })
+                        .catch(() => {});
+                }
                 catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain open err: " + e); }
             };
             const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
@@ -6838,7 +6936,12 @@ class _ReaderMixin {
                     // only the EXTRAS (skip if none — Zotero handles it alone).
                     const extraTabs = st.tabs.filter((t: any) => !t.native && t.itemID != null);
                     if (!extraTabs.length) continue;
-                    const extras = extraTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned }));
+                    // Persist each tab's group stamp (`wvGroupId`) so reader-window
+                    // group membership is restored DETERMINISTICALLY — not rebuilt by
+                    // the lossy claim pass (first-come per item-key drops a duplicate
+                    // reader tab from its group). The group definitions themselves live
+                    // in prefs and persist independently.
+                    const extras = extraTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned, grp: t.wvGroupId || null }));
                     // activeIndex is into the RESTORE order [native, ...extras] (the
                     // order _wvWTMaybeRestore rebuilds), not the live partitioned
                     // order — so the active tab survives even when pinning has
@@ -6853,13 +6956,13 @@ class _ReaderMixin {
                     // this, the native always restores first and an extra that was
                     // BEFORE it (e.g. a note first, PDF second) lands after it.
                     const order = realTabs.map((t: any) => t.itemID);
-                    out.push({ kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, order });
+                    out.push({ kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, nativeGrp: native.wvGroupId || null, order });
                 } else {
                     // ORPHAN window: the native tab was closed, so Zotero has no
                     // entry for it (it'd be lost). Weavero owns full recreation —
                     // persist every tab; on restore the first becomes the new
                     // native (see _wvWTLoadRestoreMap / _wvSessionRestoreOrphanReaderWindows).
-                    const tabs = realTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned }));
+                    const tabs = realTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned, grp: t.wvGroupId || null }));
                     let activeIndex = realTabs.findIndex((t: any) => t.id === st.activeId);
                     if (activeIndex < 0) activeIndex = 0;
                     out.push({ kind: "reader-orphan", tabs, activeIndex });
@@ -6900,7 +7003,7 @@ class _ReaderMixin {
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
                         if (g && g.kind === "reader" && g.nativeItemID != null) {
-                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, order: g.order };
+                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, nativeGrp: g.nativeGrp || null, order: g.order };
                         } else if (g && g.kind === "reader-orphan" && Array.isArray(g.tabs) && g.tabs.length) {
                             // Orphan: recreate by opening the FIRST tab as a fresh
                             // reader window (it becomes the new native); the rest
@@ -6910,9 +7013,10 @@ class _ReaderMixin {
                             const head = g.tabs[0];
                             if (head && head.itemID != null) {
                                 map[head.itemID] = {
-                                    extras: g.tabs.slice(1).map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned })),
+                                    extras: g.tabs.slice(1).map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned, grp: t.grp || null })),
                                     activeIndex: (g.activeIndex != null) ? g.activeIndex : 0,
                                     nativePinned: !!head.pinned,
+                                    nativeGrp: head.grp || null,
                                 };
                                 orphanIDs.push(head.itemID);
                             }
@@ -6964,14 +7068,15 @@ class _ReaderMixin {
                     //   v2: extras = [{ itemID, pinned }, ...]
                     const norm = entry.extras
                         .map((e: any) => (e && typeof e === "object")
-                            ? { itemID: e.itemID, pinned: !!e.pinned }
-                            : { itemID: e, pinned: false })
+                            ? { itemID: e.itemID, pinned: !!e.pinned, grp: e.grp || null }
+                            : { itemID: e, pinned: false, grp: null })
                         .filter((e: any) => e.itemID != null);
-                    // Restore native pinned state (v1 has no nativePinned → false).
+                    // Restore native pinned state (v1 has no nativePinned → false) and
+                    // its group stamp (deterministic group membership across restart).
                     try {
                         const st0 = win._wvWT;
                         const nat = st0 && st0.tabs && st0.tabs.find((t: any) => t.native);
-                        if (nat) nat.pinned = !!entry.nativePinned;
+                        if (nat) { nat.pinned = !!entry.nativePinned; if (entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; }
                     } catch (e) {}
                     // Track the tab ids in RESTORE order [native, ...extras] so the
                     // saved activeIndex resolves correctly even after we cluster
@@ -6993,13 +7098,13 @@ class _ReaderMixin {
                                 const it: any = Zotero.Items.get(ex.itemID);
                                 const isNote = !!(it && typeof it.isNote === "function" && it.isNote());
                                 const newId = isNote
-                                    ? await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true })
+                                    ? await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: true, select: false, await: true })
                                     : this._wvWTAddLazyReaderTab(win, ex.itemID);
                                 restoreOrderIds.push(newId);
                                 try {
                                     const st1 = win._wvWT;
                                     const t = st1 && st1.tabs.find((x: any) => x.id === newId);
-                                    if (t) t.pinned = ex.pinned;
+                                    if (t) { t.pinned = ex.pinned; if (ex.grp) t.wvGroupId = ex.grp; }
                                 } catch (e2) {}
                             } else {
                                 restoreOrderIds.push(null);
@@ -7036,6 +7141,9 @@ class _ReaderMixin {
                             this._wvWTSwitch(win, activeId);
                         }
                     } catch (e) {}
+                    // Reader-window group chips: the tabs were just stamped from the
+                    // saved wvGroupId, so render this window's group chips/regions.
+                    try { if ((this as any)._applyTabGroupsReader) (this as any)._applyTabGroupsReader(win); } catch (e) {}
                 } catch (e) { Zotero.debug("[Weavero] _wvWTMaybeRestore err: " + e); }
             })();
         } catch (e) { Zotero.debug("[Weavero] _wvWTMaybeRestore outer err: " + e); }
@@ -7085,6 +7193,8 @@ class _ReaderMixin {
                         if (win) {
                             const entry: any = this._wvWTRestoreMap && this._wvWTRestoreMap[itemID];
                             const extras: any[] = (entry && Array.isArray(entry.extras)) ? entry.extras : [];
+                            // Stamp the note-head's group (deterministic membership).
+                            try { const nat = win._wvWT && win._wvWT.tabs.find((t: any) => t.native); if (nat && entry && entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; } catch (e) {}
                             for (const ex of extras) {
                                 try {
                                     if (ex && ex.itemID != null && Zotero.Items.exists(ex.itemID)) {
@@ -7092,11 +7202,15 @@ class _ReaderMixin {
                                         // first click); notes mount fully.
                                         const exit: any = Zotero.Items.get(ex.itemID);
                                         const exIsNote = !!(exit && typeof exit.isNote === "function" && exit.isNote());
-                                        if (exIsNote) await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
-                                        else this._wvWTAddLazyReaderTab(win, ex.itemID);
+                                        const exId = exIsNote
+                                            ? await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: true, select: false, await: true })
+                                            : this._wvWTAddLazyReaderTab(win, ex.itemID);
+                                        // Restore this extra's group stamp.
+                                        try { if (ex.grp) { const t = win._wvWT && win._wvWT.tabs.find((x: any) => x.id === exId); if (t) t.wvGroupId = ex.grp; } } catch (e2) {}
                                     }
                                 } catch (e) {}
                             }
+                            try { if ((this as any)._applyTabGroupsReader) (this as any)._applyTabGroupsReader(win); } catch (e) {}
                             // Re-activate the tab that was active (index into
                             // [note-head, ...extras]).
                             try {
@@ -7310,16 +7424,19 @@ class _ReaderMixin {
                     if (anchorID == null) {
                         const firstReader = extras.find((e: any) => e.type !== "note");
                         anchorID = firstReader ? firstReader.itemID : null;
+                        // The anchor is ONE of the extras → remove exactly that copy
+                        // (by reference), NOT every extra sharing its itemID — else a
+                        // DUPLICATE tab of the anchor's item would be dropped.
+                        if (firstReader) { const ai = extras.indexOf(firstReader); if (ai >= 0) extras.splice(ai, 1); }
                     }
                     if (anchorID == null) continue;                 // nothing reader-able to anchor → leave in main
-                    extras = extras.filter((e: any) => e.itemID !== anchorID);
                     win = await this._wvOpenReaderWindowAndWait(anchorID);
                     if (win) closeMainTab(anchorID);                // the anchor is now the window's native
                 }
                 if (!win) continue;
                 for (const ex of extras) {
                     try {
-                        const newId = await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: false, select: false, await: true });
+                        const newId = await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: true, select: false, await: true });
                         try { const st = win._wvWT; const t = st && st.tabs.find((x: any) => x.id === newId); if (t) t.pinned = !!ex.pinned; } catch (e) {}
                         closeMainTab(ex.itemID);
                     } catch (e) { Zotero.debug("[Weavero] pullback mount err: " + e); }
@@ -11908,6 +12025,12 @@ class _ReaderMixin {
             // revert immediately and undo the apply.
             const onUnload = (e: any) => {
                 if (e.target !== win.document) return;
+                // If this reader was moved to ANOTHER window by a no-reload swap,
+                // it now lives there (reader._window points to the destination).
+                // Reverting via the reader would wipe the DESTINATION window's
+                // menubar hide, and the splice below would orphan the still-live
+                // reader. This window is just closing empty — leave it all alone.
+                try { if (reader && reader._window && reader._window !== win) return; } catch (er) {}
                 try { this._revertReaderCompactMenubar(reader); } catch (er) {}
                 // Defensively splice this reader out of Zotero.Reader._readers.
                 // Zotero's `<window onclose="reader.close()">` is supposed
@@ -12825,7 +12948,7 @@ class _ReaderMixin {
                 const moveEndItem = mkItem(str("tabs.moveToEnd", "Move to End"), () => moveToEdge(true));
                 movePopup.appendChild(moveStartItem);
                 movePopup.appendChild(moveEndItem);
-                const moveToMain = mkItem("Move Tab to Main Window", () => {
+                const moveToMain = mkItem("Move to Main Window", () => {
                     try {
                         const ids = moveSelIDs();
                         if (!ids.length) return;
@@ -12902,6 +13025,10 @@ class _ReaderMixin {
                 }, { getVisible: () => { try { return !!(win._wvWT && win._wvWT.tabs.length > 1); } catch (e) { return false; } } });
                 const reopen = mkItem(str("tabs.undoClose", "Reopen Closed Tab", 1), () => {
                     try {
+                        const lp: any = (Zotero as any).Weavero?.plugin;
+                        // Prefer Weavero's closed reader-window / group stack; else
+                        // this window's own closed-tab stack.
+                        if (lp && lp._wvClosedPeek && lp._wvClosedPeek()) { lp._wvClosedReopenLast(win); return; }
                         const stack = win._wvWTClosed;
                         if (!stack || !stack.length) return;
                         const last = stack.pop();
@@ -12976,7 +13103,7 @@ class _ReaderMixin {
                             const selMv = lpMv && lpMv._wvWTMultiSelTargets ? lpMv._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
                             const multiMv = !!(selMv && selMv.length > 1);
                             moveMenu.setAttribute("label", multiMv ? "Move Tabs" : str("tabs.move", "Move Tab"));
-                            moveToMain.setAttribute("label", multiMv ? "Move Tabs to Main Window" : "Move Tab to Main Window");
+                            moveToMain.setAttribute("label", multiMv ? "Move Tabs to Main Window" : "Move to Main Window");
                             moveToNewWin.setAttribute("label", multiMv ? "Move Tabs to New Window" : "Move to New Window");
                             // Tearing out needs >1 tab (a single-tab window already is its own).
                             moveToNewWin.hidden = !(win._wvWT && win._wvWT.tabs && win._wvWT.tabs.length > 1);
@@ -13037,7 +13164,15 @@ class _ReaderMixin {
                             groupMenu.hidden = !en;
                             removeFromGroup.hidden = !(en && grouped);
                         } catch (e) {}
-                        try { reopen.setAttribute("disabled", String(!(win._wvWTClosed && win._wvWTClosed.length))); } catch (e) {}
+                        try {
+                            const lpR: any = (Zotero as any).Weavero?.plugin;
+                            const wlabel = lpR && lpR._wvClosedTopLabel && lpR._wvClosedTopLabel();
+                            if (wlabel) { reopen.setAttribute("label", wlabel); reopen.setAttribute("disabled", "false"); }
+                            else {
+                                reopen.setAttribute("label", str("tabs.undoClose", "Reopen Closed Tab", 1));
+                                reopen.setAttribute("disabled", String(!(win._wvWTClosed && win._wvWTClosed.length)));
+                            }
+                        } catch (e) {}
                         try { const t = targetTab(); pinTab.setAttribute("label", (t && t.pinned) ? "Unpin Tab" : "Pin Tab"); } catch (e) {}
                         try {
                             const att: any = targetAttachment();
@@ -13147,7 +13282,7 @@ class _ReaderMixin {
                         }
                     } catch (e) {}
                 });
-                const moveToTab = mkItem("Move Tab to Main Window", () => {
+                const moveToTab = mkItem("Move to Main Window", () => {
                     try { this._moveNoteToTab(itemID); } catch (e) {}
                 });
                 const sep = doc.createXULElement("menuseparator");

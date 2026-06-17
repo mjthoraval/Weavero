@@ -1862,6 +1862,12 @@ class WeaveroPlugin {
     }
 
     async init() {
+        // Guard tab-group deletion through the startup restore window: separate
+        // reader windows restore (and re-stamp their tabs) AFTER the main window's
+        // first _applyTabGroups, so a group living only in a reader window would
+        // otherwise be deleted as "empty" before it restores. Cleared once reader
+        // restore settles (see the uiReadyPromise chain below).
+        (this as any)._wvTabGroupRestoreGuard = true;
         // Register pref defaults FIRST so native settings-pane binding (and our
         // own getters) see the right initial values.
         try { this._wvRegisterDefaultPrefs(); } catch (e) {}
@@ -1979,10 +1985,38 @@ class WeaveroPlugin {
         // Restored in destroy().
         try {
             const Reader: any = (Zotero as any).Reader;
+            // A reader window closed without its `_readers` entry being spliced
+            // leaves a dead cross-compartment Proxy. Touching ANY property on it
+            // throws "can't access dead object", which breaks two hot paths that
+            // iterate every reader:
+            //   • Reader.open → `_readers.find(r => r.itemID === …)` → NO item can
+            //     be opened (double-click does nothing).
+            //   • Reader.getWindowStates → `r instanceof ReaderWindow` → session
+            //     save throws + is swallowed → session.json freezes with stale
+            //     reader windows that Reader.init re-opens every restart (so the
+            //     breakage "survives" restarts until the dead entry is gone).
+            // Purging dead entries before both paths makes a stray Proxy harmless.
+            const purgeDeadReaders = () => {
+                try {
+                    const arr: any[] = Reader && Reader._readers;
+                    if (!Array.isArray(arr)) return;
+                    for (let i = arr.length - 1; i >= 0; i--) {
+                        try { void arr[i].itemID; } catch (e) { arr.splice(i, 1); }
+                    }
+                } catch (e) {}
+            };
+            if (Reader && typeof Reader.getWindowStates === "function" && !Reader._wvOrigGetWindowStates) {
+                Reader._wvOrigGetWindowStates = Reader.getWindowStates;
+                Reader.getWindowStates = function (...a: any[]) {
+                    purgeDeadReaders();
+                    return Reader._wvOrigGetWindowStates.apply(Reader, a);
+                };
+            }
             if (Reader && typeof Reader.open === "function" && !Reader._wvOrigOpen) {
                 Reader._wvOrigOpen = Reader.open;
                 const self = this;
                 Reader.open = function (itemID: any, location: any, opts: any = {}) {
+                    purgeDeadReaders();
                     try {
                         if (opts && !opts.allowDuplicate && !opts.openInWindow && (self as any)._wvWTFindTabForItem) {
                             let inMain = false;
@@ -2613,6 +2647,8 @@ class WeaveroPlugin {
         // pref (exposed in prefs.html under "Multiple main windows"; default
         // off — experimental).
         this._registerDevNewWindowMenu();
+        // "Reopen Closed Window / Group" tab-menu entry (Weavero's closed stack).
+        try { (this as any)._registerReopenClosedMenu(); } catch (e) {}
         // Plugins Manager search box (Ctrl+F filter over installed plugins).
         try { (this as any)._registerPluginsSearch(); } catch (e) {}
         // Unified Weavero session store (Phase 1): flush dev-window state on
@@ -2630,7 +2666,33 @@ class WeaveroPlugin {
                 // it recreated are present to receive their tabs.
                 .then(() => this._wvEnablePullBackReaderTabs())
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
-                .catch(() => {});
+                // Lift the startup group-deletion guard once reader-window restore
+                // has settled, then re-apply so any genuinely-empty group is
+                // cleaned. Wait until `_wvWTRestoreActive` is no longer set (reader
+                // restore done) past an 8s floor, with a 35s hard backstop so the
+                // guard never sticks (e.g. when no reader windows restore at all).
+                .then(() => {
+                    try {
+                        const win: any = Zotero.getMainWindow();
+                        const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+                        let waited = 0;
+                        const tick = () => {
+                            waited += 1000;
+                            const active = !!(this as any)._wvWTRestoreActive;
+                            if ((!active && waited >= 8000) || waited >= 35000) {
+                                (this as any)._wvTabGroupRestoreGuard = false;
+                                try {
+                                    const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                                    for (const w of wins) this._applyTabGroups(w);
+                                } catch (e) {}
+                                return;
+                            }
+                            setT(tick, 1000);
+                        };
+                        setT(tick, 1000);
+                    } catch (e) { try { (this as any)._wvTabGroupRestoreGuard = false; } catch (e2) {} }
+                })
+                .catch(() => { try { (this as any)._wvTabGroupRestoreGuard = false; } catch (e) {} });
         } catch (e) {}
         // PDF Thumbnails right-click menu — "Add Bookmark to This Page"
         // and "Copy Link to This Page" via the Zotero.Reader plugin API.
@@ -2647,6 +2709,12 @@ class WeaveroPlugin {
                 : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) this._setupTabExternalRepositioner(w);
         } catch (e) { Zotero.debug("[Weavero] tab-ext repositioner init err: " + e); }
+        // Ctrl+Shift+T (reopen closed reader window / group) on already-open main
+        // windows — onMainWindowLoad only fires for NEW windows.
+        try {
+            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) (this as any)._wvWireReopenClosedShortcut(w);
+        } catch (e) {}
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
         // see them, so wire a Window Mediator listener that catches
@@ -3389,6 +3457,9 @@ class WeaveroPlugin {
      *  is idempotent. */
     onMainWindowLoad(_window) {
         try {
+            // Ctrl+Shift+T → reopen last closed reader window / group (falls
+            // through to Zotero's native tab-undo when Weavero's stack is empty).
+            try { (this as any)._wvWireReopenClosedShortcut(_window); } catch (e) {}
             // Weavero managed window: a window spawned by the dev "New Main
             // Window" command (or by session-restore) is tagged `_wvManagedWindow`
             // — a Weavero-managed peer, as opposed to the untagged oldest
@@ -3617,6 +3688,10 @@ class WeaveroPlugin {
                 Reader.open = Reader._wvOrigOpen;
                 delete Reader._wvOrigOpen;
             }
+            if (Reader && Reader._wvOrigGetWindowStates) {
+                Reader.getWindowStates = Reader._wvOrigGetWindowStates;
+                delete Reader._wvOrigGetWindowStates;
+            }
         } catch (e) {
             Zotero.debug("[Weavero] Reader.open un-patch err: " + e);
         }
@@ -3721,6 +3796,7 @@ class WeaveroPlugin {
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
         this._unregisterDevNewWindowMenu();
+        try { (this as any)._unregisterReopenClosedMenu(); } catch (e) {}
         try { this._wvSessionUnregisterQuitFlush(); } catch (e) {}
         try { this._teardownThumbnailContextMenu(); } catch (e) {}
         this._teardownNoteWindowListener();

@@ -562,7 +562,12 @@ class _TabGroupsMixin {
                     // not mid-reopen → delete it (Firefox: last tab closed → no
                     // group). Single-window model: a live group has tabs in exactly
                     // one window, so other windows just skip it.
-                    if (!reopening && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
+                    // _wvTabGroupRestoreGuard: during startup, separate reader
+                    // windows restore (and re-stamp their tabs) AFTER the main
+                    // window's first apply. Without this guard a group living only
+                    // in a reader window looks empty here and gets deleted from
+                    // prefs before the reader window restores → the group is lost.
+                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
                     continue;
                 }
                 // NOTE: `g.members` is the persistent item-key snapshot, kept
@@ -899,22 +904,24 @@ class _TabGroupsMixin {
             if (itemID == null) return;
             const isNote = (tab.type === "note");
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             if (this._wvTabGroupIsReaderWin(tgtWin)) {
                 try { Z.close(tabID); } catch (e) {}
                 tgtWin.setTimeout(async () => {
                     try {
-                        await (this as any)._wvWTMountTab(tgtWin, itemID, { allowDuplicate: false, select: false, await: true });
-                        // Reposition the arrival (appended at the end) right
-                        // after the group's last member in the deck order.
+                        // allowDuplicate: MOVE of an explicit tab; STAMP the arrival
+                        // directly so a duplicate of a member's item joins as its own
+                        // member (no reliance on the first-come claim pass).
+                        const newId = await (this as any)._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: false, await: true });
                         const st = tgtWin._wvWT;
                         if (st && st.tabs) {
-                            const idx = st.tabs.findIndex((t: any) => t.itemID === itemID);
+                            const nt = st.tabs.find((t: any) => t.id === newId);
+                            if (nt) this._wvTabGroupSetStamp(nt, groupID);
+                            // Reposition the arrival right after the group's last member.
+                            const idx = st.tabs.findIndex((t: any) => t.id === newId);
                             let lastMember = -1;
                             for (let i = 0; i < st.tabs.length; i++) {
                                 if (i === idx) continue;
-                                const k = this._wvTabGroupDeckKey(st.tabs[i]);
-                                if (k && ks.has(k.libraryID + ":" + k.itemKey)) lastMember = i;
+                                if (this._wvTabGroupStamp(st.tabs[i]) === groupID) lastMember = i;
                             }
                             if (idx >= 0 && lastMember >= 0 && idx !== lastMember + 1) {
                                 const [moved] = st.tabs.splice(idx, 1);
@@ -932,8 +939,7 @@ class _TabGroupsMixin {
                 try {
                     const TZ: any = tgtWin.Zotero_Tabs;
                     for (let i = 1; i < ((TZ && TZ._tabs) || []).length; i++) {
-                        const k = (this as any)._tabPinKey(TZ._tabs[i]);
-                        if (k && ks.has(k.libraryID + ":" + k.itemKey)) targetIndex = i + 1;
+                        if (this._wvTabGroupStamp(TZ._tabs[i]) === groupID) targetIndex = i + 1;
                     }
                 } catch (e) {}
                 const payload = { itemID, sourceTabId: tabID, readerType: isNote ? "note" : undefined };
@@ -997,6 +1003,9 @@ class _TabGroupsMixin {
             const groups = this._tabGroupsGet();
             const g = groups.find((x: any) => x.id === groupID);
             if (!g) return;
+            // Record for "Reopen Closed Group" (Ctrl+Shift+T): the group def is
+            // about to be deleted, so snapshot name/color/members to recreate it.
+            try { (this as any)._wvClosedPush({ kind: "group", groupID, name: g.name, color: g.color, members: (g.members || []).map((m: any) => ({ libraryID: m.libraryID, itemKey: m.itemKey })) }); } catch (e) {}
             // Close the group's tabs by per-tab STAMP (exact tabs — a duplicate
             // copy that isn't a member is left open). Single-window: a live
             // group's tabs are in one window; act on the home window.
@@ -1163,7 +1172,7 @@ class _TabGroupsMixin {
         // Pinned tabs can't be grouped; grouped targets are handled by the
         // geometric JOIN rule already.
         if (!k || (this as any)._pinnedTabsHas(k.libraryID, k.itemKey)
-                || this._tabGroupOfKey(k.libraryID, k.itemKey)) {
+                || this._wvTabGroupStamp(t)) {   // per-tab: a duplicate whose twin is grouped is itself groupable
             this._wvTabGroupDwellClear(win); return;
         }
         if (win._wvGroupCreateTarget === id) return;     // armed — keep it
@@ -1193,13 +1202,15 @@ class _TabGroupsMixin {
             const tk = tt && (this as any)._tabPinKey(tt);
             const dk = dt && (this as any)._tabPinKey(dt);
             if (!tk || !dk) return;
-            // The dragged tab leaves any group it was in.
-            this._tabGroupRemoveKey(dk.libraryID, dk.itemKey);
             const groups = this._tabGroupsGet();
             const color = WV_GROUP_COLORS[groups.length % WV_GROUP_COLORS.length].id;
             const g = this._tabGroupCreate("", color);
-            this._tabGroupAddKey(g.id, tk);
-            this._tabGroupAddKey(g.id, dk);
+            // Per-tab: STAMP both specific tabs into the new group. Dragging a tab
+            // onto its OWN DUPLICATE (same item) must group BOTH copies — the old
+            // item-key + claim-pass route stamped only one (first-come per item).
+            // StampJoin also moves the dragged tab out of any prior group.
+            this._wvTabGroupStampJoin(tt, g.id);
+            this._wvTabGroupStampJoin(dt, g.id);
             // Dragged tab sits right after the target.
             try {
                 const ti = Z._tabs.indexOf(tt);
@@ -1500,8 +1511,8 @@ class _TabGroupsMixin {
             draggedEl.style.zIndex = "10";
             draggedEl.style.position = "relative";
             draggedEl.style.pointerEvents = "none";
-            const groupOf = (t: any) => { const k = (this as any)._tabPinKey(t); return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null; };
             const groups = this._tabGroupsGet();
+            const groupOf = (t: any) => { const gid = this._wvTabGroupStamp(t); return gid ? (groups.find((g: any) => g.id === gid && !(g as any).saved) || null) : null; };
             const groupById: any = {};
             for (const g of groups) groupById[g.id] = g;
             // First open-member Z._tabs index per group (where its chip sits).
@@ -1684,14 +1695,15 @@ class _TabGroupsMixin {
             // Membership straight from the previewed result (the gap already
             // showed it): join res.joinGroupId, else leave any current group.
             const t = Z._tabs.find((x: any) => x && x.id === tabID);
-            const k = t && (this as any)._tabPinKey(t);
-            if (k) {
-                const cur = this._tabGroupOfKey(k.libraryID, k.itemKey);
+            if (t) {
+                // STAMP-based current group (per-tab) so a DUPLICATE tab can join a
+                // group that already contains its item via a twin.
+                const gid = this._wvTabGroupStamp(t);
+                const cur = gid ? this._tabGroupsGet().find((g: any) => g.id === gid && !(g as any).saved) : null;
                 if (res.joinGroupId) {
-                    if (cur && cur.id !== res.joinGroupId) this._tabGroupRemoveKey(k.libraryID, k.itemKey);
-                    if (!cur || cur.id !== res.joinGroupId) this._tabGroupAddKey(res.joinGroupId, k);
+                    if (!cur || cur.id !== res.joinGroupId) this._wvTabGroupStampJoin(t, res.joinGroupId);
                 } else if (cur) {
-                    this._tabGroupRemoveKey(k.libraryID, k.itemKey);
+                    this._wvTabGroupStampLeave(t, cur.id);
                 }
             }
             this._wvTabGroupStabilize(win);
@@ -1731,14 +1743,16 @@ class _TabGroupsMixin {
                 try { if (typeof Z.move === "function") Z.move(oid, target); } catch (e) {}
                 anchorID = oid;
             }
-            const dk = (this as any)._tabPinKey(dragged);
-            const g = dk && this._tabGroupOfKey(dk.libraryID, dk.itemKey);
+            // The dragged tab's outcome (STAMP-based, per-tab) → followers inherit:
+            // joined a group → all join (each stamped); left → all leave.
+            const groups = this._tabGroupsGet();
+            const draggedGid = this._wvTabGroupStamp(dragged);
+            const g = draggedGid ? groups.find((x: any) => x.id === draggedGid && !(x as any).saved) : null;
             for (const oid of others) {
                 const t = Z._tabs.find((x: any) => x && x.id === oid);
-                const k = t && (this as any)._tabPinKey(t);
-                if (!k) continue;
-                if (g) this._tabGroupAddKey(g.id, k);
-                else this._tabGroupRemoveKey(k.libraryID, k.itemKey);
+                if (!t) continue;
+                if (g) this._wvTabGroupStampJoin(t, g.id);
+                else { const fg = this._wvTabGroupStamp(t); if (fg) this._wvTabGroupStampLeave(t, fg); }
             }
             this._wvTabGroupStabilize(win);
             this._wvTabGroupApplyEverywhere();
@@ -1780,30 +1794,32 @@ class _TabGroupsMixin {
             // passing the tab through it, preserving the dropped position
             // (membersOf() clusters in current model order).
             const di = Z_Tabs._tabs.findIndex((t: any) => t && t.id === drag.tabID);
+            const groups2 = this._tabGroupsGet();
+            // STAMP-based (per-tab): a neighbour / the dragged tab is "in" a group
+            // by its own stamp, NOT its item key — so a DUPLICATE tab whose twin is
+            // in a group is itself ungrouped until dropped in, and can be dropped in.
             const groupOfTab = (t: any) => {
                 if (!t || t.id === "zotero-pane") return null;
-                const k = (this as any)._tabPinKey(t);
-                return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
+                const gid = this._wvTabGroupStamp(t);
+                return gid ? groups2.find((x: any) => x.id === gid && !(x as any).saved) : null;
             };
             const prevG = di > 0 ? groupOfTab(Z_Tabs._tabs[di - 1]) : null;
             const nextG = (di >= 0 && di + 1 < Z_Tabs._tabs.length) ? groupOfTab(Z_Tabs._tabs[di + 1]) : null;
-            const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
+            const curGroup = groupOfTab(tab);
             const targetG = (prevG && nextG && prevG.id === nextG.id) ? prevG : null;
             this._wvTGDbg("membership(model): prev=" + (prevG && prevG.id) + " next=" + (nextG && nextG.id)
                 + " cur=" + (curGroup && curGroup.id) + " → target=" + (targetG && targetG.id));
             if (targetG) {
                 if (!curGroup || curGroup.id !== targetG.id) {
-                    if (curGroup) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
-                    this._tabGroupAddKey(targetG.id, key);
+                    this._wvTabGroupStampJoin(tab, targetG.id);   // stamps THIS tab (duplicate-safe)
                     this._wvTGDbg("membership: JOIN '" + (targetG.name || targetG.id) + "' (between its members)");
                 }
             } else if (curGroup) {
                 // Left its group's interior. A sole-member group travels with its
                 // only tab (don't dissolve it); otherwise the tab leaves.
-                const openCount = (curGroup.members || []).reduce((n: number, m: any) =>
-                    n + (Z_Tabs._tabs.some((t: any) => { const k = (this as any)._tabPinKey(t); return !!(k && k.libraryID === m.libraryID && k.itemKey === m.itemKey); }) ? 1 : 0), 0);
+                const openCount = this._wvTabGroupOpenCount(curGroup.id);
                 if (openCount > 1) {
-                    this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                    this._wvTabGroupStampLeave(tab, curGroup.id);
                     this._wvTGDbg("membership: LEAVE '" + (curGroup.name || curGroup.id) + "' (dropped outside its members)");
                 }
             }
@@ -1824,12 +1840,10 @@ class _TabGroupsMixin {
             if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return -1;
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (!g) return -1;
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             const memberIDs: string[] = [];
             for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
-                const k = (this as any)._tabPinKey(t);
-                if (k && ks.has(k.libraryID + ":" + k.itemKey)) memberIDs.push(t.id);
+                if (this._wvTabGroupStamp(t) === g.id) memberIDs.push(t.id);   // per-tab (duplicate-safe)
             }
             if (!memberIDs.length) return -1;
             const memberSet = new Set(memberIDs);
@@ -1894,9 +1908,7 @@ class _TabGroupsMixin {
             const Z_Tabs: any = win.Zotero_Tabs;
             const groupOf = (id: string) => {
                 const t = Z_Tabs._tabs.find((x: any) => x && x.id === id);
-                const k = t && (this as any)._tabPinKey(t);
-                const g = k && this._tabGroupOfKey(k.libraryID, k.itemKey);
-                return g ? g.id : null;
+                return t ? (this._wvTabGroupStamp(t) || null) : null;
             };
             if (slot <= 0 || slot >= nonMembers.length) return slot;
             const before = groupOf(nonMembers[slot - 1]);
@@ -1921,15 +1933,7 @@ class _TabGroupsMixin {
             if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return;
             const groups = this._tabGroupsGet();
             if (!groups.length) return;
-            const keyOf = (t: any) => {
-                const k = (this as any)._tabPinKey(t);
-                return k ? (k.libraryID + ":" + k.itemKey) : null;
-            };
-            const groupAt = (t: any) => {
-                const k = (this as any)._tabPinKey(t);
-                const g = k && this._tabGroupOfKey(k.libraryID, k.itemKey);
-                return g ? g.id : null;
-            };
+            const groupAt = (t: any) => this._wvTabGroupStamp(t) || null;   // per-tab
             // Detect non-contiguity: a group id that re-appears after a
             // different id interrupted its run.
             const seenClosed = new Set<string>();
@@ -1949,13 +1953,10 @@ class _TabGroupsMixin {
             const emitted = new Set<string>();
             const desired: string[] = [];
             const membersOf = (gid: string) => {
-                const g = groups.find((x: any) => x.id === gid);
-                const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
                 const out: string[] = [];
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
-                    const k = keyOf(t);
-                    if (k && ks.has(k)) out.push(t.id);
+                    if (this._wvTabGroupStamp(t) === gid) out.push(t.id);   // per-tab
                 }
                 return out;
             };
@@ -1984,12 +1985,10 @@ class _TabGroupsMixin {
             const doc = win.document;
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (!Z_Tabs || !g) return;
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             const memberSet = new Set<string>();
             for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                 const t = Z_Tabs._tabs[i];
-                const k = (this as any)._tabPinKey(t);
-                if (k && ks.has(k.libraryID + ":" + k.itemKey)) memberSet.add(t.id);
+                if (this._wvTabGroupStamp(t) === g.id) memberSet.add(t.id);   // per-tab
             }
             const nonMembers: string[] = Z_Tabs._tabs
                 .map((t: any) => t && t.id)
@@ -2068,6 +2067,84 @@ class _TabGroupsMixin {
             const k = this._wvTabGroupDeckKey(tab);
             return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
         } catch (e) { return null; }
+    }
+
+    /** Per-tab JOIN for the DRAG paths: stamp THIS specific tab into the group
+     *  (+ keep the item-key shadow as the restart fallback). Unlike a bare
+     *  `_tabGroupAddKey`, this stamps the actual tab — so a DUPLICATE tab of an
+     *  item already in the group joins as its own member (the menu path's
+     *  `_wvTabGroupAddTab` does the same). Clears any stale "kept-out" flag. */
+    _wvTabGroupStampJoin(tab: any, groupID: any) {
+        if (!tab || !groupID) return;
+        try { delete (tab as any)._wvGroupExcluded; } catch (e) { (tab as any)._wvGroupExcluded = false; }
+        this._wvTabGroupSetStamp(tab, groupID);
+        const k = this._wvTabGroupDeckKey(tab);
+        if (k) this._tabGroupAddKey(groupID, k);
+    }
+
+    /** Per-tab LEAVE for the DRAG paths: clear THIS tab's stamp only. Drop the
+     *  item-key from the shadow ONLY when no OTHER open tab is still stamped
+     *  with this group for the same item — a twin must keep the shadow (and the
+     *  claim pass's first-come-per-item then keeps this now-unstamped tab out).
+     *  Without the twin guard, `_tabGroupRemoveKey` would wipe the twin too. */
+    _wvTabGroupStampLeave(tab: any, groupID: any) {
+        if (!tab) return;
+        this._wvTabGroupSetStamp(tab, null);
+        const k = this._wvTabGroupDeckKey(tab);
+        if (!k) return;
+        let twin = false;
+        this._wvTabGroupForEachOpenTab((t2) => {
+            if (twin || t2 === tab) return;
+            if (this._wvTabGroupStamp(t2) !== groupID) return;
+            const kk = this._wvTabGroupDeckKey(t2);
+            if (kk && kk.libraryID === k.libraryID && kk.itemKey === k.itemKey) twin = true;
+        });
+        if (twin) return;
+        const groups = this._tabGroupsGet();
+        for (const g of groups) g.members = (g.members || []).filter((m: any) => !(m.libraryID === k.libraryID && m.itemKey === k.itemKey));
+        this._tabGroupsSet(groups);
+    }
+
+    /** Called from a reader window's `unload`: PARK (mark `saved`) every group
+     *  whose only stamped members live in THIS closing window — so a mid-session
+     *  reader-window close persists the group (it shows in the saved-groups list,
+     *  reopenable) instead of being deleted by the next main-window apply. No-op
+     *  at quit (`_wvQuitting`), where the window is restored next launch and the
+     *  group must stay live (auto-restored with its tabs). A group with a stamped
+     *  tab in any OTHER window is left untouched (it still lives there). */
+    _wvTabGroupParkClosingWindowGroups(win: any): string[] {
+        const parked: string[] = [];
+        try {
+            if ((this as any)._wvQuitting) return parked;
+            if (!this._getEnableTabGroups || !this._getEnableTabGroups()) return parked;
+            const st = win && win._wvWT;
+            if (!st || !st.tabs || !st.tabs.length) return parked;
+            // Distinct live (non-saved) group ids stamped on this window's tabs.
+            const ids = new Set<string>();
+            for (const t of st.tabs) {
+                const gid = this._wvTabGroupStamp(t);
+                if (gid) ids.add(gid);
+            }
+            if (!ids.size) return parked;
+            // Which of those groups still have a stamped tab in ANOTHER window?
+            const elsewhere = new Set<string>();
+            this._wvTabGroupForEachOpenTab((t, w) => {
+                if (w === win) return;
+                const gid = this._wvTabGroupStamp(t);
+                if (gid && ids.has(gid)) elsewhere.add(gid);
+            });
+            const groups = this._tabGroupsGet();
+            let dirty = false;
+            for (const g of groups) {
+                if (ids.has(g.id) && !elsewhere.has(g.id) && !(g as any).saved) {
+                    (g as any).saved = true;   // park → persists + skipped by the delete gate
+                    dirty = true;
+                    parked.push(g.id);
+                }
+            }
+            if (dirty) this._tabGroupsSet(groups);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupParkClosingWindowGroups err: " + e); }
+        return parked;
     }
 
     /** Iterate every open tab in every window (main bars + reader strips),
@@ -2222,14 +2299,15 @@ class _TabGroupsMixin {
                 return live[g.id] || null;
             };
             if (typeof clientX !== "number") return;
-            const curGroup = this._tabGroupOfKey(key.libraryID, key.itemKey);
+            const curGid = this._wvTabGroupStamp(tab);
+            const curGroup = curGid ? groups.find((x: any) => x.id === curGid && !(x as any).saved) : null;
             this._wvTGDbg("reader membership: tab=" + tabId + " x=" + clientX);
             for (const g of groups) {
                 if (curGroup && g.id === curGroup.id) continue;
                 const reg = regionOf(g);
                 if (!reg || clientX < reg.left || clientX > reg.right) continue;
                 this._wvTGDbg("reader membership: JOIN '" + (g.name || g.id) + "'");
-                this._tabGroupAddKey(g.id, key);
+                this._wvTabGroupStampJoin(tab, g.id);   // per-tab (duplicate-safe)
                 this._wvTabGroupApplyEverywhere();
                 return;
             }
@@ -2238,7 +2316,7 @@ class _TabGroupsMixin {
                 if (!reg) { this._wvTabGroupApplyEverywhere(); return; }
                 const out = clientX < reg.left || clientX > reg.right;
                 this._wvTGDbg("reader membership: own region=" + JSON.stringify(reg) + " out=" + out);
-                if (out) this._tabGroupRemoveKey(key.libraryID, key.itemKey);
+                if (out) this._wvTabGroupStampLeave(tab, curGroup.id);
                 this._wvTabGroupApplyEverywhere();
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleReaderReorder err: " + e); }
@@ -2366,18 +2444,14 @@ class _TabGroupsMixin {
                     const src = gd && gd.sourceWin;
                     const titles: string[] = [];
                     if (src && this._wvTabGroupIsReaderWin(src) && src._wvWT) {
-                        const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
                         for (const t of src._wvWT.tabs) {
-                            const k = this._wvTabGroupDeckKey(t);
-                            if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                            if (g && this._wvTabGroupStamp(t) === g.id) {
                                 titles.push((this as any)._wvWTTabTitle(t) || "");
                             }
                         }
                     } else if (src && src.Zotero_Tabs) {
-                        const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
                         for (const t of src.Zotero_Tabs._tabs) {
-                            const k = (this as any)._tabPinKey(t);
-                            if (k && ks.has(k.libraryID + ":" + k.itemKey)) titles.push(t.title || "");
+                            if (g && this._wvTabGroupStamp(t) === g.id) titles.push(t.title || "");
                         }
                     }
                     if (g && g.collapsed) {
@@ -2430,16 +2504,16 @@ class _TabGroupsMixin {
         try {
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (!g || !srcWin || !tgtWin || srcWin === tgtWin) return;
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             const srcIsReader = this._wvTabGroupIsReaderWin(srcWin);
             const tgtIsReader = this._wvTabGroupIsReaderWin(tgtWin);
-            // Collect open members in SOURCE display order.
+            // Collect open members (STAMPED with this group, per-tab) in SOURCE
+            // display order — a duplicate of a member's item that isn't itself in
+            // the group is correctly left behind.
             const entries: Array<{ itemID: number; isNote: boolean; srcTabID: any }> = [];
             if (srcIsReader) {
                 const st = srcWin._wvWT;
                 for (const t of (st && st.tabs) || []) {
-                    const k = this._wvTabGroupDeckKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                    if (this._wvTabGroupStamp(t) === g.id) {
                         entries.push({ itemID: t.itemID, isNote: t.type === "note", srcTabID: t.id });
                     }
                 }
@@ -2447,8 +2521,7 @@ class _TabGroupsMixin {
                 const Z: any = srcWin.Zotero_Tabs;
                 for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
                     const t = Z._tabs[i];
-                    const k = (this as any)._tabPinKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                    if (this._wvTabGroupStamp(t) === g.id) {
                         entries.push({ itemID: t.data && t.data.itemID, isNote: t.type === "note", srcTabID: t.id });
                     }
                 }
@@ -2677,11 +2750,14 @@ class _TabGroupsMixin {
             const groups = this._tabGroupsGet();
             const g = groups.find((x: any) => x.id === groupID);
             if (!g) return;
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
+            // Record for "Reopen Closed Group" (Ctrl+Shift+T). The group is parked
+            // (stays in prefs), so reopen finds it by id; snapshot members anyway.
+            try { (this as any)._wvClosedPush({ kind: "group", groupID, name: g.name, color: g.color, members: (g.members || []).map((m: any) => ({ libraryID: m.libraryID, itemKey: m.itemKey })) }); } catch (e) {}
             // Mark saved + persist BEFORE closing the tabs, so the
             // close-triggered _applyTabGroups pass already sees the flag and
             // preserves the group (otherwise it would drop every member and then
-            // delete the now-empty group).
+            // delete the now-empty group). Members closed by STAMP (per-tab) so a
+            // duplicate of a member's item that ISN'T in the group is left open.
             (g as any).saved = true;
             this._tabGroupsSet(groups);
             for (const w of Zotero.getMainWindows()) {
@@ -2690,8 +2766,7 @@ class _TabGroupsMixin {
                     const ids: string[] = [];
                     for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
                         const t = Z._tabs[i];
-                        const k = (this as any)._tabPinKey(t);
-                        if (k && ks.has(k.libraryID + ":" + k.itemKey)) ids.push(t.id);
+                        if (this._wvTabGroupStamp(t) === g.id) ids.push(t.id);
                     }
                     for (const id of ids) { try { Z.close(id); } catch (e) {} }
                 } catch (e) {}
@@ -2702,7 +2777,7 @@ class _TabGroupsMixin {
                     const w: any = en.getNext();
                     if (!w || !w._wvWT) continue;
                     const ids = (w._wvWT.tabs || [])
-                        .filter((t: any) => { const k = this._wvTabGroupDeckKey(t); return k && ks.has(k.libraryID + ":" + k.itemKey); })
+                        .filter((t: any) => this._wvTabGroupStamp(t) === g.id)
                         .map((t: any) => t.id);
                     for (const id of ids) { try { (this as any)._wvWTCloseTab(w, id); } catch (e) {} }
                 }
@@ -2719,6 +2794,9 @@ class _TabGroupsMixin {
             const g0 = this._tabGroupsGet().find((x: any) => x.id === groupID);
             const members = (g0 && g0.members) || [];
             if (!members.length) return;
+            // Reopening the saved group consumes it: drop it from any closed-window
+            // entry so reopening that window won't duplicate it (Firefox parity).
+            try { (this as any)._wvClosedForgetGroup(groupID); } catch (e) {}
             try { targetWin.focus(); } catch (e) {}   // Reader.open targets the focused main window
             const setT = (targetWin.setTimeout ? targetWin.setTimeout.bind(targetWin) : setTimeout);
             const Z: any = targetWin.Zotero_Tabs;
@@ -2789,15 +2867,9 @@ class _TabGroupsMixin {
     /** Select a group's first member tab (Zotero then scrolls it into view). */
     _wvTabGroupFocusFirst(win: any, groupID: any) {
         try {
-            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            const m0 = g && (g.members || [])[0];
-            if (!m0) return;
             const Z: any = win.Zotero_Tabs;
             if (!Z || !Z._tabs) return;
-            const t = Z._tabs.find((x: any) => {
-                const k = (this as any)._tabPinKey(x);
-                return k && k.libraryID === m0.libraryID && k.itemKey === m0.itemKey;
-            });
+            const t = Z._tabs.find((x: any) => this._wvTabGroupStamp(x) === groupID);   // per-tab
             if (t) { try { Z.select(t.id); } catch (e) {} }
         } catch (e) {}
     }
@@ -2810,6 +2882,9 @@ class _TabGroupsMixin {
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             const members = (g && g.members) || [];
             if (!members.length || !win._wvWT) return;
+            // Reopening the saved group consumes it: drop it from any closed-window
+            // entry so reopening that window won't duplicate it (Firefox parity).
+            try { (this as any)._wvClosedForgetGroup(groupID); } catch (e) {}
             for (const m of members) {
                 try {
                     const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey);
@@ -2841,20 +2916,12 @@ class _TabGroupsMixin {
         try {
             const home = this._wvTabGroupHomeWin(groupID);
             if (!home) return false;
-            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             if (this._wvTabGroupIsReaderWin(home)) {
-                const t = (home._wvWT.tabs || []).find((x: any) => {
-                    const k = this._wvTabGroupDeckKey(x);
-                    return k && ks.has(k.libraryID + ":" + k.itemKey);
-                });
+                const t = (home._wvWT.tabs || []).find((x: any) => this._wvTabGroupStamp(x) === groupID);
                 if (t) { try { (this as any)._wvWTSwitch(home, t.id); } catch (e) {} }
             } else {
                 const Z: any = home.Zotero_Tabs;
-                const t = (Z && Z._tabs || []).find((x: any) => {
-                    const k = (this as any)._tabPinKey(x);
-                    return k && ks.has(k.libraryID + ":" + k.itemKey);
-                });
+                const t = (Z && Z._tabs || []).find((x: any) => this._wvTabGroupStamp(x) === groupID);
                 if (t) { try { Z.select(t.id); } catch (e) {} }
             }
             try { home.focus(); } catch (e) {}
@@ -2870,8 +2937,6 @@ class _TabGroupsMixin {
      *  the fresh reader window; the group's membership is preserved (NOT
      *  forgotten, unlike a tear-out), so the new window chips them as one group. */
     async _wvTabGroupMoveToNewWindow(win: any, groupID: any) {
-        const glog = (m: string) => { try { const a: any = ((Zotero as any)._wvGrpDbg = (Zotero as any)._wvGrpDbg || []); a.push((Date.now() % 100000) + " [grp] " + m); if (a.length > 400) a.shift(); } catch (e) {} };
-        glog("ENTER group=" + groupID);
         const reopenSet = this._wvReopeningGroups();
         try {
             const home = this._wvTabGroupHomeWin(groupID) || win;
@@ -2920,31 +2985,27 @@ class _TabGroupsMixin {
                 });
                 Zotero.debug("[Weavero][move-group] START groupID=" + groupID + " name=\"" + (g.name || "") + "\" homeIsReader=" + homeIsReader + " openCount=" + open.length + " members=" + JSON.stringify(dbg));
             } catch (eLog) {}
-            glog("START name=\"" + (g.name || "") + "\" homeIsReader=" + homeIsReader + " open=" + open.length + " entries=" + JSON.stringify(entries.map((e: any) => e.itemID)));
-            if (!entries.length) { glog("ABORT no openable entries"); Zotero.debug("[Weavero][move-group] ABORT — no openable entries (group left intact)"); return; }
+            if (!entries.length) { Zotero.debug("[Weavero][move-group] ABORT — no openable entries (group left intact)"); return; }
             // Keep the group alive across the close→reopen gap (closing the last
             // member would otherwise delete it before the new window opens).
             reopenSet.add(groupID);
             // MOVE: close the open members in their home window first.
             Zotero.debug("[Weavero][move-group] closing " + open.length + " source tab(s) in " + (homeIsReader ? "reader" : "main") + " window");
-            glog("closing " + open.length + " src tabs (" + (homeIsReader ? "reader" : "main") + ")");
             for (const o of open) {
                 try { if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID); else home.Zotero_Tabs.close(o.srcTabID); }
-                catch (e) { glog("close ERR tab=" + o.srcTabID + ": " + e); Zotero.debug("[Weavero][move-group] close err tab=" + o.srcTabID + ": " + e); }
+                catch (e) { Zotero.debug("[Weavero][move-group] close err tab=" + o.srcTabID + ": " + e); }
             }
             // Open them together in ONE new reader window (membership preserved →
             // they regroup there). _wvOpenItemsInNewReaderWindow focuses it.
             Zotero.debug("[Weavero][move-group] opening " + entries.length + " entr(ies) in a new reader window: " + JSON.stringify(entries));
-            glog("→ _wvOpenItemsInNewReaderWindow(" + entries.length + ")");
-            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); glog("← openItems returned"); }
-            catch (e) { glog("openItems THREW: " + e); Zotero.debug("[Weavero][move-group] _wvOpenItemsInNewReaderWindow THREW: " + e); }
+            try { await (this as any)._wvOpenItemsInNewReaderWindow(entries); }
+            catch (e) { Zotero.debug("[Weavero][move-group] _wvOpenItemsInNewReaderWindow THREW: " + e); }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveToNewWindow err: " + e); }
         finally {
             reopenSet.delete(groupID);
             try {
                 const grp = this._tabGroupsGet().find((x: any) => x.id === groupID);
                 const cnt = grp ? this._wvTabGroupOpenCount(groupID) : -1;
-                glog("FINALLY group=" + (grp ? "EXISTS" : "GONE") + " openCount=" + cnt);
                 Zotero.debug("[Weavero][move-group] FINALLY — group " + (grp ? "EXISTS" : "GONE") + " openCount=" + cnt);
                 // Safety net: the move closed the source tabs but the new window
                 // never materialised (some member couldn't be opened), so the
@@ -3049,17 +3110,12 @@ class _TabGroupsMixin {
             if (!isReader && (!Z || !Z._tabs)) return;
             const groupOfRow = (row: any) => {
                 const id = row.getAttribute(idAttr);
-                if (isReader) {
-                    const st = win._wvWT;
-                    const t = st && st.tabs.find((x: any) => String(x.id) === String(id));
-                    if (t && (t as any)._wvGroupExcluded) return null;   // separate copy kept out
-                    const k = t && this._wvTabGroupDeckKey(t);
-                    return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
-                }
-                const tab = Z._tabs.find((t: any) => t && t.id === id);
-                if (tab && (tab as any)._wvGroupExcluded) return null;   // separate copy kept out
-                const k = tab && (this as any)._tabPinKey(tab);
-                return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
+                let t: any = null;
+                if (isReader) { const st = win._wvWT; t = st && st.tabs.find((x: any) => String(x.id) === String(id)); }
+                else { t = Z._tabs.find((x: any) => x && x.id === id); }
+                if (!t || (t as any)._wvGroupExcluded) return null;   // separate copy kept out
+                const gid = this._wvTabGroupStamp(t);                  // per-tab membership
+                return gid ? (groups.find((g: any) => g.id === gid && !(g as any).saved) || null) : null;
             };
             // Contiguous runs of tab rows (library headers etc. break them).
             const sections: any[][] = [];
@@ -3188,7 +3244,14 @@ class _TabGroupsMixin {
                 row.appendChild(name);
                 const count = doc.createElementNS(HTML_NS, "span");
                 count.className = "wv-tgmenu-count";
-                count.textContent = open ? (open + (open === 1 ? " tab" : " tabs")) : "saved";
+                if (open) {
+                    count.textContent = open + (open === 1 ? " tab" : " tabs");
+                } else {
+                    // SAVED group: show its parked tab count (members snapshot) too,
+                    // not just "saved".
+                    const n = (g.members || []).length;
+                    count.textContent = n ? (n + (n === 1 ? " tab" : " tabs") + " · saved") : "saved";
+                }
                 row.appendChild(count);
                 const gid = g.id;
                 row.addEventListener("click", (e: any) => {
@@ -3258,20 +3321,17 @@ class _TabGroupsMixin {
             if (!g || !g.collapsed) return;
             if (!chip || !chip.isConnected) return;
             const isReader = this._wvTabGroupIsReaderWin(win);
-            const ks = new Set((g.members || []).map((m: any) => m.libraryID + ":" + m.itemKey));
-            // The group's open tabs in THIS window, display order.
+            // The group's open tabs in THIS window (STAMPED, per-tab), display order.
             const entries: Array<{ id: any; title: string; itemID?: any }> = [];
             if (isReader && win._wvWT) {
                 for (const t of win._wvWT.tabs) {
-                    const k = this._wvTabGroupDeckKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                    if (this._wvTabGroupStamp(t) === g.id) {
                         entries.push({ id: t.id, title: (this as any)._wvWTTabTitle(t) || "", itemID: t.itemID });
                     }
                 }
             } else if (win.Zotero_Tabs) {
                 for (const t of win.Zotero_Tabs._tabs) {
-                    const k = (this as any)._tabPinKey(t);
-                    if (k && ks.has(k.libraryID + ":" + k.itemKey)) {
+                    if (this._wvTabGroupStamp(t) === g.id) {
                         entries.push({ id: t.id, title: t.title || "", itemID: t.data && t.data.itemID });
                     }
                 }
@@ -3478,14 +3538,15 @@ class _TabGroupsMixin {
             };
 
             mkSep();
-            mkItem("Move group to new window",
-                () => this._wvTabGroupMoveToNewWindow(win, groupID));
-            // In a separate reader window, also offer moving the whole group back
-            // into the main window (the migrate now keeps the group intact).
+            // In a separate reader window, offer moving the whole group back into
+            // the main window FIRST (the more common action there), above "new
+            // window" (the migrate keeps the group intact).
             if (this._wvTabGroupIsReaderWin(win)) {
                 mkItem("Move group to main window",
                     () => { try { this._wvTabGroupMigrateGroup(win, Zotero.getMainWindow(), groupID, 1e6); } catch (e) {} });
             }
+            mkItem("Move group to new window",
+                () => this._wvTabGroupMoveToNewWindow(win, groupID));
             // "Copy N links in group" — zotero://open links for every member
             // (Weavero's copy-link feature), like Firefox's copy-links entry.
             if ((this as any)._getEnableCopyItemLink && (this as any)._getEnableCopyItemLink()) {
@@ -3813,14 +3874,11 @@ class _TabGroupsMixin {
         try {
             const st = win._wvWT;
             if (!st || !st.tabs) return;
-            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
-            const ks = new Set(((g && g.members) || []).map((m: any) => m.libraryID + ":" + m.itemKey));
             const idx = st.tabs.findIndex((t: any) => t.itemID === itemID);
             let last = -1;
             for (let i = 0; i < st.tabs.length; i++) {
                 if (i === idx) continue;
-                const k = this._wvTabGroupDeckKey(st.tabs[i]);
-                if (k && ks.has(k.libraryID + ":" + k.itemKey)) last = i;
+                if (this._wvTabGroupStamp(st.tabs[i]) === groupID) last = i;   // per-tab
             }
             if (idx >= 0 && last >= 0) {
                 const target = idx < last ? last : last + 1;
@@ -4000,11 +4058,21 @@ class _TabGroupsMixin {
                                 };
                                 mkItem("New Group", null, () => self._wvTabGroupNewFromTabs(win, targets));
                                 const groups = self._tabGroupsGet();
-                                // Don't offer the group the tab is already in
-                                // (single-tab case only — a multi-selection may
-                                // mix members of several groups).
-                                const cur = targets.length === 1
-                                    && self._tabGroupOfKey(item.libraryID, item.key);
+                                // Don't offer the group the tab is already STAMPED into
+                                // (single-tab case only — a multi-selection may mix
+                                // members of several groups). Per-tab, NOT by item key:
+                                // a DUPLICATE tab of a member's item is its own tab and
+                                // CAN be added to the same group, so key it off the
+                                // tab's stamp — else the group is wrongly filtered out.
+                                let cur: any = null;
+                                if (targets.length === 1) {
+                                    try {
+                                        const ZT: any = win.Zotero_Tabs;
+                                        const tab = ZT && ZT._tabs.find((t: any) => t.id === tabID);
+                                        const sid = tab && self._wvTabGroupStamp(tab);
+                                        if (sid) cur = groups.find((x: any) => x.id === sid) || null;
+                                    } catch (e) {}
+                                }
                                 const others = groups.filter((x: any) => !cur || x.id !== cur.id);
                                 if (others.length) {
                                     popup.appendChild(doc.createXULElement("menuseparator"));
@@ -4026,7 +4094,7 @@ class _TabGroupsMixin {
                                                 });
                                                 self._wvTabMultiSelClear(win);
                                             });
-                                        if (parked) { try { gmi.setAttribute("acceltext", "saved"); } catch (e) {} }
+                                        if (parked) { try { const n = (g.members || []).length; gmi.setAttribute("acceltext", n ? (n + (n === 1 ? " tab" : " tabs") + " · saved") : "saved"); } catch (e) {} }
                                     }
                                 }
                             } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
@@ -4039,12 +4107,13 @@ class _TabGroupsMixin {
                                 if (!self._getEnableTabGroups() || ctx.tabID === "zotero-pane") {
                                     ctx.setVisible(false); return;
                                 }
-                                const item = ctx.items && ctx.items[0];
-                                const grouped = item && item.libraryID && item.key
-                                    && self._tabGroupOfKey(item.libraryID, item.key);
+                                const win = ctx.menuElem.ownerDocument.defaultView;
+                                // Per-tab: show "Remove from Group" only when THIS tab
+                                // is stamped (a duplicate whose twin is grouped isn't).
+                                const ctxTab = win && win.Zotero_Tabs && win.Zotero_Tabs._tabs.find((x: any) => x && x.id === ctx.tabID);
+                                const grouped = ctxTab && self._wvTabGroupStamp(ctxTab);
                                 if (!grouped) { ctx.setVisible(false); return; }
                                 ctx.setVisible(true);
-                                const win = ctx.menuElem.ownerDocument.defaultView;
                                 const n = self._wvTabMultiSelTargets(win, ctx.tabID).length;
                                 ctx.menuElem.setAttribute("label", n > 1
                                     ? "Remove " + n + " Tabs from Group"
@@ -4057,14 +4126,14 @@ class _TabGroupsMixin {
                         },
                         onCommand: (_ev: any, ctx: any) => {
                             try {
-                                const item = ctx.items && ctx.items[0];
-                                if (!item) return;
                                 const win = ctx.menuElem.ownerDocument.defaultView;
                                 const Z_Tabs: any = win && win.Zotero_Tabs;
+                                // Per-tab: clear only the SELECTED tabs' stamps (leave a
+                                // duplicate twin in the group), not every tab of the item.
                                 for (const id of self._wvTabMultiSelTargets(win, ctx.tabID)) {
                                     const t = Z_Tabs && Z_Tabs._tabs.find((x: any) => x && x.id === id);
-                                    const k = t && self._tabPinKey(t);
-                                    if (k) self._tabGroupRemoveKey(k.libraryID, k.itemKey);
+                                    const gid = t && self._wvTabGroupStamp(t);
+                                    if (t && gid) self._wvTabGroupStampLeave(t, gid);
                                 }
                                 self._wvTabMultiSelClear(win);
                                 for (const w of Zotero.getMainWindows()) self._applyTabGroups(w);

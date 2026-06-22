@@ -8777,7 +8777,11 @@ class _ReaderMixin {
      *  capture-phase listener here pre-empts it, so the SOURCE pane stays put and
      *  we drive the OTHER pane (or a duplicate window) instead. EPUB resolves a
      *  section href via `_getInternalLinkHref`; snapshot links are bare same-doc
-     *  `#fragment`s. Idempotent per iframe via `win._wvDomLinkClicksWired`. */
+     *  `#fragment`s. Idempotent per iframe via `win._wvDomLinkClicksWired`.
+     *
+     *  Built on Zotero's own reader (zotero/reader, AGPL-3.0): pre-empts and
+     *  reuses its DOM (EPUB/snapshot) views' internal-link handling
+     *  (`_getInternalLinkHref`, https://github.com/zotero/reader). */
     _wvWireReaderDomLinkClicks(reader, view) {
         try {
             if (!reader || !view) return;

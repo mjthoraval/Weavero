@@ -11,7 +11,7 @@
 [![Downloads](https://img.shields.io/github/downloads/mjthoraval/Weavero/latest/total?color=brightgreen)](https://github.com/mjthoraval/Weavero/releases)
 [![License](https://img.shields.io/github/license/mjthoraval/Weavero?label=License&color=lightgrey)](LICENSE)
 
-A Zotero 7 to 10-beta plugin that layers convenience features on top of the standard library and reader: clickable links in annotation comments and notes, a fast filter pane, bookmarks, related-item tools, a structured tabs menu, and extra items-tree columns. Everything is individually toggleable in Preferences.
+A Zotero 7 to 10-beta plugin that layers convenience features on top of the standard library and reader: clickable links in annotation comments and notes, a fast filter pane, bookmarks, related-item tools, a structured tabs menu, tab and window management, and extra items-tree columns. Everything is individually toggleable in Preferences.
 
 > [!NOTE]
 > **Your documents are safe.** Weavero never writes to or modifies your PDF files or attachments on disk — there's no risk of corrupting your documents. It only layers UI on top of Zotero's standard views and keeps its own data (bookmarks, preferences) in separate files. Any feature you turn off is inert.
@@ -28,9 +28,10 @@ A Zotero 7 to 10-beta plugin that layers convenience features on top of the stan
 
 Grouped the same way as the Preferences tabs. Expand a group below for the details and screenshots.
 
-- **[Enhanced links and relations](#enhanced-links-and-relations)** — clickable links (URLs, `zotero://`, 16 optional app schemes) in comments and notes; inline or icon + popup, colour-coded, with markdown; copy `zotero://` links for items / collections / searches / reader page / location / selection; related-item tools (*Add Related…*, chain badge, *Open Related* submenu, Related column, linked-library highlight).
-- **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has Related/Links*, multi-select tag/author/added-by/collection/search); Selection Target tri-state; structured tabs menu with per-library and file-type filters.
-- **[Bookmarks](#bookmarks)** — library bookmarks (items / collections / searches) via a toolbar dropdown; document bookmarks (in-PDF locations, selected text, annotations) in a reader-sidebar tab, foldered and draggable; auto-hide when empty.
+- **[Enhanced links and relations](#enhanced-links-and-relations)** — clickable links (URLs, `zotero://`, 17 optional app schemes) in comments and notes; inline or icon + popup, colour-coded, with markdown; copy `zotero://` links for items / collections / searches / reader page / location / selection; Ctrl/Shift+click navigation through internal document links (into a split pane or a second window); related-item tools (*Add Related…*, chain badge, *Open Related* submenu, Related column, linked-library highlight).
+- **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has DOI/URL/Related/Links*, multi-select tag/publication/author/added-by/collection/search) with a removable chip bar; reader annotation filter; Selection Target tri-state; structured tabs menu with per-library and file-type filters.
+- **[Bookmarks](#bookmarks)** — library bookmarks (items / collections / searches / URLs) via a toolbar dropdown; document bookmarks (in-PDF positions, pages, selected text, annotations) in a reader-sidebar tab, foldered and draggable, with search + funnel filter and hover cards; auto-hide when empty.
+- **[Tabs and Windows](#tabs-and-windows)** — pinned tabs (Firefox-style, icon-only); named, colour-coded **tab groups** (collapse, drag-into, reopen); multi-select tabs; **move or tear-off a reader tab to another window with no reload** (scroll, zoom and selection preserved); reopen the last closed window/group; an item-details pane beside the reader in separate windows; optional multiple main windows (experimental).
 - **[Extras](#extras)** — items-tree columns (annotation, related, tag counts); *Added By* for annotations with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
 
 ## Features
@@ -38,7 +39,7 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 <details id="enhanced-links-and-relations">
 <summary><b>Enhanced links and relations</b></summary>
 
-**Clickable links in annotation comments** across the items tree, right item pane, reader sidebar, in-PDF popup, link badges over annotation icons, and notes. Each surface is independently toggleable. Out of the box `https://`, `http://`, and `zotero://` are recognised; sixteen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
+**Clickable links in annotation comments** across the items tree, right item pane, reader sidebar, in-PDF popup, link badges over annotation icons, and notes. Each surface is independently toggleable. Out of the box `https://`, `http://`, and `zotero://` are recognised; seventeen extra schemes (`mailto:`, `obsidian://`, `vscode://`, `slack://`, `notion://`, …) can be toggled per-scheme.
 
 - **Two display modes:**
   - **Inline** — URLs, markdown, and app links render directly in the comment; an icon opens a popup with the full formatted view when the row is clipped.
@@ -57,6 +58,14 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 - *Reader (right-click on the page)* — **Copy Link to This Page** in a PDF (`zotero://open/.../items/<key>?page=N`, N = the page you clicked, even in spread / continuous-scroll layouts), or **Copy Link to This Location** in an EPUB / web snapshot (`?cfi=…` / `?sel=…` for the element under the cursor). With text selected it becomes **Copy Link to Selected Text** — for EPUB / snapshots that's a `?cfi=`/`?sel=` link to the exact passage; for PDFs it stays page-level (no `?rects=` URL form exists yet — [zotero/zotero#4508](https://github.com/zotero/zotero/issues/4508)).
 - The `zotero://` URI handler also resolves `…/collections/<key>` and `…/searches/<key>` paths (group-library variants supported), `?cfi=` / `?sel=` location params, and `…/items?itemKey=K1,K2` multi-select, and switches focus to the library tab when followed from a note.
 
+**Interlinked navigation** — <kbd>Ctrl/Cmd</kbd>-click or <kbd>Shift</kbd>+click an *internal* link to follow it without losing your place. Internal links include PDF cross-references and citations, EPUB section links, and web-snapshot `#fragment` links (external `http(s)` links are left alone).
+
+- **<kbd>Ctrl/Cmd</kbd>+click → split pane** — opens (or reuses) a split and sends the target to the *other* pane, so the pane you clicked from stays put; a reverse Ctrl+click from the second pane drives the first. Split orientation (horizontal / vertical) is configurable.
+- **<kbd>Shift</kbd>+click → duplicate window** — opens (or reuses) a second reader window of the same document and sends the target there; the two windows stay coupled both ways — handy across monitors.
+- The target is highlighted **in place** (no scroll-to-top, no flash); a page reference with no text region gets a brief red locator dot instead.
+
+Built on Zotero's own reader ([`zotero/reader`](https://github.com/zotero/reader), AGPL-3.0); it implements an idea first raised in [this 2022 forum request](https://forums.zotero.org/discussion/100095) for interconnected split views and reader windows.
+
 **Related and linked items** — features built around Zotero's related-items relations (`dc:relation`) and the linked-items mechanism.
 
 - **Add Related…** in the items-list right-click menu — opens Zotero's select-items dialog and links the chosen items as `dc:relation` peers (multi-annotation aware).
@@ -72,19 +81,25 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 <details id="filters">
 <summary><b>Filters</b></summary>
 
-**Filter popup** — a toolbar `▼` next to the search box opens a compact filter panel. Click to include, Alt+click to exclude.
+**Filter popup** — a toolbar funnel `▼` next to the search box opens a compact filter panel; an accent dot marks the button while any filter is active. Click a facet to include, **Alt+click to exclude**.
 
 - Annotation **colour**, **type**, **has-comment**
-- **Attachment** file type
-- **Item Type** (native menulist + icon-only chips for selected types)
-- **Cross-level**: *Has Related*, *Has Links* — applied across every row kind
-- **Multi-select search**: Tag, Author, Added By, Collection, Saved Search (coloured tags rendered like Zotero's tag selector)
+- **Attachment file type** — PDF / EPUB / Snapshot / Image / Video / Web Link / Linked File / Other File
+- **Item Type** (native menulist + icon-only chips for the types you use), plus a **Standalone Note** tile
+- **Parent flags**: *Has DOI*, *Has URL*, *Has Abstract*, *Has Attachment File*
+- **Attachment / annotation flags**: *Has Bookmarks* (Weavero document bookmarks), *Has Annotations*, *Item Note*
+- **Cross-level**: *Has Tag*, *Has Related*, *Has Link* (a URL in a comment or note) — each with an *Apply to* scope (parent / attachment / annotation)
+- **Multi-select search**: Tag, Publication / Journal (exact match — case matters), Author / Creator, Added By (group libraries), Collection, Saved Search; ranked matching (typing *jfm* finds *Journal of Fluid Mechanics*), with selections shown as include/exclude pills like Zotero's tag selector
 - **Selection Target**: Parent / Attachment / Annotation tri-state — controls Ctrl+A scope and dims out-of-scope rows
-- Strict per-row matching: filtering keeps only items that match; ancestors are kept for tree shape, descendants are not auto-pulled.
+- Strict per-row matching: OR across groups, AND within a group; filtering keeps only rows that match — ancestors are kept for tree shape, descendants are not auto-pulled.
+
+Active filters show as a **chip bar** above the items tree — one removable chip each, plus **+ Filter**, **+ OR Group**, and **Clear all**. A chevron on a container's first visible child reveals rows the filter hid, and a scope button inside the search box can restrict quick-search to chosen row kinds.
 
 See [Filtering rules](docs/filter-rules.md) for the full logic.
 
 <div align="center"><img src="docs/screenshots/06-items-filter.png" width="500" alt="Items-tree filter popup"></div>
+
+**Reader annotation filter.** A funnel `▼` in the PDF / EPUB reader toolbar (next to *Find*) filters the open document's annotations by **type**, **colour**, **has-comment**, **tags**, and **author** — matched-out annotations disappear from both the sidebar list and the page, and it works even with the sidebar collapsed. Alt+click a chip to exclude; an accent dot marks the funnel while filtering, and a *hide all annotations* checkbox is included.
 
 **Tabs menu.** The "List all tabs" dropdown gets a structured layout:
 
@@ -106,10 +121,33 @@ See [Filtering rules](docs/filter-rules.md) for the full logic.
 
 Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bookmarks.json` — see the syncing/backup warning near the top of this page.
 
-- **Library bookmarks** — a **Bookmarks dropdown** on the collections-pane toolbar for **items, collections, and saved searches**. Quick access to the things you return to.
-- **Document bookmarks** — a **Bookmarks tab in the reader sidebar** for **in-document locations**: a precise position (drops a 📌 pin), a selected-text passage, or an annotation in the current document, plus an "Elsewhere in Zotero" section for items / collections / URLs. Entries can be organised into folders and reordered by drag.
-- **Library-bookmarks tab in the reader** (optional) — also browse your Library-scope bookmarks from the reader's Bookmarks panel.
+- **Library bookmarks** — a **Bookmarks dropdown** on the collections-pane toolbar for **items, collections, saved searches, and plain URLs**. Right-click a collection in the tree for **Bookmark Collection**. Quick access to the things you return to.
+- **Document bookmarks** — a **Bookmarks tab in the reader sidebar** for **in-document locations**: a precise position (drops a 📌 pin you can drag to re-place), a whole page (PDF), a selected-text passage, or an annotation in the current document — plus an "Elsewhere in Zotero" section for items / collections / URLs and cross-document selections. Add them from the **+** button or the reader's right-click menu.
+- **Library-bookmarks tab in the reader** (optional) — also browse your Library-scope bookmarks from the reader's Bookmarks panel; a scope toggle switches between *this document* and *library* (Ctrl-click to show both).
+- **Folders &amp; drag-and-drop** — organise either list into folders and subfolders; reorder, nest (folders spring open on hover), and drag annotations, text selections, or library items / collections / searches straight in.
+- **Search &amp; filter** — each list has a search field and a **funnel** that filters by annotation type / colour / tags / author.
+- **Rename, edit &amp; reset** — rename a bookmark (and edit its comment) without touching the source; *Reset to Original Name* restores the live label. Deleted targets show as dimmed, struck-through **orphans** with a ⚠ badge.
+- **Hover card** — hovering a row shows a rich card: kind, colour swatch, page label, text preview, comment, tags, source document, and created date.
 - **Auto-hide when empty** (optional, per scope) — hide the collections-pane button / reader tab until you add the first bookmark.
+
+</details>
+
+<details id="tabs-and-windows">
+<summary><b>Tabs and Windows</b></summary>
+
+Tab and window management on top of Zotero's tab bar. Each piece is individually toggleable.
+
+- **Pinned tabs** — drag a tab into the pinned region (or *Pin Tab* in the tab right-click menu) for a Firefox-style, icon-only tab. Pins persist across restarts and clear automatically if the item is deleted.
+- **Tab groups** — named, colour-coded groups on the tab bar: click to collapse/expand, hover to preview, right-click to rename, recolour, ungroup or close. Add tabs with the *Add Tab to Group ▸* submenu or by dragging; saved groups can be reopened from the "List all tabs" dropdown.
+- **Multi-select tabs** — <kbd>Ctrl/Cmd</kbd>+click to toggle and <kbd>Shift</kbd>+click for a range, then move or close several tabs at once.
+- **Move / tear-off reader tabs between windows** — drag a reader tab into another window, or use *Move to New Window*. For PDFs this is a **no-reload** move that preserves scroll position, zoom and text selection (other attachment types fall back to a reload); the tab keeps its identity.
+- **Reopen closed window / group** — <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd>, or the matching context-menu entry.
+- **Item pane in separate reader windows** — a standalone reader window can show the same item-details pane as the main window (metadata, attachments, related, notes, tags, collections). Resizable, with the width remembered.
+- **Multiple main windows** *(experimental, opt-in)* — adds a *"New Main Window"* entry to the tab right-click menu.
+
+<div align="center"><img src="docs/screenshots/09-tabs-and-windows.png" width="900" alt="Two Zotero windows: the main window's tab strip shows pinned tabs, colour-coded tab groups, and window controls moved into the strip (compact title bar); a second reader window in front has its own tab group and an item-details pane on the right"></div>
+
+The "List all tabs" dropdown's library grouping and file-type filter live under [Filters](#filters) — that's the tabs *menu*; this group is tab *management*.
 
 </details>
 

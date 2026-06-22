@@ -4217,6 +4217,60 @@ class _FilterMixin {
         };
         panel.addEventListener("keydown", swallowLoneAlt, true);
         panel.addEventListener("keyup", swallowLoneAlt, true);
+
+        // Spacebar fix for the panel's HTML search inputs (publication / tag /
+        // author / …). They live inside a XUL popup, where the native layer
+        // EATS the spacebar before it reaches the input — the keydown isn't even
+        // defaultPrevented and no keypress/beforeinput fires, so typed spaces
+        // silently vanish (a publication search for "Journal of Fluid Mechanics"
+        // came out "JournalofFluidMechanics"). Intercept space at document-
+        // capture and insert it ourselves when a filter search input is focused.
+        // Scoped by the `.wv-filter-search-input` class, so the spacebar is never
+        // touched anywhere else. (XUL doc ⇒ HTML tagName is lowercase, so we key
+        // on the class + a text caret, not tagName.)
+        const spaceFix = (e) => {
+            try {
+                // Escape: close the open suggestion list first. The XUL popup
+                // eats Escape before the input (same as the spacebar), so handle
+                // it here at document-capture. Consume it only while a suggestion
+                // box is open — otherwise let Escape bubble so it closes the
+                // panel (two-stage: 1st Escape suggestions, 2nd Escape panel).
+                if (e.key === "Escape") {
+                    // Only act while our filter popup is actually open.
+                    const p: any = panel;
+                    if (!p || (p.state !== "open" && p.state !== "showing")) return;
+                    const sug = this._wvActiveSuggest;
+                    if (sug && sug.box && sug.box.style.display !== "none") {
+                        // First Escape: close the open suggestion list, keep panel.
+                        e.preventDefault();
+                        e.stopPropagation();
+                        try { sug.hide(); } catch (er) {}
+                    } else {
+                        // No suggestions open → close the whole filter popup.
+                        e.preventDefault();
+                        e.stopPropagation();
+                        try { p.hidePopup(); } catch (er) {}
+                    }
+                    return;
+                }
+                if (e.key !== " " && e.key !== "Spacebar") return;
+                const el: any = doc.activeElement;
+                if (!el || typeof el.selectionStart !== "number") return;
+                if ((el.className || "").toString()
+                    .indexOf("wv-filter-search-input") === -1) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const s = el.selectionStart, en = el.selectionEnd;
+                el.value = el.value.slice(0, s) + " " + el.value.slice(en);
+                el.selectionStart = el.selectionEnd = s + 1;
+                el.dispatchEvent(new win.Event("input", { bubbles: true }));
+            } catch (err) {
+                Zotero.debug("[Weavero] filter key-fix err: " + err);
+            }
+        };
+        doc.addEventListener("keydown", spaceFix, true);
+        this._filterSpaceFix = { doc, fn: spaceFix };
+
         tbBtn.appendChild(panel);
         searchBox.parentNode.insertBefore(tbBtn, searchBox.nextSibling);
 
@@ -4607,8 +4661,50 @@ class _FilterMixin {
                 if (popup) popup.remove();
             }
         } catch (e) {}
+        if (this._filterSpaceFix) {
+            try {
+                this._filterSpaceFix.doc.removeEventListener(
+                    "keydown", this._filterSpaceFix.fn, true);
+            } catch (e) {}
+            this._filterSpaceFix = null;
+        }
         this._filterBar = null;
         this._filterTbBtn = null;
+    }
+
+    /** Significant-word initials of a label — the acronym, skipping connector
+     *  words. "Journal of Fluid Mechanics" → "jfm"; "Journal of Applied Fluid
+     *  Mechanics" → "jafm"; "J. Fluid Mech" → "jfm". Lowercased. */
+    _wvSignificantInitials(label) {
+        try {
+            const STOP = this._wvAcronymStopwords
+                || (this._wvAcronymStopwords = new Set(["of", "the", "and",
+                    "for", "in", "on", "a", "an", "to", "at", "by", "with",
+                    "from", "de", "la", "le", "des", "du", "et"]));
+            const words: string[] = String(label).match(/[A-Za-z0-9]+/g) || [];
+            return words
+                .filter((w) => !STOP.has(w.toLowerCase()))
+                .map((w) => w[0].toLowerCase()).join("");
+        } catch (e) { return ""; }
+    }
+
+    /** Acronym match: `q` (already lowercased) is a PREFIX of `label`'s
+     *  significant-word initials. "jfm" / "jf" → "Journal of Fluid Mechanics"
+     *  (JFM); "jfm" does NOT match "Journal of Applied Fluid Mechanics" (JAFM).
+     *  Lets every filter search box surface a multi-word value by its acronym —
+     *  the launcher / Spotlight pattern. Needs q.length >= 2 so a single letter
+     *  stays a plain prefix, not an acronym. */
+    _wvAcronymMatch(label, q) {
+        if (!label || !q || q.length < 2) return false;
+        return this._wvSignificantInitials(label).startsWith(q);
+    }
+
+    /** Length of the significant-word acronym — ranks acronym matches tightest
+     *  (shortest, closest to the query) first: "J. Fluid Mech"/"Journal of
+     *  Fluid Mechanics" (3) above "Journal of Fluid Mechanics and Heat
+     *  Transfer" (5). */
+    _wvInitialsLen(label) {
+        return this._wvSignificantInitials(label).length || 999;
     }
 
     /** (Re)build the filter-bar contents from `_filterState`. Called on
@@ -6255,12 +6351,21 @@ class _FilterMixin {
         let onDocMouseDown = null;
         const hideBox = () => {
             box.style.display = "none";
+            // Drop the global "active suggestion" reference (used by the
+            // document-capture Escape handler — see _setupItemsListFilter).
+            if (this._wvActiveSuggest && this._wvActiveSuggest.box === box) {
+                this._wvActiveSuggest = null;
+            }
             if (onDocMouseDown) {
                 doc.removeEventListener("mousedown", onDocMouseDown, true);
                 onDocMouseDown = null;
             }
         };
         const showBox = () => {
+            // Register this box as the active suggestion list so a document-
+            // capture Escape can close it (the XUL popup eats Escape before the
+            // input, like it does the spacebar).
+            this._wvActiveSuggest = { box, hide: hideBox };
             if (box.style.display !== "none") return;
             box.style.display = "";
             if (!onDocMouseDown) {
@@ -6287,17 +6392,37 @@ class _FilterMixin {
 
         const SUGGEST_LIMIT = 10;
         const rankFn = (all, q) => {
-            const exact = [], pre = [], sub = [];
+            const exact = [], pre = [], sub = [], acr = [];
             for (const v of all) {
-                const lc = mode.valueLabel(v).toLowerCase();
+                const label = mode.valueLabel(v);
+                const lc = label.toLowerCase();
                 if (lc === q) exact.push(v);
                 else if (lc.startsWith(q)) pre.push(v);
                 else if (lc.includes(q)) sub.push(v);
+                // Acronym tier (last): "jfm" → "Journal of Fluid Mechanics".
+                else if (this._wvAcronymMatch(label, q)) acr.push(v);
             }
-            return [...exact, ...pre, ...sub];
+            acr.sort((a, b) => this._wvInitialsLen(mode.valueLabel(a))
+                - this._wvInitialsLen(mode.valueLabel(b)));
+            return [...exact, ...pre, ...sub, ...acr];
         };
 
         let cached = null;
+        // Keyboard navigation of the suggestion list (ArrowUp/Down + Enter).
+        // `kbActive` is the highlighted index among the live option buttons;
+        // it resets on every re-render (the box is rebuilt) — see renderButtons.
+        let kbActive = -1;
+        const kbButtons = () => Array.from(
+            box.querySelectorAll("button.wv-filter-opt")) as any[];
+        const kbSetActive = (i) => {
+            const btns = kbButtons();
+            btns.forEach((b) => b.classList.remove("wv-filter-opt-active"));
+            if (!btns.length || i < 0) { kbActive = -1; return; }
+            if (i > btns.length - 1) i = btns.length - 1;
+            btns[i].classList.add("wv-filter-opt-active");
+            kbActive = i;
+            try { btns[i].scrollIntoView({ block: "nearest" }); } catch (e) {}
+        };
 
         // Render chips below the search box for values picked across
         // ALL modes — both include AND exclude. Switching modes
@@ -6447,6 +6572,7 @@ class _FilterMixin {
 
         const renderButtons = () => {
             if (!cached) return;
+            kbActive = -1;   // box is rebuilt below — drop any keyboard highlight
             while (box.firstChild) box.removeChild(box.firstChild);
             // Vertical mode (Item Type / Collection / Saved Search):
             // one row per value, icon + label. `columns` (default 1)
@@ -6486,8 +6612,11 @@ class _FilterMixin {
                 }
             }
             else if (mode.ranked) list = rankFn(candidates, q);
-            else list = candidates.filter(
-                v => mode.valueLabel(v).toLowerCase().includes(q));
+            else list = candidates.filter((v) => {
+                const label = mode.valueLabel(v);
+                return label.toLowerCase().includes(q)
+                    || this._wvAcronymMatch(label, q);
+            });
             const overflow = q ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
             list = q ? list.slice(0, SUGGEST_LIMIT) : list;
             if (!list.length) {
@@ -6632,6 +6761,37 @@ class _FilterMixin {
         search.addEventListener("input", () => {
             this[mode.queryField] = search.value || "";
             renderButtons();
+        });
+
+        // Keyboard navigation of the suggestion list: ArrowDown/Up move the
+        // highlight, Enter picks (the highlighted option, or the top one if none
+        // is highlighted), Escape closes the suggestions first. preventDefault on
+        // the arrows/Enter stops the XUL popup's own key handling.
+        search.addEventListener("keydown", (e) => {
+            const btns = kbButtons();
+            if (e.key === "ArrowDown") {
+                if (!btns.length) return;
+                e.preventDefault();
+                kbSetActive(kbActive < 0 ? 0 : kbActive + 1);
+            }
+            else if (e.key === "ArrowUp") {
+                if (!btns.length) return;
+                e.preventDefault();
+                kbSetActive(kbActive <= 0 ? -1 : kbActive - 1);
+            }
+            else if (e.key === "Enter") {
+                const target = kbActive >= 0 ? btns[kbActive] : btns[0];
+                if (target) { e.preventDefault(); target.click(); }
+            }
+            else if (e.key === "Escape") {
+                if (box.style.display !== "none") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    kbSetActive(-1);
+                    hideBox();
+                    try { search.blur(); } catch (er) {}
+                }
+            }
         });
 
         loadAndRender();
@@ -8028,14 +8188,16 @@ class _FilterMixin {
         // (still chip-style multi-select).
         const SUGGEST_LIMIT = 10;
         const rankMatches = (allTags, q) => {
-            const exact = [], prefix = [], substring = [];
+            const exact = [], prefix = [], substring = [], acr = [];
             for (const t of allTags) {
                 const lc = t.toLowerCase();
                 if (lc === q) exact.push(t);
                 else if (lc.startsWith(q)) prefix.push(t);
                 else if (lc.includes(q)) substring.push(t);
+                else if (this._wvAcronymMatch(t, q)) acr.push(t);
             }
-            return [...exact, ...prefix, ...substring];
+            acr.sort((a, b) => this._wvInitialsLen(a) - this._wvInitialsLen(b));
+            return [...exact, ...prefix, ...substring, ...acr];
         };
 
         // (Re-)render only the chip list — keeps the search input
@@ -8266,14 +8428,16 @@ class _FilterMixin {
 
         const SUGGEST_LIMIT = 10;
         const rank = (all, q) => {
-            const exact = [], pre = [], sub = [];
+            const exact = [], pre = [], sub = [], acr = [];
             for (const t of all) {
                 const lc = t.toLowerCase();
                 if (lc === q) exact.push(t);
                 else if (lc.startsWith(q)) pre.push(t);
                 else if (lc.includes(q)) sub.push(t);
+                else if (this._wvAcronymMatch(t, q)) acr.push(t);
             }
-            return [...exact, ...pre, ...sub];
+            acr.sort((a, b) => this._wvInitialsLen(a) - this._wvInitialsLen(b));
+            return [...exact, ...pre, ...sub, ...acr];
         };
         const renderButtons = (all) => {
             while (box.firstChild) box.removeChild(box.firstChild);
@@ -8592,7 +8756,8 @@ class _FilterMixin {
             while (box.firstChild) box.removeChild(box.firstChild);
             const q = (this._collectionSearchQuery || "").trim().toLowerCase();
             let list = cols;
-            if (q) list = cols.filter(c => c.name.toLowerCase().includes(q));
+            if (q) list = cols.filter(c => c.name.toLowerCase().includes(q)
+                || this._wvAcronymMatch(c.name, q));
             const overflow = q ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
             list = q ? list.slice(0, SUGGEST_LIMIT) : list;
             const selected = new Set(this._filterState.collections || []);
@@ -8688,7 +8853,8 @@ class _FilterMixin {
             while (box.firstChild) box.removeChild(box.firstChild);
             const q = (this._savedSearchSearchQuery || "").trim().toLowerCase();
             let list = searches;
-            if (q) list = searches.filter(s => s.name.toLowerCase().includes(q));
+            if (q) list = searches.filter(s => s.name.toLowerCase().includes(q)
+                || this._wvAcronymMatch(s.name, q));
             const overflow = q ? Math.max(0, list.length - SUGGEST_LIMIT) : 0;
             list = q ? list.slice(0, SUGGEST_LIMIT) : list;
             const selected = new Set(this._filterState.savedSearches || []);
@@ -8817,14 +8983,16 @@ class _FilterMixin {
 
         const SUGGEST_LIMIT = 10;
         const rank = (all, q) => {
-            const exact = [], pre = [], sub = [];
+            const exact = [], pre = [], sub = [], acr = [];
             for (const t of all) {
                 const lc = t.toLowerCase();
                 if (lc === q) exact.push(t);
                 else if (lc.startsWith(q)) pre.push(t);
                 else if (lc.includes(q)) sub.push(t);
+                else if (this._wvAcronymMatch(t, q)) acr.push(t);
             }
-            return [...exact, ...pre, ...sub];
+            acr.sort((a, b) => this._wvInitialsLen(a) - this._wvInitialsLen(b));
+            return [...exact, ...pre, ...sub, ...acr];
         };
         const renderScope = () => {
             while (scopeRow.firstChild) scopeRow.removeChild(scopeRow.firstChild);
@@ -9980,6 +10148,18 @@ class _FilterMixin {
             let row;
             try { row = origGetRow(j); } catch (e) { continue; }
             if (!row || !row.ref) continue;
+            // Structural section-header rows (Zotero's group-by-library
+            // multi-selection view, zotero#5954) carry a Library ref, not an
+            // item. Always keep them so the grouped layout survives the filter,
+            // and skip the item-match logic below (which would drop them and
+            // misalign keep[]). No-op on builds without such rows — every
+            // current item-tree row's ref has `isRegularItem`.
+            const sref = row.ref;
+            if (row.type === "library-header"
+                || typeof sref.isRegularItem !== "function") {
+                pushKeep(j);
+                continue;
+            }
             if (isOrphanRow(j)) continue;
             const item = row.ref;
             if (isPrimary(item)) {

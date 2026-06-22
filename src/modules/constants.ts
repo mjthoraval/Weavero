@@ -1069,6 +1069,9 @@ export const PLUGIN_CSS = [
     "  font-size: 12px;",
     "}",
     ".wv-filter-opt:hover { background: rgba(127,127,127,0.08); }",
+    // Keyboard-highlighted suggestion (ArrowUp/Down). Accent-tinted so it
+    // reads as the active row regardless of mouse hover.
+    ".wv-filter-opt.wv-filter-opt-active { background: var(--color-accent-pale, rgba(64,114,229,0.18)); outline: 1px solid var(--color-accent, #4072e5); outline-offset: -1px; }",
     // Included (plain click). Solid-ish accent fill + a bright border
     // reinforced by an inset ring, so an active chip clearly stands out
     // from the idle ones (the old 18%-opacity wash read as barely-there,

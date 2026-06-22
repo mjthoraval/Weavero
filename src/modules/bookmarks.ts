@@ -142,6 +142,13 @@ const BM_TEXT_ICON = "data:image/svg+xml," + encodeURIComponent(
 const BM_MENU_ADD_ICON = "data:image/svg+xml," + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
     + '<path fill="context-fill" d="M7 7V2h2v5h5v2H9v5H7V9H2V7z"/></svg>');
+// Hollow bookmark ribbon for the collections-pane right-click "Bookmark
+// Collection" menu item — the SAME glyph as the collections-pane toolbar
+// button (shared BOOKMARK_PATH), at the menu's native 16×16 slot and themed
+// via `context-fill` like Zotero's own menu icons.
+const BM_MENU_BOOKMARK_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+    + '<path fill="context-fill" fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>');
 // Folder+plus glyph for "New Folder…" / "New Subfolder…" menu items.
 // Redrawn at 16-unit to MATCH the menu's icon slot (chrome forces
 // `menuitem-iconic` images to 16×16 — so a 20-unit SVG was being
@@ -1675,10 +1682,12 @@ class _BookmarksMixin {
         }
     }
 
-    /** Bookmark items/collections dropped onto the toolbar icon. Payloads
-     *  (zotero/item, zotero/collection) are comma-separated IDs, read
-     *  synchronously by the drop handler. */
-    async _bmDropAdd(itemData: string, colData: string, searchData?: string) {
+    /** Bookmark items / collections / searches / libraries dropped onto the
+     *  toolbar icon. Payloads (zotero/item, zotero/collection, zotero/search,
+     *  weavero/library) are comma-separated IDs, read synchronously by the drop
+     *  handler. (weavero/library is set by our own library-drag shim — see
+     *  `_setupLibraryDragSource` — since Zotero won't drag library rows.) */
+    async _bmDropAdd(itemData: string, colData: string, searchData?: string, libData?: string) {
         try {
             await this._bmInit();
             const ids = (s: string) => (s || "").split(",")
@@ -1695,6 +1704,9 @@ class _BookmarksMixin {
             for (const id of ids(searchData || "")) {
                 const s: any = Zotero.Searches.get(id);
                 if (s && this._bmAddTreeRowSync("S" + id, s.libraryID, s.name)) added++;
+            }
+            for (const id of ids(libData || "")) {
+                if (this._bmAddLibrarySync(id)) added++;
             }
             if (added) await this._bmPersist();
             this._bmRenderPopupList();
@@ -2484,7 +2496,7 @@ class _BookmarksMixin {
                     const has = (k: string) => (typeof t.includes === "function")
                         ? t.includes(k) : (Array.prototype.indexOf.call(t, k) >= 0);
                     return has("zotero/item") || has("zotero/collection")
-                        || has("zotero/search");
+                        || has("zotero/search") || has("weavero/library");
                 } catch (e) { return false; }
             };
             btn.addEventListener("dragover", (e: any) => {
@@ -2500,15 +2512,17 @@ class _BookmarksMixin {
                 if (!dtHasZotero(e.dataTransfer)) return;
                 e.preventDefault();
                 // Read synchronously — dataTransfer is neutered after an await.
-                let itemData = "", colData = "", searchData = "";
+                let itemData = "", colData = "", searchData = "", libData = "";
                 try { itemData = e.dataTransfer.getData("zotero/item") || ""; } catch (_) {}
                 try { colData = e.dataTransfer.getData("zotero/collection") || ""; } catch (_) {}
                 try { searchData = e.dataTransfer.getData("zotero/search") || ""; } catch (_) {}
-                this._bmDropAdd(itemData, colData, searchData);
+                try { libData = e.dataTransfer.getData("weavero/library") || ""; } catch (_) {}
+                this._bmDropAdd(itemData, colData, searchData, libData);
             });
             if (addBtn && addBtn.parentNode === toolbar) addBtn.after(btn);
             else toolbar.appendChild(btn);
             this._setupCollectionsBookmarkMenu(win);
+            this._setupLibraryDragSource(win);
             this._bmInit();
         } catch (e) {
             Zotero.debug("[Weavero] _setupBookmarksToolbarButton err: " + e);
@@ -2526,6 +2540,7 @@ class _BookmarksMixin {
                 doc.getElementById(BM_ROW_MENU_ID)?.remove();
             }
             this._teardownCollectionsBookmarkMenu(win);
+            this._teardownLibraryDragSource(win);
         } catch (e) {}
     }
 
@@ -3402,7 +3417,9 @@ class _BookmarksMixin {
             const mkEntry = (label: string, fn: any) => {
                 const mi = doc.createXULElement("menuitem");
                 mi.id = ID;
+                mi.classList.add("menuitem-iconic");
                 mi.setAttribute("label", label);
+                mi.setAttribute("image", BM_MENU_BOOKMARK_ICON);
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
@@ -3429,6 +3446,28 @@ class _BookmarksMixin {
                                     } else { this._bmBookmarkCollection(c); }
                                 } catch (e) {
                                     Zotero.debug("[Weavero] bookmark-collection cmd err: " + e);
+                                }
+                            });
+                        return;
+                    }
+                    // No collection selected -> a library row (My Library / group /
+                    // feed)? Offer "Bookmark Library".
+                    const cv = zp.collectionsView;
+                    const tr = cv && cv.selectedTreeRow;
+                    if (tr && this._bmTreeRowIsLibrary(tr) && tr.ref
+                            && typeof tr.ref.libraryID === "number") {
+                        const libraryID = tr.ref.libraryID;
+                        const bookmarked = this._bmHasLibrary(libraryID);
+                        mkEntry(bookmarked ? "Remove Library Bookmark" : "Bookmark Library",
+                            () => {
+                                try {
+                                    if (this._bmHasLibrary(libraryID)) {
+                                        const ex = this._bmFlatten().find((b: any) =>
+                                            b.type === "library" && b.libraryID === libraryID);
+                                        if (ex) this._bmRemove(ex.id);
+                                    } else { this._bmBookmarkLibrary(libraryID); }
+                                } catch (e) {
+                                    Zotero.debug("[Weavero] bookmark-library cmd err: " + e);
                                 }
                             });
                         return;
@@ -3460,6 +3499,69 @@ class _BookmarksMixin {
             } catch (e) {}
         } catch (e) {}
         this._collectionBookmarkMenuHandlers = null;
+    }
+
+    // ---- Make library rows draggable onto the bookmark icon ----------------
+
+    /** Let library rows (My Library / group / feed) be dragged onto the bookmark
+     *  icon. Zotero's collection tree only starts a drag for collections and
+     *  searches — its `onDragStart` bails on library rows (collectionTree.jsx),
+     *  so a dragged library carries NO drag data and can't be dropped anywhere.
+     *
+     *  Safe, non-invasive shim: we do NOT touch Zotero's handler. The row's own
+     *  (passive) `dragstart` already fires for library rows (every row is
+     *  `draggable`); we add our OWN bubble-phase listener on `#collection-tree`
+     *  that runs AFTER it and, when the dragged (selected) row is a library and
+     *  Zotero set no native drag data, attaches `weavero/library` = libraryID.
+     *  Our toolbar drop target reads that; Zotero's own drop targets ignore the
+     *  unknown type, so nothing else in the app changes. Fully removable. */
+    _setupLibraryDragSource(win?: any) {
+        try {
+            win = win || Zotero.getMainWindow();
+            const doc = win && win.document;
+            if (!doc) return;
+            this._teardownLibraryDragSource(win);
+            const tree = doc.getElementById("collection-tree");
+            if (!tree) return;
+            const onDragStart = (e: any) => {
+                try {
+                    const dt = e.dataTransfer;
+                    if (!dt) return;
+                    const t = dt.types;
+                    const has = (k: string) => t && (typeof t.includes === "function"
+                        ? t.includes(k) : Array.prototype.indexOf.call(t, k) >= 0);
+                    // A native collection/search/item drag already carries data — leave it.
+                    if (has("zotero/collection") || has("zotero/search") || has("zotero/item")) return;
+                    const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+                    const tr = cv && cv.selectedTreeRow;
+                    if (tr && this._bmTreeRowIsLibrary(tr) && tr.ref
+                            && typeof tr.ref.libraryID === "number") {
+                        dt.setData("weavero/library", String(tr.ref.libraryID));
+                        try { dt.effectAllowed = "copy"; } catch (_) {}
+                        // Use the row element as the drag image for visual feedback.
+                        try {
+                            const rowEl = e.target && e.target.closest && e.target.closest(".row");
+                            if (rowEl && typeof dt.setDragImage === "function") {
+                                dt.setDragImage(rowEl, 12, 8);
+                            }
+                        } catch (_) {}
+                    }
+                } catch (er) {}
+            };
+            tree.addEventListener("dragstart", onDragStart, false);
+            this._libraryDragSource = { tree, onDragStart };
+        } catch (e) {
+            Zotero.debug("[Weavero] _setupLibraryDragSource err: " + e);
+        }
+    }
+
+    _teardownLibraryDragSource(_win?: any) {
+        if (!this._libraryDragSource) return;
+        try {
+            const { tree, onDragStart } = this._libraryDragSource;
+            try { tree.removeEventListener("dragstart", onDragStart, false); } catch (e) {}
+        } catch (e) {}
+        this._libraryDragSource = null;
     }
 }
 

@@ -89,7 +89,7 @@ Built on Zotero's own reader ([`zotero/reader`](https://github.com/zotero/reader
 - **Parent flags**: *Has DOI*, *Has URL*, *Has Abstract*, *Has Attachment File*
 - **Attachment / annotation flags**: *Has Bookmarks* (Weavero document bookmarks), *Has Annotations*, *Item Note*
 - **Cross-level**: *Has Tag*, *Has Related*, *Has Link* (a URL in a comment or note) — each with an *Apply to* scope (parent / attachment / annotation)
-- **Multi-select search**: Tag, Publication / Journal (exact match — case matters), Author / Creator, Added By (group libraries), Collection, Saved Search; ranked matching (typing *jfm* finds *Journal of Fluid Mechanics*), with selections shown as include/exclude pills like Zotero's tag selector
+- **Multi-select search**: Tag, Publication / Journal (exact match — case matters), Author / Creator, Added By (group libraries), Collection, Saved Search; ranked matching (typing *jfm* finds *Journal of Fluid Mechanics*) with keyboard navigation (↑/↓ + Enter), and selections shown as include/exclude pills like Zotero's tag selector
 - **Selection Target**: Parent / Attachment / Annotation tri-state — controls Ctrl+A scope and dims out-of-scope rows
 - Strict per-row matching: OR across groups, AND within a group; filtering keeps only rows that match — ancestors are kept for tree shape, descendants are not auto-pulled.
 
@@ -121,10 +121,10 @@ See [Filtering rules](docs/filter-rules.md) for the full logic.
 
 Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bookmarks.json` — see the syncing/backup warning near the top of this page.
 
-- **Library bookmarks** — a **Bookmarks dropdown** on the collections-pane toolbar for **items, collections, saved searches, and plain URLs**. Right-click a collection in the tree for **Bookmark Collection**. Quick access to the things you return to.
+- **Library bookmarks** — a **Bookmarks dropdown** on the collections-pane toolbar for **items, collections, saved searches, whole libraries, and plain URLs**. Right-click a collection or library in the tree for **Bookmark Collection** / **Bookmark Library**. Quick access to the things you return to.
 - **Document bookmarks** — a **Bookmarks tab in the reader sidebar** for **in-document locations**: a precise position (drops a 📌 pin you can drag to re-place), a whole page (PDF), a selected-text passage, or an annotation in the current document — plus an "Elsewhere in Zotero" section for items / collections / URLs and cross-document selections. Add them from the **+** button or the reader's right-click menu.
 - **Library-bookmarks tab in the reader** (optional) — also browse your Library-scope bookmarks from the reader's Bookmarks panel; a scope toggle switches between *this document* and *library* (Ctrl-click to show both).
-- **Folders &amp; drag-and-drop** — organise either list into folders and subfolders; reorder, nest (folders spring open on hover), and drag annotations, text selections, or library items / collections / searches straight in.
+- **Folders &amp; drag-and-drop** — organise either list into folders and subfolders; reorder, nest (folders spring open on hover), and drag annotations, text selections, or items / collections / searches / libraries straight in.
 - **Search &amp; filter** — each list has a search field and a **funnel** that filters by annotation type / colour / tags / author.
 - **Rename, edit &amp; reset** — rename a bookmark (and edit its comment) without touching the source; *Reset to Original Name* restores the live label. Deleted targets show as dimmed, struck-through **orphans** with a ⚠ badge.
 - **Hover card** — hovering a row shows a rich card: kind, colour swatch, page label, text preview, comment, tags, source document, and created date.

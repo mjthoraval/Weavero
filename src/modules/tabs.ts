@@ -3442,6 +3442,21 @@ class _TabsMixin {
                 delete win._wvTabBarDecoMo;
             }
         } catch (e) {}
+        // Revert pinned-tab visuals so disabling the plugin (or turning the
+        // feature off) returns the tabs to normal width/position. The
+        // `weavero.pinnedTabs` pref is left untouched, so re-enabling re-pins.
+        // (Without this the pin stuck visible after the plugin was disabled.)
+        try {
+            if (doc) {
+                for (const node of doc.querySelectorAll(
+                    "#tab-bar-container .tab.wv-pinned-tab")) {
+                    node.classList.remove("wv-pinned-tab");
+                    try { node.removeAttribute("data-wv-pin-preview"); } catch (e) {}
+                }
+                const pinStyle = doc.getElementById("wv-pinned-tab-style");
+                if (pinStyle) pinStyle.remove();
+            }
+        } catch (e) {}
         try {
             const tintStyle = doc
                 && doc.getElementById("wv-tab-bar-tint-style");

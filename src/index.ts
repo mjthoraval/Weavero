@@ -3682,6 +3682,10 @@ class WeaveroPlugin {
             this._teardownCollectionsContextMenu();
             this._teardownBookmarksToolbarButton(_window);
             this._teardownTabExternalRepositioner(_window);
+            // Revert pinned-tab visuals (and the tab-bar decoration) so a
+            // pinned tab returns to normal when the plugin is disabled; the
+            // `weavero.pinnedTabs` pref is kept so re-enabling re-pins.
+            this._teardownTabBarLibraryDecoration(_window);
             this._paneObserver?.disconnect();
             this._paneObserver = null;
             this._treeMarkObserver?.disconnect();

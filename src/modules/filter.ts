@@ -4684,6 +4684,15 @@ class _FilterMixin {
                 if (bar) bar.remove();
                 const tbBtn = doc.getElementById("wv-filter-tb-button");
                 if (tbBtn) tbBtn.remove();
+                // Remove the quick-search "Apply to" scope button and any
+                // stale scope popup, so disabling the plugin (or turning the
+                // filter off) reverts the toolbar search to native. It was
+                // previously only torn down on `popuphidden`, so the button
+                // lingered in the search wrapper after the plugin was disabled.
+                try { this._uninstallQuickSearchScopeButton(doc); } catch (e) {}
+                for (const p of doc.querySelectorAll("panel.wv-qs-scope-panel") as any) {
+                    try { p.remove(); } catch (e) {}
+                }
                 for (const row of doc.querySelectorAll(".row.wv-filter-hidden") as any) {
                     row.classList.remove("wv-filter-hidden");
                 }
@@ -7548,7 +7557,8 @@ class _FilterMixin {
     }
 
     /** Remove the injected scope button from the toolbar search.
-     *  Called from `popuphidden`. Safe to call when not installed. */
+     *  Called from `_teardownItemsListFilter` (plugin disable / filter
+     *  off). Safe to call when not installed. */
     _uninstallQuickSearchScopeButton(doc) {
         try {
             const sb: any = doc.getElementById("zotero-tb-search");

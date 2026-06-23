@@ -1128,13 +1128,18 @@ class _FilterMixin {
                     continue;
                 }
                 if (!childIds.length) continue;
-                let hidden = 0;
+                let hidden = 0, visible = 0;
                 for (const cid of childIds) {
-                    if (sIDs.has(cid)) continue;
-                    if (sParents && sParents.has(cid)) continue;
+                    if (sIDs.has(cid)) { visible++; continue; }
+                    if (sParents && sParents.has(cid)) { visible++; continue; }
                     hidden++;
                 }
-                if (hidden > 0) hiddenCounts.set(it.id, hidden);
+                // Chevron only for MIXED containers — at least one child that
+                // matches the search (shown) AND at least one hidden. When every
+                // child is non-matching the container is in the view only because
+                // an ancestor matched; getChildItems now shows all its children on
+                // expand, so no chevron is needed.
+                if (hidden > 0 && visible > 0) hiddenCounts.set(it.id, hidden);
             }
             // Second pass: first visible direct child per such container.
             for (const row of rows) {
@@ -1559,6 +1564,14 @@ class _FilterMixin {
                         + (this.ref && this.ref.id)
                         + " orig=" + items.length
                         + " filtered=" + filteredOut.length);
+                    // All-non-matching: if NONE of this item's children match, the
+                    // item is in the view only because IT matched — so it acts as
+                    // a plain expandable container (show all children; no chevron,
+                    // since the chevron map gates on a matching child). A MIXED
+                    // item keeps the filter + chevron path above.
+                    if (filteredOut.length === 0 && items.length) {
+                        return items;
+                    }
                     return filteredOut;
                 } catch (e) {
                     Zotero.debug(
@@ -1870,6 +1883,23 @@ class _FilterMixin {
                         }
                         return extra.length
                             ? orig.concat(extra) : orig;
+                    }
+                    // All-non-matching: if a quick search is active and NONE of
+                    // this attachment's annotations match, the upstream
+                    // getChildItems (under hideContextAnnotationRows) returns the
+                    // filtered/empty set, so the twisty would expand to nothing.
+                    // Show ALL annotations instead — the attachment is in the view
+                    // only because its PARENT matched, so it acts as a plain
+                    // expandable container (no chevron; the chevron map gates on a
+                    // matching child). A MIXED attachment keeps the upstream
+                    // filter + chevron path above.
+                    if (opts && opts.searchMode && opts.searchItemIDs
+                        && this.ref && this.ref.getAnnotations) {
+                        const anns = this.ref.getAnnotations() || [];
+                        if (anns.length && !anns.some((a: any) =>
+                            a && opts.searchItemIDs.has(a.id))) {
+                            return anns;
+                        }
                     }
                 } catch (e) {}
                 return origGCI.apply(this, arguments);

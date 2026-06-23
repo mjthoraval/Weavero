@@ -2011,6 +2011,70 @@ class WeaveroPlugin {
                     }
                 } catch (e) {}
             };
+            // ─────────────────────────────────────────────────────────────────────────
+            // TEMPORARY WORKAROUND — REMOVE WHEN FIXED UPSTREAM  (grep tag: WV-TEMP-132342)
+            // Tracking the bug report: https://forums.zotero.org/discussion/132342
+            // When Zotero stops leaving orphaned ReaderTab entries in Reader._readers,
+            // delete this whole guard: the `tabAliveForReader` + `dropGhostTabsForItem`
+            // helpers below AND the `dropGhostTabsForItem(itemID)` call in the Reader.open
+            // wrapper. Nothing else depends on them.
+            // ─────────────────────────────────────────────────────────────────────────
+            // Defensive guard for an upstream Zotero bug (forums.zotero.org/discussion/132342):
+            // a reader whose tab is closed during a PDF page-edit RELOAD can be left behind in
+            // Reader._readers as an orphan — its `tabID` points at a tab that no longer exists.
+            // Native Reader.open then finds that entry (`_readers.find(r => r.itemID === id)`),
+            // treats the item as already-open, and calls `Zotero_Tabs.select(<ghost tabID>)`,
+            // which throws "can't access property 'type', tab is undefined" — so double-click /
+            // zotero://open on that item silently fails until a restart. Confirmed upstream
+            // (reproduces with all plugins disabled); this only shields the user until it's fixed.
+            // Before delegating to native open we drop any orphaned ReaderTab entry FOR THE ITEM
+            // BEING OPENED so the open proceeds cleanly.
+            //
+            // Surgical by construction: scoped to `itemID`; only ReaderTab entries can match (a
+            // ReaderWindow never sets `tabID`, so it can't be touched); and only when the tab is
+            // gone from the reader's OWN window AND every main window — so a live tab, including
+            // one in a separate reader window, is never removed. (The reader-window redirect
+            // below already returns for items hosted in a Weavero reader window, so by the call
+            // site the only entries left for `itemID` are a real tab or a genuine ghost.)
+            const tabAliveForReader = (r: any): boolean => {
+                let tabID: any;
+                try { tabID = r.tabID; } catch (e) { return true; }
+                if (!tabID) return true;   // no tabID (e.g. a ReaderWindow) → never a ghost-tab
+                try {
+                    const w: any = r._window;
+                    if (w && w.Zotero_Tabs && Array.isArray(w.Zotero_Tabs._tabs)
+                        && w.Zotero_Tabs._tabs.some((t: any) => t && t.id === tabID)) return true;
+                } catch (e) {}
+                try {
+                    const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]);
+                    for (const w of wins) {
+                        try {
+                            const ZT: any = w && (w as any).Zotero_Tabs;
+                            if (ZT && Array.isArray(ZT._tabs) && ZT._tabs.some((t: any) => t && t.id === tabID)) return true;
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+                return false;
+            };
+            const dropGhostTabsForItem = (itemID: any) => {
+                try {
+                    const arr: any[] = Reader && Reader._readers;
+                    if (!Array.isArray(arr)) return;
+                    for (let i = arr.length - 1; i >= 0; i--) {
+                        const r: any = arr[i];
+                        let rItem: any;
+                        try { rItem = r.itemID; } catch (e) { continue; }   // dead Proxies handled by purgeDeadReaders
+                        if (rItem !== itemID) continue;
+                        let isTab = false;
+                        try { isTab = !!(r.constructor && r.constructor.name === "ReaderTab"); } catch (e) {}
+                        if (isTab && !tabAliveForReader(r)) {
+                            arr.splice(i, 1);
+                            Zotero.debug("[Weavero] dropped orphaned reader entry for item " + itemID
+                                + " (guards upstream Zotero forums #132342)");
+                        }
+                    }
+                } catch (e) { Zotero.debug("[Weavero] dropGhostTabsForItem err: " + e); }
+            };
             if (Reader && typeof Reader.getWindowStates === "function" && !Reader._wvOrigGetWindowStates) {
                 Reader._wvOrigGetWindowStates = Reader.getWindowStates;
                 Reader.getWindowStates = function (...a: any[]) {
@@ -2046,6 +2110,7 @@ class WeaveroPlugin {
                             }
                         }
                     } catch (e) { Zotero.debug("[Weavero] reader-open redirect err: " + e); }
+                    dropGhostTabsForItem(itemID);   // WV-TEMP-132342: guard, remove when upstream-fixed (see note above)
                     return Reader._wvOrigOpen.call(Reader, itemID, location, opts);
                 };
             }

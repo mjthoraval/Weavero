@@ -29,6 +29,7 @@ import {
     BTN_CLASS, BTN_PANE_CLASS, BTN_TREE_CLASS, BTN_POPUP_CLASS,
     BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
 } from "./constants";
+import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
 
 class _PaneMixin {
     [k: string]: any;
@@ -143,6 +144,30 @@ class _PaneMixin {
      *  command resolves a fresh annotation array at click time so a
      *  selection-mutation between popupshowing and command can't
      *  capture stale items. */
+    /** Accelerator label (e.g. "Ctrl+Shift+A") for a window `<key>` element,
+     *  read LIVE from its `modifiers`/`key` attributes so it reflects whatever
+     *  the user has set in Settings → Advanced → Shortcuts (those prefs drive
+     *  the `<key>` element at startup; changes take effect after restart).
+     *  Returns "" when the key element or its char isn't available. */
+    _acceltextForKey(doc: any, keyId: string): string {
+        try {
+            const k = doc && doc.getElementById(keyId);
+            if (!k) return "";
+            const ch = (k.getAttribute("key") || "").trim();
+            if (!ch) return "";
+            const mods = (k.getAttribute("modifiers") || "").toLowerCase();
+            const mac = !!(Zotero as any).isMac;
+            const parts: string[] = [];
+            if (/accel/.test(mods)) parts.push(mac ? "⌘" : "Ctrl");
+            else if (/control|ctrl/.test(mods)) parts.push("Ctrl");
+            if (/shift/.test(mods)) parts.push(mac ? "⇧" : "Shift");
+            if (/alt|option/.test(mods)) parts.push(mac ? "⌥" : "Alt");
+            if (/meta|win/.test(mods)) parts.push(mac ? "⌘" : "Win");
+            parts.push(ch.toUpperCase());
+            return parts.join(mac ? "" : "+");
+        } catch (e) { return ""; }
+    }
+
     _setupItemsListContextMenu() {
         try {
             const win = Zotero.getMainWindow();
@@ -152,12 +177,21 @@ class _PaneMixin {
             if (!menu) return;
             this._teardownItemsListContextMenu();
             const ADD_REL_ID = "wv-itemmenu-add-related";
+            const COPY_AS_ID = "wv-itemmenu-copy-as";                  // the "Copy As" submenu parent
+            const COPY_CITATION_ID = "wv-itemmenu-copy-citation";
+            const COPY_BIB_ID = "wv-itemmenu-copy-bibliography";
+            const COPY_CITEKEY_ID = "wv-itemmenu-copy-citekey";
             const COPY_SELECT_ID = "wv-itemmenu-copy-select";          // single combined Select link
             const COPY_SELECT_SEP_ID = "wv-itemmenu-copy-select-sep";  // multi: separate Select links
             const COPY_OPEN_ID = "wv-itemmenu-copy-open";              // Open link(s)
+            const COPY_WEB_ID = "wv-itemmenu-copy-weblink";            // Online Library Link
+            const COPY_BIBTEX_ID = "wv-itemmenu-copy-bibtex";         // BBT BibTeX
+            const COPY_BIBLATEX_ID = "wv-itemmenu-copy-biblatex";     // BBT BibLaTeX
             const SEP_ID = "wv-itemmenu-separator";
             const EXTV_ID = "wv-itemmenu-open-external";               // "Open in External Viewer"
-            const ALL_IDS = [ADD_REL_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID, SEP_ID, EXTV_ID];
+            const ALL_IDS = [ADD_REL_ID, COPY_AS_ID, COPY_CITATION_ID, COPY_BIB_ID,
+                COPY_CITEKEY_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID,
+                COPY_WEB_ID, COPY_BIBTEX_ID, COPY_BIBLATEX_ID, SEP_ID, EXTV_ID];
             // Include any item type that has an `addRelatedItem`
             // method — annotations, attachments, regular items, and
             // notes all support the dc:relation predicate. Excludes
@@ -186,20 +220,15 @@ class _PaneMixin {
                     const isDark = doc.documentElement
                         && doc.documentElement.classList.contains("wv-ui-dark");
 
-                    // All of Weavero's items-menu entries form one
-                    // block at the bottom of the native menu: a single
-                    // separator above, then the Copy Select/Open Link
-                    // entries, then "Add Related…" — no separators
-                    // inside the block. Each entry is still gated by its
-                    // own pref (URI utilities / Relations groups).
-
+                    // Weavero's two items-menu features now live in different
+                    // spots: the "Copy As" submenu is inserted up beside the
+                    // native "Export Item…" entry (see below), while
+                    // "Add Related…" stays in a small block at the very bottom
+                    // with its own separator. Each is gated by its own pref
+                    // (URI utilities / Relations groups).
                     const wantCopy = this._getEnableCopyItemLink();
                     const wantAdd = this._getEnableAddRelatedMenu();
                     if (!wantCopy && !wantAdd) return;
-
-                    // Separator above the whole block (skip if the
-                    // native menu already ends with one).
-                    this._appendSeparatorIfMissing(doc, menu, SEP_ID);
 
                     // --- Copy Select / Open Link entries ---------
                     // Zotero exposes none of these in the items-tree
@@ -219,13 +248,39 @@ class _PaneMixin {
                     // in the left tree (if any) so they navigate there.
                     if (wantCopy) {
                     const menuIcon = this._menuItemIconURL;
-                    const addEntry = (id, label, action) => {
+                    // All copy actions live under one "Copy As" submenu (mirrors
+                    // zotero/zotero#2893). The parent carries Weavero's needle
+                    // icon; children are text-only for a clean list.
+                    const copyAs = doc.createXULElement("menu");
+                    copyAs.id = COPY_AS_ID;
+                    copyAs.setAttribute("label", "Copy As");
+                    if (menuIcon) {
+                        copyAs.classList.add("menu-iconic");
+                        copyAs.setAttribute("image", menuIcon);
+                    }
+                    const sub = doc.createXULElement("menupopup");
+                    copyAs.appendChild(sub);
+                    // Place "Copy As" directly ABOVE the native "Export Item…"
+                    // entry (`.zotero-menuitem-export`), falling back to the menu
+                    // end if it's somehow absent. Safe to insert mid-menu because
+                    // `onHidden` strips all Weavero entries on `popuphidden`, so
+                    // the menu is pristine before the next position-indexed
+                    // `buildItemContextMenu` runs.
+                    const exportAnchor = menu.querySelector(".zotero-menuitem-export");
+                    if (exportAnchor && exportAnchor.parentNode === menu) {
+                        menu.insertBefore(copyAs, exportAnchor);
+                    } else {
+                        menu.appendChild(copyAs);
+                    }
+                    const addEntry = (id, label, action, keyId?) => {
                         const cl = doc.createXULElement("menuitem");
                         cl.id = id;
                         cl.setAttribute("label", label);
-                        if (menuIcon) {
-                            cl.classList.add("menuitem-iconic");
-                            cl.setAttribute("image", menuIcon);
+                        // Show the matching Zotero shortcut (read live so it
+                        // tracks the user's Settings → Shortcuts binding).
+                        if (keyId) {
+                            const at = this._acceltextForKey(doc, keyId);
+                            if (at) cl.setAttribute("acceltext", at);
                         }
                         cl.addEventListener("command", () => {
                             try {
@@ -236,11 +291,12 @@ class _PaneMixin {
                                 if (!fresh.length) return;
                                 action(fresh);
                             } catch (cmdErr) {
-                                Zotero.debug("[Weavero] itemmenu copy-link cmd err: " + cmdErr);
+                                Zotero.debug("[Weavero] itemmenu copy-as cmd err: " + cmdErr);
                             }
                         });
-                        menu.appendChild(cl);
+                        sub.appendChild(cl);
                     };
+                    const addSubSep = () => sub.appendChild(doc.createXULElement("menuseparator"));
                     const collScopeNow = () => ({ collScope: this._currentCollectionScope(win) });
                     // When the left tree has a real collection selected,
                     // the Select link(s) are scoped to it — flag that in
@@ -255,25 +311,62 @@ class _PaneMixin {
                     const openExtSuffix = openTargets.length === 1
                         && this._isExternalOpenTarget(openTargets[0]) ? " (external app)" : "";
 
-                    addEntry(COPY_SELECT_ID, "Copy Select Link" + collSuffix,
+                    // --- Citation / Bibliography (user's QuickCopy cite style) ---
+                    // Accel hints mirror Zotero's own shortcuts:
+                    //   Citation     → key_copyCitation     (default Ctrl+Shift+A)
+                    //   Bibliography → key_copyBibliography (default Ctrl+Shift+C)
+                    addEntry(COPY_CITATION_ID, "Citation",
+                        (fresh) => this._copyCitationOrBibliography(fresh, true), "key_copyCitation");
+                    addEntry(COPY_BIB_ID, "Bibliography",
+                        (fresh) => this._copyCitationOrBibliography(fresh, false), "key_copyBibliography");
+                    // Citation Key — native Zotero field 9 (Better BibTeX fills
+                    // it when active). Shown only when the selection actually
+                    // has one, since Zotero doesn't auto-generate keys.
+                    if (this._anyHasCitationKey(targets)) {
+                        addEntry(COPY_CITEKEY_ID, "Citation Key",
+                            (fresh) => this._copyCitationKeys(fresh));
+                    }
+                    addSubSep();
+
+                    // --- Select / Open links (moved in from the flat menu) ---
+                    addEntry(COPY_SELECT_ID, "Select Link" + collSuffix,
                         (fresh) => this._copyCombinedSelectLink(fresh, collScopeNow()));
                     if (multi) {
                         addEntry(COPY_SELECT_SEP_ID,
-                            "Copy Select Links (Separate Links per Item)" + collSuffix,
+                            "Select Links (Separate Links per Item)" + collSuffix,
                             (fresh) => this._copyItemLinks(fresh, "select", collScopeNow()));
                         if (openTargets.length) {
-                            addEntry(COPY_OPEN_ID, "Copy Open Links (Separate Links per Item)",
+                            addEntry(COPY_OPEN_ID, "Open Links (Separate Links per Item)",
                                 (fresh) => this._copyItemLinks(fresh, "open"));
                         }
                     } else if (openTargets.length) {
-                        addEntry(COPY_OPEN_ID, "Copy Open Link" + openExtSuffix,
+                        addEntry(COPY_OPEN_ID, "Open Link" + openExtSuffix,
                             (fresh) => this._copyItemLinks(fresh, "open"));
+                    }
+
+                    // --- Online (web) library link (zotero/zotero#2917) ---
+                    if (this._anyHasWebURL(targets)) {
+                        addEntry(COPY_WEB_ID, "Online Library Link",
+                            (fresh) => this._copyOnlineLibraryLinks(fresh));
+                    }
+
+                    // --- Better BibTeX export formats (only when BBT active) ---
+                    // Prefixed "[BBT]" so it's clear these come from the
+                    // Better BibTeX plugin, not native Zotero.
+                    if (this._isBetterBibTeXActive()) {
+                        addSubSep();
+                        addEntry(COPY_BIBTEX_ID, "[BBT] BibTeX",
+                            (fresh) => this._copyExportToClipboard(fresh, BBT_BIBTEX_TRANSLATOR_ID));
+                        addEntry(COPY_BIBLATEX_ID, "[BBT] BibLaTeX",
+                            (fresh) => this._copyExportToClipboard(fresh, BBT_BIBLATEX_TRANSLATOR_ID));
                     }
                     }   // /wantCopy
 
-                    // --- Add Related… ---------------------------- (same
-                    // block as the copy entries — no separator between)
+                    // --- Add Related… ---------------------------- bottom block,
+                    // with its own separator above it (skip if the menu already
+                    // ends with one).
                     if (wantAdd) {
+                    this._appendSeparatorIfMissing(doc, menu, SEP_ID);
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ADD_REL_ID;
                     mi.setAttribute("label", targets.length > 1
@@ -438,39 +531,143 @@ class _PaneMixin {
             }
             this._teardownTabContextMenu();
             const self = this;
-            const makeEntry = (kind) => ({
+            // ---- "Copy As" submenu (mirrors the item-menu submenu) ----------
+            // The tab's `ctx.items[0]` is the ATTACHMENT the reader opened.
+            // Bibliographic copies (Citation / Bibliography / Citation Key /
+            // Online Library Link / BBT) resolve to the attachment's parent
+            // regular item; the Select / Open Link entries keep targeting the
+            // attachment itself. Each child sets its own label + visibility in
+            // onShowing (MenuManager builds submenu children lazily on hover,
+            // with the same context).
+            const bibItemOf = (ctx) => {
+                const item = ctx && ctx.items && ctx.items[0];
+                if (!item) return null;
+                if (item.isRegularItem && item.isRegularItem()) return item;
+                const parent = item.parentItem
+                    || (item.parentItemID && Zotero.Items.get(item.parentItemID));
+                return (parent && parent.isRegularItem && parent.isRegularItem()) ? parent : null;
+            };
+            const citeEntry = (label, asCitations) => ({
                 menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        if (!bibItemOf(ctx)) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", label);
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev, ctx) => {
+                    const bib = bibItemOf(ctx);
+                    if (bib) self._copyCitationOrBibliography([bib], asCitations);
+                },
+            });
+            const citationKeyEntry = {
+                menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        const bib = bibItemOf(ctx);
+                        if (!bib || !self._itemCitationKey(bib)) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", "Citation Key");
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev, ctx) => {
+                    const bib = bibItemOf(ctx);
+                    if (bib) self._copyCitationKeys([bib]);
+                },
+            };
+            const linkEntry = (kind) => ({
+                menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        if (!self._getEnableCopyItemLink()) { ctx.setVisible(false); return; }
+                        const item = ctx.items && ctx.items[0];
+                        const link = item && (kind === "open"
+                            ? self._buildOpenLink(item) : self._buildSelectLink(item));
+                        if (!link) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        let label = kind === "open" ? "Open Link" : "Select Link";
+                        if (kind === "open" && self._isExternalOpenTarget(item)) {
+                            label += " (external app)";
+                        }
+                        ctx.menuElem.setAttribute("label", label);
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev, ctx) => {
+                    const item = ctx.items && ctx.items[0];
+                    if (item) self._copyItemLinks([item], kind);
+                },
+            });
+            const onlineLinkEntry = {
+                menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        const bib = bibItemOf(ctx);
+                        if (!bib || !self._buildItemWebURL(bib)) { ctx.setVisible(false); return; }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", "Online Library Link");
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev, ctx) => {
+                    const bib = bibItemOf(ctx);
+                    if (bib) self._copyOnlineLibraryLinks([bib]);
+                },
+            };
+            const bbtEntry = (label, translatorID) => ({
+                menuType: "menuitem",
+                onShowing: (_ev, ctx) => {
+                    try {
+                        // Re-check BBT on every show so enabling/disabling the
+                        // plugin adds/removes these entries immediately.
+                        if (!self._isBetterBibTeXActive() || !bibItemOf(ctx)) {
+                            ctx.setVisible(false); return;
+                        }
+                        ctx.setVisible(true);
+                        ctx.menuElem.setAttribute("label", label);
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev, ctx) => {
+                    const bib = bibItemOf(ctx);
+                    if (bib) self._copyExportToClipboard([bib], translatorID);
+                },
+            });
+            const copyAsChildren: any[] = [
+                citeEntry("Citation", true),
+                citeEntry("Bibliography", false),
+                citationKeyEntry,
+                { menuType: "separator" },
+                linkEntry("select"),
+                linkEntry("open"),
+                onlineLinkEntry,
+            ];
+            // BBT export formats — ALWAYS registered, but the entries AND their
+            // separator hide themselves per-show when BBT isn't active. So
+            // enabling/disabling Better BibTeX immediately adds/removes them on
+            // the next time the submenu opens (no re-register or restart). The
+            // separator's own onShowing setVisible keeps it from dangling.
+            copyAsChildren.push(
+                {
+                    menuType: "separator",
+                    onShowing: (_ev, ctx) => {
+                        try { ctx.setVisible(self._isBetterBibTeXActive()); } catch (e) {}
+                    },
+                },
+                bbtEntry("[BBT] BibTeX", BBT_BIBTEX_TRANSLATOR_ID),
+                bbtEntry("[BBT] BibLaTeX", BBT_BIBLATEX_TRANSLATOR_ID));
+            const copyAsSubmenu = {
+                menuType: "submenu",
                 icon: self._menuItemIconURLLight,
                 darkIcon: self._menuItemIconURLDark,
                 onShowing: (_ev, ctx) => {
                     try {
                         if (!self._getEnableCopyItemLink()) { ctx.setVisible(false); return; }
-                        const item = ctx.items && ctx.items[0];
-                        if (!item) { ctx.setVisible(false); return; }
-                        const link = kind === "open"
-                            ? self._buildOpenLink(item)
-                            : self._buildSelectLink(item);
-                        if (!link) { ctx.setVisible(false); return; }
+                        if (!(ctx.items && ctx.items[0])) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
-                        let label = kind === "open" ? "Copy Open Link" : "Copy Select Link";
-                        if (kind === "open" && self._isExternalOpenTarget(item)) {
-                            label += " (external app)";
-                        }
-                        ctx.menuElem.setAttribute("label", label);
-                    } catch (e) {
-                        Zotero.debug("[Weavero] tab-menu onShowing err: " + e);
-                        try { ctx.setVisible(false); } catch (e2) {}
-                    }
+                        ctx.menuElem.setAttribute("label", "Copy As");
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
-                onCommand: (_ev, ctx) => {
-                    try {
-                        const item = ctx.items && ctx.items[0];
-                        if (item) self._copyItemLinks([item], kind);
-                    } catch (e) {
-                        Zotero.debug("[Weavero] tab-menu onCommand err: " + e);
-                    }
-                },
-            });
+                menus: copyAsChildren,
+            };
             // "Open in External Viewer" — gated by enableOpenExternalViewer.
             // Icon is set dynamically in onShowing to the attachment-type
             // glyph that Zotero's "Open PDF in New Tab" would target (same
@@ -625,8 +822,7 @@ class _PaneMixin {
                 pluginID: "weavero@mjthoraval",
                 target: "main/tab",
                 menus: [
-                    makeEntry("select"),
-                    makeEntry("open"),
+                    copyAsSubmenu,
                     externalEntry,
                     viewOnlineEntry,
                     showFileEntry,

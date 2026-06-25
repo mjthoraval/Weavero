@@ -56,6 +56,13 @@ export const URL_SCHEMES = [
       label: "zoommtg://",  desc: "Zoom meetings" },
 ];
 
+// Better BibTeX export-translator IDs (stable, registered by the BBT plugin).
+// Verified present in the live 10.0-beta runtime via
+// `Zotero.Translators.getAllForType("export")`. Used by the "Copy As → BibTeX /
+// BibLaTeX" submenu entries, which are only shown when BBT is active.
+export const BBT_BIBTEX_TRANSLATOR_ID = "ca65189f-8815-4afe-8c8b-8c7c15f0edca";
+export const BBT_BIBLATEX_TRANSLATOR_ID = "f895aa0d-f28e-47fe-b247-2ea77c6ed583";
+
 export const urlMethods = {
     /** Source string for the alternation between the always-on schemes
      *  (`https?://`, `zotero://`) and any user-enabled extra schemes
@@ -369,6 +376,156 @@ export const urlMethods = {
             return 0;
         }
         return links.length;
+    },
+
+    // ---- "Copy As" submenu: citation / bibliography / export / web link ----
+
+    /** Resolve the cite style + locale for Copy Citation / Copy Bibliography.
+     *  Reuses the user's QuickCopy default (`export.quickCopy.setting`, e.g.
+     *  `bibliography=http://www.zotero.org/styles/<id>`) so it matches what
+     *  drag-copy / Ctrl+Shift+C produce. Falls back to the first visible style
+     *  when the QuickCopy default is an `export=` translator (no cite style). */
+    _wvCiteStyleAndLocale() {
+        let style: string | null = null;
+        let locale: string | null = null;
+        try {
+            const setting = Zotero.Prefs.get("export.quickCopy.setting");
+            const obj: any = setting && Zotero.QuickCopy.unserializeSetting(setting);
+            if (obj && obj.mode === "bibliography" && obj.id) style = obj.id;
+            if (obj && obj.locale) locale = obj.locale;
+        } catch (e) {}
+        if (!locale) { try { locale = Zotero.Prefs.get("export.quickCopy.locale") as any; } catch (e) {} }
+        if (!style) {
+            try {
+                const vis = Zotero.Styles.getVisible();
+                if (vis && vis.length) style = vis[0].styleID;
+            } catch (e) {}
+        }
+        return { style, locale };
+    },
+
+    /** Copy a citation (asCitations=true) or bibliography (false) for `items`
+     *  to the clipboard, using the user's QuickCopy cite style. Copies plain
+     *  text + HTML flavors (asHTML=false → both), so it pastes correctly into
+     *  both plain and rich targets. Returns true on success. */
+    _copyCitationOrBibliography(items, asCitations) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        if (!arr.length) return false;
+        try {
+            const win: any = Zotero.getMainWindow();
+            const FI = win && win.Zotero_File_Interface;
+            if (!FI || typeof FI.copyItemsToClipboard !== "function") return false;
+            const { style, locale } = this._wvCiteStyleAndLocale();
+            if (!style) return false;
+            FI.copyItemsToClipboard(arr, style, locale || undefined, false, !!asCitations);
+            return true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _copyCitationOrBibliography err: " + e);
+            return false;
+        }
+    },
+
+    /** Copy `items` in an export format (e.g. a Better BibTeX translator) to the
+     *  clipboard via Zotero's own export-to-clipboard path. Async (translation),
+     *  but fire-and-forget — the API writes to the clipboard when done. */
+    _copyExportToClipboard(items, translatorID) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        if (!arr.length || !translatorID) return false;
+        try {
+            const win: any = Zotero.getMainWindow();
+            const FI = win && win.Zotero_File_Interface;
+            if (!FI || typeof FI.exportItemsToClipboard !== "function") return false;
+            FI.exportItemsToClipboard(arr, { mode: "export", id: translatorID });
+            return true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _copyExportToClipboard err: " + e);
+            return false;
+        }
+    },
+
+    /** True when Better BibTeX is installed and active (so the BibTeX/BibLaTeX
+     *  "Copy As" entries should appear). */
+    _isBetterBibTeXActive() {
+        try {
+            const bbt: any = (Zotero as any).BetterBibTeX;
+            return !!(bbt && typeof bbt === "object" && !bbt.uninstalled);
+        } catch (e) { return false; }
+    },
+
+    /** Online (web) library URL for an item — the page on zotero.org:
+     *    user library  → https://www.zotero.org/<username>/items/<key>
+     *    group library → https://www.zotero.org/groups/<groupID>/items/<key>
+     *  Annotations resolve to their parent attachment (annotations have no web
+     *  page of their own). Null when not logged in (user libraries) or the
+     *  group id can't be resolved. Mirrors zotero/zotero#2917's `getItemWebURL`,
+     *  which isn't in the released client yet. */
+    _buildItemWebURL(item) {
+        try {
+            if (!item || !item.key) return null;
+            let target = item;
+            if (item.isAnnotation && item.isAnnotation()) {
+                target = item.parentItem
+                    || (item.parentItemID && Zotero.Items.get(item.parentItemID)) || null;
+            }
+            if (!target || !target.key) return null;
+            const base = "https://www.zotero.org/";
+            const libraryID = target.libraryID;
+            if (libraryID !== Zotero.Libraries.userLibraryID) {
+                const gid = Zotero.Groups.getGroupIDFromLibraryID(libraryID);
+                if (!gid) return null;
+                return base + "groups/" + gid + "/items/" + target.key;
+            }
+            const username = (Zotero.Users.getCurrentUsername
+                && Zotero.Users.getCurrentUsername()) || null;
+            if (!username) return null;
+            return base + encodeURIComponent(username) + "/items/" + target.key;
+        } catch (e) { return null; }
+    },
+
+    /** True when at least one of `items` yields a web-library URL. */
+    _anyHasWebURL(items) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        return arr.some((it) => !!this._buildItemWebURL(it));
+    },
+
+    /** Copy the web-library URL(s) for `items`, one per line. */
+    _copyOnlineLibraryLinks(items) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        const urls = arr.map((it) => this._buildItemWebURL(it)).filter(Boolean);
+        if (!urls.length) return 0;
+        try { Zotero.Utilities.Internal.copyTextToClipboard(urls.join("\n")); }
+        catch (e) { Zotero.debug("[Weavero] _copyOnlineLibraryLinks err: " + e); return 0; }
+        return urls.length;
+    },
+
+    /** Read an item's citation key — the NATIVE Zotero `citationKey` field
+     *  (item field 9). Better BibTeX populates/manages this same field when
+     *  active, so this one accessor returns the right key either way. "" when
+     *  the item has no key. */
+    _itemCitationKey(item) {
+        try {
+            const k = item && item.getField && item.getField("citationKey");
+            return k ? String(k).trim() : "";
+        } catch (e) { return ""; }
+    },
+
+    /** True when at least one of `items` has a non-empty citation key (so the
+     *  "Citation Key" menu entry is only shown when there's something to copy —
+     *  common to be empty without BBT, since Zotero doesn't auto-generate one). */
+    _anyHasCitationKey(items) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        return arr.some((it) => !!this._itemCitationKey(it));
+    },
+
+    /** Copy the citation key(s) for `items`, one per line, skipping items with
+     *  no key. Returns the number copied. */
+    _copyCitationKeys(items) {
+        const arr = (Array.isArray(items) ? items : [items]).filter(Boolean);
+        const keys = arr.map((it) => this._itemCitationKey(it)).filter(Boolean);
+        if (!keys.length) return 0;
+        try { Zotero.Utilities.Internal.copyTextToClipboard(keys.join("\n")); }
+        catch (e) { Zotero.debug("[Weavero] _copyCitationKeys err: " + e); return 0; }
+        return keys.length;
     },
 
     /** Launch a URL the way Zotero would — with a fast no-prompt path

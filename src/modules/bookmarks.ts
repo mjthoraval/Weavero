@@ -614,8 +614,30 @@ class _BookmarksMixin {
                     const live = this._bmReaderPageLabel(bm);
                     return live ? ("Page " + live) : null;
                 }
+                case "treerow": {
+                    // Re-derive the live tree-row name (saved-search / special-
+                    // view name) from the rowID via the main window's collections
+                    // tree, so a renamed treerow can see + reset to its source
+                    // name even when no `originalLabel` snapshot was captured.
+                    // `_bmReaderOriginalLabel` falls back to the stored snapshot
+                    // when the row isn't currently in the tree.
+                    try {
+                        const w = Zotero.getMainWindow();
+                        const cv = w && w.ZoteroPane && w.ZoteroPane.collectionsView;
+                        if (cv && bm.rowID != null && typeof cv.getRow === "function") {
+                            for (let i = 0; i < cv.rowCount; i++) {
+                                const r = cv.getRow(i);
+                                if (r && r.id === bm.rowID && typeof r.getName === "function") {
+                                    const nm = r.getName();
+                                    return nm ? String(nm) : null;
+                                }
+                            }
+                        }
+                    } catch (_) {}
+                    return null;
+                }
                 default:
-                    return null;   // text (no live source), treerow (not re-derived here)
+                    return null;   // text (no live source — snapshot only)
             }
         } catch (_) { return null; }
     }
@@ -1443,6 +1465,10 @@ class _BookmarksMixin {
             rowID,
             libraryID,
             label: label || rowID,
+            // treerow has no live source to re-derive its name from (unlike
+            // item/collection/library), so snapshot the tree-row name immutably
+            // — this is what "Reset to Original Name" restores to after a rename.
+            originalLabel: label || rowID,
             created: new Date().toISOString(),
         });
         return true;
@@ -1612,7 +1638,21 @@ class _BookmarksMixin {
         await this._bmInit();
         const loc = this._bmLocate(id);
         if (!loc || !loc.entry || loc.entry.type === "folder" || !label) return;
+        // Snapshot the auto-generated original before overwriting, so types with
+        // no live source (treerow, url, text) can still "Reset to Original Name".
+        // Live-source types re-derive their original anyway, so this is a
+        // harmless fallback for them; it also covers treerows created before the
+        // creation-time snapshot above existed.
+        if (loc.entry.originalLabel == null && loc.entry.label) {
+            loc.entry.originalLabel = loc.entry.label;
+        }
         loc.entry.label = label;
+        // Flag as renamed (the reader rename already does this). Callers only
+        // invoke this for a genuine title change, so this is always correct, and
+        // it keeps `_bmReaderIsRenamed` — hence the context-menu Reset + the
+        // "Original:" hovercard — accurate even when a stale `renamed:false`
+        // flag was previously stored.
+        loc.entry.renamed = true;
         await this._bmPersist();
     }
 

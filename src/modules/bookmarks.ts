@@ -149,6 +149,15 @@ const BM_MENU_ADD_ICON = "data:image/svg+xml," + encodeURIComponent(
 const BM_MENU_BOOKMARK_ICON = "data:image/svg+xml," + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
     + '<path fill="context-fill" fill-rule="evenodd" clip-rule="evenodd" d="' + BOOKMARK_PATH + '"/></svg>');
+// Globe glyph for the "Add Link…" menu item — the same world icon URL
+// bookmarks use, redrawn so its strokes pick up `context-fill` (exposed by
+// the menupopup CSS via `-moz-context-properties: fill`) and theme like
+// Zotero's own menu icons.
+const BM_MENU_LINK_ICON = "data:image/svg+xml," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"'
+    + ' fill="none" stroke="context-fill" stroke-width="1">'
+    + '<circle cx="8" cy="8" r="6.5"/><line x1="1.5" y1="8" x2="14.5" y2="8"/>'
+    + '<ellipse cx="8" cy="8" rx="3" ry="6.5"/></svg>');
 // Folder+plus glyph for "New Folder…" / "New Subfolder…" menu items.
 // Redrawn at 16-unit to MATCH the menu's icon slot (chrome forces
 // `menuitem-iconic` images to 16×16 — so a 20-unit SVG was being
@@ -2047,6 +2056,43 @@ class _BookmarksMixin {
         }
     }
 
+    /** "Add Link…" for the collections-pane store. Opens the main-window edit
+     *  dialog (Title + URL) empty, and on save parses the link and pushes a new
+     *  bookmark into `_bmDoc.bookmarks`. A `zotero://select|open/…` link is
+     *  stored as its native `item`/`collection` target (so the icon + click
+     *  handler match); anything else becomes a plain `url` bookmark. When the
+     *  Title is left blank for a URL, a default label is derived from the URL.
+     *  `onDone` overrides the default re-render (the dropdown popup). */
+    async _bmAddLinkDialog(win: any, onDone?: any) {
+        try {
+            await this._bmInit();
+            if (!this._bmDoc) return;
+            this._bmShowEditDialog(win.document, win, {
+                dialogTitle: "Add Link Bookmark",
+                titleValue: "",
+                urlValue: "",
+                urlCaption: "URL",
+                onSave: async (newTitle: string, _comment: any, newUrl: string | null) => {
+                    const url = (newUrl || "").trim();
+                    if (!url) return;
+                    const rec = this._wvLinkToBookmarkRec(url, (newTitle || "").trim());
+                    if (!rec || !this._bmDoc) return;
+                    if (rec.type === "url" && !rec.label) {
+                        rec.label = this._wvUrlBookmarkDefaultLabel(url) || url;
+                    }
+                    this._bmDoc.bookmarks.push(Object.assign({
+                        id: "wv-" + Zotero.Utilities.randomString(8),
+                        created: new Date().toISOString(),
+                    }, rec));
+                    await this._bmPersist();
+                    if (onDone) onDone(); else this._bmRenderPopupList(win);
+                },
+            });
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmAddLinkDialog err: " + e);
+        }
+    }
+
     /** Set a (non-annotation) bookmark entry's own free-text comment. */
     async _bmSetComment(id: string, comment: string) {
         await this._bmInit();
@@ -2870,9 +2916,8 @@ class _BookmarksMixin {
             actions.appendChild(b);
             return b;
         };
-        mkIconBtn(BM_ADD_ICON, "Add Bookmarks…", () => {
-            this._bmHidePopup(win);
-            this._bmAddBookmarksDialog();
+        const addBtn = mkIconBtn(BM_ADD_ICON, "Add Bookmarks…", () => {
+            this._bmShowDropdownAddMenu(win, addBtn);
         });
         mkIconBtn(BM_NEW_FOLDER_ICON, "New Folder…", () => {
             const name = this._bmPromptName(win, "New Folder", "New Folder");
@@ -3400,6 +3445,59 @@ class _BookmarksMixin {
         container.appendChild(row);
     }
 
+    /** The dropdown toolbar's "+" button opens this 2-item menu (anchored under
+     *  the button): "Pick item from library…" (the item picker) and "Add Link…"
+     *  (a URL/zotero-link bookmark). Mirrors the reader sidebar's + menu — and
+     *  the same two entries the right-click "Add Bookmark" submenu offers. */
+    _bmShowDropdownAddMenu(win: any, anchorBtn: any) {
+        try {
+            const doc: any = win.document;
+            doc.getElementById(BM_ROW_MENU_ID)?.remove();
+            const menu = doc.createXULElement("menupopup");
+            menu.id = BM_ROW_MENU_ID;
+            const add = (label: string, fn: any, image?: string) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", label);
+                if (image) { mi.classList.add("menuitem-iconic"); mi.setAttribute("image", image); }
+                mi.addEventListener("command", fn);
+                menu.appendChild(mi);
+            };
+            add("Pick item from library…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
+            add("Add Link…", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
+            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            host.appendChild(menu);
+            menu.addEventListener("popuphidden",
+                () => { try { menu.remove(); } catch (e) {} }, { once: true });
+            menu.openPopup(anchorBtn, "after_start", 0, 0, false, false);
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmShowDropdownAddMenu err: " + e);
+        }
+    }
+
+    /** Append an "Add Bookmark ▸" submenu (a XUL <menu>) to a context menu,
+     *  with "Pick item from library…" and "Add Link…" children. Adding a link
+     *  *is* adding a bookmark, so the two live together under one parent rather
+     *  than as siblings of each other. Shared by the row / folder / empty menus. */
+    _bmAppendAddBookmarkSubmenu(doc: any, menu: any, win: any) {
+        const parent = doc.createXULElement("menu");
+        parent.setAttribute("label", "Add Bookmark");
+        parent.classList.add("menu-iconic");
+        parent.setAttribute("image", BM_MENU_ADD_ICON);
+        const popup = doc.createXULElement("menupopup");
+        const mk = (label: string, fn: any, image: string) => {
+            const mi = doc.createXULElement("menuitem");
+            mi.setAttribute("label", label);
+            mi.classList.add("menuitem-iconic");
+            mi.setAttribute("image", image);
+            mi.addEventListener("command", fn);
+            popup.appendChild(mi);
+        };
+        mk("Pick item from library…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
+        mk("Add Link…", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
+        parent.appendChild(popup);
+        menu.appendChild(parent);
+    }
+
     /** Right-click menu for a bookmark row. */
     async _bmRowContextMenu(win: any, bm: any, screenX: number, screenY: number) {
         try {
@@ -3455,7 +3553,7 @@ class _BookmarksMixin {
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_DELETE_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
-            add("Add Bookmark…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_ADD_ICON);
+            this._bmAppendAddBookmarkSubmenu(doc, menu, win);
             add("New Folder…", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
@@ -3512,7 +3610,7 @@ class _BookmarksMixin {
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_DELETE_ICON);
             menu.appendChild(doc.createXULElement("menuseparator"));
-            add("Add Bookmark…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_ADD_ICON);
+            this._bmAppendAddBookmarkSubmenu(doc, menu, win);
             add("New Folder…", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
@@ -3541,7 +3639,7 @@ class _BookmarksMixin {
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
-            add("Add Bookmark…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_ADD_ICON);
+            this._bmAppendAddBookmarkSubmenu(doc, menu, win);
             add("New Folder…", () => {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));

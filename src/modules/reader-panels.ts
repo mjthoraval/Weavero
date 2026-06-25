@@ -595,6 +595,14 @@ const RP_BM_CSS = [
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic.wv-ctx-ic-native{opacity:1;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic svg{width:16px;height:16px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-sep{height:1px;background:rgba(127,127,127,.3);margin:4px 2px;}",
+    // "Add Bookmark ▸" submenu: a flyout that appears on hover of the parent
+    // item. The flyout is a DOM descendant of the menu so click-outside dismiss
+    // (which checks `menu.contains`) treats it as inside.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-haschild{position:relative;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-arrow{margin-left:auto;padding-left:14px;opacity:.6;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-submenu{display:none;position:absolute;left:100%;top:-5px;z-index:1;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:4px;min-width:180px;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-submenu.wv-ctx-submenu-left{left:auto;right:100%;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-haschild:hover > .wv-ctx-submenu{display:block;}",
     // Modal Add-Link dialog (Text + URL fields), mounted inside the
     // reader iframe so it covers the iframe viewport. Backdrop dims
     // the document; dialog centers and uses Canvas/CanvasText to track
@@ -5703,8 +5711,32 @@ class _ReaderPanelsMixin {
             };
             const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
             const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
+            // A parent menu item with a hover flyout of children — used for the
+            // "Add Bookmark ▸ [Pick item…, Add Link…]" grouping, since adding a
+            // link is itself adding a bookmark. `children` is an array of
+            // {label, icon, fn}. Mirrors the XUL submenu in the collections-pane.
+            const itemSub = (label: string, icon: string,
+                children: Array<{ label: string; icon: string; fn: any }>) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item wv-ctx-haschild";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span"); ic.className = "wv-ctx-ic"; ic.innerHTML = icon || "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span"); lb.textContent = label;
+                const ar = idoc.createElementNS(NS_HTML_RP, "span"); ar.className = "wv-ctx-arrow"; ar.textContent = "▸";
+                it.appendChild(ic); it.appendChild(lb); it.appendChild(ar);
+                const fly = idoc.createElementNS(NS_HTML_RP, "div"); fly.className = "wv-ctx-submenu";
+                for (const c of children) {
+                    const ci = idoc.createElementNS(NS_HTML_RP, "div"); ci.className = "wv-ctx-item";
+                    const cic = idoc.createElementNS(NS_HTML_RP, "span"); cic.className = "wv-ctx-ic"; cic.innerHTML = c.icon || "";
+                    const clb = idoc.createElementNS(NS_HTML_RP, "span"); clb.textContent = c.label;
+                    ci.appendChild(cic); ci.appendChild(clb);
+                    ci.addEventListener("click", (ev: any) => { try { ev.stopPropagation(); } catch (_) {} this._wvCloseReaderBmContextMenu(idoc); c.fn(); });
+                    fly.appendChild(ci);
+                }
+                it.appendChild(fly);
+                menu.appendChild(it);
+            };
             if (this._wvReaderBmScope() === "library") {
-                this._wvReaderBuildLibCtxItems(reader, idoc, e, item, sep, reRender);
+                this._wvReaderBuildLibCtxItems(reader, idoc, e, item, sep, reRender, itemSub);
             } else {
             if (entry) {
                 if (entry.type === "folder") {
@@ -5787,7 +5819,13 @@ class _ReaderPanelsMixin {
                 }
                 sep();
             }
-            item("Add Bookmark…", RP_PLUS_SVG, () => this._wvReaderAddViaDialog(reader, idoc));
+            itemSub("Add Bookmark…", RP_PLUS_SVG, [
+                { label: "Pick item from library…", icon: RP_BM_RIBBON_TAB, fn: () => this._wvReaderAddViaDialog(reader, idoc, section) },
+                { label: "Add Link…", icon: URL_GLOBE_SVG, fn: () => {
+                    Promise.resolve(this._wvAddUrlBookmark(reader, idoc, "document", section))
+                        .catch((err: any) => Zotero.debug("[Weavero] add-link err: " + err));
+                } },
+            ]);
             item("New Folder…", RP_FOLDER_PLUS_SVG, () => {
                 const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
                 if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n).then(reRender);
@@ -5801,6 +5839,11 @@ class _ReaderPanelsMixin {
             if (x + mw > vw - 6) x = Math.max(6, vw - mw - 6);
             if (y + mh > vh - 6) y = Math.max(6, vh - mh - 6);
             menu.style.left = x + "px"; menu.style.top = y + "px";
+            // If the menu sits near the right edge, flip any "Add Bookmark"
+            // flyout to open leftward so it doesn't overflow the iframe.
+            if (x + mw + 190 > vw) {
+                try { menu.querySelectorAll(".wv-ctx-submenu").forEach((s: any) => s.classList.add("wv-ctx-submenu-left")); } catch (_) {}
+            }
             // Dismiss on click-outside / Escape across reachable docs.
             const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; this._wvCloseReaderBmContextMenu(idoc); } catch (_) {} };
             const onKey = (ev: any) => { if (ev.key === "Escape") this._wvCloseReaderBmContextMenu(idoc); };
@@ -5818,7 +5861,7 @@ class _ReaderPanelsMixin {
      *  same `item`/`sep` helpers as the reader menu. Open / Show in Library /
      *  Rename / Delete on a row; Rename/New Subfolder/Delete on a folder; plus
      *  Add Library Bookmark… / New Folder… always. All re-render the tree. */
-    _wvReaderBuildLibCtxItems(reader: any, idoc: any, e: any, item: any, sep: any, reRender: any) {
+    _wvReaderBuildLibCtxItems(reader: any, idoc: any, e: any, item: any, sep: any, reRender: any, itemSub: any) {
         const win = Zotero.getMainWindow();
         const rowEl = e.target && e.target.closest && e.target.closest(".wv-bm-reader-row");
         const nodeId = rowEl && rowEl.getAttribute("data-wv-bm-id");
@@ -5886,9 +5929,15 @@ class _ReaderPanelsMixin {
             }
             sep();
         }
-        item("Add Library Bookmark…", RP_PLUS_SVG, () => {
-            Promise.resolve(this._bmAddBookmarksDialog()).then(reRender).catch(() => {});
-        });
+        itemSub("Add Library Bookmark…", RP_PLUS_SVG, [
+            { label: "Pick item from library…", icon: RP_BM_RIBBON_TAB, fn: () => {
+                Promise.resolve(this._bmAddBookmarksDialog()).then(reRender).catch(() => {});
+            } },
+            { label: "Add Link…", icon: URL_GLOBE_SVG, fn: () => {
+                Promise.resolve(this._wvAddUrlBookmark(reader, idoc, "library"))
+                    .catch((err: any) => Zotero.debug("[Weavero] add-link err: " + err));
+            } },
+        ]);
         item("New Folder…", RP_FOLDER_PLUS_SVG, () => {
             const n = this._bmPromptName(win, "New Folder", "New Folder");
             if (n) this._bmAddFolder(n).then(reRender);

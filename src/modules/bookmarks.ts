@@ -1845,6 +1845,7 @@ class _BookmarksMixin {
             if (!doc || !win) return;
             this._bmEnsureEditDialogStyles(doc);
             const hasComment = opts.commentValue != null;
+            const hasUrl = opts.urlValue != null;
             doc.getElementById("wv-bm-editdlg-panel")?.remove();
             const panel = doc.createXULElement("panel");
             panel.id = "wv-bm-editdlg-panel";
@@ -1894,6 +1895,20 @@ class _BookmarksMixin {
             titleInput.value = String(opts.titleValue || "");
             box.appendChild(titleInput);
 
+            // URL field — shown only when the caller supplies `urlValue` (a
+            // `url` bookmark). Step 1 of the see/edit-link feature: the link IS
+            // the target, so it's directly editable.
+            let urlInput: any = null;
+            if (hasUrl) {
+                box.appendChild(cap(opts.urlCaption || "URL"));
+                urlInput = doc.createElementNS(NS_HTML, "input");
+                urlInput.className = "wv-bm-editdlg-input";
+                urlInput.setAttribute("type", "text");
+                urlInput.setAttribute("spellcheck", "false");
+                urlInput.value = String(opts.urlValue || "");
+                box.appendChild(urlInput);
+            }
+
             let commentInput: any = null;
             if (hasComment) {
                 box.appendChild(cap(opts.commentCaption || "Comment"));
@@ -1923,15 +1938,16 @@ class _BookmarksMixin {
             const doSave = async () => {
                 const newTitle = (titleInput.value || "").trim();
                 const newComment = hasComment ? String(commentInput.value || "") : null;
+                const newUrl = hasUrl ? (urlInput.value || "").trim() : null;
                 close();
-                try { if (opts.onSave) await opts.onSave(newTitle, newComment); }
+                try { if (opts.onSave) await opts.onSave(newTitle, newComment, newUrl); }
                 catch (e) { Zotero.debug("[Weavero] bm edit save err: " + e); }
             };
             cancelBtn.addEventListener("click", close);
             saveBtn.addEventListener("click", () => { doSave(); });
             panel.addEventListener("keydown", (e: any) => {
                 if (e.key === "Escape") { e.preventDefault(); close(); }
-                else if (e.key === "Enter" && e.target === titleInput) { e.preventDefault(); doSave(); }
+                else if (e.key === "Enter" && (e.target === titleInput || e.target === urlInput)) { e.preventDefault(); doSave(); }
                 else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); doSave(); }
             });
 
@@ -1954,24 +1970,47 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
-    /** Edit a library-popup bookmark's title and comment together. EVERY
-     *  bookmark gets a comment field: for bookmarks that point to a PDF
-     *  annotation it's the annotation's live comment (saveTx → reflected
-     *  everywhere); for all other bookmarks it's the bookmark's own free-text
-     *  comment, stored on the entry. */
-    async _bmEditBookmarkDialog(win: any, bm: any, onDone?: any) {
+    /** Set a `url` bookmark's target link (step 1 of see/edit-link). Only
+     *  applies to URL bookmarks — other types store a structured target. */
+    async _bmSetUrl(id: string, url: string) {
+        await this._bmInit();
+        const loc = this._bmLocate(id);
+        if (!loc || !loc.entry || loc.entry.type !== "url") return;
+        loc.entry.url = url || "";
+        await this._bmPersist();
+    }
+
+    /** Shared bookmark editor — the SINGLE place that decides which fields to
+     *  show (Title always; URL for `url` bookmarks; future steps: a Link field
+     *  for the other linkable types) and how to persist them. Both entry points
+     *  — the collections-pane dropdown (`_bmEditBookmarkDialog`) and the reader
+     *  "Elsewhere" panel (`_wvReaderEditBookmarkDialog`) — delegate here, each
+     *  passing only its window + a small save `strategy` (the two stores differ:
+     *  the global store vs the reader-doc view). Annotation comments are saved
+     *  here directly (live `saveTx`, reflected everywhere); every other field
+     *  goes through the strategy. */
+    async _bmShowBookmarkEditor(win: any, entry: any, strategy: any) {
         try {
             await this._bmInit();
-            const ann = await this._bmAnnotationItem(bm);
+            if (!win || !win.document || !entry || !strategy) return;
+            const ann = await this._bmAnnotationItem(entry);
             let curComment = "";
             if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) {} }
-            else { curComment = String(bm.comment || ""); }
+            else { curComment = String(entry.comment || ""); }
             this._bmShowEditDialog(win.document, win, {
-                titleValue: bm.label || bm.itemKey || bm.collectionKey || "",
+                titleValue: entry.label || entry.itemKey || entry.collectionKey || "",
                 commentValue: curComment,
-                onSave: async (newTitle: string, newComment: string | null) => {
-                    if (newTitle && newTitle !== bm.label) {
-                        try { await this._bmRenameBookmark(bm.id, newTitle); } catch (_) {}
+                // A plain URL bookmark's target IS a link, so expose it as an
+                // editable field. Other types store a structured target (keys /
+                // reader position) — handled in later steps of the feature.
+                urlValue: entry.type === "url" ? String(entry.url || "") : null,
+                urlCaption: "URL",
+                onSave: async (newTitle: string, newComment: string | null, newUrl: string | null) => {
+                    if (newTitle && newTitle !== entry.label) {
+                        try { await strategy.rename(newTitle); } catch (_) {}
+                    }
+                    if (entry.type === "url" && newUrl != null && newUrl !== String(entry.url || "")) {
+                        try { await strategy.setUrl(newUrl); } catch (_) {}
                     }
                     if (newComment != null) {
                         if (ann) {
@@ -1980,17 +2019,27 @@ class _BookmarksMixin {
                                 try { ann.annotationComment = newComment; await ann.saveTx(); }
                                 catch (e) { Zotero.debug("[Weavero] bm comment save err: " + e); }
                             }
-                        } else if (newComment !== String(bm.comment || "")) {
-                            try { await this._bmSetComment(bm.id, newComment); } catch (_) {}
+                        } else if (newComment !== String(entry.comment || "")) {
+                            try { await strategy.setComment(newComment); } catch (_) {}
                         }
                     }
-                    if (onDone) { try { onDone(); } catch (_) {} }
-                    else this._bmRenderPopupList(win);
+                    try { strategy.reRender(); } catch (_) {}
                 },
             });
         } catch (e) {
-            Zotero.debug("[Weavero] _bmEditBookmarkDialog err: " + e);
+            Zotero.debug("[Weavero] _bmShowBookmarkEditor err: " + e);
         }
+    }
+
+    /** Collections-pane "Edit Bookmark…": delegates to the shared editor with
+     *  the global-store save strategy. */
+    async _bmEditBookmarkDialog(win: any, bm: any, onDone?: any) {
+        return this._bmShowBookmarkEditor(win, bm, {
+            rename: (title: string) => this._bmRenameBookmark(bm.id, title),
+            setUrl: (url: string) => this._bmSetUrl(bm.id, url),
+            setComment: (comment: string) => this._bmSetComment(bm.id, comment),
+            reRender: () => { if (onDone) onDone(); else this._bmRenderPopupList(win); },
+        });
     }
 
     // ---- Navigation / opening ---------------------------------------------

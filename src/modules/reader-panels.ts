@@ -5612,46 +5612,30 @@ class _ReaderPanelsMixin {
         } catch (_) { return url; }
     }
 
-    /** Reader-sidebar "Edit Bookmark…": title + comment together in one panel
-     *  (the shared `_bmShowEditDialog`), replacing the old two sequential
-     *  prompts. The comment is the annotation's comment for annotation
-     *  bookmarks, or the location bookmark's own free-text comment for
-     *  text/position entries; other types get the title field only. Hosted in
-     *  the reader's chrome window so it appears over the reader. */
+    /** Reader-sidebar "Edit Bookmark…": delegates to the shared bookmark editor
+     *  (`_bmShowBookmarkEditor`), opened over the reader's chrome window. The
+     *  entry can be a per-document reader bookmark ("This document", in the
+     *  att's reader doc) OR a collections-pane bookmark surfaced in "Elsewhere"
+     *  (the global `_bmDoc.bookmarks` store, which `_bmLocate` searches). Route
+     *  each save to the store the entry actually lives in — otherwise an
+     *  "Elsewhere" edit silently no-ops against the wrong store. */
     async _wvReaderEditBookmarkDialog(reader: any, att: any, entry: any, reRender: any) {
-        try {
-            const win = reader && reader._window;
-            if (!win || !win.document || !entry) return;
-            const ann = await this._bmAnnotationItem(entry);
-            // EVERY bookmark gets a comment: the annotation's comment for
-            // annotation bookmarks, else the entry's own free-text comment.
-            let commentValue = "";
-            if (ann) { try { commentValue = String(ann.annotationComment || ""); } catch (_) {} }
-            else { commentValue = String(entry.comment || ""); }
-            this._bmShowEditDialog(win.document, win, {
-                titleValue: entry.label || "",
-                commentValue,
-                onSave: async (newTitle: string, newComment: string | null) => {
-                    if (newTitle && newTitle !== entry.label) {
-                        try { await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, newTitle); } catch (_) {}
-                    }
-                    if (newComment != null) {
-                        if (ann) {
-                            let cur = ""; try { cur = String(ann.annotationComment || ""); } catch (_) {}
-                            if (newComment !== cur) {
-                                try { ann.annotationComment = newComment; await ann.saveTx(); }
-                                catch (e) { Zotero.debug("[Weavero] reader bm comment save err: " + e); }
-                            }
-                        } else if (newComment !== String(entry.comment || "")) {
-                            try { await this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment: newComment }); } catch (_) {}
-                        }
-                    }
-                    try { reRender(); } catch (_) {}
-                },
-            });
-        } catch (e) {
-            Zotero.debug("[Weavero] _wvReaderEditBookmarkDialog err: " + e);
-        }
+        const win = reader && reader._window;
+        if (!win || !att || !entry) return;
+        const reRenderCb = () => { try { reRender(); } catch (_) {} };
+        const inGlobalStore = !!this._bmLocate(entry.id);
+        const strategy = inGlobalStore ? {
+            rename: (title: string) => this._bmRenameBookmark(entry.id, title),
+            setUrl: (url: string) => this._bmSetUrl(entry.id, url),
+            setComment: (comment: string) => this._bmSetComment(entry.id, comment),
+            reRender: reRenderCb,
+        } : {
+            rename: (title: string) => this._bmReaderRename(att.libraryID, att.itemKey, entry.id, title),
+            setUrl: (url: string) => this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { url }),
+            setComment: (comment: string) => this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment }),
+            reRender: reRenderCb,
+        };
+        return this._bmShowBookmarkEditor(win, entry, strategy);
     }
 
     /** Firefox-bookmarks-style right-click menu for the reader Bookmarks pane:

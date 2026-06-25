@@ -222,6 +222,9 @@ const BM_NEW_FOLDER_ICON = "data:image/svg+xml," + encodeURIComponent(
 // "Rename…" icon — uses Zotero's native rename.svg (same icon Zotero
 // uses for "Rename Collection"). Themes automatically.
 const BM_RENAME_ICON = "chrome://zotero/skin/16/universal/rename.svg";
+// "Reset to Original Name" icon — Zotero's native reset.svg (curved arrow),
+// the same glyph the reader-side menu uses. Themes automatically.
+const BM_RESET_ICON = "chrome://zotero/skin/16/universal/reset.svg";
 
 // Bare-class selectors so the same styles apply in the main panel AND in
 // flyout sub-panels (each flyout is a separate <panel>, not nested in the
@@ -349,6 +352,12 @@ const BM_EDITDLG_CSS = [
     ".wv-bm-editdlg-btn:hover{background:var(--fill-quarternary,rgba(127,127,127,.16));}",
     ".wv-bm-editdlg-btn-primary{background:var(--color-accent,#4072e5);border-color:var(--color-accent,#4072e5);color:#fff;}",
     ".wv-bm-editdlg-btn-primary:hover{filter:brightness(1.08);}",
+    // Original-title row under the Title field — shown only when the title
+    // differs from the bookmark's auto-generated original (hidden by default).
+    ".wv-bm-editdlg-origrow{display:none;align-items:center;justify-content:space-between;gap:8px;margin:-1px 0 1px;font-size:11px;}",
+    ".wv-bm-editdlg-origlabel{opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+    ".wv-bm-editdlg-resetlink{flex:none;font:inherit;font-size:11px;padding:1px 6px;border:none;background:none;color:var(--color-accent,#4072e5);cursor:pointer;text-decoration:underline;border-radius:4px;}",
+    ".wv-bm-editdlg-resetlink:hover{filter:brightness(1.12);background:var(--fill-quinary,rgba(127,127,127,.1));text-decoration:none;}",
 ].join("");
 const BM_EDITDLG_STYLE_ID = "wv-bm-editdlg-style";
 
@@ -1886,6 +1895,7 @@ class _BookmarksMixin {
             this._bmEnsureEditDialogStyles(doc);
             const hasComment = opts.commentValue != null;
             const hasUrl = opts.urlValue != null;
+            const originalTitle = opts.originalTitle != null ? String(opts.originalTitle) : null;
             doc.getElementById("wv-bm-editdlg-panel")?.remove();
             const panel = doc.createXULElement("panel");
             panel.id = "wv-bm-editdlg-panel";
@@ -1934,6 +1944,42 @@ class _BookmarksMixin {
             titleInput.setAttribute("type", "text");
             titleInput.value = String(opts.titleValue || "");
             box.appendChild(titleInput);
+
+            // Original-title row: shows the bookmark's auto-generated name plus a
+            // "Reset to original" link, visible whenever the Title field differs
+            // from it — i.e. the bookmark was renamed, or the user just edited the
+            // title. Lets you see and restore the original without leaving the
+            // dialog. Hidden when there's no original (some treerow types) or when
+            // the title already matches it.
+            let origRow: any = null;
+            const updateOrigRow = () => {
+                if (!origRow) return;
+                const changed = originalTitle != null
+                    && (titleInput.value || "").trim() !== originalTitle;
+                origRow.style.display = changed ? "flex" : "none";
+            };
+            if (originalTitle != null) {
+                origRow = doc.createElementNS(NS_HTML, "div");
+                origRow.className = "wv-bm-editdlg-origrow";
+                const olbl = doc.createElementNS(NS_HTML, "span");
+                olbl.className = "wv-bm-editdlg-origlabel";
+                olbl.textContent = "Original: " + originalTitle;
+                olbl.setAttribute("title", originalTitle);
+                const resetLink = doc.createElementNS(NS_HTML, "button");
+                resetLink.className = "wv-bm-editdlg-resetlink";
+                resetLink.textContent = "Reset to original";
+                resetLink.addEventListener("click", (e: any) => {
+                    e.preventDefault();
+                    titleInput.value = originalTitle;
+                    updateOrigRow();
+                    try { titleInput.focus(); } catch (_) {}
+                });
+                origRow.appendChild(olbl);
+                origRow.appendChild(resetLink);
+                box.appendChild(origRow);
+                titleInput.addEventListener("input", updateOrigRow);
+                updateOrigRow();   // initial — visible if the bookmark is already renamed
+            }
 
             // URL field — shown only when the caller supplies `urlValue` (a
             // `url` bookmark). Step 1 of the see/edit-link feature: the link IS
@@ -2020,6 +2066,21 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
+    /** Reset a global-store bookmark's display name to its original and clear the
+     *  renamed flag, so it resumes tracking the source. Collections-pane analogue
+     *  of `_bmReaderResetLabel`. */
+    async _bmResetBookmarkName(id: string) {
+        await this._bmInit();
+        const loc = this._bmLocate(id);
+        if (!loc || !loc.entry || loc.entry.type === "folder") return;
+        const orig = this._bmReaderOriginalLabel(loc.entry);
+        if (!orig) return;
+        loc.entry.label = orig;
+        loc.entry.originalLabel = orig;
+        loc.entry.renamed = false;
+        await this._bmPersist();
+    }
+
     /** Shared bookmark editor — the SINGLE place that decides which fields to
      *  show (Title always; URL for `url` bookmarks; future steps: a Link field
      *  for the other linkable types) and how to persist them. Both entry points
@@ -2037,8 +2098,13 @@ class _BookmarksMixin {
             let curComment = "";
             if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) {} }
             else { curComment = String(entry.comment || ""); }
+            // The auto-generated original name (live-derived or stored snapshot),
+            // for the dialog's "Original: …" row + Reset link. Null when there's
+            // none to restore to.
+            const originalTitle = this._bmReaderOriginalLabel(entry);
             this._bmShowEditDialog(win.document, win, {
                 titleValue: entry.label || entry.itemKey || entry.collectionKey || "",
+                originalTitle,
                 commentValue: curComment,
                 // A plain URL bookmark's target IS a link, so expose it as an
                 // editable field. Other types store a structured target (keys /
@@ -2046,8 +2112,15 @@ class _BookmarksMixin {
                 urlValue: entry.type === "url" ? String(entry.url || "") : null,
                 urlCaption: "URL",
                 onSave: async (newTitle: string, newComment: string | null, newUrl: string | null) => {
-                    if (newTitle && newTitle !== entry.label) {
-                        try { await strategy.rename(newTitle); } catch (_) {}
+                    if (newTitle) {
+                        if (originalTitle != null && newTitle === originalTitle
+                                && entry.label !== originalTitle) {
+                            // Title set back to the original → real reset: clears
+                            // the renamed flag so it resumes tracking the source.
+                            try { await strategy.resetName(); } catch (_) {}
+                        } else if (newTitle !== entry.label) {
+                            try { await strategy.rename(newTitle); } catch (_) {}
+                        }
                     }
                     if (entry.type === "url" && newUrl != null && newUrl !== String(entry.url || "")) {
                         try { await strategy.setUrl(newUrl); } catch (_) {}
@@ -2076,6 +2149,7 @@ class _BookmarksMixin {
     async _bmEditBookmarkDialog(win: any, bm: any, onDone?: any) {
         return this._bmShowBookmarkEditor(win, bm, {
             rename: (title: string) => this._bmRenameBookmark(bm.id, title),
+            resetName: () => this._bmResetBookmarkName(bm.id),
             setUrl: (url: string) => this._bmSetUrl(bm.id, url),
             setComment: (comment: string) => this._bmSetComment(bm.id, comment),
             reRender: () => { if (onDone) onDone(); else this._bmRenderPopupList(win); },
@@ -3364,6 +3438,19 @@ class _BookmarksMixin {
             add("Edit Bookmark…", () => {
                 this._bmEditBookmarkDialog(win, bm);
             }, BM_RENAME_ICON);
+            // "Reset to Original Name" — only when the current title actually
+            // differs from the bookmark's original. Gated on the label vs the
+            // (live-derived or stored) original rather than the `renamed` flag,
+            // so previously-renamed bookmarks carrying a stale `renamed:false`
+            // still get the option. Mirrors the reader-side menu.
+            {
+                const orig = this._bmReaderOriginalLabel(bm);
+                if (orig && orig !== bm.label) {
+                    add("Reset to Original Name", () => {
+                        this._bmResetBookmarkName(bm.id).then(() => this._bmRenderPopupList(win));
+                    }, BM_RESET_ICON);
+                }
+            }
             add("Delete Bookmark", () => {
                 this._bmRemove(bm.id).then(() => this._bmRenderPopupList(win));
             }, BM_DELETE_ICON);

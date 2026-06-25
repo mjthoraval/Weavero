@@ -5626,11 +5626,13 @@ class _ReaderPanelsMixin {
         const inGlobalStore = !!this._bmLocate(entry.id);
         const strategy = inGlobalStore ? {
             rename: (title: string) => this._bmRenameBookmark(entry.id, title),
+            resetName: () => this._bmResetBookmarkName(entry.id),
             setUrl: (url: string) => this._bmSetUrl(entry.id, url),
             setComment: (comment: string) => this._bmSetComment(entry.id, comment),
             reRender: reRenderCb,
         } : {
             rename: (title: string) => this._bmReaderRename(att.libraryID, att.itemKey, entry.id, title),
+            resetName: () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id),
             setUrl: (url: string) => this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { url }),
             setComment: (comment: string) => this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment }),
             reRender: reRenderCb,
@@ -5724,7 +5726,10 @@ class _ReaderPanelsMixin {
                         this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
                     {
-                        const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
+                        // Gate on label-vs-original, not the `renamed` flag, so a
+                        // previously-renamed bookmark with a stale flag still gets
+                        // Reset (matches the collections-pane menu).
+                        const orig = this._bmReaderOriginalLabel(entry);
                         if (orig && orig !== entry.label) {
                             item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
                         }
@@ -5758,7 +5763,10 @@ class _ReaderPanelsMixin {
                         this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
                     {
-                        const orig = this._bmReaderIsRenamed(entry) ? this._bmReaderOriginalLabel(entry) : null;
+                        // Gate on label-vs-original, not the `renamed` flag, so a
+                        // previously-renamed bookmark with a stale flag still gets
+                        // Reset (matches the collections-pane menu).
+                        const orig = this._bmReaderOriginalLabel(entry);
                         if (orig && orig !== entry.label) {
                             item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
                         }

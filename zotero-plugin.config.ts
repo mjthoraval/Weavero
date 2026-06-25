@@ -98,15 +98,13 @@ export default defineConfig({
       // bug). "always" enables both CI runs and local
       // `npm run release` invocations.
       enable: "always",
-      releaseNote(ctx) {
-        // Default: a short auto-generated note. Custom release
-        // bodies (like the v0.7.0 hand-curated changelog) can
-        // still be edited via the GitHub UI after publish.
-        return `Release v${ctx.version}\n\n`
-            + `See [CHANGELOG](https://github.com/`
-            + `mjthoraval/Weavero/commits/v${ctx.version}) `
-            + `for the commit log since the last tag.`;
-      },
+      // No custom `releaseNote` — fall back to the scaffold default
+      // (`ctx => ctx.release.changelog`), which is changelogen's
+      // convention-based changelog grouped by type (🚀 Enhancements,
+      // 🩹 Fixes, …) built from our `feat(scope): …` / `fix(scope): …`
+      // commit messages. This is the compact, readable format the
+      // windingwind plugins (e.g. Better Notes) use. Hand-curated
+      // bodies can still be edited via the GitHub UI after publish.
     },
   },
 });

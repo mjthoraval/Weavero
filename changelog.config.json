@@ -1,0 +1,8 @@
+{
+  "types": {
+    "chore": false,
+    "ci": false,
+    "test": false,
+    "style": false
+  }
+}

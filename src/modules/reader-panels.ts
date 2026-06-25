@@ -559,6 +559,9 @@ const RP_BM_CSS = [
     ".wv-bm-reader-actbtn{border:none;background:none;cursor:pointer;opacity:.55;padding:1px 4px;border-radius:3px;color:inherit;font-size:12px;line-height:1;}",
     ".wv-bm-reader-actbtn:hover{opacity:1;background:rgba(127,127,127,.2);}",
     ".wv-bm-reader-empty{opacity:.5;padding:14px 10px;font-size:12px;text-align:center;line-height:1.5;}",
+    // Per-section how-to hint shown under an empty "This Document" / "Elsewhere"
+    // header (so the sections stay visible + addable even with no bookmarks).
+    ".wv-bm-reader-empty-section{opacity:.5;padding:3px 10px 8px;font-size:11px;line-height:1.45;}",
     ".wv-bm-reader-grouphead{font-size:11px;padding:6px 8px 2px;display:flex;align-items:center;gap:4px;}",
     ".wv-bm-reader-grouphead .wv-bm-gh-title{flex:1;opacity:.55;}",
     ".wv-bm-reader-newfolder{display:flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;cursor:pointer;border-radius:3px;color:inherit;opacity:.5;padding:0;flex:0 0 auto;}",
@@ -2661,14 +2664,10 @@ class _ReaderPanelsMixin {
             this._wvBmEnsureItemsLoaded([doc.local, doc.global], () => {
                 try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
             });
-            if (!doc.local.length && !doc.global.length) {
-                const empty = idoc.createElementNS(NS, "div");
-                empty.className = "wv-bm-reader-empty";
-                empty.textContent = "No bookmarks yet.\n+ bookmarks anywhere in Zotero. Right-click in the page to bookmark a position or selection; drag an annotation here to bookmark it.";
-                list.appendChild(empty);
-                try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
-                return;
-            }
+            // Empty sections are no longer collapsed to one placeholder:
+            // addSection() below always renders the "This Document" / "Elsewhere"
+            // headers (with their "+" buttons) plus a short how-to hint, so the
+            // panel stays discoverable and addable even with zero bookmarks.
             const q = this._wvReaderBmQuery(idoc);
             const chipsOn = this._wvReaderBmChipsActive(reader);
             const chipSt = this._wvReaderBmChipState(reader);
@@ -2677,8 +2676,7 @@ class _ReaderPanelsMixin {
             const fLocal = useFilter ? this._wvBmFilterCombined(doc.local, q, chipMatch) : null;
             const fGlobal = useFilter ? this._wvBmFilterCombined(doc.global, q, chipMatch) : null;
             const addSection = (heading: string, nodes: any[], section: "local" | "global", f: { visible: Set<string>, dimmed: Set<string> } | null) => {
-                if (!nodes.length) return;
-                if (f && !f.visible.size) return;   // section has no matches under search
+                if (f && !f.visible.size) return;   // under search/chips with no matches → hide
                 const gc = idoc.createElementNS(NS, "div");
                 gc.className = "wv-bm-reader-group " + (section === "local" ? "wv-bm-grp-local" : "wv-bm-grp-global");
                 const h = idoc.createElementNS(NS, "div");
@@ -2722,10 +2720,22 @@ class _ReaderPanelsMixin {
                 });
                 h.appendChild(nf);
                 gc.appendChild(h);
-                const treeWrap = idoc.createElementNS(NS, "div");
-                treeWrap.className = "wv-bm-reader-tree";
-                this._wvReaderRenderTree(reader, idoc, att, treeWrap, nodes, section, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
-                gc.appendChild(treeWrap);
+                if (!nodes.length) {
+                    // Empty section (only reached with no active search — the
+                    // search/chip no-match case returns above). Keep the header +
+                    // "+" for discoverability; show a short how-to hint, not a tree.
+                    const hint = idoc.createElementNS(NS, "div");
+                    hint.className = "wv-bm-reader-empty-section";
+                    hint.textContent = section === "local"
+                        ? "Right-click in the page, or drag an annotation here."
+                        : "Use + to bookmark an item, collection, or link.";
+                    gc.appendChild(hint);
+                } else {
+                    const treeWrap = idoc.createElementNS(NS, "div");
+                    treeWrap.className = "wv-bm-reader-tree";
+                    this._wvReaderRenderTree(reader, idoc, att, treeWrap, nodes, section, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
+                    gc.appendChild(treeWrap);
+                }
                 this._wvReaderWireGroupDrop(reader, idoc, gc, section === "local");
                 list.appendChild(gc);
             };
@@ -3370,20 +3380,10 @@ class _ReaderPanelsMixin {
         const chipMatch = chipsOn ? (n: any) => this._wvBmNodeMatchesChips(n, chipSt) : null;
         const useFilter = q || chipsOn;
         const f = useFilter ? this._wvBmFilterCombined(nodes, q, chipMatch) : null;
-        if (!nodes.length) {
-            const empty = idoc.createElementNS(NS, "div");
-            empty.className = "wv-bm-reader-empty";
-            empty.textContent = "No library bookmarks yet.\nUse + to bookmark an item, collection, library, or saved search — they appear here in every document.";
-            list.appendChild(empty);
-            return;
-        }
-        if (f && !f.visible.size) {
-            const empty = idoc.createElementNS(NS, "div");
-            empty.className = "wv-bm-reader-empty";
-            empty.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
-            list.appendChild(empty);
-            return;
-        }
+        // Always render the section header (with its "+" add menu + new-folder
+        // button) so the Library scope stays addable even when empty — same as
+        // the document sections. The content below is a how-to hint when empty,
+        // a no-match note under a search, else the tree.
         const gc = idoc.createElementNS(NS, "div");
         gc.className = "wv-bm-reader-group wv-bm-grp-library";
         // Section header with title + add + new-folder buttons (matches
@@ -3416,10 +3416,22 @@ class _ReaderPanelsMixin {
         });
         h.appendChild(nfBtn);
         gc.appendChild(h);
-        const treeWrap = idoc.createElementNS(NS, "div");
-        treeWrap.className = "wv-bm-reader-tree";
-        this._wvReaderRenderLibraryTree(reader, idoc, treeWrap, nodes, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
-        gc.appendChild(treeWrap);
+        if (!nodes.length) {
+            const hint = idoc.createElementNS(NS, "div");
+            hint.className = "wv-bm-reader-empty-section";
+            hint.textContent = "Use + to bookmark an item, collection, library, or saved search — they appear here in every document.";
+            gc.appendChild(hint);
+        } else if (f && !f.visible.size) {
+            const hint = idoc.createElementNS(NS, "div");
+            hint.className = "wv-bm-reader-empty-section";
+            hint.textContent = q ? ("No bookmarks match \"" + q + "\".") : "No bookmarks match the current filter.";
+            gc.appendChild(hint);
+        } else {
+            const treeWrap = idoc.createElementNS(NS, "div");
+            treeWrap.className = "wv-bm-reader-tree";
+            this._wvReaderRenderLibraryTree(reader, idoc, treeWrap, nodes, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
+            gc.appendChild(treeWrap);
+        }
         list.appendChild(gc);
     }
 

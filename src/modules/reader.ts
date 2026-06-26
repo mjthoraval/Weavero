@@ -6914,13 +6914,13 @@ class _ReaderMixin {
     /** Snapshot every reader window's extra tabs into a map keyed by native
      *  itemID and write it to disk (serialized via a write chain). */
     /** Capture each open multi-tab reader window's extra tabs for the UNIFIED
-     *  session store (Phase 2 / 2b), as `{kind:'reader', nativeItemID, extras,
+     *  window store (Phase 2 / 2b), as `{kind:'reader', nativeItemID, extras,
      *  activeIndex, nativePinned}` array entries. The augment-restore path
      *  (`_wvWTMaybeRestore`) re-mounts these onto the window Zotero natively
      *  restores for `nativeItemID`. Orphaned windows (native tab closed,
      *  `native.itemID == null`) are still skipped here — recreating them is the
      *  deferred Part 2 (dev.6). */
-    _wvSessionCaptureReaderWindows() {
+    _wvWindowStoreCaptureReaderWindows() {
         const out: any[] = [];
         try {
             const en = Services.wm.getEnumerator("zotero:reader");
@@ -6961,30 +6961,32 @@ class _ReaderMixin {
                     // ORPHAN window: the native tab was closed, so Zotero has no
                     // entry for it (it'd be lost). Weavero owns full recreation —
                     // persist every tab; on restore the first becomes the new
-                    // native (see _wvWTLoadRestoreMap / _wvSessionRestoreOrphanReaderWindows).
+                    // native (see _wvWTLoadRestoreMap / _wvWindowStoreRestoreOrphanReaderWindows).
                     const tabs = realTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned, grp: t.wvGroupId || null }));
                     let activeIndex = realTabs.findIndex((t: any) => t.id === st.activeId);
                     if (activeIndex < 0) activeIndex = 0;
                     out.push({ kind: "reader-orphan", tabs, activeIndex });
                 }
             }
-        } catch (e) { Zotero.debug("[Weavero] _wvSessionCaptureReaderWindows err: " + e); }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureReaderWindows err: " + e); }
         return out;
     }
 
-    /** Reader-window tab change → persist. Routes through the UNIFIED store
-     *  (`session.json`), which captures dev main windows + reader windows in a
-     *  single doc on every save, so neither clobbers the other. */
+    /** Reader-window tab change → persist. Routes through the UNIFIED window
+     *  store (`windows.json`), which captures dev main windows + reader windows
+     *  in a single doc on every save, so neither clobbers the other. */
     _wvWTPersistSave() {
-        try { this._wvSessionSaveSync(); }
+        try { this._wvWindowStoreSaveSync(); }
         catch (e) { Zotero.debug("[Weavero] _wvWTPersistSave err: " + e); }
     }
 
     /** Debounced save — routes to the unified store's debounced save (coalesces
      *  reader-tab churn together with any dev-main-window churn). */
     _wvWTPersistSaveDebounced() {
-        try { this._wvSessionSaveDebounced(); }
-        catch (e) { try { this._wvSessionSaveSync(); } catch (e2) {} }
+        try { this._wvWindowStoreSaveDebounced(); }
+        catch (e) { try { this._wvWindowStoreSaveSync(); } catch (e2) {} }
+        // Reader-window tab changes also update the active (tracked) session.
+        try { (this as any)._wvTabSessionTrackingUpdate(); } catch (e) {}
     }
 
     /** Load the persisted map once into memory and open a ~30s restore window
@@ -6997,8 +6999,8 @@ class _ReaderMixin {
             // Unified store: pull the `kind:'reader'` entries, re-keyed by
             // nativeItemID (the shape _wvWTMaybeRestore expects).
             try {
-                const text: any = await Zotero.File.getContentsAsync(this._wvSessionStorePath());
-                const doc = JSON.parse(text);
+                const text: any = await this._wvWindowStoreReadText();
+                const doc = text ? JSON.parse(text) : null;
                 if (doc && Array.isArray(doc.windows)) {
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
@@ -7027,7 +7029,7 @@ class _ReaderMixin {
             } catch (e) { /* missing/unreadable → empty */ }
             // Migration: fall back to the legacy reader-tab-windows.json (v2 map)
             // if the unified store has no reader entries yet. It gets folded into
-            // session.json on the next save.
+            // the unified window store (windows.json) on the next save.
             if (!Object.keys(map).length) {
                 try {
                     const oldText: any = await Zotero.File.getContentsAsync(this._wvWTStorePath());
@@ -7172,7 +7174,7 @@ class _ReaderMixin {
      *  synthetic augment-map entry built in `_wvWTLoadRestoreMap`. Runs once per
      *  session after `uiReadyPromise`; dup-guarded so a hot-reload (where the
      *  recreated window already exists) doesn't open duplicates. */
-    async _wvSessionRestoreOrphanReaderWindows() {
+    async _wvWindowStoreRestoreOrphanReaderWindows() {
         try {
             if (this._wvOrphanRestored) return;
             this._wvOrphanRestored = true;
@@ -7231,7 +7233,7 @@ class _ReaderMixin {
                     await new Promise((r) => setTimeout(r, 500));
                 } catch (e) { Zotero.debug("[Weavero] orphan reader open err: " + e); }
             }
-        } catch (e) { Zotero.debug("[Weavero] _wvSessionRestoreOrphanReaderWindows err: " + e); }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRestoreOrphanReaderWindows err: " + e); }
     }
 
     // ---- Disable→enable reader-tab round-trip --------------------------------

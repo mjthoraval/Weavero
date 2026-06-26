@@ -25,6 +25,7 @@ import { filterMethods } from "./modules/filter";
 import { bookmarksMethods } from "./modules/bookmarks";
 import { readerPanelsMethods } from "./modules/reader-panels";
 import { tabGroupsMethods } from "./modules/tab-groups";
+import { sessionsMethods } from "./modules/sessions";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -1881,6 +1882,9 @@ class WeaveroPlugin {
         // populated by the time the user opens it. Fire-and-forget; the
         // cached promise dedupes with later callers.
         try { this._bmInit(); } catch (e) { Zotero.debug("[Weavero] _bmInit err: " + e); }
+        // Warm the named-tab-sessions store too, so the "Sessions" tab menu is
+        // populated by the time it's opened. Fire-and-forget; cached promise.
+        try { this._wvTabSessionInit(); } catch (e) { Zotero.debug("[Weavero] _wvTabSessionInit err: " + e); }
         // 0a. Patch Zotero.Utilities.Internal.openPreferences so EVERY
         //     Settings-window open (Edit -> Settings, Ctrl+,, plugin-
         //     triggered) uses a features string that gives the user
@@ -1998,7 +2002,7 @@ class WeaveroPlugin {
             //   • Reader.open → `_readers.find(r => r.itemID === …)` → NO item can
             //     be opened (double-click does nothing).
             //   • Reader.getWindowStates → `r instanceof ReaderWindow` → session
-            //     save throws + is swallowed → session.json freezes with stale
+            //     save throws + is swallowed → Zotero's own session.json freezes with stale
             //     reader windows that Reader.init re-opens every restart (so the
             //     breakage "survives" restarts until the dead entry is gone).
             // Purging dead entries before both paths makes a stray Proxy harmless.
@@ -2287,6 +2291,17 @@ class WeaveroPlugin {
                 }
             }
         }, ["tab"], "weavero-tab"));
+
+        // 3a. Notifier: keep the ACTIVE (tracked) tab-session in sync as
+        //     main-window tabs open/close/change. (Reader-window tabs flow
+        //     through _wvWTPersistSaveDebounced; window close through unload.)
+        this._notifierIDs.push(Zotero.Notifier.registerObserver({
+            notify: (event, type) => {
+                if (type === "tab" && (event === "add" || event === "close" || event === "select")) {
+                    try { this._wvTabSessionTrackingUpdate(); } catch (e) {}
+                }
+            }
+        }, ["tab"], "weavero-tabsession-track"));
 
         // 3b. Notifier: annotation lifecycle (delete/trash/modify).
         // Backstop for the proactive Delete/Backspace handler — the
@@ -2706,6 +2721,9 @@ class WeaveroPlugin {
         // hidden MenuManager item never relabeled reliably.)
         // Firefox-style tab groups (chip + colored underline in the tab bar).
         this._registerTabGroupMenus();
+        // (Named tab sessions live in the "List all tabs" dropdown panel — see
+        // _wvTabSessionsMenuSection, hooked into the tabs-menu refresh in
+        // modules/tabs.ts — so there's no context-menu registration here.)
         // "New Main Window" entry — gated on the `weavero.devNewMainWindow`
         // pref (exposed in prefs.html under "Multiple main windows"; default
         // off — experimental).
@@ -2714,15 +2732,15 @@ class WeaveroPlugin {
         try { (this as any)._registerReopenClosedMenu(); } catch (e) {}
         // Plugins Manager search box (Ctrl+F filter over installed plugins).
         try { (this as any)._registerPluginsSearch(); } catch (e) {}
-        // Unified Weavero session store (Phase 1): flush dev-window state on
+        // Unified Weavero window store (Phase 1): flush dev-window state on
         // quit, and once the UI is ready re-open the dev windows that were
         // open last time (gated by devNewMainWindow + devSessionAutoReopen).
-        try { this._wvSessionRegisterQuitFlush(); } catch (e) {}
+        try { this._wvWindowStoreRegisterQuitFlush(); } catch (e) {}
         try {
             (Zotero as any).uiReadyPromise
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
-                .then(() => { try { this._wvSessionRestoreDevWindows(); } catch (e) {} })
-                .then(() => { try { this._wvSessionRestoreOrphanReaderWindows(); } catch (e) {} })
+                .then(() => { try { this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
+                .then(() => { try { this._wvWindowStoreRestoreOrphanReaderWindows(); } catch (e) {} })
                 // Pull reader tabs that a previous DISABLE migrated into the main
                 // window back into their reader windows (consumes the hand-off
                 // file; no-op if absent). After the orphan restore so any windows
@@ -3673,10 +3691,12 @@ class WeaveroPlugin {
                 if (managedInPlay) {
                     setTimeout(() => {
                         try { this._wvNormalizeAnchor(); } catch (e) {}
-                        try { this._wvSessionSaveDebounced(); } catch (e) {}
+                        try { this._wvWindowStoreSaveDebounced(); } catch (e) {}
                     }, 50);
                 }
             } catch (e) {}
+            // A closed main window changes the workspace → update the active session.
+            try { this._wvTabSessionTrackingUpdate(); } catch (e) {}
             this._teardownTreeClickDelegate();
             this._teardownItemsListContextMenu();
             this._teardownCollectionsContextMenu();
@@ -3864,7 +3884,7 @@ class WeaveroPlugin {
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}
         this._unregisterDevNewWindowMenu();
         try { (this as any)._unregisterReopenClosedMenu(); } catch (e) {}
-        try { this._wvSessionUnregisterQuitFlush(); } catch (e) {}
+        try { this._wvWindowStoreUnregisterQuitFlush(); } catch (e) {}
         try { this._teardownThumbnailContextMenu(); } catch (e) {}
         this._teardownNoteWindowListener();
         try { this._teardownUpdateWindowListener(); } catch (e) {}
@@ -4277,6 +4297,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     tabGroupsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    sessionsMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================

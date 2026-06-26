@@ -102,6 +102,7 @@ class _TabsMixin {
             try {
                 const lp = Zotero.Weavero && Zotero.Weavero.plugin;
                 if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
+                if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
             } catch (e) {}
         };
         // The panel may already have content from an earlier open
@@ -503,6 +504,7 @@ class _TabsMixin {
         try {
             const lp = Zotero.Weavero && Zotero.Weavero.plugin;
             if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
+            if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
         } catch (e) {}
     }
 
@@ -638,6 +640,11 @@ class _TabsMixin {
             try { this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
             try { this._applyTabGroups(win); } catch (e) {}
+            // Keep the active (tracked) session in sync on tab open/close/reorder/
+            // select. Reliable + prompt (the 'tab' Notifier queues add/select, so
+            // it's not); debounced in _wvTabSessionTrackingUpdate, and suppressed
+            // mid-switch by the _wvTabSessionSwitching guard.
+            try { (Zotero as any).Weavero.plugin._wvTabSessionTrackingUpdate(); } catch (e) {}
         });
         mo.observe(container, {
             childList: true,
@@ -2786,22 +2793,44 @@ class _TabsMixin {
         try { win.setTimeout(settle, 150); } catch (e) { finish(); }
     }
 
-    // ---- Unified Weavero session store (Phase 1: dev main windows) --------
+    // ---- Unified Weavero WINDOW store (Phase 1: dev main windows) ---------
     // One Weavero-owned store + recreation path for non-primary managed
-    // windows. Phase 1 covers dev main windows (spawned via the hidden
-    // devNewMainWindow feature); separate reader windows keep their own
-    // persistence (reader-tab-windows.json) until Phase 2 folds them in here.
-    // Store: <data dir>/weavero/session.json, v3 = { windows: [ {kind, tabs} ] }.
+    // *windows* — Weavero reopens them on the next launch. NOT the user-facing
+    // "tab sessions" feature (that's modules/sessions.ts, `_wvTabSession*`,
+    // file `tab-sessions.json`); this is internal window-restore plumbing.
+    // Phase 1 covers dev main windows (spawned via the hidden devNewMainWindow
+    // feature); separate reader windows keep their own persistence
+    // (reader-tab-windows.json) until Phase 2 folds them in here.
+    // Store: <data dir>/weavero/windows.json, v4 = { windows: [ {kind, tabs} ] }.
+    // (Renamed from the legacy `session.json` in v0.14.7 — `_wvWindowStoreReadText`
+    // still reads the old name so an in-flight restore survives the upgrade.)
 
-    _wvSessionStorePath() {
-        return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "session.json");
+    _wvWindowStoreDir() {
+        return PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+    }
+
+    _wvWindowStorePath() {
+        return PathUtils.join(this._wvWindowStoreDir(), "windows.json");
+    }
+
+    /** Read the window-store file as text, falling back to the legacy
+     *  `session.json` name (renamed to `windows.json` in v0.14.7). Returns
+     *  null when neither exists / is readable. */
+    async _wvWindowStoreReadText() {
+        try { return await Zotero.File.getContentsAsync(this._wvWindowStorePath()); }
+        catch (e) { /* try legacy name */ }
+        try {
+            return await Zotero.File.getContentsAsync(
+                PathUtils.join(this._wvWindowStoreDir(), "session.json"));
+        } catch (e) { /* neither present */ }
+        return null;
     }
 
     /** Sync snapshot of every currently-open dev main window. Stores each
      *  window's full `Zotero_Tabs.getState()` (same shape Zotero's own pane
      *  session uses), so restore round-trips via `Zotero_Tabs.restoreState`.
      *  Cheap + synchronous → safe to call from the quit observer. */
-    _wvSessionCaptureDevWindows() {
+    _wvWindowStoreCaptureDevWindows() {
         const groups: any[] = [];
         try {
             const en = Services.wm.getEnumerator("navigator:browser");
@@ -2813,56 +2842,56 @@ class _TabsMixin {
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
                 groups.push({ kind: "main-dev", tabs });
             }
-        } catch (e) { Zotero.debug("[Weavero] _wvSessionCaptureDevWindows err: " + e); }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureDevWindows err: " + e); }
         return groups;
     }
 
     /** Issue an atomic write of the store doc (chained so writes serialise). */
-    _wvSessionWrite(doc) {
+    _wvWindowStoreWrite(doc) {
         try {
             const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
-            const path = this._wvSessionStorePath();
-            this._wvSessionWriteChain = (this._wvSessionWriteChain || Promise.resolve())
+            const path = this._wvWindowStorePath();
+            this._wvWindowStoreWriteChain = (this._wvWindowStoreWriteChain || Promise.resolve())
                 .then(async () => {
                     await IOUtils.makeDirectory(dir, { ignoreExisting: true });
                     await IOUtils.writeUTF8(path, JSON.stringify(doc, null, 2), { tmpPath: path + ".tmp" });
                 })
-                .catch((e: any) => Zotero.debug("[Weavero] _wvSessionWrite err: " + e));
-            return this._wvSessionWriteChain;
-        } catch (e) { Zotero.debug("[Weavero] _wvSessionWrite err: " + e); }
+                .catch((e: any) => Zotero.debug("[Weavero] _wvWindowStoreWrite err: " + e));
+            return this._wvWindowStoreWriteChain;
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreWrite err: " + e); }
     }
 
     /** Synchronous capture + issue write. Safe from `quit-application-granted`:
      *  capture is sync; the IOUtils write is flushed by Gecko's profile-before-
      *  change I/O barrier as long as it's *issued* here (no awaits before it). */
-    _wvSessionSaveSync() {
+    _wvWindowStoreSaveSync() {
         // Unified doc: dev main windows + reader windows in one file, captured
         // together on every save so neither path clobbers the other's entries.
-        this._wvSessionWrite({ version: 4, windows: [
-            ...this._wvSessionCaptureDevWindows(),
-            ...this._wvSessionCaptureReaderWindows(),
+        this._wvWindowStoreWrite({ version: 4, windows: [
+            ...this._wvWindowStoreCaptureDevWindows(),
+            ...this._wvWindowStoreCaptureReaderWindows(),
         ] });
     }
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
-    _wvSessionSaveDebounced() {
+    _wvWindowStoreSaveDebounced() {
         try {
             const win = Zotero.getMainWindow();
             const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
             const clearT = (win && win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
-            if (this._wvSessionSaveTimer) { try { clearT(this._wvSessionSaveTimer); } catch (e) {} }
-            this._wvSessionSaveTimer = setT(() => {
-                this._wvSessionSaveTimer = null;
-                try { this._wvSessionSaveSync(); } catch (e) {}
+            if (this._wvWindowStoreSaveTimer) { try { clearT(this._wvWindowStoreSaveTimer); } catch (e) {} }
+            this._wvWindowStoreSaveTimer = setT(() => {
+                this._wvWindowStoreSaveTimer = null;
+                try { this._wvWindowStoreSaveSync(); } catch (e) {}
             }, 400);
-        } catch (e) { try { this._wvSessionSaveSync(); } catch (e2) {} }
+        } catch (e) { try { this._wvWindowStoreSaveSync(); } catch (e2) {} }
     }
 
     /** Read + parse the store; returns the windows array (empty on missing). */
-    async _wvSessionLoad() {
+    async _wvWindowStoreLoad() {
         try {
-            const text: any = await Zotero.File.getContentsAsync(this._wvSessionStorePath());
-            const doc = JSON.parse(text);
+            const text: any = await this._wvWindowStoreReadText();
+            const doc = text ? JSON.parse(text) : null;
             if (doc && Array.isArray(doc.windows)) return doc.windows;
         } catch (e) { /* missing/unreadable → none */ }
         return [];
@@ -2874,10 +2903,10 @@ class _TabsMixin {
      *  Queues the saved groups and spawns windows one at a time, chained off
      *  each window's load (no timing races); Weavero owning the recreation is
      *  what resolves window↔group identity, Firefox-style. */
-    async _wvSessionRestoreDevWindows() {
+    async _wvWindowStoreRestoreDevWindows() {
         try {
-            if (this._wvSessionDevRestored) return;
-            this._wvSessionDevRestored = true;
+            if (this._wvWindowStoreDevRestored) return;
+            this._wvWindowStoreDevRestored = true;
             // Reload-safe guard: if any managed window is ALREADY open, this is
             // a plugin hot-reload (windows persist), not a cold start — the
             // instance flag above was reset by the reload, so we check the live
@@ -2894,12 +2923,12 @@ class _TabsMixin {
             let auto = true;
             try { const v = Zotero.Prefs.get("weavero.devSessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}
             if (!auto) return;
-            const groups = (await this._wvSessionLoad())
+            const groups = (await this._wvWindowStoreLoad())
                 .filter((g: any) => g && g.kind === "main-dev" && g.tabs && g.tabs.length > 1);
             if (!groups.length) return;
             this._wvDevSpawnQueue = groups.slice();
             this._wvSpawnNextDevWindow();
-        } catch (e) { Zotero.debug("[Weavero] _wvSessionRestoreDevWindows err: " + e); }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRestoreDevWindows err: " + e); }
     }
 
     /** Spawn the next queued dev window. Its `onMainWindowLoad` consumes one
@@ -2942,27 +2971,27 @@ class _TabsMixin {
      *  captures the open dev windows and issues the store write — the
      *  authoritative final save (the debounced ones may not flush at quit).
      *  Same hook + timing Zotero's own `Session.save` relies on. */
-    _wvSessionRegisterQuitFlush() {
+    _wvWindowStoreRegisterQuitFlush() {
         try {
-            if (this._wvSessionQuitObserver) return;
+            if (this._wvWindowStoreQuitObserver) return;
             const self = this;
             const obs = { observe() {
                 // Mark that we're quitting BEFORE windows tear down, so reader-window
                 // unload handlers don't PARK their groups (that's only for a genuine
                 // mid-session close — at quit the windows are restored next launch).
                 try { (self as any)._wvQuitting = true; } catch (e) {}
-                try { self._wvSessionSaveSync(); } catch (e) {}
+                try { self._wvWindowStoreSaveSync(); } catch (e) {}
             } };
-            this._wvSessionQuitObserver = obs;
+            this._wvWindowStoreQuitObserver = obs;
             Services.obs.addObserver(obs, "quit-application-granted", false);
-        } catch (e) { Zotero.debug("[Weavero] _wvSessionRegisterQuitFlush err: " + e); }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRegisterQuitFlush err: " + e); }
     }
 
-    _wvSessionUnregisterQuitFlush() {
+    _wvWindowStoreUnregisterQuitFlush() {
         try {
-            if (this._wvSessionQuitObserver) {
-                Services.obs.removeObserver(this._wvSessionQuitObserver, "quit-application-granted");
-                this._wvSessionQuitObserver = null;
+            if (this._wvWindowStoreQuitObserver) {
+                Services.obs.removeObserver(this._wvWindowStoreQuitObserver, "quit-application-granted");
+                this._wvWindowStoreQuitObserver = null;
             }
         } catch (e) {}
     }

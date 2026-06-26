@@ -2058,12 +2058,29 @@ export const PLUGIN_CSS = [
     "  animation: none !important;",
     "  opacity: 1;",
     "}",
-    // When the Tabs panel is in grouped layout (Weavero added
-    // section headers), every row is indented uniformly so the
-    // Library tab and the section tabs align — headers
-    // themselves stay flush-left (they don't match `.row`).
-    "#zotero-tabs-menu-panel.wv-tabs-menu-grouped .row[data-tab-id] {",
-    "  padding-inline-start: 18px !important;",
+    // Tab rows inside a window (`.wv-winscope`) are indented well past the
+    // window header, so the window → tab hierarchy reads clearly. Window/library
+    // headers stay flush-left (they don't match `.row`). Targets the window
+    // wrapper (present whether or not Sort-by-Library is on) rather than the
+    // grouped class, so the indent applies in both states. Native rows
+    // (`[data-tab-id]`) AND Weavero's all-windows / expanded-session rows match.
+    "#zotero-tabs-menu-panel .wv-winscope .row[data-tab-id],",
+    "#zotero-tabs-menu-panel .wv-winscope .wv-otherwin-row,",
+    "#zotero-tabs-menu-panel .wv-winscope .wv-sessmenu-tabrow {",
+    "  padding-inline-start: 18px !important;",   // one icon-width in from the window header
+    "}",
+    // Library sub-headers are a secondary GROUPING, not a hierarchy level — so
+    // they're centered (reading as dividers) instead of left-aligned at the same
+    // indent as the window headers. Window headers (curwin / otherwin / sessmenu)
+    // are excluded so they stay flush-left at the top of their window.
+    "#zotero-tabs-menu-panel .wv-tabs-menu-library-header:not(.wv-curwin-header):not(.wv-otherwin-header):not(.wv-sessmenu-winhdr) {",
+    "  justify-content: center !important;",
+    "}",
+    // The native library header's tick button has margin-inline-start:auto (pins it
+    // right), which eats the free space and defeats centering — neutralise it so the
+    // whole cluster centers together.
+    "#zotero-tabs-menu-panel .wv-tabs-menu-library-header:not(.wv-curwin-header):not(.wv-otherwin-header):not(.wv-sessmenu-winhdr) .wv-tabs-menu-library-tick {",
+    "  margin-inline-start: 0 !important;",
     "}",
     // Widen the panel to recover the horizontal space the row
     // indent eats into the tab title — AND to leave room for the
@@ -2074,5 +2091,12 @@ export const PLUGIN_CSS = [
     // "Sort by Library" enabled — avoids a width-jump on toggle.
     "#zotero-tabs-menu-panel.wv-tabs-menu-wide {",
     "  width: 420px !important;",
+    "}",
+    // Cap the list height to the viewport (minus the search box + anchor offset)
+    // and scroll when the tabs/windows/sessions overflow — otherwise a long list
+    // grows the panel off the bottom of the screen and the overflow is unreachable.
+    "#zotero-tabs-menu-panel #zotero-tabs-menu-list {",
+    "  max-height: calc(100vh - 130px) !important;",
+    "  overflow-y: auto !important;",
     "}",
 ].join("\n");

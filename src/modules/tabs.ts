@@ -101,10 +101,29 @@ class _TabsMixin {
             // LIVE plugin so reloads pick up new code without re-patching.
             try {
                 const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                if (lp && lp._wvTabSessionCurrentHeader) lp._wvTabSessionCurrentHeader(panel);
+                if (lp && lp._wvTabsMenuWrapCurrentWindow) lp._wvTabsMenuWrapCurrentWindow(panel);
+                if (lp && lp._wvTabsMenuOtherWindows) lp._wvTabsMenuOtherWindows(panel);
                 if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
+                if (lp && lp._wvTabsMenuWrapCurrentSession) lp._wvTabsMenuWrapCurrentSession(panel);
                 if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
+                // Defer the height-fit until after the popup is positioned.
+                const w = panel.ownerGlobal;
+                if (w) w.setTimeout(() => { try { const l2 = Zotero.Weavero && Zotero.Weavero.plugin; if (l2 && l2._wvTabsMenuFitListHeight) l2._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
             } catch (e) {}
         };
+        // Once the panel is positioned on screen, cap the list to the space that
+        // actually remains below it so a long list scrolls instead of running off
+        // the bottom of the screen (the static CSS cap can't know the anchor).
+        if (!panel._wvOverflowWired) {
+            panel._wvOverflowWired = true;
+            panel.addEventListener("popupshown", () => {
+                try {
+                    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                    if (lp && lp._wvTabsMenuFitListHeight) lp._wvTabsMenuFitListHeight(panel);
+                } catch (e) {}
+            });
+        }
         // The panel may already have content from an earlier open
         // before the patch landed — refresh it now so the header
         // structure is in place even without a popupshowing event.
@@ -503,9 +522,349 @@ class _TabsMixin {
         catch (e) { Zotero.debug("[Weavero] tabs-menu library sort err: " + e); }
         try {
             const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+            if (lp && lp._wvTabSessionCurrentHeader) lp._wvTabSessionCurrentHeader(panel);
+            if (lp && lp._wvTabsMenuWrapCurrentWindow) lp._wvTabsMenuWrapCurrentWindow(panel);
+            if (lp && lp._wvTabsMenuOtherWindows) lp._wvTabsMenuOtherWindows(panel);
             if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
+            if (lp && lp._wvTabsMenuWrapCurrentSession) lp._wvTabsMenuWrapCurrentSession(panel);
             if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
+            const w = panel.ownerGlobal;
+            if (w) w.setTimeout(() => { try { const l2 = Zotero.Weavero && Zotero.Weavero.plugin; if (l2 && l2._wvTabsMenuFitListHeight) l2._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
         } catch (e) {}
+    }
+
+    // ---- All-windows tab list ----------------------------------------------
+    // The native "List all tabs" panel shows ONLY the current window's tabs.
+    // Below them we append a section per OTHER window (other main windows + all
+    // reader windows), so every window's tabs are visible, current window on top.
+    // Clicking a row focuses that window and selects the tab.
+
+    /** Display title for a tab's item — parent paper title reads better than an
+     *  attachment's "Full Text PDF" name. */
+    _wvTabsMenuItemTitle(item: any) {
+        try {
+            if (item.parentItem && item.parentItem.getDisplayTitle) return item.parentItem.getDisplayTitle();
+            if (item.getDisplayTitle) return item.getDisplayTitle();
+        } catch (e) {}
+        return "";
+    }
+
+    /** Build the list of OTHER windows and their tab rows. */
+    _wvTabsMenuOtherWindowSections(curWin: any) {
+        const sections: any[] = [];
+        try {
+            const liveStamp = (it: any, title: any) => ({
+                item: it, title: (title || this._wvTabsMenuItemTitle(it)) || "",
+            });
+            // Other main windows (current window stays at the top, native).
+            let n = 1;
+            for (const w of Zotero.getMainWindows()) {
+                n++;
+                if (w === curWin) continue;
+                const Z: any = (w as any).Zotero_Tabs;
+                if (!Z || !Array.isArray(Z._tabs)) continue;
+                const tabs: any[] = [];
+                for (const t of Z._tabs) {
+                    if (!t || t.id === "zotero-pane" || t.type === "library") continue;
+                    const base = t.type.replace(/-(unloaded|reloaded|loading)$/, "");
+                    if (base !== "reader" && base !== "note") continue;
+                    const item = t.data && Zotero.Items.get(t.data.itemID);
+                    if (!item) continue;
+                    const tabId = t.id, tw = w, tZ = Z;
+                    const r = liveStamp(item, t.title) as any;
+                    r.onClick = () => { try { tw.focus(); tZ.select(tabId); } catch (e) {} };
+                    tabs.push(r);
+                }
+                if (tabs.length) sections.push({ label: "Window " + n, tabs, kind: "main", iconType: w._wvManagedWindow ? "main" : "anchor", anchorIconClass: w._wvManagedWindow ? "" : this._wvAnchorLibIconClass(w) });
+            }
+            // Reader windows.
+            const en = Services.wm.getEnumerator("zotero:reader");
+            let rn = 0;
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                rn++;
+                const st = w._wvWT;
+                const tabs: any[] = [];
+                if (st && Array.isArray(st.tabs)) {
+                    for (const t of st.tabs) {
+                        const item = t.itemID != null && Zotero.Items.get(t.itemID);
+                        if (!item) continue;
+                        const tabId = t.id, rw = w;
+                        const r = liveStamp(item, null) as any;
+                        r.onClick = () => {
+                            try {
+                                rw.focus();
+                                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (lp && lp._wvWTSwitch) lp._wvWTSwitch(rw, tabId);
+                            } catch (e) {}
+                        };
+                        tabs.push(r);
+                    }
+                } else {
+                    const readers = (Zotero.Reader && Zotero.Reader._readers) || [];
+                    for (const rd of readers) {
+                        if (!rd || rd._window !== w) continue;
+                        const iid = rd.itemID || (rd._item && rd._item.id);
+                        const item = iid && Zotero.Items.get(iid);
+                        if (!item) continue;
+                        const rw = w;
+                        const r = liveStamp(item, null) as any;
+                        r.onClick = () => { try { rw.focus(); } catch (e) {} };
+                        tabs.push(r);
+                    }
+                }
+                if (tabs.length) sections.push({ label: rn > 1 ? "Reader window " + rn : "Reader window", tabs, kind: "reader" });
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuOtherWindowSections err: " + e); }
+        return sections;
+    }
+
+    /** Render the other-windows sections into the tabs-menu list. */
+    _wvTabsMenuOtherWindows(panel: any) {
+        try {
+            const doc = panel.ownerDocument;
+            const win = doc.defaultView;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (!list) return;
+            for (const el of list.querySelectorAll(".wv-otherwin-scope")) el.remove();
+            const sections = this._wvTabsMenuOtherWindowSections(win);
+            if (!sections.length) return;
+            this._wvTabsMenuRenderSections(doc, list, panel, sections,
+                { header: "wv-otherwin-header", row: "wv-otherwin-row", lib: "wv-otherwin-libhdr", scope: "wv-otherwin-scope" });
+        } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuOtherWindows err: " + e); }
+    }
+
+    /** Cap the tabs-menu list to the space remaining below it on screen, so a long
+     *  list scrolls (overflow-y:auto) instead of pushing the panel off the bottom.
+     *  Computed from the list's live top after the panel is positioned. */
+    _wvTabsMenuFitListHeight(panel: any) {
+        try {
+            const win = panel.ownerGlobal;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (!win || !list) return;
+            const top = list.getBoundingClientRect().top;
+            const avail = Math.max(200, Math.floor(win.innerHeight - top - 24));
+            list.style.maxHeight = avail + "px";
+            list.style.overflowY = "auto";
+        } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuFitListHeight err: " + e); }
+    }
+
+    /** A window-section header (label + count), styled like the library headers.
+     *  Shared by the all-windows list AND the expanded-session view. */
+    _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string) {
+        const header = doc.createElement("div");
+        header.className = "wv-tabs-menu-library-header " + (marker || "");
+        header.setAttribute("role", "presentation");
+        // Left glyph: a plain window frame for any window (main, reader, anchor —
+        // the first tab makes the kind obvious); a Zotero icon class for library
+        // sub-headers.
+        if (iconType === "anchor" || iconType === "main" || iconType === "reader" || iconType === "window") {
+            const ic = doc.createElement("span");
+            ic.className = "wv-winicon";
+            header.appendChild(ic);
+        } else if (iconType) {
+            const ic = doc.createElement("span");
+            ic.className = "icon icon-css " + iconType;   // Zotero library/group/feed icon
+            header.appendChild(ic);
+        }
+        const lbl = doc.createElement("span");
+        lbl.className = "wv-tabs-menu-library-name";
+        lbl.textContent = label;
+        header.appendChild(lbl);
+        // Anchor (primary) window: mark it on the RIGHT of the name with an anchor
+        // glyph.
+        if (iconType === "anchor") {
+            const SVG = "http://www.w3.org/2000/svg";
+            const svg = doc.createElementNS(SVG, "svg");
+            svg.setAttribute("viewBox", "0 0 24 24");
+            svg.setAttribute("class", "wv-anchor-mark");
+            const path = doc.createElementNS(SVG, "path");
+            path.setAttribute("fill", "currentColor");
+            path.setAttribute("d", "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3V7.82C14.16 7.4 15 6.3 15 5c0-1.65-1.35-3-3-3S9 3.35 9 5c0 1.3.84 2.4 2 2.82V9H8v2h3v8.92c-2.22-.33-4.59-1.68-5.55-3.37L7 15l-4-3v3c0 3.88 4.92 7 9 7s9-3.12 9-7v-3l-4 3zM12 4c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z");
+            svg.appendChild(path);
+            header.appendChild(svg);
+        }
+        const cnt = doc.createElement("span");
+        cnt.className = "wv-tabs-menu-library-count";
+        cnt.textContent = String(count);
+        header.appendChild(cnt);
+        return header;
+    }
+
+    /** The icon class of a main window's library tab (reflects its selected
+     *  library — icon-library / icon-library-group / icon-feed / a collection).
+     *  Stripped of tab-only classes so it can be reused as a plain icon. */
+    _wvAnchorLibIconClass(win: any) {
+        try {
+            const d = win && win.document;
+            const lt = d && d.querySelector('.tab[data-id="zotero-pane"] .tab-icon');
+            if (lt) return String(lt.className).replace(/\b(tab-icon|selected)\b/g, "").replace(/\s+/g, " ").trim();
+        } catch (e) {}
+        return "";
+    }
+
+    /** One native-styled tab row. `tb` = { item, title, onClick }; `marker` is a
+     *  cleanup class. Shared by the all-windows list AND the expanded-session
+     *  view so both share the same design. */
+    _wvTabsMenuTabRow(doc: any, tb: any, panel: any, marker: string) {
+        const row = doc.createElement("div");
+        row.className = "row " + (marker || "");
+        row.style.cursor = "pointer";
+        const title = doc.createElement("div");
+        title.setAttribute("flex", "1");
+        title.className = "zotero-tabs-menu-entry title";
+        const span = doc.createElement("span");
+        span.className = "icon icon-css tab-icon icon-item-type";
+        try { span.setAttribute("data-item-type", tb.item.getItemTypeIconName(true)); } catch (e) {}
+        title.appendChild(span);
+        const label = doc.createElement("label");
+        label.textContent = tb.title || "";
+        title.appendChild(label);
+        row.appendChild(title);
+        row.addEventListener("click", (e: any) => {
+            try {
+                e.stopPropagation();
+                try { panel.hidePopup(); } catch (er) {}
+                if (typeof tb.onClick === "function") tb.onClick();
+            } catch (er) {}
+        });
+        return row;
+    }
+
+    /** Annotation-count badge for an item (null when 0), same look as the
+     *  native rows' badge. */
+    _wvTabsMenuAnnotationBadge(doc: any, item: any) {
+        try {
+            if (!item || typeof item.getAnnotations !== "function") return null;
+            const n = (item.getAnnotations() || []).length;
+            if (!n) return null;
+            const NS = "http://www.w3.org/1999/xhtml";
+            const badge = doc.createElementNS(NS, "span");
+            badge.className = "wv-tabs-menu-anncount";
+            badge.title = n + " annotation" + (n === 1 ? "" : "s");
+            const ic = doc.createElementNS(NS, "span");
+            ic.className = "wv-tabs-menu-anncount-icon";
+            badge.appendChild(ic);
+            const lbl = doc.createElementNS(NS, "span");
+            lbl.className = "wv-tabs-menu-anncount-label";
+            lbl.textContent = String(n);
+            badge.appendChild(lbl);
+            return badge;
+        } catch (e) { return null; }
+    }
+
+    /** Render window sections (label + tabs[{item,title,onClick}]) into the list,
+     *  honouring the tabs-menu settings: "Sort by Library" → library sub-headers
+     *  nested inside each window; "Show annotation count" → per-row badge.
+     *  Shared by the all-windows list AND the expanded-session view, so both look
+     *  identical. `marker` = { header, row, lib } cleanup classes. */
+    _wvTabsMenuRenderSections(doc: any, container: any, panel: any, sections: any[], marker: any) {
+        try { (this as any)._wvEnsureTabSessionStyles(doc); } catch (e) {}   // rail + indent CSS
+        const sortByLib = this._tabsMenuGroupByLibrary !== false;
+        const showAnn = !!this._tabsMenuShowAnnotationCount;
+        const addRow = (parent: any, tb: any) => {
+            const row = this._wvTabsMenuTabRow(doc, tb, panel, marker.row);
+            if (showAnn) {
+                try {
+                    const badge = this._wvTabsMenuAnnotationBadge(doc, tb.item);
+                    if (badge) row.appendChild(badge);
+                } catch (e) {}
+            }
+            parent.appendChild(row);
+        };
+        for (const sec of sections) {
+            // Each window's content goes in a `.wv-winscope` wrapper → its left
+            // rail spans the whole window. No window icon (the rail + label say it).
+            const winWrap = doc.createElement("div");
+            winWrap.className = "wv-winscope " + (marker.scope || "");
+            winWrap.appendChild(this._wvTabsMenuWindowHeader(doc, sec.label, sec.tabs.length, marker.header, sec.iconType || (sec.kind === "reader" ? "reader" : "main"), sec.anchorIconClass));
+            if (sortByLib) {
+                const byLib = new Map<any, any[]>();
+                for (const tb of sec.tabs) {
+                    const lid = (tb.item && tb.item.libraryID != null) ? tb.item.libraryID : 0;
+                    if (!byLib.has(lid)) byLib.set(lid, []);
+                    byLib.get(lid)!.push(tb);
+                }
+                for (const [lid, tabs] of byLib) {
+                    let libName = "Library", iconClass = "icon-library";
+                    try {
+                        const lib = Zotero.Libraries.get(lid);
+                        if (lib && lib.name) libName = lib.name;
+                        if (lib && lib.libraryType === "group") iconClass = "icon-library-group";
+                        else if (lib && lib.libraryType === "feed") iconClass = "icon-feed";
+                    } catch (e) {}
+                    const libHdr = this._wvTabsMenuWindowHeader(doc, libName, tabs.length, marker.lib, iconClass);
+                    libHdr.classList.add("wv-tabsmenu-sublib");
+                    winWrap.appendChild(libHdr);
+                    for (const tb of tabs) addRow(winWrap, tb);
+                }
+            } else {
+                for (const tb of sec.tabs) addRow(winWrap, tb);
+            }
+            container.appendChild(winWrap);
+        }
+    }
+
+    /** Wrap the current window's native content (library headers + tab rows) in a
+     *  window scope rail, so the current window reads as one scoped window like
+     *  the others. Run after groupByLibrary + the current-session banner. */
+    _wvTabsMenuWrapCurrentWindow(panel: any) {
+        try {
+            const doc = panel.ownerDocument;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (!list) return;
+            if (list.querySelector(".wv-winscope-current")) return;   // already wrapped this pass
+            // Everything that isn't the banner or an existing scope wrapper is the
+            // native current-window content.
+            const nodes = [...list.children].filter((n: any) =>
+                !n.classList.contains("wv-cursess-header")
+                && !n.classList.contains("wv-winscope")
+                && !n.classList.contains("wv-sessscope"));
+            if (!nodes.length) return;
+            const wrap = doc.createElement("div");
+            wrap.className = "wv-winscope wv-winscope-current";
+            list.insertBefore(wrap, nodes[0]);
+            for (const n of nodes) wrap.appendChild(n);
+            // Label the current window "Window 1" with the M (main-window) glyph —
+            // extra main windows continue at "Window 2"+, reader windows get "R" —
+            // so every window in the session reads the same way.
+            const count = wrap.querySelectorAll(".row[data-tab-id]").length;
+            const w: any = doc.defaultView;
+            const isAnchor = !!(w && !w._wvManagedWindow);
+            const anchorIconClass = isAnchor ? this._wvAnchorLibIconClass(w) : "";
+            const hdr = this._wvTabsMenuWindowHeader(doc, "Window 1", count, "wv-curwin-header", isAnchor ? "anchor" : "main", anchorIconClass);
+            wrap.insertBefore(hdr, wrap.firstChild);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuWrapCurrentWindow err: " + e); }
+    }
+
+    /** Wrap the WHOLE current-session region — the banner, the current window,
+     *  the other windows, and the tab-groups section — in one session scope, so
+     *  the current session reads as a single tinted block (like an expanded saved
+     *  session). All of that belongs to the current session. Runs AFTER the
+     *  tab-groups section and BEFORE the saved-sessions list, which stays outside
+     *  the scope. Idempotent within a pass; the list is rebuilt each refresh. */
+    _wvTabsMenuWrapCurrentSession(panel: any) {
+        try {
+            const doc = panel.ownerDocument;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (!list) return;
+            if (list.querySelector(".wv-cursess-scope")) return;   // already wrapped this pass
+            const nodes = [...list.children];
+            if (!nodes.length) return;
+            const wrap = doc.createElement("div");
+            wrap.className = "wv-sessscope wv-cursess-scope";
+            list.insertBefore(wrap, nodes[0]);
+            // The "Current session" banner is the box's title bar (direct child,
+            // top); the windows + tab-groups go in the body below — same structure
+            // as a saved-session box, so the two read consistently.
+            const body = doc.createElement("div");
+            body.className = "wv-sess-body";
+            for (const n of nodes) {
+                if (n.classList && n.classList.contains("wv-cursess-header")) wrap.appendChild(n);
+                else body.appendChild(n);
+            }
+            wrap.appendChild(body);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuWrapCurrentSession err: " + e); }
     }
 
     /** Build (or update) a stylesheet that hides tabs in the main
@@ -2770,6 +3129,17 @@ class _TabsMixin {
                 if (group && group.tabs && group.tabs.length > 1) {
                     try { tabs.restoreState(group.tabs); }    // re-add this dev window's own tabs
                     catch (e) { Zotero.debug("[Weavero] dev restore err: " + e); }
+                    // Session reconstruct carries this window's library-view state
+                    // (collection + items-tree columns/sort); the dev "New Window"
+                    // path leaves wvMainState unset, so this is a no-op there.
+                    if (group.wvMainState) {
+                        try {
+                            const plugin = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (plugin && plugin._wvTabSessionApplyMainState) {
+                                plugin._wvTabSessionApplyMainState(win, group.wvMainState);
+                            }
+                        } catch (e) { Zotero.debug("[Weavero] dev wvMainState err: " + e); }
+                    }
                 } else {
                     try {
                         const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;

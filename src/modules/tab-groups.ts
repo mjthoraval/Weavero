@@ -2028,6 +2028,28 @@ class _TabGroupsMixin {
         } catch (e) { return null; }
     }
 
+    /** Collect the {libraryID,itemKey} of every currently-open tab (across all
+     *  main + reader windows) stamped with `groupID`, de-duplicated. Used to
+     *  refresh a group's persistent member snapshot at save/park time so a
+     *  parked group remembers how many tabs it holds — the count shown in the
+     *  tabs-menu Sessions/Groups list. `g.members` alone can be stale. */
+    _wvTabGroupLiveMemberKeys(groupID: any) {
+        const seen = new Set<string>();
+        const keys: any[] = [];
+        try {
+            this._wvTabGroupForEachOpenTab((t: any) => {
+                if (this._wvTabGroupStamp(t) !== groupID) return;
+                const k = this._wvTabGroupDeckKey(t);
+                if (!k || k.libraryID == null || !k.itemKey) return;
+                const dk = k.libraryID + ":" + k.itemKey;
+                if (seen.has(dk)) return;
+                seen.add(dk);
+                keys.push({ libraryID: k.libraryID, itemKey: k.itemKey });
+            });
+        } catch (e) {}
+        return keys;
+    }
+
     // ---- Per-tab membership (Firefox-style) --------------------------------
     // A tab's group is stamped ON THE TAB, not derived from its item key, so
     // duplicate tabs of the same item are independent members (fixes the
@@ -2137,6 +2159,22 @@ class _TabGroupsMixin {
             let dirty = false;
             for (const g of groups) {
                 if (ids.has(g.id) && !elsewhere.has(g.id) && !(g as any).saved) {
+                    // Snapshot members from THIS closing window's stamped tabs so
+                    // the parked group keeps its tab count for the menu list.
+                    try {
+                        const seen = new Set<string>();
+                        const keys: any[] = [];
+                        for (const t of st.tabs) {
+                            if (this._wvTabGroupStamp(t) !== g.id) continue;
+                            const k = this._wvTabGroupDeckKey(t);
+                            if (!k || k.libraryID == null || !k.itemKey) continue;
+                            const dk = k.libraryID + ":" + k.itemKey;
+                            if (seen.has(dk)) continue;
+                            seen.add(dk);
+                            keys.push({ libraryID: k.libraryID, itemKey: k.itemKey });
+                        }
+                        if (keys.length) g.members = keys;
+                    } catch (e) {}
                     (g as any).saved = true;   // park → persists + skipped by the delete gate
                     dirty = true;
                     parked.push(g.id);
@@ -2750,6 +2788,11 @@ class _TabGroupsMixin {
             const groups = this._tabGroupsGet();
             const g = groups.find((x: any) => x.id === groupID);
             if (!g) return;
+            // Refresh the persistent member snapshot from the LIVE stamps before
+            // closing, so the parked group remembers its tab count (the count
+            // shown in the tabs-menu list). g.members can be stale/empty if
+            // membership changed without a tracked add/remove.
+            try { const lk = this._wvTabGroupLiveMemberKeys(g.id); if (lk.length) g.members = lk; } catch (e) {}
             // Record for "Reopen Closed Group" (Ctrl+Shift+T). The group is parked
             // (stays in prefs), so reopen finds it by id; snapshot members anyway.
             try { (this as any)._wvClosedPush({ kind: "group", groupID, name: g.name, color: g.color, members: (g.members || []).map((m: any) => ({ libraryID: m.libraryID, itemKey: m.itemKey })) }); } catch (e) {}

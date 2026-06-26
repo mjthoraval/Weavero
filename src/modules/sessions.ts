@@ -168,8 +168,9 @@ class _TabSessionsMixin {
     // layout. Tab record: { type:"reader"|"note", title, libraryID, itemKey,
     // location, selected, pinned? }.
 
-    /** Build one session tab record from a resolved item. */
-    _wvTabSessionMakeRecord(base: string, title: any, item: any, selected: boolean, pinned: boolean) {
+    /** Build one session tab record from a resolved item. `groupId` is the
+     *  tab's Weavero tab-group stamp (so groups are session-specific). */
+    _wvTabSessionMakeRecord(base: string, title: any, item: any, selected: boolean, pinned: boolean, groupId?: any) {
         let location: any = null;
         if (base === "reader") {
             try {
@@ -186,7 +187,16 @@ class _TabSessionsMixin {
             selected: !!selected,
         };
         if (pinned) rec.pinned = true;
+        if (groupId) rec.groupId = groupId;
         return rec;
+    }
+
+    /** This tab's tab-group stamp, or null. */
+    _wvTabSessionTabGroupId(t: any) {
+        try {
+            return (typeof (this as any)._wvTabGroupStamp === "function")
+                ? ((this as any)._wvTabGroupStamp(t) || null) : null;
+        } catch (e) { return null; }
     }
 
     /** A main-window Zotero tab → record (reader/note only), else null. */
@@ -200,7 +210,7 @@ class _TabSessionsMixin {
             const item = Zotero.Items.get(itemID);
             if (!item || !item.key) return null;
             return this._wvTabSessionMakeRecord(base, t.title, item,
-                selID != null && t.id === selID, false);
+                selID != null && t.id === selID, false, this._wvTabSessionTabGroupId(t));
         } catch (e) { return null; }
     }
 
@@ -219,7 +229,7 @@ class _TabSessionsMixin {
                     if (!item || !item.key) continue;
                     const base = (item.isNote && item.isNote()) ? "note" : "reader";
                     tabs.push(this._wvTabSessionMakeRecord(base, "", item,
-                        st.activeId === t.id, !!t.pinned));
+                        st.activeId === t.id, !!t.pinned, this._wvTabSessionTabGroupId(t)));
                 }
             } else {
                 const readers = (Zotero.Reader && Zotero.Reader._readers) || [];
@@ -302,6 +312,17 @@ class _TabSessionsMixin {
         } catch (e) { return 0; }
     }
 
+    /** Deep snapshot of the current tab-group definitions, so each session OWNS
+     *  its tab groups (active + saved) instead of them carrying across. */
+    _wvTabSessionCaptureGroups() {
+        try {
+            if (typeof (this as any)._tabGroupsGet === "function") {
+                return JSON.parse(JSON.stringify((this as any)._tabGroupsGet() || []));
+            }
+        } catch (e) {}
+        return [];
+    }
+
     /** Convert session tab records → Zotero_Tabs.getState() shape (resolving
      *  itemKey→itemID), for `Zotero_Tabs.restoreState` / the dev-window queue.
      *  CRITICAL: `restoreState` uses the array index as each tab's index and
@@ -322,10 +343,14 @@ class _TabSessionsMixin {
             try {
                 const id = Zotero.Items.getIDFromLibraryAndKey(rec.libraryID, rec.itemKey);
                 if (!id) continue;
+                const data: any = { itemID: id };
+                // Carry the tab-group stamp in `data` so restoreState round-trips
+                // it onto the rebuilt main tab (`data.wvGroupId`).
+                if (rec.groupId) data.wvGroupId = rec.groupId;
                 out.push({
                     type: rec.type,
                     title: rec.title || "",
-                    data: { itemID: id },
+                    data,
                     selected: !!rec.selected,
                 });
             } catch (e) {}
@@ -343,6 +368,7 @@ class _TabSessionsMixin {
             created: now,
             modified: now,
             windows: this._wvTabSessionCaptureWindows(),
+            tabGroups: this._wvTabSessionCaptureGroups(),
         };
         this._wvTabSessionDoc.sessions.push(sess);
         // A freshly-saved session becomes the active (tracked) one.
@@ -357,6 +383,7 @@ class _TabSessionsMixin {
         const sess = this._wvTabSessionList().find((s: any) => s.id === id);
         if (!sess) return null;
         sess.windows = this._wvTabSessionCaptureWindows();
+        sess.tabGroups = this._wvTabSessionCaptureGroups();
         delete sess.tabs;
         sess.modified = Date.now();
         await this._wvTabSessionPersist();
@@ -391,26 +418,30 @@ class _TabSessionsMixin {
         await this._wvTabSessionInit();
         const windows = this._wvTabSessionCaptureWindows();
         if (!windows.some((w: any) => (w.tabs || []).length)) return;   // nothing to lose
+        const tabGroups = this._wvTabSessionCaptureGroups();
         const now = Date.now();
         let slot = this._wvTabSessionList().find((s: any) => s.id === WV_TABSESSION_AUTOSAVE_ID);
         if (!slot) {
             slot = {
                 id: WV_TABSESSION_AUTOSAVE_ID, name: "Last workspace (auto)",
-                created: now, modified: now, windows,
+                created: now, modified: now, windows, tabGroups,
             };
             this._wvTabSessionDoc.sessions.unshift(slot);
         } else {
             slot.windows = windows;
+            slot.tabGroups = tabGroups;
             delete slot.tabs;
             slot.modified = now;
         }
         await this._wvTabSessionPersist();
     }
 
-    // ---- Active (tracking) session -----------------------------------------
-    // At most one session is "active": it tracks the live workspace, re-captured
-    // (debounced) whenever a tab or window opens/closes/changes. Switching to a
-    // session — or saving a new one — makes it active.
+    // ---- Active session (always live) --------------------------------------
+    // Exactly one session is "active" — the one you switched to or just saved —
+    // and it ALWAYS mirrors the live workspace, re-captured (debounced) whenever
+    // a tab or window opens/closes/changes. Every OTHER session stays a frozen
+    // snapshot until you switch to it. There is no tracking on/off toggle: the
+    // session you're in is live; the rest are snapshots.
 
     _wvTabSessionGetActiveId() {
         return (this._wvTabSessionDoc && this._wvTabSessionDoc.activeSessionId) || null;
@@ -448,28 +479,25 @@ class _TabSessionsMixin {
             const sess = this._wvTabSessionList().find((s: any) => s.id === id);
             if (!sess) { this._wvTabSessionDoc.activeSessionId = null; await this._wvTabSessionPersist(); return; }
             sess.windows = this._wvTabSessionCaptureWindows();
+            sess.tabGroups = this._wvTabSessionCaptureGroups();
             delete sess.tabs;
             sess.modified = Date.now();
             await this._wvTabSessionPersist();
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionTrackingFlush err: " + e); }
     }
 
-    _wvTabSessionStopTracking() {
-        try {
-            if (this._wvTabSessionTrackTimer) {
-                try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
-                this._wvTabSessionTrackTimer = null;
-            }
-            this._wvTabSessionSetActiveId(null);
-            this._wvTabSessionToast("Stopped tracking");
-        } catch (e) {}
-    }
-
     // ---- Restore (switch = reconstruct the saved window topology) ----------
 
-    /** Tear down the current workspace: close every reader/note tab in every
-     *  main window (library tab stays) and close every reader window. */
+    /** Tear down the current workspace: close session-spawned (managed) extra
+     *  main windows, close every reader/note tab in the remaining main window(s),
+     *  and close every reader window. The anchor (non-managed) window stays and
+     *  is reused as the primary, so a switch never leaves an empty window behind. */
     _wvTabSessionTearDown() {
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                if (w && (w as any)._wvManagedWindow) { try { w.close(); } catch (_) {} }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionTearDown (managed win) err: " + e); }
         try {
             for (const w of Zotero.getMainWindows()) {
                 const Z: any = (w as any).Zotero_Tabs;
@@ -500,13 +528,13 @@ class _TabSessionsMixin {
             const first = items[0];
             if (items.length > 1) {
                 const extras = items.slice(1).map((x: any) =>
-                    ({ itemID: x.id, pinned: !!x.rec.pinned, grp: null }));
+                    ({ itemID: x.id, pinned: !!x.rec.pinned, grp: x.rec.groupId || null }));
                 let activeIndex = items.findIndex((x: any) => x.rec.selected);
                 if (activeIndex < 0) activeIndex = 0;
                 this._wvWTRestoreMap = this._wvWTRestoreMap || {};
                 this._wvWTRestoreMap[first.id] = {
                     extras, activeIndex,
-                    nativePinned: !!first.rec.pinned, nativeGrp: null,
+                    nativePinned: !!first.rec.pinned, nativeGrp: first.rec.groupId || null,
                     order: items.map((x: any) => x.id),
                 };
                 this._wvWTRestoreActive = true;
@@ -546,17 +574,37 @@ class _TabSessionsMixin {
     }
 
     /** Rebuild a session's window topology: main windows (primary in place +
-     *  extras via the dev-window spawn queue) and reader windows. */
-    async _wvTabSessionReconstruct(windows: any[]) {
+     *  extras via the dev-window spawn queue) and reader windows. `tabGroups`
+     *  (when present) becomes the global tab-group set for this session — swapped
+     *  in BEFORE the tabs are rebuilt (which carry their `wvGroupId` stamps), so
+     *  groups are session-specific instead of carrying across. */
+    async _wvTabSessionReconstruct(windows: any[], tabGroups?: any[]) {
         const mains = (windows || []).filter((w: any) => w.kind === "main");
         const readers = (windows || []).filter((w: any) => w.kind === "reader");
+        try {
+            Zotero.debug("[Weavero] session reconstruct: open main windows="
+                + Zotero.getMainWindows().length + " (managed="
+                + Zotero.getMainWindows().filter((w: any) => w._wvManagedWindow).length
+                + "), session main entries=" + mains.length + ", reader entries=" + readers.length);
+        } catch (e) {}
+        // Swap in the session's tab groups under a restore guard so the apply
+        // pass doesn't delete groups whose tabs haven't been re-stamped yet.
+        // Legacy sessions (no tabGroups field) leave the current groups alone.
+        const swapGroups = Array.isArray(tabGroups);
+        if (swapGroups) {
+            try {
+                (this as any)._wvTabGroupRestoreGuard = true;
+                (this as any)._tabGroupsSet(JSON.parse(JSON.stringify(tabGroups)));
+            } catch (e) { Zotero.debug("[Weavero] reconstruct group-swap err: " + e); }
+        }
         this._wvTabSessionTearDown();
         if (mains.length) {
-            // Primary (active) main window gets the first main entry. Teardown
-            // already left it at the library tab; restoreState re-adds the rest
+            // Primary main window = the anchor (non-managed) window, reused.
+            // Teardown left it at the library tab; restoreState re-adds the rest
             // (it honors each record's `selected`), then we restore the library
             // view (collection + columns + sort).
-            const primary = Zotero.getMainWindow();
+            const primary = Zotero.getMainWindows().find((w: any) => !w._wvManagedWindow)
+                || Zotero.getMainWindow();
             try {
                 const Z: any = primary && (primary as any).Zotero_Tabs;
                 if (Z && (mains[0].tabs || []).length && typeof Z.restoreState === "function") {
@@ -568,9 +616,16 @@ class _TabSessionsMixin {
             // (the dev-window machinery consumes the queue in onMainWindowLoad).
             const extraGroups = mains.slice(1)
                 .filter((m: any) => (m.tabs || []).length)   // skip windows with only a library tab
-                .map((m: any) => ({ tabs: this._wvTabSessionToGetStateTabs(m.tabs) }));
+                .map((m: any) => ({
+                    tabs: this._wvTabSessionToGetStateTabs(m.tabs),
+                    // Carried into the spawned window so it restores its OWN
+                    // collection + items-tree columns/sort, not the anchor's.
+                    wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs },
+                }));
             if (extraGroups.length) {
                 try {
+                    Zotero.debug("[Weavero] session reconstruct: spawning " + extraGroups.length
+                        + " extra main window(s)");
                     this._wvDevSpawnQueue = (this._wvDevSpawnQueue || []).concat(extraGroups);
                     this._wvSpawnNextDevWindow();
                 } catch (e) { Zotero.debug("[Weavero] reconstruct extra-main err: " + e); }
@@ -578,6 +633,34 @@ class _TabSessionsMixin {
         }
         for (const rw of readers) {
             try { await this._wvTabSessionReconstructReaderWindow(rw); } catch (_) {}
+        }
+        try {
+            const w = Zotero.getMainWindow();
+            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => {
+                try {
+                    const wins = Zotero.getMainWindows();
+                    const empty = wins.filter((x: any) => {
+                        const Z = x.Zotero_Tabs;
+                        return Z && Z._tabs.filter((t: any) => t.type !== "library").length === 0;
+                    }).length;
+                    Zotero.debug("[Weavero] session reconstruct done: main windows="
+                        + wins.length + ", empty=" + empty);
+                } catch (e) {}
+            }, 1800);
+        } catch (e) {}
+        if (swapGroups) {
+            try { (this as any)._wvTabGroupApplyEverywhere(); } catch (e) {}
+            // Lift the guard once windows (esp. async reader windows) have settled,
+            // then re-apply so the new groups render and any stale empties clear.
+            try {
+                const w = Zotero.getMainWindow();
+                const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                st(() => {
+                    try { (this as any)._wvTabGroupRestoreGuard = false; } catch (e) {}
+                    try { (this as any)._wvTabGroupApplyEverywhere(); } catch (e) {}
+                }, 2500);
+            } catch (e) { try { (this as any)._wvTabGroupRestoreGuard = false; } catch (e2) {} }
         }
     }
 
@@ -591,6 +674,9 @@ class _TabSessionsMixin {
         // objects (e.g. switching to the auto slot rewrites its own `windows`).
         const targetWindows = Array.isArray(sess.windows) ? sess.windows.slice()
             : [{ kind: "main", tabs: (sess.tabs || []) }];   // legacy fallback
+        // Snapshot the target's groups too (before any flush rewrites them).
+        const targetGroups = Array.isArray(sess.tabGroups)
+            ? JSON.parse(JSON.stringify(sess.tabGroups)) : undefined;
         const activeId = this._wvTabSessionGetActiveId();
         this._wvTabSessionSwitching = true;   // suppress tracking during teardown/rebuild
         try {
@@ -601,7 +687,7 @@ class _TabSessionsMixin {
             } else if (!activeId && id !== WV_TABSESSION_AUTOSAVE_ID) {
                 try { await this._wvTabSessionAutosaveCurrent(); } catch (_) {}
             }
-            await this._wvTabSessionReconstruct(targetWindows);
+            await this._wvTabSessionReconstruct(targetWindows, targetGroups);
         } finally {
             this._wvTabSessionSwitching = false;
         }
@@ -645,10 +731,17 @@ class _TabSessionsMixin {
             const sess = this._wvTabSessionList().find((s: any) => s.id === id);
             if (!sess) return;
             const n = this._wvTabSessionCountTabs(sess);
+            // The current tabs are never lost: if you're in a session it keeps
+            // them (it's live); otherwise they go to the auto-recovery slot.
+            const activeId = this._wvTabSessionGetActiveId();
+            const active = (activeId && activeId !== id)
+                ? this._wvTabSessionList().find((s: any) => s.id === activeId) : null;
+            const safety = active
+                ? "Your current tabs stay saved in “" + active.name + "”."
+                : "Your current tabs are saved to “Last workspace (auto)” first.";
             const ok = Services.prompt.confirm(win, "Switch Session",
-                "Close the current tabs and open “" + sess.name + "” ("
-                + this._wvTabSessionTabCountLabel(n) + ")?\n\n"
-                + "Your current tabs are saved to “Last workspace (auto)” first.");
+                "Switch to “" + sess.name + "” (" + this._wvTabSessionTabCountLabel(n) + ")?\n\n"
+                + safety);
             if (!ok) return;
             this._wvTabSessionSwitch(id);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionConfirmSwitch err: " + e); }
@@ -702,11 +795,8 @@ class _TabSessionsMixin {
 
     _wvEnsureTabSessionStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-tab-session-styles")) return;
             const HTML = "http://www.w3.org/1999/xhtml";
-            const st = doc.createElementNS(HTML, "style");
-            st.id = "wv-tab-session-styles";
-            st.textContent = [
+            const css = [
                 ".wv-sessmenu-header {",
                 "  margin: 8px 4px 2px; padding: 4px 6px 2px;",
                 "  border-top: 1px solid rgba(127,127,127,0.3);",
@@ -717,9 +807,14 @@ class _TabSessionsMixin {
                 "  padding: 4px 8px; margin: 0 4px; border-radius: 5px; cursor: pointer;",
                 "}",
                 ".wv-sessmenu-row:hover { background: rgba(127,127,127,0.18); }",
+                // Session marker = a stylish \"S\" badge (amber rounded square,
+                // italic serif S) — ties to the amber session boxes.
                 ".wv-sessmenu-dot {",
-                "  width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto;",
-                "  box-sizing: border-box; border: 1.5px solid currentColor; opacity: 0.55;",
+                "  width: 15px; height: 15px; flex: 0 0 auto; box-sizing: border-box;",
+                "  display: inline-flex; align-items: center; justify-content: center;",
+                "  border-radius: 4px; background: rgb(214,158,46); color: #fff;",
+                "  font-family: Georgia, 'Times New Roman', serif; font-weight: 700;",
+                "  font-style: italic; font-size: 11px; line-height: 1;",
                 "}",
                 ".wv-sessmenu-glyph {",
                 "  width: 12px; height: 12px; flex: 0 0 auto; display: flex;",
@@ -732,38 +827,120 @@ class _TabSessionsMixin {
                 "}",
                 ".wv-sessmenu-count { flex: 0 0 auto; font-size: 11px; opacity: 0.6; }",
                 ".wv-sessmenu-auto .wv-sessmenu-name { font-style: italic; opacity: 0.8; }",
-                // Active (tracked) session: filled dot, bold name, accent count.
-                ".wv-sessmenu-active .wv-sessmenu-dot {",
-                "  background: currentColor; border-color: currentColor; opacity: 0.9;",
-                "}",
+                // Active session: bold name.
                 ".wv-sessmenu-active .wv-sessmenu-name { font-weight: 700; }",
                 ".wv-sessmenu-active .wv-sessmenu-count { opacity: 0.85; }",
                 // Disclosure twisty + expanded per-tab rows.
                 ".wv-sessmenu-twisty {",
-                "  width: 12px; flex: 0 0 auto; display: flex; align-items: center;",
-                "  justify-content: center; font-size: 9px; opacity: 0.6; cursor: pointer;",
+                "  width: 18px; flex: 0 0 auto; display: flex; align-items: center;",
+                "  justify-content: center; font-size: 14px; opacity: 0.7; cursor: pointer;",
                 "}",
                 ".wv-sessmenu-twisty:hover { opacity: 1; }",
-                ".wv-sessmenu-winlabel {",
-                "  padding: 3px 8px 1px 32px; margin: 0 4px; font-size: 10px;",
-                "  font-weight: 600; opacity: 0.45; text-transform: uppercase; letter-spacing: 0.3px;",
+                // The expanded session renders IDENTICALLY to the all-windows list
+                // (same window/library headers + rows, same alignment) — the
+                // session row above + its twisty provide the context, so no extra
+                // nesting indent. Library sub-headers align with the native
+                // top-level library headers (no indent, just the dim); rows get the
+                // shared 18px indent from constants.ts.
+                ".wv-tabsmenu-sublib { opacity: 0.75; }",
+                // Window-header glyph: a simple window frame (rounded rect + title
+                // bar). Same for main and reader windows.
+                ".wv-winicon {",
+                "  width: 16px; height: 13px; flex: 0 0 auto; box-sizing: border-box;",
+                "  border: 1.3px solid currentColor; border-radius: 2px;",
+                "  opacity: 0.8; position: relative;",
                 "}",
-                ".wv-sessmenu-tab {",
-                "  display: flex; align-items: center; gap: 6px; cursor: pointer;",
-                "  padding: 2px 8px 2px 34px; margin: 0 4px; border-radius: 5px;",
-                "  font-size: 12px; opacity: 0.85;",
+                ".wv-winicon::before {",
+                "  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2.5px;",
+                "  background: currentColor; opacity: 0.5;",
                 "}",
-                ".wv-sessmenu-tab:hover { background: rgba(127,127,127,0.15); opacity: 1; }",
-                ".wv-sessmenu-tabicon {",
-                "  width: 13px; height: 13px; flex: 0 0 auto; opacity: 0.8;",
-                "  background-size: contain; background-repeat: no-repeat; background-position: center;",
+                // Anchor-window marker: an anchor glyph on the right of the name, in
+                // Zotero's accent blue (matching the library-tab icon it echoes).
+                ".wv-anchor-mark {",
+                "  width: 15px; height: 15px; flex: 0 0 auto; margin-inline-start: 5px;",
+                "  color: var(--accent-blue, #4072e5);",
                 "}",
-                ".wv-sessmenu-tabname {",
-                "  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
+                // No per-window vertical lines — windows are grouped purely by their
+                // header + the indentation below it (the library sub-headers and the
+                // 18px row indent from constants.ts). Same for the current window and
+                // saved-session windows, so both read with one consistent hierarchy.
+                ".wv-winscope { margin: 0 0 6px; }",
+                ".wv-winscope:last-child { margin-bottom: 0; }",
+                // A session = a full BOX (border on all four sides, rounded). Its
+                // title bar (the banner / session row) is the FIRST child and bleeds
+                // to the box edges with an amber fill matching the border line, so
+                // header + box read as one connected unit (Tab-Stash style). The
+                // windows inside the body are grouped by header + indentation (no line).
+                ".wv-sessscope {",
+                "  border: 1.5px solid rgba(214,158,46,0.7);",
+                "  border-radius: 6px; overflow: hidden;",
+                "  margin: 4px 6px 6px 2px;",
                 "}",
+                ".wv-sessscope > .wv-cursess-header,",
+                ".wv-sessscope > .wv-sessmenu-row {",
+                "  margin: 0; border-radius: 0; padding: 5px 8px;",
+                "  background: rgba(214,158,46,0.20);",
+                "}",
+                ".wv-sessscope > .wv-sessmenu-row:hover { background: rgba(214,158,46,0.32); }",
+                ".wv-sess-body { padding: 5px 7px; }",
+                // Inside a session, the per-window rails stay neutral (no current).
+                ".wv-sessscope .wv-winscope { margin-bottom: 4px; }",
+                ".wv-sess-body .wv-winscope:last-child { margin-bottom: 0; }",
+                // "Current session" banner at the very top of the panel.
+                ".wv-cursess-header {",
+                "  display: flex; align-items: center; gap: 7px;",
+                "  padding: 5px 8px; margin: 2px 4px 5px; border-radius: 5px;",
+                "  background: rgba(127,127,127,0.13); font-size: 12px;",
+                "}",
+                ".wv-cursess-eyebrow { flex: 0 0 auto; font-size: 10px; font-weight: 600;",
+                "  opacity: 0.5; text-transform: uppercase; letter-spacing: 0.3px; }",
+                ".wv-cursess-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;",
+                "  white-space: nowrap; font-weight: 700; }",
+                ".wv-cursess-unsaved .wv-cursess-label { font-weight: 600; font-style: italic; opacity: 0.8; }",
             ].join("\n");
-            (doc.documentElement || doc).appendChild(st);
+            // Find-or-create + refresh when changed, so CSS edits take effect on a
+            // plugin reload (the old stylesheet survives the reload otherwise).
+            let st = doc.getElementById("wv-tab-session-styles");
+            if (!st) {
+                st = doc.createElementNS(HTML, "style");
+                st.id = "wv-tab-session-styles";
+                (doc.documentElement || doc).appendChild(st);
+            }
+            if (st.textContent !== css) st.textContent = css;
         } catch (e) { Zotero.debug("[Weavero] _wvEnsureTabSessionStyles err: " + e); }
+    }
+
+    /** Banner at the very TOP of the tabs-menu panel naming the CURRENT session
+     *  (the active one), so the live tabs/windows below it are clearly "this
+     *  session" — and it isn't also listed in the Sessions section. */
+    _wvTabSessionCurrentHeader(panel: any) {
+        try {
+            const doc = panel.ownerDocument;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (!list) return;
+            for (const el of list.querySelectorAll(".wv-cursess-header")) el.remove();
+            if (!this._wvGetEnableTabSessions()) return;
+            this._wvEnsureTabSessionStyles(doc);
+            const activeId = this._wvTabSessionGetActiveId();
+            const sess = activeId ? this._wvTabSessionList().find((s: any) => s.id === activeId) : null;
+            const hdr = doc.createElementNS(HTML_NS, "div");
+            hdr.className = "wv-cursess-header" + (sess ? " wv-sessmenu-active" : " wv-cursess-unsaved");
+            const dot = doc.createElementNS(HTML_NS, "span");
+            dot.className = "wv-sessmenu-dot";
+            dot.textContent = "S";
+            hdr.appendChild(dot);
+            // Name first, then the "Current session" tag (right-aligned) — mirrors
+            // the saved-session rows' name-left / meta-right layout.
+            const label = doc.createElementNS(HTML_NS, "span");
+            label.className = "wv-cursess-label";
+            label.textContent = sess ? (sess.name || "Untitled session") : "Unsaved — “Save current tabs…” to keep";
+            hdr.appendChild(label);
+            const eyebrow = doc.createElementNS(HTML_NS, "span");
+            eyebrow.className = "wv-cursess-eyebrow";
+            eyebrow.textContent = "Current session";
+            hdr.appendChild(eyebrow);
+            list.insertBefore(hdr, list.firstChild);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCurrentHeader err: " + e); }
     }
 
     /** Render the "Sessions" section into the tabs-menu panel's list. Called
@@ -776,7 +953,7 @@ class _TabSessionsMixin {
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
             if (!list) return;
             for (const el of list.querySelectorAll(
-                ".wv-sessmenu-header, .wv-sessmenu-row, .wv-sessmenu-winlabel, .wv-sessmenu-tab")) el.remove();
+                ".wv-sessmenu-header, .wv-sessmenu-row, .wv-sessmenu-scope")) el.remove();
             if (!this._wvGetEnableTabSessions()) return;
             this._wvEnsureTabSessionStyles(doc);
 
@@ -818,7 +995,7 @@ class _TabSessionsMixin {
                     + (autoSlot ? " wv-sessmenu-auto" : "")
                     + (isActive ? " wv-sessmenu-active" : "");
                 row.setAttribute("title", isActive
-                    ? "Active session — tracking open tabs & windows"
+                    ? "Current session — updates automatically as you open & close tabs"
                     : "Switch to this session");
                 const sid = s.id;
                 // Disclosure twisty (expand to see the tabs). Empty spacer when 0 tabs.
@@ -838,6 +1015,7 @@ class _TabSessionsMixin {
                 row.appendChild(tw);
                 const dot = doc.createElementNS(HTML_NS, "span");
                 dot.className = "wv-sessmenu-dot";
+                dot.textContent = "S";
                 row.appendChild(dot);
                 const name = doc.createElementNS(HTML_NS, "span");
                 name.className = "wv-sessmenu-name";
@@ -845,7 +1023,7 @@ class _TabSessionsMixin {
                 row.appendChild(name);
                 const count = doc.createElementNS(HTML_NS, "span");
                 count.className = "wv-sessmenu-count";
-                const suffix = isActive ? " · tracking" : (autoSlot ? " · auto" : "");
+                const suffix = autoSlot ? " · auto" : "";
                 count.textContent = this._wvTabSessionTabCountLabel(n) + suffix;
                 row.appendChild(count);
                 row.addEventListener("click", (e: any) => {
@@ -864,11 +1042,28 @@ class _TabSessionsMixin {
                         if (p) p._wvTabSessionsMenuContext(win, panel, sid, autoSlot, isActive, e);
                     } catch (er) {}
                 });
-                list.appendChild(row);
-                if (n > 0 && expanded) this._wvTabSessionRenderTabRows(doc, list, s, panel);
+                // Tab-Stash–style: each session is a BOX whose title bar is the row
+                // (inside the box, top), with the expanded tabs in the body below —
+                // so the header and its content read as one connected unit.
+                const box = doc.createElementNS(HTML_NS, "div");
+                box.className = "wv-sessscope wv-sessmenu-scope";
+                box.appendChild(row);
+                if (n > 0 && expanded) {
+                    const body = doc.createElementNS(HTML_NS, "div");
+                    body.className = "wv-sess-body";
+                    this._wvTabSessionRenderTabRows(doc, body, s, panel);
+                    box.appendChild(body);
+                }
+                list.appendChild(box);
             };
 
-            for (const s of this._wvTabSessionNamedList()) mkRow(s, false);
+            // The active session is shown as the live workspace at the TOP of the
+            // panel (the "Current session" header), so it's omitted here to avoid
+            // listing it twice.
+            for (const s of this._wvTabSessionNamedList()) {
+                if (s.id === activeId) continue;
+                mkRow(s, false);
+            }
             const auto = this._wvTabSessionList().find((s: any) => s.id === WV_TABSESSION_AUTOSAVE_ID);
             if (auto) mkRow(auto, true);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionsMenuSection err: " + e); }
@@ -899,52 +1094,42 @@ class _TabSessionsMixin {
         return rec.title || rec.itemKey || "Untitled";
     }
 
-    /** Render a session's tab rows (indented, grouped by window) under its row.
-     *  Clicking a tab opens that single document in the current window. */
-    _wvTabSessionRenderTabRows(doc: any, list: any, sess: any, panel: any) {
+    /** Render a session's tabs under its row, grouped by window — using the SAME
+     *  shared renderer as the all-windows list (so the design + the Sort-by-Library
+     *  / annotation-count settings apply identically). Clicking a tab opens it. */
+    _wvTabSessionRenderTabRows(doc: any, container: any, sess: any, panel: any) {
         try {
             const windows = sess.windows || [];
-            const multiWin = windows.filter((w: any) => (w.tabs || []).length).length > 1;
-            for (let wi = 0; wi < windows.length; wi++) {
-                const w = windows[wi];
-                const tabs = w.tabs || [];
-                if (!tabs.length) continue;
-                if (multiWin) {
-                    const wl = doc.createElementNS(HTML_NS, "div");
-                    wl.className = "wv-sessmenu-winlabel";
-                    wl.textContent = (w.kind === "reader") ? "Reader window" : "Main window";
-                    list.appendChild(wl);
-                }
-                for (const rec of tabs) {
-                    const tr = doc.createElementNS(HTML_NS, "div");
-                    tr.className = "wv-sessmenu-tab";
-                    tr.setAttribute("title", "Open this document");
-                    const ic = doc.createElementNS(HTML_NS, "span");
-                    ic.className = "wv-sessmenu-tabicon";
-                    try {
-                        const iid = Zotero.Items.getIDFromLibraryAndKey(rec.libraryID, rec.itemKey);
-                        const item = iid && Zotero.Items.get(iid);
-                        if (item && typeof item.getImageSrc === "function") {
-                            ic.style.backgroundImage = "url('" + item.getImageSrc() + "')";
-                        }
-                    } catch (e) {}
-                    tr.appendChild(ic);
-                    const nm = doc.createElementNS(HTML_NS, "span");
-                    nm.className = "wv-sessmenu-tabname";
-                    nm.textContent = this._wvTabSessionTabTitle(rec);
-                    tr.appendChild(nm);
+            let mainN = 0, readerN = 0;
+            const sections: any[] = [];
+            for (const w of windows) {
+                const recs = w.tabs || [];
+                if (!recs.length) continue;
+                let label: string;
+                if (w.kind === "reader") { readerN++; label = readerN > 1 ? "Reader window " + readerN : "Reader window"; }
+                else { mainN++; label = "Window " + mainN; }
+                const tabs: any[] = [];
+                for (const rec of recs) {
+                    const id = Zotero.Items.getIDFromLibraryAndKey(rec.libraryID, rec.itemKey);
+                    const item = id && Zotero.Items.get(id);
+                    if (!item) continue;
                     const r = rec;
-                    tr.addEventListener("click", (e: any) => {
-                        try {
-                            e.stopPropagation();
-                            try { panel.hidePopup(); } catch (er) {}
+                    tabs.push({
+                        item,
+                        title: this._wvTabSessionTabTitle(rec),
+                        onClick: () => {
                             const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                             if (p) p._wvTabSessionOpenTabRecord(r);
-                        } catch (er) {}
+                        },
                     });
-                    list.appendChild(tr);
                 }
+                if (tabs.length) sections.push({ label, tabs, kind: w.kind === "reader" ? "reader" : "main" });
             }
+            if (!sections.length) return;
+            // Render the windows (each a left-line scope) straight into `container`
+            // — the caller's session box body. The box itself is the session scope.
+            (this as any)._wvTabsMenuRenderSections(doc, container, panel, sections,
+                { header: "wv-sessmenu-winhdr", row: "wv-sessmenu-tabrow", lib: "wv-sessmenu-liblbl", scope: "wv-sessmenu-winscope" });
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionRenderTabRows err: " + e); }
     }
 
@@ -990,13 +1175,15 @@ class _TabSessionsMixin {
                 });
                 pop.appendChild(mi);
             };
-            if (isActive) {
-                mk("Stop Tracking", (p: any) => p._wvTabSessionStopTracking());
-            } else {
+            if (!isActive) {
                 mk("Switch to This Session", (p: any) => p._wvTabSessionConfirmSwitch(win, id));
             }
-            if (!autoSlot) {
+            if (!autoSlot && !isActive) {
+                // The active session already mirrors the current tabs, so a manual
+                // "overwrite" only makes sense for a frozen (non-active) session.
                 mk("Overwrite with Current Tabs", (p: any) => p._wvTabSessionConfirmOverwrite(win, id));
+            }
+            if (!autoSlot) {
                 mk("Rename…", (p: any) => p._wvTabSessionPromptRename(win, id));
             }
             pop.appendChild(doc.createXULElement("menuseparator"));

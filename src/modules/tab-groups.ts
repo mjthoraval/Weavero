@@ -3160,15 +3160,24 @@ class _TabGroupsMixin {
                 const gid = this._wvTabGroupStamp(t);                  // per-tab membership
                 return gid ? (groups.find((g: any) => g.id === gid && !(g as any).saved) || null) : null;
             };
-            // Contiguous runs of tab rows (library headers etc. break them).
+            // Tab rows now live inside per-window wrappers (.wv-winscope) in the main
+            // panel — and directly in the list for the reader clone. Scan EACH
+            // container that holds rows, splitting into contiguous runs (library
+            // sub-headers etc. break them) so a group nests within its library section.
+            const rowSel = ".row[" + idAttr + "]";
+            const containers = new Set<any>();
+            for (const r of list.querySelectorAll(rowSel)) containers.add(r.parentElement);
+            if (!containers.size) containers.add(list);
             const sections: any[][] = [];
-            let cur: any[] = [];
-            for (const ch of [...list.children]) {
-                if (ch.classList && ch.classList.contains("row") && ch.getAttribute && ch.getAttribute(idAttr)) {
-                    cur.push(ch);
-                } else if (cur.length) { sections.push(cur); cur = []; }
+            for (const cont of containers) {
+                let cur: any[] = [];
+                for (const ch of [...cont.children]) {
+                    if (ch.classList && ch.classList.contains("row") && ch.getAttribute && ch.getAttribute(idAttr)) {
+                        cur.push(ch);
+                    } else if (cur.length) { sections.push(cur); cur = []; }
+                }
+                if (cur.length) sections.push(cur);
             }
-            if (cur.length) sections.push(cur);
             // The LIST has its own expand/collapse state, independent of the
             // strip; a group starts out matching its strip state, then the
             // header's twisty toggles it list-only (per window).
@@ -3227,12 +3236,13 @@ class _TabGroupsMixin {
                             if (p) p._wvTabsMenuGroupContext(win, panel, gid, e);
                         } catch (er) {}
                     });
-                    list.insertBefore(header, members[0]);
+                    const cont = members[0].parentElement;
+                    cont.insertBefore(header, members[0]);
                     let anchor: any = header;
                     for (const m of members) {
                         m.classList.add("wv-tgrow-member");
                         if (listCollapsed) m.classList.add("wv-tgrow-hidden");
-                        list.insertBefore(m, anchor.nextSibling);
+                        cont.insertBefore(m, anchor.nextSibling);
                         anchor = m;
                     }
                 }

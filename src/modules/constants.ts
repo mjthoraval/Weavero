@@ -2096,7 +2096,25 @@ export const PLUGIN_CSS = [
     // and scroll when the tabs/windows/sessions overflow — otherwise a long list
     // grows the panel off the bottom of the screen and the overflow is unreachable.
     "#zotero-tabs-menu-panel #zotero-tabs-menu-list {",
-    "  max-height: calc(100vh - 130px) !important;",
     "  overflow-y: auto !important;",
+    "}",
+    // The list is a XUL <vbox> (flex column): by default its children flex-shrink
+    // and get CLIPPED (overflow:hidden cards) to fit, so a long list never scrolls —
+    // it just hides content. Force the children not to shrink so the list overflows
+    // and scrolls; _wvTabsMenuFitListHeight sets the list's explicit height (CSS
+    // max-height is ignored on a vbox) to the space remaining on screen.
+    "#zotero-tabs-menu-panel #zotero-tabs-menu-list > * { flex-shrink: 0 !important; }",
+    // Group-library badge: a small group icon tucked into the bottom-right corner of
+    // a tab's item icon, marking tabs that live in a group library when Sort-by-
+    // Library is off (added by _wvDecorateGroupLibBadge).
+    "#zotero-tabs-menu-panel .wv-grouplib-badge {",
+    "  position: absolute !important; right: -4px; bottom: -4px;",
+    "  width: 12px !important; height: 12px !important;",
+    "  min-width: 0 !important; min-height: 0 !important; flex: none !important;",
+    "  display: block !important; padding: 0 !important; margin: 0 !important;",
+    "  background-size: contain !important; background-repeat: no-repeat !important;",
+    "  background-position: center !important;",
+    // a thin dark halo so the teal temple reads against the item icon beneath it
+    "  filter: drop-shadow(0 0 0.7px #1c1c1e) drop-shadow(0 0 0.7px #1c1c1e);",
     "}",
 ].join("\n");

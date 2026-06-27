@@ -27,6 +27,19 @@ declare const Zotero_Tabs: any;
 const WV_ANCHOR_VIEWBOX = "0 0 24 24";
 const WV_ANCHOR_PATH = "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3V7.82C14.16 7.4 15 6.3 15 5c0-1.65-1.35-3-3-3S9 3.35 9 5c0 1.3.84 2.4 2 2.82V9H8v2h3v8.92c-2.22-.33-4.59-1.68-5.55-3.37L7 15l-4-3v3c0 3.88 4.92 7 9 7s9-3.12 9-7v-3l-4 3zM12 4c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z";
 
+// Group-library badge glyph — a symmetric, bold 3-column temple centred on x8.
+// Zotero's stock library-group icon has 1px columns that blur when scaled down to
+// badge size, so we draw a chunkier version that stays sharp. #59ADC4 is the same
+// teal Zotero uses for group libraries throughout the UI. Shared by the
+// List-all-tabs dropdown badge (`_wvGroupLibBadgeSvg`) AND the tab-strip overlay
+// (`_decorateTabBar`), so the two stay identical — edit here only.
+const WV_GROUPLIB_BADGE_SVG = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='#59adc4'>"
+    + "<path d='M8 1.5L13.5 6.5H2.5Z'/>"
+    + "<rect x='3.5' y='7' width='2' height='6'/>"
+    + "<rect x='7' y='7' width='2' height='6'/>"
+    + "<rect x='10.5' y='7' width='2' height='6'/>"
+    + "<rect x='2' y='13' width='12' height='2'/></svg>";
+
 class _TabsMixin {
     [k: string]: any;
     /** Patch the "List all tabs" panel (the dropdown reachable from
@@ -566,9 +579,7 @@ class _TabsMixin {
                 item: it, title: (title || this._wvTabsMenuItemTitle(it)) || "",
             });
             // Other main windows (current window stays at the top, native).
-            let n = 1;
             for (const w of Zotero.getMainWindows()) {
-                n++;
                 if (w === curWin) continue;
                 const Z: any = (w as any).Zotero_Tabs;
                 if (!Z || !Array.isArray(Z._tabs)) continue;
@@ -584,7 +595,22 @@ class _TabsMixin {
                     r.onClick = () => { try { tw.focus(); tZ.select(tabId); } catch (e) {} };
                     tabs.push(r);
                 }
-                if (tabs.length) sections.push({ label: "Window " + n, tabs, kind: "main", iconType: w._wvManagedWindow ? "main" : "anchor", anchorIconClass: w._wvManagedWindow ? "" : this._wvAnchorLibIconClass(w) });
+                // The window's Library (home) tab — shown first, like the current
+                // window's native list (was previously skipped for other windows).
+                let libraryTab: any = null;
+                try {
+                    const lt = Z._tabs.find((t: any) => t && (t.id === "zotero-pane" || t.type === "library"));
+                    if (lt) {
+                        const tw = w, tZ = Z;
+                        libraryTab = {
+                            title: lt.title || "My Library",
+                            iconFullClass: ((this._wvAnchorLibIconClass(w) || "icon icon-css icon-library") + " tab-icon").replace(/\s+/g, " ").trim(),
+                            onClick: () => { try { tw.focus(); tZ.select("zotero-pane"); } catch (e) {} },
+                        };
+                    }
+                } catch (e) {}
+                const wIsAnchor = this._wvIsAnchorWindow(w);
+                if (tabs.length) sections.push({ label: this._wvWindowName(w), win: w, libraryTab, tabs, kind: "main", iconType: wIsAnchor ? "anchor" : "main", anchorIconClass: wIsAnchor ? this._wvAnchorLibIconClass(w) : "" });
             }
             // Reader windows.
             const en = Services.wm.getEnumerator("zotero:reader");
@@ -703,13 +729,7 @@ class _TabsMixin {
     _wvGroupLibBadgeSvg(doc: any) {
         const span = doc.createElement("span");
         span.className = "wv-grouplib-badge";
-        const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='#59adc4'>"
-            + "<path d='M8 1.5L13.5 6.5H2.5Z'/>"
-            + "<rect x='3.5' y='7' width='2' height='6'/>"
-            + "<rect x='7' y='7' width='2' height='6'/>"
-            + "<rect x='10.5' y='7' width='2' height='6'/>"
-            + "<rect x='2' y='13' width='12' height='2'/></svg>";
-        span.style.backgroundImage = "url(\"data:image/svg+xml," + encodeURIComponent(svg) + "\")";
+        span.style.backgroundImage = "url(\"data:image/svg+xml," + encodeURIComponent(WV_GROUPLIB_BADGE_SVG) + "\")";
         return span;
     }
 
@@ -723,9 +743,117 @@ class _TabsMixin {
         if (s.has(key)) s.delete(key); else s.add(key);
     }
 
+    // ---- Window names (stable default + configurable per-window title) ----------
+    // Default name is "Window N" by the window's STABLE index in
+    // Zotero.getMainWindows() (creation order, oldest-first) — so a window keeps the
+    // same number no matter which window you view the tabs list from. A custom title
+    // overrides it; titles persist across restarts keyed by that stable index.
+
+    _wvWindowTitlesGet() {
+        try { return JSON.parse(String(Zotero.Prefs.get("weavero.windowTitles", true) || "{}")) || {}; }
+        catch (e) { return {}; }
+    }
+    _wvWindowTitlesSet(map: any) {
+        try { Zotero.Prefs.set("weavero.windowTitles", JSON.stringify(map || {}), true); } catch (e) {}
+    }
+    _wvWindowIndex(win: any) {
+        try { return Zotero.getMainWindows().indexOf(win); } catch (e) { return -1; }
+    }
+    /** A window's custom title (session cache → persisted-by-index), or null. */
+    _wvWindowCustomTitle(win: any) {
+        if (!win) return null;
+        if (win._wvWindowTitle != null) return win._wvWindowTitle || null;   // "" = cleared
+        const idx = this._wvWindowIndex(win);
+        if (idx < 0) return null;
+        const t = this._wvWindowTitlesGet()[String(idx)];
+        if (t) { win._wvWindowTitle = t; return t; }
+        return null;
+    }
+    _wvWindowSetCustomTitle(win: any, title: any) {
+        if (!win) return;
+        win._wvWindowTitle = title || "";
+        const idx = this._wvWindowIndex(win);
+        if (idx < 0) return;
+        const map = this._wvWindowTitlesGet();
+        if (title) map[String(idx)] = title; else delete map[String(idx)];
+        this._wvWindowTitlesSet(map);
+    }
+    /** Display name for a main window: custom title, else stable "Window N". */
+    _wvWindowName(win: any) {
+        const custom = this._wvWindowCustomTitle(win);
+        if (custom) return custom;
+        const idx = this._wvWindowIndex(win);
+        return "Window " + (idx >= 0 ? idx + 1 : "?");
+    }
+    /** The anchor is the single OLDEST main window (creation order — index 0 of
+     *  `Zotero.getMainWindows()`). Defining it by position rather than by the
+     *  `_wvManagedWindow` flag guarantees EXACTLY ONE anchor: a second main window
+     *  opened natively (or programmatically, e.g. during session recovery) doesn't
+     *  carry the managed flag, so the old `!_wvManagedWindow` test wrongly marked
+     *  every such window an anchor. */
+    _wvIsAnchorWindow(win: any) {
+        try {
+            const mains = Zotero.getMainWindows();
+            return !!(win && mains.length && mains[0] === win);
+        } catch (e) { return false; }
+    }
+    /** Prompt to rename a window; blank restores the default. */
+    _wvWindowRenamePrompt(targetWin: any, panel: any) {
+        try {
+            const parentWin = (panel && panel.ownerGlobal) || targetWin;
+            const obj = { value: this._wvWindowCustomTitle(targetWin) || "" };
+            const ok = Services.prompt.prompt(parentWin, "Rename Window",
+                "Window title (leave blank for the default):", obj, null, { value: false });
+            if (!ok) return;
+            this._wvWindowSetCustomTitle(targetWin, (obj.value || "").trim() || null);
+            try { if (panel && typeof panel.refreshList === "function") panel.refreshList(); else this._wvRegroupTabsMenu(panel); }
+            catch (e) { try { this._wvRegroupTabsMenu(panel); } catch (e2) {} }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowRenamePrompt err: " + e); }
+    }
+
+    /** Right-click context menu for a window header in the tabs dropdown:
+     *  a "Rename Window…" item (and "Reset to Default Name" when a custom title
+     *  is set), so the rename isn't a surprise direct prompt. Mirrors the
+     *  tab-group context menu (`_wvTabsMenuGroupContext`) so the two feel the same. */
+    _wvWindowHeaderContext(targetWin: any, panel: any, e: any) {
+        try {
+            const menuWin = (panel && panel.ownerGlobal) || targetWin;
+            const doc = menuWin.document;
+            let pop: any = doc.getElementById("wv-winhdr-context");
+            if (pop) pop.remove();                       // rebuild fresh each time
+            pop = doc.createXULElement("menupopup");
+            pop.id = "wv-winhdr-context";
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const mk = (label: string, fn: (p: any) => void) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", label);
+                mi.addEventListener("command", (ev: any) => {
+                    try {
+                        ev.stopPropagation();
+                        const p: any = live();
+                        if (p) fn(p);
+                    } catch (er) {}
+                });
+                pop.appendChild(mi);
+            };
+            mk("Rename Window…", (p: any) => p._wvWindowRenamePrompt(targetWin, panel));
+            if (this._wvWindowCustomTitle(targetWin)) {
+                mk("Reset to Default Name", (p: any) => {
+                    try {
+                        p._wvWindowSetCustomTitle(targetWin, null);
+                        if (panel && typeof panel.refreshList === "function") panel.refreshList();
+                        else p._wvRegroupTabsMenu(panel);
+                    } catch (er) {}
+                });
+            }
+            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+            pop.openPopupAtScreen(e.screenX, e.screenY, true);
+        } catch (er) { Zotero.debug("[Weavero] _wvWindowHeaderContext err: " + er); }
+    }
+
     /** A window-section header (label + count), styled like the library headers.
      *  Shared by the all-windows list AND the expanded-session view. */
-    _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string, collapseKey?: string, panel?: any) {
+    _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string, collapseKey?: string, panel?: any, winRef?: any) {
         const header = doc.createElement("div");
         header.className = "wv-tabs-menu-library-header " + (marker || "");
         header.setAttribute("role", "presentation");
@@ -781,10 +909,53 @@ class _TabsMixin {
                 const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (!p) return;
                 p._wvTabsMenuToggleWindowCollapse(collapseKey);
-                // Full rebuild: _wvRegroupTabsMenu doesn't replaceChildren() when
-                // Sort-by-Library is off, which corrupts the already-wrapped layout.
-                try { if (typeof panel.refreshList === "function") panel.refreshList(); else p._wvRegroupTabsMenu(panel); }
-                catch (er) { try { p._wvRegroupTabsMenu(panel); } catch (e2) {} }
+                const collapsed = p._wvTabsMenuIsWindowCollapsed(collapseKey);
+                // Toggle the collapse class on the window wrapper IN PLACE (the CSS
+                // `.wv-winscope.wv-win-collapsed > :not(:first-child)` hides the rows)
+                // rather than a full panel.refreshList() rebuild — a rebuild recreates
+                // every scroll container and so loses the session box's internal scroll
+                // position, jumping it to the top. In-place toggle keeps all scrolls.
+                const winWrap = header.closest(".wv-winscope");
+                if (winWrap) {
+                    // Keep the CLICKED header visually fixed so collapsing doesn't
+                    // shift the scroll: find the nearest scrollable ancestor (the
+                    // session box `.wv-sess-body` or the list itself) and adjust its
+                    // scrollTop by the header's on-screen movement after the rows
+                    // hide/show.
+                    let sc: any = winWrap.parentElement;
+                    try {
+                        const view = doc.defaultView;
+                        while (sc) {
+                            const cs = view.getComputedStyle(sc);
+                            if (/(auto|scroll)/.test(cs.overflowY) && sc.scrollHeight > sc.clientHeight) break;
+                            sc = sc.parentElement;
+                        }
+                    } catch (er) { sc = null; }
+                    const beforeTop = header.getBoundingClientRect().top;
+                    winWrap.classList.toggle("wv-win-collapsed", collapsed);
+                    try { tw.textContent = collapsed ? "▸" : "▾"; } catch (er) {}
+                    // Re-anchor the header to its pre-collapse screen position. Apply
+                    // now AND on the next frame — the height-fit/reflow pass runs async
+                    // and would otherwise drift the header after this handler returns.
+                    if (sc) {
+                        const reanchor = () => { try { sc.scrollTop += header.getBoundingClientRect().top - beforeTop; } catch (er) {} };
+                        reanchor();
+                        try { const v = doc.defaultView; if (v && v.requestAnimationFrame) v.requestAnimationFrame(reanchor); } catch (er) {}
+                    }
+                } else {
+                    // No wrapper found (unexpected) → fall back to the full rebuild.
+                    try { if (typeof panel.refreshList === "function") panel.refreshList(); else p._wvRegroupTabsMenu(panel); }
+                    catch (er) { try { p._wvRegroupTabsMenu(panel); } catch (e2) {} }
+                }
+            });
+        }
+        // Right-click a (main) window header → context menu with a Rename option.
+        if (winRef && (iconType === "anchor" || iconType === "main")) {
+            header.style.setProperty("pointer-events", "auto", "important");
+            header.addEventListener("contextmenu", (e: any) => {
+                e.preventDefault(); e.stopPropagation();
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (p) p._wvWindowHeaderContext(winRef, panel, e);
             });
         }
         return header;
@@ -813,8 +984,12 @@ class _TabsMixin {
         title.setAttribute("flex", "1");
         title.className = "zotero-tabs-menu-entry title";
         const span = doc.createElement("span");
-        span.className = "icon icon-css tab-icon icon-item-type";
-        try { span.setAttribute("data-item-type", tb.item.getItemTypeIconName(true)); } catch (e) {}
+        if (tb.iconFullClass) {
+            span.className = tb.iconFullClass;   // a library-tab row (no item) — its own icon
+        } else {
+            span.className = "icon icon-css tab-icon icon-item-type";
+            try { span.setAttribute("data-item-type", tb.item.getItemTypeIconName(true)); } catch (e) {}
+        }
         title.appendChild(span);
         // Group-library badge when Sort-by-Library is off (no library headers to
         // group these rows) — matches the native current-window rows.
@@ -889,7 +1064,10 @@ class _TabsMixin {
             winWrap.className = "wv-winscope " + (marker.scope || "");
             const collapseKey = keyPrefix ? (keyPrefix + "|" + sec.label) : undefined;
             if (collapseKey && this._wvTabsMenuIsWindowCollapsed(collapseKey)) winWrap.classList.add("wv-win-collapsed");
-            winWrap.appendChild(this._wvTabsMenuWindowHeader(doc, sec.label, sec.tabs.length, marker.header, sec.iconType || (sec.kind === "reader" ? "reader" : "main"), sec.anchorIconClass, collapseKey, panel));
+            winWrap.appendChild(this._wvTabsMenuWindowHeader(doc, sec.label, sec.tabs.length, marker.header, sec.iconType || (sec.kind === "reader" ? "reader" : "main"), sec.anchorIconClass, collapseKey, panel, sec.win));
+            // The window's Library (home) tab, shown first — matches the current
+            // window's native list, which always leads with "My Library".
+            if (sec.libraryTab) { try { addRow(winWrap, sec.libraryTab); } catch (e) {} }
             if (sortByLib) {
                 const byLib = new Map<any, any[]>();
                 for (const tb of sec.tabs) {
@@ -937,15 +1115,15 @@ class _TabsMixin {
             wrap.className = "wv-winscope wv-winscope-current";
             list.insertBefore(wrap, nodes[0]);
             for (const n of nodes) wrap.appendChild(n);
-            // Label the current window "Window 1" with the M (main-window) glyph —
-            // extra main windows continue at "Window 2"+, reader windows get "R" —
-            // so every window in the session reads the same way.
+            // Label the current window by its STABLE name (custom title, else
+            // "Window N" by creation order) — consistent no matter which window the
+            // tabs list is opened from. Right-click the header to rename.
             const count = wrap.querySelectorAll(".row[data-tab-id]").length;
             const w: any = doc.defaultView;
-            const isAnchor = !!(w && !w._wvManagedWindow);
+            const isAnchor = this._wvIsAnchorWindow(w);
             const collapseKey = "live|current";
             if (this._wvTabsMenuIsWindowCollapsed(collapseKey)) wrap.classList.add("wv-win-collapsed");
-            const hdr = this._wvTabsMenuWindowHeader(doc, "Window 1", count, "wv-curwin-header", isAnchor ? "anchor" : "main", "", collapseKey, panel);
+            const hdr = this._wvTabsMenuWindowHeader(doc, this._wvWindowName(w), count, "wv-curwin-header", isAnchor ? "anchor" : "main", "", collapseKey, panel, w);
             wrap.insertBefore(hdr, wrap.firstChild);
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuWrapCurrentWindow err: " + e); }
     }
@@ -1112,6 +1290,11 @@ class _TabsMixin {
             try { this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
             try { this._applyTabGroups(win); } catch (e) {}
+            // Self-heal the Ctrl/Shift+click multi-select wiring: a session
+            // switch / window rebuild can drop it (the listeners live on the
+            // tab-bar container). The WIRE_VERSION guard makes this a no-op once
+            // wired, so re-calling it on every tab-bar mutation is cheap.
+            try { (Zotero as any).Weavero.plugin._wvWireTabMultiSel(win); } catch (e) {}
             // Keep the active (tracked) session in sync on tab open/close/reorder/
             // select. Reliable + prompt (the 'tab' Notifier queues add/select, so
             // it's not); debounced in _wvTabSessionTrackingUpdate, and suppressed
@@ -2908,6 +3091,7 @@ class _TabsMixin {
                                         if (tg && tg.length > 1) {
                                             self._wvMakeMoveTabMenuMulti(win2, popup, tg);
                                             self._wvMakeCloseTabsMenuMulti(win2, popup, tg);
+                                            self._wvMakeDuplicateTabMenuMulti(win2, popup, tg);
                                         }
                                     }
                                 } catch (e) {}
@@ -3053,6 +3237,70 @@ class _TabsMixin {
                 break;   // only the first plain "Close" (not "Close Other Tabs")
             }
         } catch (e) { Zotero.debug("[Weavero] _wvMakeCloseTabsMenuMulti err: " + e); }
+    }
+
+    /** True if a tab can be duplicated — i.e. its content type registers a
+     *  `duplicate` hook (reader / note tabs do; the library tab does not). */
+    _wvTabIsDuplicatable(ZT: any, id: any): boolean {
+        try {
+            if (!ZT || !id || id === "zotero-pane") return false;
+            const got = ZT._getTab(id);
+            const tab = got && got.tab;
+            if (!tab) return false;
+            const { tabContentType } = ZT.parseTabType(tab.type);
+            return typeof ZT._hasHook === "function" && ZT._hasHook(tabContentType, "duplicate");
+        } catch (e) { return false; }
+    }
+
+    /** Relabel the native "Duplicate tab" menuitem to "Duplicate N Tabs" and
+     *  rebind it to duplicate the whole `targets` selection (each via its own
+     *  tab-type duplicate hook). Mirrors _wvMakeCloseTabsMenuMulti. No-op when the
+     *  selection has ≤1 duplicatable tab (leaves native single-tab behavior). */
+    _wvMakeDuplicateTabMenuMulti(win: any, popup: any, targets: any[]) {
+        try {
+            const ZT: any = win && (win as any).Zotero_Tabs;
+            const dupable = (targets || []).filter((id: any) => this._wvTabIsDuplicatable(ZT, id));
+            if (dupable.length <= 1) return;
+            const dupLabel = Zotero.getString("tabs.duplicate");
+            for (const mi of Array.from(popup.querySelectorAll("menuitem")) as any[]) {
+                if (!mi.getAttribute || mi.getAttribute("label") !== dupLabel) continue;
+                const clone = mi.cloneNode(true);   // drops the native single-tab command listener
+                clone.setAttribute("label", "Duplicate " + dupable.length + " Tabs");
+                mi.replaceWith(clone);
+                clone.addEventListener("command", () => {
+                    try { this._wvDuplicateTabs(win, dupable); } catch (e) {}
+                });
+                break;   // only the one "Duplicate tab" item
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMakeDuplicateTabMenuMulti err: " + e); }
+    }
+
+    /** Duplicate each tab in `ids` via its content type's own `duplicate` hook
+     *  (the same path the native single-tab item uses). Left-to-right by current
+     *  bar position, sequentially, re-reading each tab's index so every duplicate
+     *  lands right after its original. */
+    async _wvDuplicateTabs(win: any, ids: any[]) {
+        try {
+            const ZT: any = win && (win as any).Zotero_Tabs;
+            if (!ZT) return;
+            const ordered = (ids || [])
+                .map((id: any) => { const g = ZT._getTab(id); return { id, idx: g ? g.tabIndex : -1 }; })
+                .filter((o: any) => o.idx > 0)
+                .sort((a: any, b: any) => a.idx - b.idx)
+                .map((o: any) => o.id);
+            for (const id of ordered) {
+                try {
+                    const got = ZT._getTab(id);
+                    const tab = got && got.tab;
+                    const tabIndex = got && got.tabIndex;
+                    if (!tab || tab.id === "zotero-pane") continue;
+                    const { tabContentType } = ZT.parseTabType(tab.type);
+                    if (typeof ZT._hasHook !== "function" || !ZT._hasHook(tabContentType, "duplicate")) continue;
+                    const hook = ZT._getHook(tabContentType, "duplicate");
+                    if (typeof hook === "function") await hook(tab, tabIndex);
+                } catch (e) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvDuplicateTabs err: " + e); }
     }
 
     /** Move every tab in `ids` to the start (just after the library tab) or the
@@ -3929,7 +4177,7 @@ class _TabsMixin {
             // = the untagged window; managed windows are tagged.
             let multi = false;
             try { multi = (Zotero.getMainWindows ? Zotero.getMainWindows().length : 1) > 1; } catch (e) {}
-            d.documentElement.classList.toggle("wv-anchor-window", multi && !win._wvManagedWindow);
+            d.documentElement.classList.toggle("wv-anchor-window", multi && this._wvIsAnchorWindow(win));
         } catch (e) { Zotero.debug("[Weavero] _wvUpdateMainWindowIndicator err: " + e); }
     }
 
@@ -4044,19 +4292,17 @@ class _TabsMixin {
             }
             const escape = (s) => (win.CSS && win.CSS.escape)
                 ? win.CSS.escape(s) : s;
-            // Overlay the "Group Libraries" cluster icon as a small
-            // badge in the TOP-LEFT corner of the tab's
-            // attachment-file-type icon (PDF/EPUB/snapshot/note/etc.).
-            // Uses `groups.svg` (two-figures glyph — same icon Zotero
-            // shows next to the "Group Libraries" header in the
-            // collection-tree pane) rather than `library-group.svg`,
-            // so the badge reads as "this came from group libraries"
-            // generically rather than mimicking a specific group's
-            // icon. Implemented as an `::after` pseudo-element on
-            // `.tab-icon` so the badge overlays without disturbing
-            // any layout or React-managed styling. The SVG ships with
-            // a hard-coded #59ADC4 fill — same teal Zotero uses for
-            // group libraries throughout the UI.
+            // Overlay the group-library temple badge in the BOTTOM-RIGHT
+            // corner of the tab's attachment-file-type icon
+            // (PDF/EPUB/snapshot/note/etc.) — the same glyph and corner as
+            // the List-all-tabs dropdown badge (`_wvGroupLibBadgeSvg`), so
+            // the two UIs read identically. Implemented as an `::after`
+            // pseudo-element on `.tab-icon` so the badge overlays without
+            // disturbing any layout or React-managed styling. The shared
+            // `WV_GROUPLIB_BADGE_SVG` carries a hard-coded #59ADC4 fill —
+            // the teal Zotero uses for group libraries throughout the UI —
+            // and a thin dark drop-shadow halo lifts it off the icon beneath.
+            const badgeUri = "data:image/svg+xml," + encodeURIComponent(WV_GROUPLIB_BADGE_SVG);
             const selIcon = groupTabs
                 .map(t => `#tab-bar-container .tab[data-id="${
                     escape(t.id)}"] .tab-icon`)
@@ -4073,19 +4319,17 @@ class _TabsMixin {
                 + selBadge + " {\n"
                 + "  content: \"\";\n"
                 + "  position: absolute;\n"
-                + "  left: -5px;\n"
-                + "  top: -4px;\n"
-                + "  width: 13px;\n"
-                + "  height: 13px;\n"
-                // Disc behind the badge so the (#59ADC4) glyph
-                // separates from the file-type icon underneath. The
-                // disc colour matches the tab-bar background tint.
-                + "  background-color: var(--material-toolbar, #fff);\n"
-                + "  border-radius: 50%;\n"
-                + "  background-image: url(\"chrome://zotero/skin/collection-tree/16/light/groups.svg\");\n"
-                + "  background-size: 11px 11px;\n"
+                + "  right: -4px;\n"
+                + "  bottom: -4px;\n"
+                + "  width: 12px;\n"
+                + "  height: 12px;\n"
+                + "  background-image: url(\"" + badgeUri + "\");\n"
+                + "  background-size: contain;\n"
                 + "  background-repeat: no-repeat;\n"
                 + "  background-position: center;\n"
+                // Thin dark halo so the teal temple reads against the
+                // file-type icon underneath (matches the dropdown badge).
+                + "  filter: drop-shadow(0 0 0.7px #1c1c1e) drop-shadow(0 0 0.7px #1c1c1e);\n"
                 + "  pointer-events: none;\n"
                 + "}\n";
         }
@@ -4364,14 +4608,17 @@ class _TabsMixin {
                 exclude: new Set(),
             };
         }
-        // Initialise display-settings state on first install. These
-        // ride the Weavero instance so they survive panel close/
-        // reopen but reset on plugin reload.
+        // Initialise display-settings state on first use of a fresh plugin
+        // instance. Pref-backed so the last choice survives restart/reload; both
+        // default OFF (plain tab order, no annotation counts) until the user opts
+        // in. `weavero.tabsMenuGroupByLibrary` / `weavero.tabsMenuShowAnnotationCount`.
         if (this._tabsMenuGroupByLibrary === undefined) {
-            this._tabsMenuGroupByLibrary = true;
+            const v = Zotero.Prefs.get("weavero.tabsMenuGroupByLibrary");
+            this._tabsMenuGroupByLibrary = (typeof v === "boolean") ? v : false;
         }
         if (this._tabsMenuShowAnnotationCount === undefined) {
-            this._tabsMenuShowAnnotationCount = false;
+            const v = Zotero.Prefs.get("weavero.tabsMenuShowAnnotationCount");
+            this._tabsMenuShowAnnotationCount = (typeof v === "boolean") ? v : false;
         }
         // Replace any prior install — picks up code changes after
         // hot-reload without requiring a full window restart.
@@ -4694,6 +4941,10 @@ class _TabsMixin {
             cb.checked = !!this[key];
             cb.addEventListener("change", () => {
                 this[key] = cb.checked;
+                // Persist so the choice survives restart/reload (the in-memory
+                // field resets on a fresh plugin instance). Pref name derives from
+                // the field: `_tabsMenuGroupByLibrary` → `weavero.tabsMenuGroupByLibrary`.
+                try { Zotero.Prefs.set("weavero." + key.replace(/^_/, ""), cb.checked); } catch (e) {}
                 if (typeof onChange === "function") onChange();
             });
             const lbl = doc.createElementNS(NS_HTML, "span");

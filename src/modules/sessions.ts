@@ -423,7 +423,7 @@ class _TabSessionsMixin {
         let slot = this._wvTabSessionList().find((s: any) => s.id === WV_TABSESSION_AUTOSAVE_ID);
         if (!slot) {
             slot = {
-                id: WV_TABSESSION_AUTOSAVE_ID, name: "Last workspace (auto)",
+                id: WV_TABSESSION_AUTOSAVE_ID, name: this._wvTabSessionDefaultName(),
                 created: now, modified: now, windows, tabGroups,
             };
             this._wvTabSessionDoc.sessions.unshift(slot);
@@ -458,6 +458,9 @@ class _TabSessionsMixin {
      *  reader-window changes, and main-window open/close. */
     _wvTabSessionTrackingUpdate() {
         try {
+            // Sessions disabled → go DORMANT: stop tracking so saved sessions are
+            // frozen (never overwritten) and can be recovered when re-enabled.
+            if (!this._wvGetEnableTabSessions()) return;
             if (this._wvTabSessionSwitching) return;
             if (!this._wvTabSessionGetActiveId()) return;
             if (this._wvTabSessionTrackTimer) {
@@ -726,23 +729,53 @@ class _TabSessionsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionPromptSaveAs err: " + e); }
     }
 
-    _wvTabSessionConfirmSwitch(win: any, id: string) {
+    /** "New session": preserve the CURRENT workspace in the current session, then
+     *  open a FRESH empty workspace (one main window, library tab only) as a new
+     *  current session. The session you were in stays saved in the list — nothing
+     *  is lost. Destructive (it tears the current windows/tabs down), so the
+     *  outgoing session is flushed + persisted BEFORE any teardown, and tracking is
+     *  suppressed during the rebuild. */
+    async _wvTabSessionNewEmpty(win: any) {
+        await this._wvTabSessionInit();
+        const activeId = this._wvTabSessionGetActiveId();
+        this._wvTabSessionSwitching = true;   // suppress tracking during teardown/rebuild
+        try {
+            // Keep the outgoing workspace: flush the live tabs into the active
+            // session (or snapshot to the auto slot if somehow none is active).
+            if (activeId) { try { await this._wvTabSessionTrackingFlush(); } catch (_) {} }
+            else { try { await this._wvTabSessionAutosaveCurrent(); } catch (_) {} }
+            // Create the fresh, empty session and make it the current one.
+            const now = Date.now();
+            const sess = {
+                id: this._wvTabSessionNewId(),
+                name: this._wvTabSessionDefaultName(),
+                created: now, modified: now,
+                windows: [{ kind: "main", tabs: [] }],
+                tabGroups: [],
+            };
+            this._wvTabSessionDoc.sessions.push(sess);
+            this._wvTabSessionDoc.activeSessionId = sess.id;
+            await this._wvTabSessionPersist();
+            // Tear the current windows/tabs down to one empty main window.
+            await this._wvTabSessionReconstruct(sess.windows, sess.tabGroups);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabSessionNewEmpty err: " + e); }
+        finally { this._wvTabSessionSwitching = false; }
+        // Refresh any open tabs-menu so it shows the new current session + list.
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                const panel: any = w.document && w.document.querySelector("#zotero-tabs-menu-panel");
+                if (panel && panel.state !== "closed" && typeof panel.refreshList === "function") panel.refreshList();
+            }
+        } catch (_) {}
+    }
+
+    /** Switch to a session — IMMEDIATELY, no confirm dialog. Switching is safe and
+     *  automatic now: the session you're leaving is the live current session and
+     *  keeps its tabs, so nothing is ever lost. (Name kept for its callers.) */
+    _wvTabSessionConfirmSwitch(_win: any, id: string) {
         try {
             const sess = this._wvTabSessionList().find((s: any) => s.id === id);
             if (!sess) return;
-            const n = this._wvTabSessionCountTabs(sess);
-            // The current tabs are never lost: if you're in a session it keeps
-            // them (it's live); otherwise they go to the auto-recovery slot.
-            const activeId = this._wvTabSessionGetActiveId();
-            const active = (activeId && activeId !== id)
-                ? this._wvTabSessionList().find((s: any) => s.id === activeId) : null;
-            const safety = active
-                ? "Your current tabs stay saved in “" + active.name + "”."
-                : "Your current tabs are saved to “Last workspace (auto)” first.";
-            const ok = Services.prompt.confirm(win, "Switch Session",
-                "Switch to “" + sess.name + "” (" + this._wvTabSessionTabCountLabel(n) + ")?\n\n"
-                + safety);
-            if (!ok) return;
             this._wvTabSessionSwitch(id);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionConfirmSwitch err: " + e); }
     }
@@ -944,12 +977,39 @@ class _TabSessionsMixin {
             // the saved-session rows' name-left / meta-right layout.
             const label = doc.createElementNS(HTML_NS, "span");
             label.className = "wv-cursess-label";
-            label.textContent = sess ? (sess.name || "Untitled session") : "Unsaved — “Save current tabs…” to keep";
+            label.textContent = sess ? (sess.name || this._wvTabSessionDefaultName()) : "Current session";
             hdr.appendChild(label);
+            // Tab count — like the saved-session rows, but a LIVE count of the
+            // current workspace (main-window content tabs + reader-window tabs) so
+            // it matches the tabs shown in the body below.
+            try {
+                let n = 0;
+                for (const w of Zotero.getMainWindows()) {
+                    const Z: any = (w as any).Zotero_Tabs;
+                    if (Z && Array.isArray(Z._tabs)) n += Z._tabs.filter((t: any) => t && t.id !== "zotero-pane" && t.type !== "library").length;
+                }
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) { const w: any = en.getNext(); const st = w._wvWT; if (st && Array.isArray(st.tabs)) n += st.tabs.length; }
+                const cnt = doc.createElementNS(HTML_NS, "span");
+                cnt.className = "wv-sessmenu-count";
+                cnt.textContent = this._wvTabSessionTabCountLabel(n);
+                hdr.appendChild(cnt);
+            } catch (er) {}
             const eyebrow = doc.createElementNS(HTML_NS, "span");
             eyebrow.className = "wv-cursess-eyebrow";
             eyebrow.textContent = "Current session";
             hdr.appendChild(eyebrow);
+            // Right-click → rename the current session (or save the live tabs as a
+            // new one) — same affordance the saved-session rows already have.
+            hdr.setAttribute("title", "Right-click to rename or save this session");
+            hdr.style.cursor = "context-menu";
+            hdr.addEventListener("contextmenu", (e: any) => {
+                try {
+                    e.preventDefault(); e.stopPropagation();
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (p) p._wvTabSessionCurrentHeaderContext(doc.defaultView, panel, e);
+                } catch (er) {}
+            });
             list.insertBefore(hdr, list.firstChild);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCurrentHeader err: " + e); }
     }
@@ -973,24 +1033,27 @@ class _TabSessionsMixin {
             header.textContent = "Sessions";
             list.appendChild(header);
 
-            // "Save current tabs" action row.
+            // "New session" action row. The current tabs are always saved in the
+            // current session, so this doesn't "save" — it opens a FRESH empty
+            // workspace as a new current session; the session you were in stays
+            // saved in the list behind you.
             const save = doc.createElementNS(HTML_NS, "div");
             save.className = "wv-sessmenu-row";
-            save.setAttribute("title", "Save the current tabs as a new session");
+            save.setAttribute("title", "Open a fresh, empty workspace as a new session (the current session stays saved below)");
             const plus = doc.createElementNS(HTML_NS, "span");
             plus.className = "wv-sessmenu-glyph";
             plus.textContent = "+";
             save.appendChild(plus);
             const saveName = doc.createElementNS(HTML_NS, "span");
             saveName.className = "wv-sessmenu-name";
-            saveName.textContent = "Save current tabs…";
+            saveName.textContent = "New session";
             save.appendChild(saveName);
             save.addEventListener("click", (e: any) => {
                 try {
                     e.stopPropagation();
                     try { panel.hidePopup(); } catch (er) {}
                     const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (p) p._wvTabSessionPromptSaveAs(win);
+                    if (p) p._wvTabSessionNewEmpty(win);
                 } catch (er) {}
             });
             list.appendChild(save);
@@ -1075,8 +1138,14 @@ class _TabSessionsMixin {
                 if (s.id === activeId) continue;
                 mkRow(s, false);
             }
+            // The auto-save slot is now just a NORMAL session (autoSlot=false): a
+            // default name, no "· auto" suffix, full Rename/Overwrite/Delete menu.
+            // Shown so you can switch BACK to it after visiting another session — but
+            // NOT when it's already the active session (then it's the current-session
+            // header at the top, and a list row would be a dead, unclickable
+            // duplicate that reads as "switching doesn't work").
             const auto = this._wvTabSessionList().find((s: any) => s.id === WV_TABSESSION_AUTOSAVE_ID);
-            if (auto) mkRow(auto, true);
+            if (auto && auto.id !== activeId) mkRow(auto, false);
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionsMenuSection err: " + e); }
     }
 
@@ -1134,7 +1203,26 @@ class _TabSessionsMixin {
                         },
                     });
                 }
-                if (tabs.length) sections.push({ label, tabs, kind: w.kind === "reader" ? "reader" : "main" });
+                // Every main window has an implicit "My Library" home tab that the
+                // session snapshot doesn't store — synthesize it so the saved view
+                // leads with it, matching the live all-windows list. (Reader windows
+                // have no home tab.) Clicking it focuses the library in the current
+                // main window.
+                let libraryTab: any = null;
+                if (w.kind !== "reader") {
+                    const live = Zotero.getMainWindows()[0];
+                    libraryTab = {
+                        title: "My Library",
+                        iconFullClass: (((this as any)._wvAnchorLibIconClass(live) || "icon icon-css icon-library") + " tab-icon").replace(/\s+/g, " ").trim(),
+                        onClick: () => {
+                            try {
+                                const mw = Zotero.getMainWindows()[0];
+                                if (mw) { mw.focus(); mw.Zotero_Tabs.select("zotero-pane"); }
+                            } catch (e) {}
+                        },
+                    };
+                }
+                if (tabs.length) sections.push({ label, libraryTab, tabs, kind: w.kind === "reader" ? "reader" : "main" });
             }
             if (!sections.length) return;
             // Render the windows (each a left-line scope) straight into `container`
@@ -1190,11 +1278,6 @@ class _TabSessionsMixin {
             if (!isActive) {
                 mk("Switch to This Session", (p: any) => p._wvTabSessionConfirmSwitch(win, id));
             }
-            if (!autoSlot && !isActive) {
-                // The active session already mirrors the current tabs, so a manual
-                // "overwrite" only makes sense for a frozen (non-active) session.
-                mk("Overwrite with Current Tabs", (p: any) => p._wvTabSessionConfirmOverwrite(win, id));
-            }
             if (!autoSlot) {
                 mk("Rename…", (p: any) => p._wvTabSessionPromptRename(win, id));
             }
@@ -1203,6 +1286,40 @@ class _TabSessionsMixin {
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (er) { Zotero.debug("[Weavero] _wvTabSessionsMenuContext err: " + er); }
+    }
+
+    /** Right-click popup on the CURRENT-session header. The current session is a
+     *  normal session (it always holds the live tabs, with a default name until you
+     *  rename it), so the only action is "Rename Session…". Mirrors
+     *  _wvTabSessionsMenuContext. */
+    _wvTabSessionCurrentHeaderContext(win: any, panel: any, e: any) {
+        try {
+            const doc = win.document;
+            const activeId = this._wvTabSessionGetActiveId();
+            let pop: any = doc.getElementById("wv-cursess-context");
+            if (pop) pop.remove();
+            pop = doc.createXULElement("menupopup");
+            pop.id = "wv-cursess-context";
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const mk = (label: string, fn: (p: any) => void) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", label);
+                mi.addEventListener("command", (ev: any) => {
+                    try {
+                        ev.stopPropagation();
+                        try { panel.hidePopup(); } catch (er) {}
+                        const p: any = live();
+                        if (p) fn(p);
+                    } catch (er) {}
+                });
+                pop.appendChild(mi);
+            };
+            if (activeId) {
+                mk("Rename Session…", (p: any) => p._wvTabSessionPromptRename(win, activeId));
+            }
+            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+            pop.openPopupAtScreen(e.screenX, e.screenY, true);
+        } catch (er) { Zotero.debug("[Weavero] _wvTabSessionCurrentHeaderContext err: " + er); }
     }
 }
 

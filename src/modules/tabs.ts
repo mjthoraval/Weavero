@@ -21,6 +21,12 @@
 // doesn't ship a typing for the runtime per-window global yet.
 declare const Zotero_Tabs: any;
 
+// Single source of truth for the anchor-window marker (solid Material anchor,
+// 24-unit grid). Used BOTH as an inline <svg> in the List-all-tabs Window header
+// and as a CSS mask on the anchor window's library tab — edit here only.
+const WV_ANCHOR_VIEWBOX = "0 0 24 24";
+const WV_ANCHOR_PATH = "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3V7.82C14.16 7.4 15 6.3 15 5c0-1.65-1.35-3-3-3S9 3.35 9 5c0 1.3.84 2.4 2 2.82V9H8v2h3v8.92c-2.22-.33-4.59-1.68-5.55-3.37L7 15l-4-3v3c0 3.88 4.92 7 9 7s9-3.12 9-7v-3l-4 3zM12 4c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z";
+
 class _TabsMixin {
     [k: string]: any;
     /** Patch the "List all tabs" panel (the dropdown reachable from
@@ -255,6 +261,9 @@ class _TabsMixin {
         try {
             for (const row of allRows) {
                 this._decoratePinIconOnTabsMenuRow(row);
+                // Group-library badge on the item icon — only meaningful when the
+                // library headers are gone (Sort-by-Library off); self-clears otherwise.
+                this._wvDecorateGroupLibBadge(row, win);
             }
         } catch (e) {}
 
@@ -630,28 +639,93 @@ class _TabsMixin {
             const sections = this._wvTabsMenuOtherWindowSections(win);
             if (!sections.length) return;
             this._wvTabsMenuRenderSections(doc, list, panel, sections,
-                { header: "wv-otherwin-header", row: "wv-otherwin-row", lib: "wv-otherwin-libhdr", scope: "wv-otherwin-scope" });
+                { header: "wv-otherwin-header", row: "wv-otherwin-row", lib: "wv-otherwin-libhdr", scope: "wv-otherwin-scope" }, "live");
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuOtherWindows err: " + e); }
     }
 
     /** Cap the tabs-menu list to the space remaining below it on screen, so a long
      *  list scrolls (overflow-y:auto) instead of pushing the panel off the bottom.
      *  Computed from the list's live top after the panel is positioned. */
-    _wvTabsMenuFitListHeight(panel: any) {
+    _wvTabsMenuFitListHeight(panel: any, attempt?: number) {
         try {
             const win = panel.ownerGlobal;
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
             if (!win || !list) return;
             const top = list.getBoundingClientRect().top;
-            const avail = Math.max(200, Math.floor(win.innerHeight - top - 24));
-            list.style.maxHeight = avail + "px";
-            list.style.overflowY = "auto";
+            // The popup may not be positioned yet (top still at its pre-anchor spot);
+            // retry next frame until it lands below the toolbar.
+            if (top < 20 && (attempt || 0) < 12) {
+                win.requestAnimationFrame(() => this._wvTabsMenuFitListHeight(panel, (attempt || 0) + 1));
+                return;
+            }
+            const avail = Math.max(200, Math.floor(win.innerHeight - top - 18));
+            const content = list.scrollHeight;
+            const h = Math.min(content, avail);
+            // The list is a XUL vbox — CSS max-height is ignored, but an explicit
+            // height is honoured. Set it so the list caps to the on-screen space and
+            // its (non-shrinking) children overflow → it scrolls. Use min(content,…)
+            // so a short list doesn't leave empty space below.
+            list.style.setProperty("height", h + "px", "important");
+            list.style.setProperty("overflow-y", "auto", "important");
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuFitListHeight err: " + e); }
+    }
+
+    /** Overlay a small group-library badge on a tab row's item icon when the tab's
+     *  item lives in a group library AND Sort-by-Library is off (so the lost library
+     *  grouping is still hinted). Idempotent; removes the badge when not applicable. */
+    _wvDecorateGroupLibBadge(row: any, win: any) {
+        try {
+            const prev = row.querySelector(".wv-grouplib-badge");
+            if (prev) prev.remove();
+            if (this._tabsMenuGroupByLibrary !== false) return;   // only when sort is OFF
+            const tabId = row.dataset && row.dataset.tabId;
+            if (!tabId || tabId === "zotero-pane") return;
+            const Zotero_Tabs = win && win.Zotero_Tabs;
+            const tab = Zotero_Tabs && Zotero_Tabs._tabs.find((t: any) => t.id === tabId);
+            const itemID = tab && tab.data && tab.data.itemID;
+            if (itemID == null) return;
+            const item = Zotero.Items.get(itemID);
+            if (!item) return;
+            let isGroup = false;
+            try { const lib = Zotero.Libraries.get(item.libraryID); isGroup = !!(lib && lib.libraryType === "group"); } catch (e) {}
+            if (!isGroup) return;
+            const icon = row.querySelector(".icon-item-type") || row.querySelector(".tab-icon");
+            if (!icon) return;
+            icon.style.position = "relative";
+            icon.appendChild(this._wvGroupLibBadgeSvg(row.ownerDocument));
+        } catch (e) {}
+    }
+
+    /** A small, symmetric, bold temple glyph for the group-library badge — Zotero's
+     *  stock icon has 1px columns that blur when scaled down to badge size, so we
+     *  draw a 3-column version centred on x8. Rendered as a background-image on a
+     *  span (an absolutely-positioned <svg> collapses against the 0×0 icon span). */
+    _wvGroupLibBadgeSvg(doc: any) {
+        const span = doc.createElement("span");
+        span.className = "wv-grouplib-badge";
+        const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='#59adc4'>"
+            + "<path d='M8 1.5L13.5 6.5H2.5Z'/>"
+            + "<rect x='3.5' y='7' width='2' height='6'/>"
+            + "<rect x='7' y='7' width='2' height='6'/>"
+            + "<rect x='10.5' y='7' width='2' height='6'/>"
+            + "<rect x='2' y='13' width='12' height='2'/></svg>";
+        span.style.backgroundImage = "url(\"data:image/svg+xml," + encodeURIComponent(svg) + "\")";
+        return span;
+    }
+
+    _wvTabsMenuIsWindowCollapsed(key: string) {
+        return !!(this._wvTabsMenuCollapsedWindows && this._wvTabsMenuCollapsedWindows.has(key));
+    }
+
+    _wvTabsMenuToggleWindowCollapse(key: string) {
+        if (!this._wvTabsMenuCollapsedWindows) this._wvTabsMenuCollapsedWindows = new Set();
+        const s = this._wvTabsMenuCollapsedWindows;
+        if (s.has(key)) s.delete(key); else s.add(key);
     }
 
     /** A window-section header (label + count), styled like the library headers.
      *  Shared by the all-windows list AND the expanded-session view. */
-    _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string) {
+    _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string, collapseKey?: string, panel?: any) {
         const header = doc.createElement("div");
         header.className = "wv-tabs-menu-library-header " + (marker || "");
         header.setAttribute("role", "presentation");
@@ -676,11 +750,12 @@ class _TabsMixin {
         if (iconType === "anchor") {
             const SVG = "http://www.w3.org/2000/svg";
             const svg = doc.createElementNS(SVG, "svg");
-            svg.setAttribute("viewBox", "0 0 24 24");
+            svg.setAttribute("viewBox", WV_ANCHOR_VIEWBOX);
             svg.setAttribute("class", "wv-anchor-mark");
+            // Shared solid Material anchor (see WV_ANCHOR_PATH); colour from CSS.
             const path = doc.createElementNS(SVG, "path");
             path.setAttribute("fill", "currentColor");
-            path.setAttribute("d", "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3V7.82C14.16 7.4 15 6.3 15 5c0-1.65-1.35-3-3-3S9 3.35 9 5c0 1.3.84 2.4 2 2.82V9H8v2h3v8.92c-2.22-.33-4.59-1.68-5.55-3.37L7 15l-4-3v3c0 3.88 4.92 7 9 7s9-3.12 9-7v-3l-4 3zM12 4c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z");
+            path.setAttribute("d", WV_ANCHOR_PATH);
             svg.appendChild(path);
             header.appendChild(svg);
         }
@@ -688,6 +763,30 @@ class _TabsMixin {
         cnt.className = "wv-tabs-menu-library-count";
         cnt.textContent = String(count);
         header.appendChild(cnt);
+        // Collapsible window: a twisty at the far RIGHT (same as tab-group headers);
+        // clicking anywhere on the header toggles the window's tabs.
+        if (collapseKey != null) {
+            const collapsed = this._wvTabsMenuIsWindowCollapsed(collapseKey);
+            const tw = doc.createElement("span");
+            tw.className = "wv-win-twisty";
+            tw.textContent = collapsed ? "▸" : "▾";   // ▸ / ▾
+            header.appendChild(tw);
+            header.style.cursor = "pointer";
+            // The native .wv-tabs-menu-library-header is pointer-events:none, so real
+            // clicks fall through (synthetic dispatch ignores it — that's why tests
+            // lied). Re-enable hit-testing so the header actually toggles.
+            header.style.setProperty("pointer-events", "auto", "important");
+            header.addEventListener("click", (e: any) => {
+                e.stopPropagation();
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!p) return;
+                p._wvTabsMenuToggleWindowCollapse(collapseKey);
+                // Full rebuild: _wvRegroupTabsMenu doesn't replaceChildren() when
+                // Sort-by-Library is off, which corrupts the already-wrapped layout.
+                try { if (typeof panel.refreshList === "function") panel.refreshList(); else p._wvRegroupTabsMenu(panel); }
+                catch (er) { try { p._wvRegroupTabsMenu(panel); } catch (e2) {} }
+            });
+        }
         return header;
     }
 
@@ -717,6 +816,17 @@ class _TabsMixin {
         span.className = "icon icon-css tab-icon icon-item-type";
         try { span.setAttribute("data-item-type", tb.item.getItemTypeIconName(true)); } catch (e) {}
         title.appendChild(span);
+        // Group-library badge when Sort-by-Library is off (no library headers to
+        // group these rows) — matches the native current-window rows.
+        try {
+            if (this._tabsMenuGroupByLibrary === false && tb.item) {
+                const lib = Zotero.Libraries.get(tb.item.libraryID);
+                if (lib && lib.libraryType === "group") {
+                    span.style.position = "relative";
+                    span.appendChild(this._wvGroupLibBadgeSvg(doc));
+                }
+            }
+        } catch (e) {}
         const label = doc.createElement("label");
         label.textContent = tb.title || "";
         title.appendChild(label);
@@ -758,7 +868,7 @@ class _TabsMixin {
      *  nested inside each window; "Show annotation count" → per-row badge.
      *  Shared by the all-windows list AND the expanded-session view, so both look
      *  identical. `marker` = { header, row, lib } cleanup classes. */
-    _wvTabsMenuRenderSections(doc: any, container: any, panel: any, sections: any[], marker: any) {
+    _wvTabsMenuRenderSections(doc: any, container: any, panel: any, sections: any[], marker: any, keyPrefix?: string) {
         try { (this as any)._wvEnsureTabSessionStyles(doc); } catch (e) {}   // rail + indent CSS
         const sortByLib = this._tabsMenuGroupByLibrary !== false;
         const showAnn = !!this._tabsMenuShowAnnotationCount;
@@ -777,7 +887,9 @@ class _TabsMixin {
             // rail spans the whole window. No window icon (the rail + label say it).
             const winWrap = doc.createElement("div");
             winWrap.className = "wv-winscope " + (marker.scope || "");
-            winWrap.appendChild(this._wvTabsMenuWindowHeader(doc, sec.label, sec.tabs.length, marker.header, sec.iconType || (sec.kind === "reader" ? "reader" : "main"), sec.anchorIconClass));
+            const collapseKey = keyPrefix ? (keyPrefix + "|" + sec.label) : undefined;
+            if (collapseKey && this._wvTabsMenuIsWindowCollapsed(collapseKey)) winWrap.classList.add("wv-win-collapsed");
+            winWrap.appendChild(this._wvTabsMenuWindowHeader(doc, sec.label, sec.tabs.length, marker.header, sec.iconType || (sec.kind === "reader" ? "reader" : "main"), sec.anchorIconClass, collapseKey, panel));
             if (sortByLib) {
                 const byLib = new Map<any, any[]>();
                 for (const tb of sec.tabs) {
@@ -831,8 +943,9 @@ class _TabsMixin {
             const count = wrap.querySelectorAll(".row[data-tab-id]").length;
             const w: any = doc.defaultView;
             const isAnchor = !!(w && !w._wvManagedWindow);
-            const anchorIconClass = isAnchor ? this._wvAnchorLibIconClass(w) : "";
-            const hdr = this._wvTabsMenuWindowHeader(doc, "Window 1", count, "wv-curwin-header", isAnchor ? "anchor" : "main", anchorIconClass);
+            const collapseKey = "live|current";
+            if (this._wvTabsMenuIsWindowCollapsed(collapseKey)) wrap.classList.add("wv-win-collapsed");
+            const hdr = this._wvTabsMenuWindowHeader(doc, "Window 1", count, "wv-curwin-header", isAnchor ? "anchor" : "main", "", collapseKey, panel);
             wrap.insertBefore(hdr, wrap.firstChild);
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuWrapCurrentWindow err: " + e); }
     }
@@ -3789,16 +3902,14 @@ class _TabsMixin {
             // is its last flex item; the name grows (flex:1) and the close
             // button is display:none on the library tab, so this lands at the
             // far right. Drawn as an SVG mask so it tints with the accent color.
+            // Same shared solid Material anchor (WV_ANCHOR_PATH) as the dropdown,
+            // used as a mask so it tints with the accent colour.
             const anchorSvg = encodeURIComponent(
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none"'
-                + ' stroke="black" stroke-width="1.6" stroke-linecap="round">'
-                + '<circle cx="8" cy="3.2" r="1.7"/>'
-                + '<path d="M8 4.9 V 13.8"/>'
-                + '<path d="M4.8 7.2 h6.4"/>'
-                + '<path d="M2.3 9.5 a5.7 5.7 0 0 0 11.4 0"/>'
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + WV_ANCHOR_VIEWBOX + '">'
+                + '<path fill="black" d="' + WV_ANCHOR_PATH + '"/>'
                 + "</svg>");
             const css = `.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
-                + `content:"";display:inline-block;width:13px;height:13px;margin-inline-start:6px;`
+                + `content:"";display:inline-block;width:15px;height:15px;margin-inline-start:6px;`
                 + `background-color:#3d6fe0;`
                 + `mask:url("data:image/svg+xml,${anchorSvg}") center/contain no-repeat;`
                 + `align-self:center;flex:0 0 auto;}`

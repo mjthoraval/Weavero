@@ -854,12 +854,21 @@ class _TabSessionsMixin {
                 "  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2.5px;",
                 "  background: currentColor; opacity: 0.5;",
                 "}",
-                // Anchor-window marker: an anchor glyph on the right of the name, in
-                // Zotero's accent blue (matching the library-tab icon it echoes).
+                // Window collapse: a twisty before the window glyph; collapsing hides
+                // everything in the window wrapper except its header (the first child).
+                ".wv-win-twisty {",
+                "  margin-inline-start: auto; width: 12px; flex: 0 0 auto;",
+                "  display: inline-flex; align-items: center; justify-content: center;",
+                "  font-size: 9px; opacity: 0.55;",
+                "}",
+                ".wv-winscope.wv-win-collapsed > :not(:first-child) { display: none !important; }",
+                // Anchor-window marker: solid Material anchor in the library-tab
+                // anchor shade (#3d6fe0 light, lighter #9dbcff dark).
                 ".wv-anchor-mark {",
                 "  width: 15px; height: 15px; flex: 0 0 auto; margin-inline-start: 5px;",
-                "  color: var(--accent-blue, #4072e5);",
+                "  color: #3d6fe0;",
                 "}",
+                ".wv-ui-dark .wv-anchor-mark { color: #9dbcff; }",
                 // No per-window vertical lines — windows are grouped purely by their
                 // header + the indentation below it (the library sub-headers and the
                 // 18px row indent from constants.ts). Same for the current window and
@@ -882,7 +891,9 @@ class _TabSessionsMixin {
                 "  background: rgba(214,158,46,0.20);",
                 "}",
                 ".wv-sessscope > .wv-sessmenu-row:hover { background: rgba(214,158,46,0.32); }",
-                ".wv-sess-body { padding: 5px 7px; }",
+                // The session body scrolls inside the box when tall, so the title bar
+                // stays put and the Sessions list below the box stays reachable.
+                ".wv-sess-body { padding: 5px 7px; max-height: 55vh; overflow-y: auto; }",
                 // Inside a session, the per-window rails stay neutral (no current).
                 ".wv-sessscope .wv-winscope { margin-bottom: 4px; }",
                 ".wv-sess-body .wv-winscope:last-child { margin-bottom: 0; }",
@@ -1129,7 +1140,8 @@ class _TabSessionsMixin {
             // Render the windows (each a left-line scope) straight into `container`
             // — the caller's session box body. The box itself is the session scope.
             (this as any)._wvTabsMenuRenderSections(doc, container, panel, sections,
-                { header: "wv-sessmenu-winhdr", row: "wv-sessmenu-tabrow", lib: "wv-sessmenu-liblbl", scope: "wv-sessmenu-winscope" });
+                { header: "wv-sessmenu-winhdr", row: "wv-sessmenu-tabrow", lib: "wv-sessmenu-liblbl", scope: "wv-sessmenu-winscope" },
+                "sess|" + (sess.id || ""));
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionRenderTabRows err: " + e); }
     }
 

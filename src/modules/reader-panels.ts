@@ -6245,12 +6245,34 @@ class _ReaderPanelsMixin {
     }
 
     // ---- Outline text highlight (in-place, no scroll, no flash) -----------
-    // An embedded PDF outline entry stores only a destination POINT, so clicking
-    // it scrolls to the page top and Zotero's flash lands on nothing. This makes
-    // the heading TEXT flash instead: navigation runs unchanged (honors the real
-    // dest), then we recover the heading's bounding box and paint the highlight
-    // IN PLACE. The paint primitive (see _wvOutlinePaint) avoids both a second
-    // scroll and a full-page flash. (Wiring lives in _wvOutlineInstallRecovery.)
+    // Clicking a PDF outline (table-of-contents) entry flashes the actual HEADING
+    // TEXT, not just the page. When a PDF has its OWN embedded outline, each entry's
+    // destination is only a POINT, so Zotero scrolls there but its highlight (zero
+    // area) lands on nothing — the gap this fills. Navigation runs unchanged (honors
+    // the real dest); we then recover the heading's bounding box and paint the
+    // highlight IN PLACE (see _wvOutlinePaint — avoids a second scroll / full-page
+    // flash). Wiring lives in _wvOutlineInstallRecovery.
+    //
+    // CREDIT & SOURCES — built on Zotero's open-source reader (AGPL-3.0, the same
+    // licence as Weavero). We REUSE, but do not reimplement, Zotero's machinery:
+    //   * Per-glyph text data — `_pdfPages[i].chars` (exact glyph rects) comes from
+    //     Zotero's TEXT ANALYZER, fetched by the reader via getProcessedData() /
+    //     getPageData(). Those are siblings of getOutline2(), all introduced in one
+    //     direct commit (Zotero maintains its pdf.js/reader forks by direct pushes,
+    //     NOT pull requests): zotero/pdf.js@2ec80d8581 "Implement text analyzer"
+    //     (Martynas Bagdonas / mrtcode, 2023-03-09).
+    //     https://github.com/zotero/pdf.js/commit/2ec80d8581
+    //   * In-place highlight + outline navigation — navigateToPosition,
+    //     _highlightPosition / _highlightedPosition — are zotero/reader's:
+    //     https://github.com/zotero/reader/blob/master/src/pdf/pdf-view.js
+    // What is NEW here is only the JOIN: matching the embedded outline's title text
+    // against the analyzer's glyph rects to recover the heading box. Zotero's
+    // getOutline2 yields rectangles only for the text-analyzer-EXTRACTED outline
+    // (PDFs with no embedded TOC); an embedded TOC passes through as bare points and
+    // never highlights — a gap Zotero acknowledged but never shipped a fix for.
+    // Feature discussion: forums.zotero.org/discussion/122030 (the highlight-timer
+    // inconsistency this also works around), zotero/zotero#2285 (TOC extraction),
+    // zotero/zotero#3752 (highlight the current outline item — still open).
 
     /** True if a position is a degenerate (zero-area) rect — a bare dest point. */
     _wvOutlineIsPointRect(position: any): boolean {
@@ -6317,15 +6339,23 @@ class _ReaderPanelsMixin {
         return null;
     }
 
-    /** Recover the heading title's bounding box on its dest page (PDF points,
-     *  bottom-left origin). Matches the (punctuation-insensitive) title against
-     *  the page text, preferring the occurrence nearest the dest y. Null on no
-     *  match. Best-effort; scanned / unusual-font pages may miss. */
-    async _wvOutlineRecoverRect(pv: any, pageIndex: number, destX: number, destY: number, title: string): Promise<number[] | null> {
+    /** Recover the heading title's bounding box AND the page it sits on (PDF
+     *  points, bottom-left origin). Matches the (punctuation-insensitive) title
+     *  against the page text, preferring — in order — the FULL numbered title over
+     *  the bare stripped form (so a section heading wins over body prose like
+     *  "…a similar conclusion was reached…"), the DEST page over its neighbours,
+     *  and on the dest page the occurrence nearest the dest y. Also searches the
+     *  NEIGHBOUR the dest point leans toward (dest near page bottom → next page
+     *  top; near top → previous page), because a PDF's outline destination often
+     *  points a hair before the heading and lands on the adjacent page. Returns
+     *  { rect, pageIndex } or null. Best-effort; scanned / odd-font pages may miss. */
+    async _wvOutlineRecoverRect(pv: any, pageIndex: number, destX: number, destY: number, title: string): Promise<{ rect: number[]; pageIndex: number } | null> {
         try {
             const win = pv && pv._iframeWindow;
             const app = win && win.PDFViewerApplication;
             if (!app || !app.pdfViewer) return null;
+            const numPages = (app.pdfViewer._pages && app.pdfViewer._pages.length) || 0;
+
             const candidates: string[] = [];
             const full = this._wvOutlineNorm(title);
             if (full.length >= 2) candidates.push(full);
@@ -6335,73 +6365,133 @@ class _ReaderPanelsMixin {
             if (noNum.length >= 3 && noNum !== full) candidates.push(noNum);
             if (!candidates.length) return null;
 
-            // Build match tokens {normalised char(s), rect}. PREFERRED source:
-            // the reader's OWN structured chars (`_pdfPages[pi].chars`) — their
-            // `.rect` is the exact glyph box used for text selection, so the
-            // highlight lines up with a manual selection (no vertical shift).
-            // FALLBACK: pdf.js getTextContent run boxes (baseline-derived, sits
-            // a little high) when chars aren't available.
-            const toks: any[] = [];
-            try { if (typeof pv._ensureBasicPageData === "function") await pv._ensureBasicPageData(pageIndex); } catch (_) {}
-            let chars: any = null;
-            try { chars = pv._pdfPages && pv._pdfPages[pageIndex] && pv._pdfPages[pageIndex].chars; } catch (_) {}
-            if (chars && chars.length) {
-                for (const ch of chars) {
-                    const c = ch && ch.c;
-                    const rc = ch && ch.rect;
-                    if (!c || !rc) continue;
-                    const nn = this._wvOutlineNorm(c);
-                    if (!nn) continue;
-                    toks.push({ n: nn, x0: rc[0], y0: rc[1], x1: rc[2], y1: rc[3] });
+            // Per-page tokeniser (cached so each page is built at most once across
+            // both candidate passes). PREFERRED source: the reader's OWN structured
+            // chars (`_pdfPages[pi].chars`) — their `.rect` is the exact glyph box
+            // used for text selection, so the highlight lines up with a manual
+            // selection. FALLBACK: pdf.js getTextContent run boxes (baseline-derived,
+            // sits a little high) when chars aren't available.
+            const cache = new Map<number, any>();
+            const tokensFor = async (pi: number) => {
+                if (cache.has(pi)) return cache.get(pi);
+                const toks: any[] = [];
+                try { if (typeof pv._ensureBasicPageData === "function") await pv._ensureBasicPageData(pi); } catch (_) {}
+                let chars: any = null;
+                try { chars = pv._pdfPages && pv._pdfPages[pi] && pv._pdfPages[pi].chars; } catch (_) {}
+                if (chars && chars.length) {
+                    for (const ch of chars) {
+                        const c = ch && ch.c, rc = ch && ch.rect;
+                        if (!c || !rc) continue;
+                        const nn = this._wvOutlineNorm(c);
+                        if (!nn) continue;
+                        toks.push({ n: nn, x0: rc[0], y0: rc[1], x1: rc[2], y1: rc[3] });
+                    }
                 }
-            }
-            if (!toks.length) {
-                const page = await this._wvOutlineGetPdfPage(app, pageIndex);
-                if (!page || typeof page.getTextContent !== "function") return null;
-                const tc = await page.getTextContent();
-                const items = (tc && tc.items) || [];
-                for (const it of items) {
-                    const s = it && it.str;
-                    if (!s) continue;
-                    const nn = this._wvOutlineNorm(s);
-                    if (!nn) continue;
-                    const tr = it.transform || [1, 0, 0, 1, 0, 0];
-                    const x0 = tr[4], yb = tr[5];
-                    const w = it.width || 0, h = it.height || 0;
-                    toks.push({ n: nn, x0, y0: yb, x1: x0 + w, y1: yb + h });
+                if (!toks.length) {
+                    const page = await this._wvOutlineGetPdfPage(app, pi);
+                    if (page && typeof page.getTextContent === "function") {
+                        const tc = await page.getTextContent();
+                        for (const it of ((tc && tc.items) || [])) {
+                            const s = it && it.str;
+                            if (!s) continue;
+                            const nn = this._wvOutlineNorm(s);
+                            if (!nn) continue;
+                            const tr = it.transform || [1, 0, 0, 1, 0, 0];
+                            const x0 = tr[4], yb = tr[5], w = it.width || 0, h = it.height || 0;
+                            toks.push({ n: nn, x0, y0: yb, x1: x0 + w, y1: yb + h });
+                        }
+                    }
                 }
-            }
-            if (!toks.length) return null;
+                let concat = "";
+                const map: number[] = [];
+                for (let i = 0; i < toks.length; i++) {
+                    for (let k = 0; k < toks[i].n.length; k++) { concat += toks[i].n[k]; map.push(i); }
+                }
+                const data = toks.length ? { toks, concat, map } : null;
+                cache.set(pi, data);
+                return data;
+            };
 
-            let concat = "";
-            const map: number[] = [];
-            for (let i = 0; i < toks.length; i++) {
-                for (let k = 0; k < toks[i].n.length; k++) { concat += toks[i].n[k]; map.push(i); }
-            }
-
-            let best: number[] | null = null;
-            for (const target of candidates) {
-                let bestDy = Infinity, from = 0, idx: number;
+            // Best occurrence of `target` on one page → bounding box. With `refY`
+            // (the dest page), pick the occurrence whose top is nearest refY; else
+            // (a neighbour) the TOPMOST occurrence, since a section heading sits high.
+            const matchOnPage = (data: any, target: string, refY: number | null): number[] | null => {
+                if (!data) return null;
+                const { toks, concat, map } = data;
+                let best: number[] | null = null, bestScore = Infinity;
+                let from = 0, idx: number;
                 while ((idx = concat.indexOf(target, from)) !== -1) {
                     const startTok = map[idx], endTok = map[idx + target.length - 1];
-                    const dy = Math.abs(toks[startTok].y1 - destY);
-                    if (dy < bestDy) { bestDy = dy; best = [startTok, endTok]; }
+                    const topY = toks[startTok].y1;
+                    const score = refY != null ? Math.abs(topY - refY) : -topY;   // -topY → higher on page wins
+                    if (score < bestScore) { bestScore = score; best = [startTok, endTok]; }
                     from = idx + 1;
                 }
-                if (best) break;
-            }
-            if (!best) return null;
+                if (!best) return null;
+                let X0 = Infinity, Y0 = Infinity, X1 = -Infinity, Y1 = -Infinity;
+                for (let i = best[0]; i <= best[1]; i++) {
+                    if (toks[i].x0 < X0) X0 = toks[i].x0;
+                    if (toks[i].y0 < Y0) Y0 = toks[i].y0;
+                    if (toks[i].x1 > X1) X1 = toks[i].x1;
+                    if (toks[i].y1 > Y1) Y1 = toks[i].y1;
+                }
+                if (!isFinite(X0) || !isFinite(Y0) || !isFinite(X1) || !isFinite(Y1)) return null;
+                return [X0, Y0, X1, Y1];
+            };
 
-            let X0 = Infinity, Y0 = Infinity, X1 = -Infinity, Y1 = -Infinity;
-            for (let i = best[0]; i <= best[1]; i++) {
-                if (toks[i].x0 < X0) X0 = toks[i].x0;
-                if (toks[i].y0 < Y0) Y0 = toks[i].y0;
-                if (toks[i].x1 > X1) X1 = toks[i].x1;
-                if (toks[i].y1 > Y1) Y1 = toks[i].y1;
+            // Page search order: dest page, then the neighbour the dest leans toward.
+            let pageHeight = 0;
+            try { pageHeight = app.pdfViewer._pages[pageIndex].viewport.viewBox[3]; } catch (_) {}
+            const nearBottom = pageHeight ? (destY < pageHeight / 2) : true;
+            const order = [pageIndex];
+            for (const np of (nearBottom ? [pageIndex + 1, pageIndex - 1] : [pageIndex - 1, pageIndex + 1])) {
+                if (np >= 0 && np < numPages) order.push(np);
             }
-            if (!isFinite(X0) || !isFinite(Y0) || !isFinite(X1) || !isFinite(Y1)) return null;
-            return [X0, Y0, X1, Y1];
+
+            // Prefer the FULL candidate ANYWHERE over the stripped one; within a
+            // candidate, the earliest page in `order` (dest first) wins.
+            for (const target of candidates) {
+                for (const pi of order) {
+                    const data = await tokensFor(pi);
+                    const box = matchOnPage(data, target, pi === pageIndex ? destY : null);
+                    if (box) return { rect: box, pageIndex: pi };
+                }
+            }
+            return null;
         } catch (_) { return null; }
+    }
+
+    /** Scroll the reader so the recovered heading `rect` (PDF points, bottom-left
+     *  origin) on `pageIndex` sits near the top of the viewport. Done by setting
+     *  the viewer container's `scrollTop` DIRECTLY — the reader's own
+     *  `navigateToPosition` throws across the chrome↔content Xray boundary
+     *  (`_pages[pageIndex]` reads as undefined even when the page is laid out), but
+     *  a plain DOM scroll property works. Falls back to `currentPageNumber` when the
+     *  page view isn't laid out yet. Returns true on a precise scroll. */
+    _wvOutlineScrollToRect(pv: any, pageIndex: number, rect: number[]): boolean {
+        try {
+            const win = pv && pv._iframeWindow;
+            const app = win && win.PDFViewerApplication;
+            const viewer = app && app.pdfViewer;
+            const container = win && win.document && win.document.getElementById("viewerContainer");
+            if (!viewer || !container) return false;
+            const pageView = viewer._pages && viewer._pages[pageIndex];
+            const vp = pageView && pageView.viewport;
+            if (!pageView || !pageView.div || !vp) {
+                try { viewer.currentPageNumber = pageIndex + 1; } catch (_) {}   // at least the right page
+                return false;
+            }
+            const scale = vp.scale || viewer.currentScale || 1;
+            const pageHeightPts = (vp.viewBox && vp.viewBox[3]) || 0;
+            const fromTopPts = pageHeightPts - rect[3];   // rect[3] = y1 = heading top edge
+            const headingTopDocY = pageView.div.offsetTop + fromTopPts * scale;
+            // CENTER the heading vertically — matching native Zotero's default
+            // outline-click behaviour (`navigateToPosition` with no `block` does
+            // `top = y - clientHeight/2 - 5`).
+            const target = headingTopDocY - (container.clientHeight / 2) - 5;
+            container.scrollTop = Math.max(0, target);
+            return true;
+        } catch (e) { return false; }
     }
 
     /** The reader LAYER page object bound to the LIVE pdf.js page view for
@@ -6537,6 +6627,10 @@ class _ReaderPanelsMixin {
                                 // We do the scroll and fully own the highlight +
                                 // its (reset-on-each-click) timer — fixing the
                                 // inconsistency for BOTH outline kinds.
+                                // Scroll to the dest FIRST — this reliably moves the
+                                // view to the right area and renders the dest page + its
+                                // neighbours (navigateToPosition needs the target page
+                                // rendered). The recovery then nudges to the exact heading.
                                 try {
                                     if (!(options && options.skipHistory) && typeof pv._onManualNavigation === "function") {
                                         try { pv._onManualNavigation(); } catch (_) {}
@@ -6547,17 +6641,34 @@ class _ReaderPanelsMixin {
                                     try { origNavigate(location, options); } catch (_) {}
                                 }
                                 if (plugin._wvOutlineIsPointRect(location.position)) {
-                                    // Embedded: dest is a bare point → recover the
-                                    // heading's text box, then flash it.
+                                    // Embedded: the dest is a bare POINT, often a hair
+                                    // before the heading (sometimes on the previous page).
+                                    // Recover the heading's real box, then — once the dest
+                                    // scroll has settled — bring it into view IF it isn't
+                                    // already (`ifNeeded`), aligned to the top (`block:
+                                    // start`), and flash it. The deferred second nudge (vs
+                                    // an immediate one) avoids racing the dest scroll, the
+                                    // race that left the heading off-screen before.
                                     const r = location.position.rects[0];
                                     Promise.resolve(
                                         plugin._wvOutlineRecoverRect(pv, pi, r[0], r[1], title)
-                                    ).then(function (box: any) {
-                                        if (box) plugin._wvOutlineHighlightInPlace(pv, pi, [box], gen, 0);
+                                    ).then(function (res: any) {
+                                        if (!res || pv._wvHlSeq !== gen) return;   // none / superseded
+                                        const w = pv._iframeWindow;
+                                        const nudge = function () {
+                                            if (pv._wvHlSeq !== gen) return;
+                                            // Scroll the heading to the top via a direct DOM
+                                            // scroll (navigateToPosition throws across the
+                                            // Xray boundary). Deferred so the dest scroll has
+                                            // rendered/laid out the heading's page first.
+                                            try { plugin._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
+                                            plugin._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
+                                        };
+                                        if (w && w.setTimeout) w.setTimeout(nudge, 130); else nudge();
                                     }).catch(function () {});
                                 } else {
-                                    // Extracted: the entry already carries the real
-                                    // heading rect — flash it directly (no recovery).
+                                    // Extracted: the entry already carries the real heading
+                                    // rect on the dest page — flash it directly.
                                     const rr = location.position.rects[0];
                                     plugin._wvOutlineHighlightInPlace(pv, pi, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
                                 }

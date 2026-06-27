@@ -297,15 +297,17 @@ class _TabGroupsMixin {
                 // Inline group headers nesting the tab rows (Firefox layout).
                 // The chip's CENTER sits on the tab-icon column's center.
                 // Icon position depends on the panel mode (measured): flat
-                // list icons center at x=14 → chip padding-left 4; sort-by-
-                // library indents rows (18px) → icons center at x=26 → 16.
+                // Tab rows now always live in a `.wv-winscope` wrapper that indents
+                // them `padding-inline-start: 18px` (window → tab hierarchy), in BOTH
+                // sort states. So the chip's left edge is pinned to that same 18px
+                // regardless of Sort-by-Library — header margin-left(4)+padding-left(14)
+                // = 18, lining the chip up with every ungrouped tab icon. (The old
+                // grouped-only 16px override was stale: it pre-dated the wrapper indent
+                // and left the chip ~10px adrift whenever Sort-by-Library was off.)
                 ".wv-tgrow-header {",
                 "  display: flex; align-items: center; gap: 7px;",
-                "  padding: 4px 8px 4px 4px; margin: 2px 4px 0; border-radius: 5px;",
+                "  padding: 4px 8px 4px 14px; margin: 2px 4px 0; border-radius: 5px;",
                 "  font-size: 12px; font-weight: 600;",
-                "}",
-                "#zotero-tabs-menu-panel.wv-tabs-menu-grouped .wv-tgrow-header {",
-                "  padding-left: 16px;",
                 "}",
                 ".wv-tgrow-header:hover { background: rgba(127,127,127,0.18); }",
                 ".wv-tgrow-chip { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }",

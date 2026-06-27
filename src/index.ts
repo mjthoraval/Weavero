@@ -1831,7 +1831,7 @@ class WeaveroPlugin {
                 // multiple main windows + restore, note-in-deck-window, reader item
                 // pane. `_wvMigrateTabsWindowsDefaults` applies these to existing
                 // installs (whose stored user values would otherwise mask them).
-                "enableTabGroups",
+                "enableTabGroups", "enableTabSessions",
                 "compactTitleBar", "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
                 "noteOpenInDeckWindow",
                 "devNewMainWindow", "devSessionAutoReopen",

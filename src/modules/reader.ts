@@ -12649,23 +12649,26 @@ class _ReaderMixin {
             let btn = stripEl.querySelector(":scope > .wv-hamburger-btn");
             if (btn) return btn;
 
-            // 1. Find every top-level <menu> across all <menubar>s. Skip
-            //    platform-hidden ones (Zotero hides `go-menu` and `windowMenu`
-            //    with `hidden="true"` on Windows / Linux — they're macOS-only;
-            //    we'd otherwise expose empty entries in the hamburger).
+            // 1. Find every top-level <menu> across all <menubar>s, INCLUDING
+            //    currently-hidden ones. `go-menu` is NOT macOS-only — it's
+            //    `menu-type-reader`, hidden only when no reader tab is active and
+            //    shown (all platforms) on a reader tab. `windowMenu` is macOS-only.
+            //    We include both and sync each hamburger entry's visibility to its
+            //    live source menu on every open (see the popupshowing handler), so
+            //    Go appears on reader tabs and Window stays hidden on Windows.
             const sources: any[] = [];
             for (const mb of doc.querySelectorAll("menubar")) {
                 for (const ch of mb.children) {
                     if (ch.tagName !== "menu") continue;
-                    if ((ch as any).hidden
-                            || ch.getAttribute("hidden") === "true"
-                            || ch.getAttribute("collapsed") === "true") continue;
                     const popupId = ch.querySelector(":scope > menupopup")?.id;
                     if (!popupId) continue;
+                    const hidden = !!(ch as any).hidden
+                        || ch.getAttribute("hidden") === "true"
+                        || ch.getAttribute("collapsed") === "true";
                     sources.push({
                         label: ch.getAttribute("label") || "",
                         accesskey: ch.getAttribute("accesskey") || "",
-                        popupId,
+                        popupId, hidden,
                     });
                 }
             }
@@ -12716,6 +12719,8 @@ class _ReaderMixin {
                 const submenu: any = doc.createXULElement("menu");
                 submenu.setAttribute("label", src.label);
                 if (src.accesskey) submenu.setAttribute("accesskey", src.accesskey);
+                if (src.hidden) submenu.hidden = true;
+                submenu._wvSrcPopupId = src.popupId;   // for the visibility sync below
                 const innerPlaceholder: any = doc.createXULElement("menupopup");
                 const popupIdForCapture = src.popupId;
                 const parentMenuItem = submenu;
@@ -12811,6 +12816,22 @@ class _ReaderMixin {
             // We treat a click within this window of a popuphidden as the
             // SAME interaction that closed the popup, and skip the re-open.
             let lastHiddenAt = 0;
+            // Sync each top-level entry's visibility to its live source menu so
+            // reader-only menus (Go) appear on reader tabs and vanish otherwise,
+            // and always-hidden menus (Window on Windows) stay hidden.
+            popup.addEventListener("popupshowing", (e: any) => {
+                if (e.target !== popup) return;   // not the nested source placeholders
+                try {
+                    for (const sm of [...popup.children] as any[]) {
+                        const pid = sm._wvSrcPopupId;
+                        if (!pid) continue;
+                        const srcMenu: any = doc.getElementById(pid)?.parentElement;
+                        sm.hidden = !srcMenu || !!srcMenu.hidden
+                            || srcMenu.getAttribute("hidden") === "true"
+                            || srcMenu.getAttribute("collapsed") === "true";
+                    }
+                } catch (er) {}
+            }, true);
             popup.addEventListener("popupshown", () => {
                 wvLog("popupshown  state=" + popup.state);
                 try {

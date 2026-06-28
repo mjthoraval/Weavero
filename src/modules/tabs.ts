@@ -648,9 +648,18 @@ class _TabsMixin {
                         tabs.push(r);
                     }
                 }
-                if (tabs.length) sections.push({ label: rn > 1 ? "Reader window " + rn : "Reader window", tabs, kind: "reader" });
+                if (tabs.length) sections.push({ label: rn > 1 ? "Reader window " + rn : "Reader window", win: w, tabs, kind: "reader" });
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuOtherWindowSections err: " + e); }
+        // The window you're viewing from leads the list. For a MAIN window the
+        // current window is already pinned to the top natively (its tabs are the
+        // panel's own list); it's skipped above, so this is a no-op there. For a
+        // READER window there's no native list, so its section would otherwise sit
+        // after every main window — pull it to the front.
+        try {
+            const ci = sections.findIndex((s: any) => s.win && s.win === curWin);
+            if (ci > 0) { const [cur] = sections.splice(ci, 1); sections.unshift(cur); }
+        } catch (e) {}
         return sections;
     }
 

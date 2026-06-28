@@ -550,11 +550,42 @@ class _PaneMixin {
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
-    /** A small plus icon (data URI) for the "New Group" rows. */
+    /** A small plus icon (data URI) for the "New Group" rows. Drawn as whole-pixel
+     *  rects at 16×16 (1:1 with the menu icon) so it stays crisp — no scaling, no
+     *  soft round caps. */
     _wvPlusIconURI(dark: boolean): string {
-        const c = dark ? "rgba(255,255,255,0.72)" : "rgba(0,0,0,0.58)";
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">'
-            + '<path d="M7 2.5v9M2.5 7h9" stroke="' + c + '" stroke-width="1.5" stroke-linecap="round"/></svg>';
+        const c = dark ? "rgba(255,255,255,0.78)" : "rgba(0,0,0,0.62)";
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+            + '<rect x="7" y="3" width="2" height="10" fill="' + c + '"/>'
+            + '<rect x="3" y="7" width="10" height="2" fill="' + c + '"/>'
+            + '</svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    /** A MAIN-window icon (data URI): the window frame with a blue tab at its top
+     *  left (a main window has tabs) — distinguishes it from reader windows, which
+     *  keep the plain frame. */
+    _wvMainWindowIconURI(dark: boolean): string {
+        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
+        const blue = dark ? "#5b9bf8" : "#4072e5";
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+            + '<rect x="1" y="2.5" width="14" height="11" rx="2" ry="2" fill="none" stroke="' + c + '" stroke-width="1.3"/>'
+            + '<rect x="2.3" y="3.4" width="5.6" height="2.6" rx="0.9" ry="0.9" fill="' + blue + '"/>'
+            + '</svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    /** A "new MAIN window" icon (data URI): the main-window frame (blue tab at the
+     *  top left) with a sharp "+" badge over its bottom-right corner. */
+    _wvNewWindowIconURI(dark: boolean): string {
+        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
+        const blue = dark ? "#5b9bf8" : "#4072e5";
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+            + '<rect x="1" y="2.5" width="12" height="9.5" rx="1.6" ry="1.6" fill="none" stroke="' + c + '" stroke-width="1.2"/>'
+            + '<rect x="2.2" y="3.3" width="4.9" height="2.3" rx="0.8" ry="0.8" fill="' + blue + '"/>'
+            + '<rect x="11" y="9" width="2" height="6" fill="' + c + '"/>'
+            + '<rect x="9" y="11" width="6" height="2" fill="' + c + '"/>'
+            + '</svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
@@ -621,7 +652,9 @@ class _PaneMixin {
             // (open a New Tab there); its tab groups + "New Group" sit directly under
             // it, indented. Everything visible at once — no submenus to hover.
             const dark = !!(this._detectUIDark && this._detectUIDark());
-            const winIcon = this._wvWindowIconURI(dark);
+            const mainIcon = this._wvMainWindowIconURI(dark);   // blue-tab frame (main windows)
+            const readerIcon = this._wvWindowIconURI(dark);     // plain frame (reader windows)
+            const newWinIcon = this._wvNewWindowIconURI(dark);  // frame + "+" badge
             const plusIcon = this._wvPlusIconURI(dark);
             const INDENT = "padding-inline-start: 1.7em;";
             for (const t of targets) {
@@ -629,7 +662,7 @@ class _PaneMixin {
                 const wi = doc.createXULElement("menuitem");
                 wi.setAttribute("label", t.name);
                 wi.classList.add("menuitem-iconic");
-                wi.setAttribute("image", winIcon);
+                wi.setAttribute("image", t.isReader ? readerIcon : mainIcon);
                 wi.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
                 pop.appendChild(wi);
                 // This window's groups + "New Group", indented under it (main windows
@@ -660,9 +693,9 @@ class _PaneMixin {
             // "New Group" opens into a fresh group created in that new window.
             pop.appendChild(doc.createXULElement("menuseparator"));
             const nwItem = doc.createXULElement("menuitem");
-            nwItem.setAttribute("label", "New Window");
+            nwItem.setAttribute("label", "New Main Window");
             nwItem.classList.add("menuitem-iconic");
-            nwItem.setAttribute("image", winIcon);
+            nwItem.setAttribute("image", newWinIcon);
             nwItem.addEventListener("command", () => { this._wvOpenInNewMainWindow(win, false); });
             pop.appendChild(nwItem);
             const nwGroup = doc.createXULElement("menuitem");

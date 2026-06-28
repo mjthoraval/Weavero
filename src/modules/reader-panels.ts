@@ -6485,10 +6485,11 @@ class _ReaderPanelsMixin {
             const pageHeightPts = (vp.viewBox && vp.viewBox[3]) || 0;
             const fromTopPts = pageHeightPts - rect[3];   // rect[3] = y1 = heading top edge
             const headingTopDocY = pageView.div.offsetTop + fromTopPts * scale;
-            // CENTER the heading vertically — matching native Zotero's default
-            // outline-click behaviour (`navigateToPosition` with no `block` does
-            // `top = y - clientHeight/2 - 5`).
-            const target = headingTopDocY - (container.clientHeight / 2) - 5;
+            // Place the heading ONE THIRD down from the top of the view. This is the
+            // single consistent rule for ALL outline clicks (embedded + extracted) —
+            // deliberately neither native's top-align (`block: 'start'`, outline
+            // sidebar) nor its centre (`block: 'center'`, search/annotations).
+            const target = headingTopDocY - (container.clientHeight / 3);
             container.scrollTop = Math.max(0, target);
             return true;
         } catch (e) { return false; }
@@ -6669,10 +6670,17 @@ class _ReaderPanelsMixin {
                                     }).catch(function () { try { destScroll(); } catch (_) {} });
                                 } else {
                                     // Extracted: the entry already carries the real heading rect
-                                    // on the dest page — navigate to it (already the heading, so
-                                    // no flicker) and flash it directly.
-                                    destScroll();
+                                    // on the dest page. Scroll DIRECTLY to it one-third down (the
+                                    // SAME rule as the embedded case) in ONE move — NOT native's
+                                    // block:'start' top-jump — so both outline kinds land
+                                    // identically and there's no flicker. Fall back to the native
+                                    // nav only if the page isn't laid out yet.
                                     const rr = location.position.rects[0];
+                                    markNav();
+                                    if (!plugin._wvOutlineScrollToRect(pv, pi, rr)) {
+                                        try { pv.navigateToPosition(location.position, options); }
+                                        catch (e) { try { origNavigate(location, options); } catch (_) {} }
+                                    }
                                     plugin._wvOutlineHighlightInPlace(pv, pi, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
                                 }
                             }

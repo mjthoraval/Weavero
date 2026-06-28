@@ -3187,11 +3187,8 @@ class _TabsMixin {
                             const tabID = ctx.tabID;
                             if (!popup || !win || !tabID || tabID === "zotero-pane") return;
                             const targets = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(win, tabID) : [tabID];
-                            // Inject the nested window/group move targets (single +
-                            // multi). Then, for a multi-selection, the relabel +
-                            // whole-selection edge moves.
-                            self._wvInjectMoveTargetsIntoNativeMoveMenu(win, popup, targets);
-                            if (targets && targets.length > 1) self._wvMakeMoveTabMenuMulti(win, popup, targets);
+                            if (!targets || targets.length <= 1) return;   // single → leave native
+                            self._wvMakeMoveTabMenuMulti(win, popup, targets);
                         } catch (e) {}
                     },
                 }],

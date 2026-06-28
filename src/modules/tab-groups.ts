@@ -4237,9 +4237,21 @@ class _TabGroupsMixin {
                         menuType: "submenu",
                         menus: [{ menuType: "menuitem", l10nID: "zotero-general-cancel" }],
                         onShowing: (_ev: any, ctx: any) => {
-                            // The standalone "Add Tab to Group" submenu is now merged
-                            // into the native "Move Tab" submenu (see tabs.ts ->
-                            // _wvInjectMoveTargetsIntoNativeMoveMenu). Keep it hidden.
+                            // The standalone "Add Tab to Group" submenu is merged into
+                            // the native "Move Tab" submenu. THIS onShowing reliably has
+                            // popup access (it's a real submenu, unlike the hidden
+                            // move-tabs hook), so we inject the window/group move targets
+                            // into Move Tab from here, then hide this entry.
+                            try {
+                                const winI = ctx.menuElem.ownerDocument.defaultView;
+                                const popupI = ctx.menuElem.parentNode;
+                                const tabIDI = ctx.tabID;
+                                if (popupI && winI && tabIDI && tabIDI !== "zotero-pane"
+                                        && typeof (self as any)._wvInjectMoveTargetsIntoNativeMoveMenu === "function") {
+                                    const tgts = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(winI, tabIDI) : [tabIDI];
+                                    (self as any)._wvInjectMoveTargetsIntoNativeMoveMenu(winI, popupI, tgts);
+                                }
+                            } catch (e) {}
                             try { ctx.setVisible(false); } catch (e) {}
                             return;
                             // eslint-disable-next-line no-unreachable

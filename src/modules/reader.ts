@@ -3700,17 +3700,30 @@ class _ReaderMixin {
                 "  padding: 2px;",
                 "  padding-inline-start: 5px;",
                 "}",
-                /* The blue focus line. In the MAIN window this is the OS default
-                   :focus-visible outline — Zotero gates its own focus-ring off on
-                   Windows (`@media not windows`), letting the platform ring show.
-                   But the READER chrome window (reader.xhtml) resets input outlines
-                   to none, so the UA ring never appears here. We redraw the same
-                   accent ring explicitly; the id+`:focus-visible` selector outranks
-                   that generic reset. The search autofocuses on panel open, so this
-                   is what the user sees the moment the menu opens. */
-                "#wv-wtl-filter:focus-visible, #wv-wtl-filter:focus {",
-                "  outline: 2px solid var(--color-accent, #4072e5);",
-                "  outline-offset: -1px;",
+                /* The blue line BELOW the input on focus — NOT a surrounding ring.
+                   In the main window this comes from Zotero's global Windows input
+                   style (scss/win/components/_input.scss -> windows-input-active):
+                   a 2px --accent-blue line painted as a background-image gradient at
+                   the bottom edge (the border stays transparent — the tabs-menu id
+                   rule overrides it). The reader chrome window (reader.xhtml) doesn't
+                   load that global stylesheet, so the line never appears here unless
+                   we replicate the gradient verbatim. Light + dark variants mirror
+                   the mixin's two background layers (accent line + faint overlay). */
+                "#wv-wtl-filter:focus, #wv-wtl-filter:focus-visible, #wv-wtl-filter:active {",
+                "  outline: none;",
+                "  background-clip: border-box, padding-box;",
+                "  background-repeat: no-repeat;",
+                "  background-color: unset;",
+                "  background-image:",
+                "    linear-gradient(to top, var(--accent-blue, #4072e5) 2px, transparent 2px 100%),",
+                "    linear-gradient(rgba(255,255,255,0.3), rgba(255,255,255,0.3));",
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  #wv-wtl-filter:focus, #wv-wtl-filter:focus-visible, #wv-wtl-filter:active {",
+                "    background-image:",
+                "      linear-gradient(to top, var(--accent-blue, #4072e5) 2px, transparent 2px 100%),",
+                "      linear-gradient(var(--fill-senary, rgba(255,255,255,0.03)), var(--fill-senary, rgba(255,255,255,0.03)));",
+                "  }",
                 "}",
                 /* Gear (settings) button — far left, outside the input. */
                 "#wv-wtl-settings-btn, #wv-wtl-filetype-btn {",

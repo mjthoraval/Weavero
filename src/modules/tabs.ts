@@ -3169,6 +3169,10 @@ class _TabsMixin {
         try {
             const MM: any = (Zotero as any).MenuManager;
             if (!MM || typeof MM.registerMenu !== "function") return;
+            // Re-register cleanly so a reload picks up the latest onShowing (else a
+            // stale registration — from before the move-targets injection existed —
+            // keeps winning and the targets never appear).
+            this._unregisterMoveTabsMenu();
             const self = this;
             const id = MM.registerMenu({
                 menuID: "weavero-move-tabs",

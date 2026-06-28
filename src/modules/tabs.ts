@@ -619,6 +619,10 @@ class _TabsMixin {
                 const w: any = en.getNext();
                 rn++;
                 const st = w._wvWT;
+                // The window's currently-open tab, so we can highlight it in the
+                // list — but only for the window you're viewing from (curWin), the
+                // same as the main window, which marks ONLY the current window's tab.
+                const activeId = st && st.activeId;
                 const tabs: any[] = [];
                 if (st && Array.isArray(st.tabs)) {
                     for (const t of st.tabs) {
@@ -626,6 +630,7 @@ class _TabsMixin {
                         if (!item) continue;
                         const tabId = t.id, rw = w;
                         const r = liveStamp(item, null) as any;
+                        r.selected = (w === curWin && t.id === activeId);
                         r.onClick = () => {
                             try {
                                 rw.focus();
@@ -988,7 +993,7 @@ class _TabsMixin {
      *  view so both share the same design. */
     _wvTabsMenuTabRow(doc: any, tb: any, panel: any, marker: string) {
         const row = doc.createElement("div");
-        row.className = "row " + (marker || "");
+        row.className = "row " + (marker || "") + (tb.selected ? " selected" : "");
         row.style.cursor = "pointer";
         const title = doc.createElement("div");
         title.setAttribute("flex", "1");

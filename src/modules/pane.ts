@@ -807,17 +807,22 @@ class _PaneMixin {
      *  the new window if it landed elsewhere. (The earlier focus-then-open approach
      *  worked only in the test bridge, where no other window competes for focus.) */
     async _wvOpenInNewMainWindow(srcWin: any, createNewGroup?: boolean) {
+        const LOG = (m: string) => { try { Zotero.debug("[Weavero][NewMainWindow] " + m); } catch (e) {} };
+        const winName = (w: any) => { try { return (w && this._wvWindowName) ? this._wvWindowName(w) : (w ? "(win)" : "(null)"); } catch (e) { return "?"; } };
         try {
+            LOG("start createNewGroup=" + !!createNewGroup + " srcWin=" + winName(srcWin));
             // Capture the attachments BEFORE the new window steals focus.
             const zp = srcWin && srcWin.ZoteroPane;
             const sel = (zp && typeof zp.getSelectedItems === "function") ? zp.getSelectedItems() : [];
             const atts: any[] = [];
             for (const it of sel) { const a = this._wvGetBestAttachmentSync(it); if (a) atts.push(a); }
-            if (!atts.length) return;
+            LOG("selected=" + sel.length + " attachments=" + atts.length);
+            if (!atts.length) { LOG("no attachments -> abort"); return; }
             // Open a new main window and find it (openMainWindow returns nothing).
             const before = new Set(Zotero.getMainWindows());
+            LOG("mainWindowsBefore=" + before.size + " -> openMainWindow()");
             try { (Zotero as any).openMainWindow(); }
-            catch (e) { Zotero.debug("[Weavero] openMainWindow err: " + e); return; }
+            catch (e) { LOG("openMainWindow THREW: " + e); return; }
             const st = (srcWin && srcWin.setTimeout) ? srcWin.setTimeout.bind(srcWin) : setTimeout;
             let newWin: any = null;
             await new Promise<void>((resolve) => {
@@ -833,29 +838,66 @@ class _PaneMixin {
                 };
                 find();
             });
-            if (!newWin) { Zotero.debug("[Weavero] new main window not found"); return; }
+            if (!newWin) { LOG("new main window NOT FOUND after wait (mainWindowsNow=" + Zotero.getMainWindows().length + ") -> abort"); return; }
+            LOG("found newWin=" + winName(newWin) + " (mainWindowsNow=" + Zotero.getMainWindows().length + ")");
             try { if (newWin.focus) newWin.focus(); } catch (e) {}
+            LOG("focused newWin; getMainWindow()=" + winName(Zotero.getMainWindow()));
             // Fresh group (homed in newWin once a tab lands there).
             let groupID: any = null;
-            if (createNewGroup) { try { groupID = this._tabGroupCreate("", this._wvTabGroupNextColor()).id; } catch (e) {} }
+            if (createNewGroup) { try { groupID = this._tabGroupCreate("", this._wvTabGroupNextColor()).id; LOG("created group " + groupID); } catch (e) { LOG("group create err " + e); } }
             // Open each attachment, then ensure it ends up in newWin (+ group).
             for (const att of atts) {
                 let reader: any = null;
                 try { reader = await (Zotero.Reader as any).open(att.id, null, { openInWindow: false, allowDuplicate: true, openInBackground: true }); }
-                catch (e) { Zotero.debug("[Weavero] new-window Reader.open err: " + e); continue; }
+                catch (e) { LOG("Reader.open THREW att=" + att.id + ": " + e); continue; }
                 const tabID = reader && reader.tabID;
-                if (!tabID) continue;
+                LOG("Reader.open att=" + att.id + " -> tabID=" + tabID + " type=" + (reader && reader.constructor && reader.constructor.name));
+                if (!tabID) { LOG("no tabID -> skip"); continue; }
                 const landedWin = Zotero.getMainWindows().find((w: any) => w.Zotero_Tabs && w.Zotero_Tabs._tabs.some((t: any) => t.id === tabID));
+                LOG("tab landed in " + winName(landedWin) + " (isNewWin=" + (landedWin === newWin) + ")");
                 if (landedWin === newWin) {
-                    if (groupID) { try { this._wvTabGroupAddTab(newWin, tabID, groupID); } catch (e) {} }
-                    else { try { newWin.Zotero_Tabs.select(tabID); } catch (e) {} }
+                    if (groupID) { try { this._wvTabGroupAddTab(newWin, tabID, groupID); LOG("added to group in newWin"); } catch (e) { LOG("addTab err " + e); } }
+                    else { try { newWin.Zotero_Tabs.select(tabID); LOG("selected in newWin"); } catch (e) {} }
                 } else if (landedWin) {
-                    // Reader.open landed it in another window — move it to newWin.
-                    if (groupID) { try { this._wvTabGroupSendTabToWin(landedWin, tabID, newWin, groupID); } catch (e) {} }
-                    else { try { this._wvMoveTabBetweenMains(landedWin, newWin, { itemID: att.id, sourceTabId: tabID }, newWin.Zotero_Tabs._tabs.length, 0); } catch (e) {} }
-                }
+                    LOG("MOVING from " + winName(landedWin) + " to " + winName(newWin) + (groupID ? " (group)" : " (loose)"));
+                    if (groupID) { try { this._wvTabGroupSendTabToWin(landedWin, tabID, newWin, groupID); LOG("sendTabToWin done"); } catch (e) { LOG("sendTabToWin err " + e); } }
+                    else { try { this._wvMoveTabBetweenMains(landedWin, newWin, { itemID: att.id, sourceTabId: tabID }, newWin.Zotero_Tabs._tabs.length, 0); LOG("moveTabBetweenMains done"); } catch (e) { LOG("moveTabBetweenMains err " + e); } }
+                } else { LOG("landedWin NULL -> tab " + tabID + " not in any window?!"); }
             }
-        } catch (e) { Zotero.debug("[Weavero] _wvOpenInNewMainWindow err: " + e); }
+            // The new window inherited the full session (duplicate tabs). Make it
+            // CLEAN — keep only the library tab + the item(s) we opened. The session
+            // restore is async, so poll until the tab count settles, then close the
+            // duplicates (safe: they're copies; the originals stay in their source
+            // window — only the new window's instances are removed).
+            const keepItemIDs = new Set(atts.map((a: any) => a.id));
+            await new Promise<void>((resolve) => {
+                let lastCount = -1, stable = 0, attempts = 0;
+                const clean = () => {
+                    try {
+                        const Z = newWin.Zotero_Tabs;
+                        const n = (Z && Z._tabs) ? Z._tabs.length : 0;
+                        if (n === lastCount) stable++; else { stable = 0; lastCount = n; }
+                        if (stable >= 3 || attempts++ > 50) {
+                            const toClose = (Z._tabs || []).filter((t: any) =>
+                                t.id !== "zotero-pane" && t.type !== "library"
+                                && !(t.data && keepItemIDs.has(t.data.itemID))).map((t: any) => t.id);
+                            LOG("clean: tab count stable at " + n + "; closing " + toClose.length + " restored duplicate(s)");
+                            try { if (toClose.length) Z.close(toClose); } catch (e) { LOG("close err " + e); }
+                            resolve(); return;
+                        }
+                        st(clean, 200);
+                    } catch (e) { LOG("clean err " + e); resolve(); }
+                };
+                st(clean, 300);
+            });
+            // Re-select the item and raise the now-clean window to the front.
+            try {
+                const itemTab = (newWin.Zotero_Tabs._tabs || []).find((t: any) => t.data && keepItemIDs.has(t.data.itemID));
+                if (itemTab) newWin.Zotero_Tabs.select(itemTab.id);
+            } catch (e) {}
+            try { if (newWin.focus) newWin.focus(); } catch (e) {}
+            LOG("done");
+        } catch (e) { LOG("OUTER THREW: " + e); }
     }
 
     /** Register the reader-tab right-click menu entries via Zotero's

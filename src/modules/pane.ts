@@ -536,6 +536,28 @@ class _PaneMixin {
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
+    /** A window-frame icon (data URI) for the "Open … in" window rows — mirrors the
+     *  tabs-menu `.wv-winicon` glyph (rounded rect + title bar). Colour follows the
+     *  menu theme (light / dark). */
+    _wvWindowIconURI(dark: boolean): string {
+        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
+        // Match the tabs-menu .wv-winicon: a 16×13 rounded window frame with a
+        // title bar across the top (sessions.ts).
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+            + '<rect x="1" y="2.5" width="14" height="11" rx="2" ry="2" fill="none" stroke="' + c + '" stroke-width="1.3"/>'
+            + '<rect x="1.9" y="3.4" width="12.2" height="2" fill="' + c + '" fill-opacity="0.5"/>'
+            + '</svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    /** A small plus icon (data URI) for the "New Group" rows. */
+    _wvPlusIconURI(dark: boolean): string {
+        const c = dark ? "rgba(255,255,255,0.72)" : "rgba(0,0,0,0.58)";
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">'
+            + '<path d="M7 2.5v9M2.5 7h9" stroke="' + c + '" stroke-width="1.5" stroke-linecap="round"/></svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
     /** Ordered list of windows that can host a new tab — every main window, then
      *  every Weavero multi-tab reader window — as `{win, name, isReader}`. Reader
      *  windows are labelled "Reader window"(/ N) like the tabs-menu sections. */
@@ -596,40 +618,40 @@ class _PaneMixin {
             const pop = doc.createXULElement("menupopup");
             parent.appendChild(pop);
 
-            // FLAT layout: every window first (open a New Tab there), then a
-            // separator + every tab group (open into it; suffixed with its window
-            // when there's more than one), then a separator + "New Group" per main
-            // window. Everything is visible at once — no per-window nesting.
-            const mainTargets = targets.filter((t: any) => !t.isReader);
-            const multiWin = mainTargets.length > 1;
+            // FLAT, grouped by window: every window is a row with the window icon
+            // (open a New Tab there); its tab groups + "New Group" sit directly under
+            // it, indented. Everything visible at once — no submenus to hover.
+            const dark = !!(this._detectUIDark && this._detectUIDark());
+            const winIcon = this._wvWindowIconURI(dark);
+            const plusIcon = this._wvPlusIconURI(dark);
+            const INDENT = "padding-inline-start: 1.7em;";
             for (const t of targets) {
                 const w = t.win;
                 const wi = doc.createXULElement("menuitem");
                 wi.setAttribute("label", t.name);
+                wi.classList.add("menuitem-iconic");
+                wi.setAttribute("image", winIcon);
                 wi.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
                 pop.appendChild(wi);
-            }
-            if (groups.length) {
-                pop.appendChild(doc.createXULElement("menuseparator"));
-                for (const g of groups) {
-                    const gw = this._wvTabGroupHomeWin(g.id);
-                    const gItem = doc.createXULElement("menuitem");
-                    let glabel = g.name || "Group";
-                    if (multiWin && gw) { const wt = targets.find((t: any) => t.win === gw); if (wt) glabel += "  ·  " + wt.name; }
-                    gItem.setAttribute("label", glabel);
-                    gItem.classList.add("menuitem-iconic");
-                    try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
-                    const gid = g.id;
-                    gItem.addEventListener("command", () => { this._wvOpenInTarget(win, gw, gid); });
-                    pop.appendChild(gItem);
-                }
-            }
-            if (mainTargets.length) {
-                pop.appendChild(doc.createXULElement("menuseparator"));
-                for (const t of mainTargets) {
-                    const w = t.win;
+                // This window's groups + "New Group", indented under it (main windows
+                // only — reader windows host no groups).
+                if (!t.isReader) {
+                    const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
+                    for (const g of winGroups) {
+                        const gItem = doc.createXULElement("menuitem");
+                        gItem.setAttribute("label", g.name || "Group");
+                        gItem.classList.add("menuitem-iconic");
+                        gItem.setAttribute("style", INDENT);
+                        try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
+                        const gid = g.id;
+                        gItem.addEventListener("command", () => { this._wvOpenInTarget(win, w, gid); });
+                        pop.appendChild(gItem);
+                    }
                     const ng = doc.createXULElement("menuitem");
-                    ng.setAttribute("label", multiWin ? ("New Group in " + t.name) : "New Group");
+                    ng.setAttribute("label", "New Group");
+                    ng.classList.add("menuitem-iconic");
+                    ng.setAttribute("style", INDENT);
+                    ng.setAttribute("image", plusIcon);
                     ng.addEventListener("command", () => { this._wvOpenInTarget(win, w, null, true); });
                     pop.appendChild(ng);
                 }

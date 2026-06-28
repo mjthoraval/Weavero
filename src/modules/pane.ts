@@ -604,7 +604,7 @@ class _PaneMixin {
                 wMenu.appendChild(wPop);
                 // Loose "New tab" in this window.
                 const loose = doc.createXULElement("menuitem");
-                loose.setAttribute("label", "New tab");
+                loose.setAttribute("label", "New Tab");
                 loose.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
                 wPop.appendChild(loose);
                 // Tab groups (main windows only — reader windows have none).

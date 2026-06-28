@@ -98,6 +98,15 @@ class _TabGroupsMixin {
         return g;
     }
 
+    /** The next group colour, by rotation through the palette (matches the
+     *  `_wvTabGroupNewFromTabs` convention so new groups cycle colours). */
+    _wvTabGroupNextColor(): string {
+        try {
+            const groups = this._tabGroupsGet();
+            return WV_GROUP_COLORS[groups.length % WV_GROUP_COLORS.length].id;
+        } catch (e) { return "blue"; }
+    }
+
     /** Add a key to a group's item-key SHADOW (removing it from any other
      *  group's shadow first). The shadow is a saved/restart fallback only —
      *  live membership is the per-tab stamp — so groups are NO LONGER deleted
@@ -998,6 +1007,154 @@ class _TabGroupsMixin {
             } catch (e) {}
             this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupAddTab err: " + e); }
+    }
+
+    /** Move a tab to a chosen destination. `srcWin` hosts the tab; `tabId` is its
+     *  id (a main-window Zotero_Tabs id OR a reader-window `_wvWT` id). `target` is
+     *  `{ win, isReader, groupId? }` (as produced by `_wvOpenInTargetWindows()` plus
+     *  the group entries). With a `groupId` the tab lands in that group (groups live
+     *  in a MAIN window — the group's home); otherwise it's a loose move to the
+     *  window. Covers every source/target combination. */
+    async _wvMoveTabToTarget(srcWin: any, tabId: any, target: any) {
+        try {
+            if (!srcWin || tabId == null || !target) return;
+            const tgtWin = target.win;
+            const tgtIsReader = !!target.isReader;
+            const srcIsReader = !!(srcWin && srcWin._wvWT);
+
+            // "New Group in this window" → create one (empty name, next colour),
+            // then move into it as a normal group target. Groups live in main
+            // windows only.
+            if (target.newGroup && !tgtIsReader) {
+                const g = this._tabGroupCreate("", this._wvTabGroupNextColor());
+                return await this._wvMoveTabToTarget(srcWin, tabId, { win: tgtWin, isReader: false, groupId: g.id });
+            }
+            const groupId = target.groupId || null;
+
+            // Resolve the item + note-ness from the source tab.
+            let itemID: any = null, isNote = false;
+            if (srcIsReader) {
+                const t = (srcWin._wvWT.tabs || []).find((x: any) => x.id === tabId);
+                if (!t) return;
+                itemID = t.itemID; isNote = (t.type === "note");
+            } else {
+                const Z = srcWin.Zotero_Tabs;
+                const t = Z && Z._tabs.find((x: any) => x.id === tabId);
+                if (!t || t.id === "zotero-pane" || t.type === "library") return;
+                itemID = t.data && t.data.itemID; isNote = !!(t.type && String(t.type).indexOf("note") !== -1);
+            }
+            if (itemID == null) return;
+
+            // ---- GROUP target — groups live in a MAIN window (the home) ----
+            if (groupId) {
+                const homeWin = this._wvTabGroupHomeWin(groupId) || tgtWin;
+                if (!homeWin) return;
+                if (srcIsReader) {
+                    this._wvMoveReaderTabToMainGroup(srcWin, tabId, itemID, homeWin, groupId);
+                } else if (srcWin === homeWin) {
+                    this._wvTabGroupAddTab(srcWin, tabId, groupId);                  // already home → just group it
+                } else {
+                    this._wvTabGroupSendTabToWin(srcWin, tabId, homeWin, groupId);   // other main → home + stamp
+                }
+                return;
+            }
+
+            // ---- LOOSE move to a window ----
+            if (tgtIsReader) {
+                if (srcWin === tgtWin) return;   // already in this reader window
+                try { await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true }); } catch (e) {}
+                try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
+            } else if (srcIsReader) {
+                this._wvWTMoveTabToMain(srcWin, tabId, tgtWin);                      // reader → main window
+            } else {
+                if (srcWin === tgtWin) return;   // same main window, loose → no-op
+                const Z = tgtWin.Zotero_Tabs;
+                const targetIndex = (Z && Z._tabs) ? Z._tabs.length : 1;            // append to end
+                // maxOtherPinned = 0 so the moved tab is never auto-pinned.
+                this._wvMoveTabBetweenMains(srcWin, tgtWin,
+                    { itemID, sourceTabId: tabId, readerType: isNote ? "note" : undefined }, targetIndex, 0);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMoveTabToTarget err: " + e); }
+    }
+
+    /** reader-window tab → a tab GROUP: move it to the group's home main window,
+     *  then file the freshly-landed tab into the group (found by diffing the home
+     *  window's tab ids against a pre-move snapshot). */
+    _wvMoveReaderTabToMainGroup(srcReaderWin: any, tabId: any, itemID: any, homeWin: any, groupId: any) {
+        try {
+            const Z = homeWin.Zotero_Tabs;
+            const before = new Set((Z && Z._tabs ? Z._tabs : []).map((t: any) => t.id));
+            this._wvWTMoveTabToMain(srcReaderWin, tabId, homeWin);
+            let tries = 0;
+            const land = () => {
+                try {
+                    const z = homeWin.Zotero_Tabs;
+                    const nw = z && z._tabs.find((t: any) => !before.has(t.id) && t.data && t.data.itemID === itemID);
+                    if (nw) { this._wvTabGroupAddTab(homeWin, nw.id, groupId); return; }
+                } catch (e) {}
+                if (tries++ < 30) (homeWin.setTimeout || setTimeout)(land, 80);
+            };
+            land();
+        } catch (e) { Zotero.debug("[Weavero] _wvMoveReaderTabToMainGroup err: " + e); }
+    }
+
+    /** Append the nested "move to a window / group" target submenus into `popup`
+     *  (a XUL <menupopup>). One `<menu>` per window (main windows + reader windows):
+     *  other windows offer "Move Here" plus their tab groups; the SOURCE window
+     *  (`srcWin`) offers only its groups (you can't loose-move where it already is)
+     *  and is skipped entirely if it has none. `onPick({win,isReader,groupId})` runs
+     *  on selection. Each window `<menu>` is tagged `.wv-mv-target` so callers can
+     *  clear+rebuild them on popupshowing; pass `beforeNode` to insert before it
+     *  instead of appending. Returns the number of window submenus added. Shared by
+     *  the main-window and reader-window tab context menus. */
+    _wvBuildMoveTargetsInto(doc: any, popup: any, srcWin: any, onPick: (t: any) => void, beforeNode?: any): number {
+        let added = 0;
+        try {
+            const targets = this._wvOpenInTargetWindows();
+            const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
+                .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
+            for (const t of targets) {
+                const w = t.win;
+                const isSrc = (w === srcWin);
+                // Skip only the source READER window (no groups, can't loose-move
+                // where it already is). The source MAIN window stays — it can still
+                // offer its groups + "New Group".
+                if (isSrc && t.isReader) continue;
+                const winGroups = t.isReader ? [] : groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
+                const wMenu = doc.createXULElement("menu");
+                wMenu.classList.add("wv-mv-target");
+                wMenu.setAttribute("label", t.name + (isSrc ? "  (here)" : ""));
+                const wPop = doc.createXULElement("menupopup");
+                wMenu.appendChild(wPop);
+                if (!isSrc) {
+                    const here = doc.createXULElement("menuitem");
+                    here.setAttribute("label", "Move Here");
+                    here.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
+                    wPop.appendChild(here);
+                }
+                // Group section (main windows only): existing groups + "New Group".
+                if (!t.isReader) {
+                    if (!isSrc) wPop.appendChild(doc.createXULElement("menuseparator"));
+                    for (const g of winGroups) {
+                        const gItem = doc.createXULElement("menuitem");
+                        gItem.setAttribute("label", g.name || "Group");
+                        gItem.classList.add("menuitem-iconic");
+                        try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
+                        const gid = g.id;
+                        gItem.addEventListener("command", () => { try { onPick({ win: w, isReader: false, groupId: gid }); } catch (e) {} });
+                        wPop.appendChild(gItem);
+                    }
+                    const ng = doc.createXULElement("menuitem");
+                    ng.setAttribute("label", "New Group");
+                    ng.addEventListener("command", () => { try { onPick({ win: w, isReader: false, newGroup: true }); } catch (e) {} });
+                    wPop.appendChild(ng);
+                }
+                if (beforeNode && beforeNode.parentNode === popup) popup.insertBefore(wMenu, beforeNode);
+                else popup.appendChild(wMenu);
+                added++;
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvBuildMoveTargetsInto err: " + e); }
+        return added;
     }
 
     _wvTabGroupCloseTabs(win: any, groupID: any) {

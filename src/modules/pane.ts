@@ -607,9 +607,10 @@ class _PaneMixin {
                 loose.setAttribute("label", "New Tab");
                 loose.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
                 wPop.appendChild(loose);
-                // Tab groups (main windows only — reader windows have none).
-                const winGroups = t.isReader ? [] : groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
-                if (winGroups.length) {
+                // Group section (main windows only — reader windows have none):
+                // existing groups + "New Group" (opens into a brand-new group here).
+                if (!t.isReader) {
+                    const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
                     wPop.appendChild(doc.createXULElement("menuseparator"));
                     for (const g of winGroups) {
                         const gItem = doc.createXULElement("menuitem");
@@ -620,6 +621,10 @@ class _PaneMixin {
                         gItem.addEventListener("command", () => { this._wvOpenInTarget(win, w, gid); });
                         wPop.appendChild(gItem);
                     }
+                    const ng = doc.createXULElement("menuitem");
+                    ng.setAttribute("label", "New Group");
+                    ng.addEventListener("command", () => { this._wvOpenInTarget(win, w, null, true); });
+                    wPop.appendChild(ng);
                 }
                 pop.appendChild(wMenu);
             }
@@ -644,11 +649,16 @@ class _PaneMixin {
      *  group). Focus the window so Zotero.Reader.open lands there; for a group,
      *  file the freshly-opened tab in via _wvTabGroupAddTab (retried briefly until
      *  the new tab lands in the window's tab list). */
-    async _wvOpenInTarget(srcWin: any, targetWin: any, groupID: any) {
+    async _wvOpenInTarget(srcWin: any, targetWin: any, groupID: any, createNewGroup?: boolean) {
         try {
             const zp = srcWin && srcWin.ZoteroPane;
             const sel = (zp && typeof zp.getSelectedItems === "function") ? zp.getSelectedItems() : [];
             const isReaderWin = !!(targetWin && targetWin._wvWT);
+            // "New Group" → create one (empty name, next colour) up front so all
+            // selected items land in the SAME new group. Main windows only.
+            if (createNewGroup && !isReaderWin) {
+                try { const g = this._tabGroupCreate("", this._wvTabGroupNextColor()); groupID = g.id; } catch (e) {}
+            }
             for (const it of sel) {
                 const att = this._wvGetBestAttachmentSync(it);
                 if (!att) continue;

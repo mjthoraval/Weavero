@@ -776,12 +776,20 @@ class _PaneMixin {
     }
 
     /** Open the selected items in a BRAND-NEW main window (and, with
-     *  createNewGroup, a fresh tab group there). Opens the window, waits for its
-     *  tab machinery to come up, then routes through _wvOpenInTarget. */
+     *  createNewGroup, a fresh tab group there). Zotero.Reader.open always targets
+     *  the most-recently-active window (getMainWindow), which is NOT the new window
+     *  when you clicked a menu in another window — so we open, then MOVE the tab into
+     *  the new window if it landed elsewhere. (The earlier focus-then-open approach
+     *  worked only in the test bridge, where no other window competes for focus.) */
     async _wvOpenInNewMainWindow(srcWin: any, createNewGroup?: boolean) {
         try {
-            // Zotero.openMainWindow() opens a window but returns nothing — find the
-            // new one by diffing the main-window list.
+            // Capture the attachments BEFORE the new window steals focus.
+            const zp = srcWin && srcWin.ZoteroPane;
+            const sel = (zp && typeof zp.getSelectedItems === "function") ? zp.getSelectedItems() : [];
+            const atts: any[] = [];
+            for (const it of sel) { const a = this._wvGetBestAttachmentSync(it); if (a) atts.push(a); }
+            if (!atts.length) return;
+            // Open a new main window and find it (openMainWindow returns nothing).
             const before = new Set(Zotero.getMainWindows());
             try { (Zotero as any).openMainWindow(); }
             catch (e) { Zotero.debug("[Weavero] openMainWindow err: " + e); return; }
@@ -801,18 +809,27 @@ class _PaneMixin {
                 find();
             });
             if (!newWin) { Zotero.debug("[Weavero] new main window not found"); return; }
-            // Make it the active window so Zotero.Reader.open (which targets
-            // getMainWindow()) lands the attachment here.
-            await new Promise<void>((resolve) => {
-                let tries = 0;
-                const activate = () => {
-                    try { if (newWin.focus) newWin.focus(); } catch (e) {}
-                    try { if (Zotero.getMainWindow() === newWin) { resolve(); return; } } catch (e) {}
-                    if (tries++ < 25) st(activate, 100); else resolve();
-                };
-                activate();
-            });
-            await this._wvOpenInTarget(srcWin, newWin, null, !!createNewGroup);
+            try { if (newWin.focus) newWin.focus(); } catch (e) {}
+            // Fresh group (homed in newWin once a tab lands there).
+            let groupID: any = null;
+            if (createNewGroup) { try { groupID = this._tabGroupCreate("", this._wvTabGroupNextColor()).id; } catch (e) {} }
+            // Open each attachment, then ensure it ends up in newWin (+ group).
+            for (const att of atts) {
+                let reader: any = null;
+                try { reader = await (Zotero.Reader as any).open(att.id, null, { openInWindow: false, allowDuplicate: true, openInBackground: true }); }
+                catch (e) { Zotero.debug("[Weavero] new-window Reader.open err: " + e); continue; }
+                const tabID = reader && reader.tabID;
+                if (!tabID) continue;
+                const landedWin = Zotero.getMainWindows().find((w: any) => w.Zotero_Tabs && w.Zotero_Tabs._tabs.some((t: any) => t.id === tabID));
+                if (landedWin === newWin) {
+                    if (groupID) { try { this._wvTabGroupAddTab(newWin, tabID, groupID); } catch (e) {} }
+                    else { try { newWin.Zotero_Tabs.select(tabID); } catch (e) {} }
+                } else if (landedWin) {
+                    // Reader.open landed it in another window — move it to newWin.
+                    if (groupID) { try { this._wvTabGroupSendTabToWin(landedWin, tabID, newWin, groupID); } catch (e) {} }
+                    else { try { this._wvMoveTabBetweenMains(landedWin, newWin, { itemID: att.id, sourceTabId: tabID }, newWin.Zotero_Tabs._tabs.length, 0); } catch (e) {} }
+                }
+            }
         } catch (e) { Zotero.debug("[Weavero] _wvOpenInNewMainWindow err: " + e); }
     }
 

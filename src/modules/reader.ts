@@ -2552,9 +2552,14 @@ class _ReaderMixin {
                 try {
                     const plugin: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const d = plugin && plugin._wvTabDrag;
-                    // Accept reader AND note main-window tabs (notes mount a
-                    // note-editor tab via _wvWTHandleMainTabDrop -> _wvWTMountTab).
-                    return (d && (d.tabType === "reader" || d.tabType === "note")) ? d : null;
+                    // Accept reader AND note main-window tabs, INCLUDING their
+                    // session-restored "-unloaded" variants (reader-unloaded /
+                    // note-unloaded). Those have no live reader yet, so the drop
+                    // falls back to the classic mount-by-itemID path in
+                    // _wvWTHandleMainTabDrop. Prefix-match catches all variants —
+                    // an exact "reader"/"note" check silently refused unloaded
+                    // tabs (forbidden cursor even on the strip).
+                    return (d && /^(reader|note)/.test(d.tabType || "")) ? d : null;
                 } catch (er) { return null; }
             };
             // Only windows with the multi-tab deck (`#zotero-reader`) can host a

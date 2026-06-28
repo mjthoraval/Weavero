@@ -488,18 +488,23 @@ class WeaveroPlugin {
                 return;
             }
             if (url.startsWith("zotero://note/")) {
-                // If another plugin (Better Notes) has registered a
-                // `zotero://note` extension on the protocol handler, defer
-                // to it via Zotero.launchURL — it handles the full URL
-                // feature set (`?line=N`, `?section=NAME`, `?ignore=1`,
-                // `#selectionText`) that Better Notes-created links rely on.
+                // Defer to the registered `zotero://note` extension (Better Notes) —
+                // but via the protocol handler's INTERNAL doAction, NOT
+                // Zotero.launchURL. launchURL routes zotero:// through the OS
+                // external-protocol handler, which pops the "Allow this site to open
+                // the zotero link with Zotero?" dialog AND drops BN's full feature set
+                // (`?line=N`, `?section=NAME`, `#selectionText`). doAction runs the
+                // extension in-process — no dialog, full features. This mirrors how
+                // ZoteroPane.loadURI dispatches no-content zotero: URLs. (Before notes
+                // defaulted ON in v0.14.2, Weavero never intercepted these links, so BN
+                // handled them itself; the launchURL path was what broke them.)
                 try {
-                    const proto: any = Services.io.getProtocolHandler("zotero");
-                    const ext = proto && proto.wrappedJSObject
-                        && proto.wrappedJSObject._extensions
-                        && proto.wrappedJSObject._extensions["zotero://note"];
-                    if (ext) {
-                        Zotero.launchURL(url);
+                    const handler: any = Services.io.getProtocolHandler("zotero").wrappedJSObject;
+                    const nsIURI = Services.io.newURI(url, null, null);
+                    const ext = (handler && typeof handler.getExtension === "function")
+                        ? handler.getExtension(nsIURI) : null;
+                    if (ext && ext.noContent && typeof ext.doAction === "function") {
+                        ext.doAction(nsIURI);
                         return;
                     }
                 } catch (e) {}

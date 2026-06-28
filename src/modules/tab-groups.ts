@@ -1098,15 +1098,15 @@ class _TabGroupsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvMoveReaderTabToMainGroup err: " + e); }
     }
 
-    /** Append the nested "move to a window / group" target submenus into `popup`
-     *  (a XUL <menupopup>). One `<menu>` per window (main windows + reader windows):
-     *  other windows offer "Move Here" plus their tab groups; the SOURCE window
-     *  (`srcWin`) offers only its groups (you can't loose-move where it already is)
-     *  and is skipped entirely if it has none. `onPick({win,isReader,groupId})` runs
-     *  on selection. Each window `<menu>` is tagged `.wv-mv-target` so callers can
-     *  clear+rebuild them on popupshowing; pass `beforeNode` to insert before it
-     *  instead of appending. Returns the number of window submenus added. Shared by
-     *  the main-window and reader-window tab context menus. */
+    /** Append the FLAT "move to a window / group" targets into `popup` (a XUL
+     *  <menupopup>) — same look as the "Open … in" menu: each window is a ROW with
+     *  its window icon (main = blue-tab, reader = plain frame), and its tab groups +
+     *  "New Group" sit indented beneath it. Clicking a window row moves the tab there
+     *  (loose); the SOURCE window is a disabled header (you can't loose-move where it
+     *  already is) but its groups stay valid. Every injected node is tagged
+     *  `.wv-mv-target` so callers can clear+rebuild on popupshowing; pass `beforeNode`
+     *  to insert before it. `onPick({win,isReader,groupId,newGroup})` runs on
+     *  selection. Returns the number of rows added. Shared by both tab menus. */
     _wvBuildMoveTargetsInto(doc: any, popup: any, srcWin: any, onPick: (t: any) => void, beforeNode?: any): number {
         let added = 0;
         try {
@@ -1114,47 +1114,50 @@ class _TabGroupsMixin {
             const targets = this._wvOpenInTargetWindows();
             const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
+            const dark = !!(this._detectUIDark && this._detectUIDark());
+            const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
+            const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
+            const plusIcon = this._wvPlusIconURI ? this._wvPlusIconURI(dark) : "";
+            const INDENT = "padding-inline-start: 1.7em;";
+            const place = (el: any) => {
+                el.classList.add("wv-mv-target");
+                if (beforeNode && beforeNode.parentNode === popup) popup.insertBefore(el, beforeNode);
+                else popup.appendChild(el);
+            };
             for (const t of targets) {
                 const w = t.win;
                 const isSrc = (w === srcWin);
-                // Skip only the source READER window (no groups, can't loose-move
-                // where it already is). The source MAIN window stays — it can still
-                // offer its groups + "New Group".
-                if (isSrc && t.isReader) continue;
-                const winGroups = t.isReader ? [] : groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
-                const wMenu = doc.createXULElement("menu");
-                wMenu.classList.add("wv-mv-target");
-                wMenu.setAttribute("label", t.name + (isSrc ? "  (here)" : ""));
-                const wPop = doc.createXULElement("menupopup");
-                wMenu.appendChild(wPop);
-                if (!isSrc) {
-                    const here = doc.createXULElement("menuitem");
-                    here.setAttribute("label", "Move Here");
-                    here.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
-                    wPop.appendChild(here);
-                }
-                // Group section (main windows only, when tab groups are enabled):
-                // existing groups + "New Group".
+                if (isSrc && t.isReader) continue;   // source reader window: nothing to offer
+                // Window row (icon + name). Source = disabled header; others move here.
+                const wi = doc.createXULElement("menuitem");
+                wi.classList.add("menuitem-iconic");
+                wi.setAttribute("label", t.name + (isSrc ? "  (here)" : ""));
+                try { if (t.isReader ? readerIcon : mainIcon) wi.setAttribute("image", t.isReader ? readerIcon : mainIcon); } catch (e) {}
+                if (isSrc) wi.setAttribute("disabled", "true");
+                else wi.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
+                place(wi);
+                added++;
+                // Groups + "New Group", indented under the window (main + enabled).
                 if (!t.isReader && groupsEnabled) {
-                    if (!isSrc) wPop.appendChild(doc.createXULElement("menuseparator"));
+                    const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
                     for (const g of winGroups) {
-                        const gItem = doc.createXULElement("menuitem");
-                        gItem.setAttribute("label", g.name || "Group");
-                        gItem.classList.add("menuitem-iconic");
-                        try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
+                        const gi = doc.createXULElement("menuitem");
+                        gi.classList.add("menuitem-iconic");
+                        gi.setAttribute("label", g.name || "Group");
+                        gi.setAttribute("style", INDENT);
+                        try { gi.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
                         const gid = g.id;
-                        gItem.addEventListener("command", () => { try { onPick({ win: w, isReader: false, groupId: gid }); } catch (e) {} });
-                        wPop.appendChild(gItem);
+                        gi.addEventListener("command", () => { try { onPick({ win: w, isReader: false, groupId: gid }); } catch (e) {} });
+                        place(gi);
                     }
                     const ng = doc.createXULElement("menuitem");
+                    ng.classList.add("menuitem-iconic");
                     ng.setAttribute("label", "New Group");
+                    ng.setAttribute("style", INDENT);
+                    try { if (plusIcon) ng.setAttribute("image", plusIcon); } catch (e) {}
                     ng.addEventListener("command", () => { try { onPick({ win: w, isReader: false, newGroup: true }); } catch (e) {} });
-                    wPop.appendChild(ng);
+                    place(ng);
                 }
-                if (!wPop.firstChild) continue;   // nothing to offer in this window
-                if (beforeNode && beforeNode.parentNode === popup) popup.insertBefore(wMenu, beforeNode);
-                else popup.appendChild(wMenu);
-                added++;
             }
         } catch (e) { Zotero.debug("[Weavero] _wvBuildMoveTargetsInto err: " + e); }
         return added;

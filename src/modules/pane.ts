@@ -189,9 +189,10 @@ class _PaneMixin {
             const COPY_BIBLATEX_ID = "wv-itemmenu-copy-biblatex";     // BBT BibLaTeX
             const SEP_ID = "wv-itemmenu-separator";
             const EXTV_ID = "wv-itemmenu-open-external";               // "Open in External Viewer"
+            const OPEN_IN_ID = "wv-itemmenu-open-in";                  // "Open <type> in ▸" (windows / groups)
             const ALL_IDS = [ADD_REL_ID, COPY_AS_ID, COPY_CITATION_ID, COPY_BIB_ID,
                 COPY_CITEKEY_ID, COPY_SELECT_ID, COPY_SELECT_SEP_ID, COPY_OPEN_ID,
-                COPY_WEB_ID, COPY_BIBTEX_ID, COPY_BIBLATEX_ID, SEP_ID, EXTV_ID];
+                COPY_WEB_ID, COPY_BIBTEX_ID, COPY_BIBLATEX_ID, SEP_ID, EXTV_ID, OPEN_IN_ID];
             // Include any item type that has an `addRelatedItem`
             // method — annotations, attachments, regular items, and
             // notes all support the dc:relation predicate. Excludes
@@ -214,6 +215,7 @@ class _PaneMixin {
                         ? zp.getSelectedItems() : [];
 
                     this._appendExternalViewerToItemsMenu(doc, menu, selected, win);
+                    this._appendOpenInToItemsMenu(doc, menu, selected, win);
 
                     const targets = selected.filter(isRelatable);
                     if (!targets.length) return;
@@ -508,6 +510,181 @@ class _PaneMixin {
             }
         } catch (extErr) {
             Zotero.debug("[Weavero] open-external inject err: " + extErr);
+        }
+    }
+
+    /** File-type word for the "Open <X> in" label, from an attachment's content
+     *  type (PDF / EPUB / Snapshot / Image / …). */
+    _wvAttachmentTypeLabel(att: any): string {
+        try {
+            const ct = (att && att.attachmentContentType) || "";
+            if (ct === "application/pdf") return "PDF";
+            if (ct === "application/epub+zip") return "EPUB";
+            if (ct === "text/html") return "Snapshot";
+            if (ct.indexOf("image/") === 0) return "Image";
+            if (ct.indexOf("video/") === 0) return "Video";
+            if (ct.indexOf("audio/") === 0) return "Audio";
+            if (ct === "text/plain") return "Text";
+            return "File";
+        } catch (e) { return "File"; }
+    }
+
+    /** A small colour-dot data URI for a group's palette colour (group menu icon). */
+    _wvGroupColorDotURI(hex: string): string {
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">'
+            + '<circle cx="6" cy="6" r="5" fill="' + hex + '"/></svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    /** Ordered list of windows that can host a new tab — every main window, then
+     *  every Weavero multi-tab reader window — as `{win, name, isReader}`. Reader
+     *  windows are labelled "Reader window"(/ N) like the tabs-menu sections. */
+    _wvOpenInTargetWindows(): any[] {
+        const out: any[] = [];
+        try {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                out.push({ win: w, name: this._wvWindowName(w), isReader: false });
+            }
+        } catch (e) {}
+        try {
+            const en = Services.wm.getEnumerator("zotero:reader");
+            let n = 0;
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (!w || !w._wvWT) continue;
+                n++;
+                out.push({ win: w, name: n > 1 ? "Reader window " + n : "Reader window", isReader: true });
+            }
+        } catch (e) {}
+        return out;
+    }
+
+    /** "Open <type> in ▸" — a submenu, NESTED BY WINDOW: each open main window is
+     *  a submenu offering a loose "New tab" plus that window's tab groups. Picking
+     *  a target focuses the window, opens the selected items' best attachments
+     *  there, and (for a group) files the new tab into the group. Shown only when
+     *  there's a real choice (>1 window, or at least one group). File attachments
+     *  only — notes/links have no best attachment. */
+    _appendOpenInToItemsMenu(doc: any, menu: any, selected: any[], win: any) {
+        try {
+            // Representative best attachment → icon + file-type word.
+            let repAtt: any = null;
+            let typeWord: string | null = null;
+            let mixedType = false;
+            for (const it of selected) {
+                const att = this._wvGetBestAttachmentSync(it);
+                if (!att) continue;
+                if (!repAtt) repAtt = att;
+                const t = this._wvAttachmentTypeLabel(att);
+                if (typeWord == null) typeWord = t;
+                else if (typeWord !== t) mixedType = true;
+            }
+            if (!repAtt) return;
+
+            const targets = this._wvOpenInTargetWindows();
+            const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
+                .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
+            // Only worth showing when there's an actual choice of destination.
+            if (targets.length <= 1 && !groups.length) return;
+
+            const label = (typeWord && !mixedType) ? ("Open " + typeWord + " in") : "Open in";
+            const parent = doc.createXULElement("menu");
+            parent.id = "wv-itemmenu-open-in";
+            parent.setAttribute("label", label);
+            const icon = this._wvAttachmentIconURL(repAtt);
+            if (icon) { parent.classList.add("menu-iconic"); parent.setAttribute("image", icon); }
+            const pop = doc.createXULElement("menupopup");
+            parent.appendChild(pop);
+
+            for (const t of targets) {
+                const w = t.win;
+                const wMenu = doc.createXULElement("menu");
+                wMenu.setAttribute("label", t.name);
+                const wPop = doc.createXULElement("menupopup");
+                wMenu.appendChild(wPop);
+                // Loose "New tab" in this window.
+                const loose = doc.createXULElement("menuitem");
+                loose.setAttribute("label", "New tab");
+                loose.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
+                wPop.appendChild(loose);
+                // Tab groups (main windows only — reader windows have none).
+                const winGroups = t.isReader ? [] : groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
+                if (winGroups.length) {
+                    wPop.appendChild(doc.createXULElement("menuseparator"));
+                    for (const g of winGroups) {
+                        const gItem = doc.createXULElement("menuitem");
+                        gItem.setAttribute("label", g.name || "Group");
+                        gItem.classList.add("menuitem-iconic");
+                        try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
+                        const gid = g.id;
+                        gItem.addEventListener("command", () => { this._wvOpenInTarget(win, w, gid); });
+                        wPop.appendChild(gItem);
+                    }
+                }
+                pop.appendChild(wMenu);
+            }
+
+            // Place directly ABOVE the native "View Online" entry; fall back to the
+            // other open-actions, then the menu end.
+            const viewOnline = menu.querySelector(".zotero-menuitem-view-online");
+            if (viewOnline && viewOnline.parentNode === menu) {
+                menu.insertBefore(parent, viewOnline);
+            } else {
+                const anchor = menu.querySelector("#wv-itemmenu-open-external")
+                    || menu.querySelector(".zotero-menuitem-show-file");
+                if (anchor && anchor.parentNode === menu) anchor.after(parent);
+                else menu.appendChild(parent);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] open-in inject err: " + e);
+        }
+    }
+
+    /** Open each selected item's best attachment in a target window (optionally a
+     *  group). Focus the window so Zotero.Reader.open lands there; for a group,
+     *  file the freshly-opened tab in via _wvTabGroupAddTab (retried briefly until
+     *  the new tab lands in the window's tab list). */
+    async _wvOpenInTarget(srcWin: any, targetWin: any, groupID: any) {
+        try {
+            const zp = srcWin && srcWin.ZoteroPane;
+            const sel = (zp && typeof zp.getSelectedItems === "function") ? zp.getSelectedItems() : [];
+            const isReaderWin = !!(targetWin && targetWin._wvWT);
+            for (const it of sel) {
+                const att = this._wvGetBestAttachmentSync(it);
+                if (!att) continue;
+                try { if (targetWin && targetWin.focus) targetWin.focus(); } catch (e) {}
+                if (isReaderWin) {
+                    // A Weavero multi-tab reader window: add the attachment as a new
+                    // reader tab (lazy — realises on switch) and select it. No groups.
+                    try {
+                        const tabId = this._wvWTAddLazyReaderTab(targetWin, att.id);
+                        if (tabId && this._wvWTSwitch) this._wvWTSwitch(targetWin, tabId);
+                    } catch (e) { Zotero.debug("[Weavero] open-in reader-win err: " + e); }
+                    continue;
+                }
+                let reader: any = null;
+                try { reader = await (Zotero.Reader as any).open(att.id, null, { openInWindow: false, allowDuplicate: true }); }
+                catch (e) { Zotero.debug("[Weavero] open-in Reader.open err: " + e); continue; }
+                if (groupID) {
+                    const tabID = reader && reader.tabID;
+                    if (tabID && this._wvTabGroupAddTab) {
+                        let tries = 0;
+                        const tryAdd = () => {
+                            try {
+                                const Z = targetWin.Zotero_Tabs;
+                                if (Z && Z._tabs && Z._tabs.some((t: any) => t.id === tabID)) {
+                                    this._wvTabGroupAddTab(targetWin, tabID, groupID);
+                                    return;
+                                }
+                            } catch (e) {}
+                            if (tries++ < 20) (targetWin.setTimeout || setTimeout)(tryAdd, 50);
+                        };
+                        tryAdd();
+                    }
+                }
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvOpenInTarget err: " + e);
         }
     }
 

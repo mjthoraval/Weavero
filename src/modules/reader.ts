@@ -13066,7 +13066,7 @@ class _ReaderMixin {
             const MENU_ID = "wv-window-tab-context-menu";
             // Bump when the menu's structure changes — live windows keep the
             // old element otherwise (it's cached by id).
-            const MENU_VER = "3";
+            const MENU_VER = "4";
             let menu: any = doc.getElementById(MENU_ID);
             if (menu && menu.getAttribute("data-wv-menu-ver") !== MENU_VER) {
                 try { menu.remove(); } catch (e) {}
@@ -13267,35 +13267,21 @@ class _ReaderMixin {
                 const moveEndItem = mkItem(str("tabs.moveToEnd", "Move to End"), () => moveToEdge(true));
                 movePopup.appendChild(moveStartItem);
                 movePopup.appendChild(moveEndItem);
-                const moveToMain = mkItem("Move to Main Window", () => {
+                // Separator, then the nested per-window / per-group move targets
+                // (rebuilt on popupshowing via _wvBuildMoveTargetsInto, inserted
+                // before newGroupItem), then New Group + Move to New Window. These
+                // window targets cover "move to a/the main window" and "move into a
+                // group" — folding in the old standalone "Move to Main Window" entry
+                // AND the separate "Add Tab to Group" submenu.
+                const mvTargetsSep = doc.createXULElement("menuseparator");
+                movePopup.appendChild(mvTargetsSep);
+                const newGroupItem = mkItem("New Group", () => {
                     try {
-                        const ids = moveSelIDs();
-                        if (!ids.length) return;
-                        if (ids.length === 1) { this._wvWTMoveTabToMain(win, ids[0]); return; }
-                        // Several tabs: sequence the no-reload single mover (spaced so
-                        // each docshell swap finishes before the next starts). Process
-                        // the NATIVE tab LAST — a native tab only moves no-reload when
-                        // it's the window's last tab (then its move also closes the
-                        // window); moving it earlier would reload it.
-                        const stx = win._wvWT;
-                        const ordered = ids.slice().sort((a: any, b: any) => {
-                            const ta = stx && stx.tabs.find((x: any) => x.id === a);
-                            const tb = stx && stx.tabs.find((x: any) => x.id === b);
-                            return ((ta && ta.native) ? 1 : 0) - ((tb && tb.native) ? 1 : 0);
-                        });
-                        const mainWin = Zotero.getMainWindow();
-                        const setT = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
-                        let i = 0;
-                        const step = () => {
-                            if (i >= ordered.length) return;
-                            const id = ordered[i++];
-                            try { this._wvWTMoveTabToMain(win, id, mainWin); } catch (e) {}
-                            if (i < ordered.length) setT(step, 500);
-                        };
-                        step();
+                        const lp: any = (Zotero as any).Weavero?.plugin;
+                        if (lp && lp._wvTabGroupNewFromDeckTabs) lp._wvTabGroupNewFromDeckTabs(win, moveSelIDs());
                     } catch (e) {}
-                });
-                movePopup.appendChild(moveToMain);
+                }, { getVisible: () => { try { const lp: any = (Zotero as any).Weavero?.plugin; return !!(lp && lp._getEnableTabGroups && lp._getEnableTabGroups()); } catch (e) { return false; } } });
+                movePopup.appendChild(newGroupItem);
                 // "Move to New Window" — tear the tab(s) out into a fresh standalone
                 // reader window (no-reload). Multi-select aware. Hidden when this is
                 // the only tab (it's already its own window) — toggled in popupshowing.
@@ -13396,7 +13382,8 @@ class _ReaderMixin {
                 menu.appendChild(showFile);
                 menu.appendChild(externalViewer);
                 menu.appendChild(openNotes);
-                menu.appendChild(groupMenu);
+                // (Add Tab to Group is folded into Move Tab below; groupMenu is no
+                // longer attached.) "Remove from Tab Group" stays as its own entry.
                 menu.appendChild(removeFromGroup);
                 menu.appendChild(moveMenu);
                 menu.appendChild(duplicate);
@@ -13422,10 +13409,34 @@ class _ReaderMixin {
                             const selMv = lpMv && lpMv._wvWTMultiSelTargets ? lpMv._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
                             const multiMv = !!(selMv && selMv.length > 1);
                             moveMenu.setAttribute("label", multiMv ? "Move Tabs" : str("tabs.move", "Move Tab"));
-                            moveToMain.setAttribute("label", multiMv ? "Move Tabs to Main Window" : "Move to Main Window");
                             moveToNewWin.setAttribute("label", multiMv ? "Move Tabs to New Window" : "Move to New Window");
                             // Tearing out needs >1 tab (a single-tab window already is its own).
                             moveToNewWin.hidden = !(win._wvWT && win._wvWT.tabs && win._wvWT.tabs.length > 1);
+                            newGroupItem.setAttribute("label", multiMv ? "New Group from Tabs" : "New Group");
+                            // Rebuild the nested per-window / per-group move targets
+                            // (windows + groups change between opens), inserted before
+                            // New Group. Multi-select sequences the single mover (500ms
+                            // apart) so each docshell swap finishes before the next.
+                            try {
+                                for (const el of Array.from(movePopup.querySelectorAll(".wv-mv-target")) as any[]) el.remove();
+                                let added = 0;
+                                if (lpMv && lpMv._wvBuildMoveTargetsInto) {
+                                    const onPick = (target: any) => {
+                                        try {
+                                            const ids = moveSelIDs();
+                                            let i = 0;
+                                            const step = () => {
+                                                if (i >= ids.length) return;
+                                                try { lpMv._wvMoveTabToTarget(win, ids[i++], target); } catch (e) {}
+                                                if (i < ids.length) (win.setTimeout || setTimeout)(step, 500);
+                                            };
+                                            step();
+                                        } catch (e) {}
+                                    };
+                                    added = lpMv._wvBuildMoveTargetsInto(doc, movePopup, win, onPick, newGroupItem);
+                                }
+                                mvTargetsSep.hidden = !added;
+                            } catch (e) {}
                         } catch (e) {}
                         // Group commands: label by selection size, popup rebuilt
                         // from the live group list.

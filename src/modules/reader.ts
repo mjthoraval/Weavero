@@ -3695,7 +3695,15 @@ class _ReaderMixin {
                 "  margin: 0;",
                 "  margin-inline-start: 38px;",
                 "  margin-inline-end: 38px;",
-                "  box-sizing: border-box;",
+                // Match native exactly (_input.scss): content-box + height 26px →
+                // 26 + 4px padding + 2px border = 32px rendered, same as the main
+                // window. (border-box with no height left it 23px — 9px too short.)
+                "  box-sizing: content-box;",
+                "  height: 26px;",
+                // The wrapper is a flex column; without this the input (flex-shrink:1,
+                // min-height:auto) gets squeezed below its 26px to the content height
+                // (~23px). flex-shrink:0 makes it hold the 26px → 32px rendered.
+                "  flex-shrink: 0;",
                 "  border-radius: 5px;",
                 "  border: 1px solid transparent;",
                 "  background: var(--fill-quinary, rgba(127,127,127,0.06));",

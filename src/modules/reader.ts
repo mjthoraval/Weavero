@@ -3675,10 +3675,13 @@ class _ReaderMixin {
                 "}",
                 "#wv-wtl-wrapper {",
                 "  position: relative;",
-                // Match the main window's tabs-menu panel width (420px via
-                // `.wv-tabs-menu-wide`): 404 + the 8px×2 ::part(content) padding ≈ 420,
-                // so the reader popup opens the same size as the main window's.
-                "  width: 404px;",
+                // Width tuned so the reader popup matches the main window EXACTLY.
+                // Measured: input width = wrapper - 76px (the two 38px button margins);
+                // main input is 318px, so wrapper = 394px. (404px made the reader panel
+                // 430px / input 328px — 10px wider than the main's 420px / 318px, because
+                // the plain <panel> carries ~10px more chrome than the main's custom
+                // element.) Keep this in sync with the main's `.wv-tabs-menu-wide` 420px.
+                "  width: 394px;",
                 "  display: flex; flex-direction: column;",
                 "  min-height: 0; gap: 6px;",
                 "}",

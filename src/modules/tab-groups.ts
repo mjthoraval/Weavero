@@ -1110,6 +1110,7 @@ class _TabGroupsMixin {
     _wvBuildMoveTargetsInto(doc: any, popup: any, srcWin: any, onPick: (t: any) => void, beforeNode?: any): number {
         let added = 0;
         try {
+            const groupsEnabled = this._getEnableTabGroups ? !!this._getEnableTabGroups() : true;
             const targets = this._wvOpenInTargetWindows();
             const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
@@ -1132,8 +1133,9 @@ class _TabGroupsMixin {
                     here.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
                     wPop.appendChild(here);
                 }
-                // Group section (main windows only): existing groups + "New Group".
-                if (!t.isReader) {
+                // Group section (main windows only, when tab groups are enabled):
+                // existing groups + "New Group".
+                if (!t.isReader && groupsEnabled) {
                     if (!isSrc) wPop.appendChild(doc.createXULElement("menuseparator"));
                     for (const g of winGroups) {
                         const gItem = doc.createXULElement("menuitem");
@@ -1149,6 +1151,7 @@ class _TabGroupsMixin {
                     ng.addEventListener("command", () => { try { onPick({ win: w, isReader: false, newGroup: true }); } catch (e) {} });
                     wPop.appendChild(ng);
                 }
+                if (!wPop.firstChild) continue;   // nothing to offer in this window
                 if (beforeNode && beforeNode.parentNode === popup) popup.insertBefore(wMenu, beforeNode);
                 else popup.appendChild(wMenu);
                 added++;
@@ -4234,6 +4237,12 @@ class _TabGroupsMixin {
                         menuType: "submenu",
                         menus: [{ menuType: "menuitem", l10nID: "zotero-general-cancel" }],
                         onShowing: (_ev: any, ctx: any) => {
+                            // The standalone "Add Tab to Group" submenu is now merged
+                            // into the native "Move Tab" submenu (see tabs.ts ->
+                            // _wvInjectMoveTargetsIntoNativeMoveMenu). Keep it hidden.
+                            try { ctx.setVisible(false); } catch (e) {}
+                            return;
+                            // eslint-disable-next-line no-unreachable
                             try {
                                 if (!self._getEnableTabGroups() || ctx.tabID === "zotero-pane") {
                                     ctx.setVisible(false); return;

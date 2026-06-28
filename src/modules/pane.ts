@@ -596,37 +596,43 @@ class _PaneMixin {
             const pop = doc.createXULElement("menupopup");
             parent.appendChild(pop);
 
+            // FLAT layout: every window first (open a New Tab there), then a
+            // separator + every tab group (open into it; suffixed with its window
+            // when there's more than one), then a separator + "New Group" per main
+            // window. Everything is visible at once — no per-window nesting.
+            const mainTargets = targets.filter((t: any) => !t.isReader);
+            const multiWin = mainTargets.length > 1;
             for (const t of targets) {
                 const w = t.win;
-                const wMenu = doc.createXULElement("menu");
-                wMenu.setAttribute("label", t.name);
-                const wPop = doc.createXULElement("menupopup");
-                wMenu.appendChild(wPop);
-                // Loose "New tab" in this window.
-                const loose = doc.createXULElement("menuitem");
-                loose.setAttribute("label", "New Tab");
-                loose.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
-                wPop.appendChild(loose);
-                // Group section (main windows only — reader windows have none):
-                // existing groups + "New Group" (opens into a brand-new group here).
-                if (!t.isReader) {
-                    const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
-                    wPop.appendChild(doc.createXULElement("menuseparator"));
-                    for (const g of winGroups) {
-                        const gItem = doc.createXULElement("menuitem");
-                        gItem.setAttribute("label", g.name || "Group");
-                        gItem.classList.add("menuitem-iconic");
-                        try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
-                        const gid = g.id;
-                        gItem.addEventListener("command", () => { this._wvOpenInTarget(win, w, gid); });
-                        wPop.appendChild(gItem);
-                    }
-                    const ng = doc.createXULElement("menuitem");
-                    ng.setAttribute("label", "New Group");
-                    ng.addEventListener("command", () => { this._wvOpenInTarget(win, w, null, true); });
-                    wPop.appendChild(ng);
+                const wi = doc.createXULElement("menuitem");
+                wi.setAttribute("label", t.name);
+                wi.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
+                pop.appendChild(wi);
+            }
+            if (groups.length) {
+                pop.appendChild(doc.createXULElement("menuseparator"));
+                for (const g of groups) {
+                    const gw = this._wvTabGroupHomeWin(g.id);
+                    const gItem = doc.createXULElement("menuitem");
+                    let glabel = g.name || "Group";
+                    if (multiWin && gw) { const wt = targets.find((t: any) => t.win === gw); if (wt) glabel += "  ·  " + wt.name; }
+                    gItem.setAttribute("label", glabel);
+                    gItem.classList.add("menuitem-iconic");
+                    try { gItem.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
+                    const gid = g.id;
+                    gItem.addEventListener("command", () => { this._wvOpenInTarget(win, gw, gid); });
+                    pop.appendChild(gItem);
                 }
-                pop.appendChild(wMenu);
+            }
+            if (mainTargets.length) {
+                pop.appendChild(doc.createXULElement("menuseparator"));
+                for (const t of mainTargets) {
+                    const w = t.win;
+                    const ng = doc.createXULElement("menuitem");
+                    ng.setAttribute("label", multiWin ? ("New Group in " + t.name) : "New Group");
+                    ng.addEventListener("command", () => { this._wvOpenInTarget(win, w, null, true); });
+                    pop.appendChild(ng);
+                }
             }
 
             // Place directly ABOVE the native "View Online" entry; fall back to the

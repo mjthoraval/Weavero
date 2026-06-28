@@ -3588,6 +3588,14 @@ class WeaveroPlugin {
                     if (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length) {
                         group = this._wvDevSpawnQueue.shift();
                     }
+                    // Stable per-window id: a restored window carries it in its saved
+                    // group; a manual new window gets a fresh one. Drives the
+                    // per-window items-tree column key so layouts persist across
+                    // restarts (keyed by this id, not a session-scoped counter).
+                    try {
+                        _window._wvWindowId = (group && group.wvWinId != null)
+                            ? group.wvWinId : this._wvNextWindowId();
+                    } catch (e) {}
                     this._wvInitDevMainWindow(_window, group);
                     // Give this managed window its own items-tree column layout
                     // (else it shares/clobbers the primary's via treePrefs.json).

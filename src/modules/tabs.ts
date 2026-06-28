@@ -3633,7 +3633,9 @@ class _TabsMixin {
                 let tabs = null;
                 try { tabs = w.Zotero_Tabs && w.Zotero_Tabs.getState(); } catch (e) {}
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
-                groups.push({ kind: "main-dev", tabs });
+                // Persist the window's stable id so its items-tree column layout
+                // can be re-bound to the same window on the next restart.
+                groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null) });
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureDevWindows err: " + e); }
         return groups;
@@ -3990,7 +3992,10 @@ class _TabsMixin {
             try {
                 if (!win || win.closed) return;
                 const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
-                if (iv) { this._wvApplyPerWindowColumns(win); return; }
+                // Wait until the tree id AND the stable window id are both ready —
+                // applying before iv.id exists is what produced the old `null::wvN`
+                // garbage keys.
+                if (iv && iv.id && win._wvWindowId != null) { this._wvApplyPerWindowColumns(win); return; }
                 if (++tries >= 20) return;          // give up after ~6s
                 win.setTimeout(tick, 300);
             } catch (e) {}
@@ -4004,42 +4009,119 @@ class _TabsMixin {
             const iv: any = win.ZoteroPane && win.ZoteroPane.itemsView;
             if (!iv || iv._wvColIsolated) return;
             if (!iv.props || !iv.props.columnPicker) return;   // no column persistence to isolate
+            // A STABLE per-window id (persisted in windows.json) is required so the
+            // column key survives restarts. The scheduler waits for both id and
+            // _wvWindowId, so bailing here is defensive — and bailing BEFORE setting
+            // the guard lets a retry pick it up (this also kills the old `null::wvN`
+            // garbage-key bug, where origId was null at apply time).
+            if (!iv.id || win._wvWindowId == null) return;
             iv._wvColIsolated = true;                          // guard re-entry across awaits
+            // One-time: purge orphaned keys left by the old runtime-seq scheme
+            // (::wvN) and the null-id bug, preserving the primary's real key.
+            try { await this._wvCleanupTreePrefsGarbage(); } catch (e) {}
             // Let the tree finish its initial (shared-key) load so _columnPrefs
             // holds the columns it's currently showing, before we seed our key.
             try { if (iv._sortContextReadyPromise) await iv._sortContextReadyPromise; } catch (e) {}
-            const origId = iv.id;
-            const seq = (this._wvColSeq = (this._wvColSeq || 0) + 1);
-            const key = origId + "::wv" + seq;
-            const path = PathUtils.join((Zotero as any).Profile.dir, "treePrefs.json");
-            iv._wvColKey = key;
+            // Per-window column layout lives in Weavero's OWN store keyed by the
+            // stable window id — NOT in Zotero's treePrefs.json. Zotero's setId /
+            // viewType machinery keeps mangling treePrefs keys (it renames
+            // "…::win-1" → "…::win-1-default" early in a restart, then the next
+            // load can't find it), which defeated every wrapper that stored there.
+            // A separate file is immune. (All views of a window share one entry —
+            // per-view columns within a managed window are not preserved; the
+            // default library view is what matters here.)
+            const colDir = PathUtils.join((Zotero as any).DataDirectory.dir, "weavero");
+            const colPath = PathUtils.join(colDir, "colstore.json");
+            const colKey = "win-" + win._wvWindowId;
+            iv._wvColKey = colKey;
             iv._loadColumnPrefsFromFile = async function () {
                 try {
-                    const text: any = await Zotero.File.getContentsAsync(path);
-                    const persist = JSON.parse(text);
-                    let prefs = persist[key];
-                    // Seed from the shared layout the first time (before our key exists).
-                    if (!prefs || !Object.keys(prefs).length) prefs = persist[origId] || persist[origId + "-default"];
-                    this._columnPrefs = prefs || {};
-                } catch (e) { this._columnPrefs = {}; }
+                    const store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string);
+                    const prefs = store[colKey];
+                    if (prefs && Object.keys(prefs).length) { this._columnPrefs = prefs; return; }
+                } catch (e) {}
+                // No saved layout yet → keep what native just loaded (the shared
+                // layout); the first-time seed persists it under our key.
             };
             iv._writeColumnPrefsToFile = async function (force) {
                 const self = this;
                 const writeToFile = async () => {
-                    let persist: any;
-                    try { const t: any = await Zotero.File.getContentsAsync(path); persist = JSON.parse(t); } catch (e) { persist = {}; }
-                    persist[key] = self._columnPrefs;            // only our key; everything else preserved
-                    return Zotero.File.putContentsAsync(path, JSON.stringify(persist));   // atomic (tmpPath) internally
+                    let store: any;
+                    try { store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string); } catch (e) { store = {}; }
+                    store[colKey] = self._columnPrefs;            // only our window's entry
+                    try { await IOUtils.makeDirectory(colDir, { ignoreExisting: true }); } catch (e) {}
+                    return Zotero.File.putContentsAsync(colPath, JSON.stringify(store, null, 2));
                 };
                 if (this._wvColWriteTimer) { try { clearTimeout(this._wvColWriteTimer); } catch (e) {} }
                 if (force) return writeToFile();
                 this._wvColWriteTimer = setTimeout(writeToFile, 60000);
             };
-            // Seed our key with the columns the window currently shows, so future
-            // re-reads use the isolated key instead of the shared fallback.
-            try { await iv._writeColumnPrefsToFile(true); } catch (e) {}
-            Zotero.debug("[Weavero] per-window items-tree columns isolated under " + key);
+            // SEED vs RESTORE. The native load already filled _columnPrefs from the
+            // shared treePrefs key (that's what the tree shows now). If our store
+            // has a saved layout, RESTORE it — load + rebuild + repaint. Else SEED
+            // (persist the current shared layout under our key) the first time only.
+            let hadSaved = false;
+            try {
+                const store = JSON.parse((await Zotero.File.getContentsAsync(colPath)) as string);
+                hadSaved = !!(store[colKey] && Object.keys(store[colKey]).length);
+            } catch (e) {}
+            if (hadSaved) {
+                try { await iv._loadColumnPrefsFromFile(); } catch (e) {}   // _columnPrefs ← our store
+                try {
+                    iv._columnsId = null;
+                    iv._sortedColumn = null;
+                    iv._getColumns();
+                    if (typeof iv.forceUpdate === "function") {
+                        await new Promise<void>((r) => { try { iv.forceUpdate(() => r()); } catch (e) { r(); } });
+                    }
+                } catch (e) {}
+            } else {
+                try { await iv._writeColumnPrefsToFile(true); } catch (e) {}
+            }
+            Zotero.debug("[Weavero] per-window items-tree columns isolated under " + colKey);
         } catch (e) { Zotero.debug("[Weavero] _wvApplyPerWindowColumns err: " + e); }
+    }
+
+    /** Stable, monotonic per-window id (persisted in the `weavero.nextWindowId`
+     *  pref). Keys a managed window's items-tree column layout so it survives
+     *  restarts. Never reused, so a stale orphaned key can never collide with a
+     *  live window. */
+    _wvNextWindowId() {
+        let n = 1;
+        try {
+            const v: any = Zotero.Prefs.get("weavero.nextWindowId");
+            if (typeof v === "number" && v >= 1) n = v;
+            else if (v != null) n = parseInt(String(v), 10) || 1;
+        } catch (e) {}
+        try { Zotero.Prefs.set("weavero.nextWindowId", n + 1); } catch (e) {}
+        return n;
+    }
+
+    /** One-time cleanup of orphaned items-tree column keys in treePrefs.json: the
+     *  old runtime-seq per-window keys (`…::wvN…`) and the null-id bug keys
+     *  (`null::…`). Backs the file up to treePrefs.json.bak first, and never
+     *  touches the primary's real key (`item-tree-main-default`), the native
+     *  per-view keys, or the new stable `::win-<id>` keys (which can't match the
+     *  `::wv\d` pattern). Runs at most once per session. */
+    async _wvCleanupTreePrefsGarbage() {
+        if (this._wvTreePrefsCleaned) return;
+        this._wvTreePrefsCleaned = true;
+        try {
+            const path = PathUtils.join((Zotero as any).Profile.dir, "treePrefs.json");
+            let persist: any;
+            try { const t: any = await Zotero.File.getContentsAsync(path); persist = JSON.parse(t); }
+            catch (e) { return; }   // missing/unreadable → nothing to clean
+            // Sweep: old runtime-seq keys (::wvN), the null-id bug keys (null::),
+            // and the transitional ::win-N-<suffix> orphans (a live key is exactly
+            // ::win-N with no trailing dash, so it can't match ::win-\d+-).
+            const garbage = Object.keys(persist).filter((k) =>
+                /::wv\d/.test(k) || /::win-\d+-/.test(k) || k.startsWith("null::"));
+            if (!garbage.length) return;
+            try { await Zotero.File.putContentsAsync(path + ".bak", JSON.stringify(persist)); } catch (e) {}
+            for (const k of garbage) delete persist[k];
+            await Zotero.File.putContentsAsync(path, JSON.stringify(persist));
+            Zotero.debug("[Weavero] cleaned " + garbage.length + " orphaned treePrefs key(s): " + garbage.join(", "));
+        } catch (e) { Zotero.debug("[Weavero] _wvCleanupTreePrefsGarbage err: " + e); }
     }
 
     // ---- Per-window reader/note sidebar state (consistency plan) ----------

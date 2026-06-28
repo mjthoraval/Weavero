@@ -168,14 +168,25 @@ class _PaneMixin {
         } catch (e) { return ""; }
     }
 
+    /** Bind the items-menu popupshowing handler to EVERY main window's
+     *  #zotero-itemmenu — not just getMainWindow() — so Weavero's additions appear
+     *  in all windows (previously only the most-recently-active window had them).
+     *  Idempotent per window. */
     _setupItemsListContextMenu() {
         try {
-            const win = Zotero.getMainWindow();
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { this._setupItemsMenuForWindow(w); } catch (e) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _setupItemsListContextMenu err: " + e); }
+    }
+
+    _setupItemsMenuForWindow(win: any) {
+        try {
             const doc = win && win.document;
             if (!doc) return;
             const menu = doc.getElementById("zotero-itemmenu");
             if (!menu) return;
-            this._teardownItemsListContextMenu();
+            this._removeItemMenuHandlerFor(menu);   // dedup THIS window only
             const ADD_REL_ID = "wv-itemmenu-add-related";
             const COPY_AS_ID = "wv-itemmenu-copy-as";                  // the "Copy As" submenu parent
             const COPY_CITATION_ID = "wv-itemmenu-copy-citation";
@@ -428,25 +439,39 @@ class _PaneMixin {
             };
             menu.addEventListener("popupshowing", onShowingGuarded);
             menu.addEventListener("popuphidden", onHidden);
-            this._itemMenuHandlers = { menu, onShowing: onShowingGuarded, onHidden };
+            if (!this._itemMenuHandlersList) this._itemMenuHandlersList = [];
+            this._itemMenuHandlersList.push({ menu, onShowing: onShowingGuarded, onHidden });
         } catch (e) {
-            Zotero.debug("[Weavero] _setupItemsListContextMenu err: " + e);
+            Zotero.debug("[Weavero] _setupItemsMenuForWindow err: " + e);
         }
     }
 
+    /** Remove (and unbind) any previously-bound handler for a specific menu. */
+    _removeItemMenuHandlerFor(menu: any) {
+        if (!this._itemMenuHandlersList) { this._itemMenuHandlersList = []; return; }
+        this._itemMenuHandlersList = this._itemMenuHandlersList.filter((h: any) => {
+            if (h.menu === menu) {
+                try { menu.removeEventListener("popupshowing", h.onShowing); } catch (e) {}
+                try { menu.removeEventListener("popuphidden", h.onHidden); } catch (e) {}
+                return false;
+            }
+            return true;
+        });
+    }
+
     _teardownItemsListContextMenu() {
-        if (!this._itemMenuHandlers) return;
-        try {
-            const { menu, onShowing, onHidden } = this._itemMenuHandlers;
-            try { menu.removeEventListener("popupshowing", onShowing); } catch (e) {}
-            try { menu.removeEventListener("popuphidden", onHidden); } catch (e) {}
-            this._clearStaleMenuIds(menu.ownerDocument, [
-                "wv-itemmenu-add-related", "wv-itemmenu-copy-select", 
-                "wv-itemmenu-copy-select-sep", "wv-itemmenu-copy-open", 
-                "wv-itemmenu-separator", "wv-itemmenu-open-external"
-            ]);
-        } catch (e) {}
-        this._itemMenuHandlers = null;
+        if (!this._itemMenuHandlersList) return;
+        for (const h of this._itemMenuHandlersList) {
+            try { h.menu.removeEventListener("popupshowing", h.onShowing); } catch (e) {}
+            try { h.menu.removeEventListener("popuphidden", h.onHidden); } catch (e) {}
+            try {
+                this._clearStaleMenuIds(h.menu.ownerDocument, [
+                    "wv-itemmenu-add-related", "wv-itemmenu-copy-as", "wv-itemmenu-open-in",
+                    "wv-itemmenu-open-external", "wv-itemmenu-separator"
+                ]);
+            } catch (e) {}
+        }
+        this._itemMenuHandlersList = [];
     }
 
     _clearStaleMenuIds(doc: Document, ids: string[]) {

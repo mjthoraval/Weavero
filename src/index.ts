@@ -3725,7 +3725,16 @@ class WeaveroPlugin {
             // A closed main window changes the workspace → update the active session.
             try { this._wvTabSessionTrackingUpdate(); } catch (e) {}
             this._teardownTreeClickDelegate();
-            this._teardownItemsListContextMenu();
+            // Per-window: drop only THIS window's items-menu handler. The global
+            // _teardownItemsListContextMenu() unbinds AND clears the handler list
+            // for every window, so closing one main window would strip the
+            // "Open … in" / "Copy As" / "Add Related…" menu from all the others
+            // (regression seen after closing duplicate windows).
+            try {
+                const closingMenu = _window && _window.document
+                    && _window.document.getElementById("zotero-itemmenu");
+                if (closingMenu) this._removeItemMenuHandlerFor(closingMenu);
+            } catch (e) {}
             this._teardownCollectionsContextMenu();
             this._teardownBookmarksToolbarButton(_window);
             this._teardownTabExternalRepositioner(_window);

@@ -6485,11 +6485,11 @@ class _ReaderPanelsMixin {
             const pageHeightPts = (vp.viewBox && vp.viewBox[3]) || 0;
             const fromTopPts = pageHeightPts - rect[3];   // rect[3] = y1 = heading top edge
             const headingTopDocY = pageView.div.offsetTop + fromTopPts * scale;
-            // Place the heading ONE THIRD down from the top of the view. This is the
+            // Place the heading ONE QUARTER down from the top of the view. This is the
             // single consistent rule for ALL outline clicks (embedded + extracted) —
             // deliberately neither native's top-align (`block: 'start'`, outline
             // sidebar) nor its centre (`block: 'center'`, search/annotations).
-            const target = headingTopDocY - (container.clientHeight / 3);
+            const target = headingTopDocY - (container.clientHeight / 4);
             container.scrollTop = Math.max(0, target);
             return true;
         } catch (e) { return false; }

@@ -6627,48 +6627,51 @@ class _ReaderPanelsMixin {
                                 // We do the scroll and fully own the highlight +
                                 // its (reset-on-each-click) timer — fixing the
                                 // inconsistency for BOTH outline kinds.
-                                // Scroll to the dest FIRST — this reliably moves the
-                                // view to the right area and renders the dest page + its
-                                // neighbours (navigateToPosition needs the target page
-                                // rendered). The recovery then nudges to the exact heading.
-                                try {
-                                    if (!(options && options.skipHistory) && typeof pv._onManualNavigation === "function") {
-                                        try { pv._onManualNavigation(); } catch (_) {}
-                                    }
-                                    try { pv._lastNavigationTime = Date.now(); } catch (_) {}
-                                    pv.navigateToPosition(location.position, options);
-                                } catch (e) {
-                                    try { origNavigate(location, options); } catch (_) {}
-                                }
+                                // Record the manual navigation (history + suppress the
+                                // reader's own scroll-spy) up front; the actual scroll is
+                                // done per-branch below.
+                                const markNav = function () {
+                                    try {
+                                        if (!(options && options.skipHistory) && typeof pv._onManualNavigation === "function") {
+                                            try { pv._onManualNavigation(); } catch (_) {}
+                                        }
+                                        try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+                                    } catch (_) {}
+                                };
+                                // Plain dest scroll (native-style centre on the bare point) —
+                                // the fallback when there's nothing better to aim at.
+                                const destScroll = function () {
+                                    markNav();
+                                    try { pv.navigateToPosition(location.position, options); }
+                                    catch (e) { try { origNavigate(location, options); } catch (_) {} }
+                                };
                                 if (plugin._wvOutlineIsPointRect(location.position)) {
-                                    // Embedded: the dest is a bare POINT, often a hair
-                                    // before the heading (sometimes on the previous page).
-                                    // Recover the heading's real box, then — once the dest
-                                    // scroll has settled — bring it into view IF it isn't
-                                    // already (`ifNeeded`), aligned to the top (`block:
-                                    // start`), and flash it. The deferred second nudge (vs
-                                    // an immediate one) avoids racing the dest scroll, the
-                                    // race that left the heading off-screen before.
+                                    // Embedded: the dest is a bare POINT, often a hair before
+                                    // the heading (sometimes on the previous page). Recover the
+                                    // heading's real box and scroll DIRECTLY to it in ONE move —
+                                    // no dest pre-scroll. The page views are laid out on
+                                    // document load, so _wvOutlineScrollToRect can compute the
+                                    // offset (via div.offsetTop) without the page being rendered
+                                    // first. Doing both scrolls used to flicker: the view jumped
+                                    // to the bare point, then re-jumped to the recovered heading.
+                                    // Recovery is data-only (no scroll), so we just wait for it.
                                     const r = location.position.rects[0];
                                     Promise.resolve(
                                         plugin._wvOutlineRecoverRect(pv, pi, r[0], r[1], title)
                                     ).then(function (res: any) {
-                                        if (!res || pv._wvHlSeq !== gen) return;   // none / superseded
-                                        const w = pv._iframeWindow;
-                                        const nudge = function () {
-                                            if (pv._wvHlSeq !== gen) return;
-                                            // Scroll the heading to the top via a direct DOM
-                                            // scroll (navigateToPosition throws across the
-                                            // Xray boundary). Deferred so the dest scroll has
-                                            // rendered/laid out the heading's page first.
-                                            try { plugin._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
-                                            plugin._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
-                                        };
-                                        if (w && w.setTimeout) w.setTimeout(nudge, 130); else nudge();
-                                    }).catch(function () {});
+                                        if (pv._wvHlSeq !== gen) return;   // superseded by a newer click
+                                        if (!res) { destScroll(); return; }   // nothing recovered → plain dest scroll
+                                        markNav();
+                                        // Scroll the heading into view via a direct DOM scroll
+                                        // (navigateToPosition throws across the Xray boundary).
+                                        try { plugin._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
+                                        plugin._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
+                                    }).catch(function () { try { destScroll(); } catch (_) {} });
                                 } else {
-                                    // Extracted: the entry already carries the real heading
-                                    // rect on the dest page — flash it directly.
+                                    // Extracted: the entry already carries the real heading rect
+                                    // on the dest page — navigate to it (already the heading, so
+                                    // no flicker) and flash it directly.
+                                    destScroll();
                                     const rr = location.position.rects[0];
                                     plugin._wvOutlineHighlightInPlace(pv, pi, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
                                 }

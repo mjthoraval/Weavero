@@ -6586,7 +6586,7 @@ class _ReaderPanelsMixin {
      *  from a bare-point dest) and EXTRACTED outlines (use the entry's own rect),
      *  both via our own reset-on-each-click timer (works around the native
      *  rapid-click bug, Zotero forums #122030). Gated at click time on
-     *  `weavero.enableOutlineTextHighlight` (default off). Idempotent per view;
+     *  `weavero.enableOutlineTextHighlight` (default on). Idempotent per view;
      *  captures the true original navigate once for clean re-install; reads the
      *  live plugin so it survives reloads. */
     _wvOutlineInstallRecovery(reader: any, tries?: number) {

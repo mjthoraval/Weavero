@@ -671,7 +671,7 @@ class WeaveroPlugin {
     _getEnableOutlineTextHighlight() {
         try {
             const v = Zotero.Prefs.get("weavero.enableOutlineTextHighlight");
-            return v === undefined ? false : !!v;
+            return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
     /** Master switch for inline markdown rendering inside the popup.
@@ -1856,6 +1856,8 @@ class WeaveroPlugin {
                 "noteOpenInDeckWindow",
                 "devNewMainWindow", "devSessionAutoReopen",
                 "readerItemPane",
+                // PDF reader outline heading-highlight — on by default.
+                "enableOutlineTextHighlight",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
                 // Bookmarks
@@ -1865,7 +1867,7 @@ class WeaveroPlugin {
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm",
                 "enableOpenExternalViewer",
-                "enableOutlineTextHighlight", "debug",
+                "debug",
                 // Optional URL schemes — all opt-in
                 "enableMagnetScheme", "enableMailtoScheme", "enableSkypeScheme",
                 "enableSmsScheme", "enableSpotifyScheme", "enableTelScheme",

@@ -3682,26 +3682,35 @@ class _ReaderMixin {
                 "  display: flex; flex-direction: column;",
                 "  min-height: 0; gap: 6px;",
                 "}",
-                /* Search input — leaves room for the gear (left) + funnel
-                   (right) absolute buttons. */
+                /* Search input — styled to MATCH Zotero's native tabs-menu
+                   filter (#zotero-tabs-menu-filter, scss/elements/_tabsMenuPanel.scss):
+                   transparent border, native padding, and the gear (left) + funnel
+                   (right) buttons given room via MARGIN (so the input shrinks and
+                   the buttons sit OUTSIDE it) — the same `margin: 0 38px` the main
+                   window uses. */
                 "#wv-wtl-filter {",
                 "  margin: 0;",
-                "  box-sizing: border-box; width: 100%;",
+                "  margin-inline-start: 38px;",
+                "  margin-inline-end: 38px;",
+                "  box-sizing: border-box;",
                 "  border-radius: 5px;",
-                "  border: 1px solid var(--material-panedivider, rgba(127,127,127,0.4));",
+                "  border: 1px solid transparent;",
                 "  background: var(--fill-quinary, rgba(127,127,127,0.06));",
                 "  color: inherit; font: inherit; font-size: 13px;",
-                "  height: 32px;",
-                "  padding: 2px 38px;",
+                "  padding: 2px;",
+                "  padding-inline-start: 5px;",
                 "}",
-                // Accent focus ring, matching Zotero's native tabs-menu search
-                // input (its focus-ring): the search autofocuses on open, so this
-                // is the blue line the main window shows. A 1px accent box-shadow
-                // sits outside the 1px accent border for a clearly-visible ring.
-                "#wv-wtl-filter:focus, #wv-wtl-filter:focus-visible {",
-                "  outline: none;",
-                "  border-color: var(--color-accent, #4072e5);",
-                "  box-shadow: 0 0 0 1px var(--color-accent, #4072e5);",
+                /* The blue focus line. In the MAIN window this is the OS default
+                   :focus-visible outline — Zotero gates its own focus-ring off on
+                   Windows (`@media not windows`), letting the platform ring show.
+                   But the READER chrome window (reader.xhtml) resets input outlines
+                   to none, so the UA ring never appears here. We redraw the same
+                   accent ring explicitly; the id+`:focus-visible` selector outranks
+                   that generic reset. The search autofocuses on panel open, so this
+                   is what the user sees the moment the menu opens. */
+                "#wv-wtl-filter:focus-visible, #wv-wtl-filter:focus {",
+                "  outline: 2px solid var(--color-accent, #4072e5);",
+                "  outline-offset: -1px;",
                 "}",
                 /* Gear (settings) button — far left, outside the input. */
                 "#wv-wtl-settings-btn, #wv-wtl-filetype-btn {",
@@ -5208,7 +5217,7 @@ class _ReaderMixin {
             const input: any = doc.createElementNS(HTML, "input");
             input.id = "wv-wtl-filter";
             input.type = "text";
-            input.setAttribute("placeholder", "Search tabs");
+            input.setAttribute("placeholder", "Search Tabs");
             input.addEventListener("input", () => {
                 try {
                     const st = this._wvWTPanelState(win);

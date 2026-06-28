@@ -127,6 +127,26 @@ class WeaveroPlugin {
         (doc.head || doc.documentElement).appendChild(s);
     }
 
+    /** Inject the SAME tabs-menu stylesheet into a reader window, with the
+     *  native panel/list ids rewritten to the reader clone's ids
+     *  (#wv-window-tablist-panel / #wv-wtl-list). This is how the reader-window
+     *  tabs menu is styled IDENTICALLY to the main window's from one CSS source:
+     *  the menu renders via the same shared code, and this makes the same rules
+     *  apply to it. Injected AFTER the reader's own styles so it wins on the few
+     *  shared selectors. Idempotent. */
+    ensureSharedMenuStylesIn(doc) {
+        if (!doc) return;
+        const ID = STYLE_ID + "-wtl";
+        if (doc.getElementById(ID)) return;
+        const css = PLUGIN_CSS
+            .replace(/#zotero-tabs-menu-panel/g, "#wv-window-tablist-panel")
+            .replace(/#zotero-tabs-menu-list/g, "#wv-wtl-list");
+        const s = doc.createElement("style");
+        s.id = ID;
+        s.textContent = css;
+        (doc.head || doc.documentElement).appendChild(s);
+    }
+
     removeStyles() {
         try {
             const el = Zotero.getMainWindow().document.getElementById(STYLE_ID);

@@ -3675,7 +3675,10 @@ class _ReaderMixin {
                 "}",
                 "#wv-wtl-wrapper {",
                 "  position: relative;",
-                "  width: 360px;",
+                // Match the main window's tabs-menu panel width (420px via
+                // `.wv-tabs-menu-wide`): 404 + the 8px×2 ::part(content) padding ≈ 420,
+                // so the reader popup opens the same size as the main window's.
+                "  width: 404px;",
                 "  display: flex; flex-direction: column;",
                 "  min-height: 0; gap: 6px;",
                 "}",
@@ -3691,7 +3694,15 @@ class _ReaderMixin {
                 "  height: 32px;",
                 "  padding: 2px 38px;",
                 "}",
-                "#wv-wtl-filter:focus { outline: none; border-color: var(--color-accent, #4072e5); }",
+                // Accent focus ring, matching Zotero's native tabs-menu search
+                // input (its focus-ring): the search autofocuses on open, so this
+                // is the blue line the main window shows. A 1px accent box-shadow
+                // sits outside the 1px accent border for a clearly-visible ring.
+                "#wv-wtl-filter:focus, #wv-wtl-filter:focus-visible {",
+                "  outline: none;",
+                "  border-color: var(--color-accent, #4072e5);",
+                "  box-shadow: 0 0 0 1px var(--color-accent, #4072e5);",
+                "}",
                 /* Gear (settings) button — far left, outside the input. */
                 "#wv-wtl-settings-btn, #wv-wtl-filetype-btn {",
                 "  position: absolute; top: 0; height: 32px;",
@@ -3734,7 +3745,11 @@ class _ReaderMixin {
                 /* List container. */
                 "#wv-wtl-list {",
                 "  margin: 0; overflow-x: hidden; overflow-y: auto;",
-                "  max-height: 60vh; scrollbar-width: thin;",
+                // No fixed max-height: _wvTabsMenuFitListHeight sets an explicit
+                // height = min(content, viewport - top - 18) so the list fills the
+                // available on-screen space exactly like the main window (which has
+                // no 60vh cap). A static cap made the reader popup open shorter.
+                "  scrollbar-width: thin;",
                 "  display: flex; flex-direction: column;",
                 "}",
                 "#wv-wtl-list .wv-wtl-empty {",
@@ -3744,10 +3759,27 @@ class _ReaderMixin {
                    rounded, hover / active fills, accent when selected). */
                 "#wv-wtl-list .row {",
                 "  display: flex; align-items: center; gap: 4px;",
-                "  border-radius: 5px;",
-                "  padding: 4px 3px 4px 6px;",
-                "  cursor: pointer;",
-                "  color: inherit; font-size: 13px;",
+                "  border-radius: 2px;",
+                "  padding: 2px 3px 2px 6px;",
+                "  height: 18px;",
+                "  cursor: pointer; color: inherit; font-size: 13px;",
+                "}",
+                // The consolidated reader menu renders the SAME rows as the main
+                // window (Zotero's native structure: `.zotero-tabs-menu-entry.title
+                // > label`). Style that structure exactly like _tabsMenuPanel.scss so
+                // titles are a single ellipsised line and the icon aligns — the
+                // reader's bespoke `.wv-wtl-row-*` rules don't match these classes.
+                "#wv-wtl-list .row .zotero-tabs-menu-entry.title {",
+                "  padding: 0; padding-inline-start: 3px; margin-inline-start: -3px;",
+                "  display: flex; align-items: center; width: 100%; min-width: 0; color: unset;",
+                "}",
+                "#wv-wtl-list .row .zotero-tabs-menu-entry.title label {",
+                "  overflow: hidden; margin-bottom: 0; margin-block-start: 0;",
+                "  white-space: nowrap; text-overflow: ellipsis; display: inline-block;",
+                "}",
+                "#wv-wtl-list .row .zotero-tabs-menu-entry.title .tab-icon,",
+                "#wv-wtl-list .row .zotero-tabs-menu-entry.title .icon {",
+                "  width: 16px; height: 16px; margin-inline-end: 4px; flex-shrink: 0;",
                 "}",
                 "#wv-wtl-list .row:hover { background-color: var(--fill-quinary); }",
                 "#wv-wtl-list .row:active { background-color: var(--fill-quarternary); }",
@@ -5261,7 +5293,13 @@ class _ReaderMixin {
             });
             // Focus the search field on open so typing filters immediately and
             // arrow keys reach this listener (keydown bubbles from the input).
-            panel.addEventListener("popupshown", () => { try { input.focus(); } catch (er) {} });
+            panel.addEventListener("popupshown", () => {
+                try { input.focus(); } catch (er) {}
+                // Cap the list to the on-screen space below the panel now that it's
+                // positioned — same as the main window's popupshown handler, so the
+                // popup fills the available height instead of a static cap.
+                try { const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; if (lp && lp._wvTabsMenuFitListHeight) lp._wvTabsMenuFitListHeight(panel); } catch (er) {}
+            });
 
             panel.appendChild(wrapper);
             const popupset = doc.querySelector("popupset") || doc.documentElement;
@@ -5338,247 +5376,39 @@ class _ReaderMixin {
         try {
             if (!win || !win.document) return;
             const doc = win.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
             const panel: any = doc.getElementById("wv-window-tablist-panel");
             if (!panel) return;
             const list: any = panel.querySelector("#wv-wtl-list");
             if (!list) return;
             const ps = this._wvWTPanelState(win);
             if (!ps) return;
-            const st = win._wvWT;
-            const tabs: any[] = (st && Array.isArray(st.tabs)) ? st.tabs : [];
 
+            // Style the shared rows identically to the main window — inject the
+            // same tabs-menu CSS with the ids rewritten for this reader clone.
+            try { this.ensureSharedMenuStylesIn(doc); } catch (e) {}
             list.replaceChildren();
-            // Indent rows under headers only when grouping is on (mirrors the
-            // main panel's `.wv-tabs-menu-grouped` marker).
-            try { list.classList.toggle("wv-grouped", !!ps.groupByLibrary); } catch (e) {}
-
-            if (!tabs.length) {
-                const empty: any = doc.createElementNS(HTML, "div");
-                empty.className = "wv-wtl-empty";
-                empty.textContent = "No tabs";
-                list.appendChild(empty);
-                this._wvWTRefreshFunnelState(win);
-                return;
-            }
-
-            const searchLC = (ps.search || "").trim().toLocaleLowerCase();
-            const passesSearch = (tab: any) => {
-                if (!searchLC) return true;
-                const t = (this._wvWTTabTitle(tab) || "").toLocaleLowerCase();
-                return t.includes(searchLC);
-            };
-
-            // Library-filter predicate (mirrors the main window's
-            // isLibVisible): any include flag narrows to flagged libs;
-            // an exclude flag hides that lib.
-            const anyIncluded = [...ps.libFilter.values()].includes("include");
-            const isLibVisible = (libID: any) => {
-                const v = ps.libFilter.get(libID);
-                if (v === "exclude") return false;
-                if (anyIncluded) return v === "include";
-                return true;
-            };
-
-            // Build one row element for a tab.
-            const buildRow = (tab: any) => {
-                const row: any = doc.createElementNS(HTML, "div");
-                row.className = "row";
-                row.setAttribute("data-wv-tab-id", tab.id);
-                if (st && st.activeId === tab.id) {
-                    row.classList.add("wv-active");
-                    row.setAttribute("data-selected", "true");
-                }
-
-                const iconEl: any = doc.createElementNS(HTML, "span");
-                iconEl.className = "wv-wtl-row-icon";
-                const rtype = tab.type || (tab.reader && tab.reader._type) || "";
-                this._wvWTApplyTabIcon(iconEl, rtype);
-                row.appendChild(iconEl);
-
-                const titleEl: any = doc.createElementNS(HTML, "span");
-                titleEl.className = "wv-wtl-row-title";
-                titleEl.textContent = this._wvWTTabTitle(tab) || "(untitled)";
-                row.appendChild(titleEl);
-
-                // Annotation count badge (only when the setting is on and
-                // count > 0). Structure mirrors _addAnnotationCountToRow.
-                if (ps.showAnnCount) {
-                    try {
-                        const item: any = Zotero.Items.get(tab.itemID);
-                        const annots = (item && typeof item.getAnnotations === "function")
-                            ? (item.getAnnotations() || []) : [];
-                        const n = annots.length;
-                        if (n) {
-                            const badge: any = doc.createElementNS(HTML, "span");
-                            badge.className = "wv-tabs-menu-anncount";
-                            badge.title = n + " annotation" + (n === 1 ? "" : "s");
-                            const ic: any = doc.createElementNS(HTML, "span");
-                            ic.className = "wv-tabs-menu-anncount-icon";
-                            badge.appendChild(ic);
-                            const lbl: any = doc.createElementNS(HTML, "span");
-                            lbl.className = "wv-tabs-menu-anncount-label";
-                            lbl.textContent = String(n);
-                            badge.appendChild(lbl);
-                            row.appendChild(badge);
-                        }
-                    } catch (e) {}
-                }
-
-                // Pin glyph — shown when THIS reader tab is pinned (reader tabs
-                // carry their own `tab.pinned`, independent of the main window's
-                // shared pinned-tabs store). Structure mirrors
-                // _decoratePinIconOnTabsMenuRow.
-                try {
-                    if (tab.pinned) {
-                        const SVG_NS = "http://www.w3.org/2000/svg";
-                        const span: any = doc.createElementNS(HTML, "span");
-                        span.className = "wv-tabs-menu-pin-icon";
-                        const psvg: any = doc.createElementNS(SVG_NS, "svg");
-                        psvg.setAttribute("viewBox", "0 0 16 16");
-                        psvg.setAttribute("width", "12");
-                        psvg.setAttribute("height", "12");
-                        psvg.setAttribute("fill", "currentColor");
-                        const ppath: any = doc.createElementNS(SVG_NS, "path");
-                        ppath.setAttribute("d", "M9.5 0v4l2 2v2H8.7L8 14.5 7.3 8H4.5V6l2-2V0h3z");
-                        psvg.appendChild(ppath);
-                        span.appendChild(psvg);
-                        row.appendChild(span);
-                    }
-                } catch (e) {}
-
-                // Close button — same icon + class as the reader's tab
-                // close (icon-x-8).
-                const closeBtn: any = doc.createElementNS(HTML, "button");
-                closeBtn.className = "wv-window-tab-close wv-wtl-row-close";
-                closeBtn.setAttribute("title", "Close");
-                closeBtn.setAttribute("tabindex", "-1");
-                closeBtn.setAttribute("aria-label", "Close");
-                const closeIcon: any = doc.createElementNS(HTML, "span");
-                closeIcon.className = "icon icon-css icon-x-8 icon-16";
-                closeBtn.appendChild(closeIcon);
-                closeBtn.addEventListener("click", (e: any) => {
-                    try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
-                    try {
-                        this._wvWTCloseTab(win, tab.id);
-                        this._wvWTRenderTabListPanel(win);
-                    } catch (er) {}
-                });
-                row.appendChild(closeBtn);
-
-                // Click the row (not the close) → switch to that tab.
-                row.addEventListener("click", (e: any) => {
-                    try {
-                        if (e.target && e.target.closest
-                            && e.target.closest(".wv-wtl-row-close")) return;
-                        this._wvWTSwitch(win, tab.id);
-                        this._wvWTScrollTabIntoView(win, tab.id);
-                        try { panel.hidePopup(); } catch (er) {}
-                    } catch (er) {}
-                });
-                return row;
-            };
-
-            // Decide row visibility for a tab (search + library + file type).
-            const applyVisibility = (row: any, tab: any, libVisible: boolean) => {
-                const visible = libVisible
-                    && passesSearch(tab)
-                    && this._wvWTTabPassesFileType(win, tab);
-                if (visible) row.classList.remove("wv-tabs-menu-row-hidden");
-                else row.classList.add("wv-tabs-menu-row-hidden");
-            };
-
-            if (!ps.groupByLibrary) {
-                // Flat list — no headers. Apply file-type + search filters
-                // per row (no library filter applies in flat mode).
-                for (const tab of tabs) {
-                    const row = buildRow(tab);
-                    applyVisibility(row, tab, true);
-                    list.appendChild(row);
+            // CONSOLIDATED: render the whole workspace exactly like the MAIN
+            // window's tabs menu, via the SAME shared code — the current-session
+            // header, every window's tabs (window-organised; this reader window is
+            // one of the sections), the Tab Groups section, and the Sessions list.
+            // Uses the plugin's global Sort-by-Library / annotation-count state so
+            // the two menus stay in lock-step. (The bespoke reader-only renderer
+            // below is bypassed.)
+            try {
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (lp) {
+                    list.classList.toggle("wv-grouped", lp._tabsMenuGroupByLibrary !== false);
+                    lp._wvTabSessionCurrentHeader(panel);
+                    lp._wvTabsMenuOtherWindows(panel);
+                    lp._wvTabsMenuGroupsSection(panel);
+                    lp._wvTabsMenuWrapCurrentSession(panel);   // box around the current session
+                    lp._wvTabSessionsMenuSection(panel);
+                    const w2 = panel.ownerGlobal;
+                    if (w2) w2.setTimeout(() => { try { lp._wvTabsMenuFitListHeight && lp._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
                 }
                 this._wvWTRefreshFunnelState(win);
-                return;
-            }
-
-            // Grouped layout — bucket tabs by library, ordered user library
-            // first then groups / feeds alphabetically.
-            const groupByLib = new Map<any, any[]>();
-            const infoByLib = new Map<any, any>();
-            const orderedIds: any[] = [];
-            for (const tab of tabs) {
-                const info = this._wvWTLibInfoForTab(tab);
-                const id = info.id;
-                if (!groupByLib.has(id)) {
-                    groupByLib.set(id, []);
-                    infoByLib.set(id, info);
-                    orderedIds.push(id);
-                }
-                groupByLib.get(id)!.push(tab);
-            }
-            const ordered = orderedIds
-                .map(id => infoByLib.get(id))
-                .sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-
-            for (const grp of ordered) {
-                const header: any = doc.createElementNS(HTML, "div");
-                header.className = "wv-tabs-menu-library-header";
-                header.setAttribute("role", "presentation");
-
-                const icon: any = doc.createElementNS(HTML, "span");
-                icon.className = "icon icon-css " + grp.iconClass;
-                header.appendChild(icon);
-
-                const label: any = doc.createElementNS(HTML, "span");
-                label.className = "wv-tabs-menu-library-name";
-                label.textContent = grp.name;
-                header.appendChild(label);
-
-                const count: any = doc.createElementNS(HTML, "span");
-                count.className = "wv-tabs-menu-library-count";
-                count.textContent = String(groupByLib.get(grp.id)!.length);
-                header.appendChild(count);
-
-                // Tri-state include / exclude tickbox. Click → include↔off,
-                // Alt+click → exclude↔off. Re-renders on toggle.
-                const tick: any = doc.createElementNS(HTML, "button");
-                tick.type = "button";
-                tick.className = "wv-tabs-menu-library-tick";
-                const cur = ps.libFilter.get(grp.id);
-                if (cur === "include") tick.dataset.selected = "true";
-                else if (cur === "exclude") tick.dataset.excluded = "true";
-                tick.title = "Click to filter to this library, "
-                    + "Alt+click to exclude. Click again to clear.";
-                tick.addEventListener("click", (e: any) => {
-                    try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
-                    const prev = ps.libFilter.get(grp.id);
-                    if (e.altKey) {
-                        if (prev === "exclude") ps.libFilter.delete(grp.id);
-                        else ps.libFilter.set(grp.id, "exclude");
-                    }
-                    else {
-                        if (prev === "include") ps.libFilter.delete(grp.id);
-                        else ps.libFilter.set(grp.id, "include");
-                    }
-                    this._wvWTRenderTabListPanel(win);
-                });
-                header.appendChild(tick);
-
-                list.appendChild(header);
-
-                const libVisible = isLibVisible(grp.id);
-                for (const tab of groupByLib.get(grp.id)!) {
-                    const row = buildRow(tab);
-                    applyVisibility(row, tab, libVisible);
-                    list.appendChild(row);
-                }
-            }
-
-            // Tab-group treatment, identical to the main window's tabs
-            // menu: nested group headers (count, twisty, independent
-            // collapse) + the "Tab Groups" summary section.
-            try { (this as any)._wvTabsMenuGroupsSection(panel); } catch (e) {}
-
-            this._wvWTRefreshFunnelState(win);
+            } catch (e) { Zotero.debug("[Weavero] reader consolidated render err: " + e); }
+            return;
         } catch (e) {
             Zotero.debug("[Weavero] _wvWTRenderTabListPanel err: " + e);
         }

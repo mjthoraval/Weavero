@@ -659,7 +659,8 @@ class _TabsMixin {
         try {
             const doc = panel.ownerDocument;
             const win = doc.defaultView;
-            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             for (const el of list.querySelectorAll(".wv-otherwin-scope")) el.remove();
             const sections = this._wvTabsMenuOtherWindowSections(win);
@@ -675,7 +676,7 @@ class _TabsMixin {
     _wvTabsMenuFitListHeight(panel: any, attempt?: number) {
         try {
             const win = panel.ownerGlobal;
-            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!win || !list) return;
             const top = list.getBoundingClientRect().top;
             // The popup may not be positioned yet (top still at its pre-anchor spot);
@@ -1137,7 +1138,8 @@ class _TabsMixin {
     _wvTabsMenuWrapCurrentSession(panel: any) {
         try {
             const doc = panel.ownerDocument;
-            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             if (list.querySelector(".wv-cursess-scope")) return;   // already wrapped this pass
             const nodes = [...list.children];

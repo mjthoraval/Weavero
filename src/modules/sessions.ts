@@ -960,7 +960,8 @@ class _TabSessionsMixin {
     _wvTabSessionCurrentHeader(panel: any) {
         try {
             const doc = panel.ownerDocument;
-            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             for (const el of list.querySelectorAll(".wv-cursess-header")) el.remove();
             if (!this._wvGetEnableTabSessions()) return;
@@ -1020,8 +1021,8 @@ class _TabSessionsMixin {
         try {
             const doc = panel.ownerDocument;
             const win = doc.defaultView;
-            // Main-window tabs menu only (reader-window clone uses #wv-wtl-list).
-            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             for (const el of list.querySelectorAll(
                 ".wv-sessmenu-header, .wv-sessmenu-row, .wv-sessmenu-scope")) el.remove();

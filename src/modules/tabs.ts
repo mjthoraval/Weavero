@@ -3183,8 +3183,11 @@ class _TabsMixin {
                             const tabID = ctx.tabID;
                             if (!popup || !win || !tabID || tabID === "zotero-pane") return;
                             const targets = self._wvTabMultiSelTargets ? self._wvTabMultiSelTargets(win, tabID) : [tabID];
-                            if (!targets || targets.length <= 1) return;   // single → leave native
-                            self._wvMakeMoveTabMenuMulti(win, popup, targets);
+                            // Inject the nested window/group move targets (single +
+                            // multi). Then, for a multi-selection, the relabel +
+                            // whole-selection edge moves.
+                            self._wvInjectMoveTargetsIntoNativeMoveMenu(win, popup, targets);
+                            if (targets && targets.length > 1) self._wvMakeMoveTabMenuMulti(win, popup, targets);
                         } catch (e) {}
                     },
                 }],
@@ -3234,6 +3237,48 @@ class _TabsMixin {
                 });
             }
         } catch (e) { Zotero.debug("[Weavero] _wvMakeMoveTabMenuMulti err: " + e); }
+    }
+
+    /** Inject the nested per-window / per-group move targets into the native
+     *  "Move Tab" submenu (main-window tab context menu) — the same shared builder
+     *  the reader-window menu uses. Cleared + rebuilt each popupshowing (windows /
+     *  groups change). Inserted before the native "Move to New Window" (the
+     *  submenu's last direct menuitem). `targets` is the right-clicked selection;
+     *  a multi-selection moves all together, sequenced so each move settles. */
+    _wvInjectMoveTargetsIntoNativeMoveMenu(win: any, popup: any, targets: any[]) {
+        try {
+            const doc = popup.ownerDocument;
+            const moveLabel = Zotero.getString("tabs.move");
+            let moveMenu: any = null;
+            for (const m of popup.querySelectorAll("menu")) {
+                const l = m.getAttribute && m.getAttribute("label");
+                if (l === moveLabel || l === "Move Tabs") { moveMenu = m; break; }
+            }
+            if (!moveMenu) return;
+            const submenu = moveMenu.querySelector("menupopup");
+            if (!submenu) return;
+            for (const el of Array.from(submenu.querySelectorAll(".wv-mv-target, .wv-mv-extra")) as any[]) el.remove();
+            // Insert before "Move to New Window" — the submenu's last direct menuitem.
+            const items = Array.from(submenu.children).filter((c: any) => c.tagName === "menuitem");
+            const before: any = items.length ? items[items.length - 1] : null;
+            const sep = doc.createXULElement("menuseparator");
+            sep.classList.add("wv-mv-extra");
+            if (before && before.parentNode === submenu) submenu.insertBefore(sep, before);
+            else submenu.appendChild(sep);
+            const tids = (targets && targets.length) ? targets.slice() : [];
+            const onPick = (target: any) => {
+                try {
+                    let i = 0;
+                    const step = () => {
+                        if (i >= tids.length) return;
+                        try { this._wvMoveTabToTarget(win, tids[i++], target); } catch (e) {}
+                        if (i < tids.length) (win.setTimeout || setTimeout)(step, 500);
+                    };
+                    step();
+                } catch (e) {}
+            };
+            this._wvBuildMoveTargetsInto(doc, submenu, win, onPick, before);
+        } catch (e) { Zotero.debug("[Weavero] _wvInjectMoveTargetsIntoNativeMoveMenu err: " + e); }
     }
 
     /** Relabel the native "Close" menuitem to "Close N Tabs" and rebind it to

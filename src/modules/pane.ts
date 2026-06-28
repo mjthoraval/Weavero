@@ -606,8 +606,7 @@ class _PaneMixin {
             const targets = this._wvOpenInTargetWindows();
             const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
-            // Only worth showing when there's an actual choice of destination.
-            if (targets.length <= 1 && !groups.length) return;
+            // Always shown — "New Window" is always a valid destination.
 
             const label = (typeWord && !mixedType) ? ("Open " + typeWord + " in") : "Open in";
             const parent = doc.createXULElement("menu");
@@ -656,6 +655,23 @@ class _PaneMixin {
                     pop.appendChild(ng);
                 }
             }
+
+            // "New Window" — open in a brand-new main window; its indented
+            // "New Group" opens into a fresh group created in that new window.
+            pop.appendChild(doc.createXULElement("menuseparator"));
+            const nwItem = doc.createXULElement("menuitem");
+            nwItem.setAttribute("label", "New Window");
+            nwItem.classList.add("menuitem-iconic");
+            nwItem.setAttribute("image", winIcon);
+            nwItem.addEventListener("command", () => { this._wvOpenInNewMainWindow(win, false); });
+            pop.appendChild(nwItem);
+            const nwGroup = doc.createXULElement("menuitem");
+            nwGroup.setAttribute("label", "New Group");
+            nwGroup.classList.add("menuitem-iconic");
+            nwGroup.setAttribute("style", INDENT);
+            nwGroup.setAttribute("image", plusIcon);
+            nwGroup.addEventListener("command", () => { this._wvOpenInNewMainWindow(win, true); });
+            pop.appendChild(nwGroup);
 
             // Place directly ABOVE the native "View Online" entry; fall back to the
             // other open-actions, then the menu end.
@@ -724,6 +740,47 @@ class _PaneMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenInTarget err: " + e);
         }
+    }
+
+    /** Open the selected items in a BRAND-NEW main window (and, with
+     *  createNewGroup, a fresh tab group there). Opens the window, waits for its
+     *  tab machinery to come up, then routes through _wvOpenInTarget. */
+    async _wvOpenInNewMainWindow(srcWin: any, createNewGroup?: boolean) {
+        try {
+            // Zotero.openMainWindow() opens a window but returns nothing — find the
+            // new one by diffing the main-window list.
+            const before = new Set(Zotero.getMainWindows());
+            try { (Zotero as any).openMainWindow(); }
+            catch (e) { Zotero.debug("[Weavero] openMainWindow err: " + e); return; }
+            const st = (srcWin && srcWin.setTimeout) ? srcWin.setTimeout.bind(srcWin) : setTimeout;
+            let newWin: any = null;
+            await new Promise<void>((resolve) => {
+                let tries = 0;
+                const find = () => {
+                    try {
+                        const w = Zotero.getMainWindows().find((x: any) => !before.has(x)
+                            && x.ZoteroPane && x.Zotero_Tabs && x.Zotero_Tabs._tabs
+                            && x.document && x.document.readyState === "complete");
+                        if (w) { newWin = w; resolve(); return; }
+                    } catch (e) {}
+                    if (tries++ < 150) st(find, 100); else resolve();
+                };
+                find();
+            });
+            if (!newWin) { Zotero.debug("[Weavero] new main window not found"); return; }
+            // Make it the active window so Zotero.Reader.open (which targets
+            // getMainWindow()) lands the attachment here.
+            await new Promise<void>((resolve) => {
+                let tries = 0;
+                const activate = () => {
+                    try { if (newWin.focus) newWin.focus(); } catch (e) {}
+                    try { if (Zotero.getMainWindow() === newWin) { resolve(); return; } } catch (e) {}
+                    if (tries++ < 25) st(activate, 100); else resolve();
+                };
+                activate();
+            });
+            await this._wvOpenInTarget(srcWin, newWin, null, !!createNewGroup);
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenInNewMainWindow err: " + e); }
     }
 
     /** Register the reader-tab right-click menu entries via Zotero's

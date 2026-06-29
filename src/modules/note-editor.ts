@@ -60,9 +60,10 @@ class _NoteEditorMixin {
      *  re-applied its own DOM, our observer re-tagged anchors, and
      *  the editor re-applied again, ad infinitum).
      *
-     *  Always-on rules: `zotero://` + `http(s)://`.
-     *  App-link rules: only when the master `enableAppLinks` is on
-     *  AND the per-scheme tickbox is on. */
+     *  `zotero://` is gated by the "Zotero links" toggle
+     *  (`enableZoteroLinks`) and `http(s)://` by the "URLs" toggle
+     *  (`enableInlineUrls`); app-link rules need the master
+     *  `enableAppLinks` AND the per-scheme tickbox. */
     _buildNoteEditorCSS() {
         const rules = [
             // Light/dark variants via `prefers-color-scheme` — the
@@ -77,10 +78,6 @@ class _NoteEditorMixin {
                 + " :root { --wv-link-http: #8ab4f8;"
                 + " --wv-link-zotero: #cd853f;"
                 + " --wv-link-app: #c084fc; } }",
-            "a[href^=\"zotero://\"] { color: var(--wv-link-zotero) !important; }",
-            "a[href^=\"http://\"],"
-            + " a[href^=\"https://\"]"
-            + " { color: var(--wv-link-http) !important; }",
             // Hide the note editor's built-in link popup in BOTH
             // modes. View mode (URL + Edit/Unlink buttons) is
             // replaced by Weavero's hover tooltip + right-click
@@ -91,7 +88,7 @@ class _NoteEditorMixin {
             // Ctrl-K, the toolbar's "Insert link" button, or the
             // Edit button — though the last is unreachable now)
             // and routes through `_takeOverEditorLinkPopup`.
-            ".popup.link-popup { display: none !important; }",
+            "body:not(.wv-note-native-link) .popup.link-popup { display: none !important; }",
             // Hand cursor over any `<a href>` — matches the PDF
             // reader's clickable-link cursor. The note editor
             // doesn't set a pointer cursor on anchors by default
@@ -100,6 +97,19 @@ class _NoteEditorMixin {
             // need to advertise that the link is clickable.
             "a[href] { cursor: pointer !important; }",
         ];
+        const prefOn = (name) => {
+            try { const v = Zotero.Prefs.get("weavero." + name); return v === undefined ? true : !!v; }
+            catch (e) { return true; }
+        };
+        // zotero:// — only when the "Zotero links" toggle (enableZoteroLinks) is on.
+        if (prefOn("enableZoteroLinks")) {
+            rules.push("a[href^=\"zotero://\"] { color: var(--wv-link-zotero) !important; }");
+        }
+        // http(s):// — only when the "URLs" toggle (enableInlineUrls) is on.
+        if (prefOn("enableInlineUrls")) {
+            rules.push("a[href^=\"http://\"], a[href^=\"https://\"]"
+                + " { color: var(--wv-link-http) !important; }");
+        }
         let appLinksOn = false;
         try { appLinksOn = !!Zotero.Prefs.get("weavero.enableAppLinks"); }
         catch (e) {}
@@ -135,6 +145,32 @@ class _NoteEditorMixin {
         }
         const css = this._buildNoteEditorCSS();
         if (s.textContent !== css) s.textContent = css;
+    }
+
+    /** Whether Weavero should take over a note link with this href — i.e. swallow
+     *  the click, show the hover tooltip, take the right-click menu, and suppress
+     *  the editor's native popup. Gated by the same "Show:" toggles as the link
+     *  colouring: zotero:// → enableZoteroLinks, http(s):// → enableInlineUrls,
+     *  app schemes → enableAppLinks + the per-scheme tickbox. When a scheme's
+     *  toggle is OFF, Weavero steps aside and the native popup-then-click works.
+     *  Unknown schemes keep the default takeover. */
+    _noteTakeoverForHref(href) {
+        try {
+            const h = String(href || "").trim();
+            if (!h) return true;
+            const on = (name) => {
+                try { const v = Zotero.Prefs.get("weavero." + name); return v === undefined ? true : !!v; }
+                catch (e) { return true; }
+            };
+            if (/^zotero:\/\//i.test(h)) return on("enableZoteroLinks");
+            if (/^https?:\/\//i.test(h)) return on("enableInlineUrls");
+            for (const def of URL_SCHEMES) {
+                if (h.toLowerCase().startsWith((def.name + def.sep).toLowerCase())) {
+                    return on("enableAppLinks") && on(def.pref);
+                }
+            }
+            return true;
+        } catch (e) { return true; }
     }
 
     /** Per-`<note-editor>` setup. CSS-only approach — we inject our
@@ -196,18 +232,35 @@ class _NoteEditorMixin {
                     if (e.button !== 0) return null;
                     const a = findAnchor(e);
                     if (!a) return null;
+                    const href = a.getAttribute("href") || "";
+                    // Scheme whose toggle is OFF → don't take over: let the event
+                    // through so the editor's native link popup appears.
+                    if (!this._noteTakeoverForHref(href)) return null;
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
                     return a;
                 };
-                const onPointerDown = (e) => { swallowLeft(e); };
+                const onPointerDown = (e) => {
+                    // Sync the popup-hide flag to the link under the pointer BEFORE
+                    // the editor shows its native link popup. An off-scheme link
+                    // (its toggle is off) sets the body class, so the blanket
+                    // popup-hide CSS skips it and the native popup shows; on-scheme
+                    // links (and non-links) clear it so the popup stays hidden.
+                    try {
+                        const a = findAnchor(e);
+                        const href = a ? (a.getAttribute("href") || "") : "";
+                        const takeover = !!a && this._noteTakeoverForHref(href);
+                        idoc.body.classList.toggle("wv-note-native-link", !!a && !takeover);
+                    } catch (er) {}
+                    swallowLeft(e);
+                };
                 const onMouseDown   = (e) => { swallowLeft(e); };
                 const onMouseUp     = (e) => { swallowLeft(e); };
                 const onAuxClick    = (e) => { swallowLeft(e); };  // button-1/middle
                 const onClick = (e) => {
                     const a = swallowLeft(e);
-                    if (!a) return;
+                    if (!a) return;   // off-scheme (toggle off) → native click/popup
                     const href = a.getAttribute("href") || "";
                     if (href) this._launchURL(href);
                 };
@@ -222,6 +275,8 @@ class _NoteEditorMixin {
                 const onContext = (e) => {
                     const a = findAnchor(e);
                     if (!a) return;
+                    // Off-scheme (toggle off) → let the native context menu through.
+                    if (!this._noteTakeoverForHref(a.getAttribute("href"))) return;
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
@@ -271,6 +326,8 @@ class _NoteEditorMixin {
                     if (!a) return;
                     const href = a.getAttribute("href") || "";
                     if (!href) return;
+                    // Off-scheme (toggle off) → no Weavero tooltip; native handles it.
+                    if (!this._noteTakeoverForHref(href)) return;
                     // Capture the current cursor position; the
                     // panel will anchor here when the timer fires.
                     const sx = e.screenX;
@@ -332,12 +389,17 @@ class _NoteEditorMixin {
                                     ? n.querySelectorAll(".popup.link-popup")
                                     : []);
                             for (const p of cands) {
+                                // VIEW popups are governed by the body-class CSS —
+                                // leave them. Only the EDIT popup (has an input) is
+                                // handed to Weavero's Edit Link panel.
                                 if (!p.querySelector("input")) continue;
+                                // Off-scheme link (its toggle is off) → native editing
+                                // too: the body flag is set, so don't take over.
+                                if (idoc.body.classList.contains("wv-note-native-link")) continue;
                                 if (p.dataset.weaveroSeen === "1") continue;
                                 p.dataset.weaveroSeen = "1";
-                                // Defer one tick so React's
-                                // useLayoutEffect has run and
-                                // pluginState.link.popup is settled.
+                                // Defer one tick so React's useLayoutEffect has run
+                                // and pluginState.link.popup is settled.
                                 iwin.setTimeout(() => {
                                     try {
                                         this._takeOverEditorLinkPopup(idoc, p);

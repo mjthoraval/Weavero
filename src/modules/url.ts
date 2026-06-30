@@ -452,6 +452,58 @@ export const urlMethods = {
         } catch (e) { return false; }
     },
 
+    /** Populate a <menupopup> `sub` with the "Copy As" entries (Citation /
+     *  Bibliography / Citation Key / Select Link / Open Link / Online Library
+     *  Link / BBT) for the single item returned by `getItem()` — the same set the
+     *  items-list "Copy As" submenu builds, reused for the reader-/note-window tab
+     *  menus so every window's tab menu matches. Citation-style entries operate on
+     *  the item's top-level parent (citing an attachment cites its parent). */
+    _wvBuildCopyAsSubmenu(doc: any, sub: any, getItem: () => any) {
+        const self: any = this;
+        // The "cite-able" item: the regular parent for an attachment, else self.
+        const citeItem = () => {
+            try {
+                const it: any = getItem();
+                if (!it) return null;
+                if (it.isAttachment && it.isAttachment() && it.parentID) return Zotero.Items.get(it.parentID);
+                return it;
+            } catch (e) { return null; }
+        };
+        const add = (label: string, action: (arr: any[]) => void, itemFn?: () => any) => {
+            const mi = doc.createXULElement("menuitem");
+            mi.setAttribute("label", label);
+            mi.addEventListener("command", (e: any) => {
+                try { e.stopPropagation(); } catch (er) {}
+                try { const it = (itemFn || getItem)(); if (it) action([it]); } catch (er) { Zotero.debug("[Weavero] reader copy-as cmd err: " + er); }
+            });
+            sub.appendChild(mi);
+            return mi;
+        };
+        const sep = () => sub.appendChild(doc.createXULElement("menuseparator"));
+        try {
+            add("Citation", (a) => self._copyCitationOrBibliography(a, true), citeItem);
+            add("Bibliography", (a) => self._copyCitationOrBibliography(a, false), citeItem);
+            const ci = citeItem();
+            if (ci && self._anyHasCitationKey && self._anyHasCitationKey([ci])) {
+                add("Citation Key", (a) => self._copyCitationKeys(a), citeItem);
+            }
+            sep();
+            add("Select Link", (a) => self._copyCombinedSelectLink(a, {}));
+            const it0: any = getItem();
+            if (it0 && self._buildOpenLink && self._buildOpenLink(it0)) {
+                add("Open Link", (a) => self._copyItemLinks(a, "open"));
+            }
+            if (ci && self._anyHasWebURL && self._anyHasWebURL([ci])) {
+                add("Online Library Link", (a) => self._copyOnlineLibraryLinks(a), citeItem);
+            }
+            if (self._isBetterBibTeXActive && self._isBetterBibTeXActive()) {
+                sep();
+                add("[BBT] BibTeX", (a) => self._copyExportToClipboard(a, BBT_BIBTEX_TRANSLATOR_ID), citeItem);
+                add("[BBT] BibLaTeX", (a) => self._copyExportToClipboard(a, BBT_BIBLATEX_TRANSLATOR_ID), citeItem);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvBuildCopyAsSubmenu err: " + e); }
+    },
+
     /** Online (web) library URL for an item — the page on zotero.org:
      *    user library  → https://www.zotero.org/<username>/items/<key>
      *    group library → https://www.zotero.org/groups/<groupID>/items/<key>

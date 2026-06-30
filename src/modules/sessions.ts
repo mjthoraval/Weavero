@@ -887,6 +887,16 @@ class _TabSessionsMixin {
                 "  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2.5px;",
                 "  background: currentColor; opacity: 0.5;",
                 "}",
+                // Main windows: replace the full-width title bar with a short blue
+                // tab at the top-left (matches the blue-tab data-URI window icon used
+                // in the Open-in / Move-Tabs menus). Reader windows keep the plain bar.
+                ".wv-winicon-main::before {",
+                "  left: 1.5px; right: auto; top: 1px; width: 6px; height: 2.5px;",
+                "  border-radius: 1px; background: #4072e5; opacity: 1;",
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  .wv-winicon-main::before { background: #5b9bf8; }",
+                "}",
                 // Window collapse: a twisty before the window glyph; collapsing hides
                 // everything in the window wrapper except its header (the first child).
                 ".wv-win-twisty {",

@@ -1026,8 +1026,13 @@ class _TabGroupsMixin {
             // then move into it as a normal group target. Groups live in main
             // windows only.
             if (target.newGroup && !tgtIsReader) {
-                const g = this._tabGroupCreate("", this._wvTabGroupNextColor());
-                return await this._wvMoveTabToTarget(srcWin, tabId, { win: tgtWin, isReader: false, groupId: g.id });
+                // Memoise on the shared target object so a sequenced multi-select all
+                // joins the SAME new group (one click → one group, N tabs).
+                if (!target._wvMainGroupId) {
+                    const g = this._tabGroupCreate("", this._wvTabGroupNextColor());
+                    target._wvMainGroupId = g.id;
+                }
+                return await this._wvMoveTabToTarget(srcWin, tabId, { win: tgtWin, isReader: false, groupId: target._wvMainGroupId });
             }
             const groupId = target.groupId || null;
 
@@ -1061,6 +1066,24 @@ class _TabGroupsMixin {
 
             // ---- LOOSE move to a window ----
             if (tgtIsReader) {
+                // "New Group" in a reader window: reader windows DO host groups
+                // (wvGroupId stamps). Create one group, memoised on the shared
+                // target object so a sequenced multi-select all lands in the SAME
+                // group; mount the tab here if it isn't already, then stamp it.
+                if (target.newGroup) {
+                    if (!target._wvReaderGroupId) {
+                        try { const g = this._tabGroupCreate("", this._wvTabGroupNextColor()); target._wvReaderGroupId = g.id; } catch (e) {}
+                    }
+                    const gid = target._wvReaderGroupId;
+                    let newId: any = tabId;
+                    if (srcWin !== tgtWin) {
+                        newId = null;
+                        try { newId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true, await: true }); } catch (e) {}
+                        try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
+                    }
+                    if (gid != null && newId != null) { try { this._wvReaderStampTabGroup(tgtWin, newId, gid); } catch (e) {} }
+                    return;
+                }
                 if (srcWin === tgtWin) return;   // already in this reader window
                 try { await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true }); } catch (e) {}
                 try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
@@ -1118,6 +1141,8 @@ class _TabGroupsMixin {
             const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
             const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
             const plusIcon = this._wvPlusIconURI ? this._wvPlusIconURI(dark) : "";
+            const newWinIcon = this._wvNewWindowIconURI ? this._wvNewWindowIconURI(dark) : "";
+            const newReaderWinIcon = this._wvNewReaderWindowIconURI ? this._wvNewReaderWindowIconURI(dark) : readerIcon;
             const INDENT = "padding-inline-start: 1.7em;";
             const place = (el: any) => {
                 el.classList.add("wv-mv-target");
@@ -1127,7 +1152,8 @@ class _TabGroupsMixin {
             for (const t of targets) {
                 const w = t.win;
                 const isSrc = (w === srcWin);
-                if (isSrc && t.isReader) continue;   // source reader window: nothing to offer
+                // The source window is shown as a disabled "(here)" header (main AND
+                // reader), so the current window is always visible in the list.
                 // Window row (icon + name). Source = disabled header; others move here.
                 const wi = doc.createXULElement("menuitem");
                 wi.classList.add("menuitem-iconic");
@@ -1137,28 +1163,64 @@ class _TabGroupsMixin {
                 else wi.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
                 place(wi);
                 added++;
-                // Groups + "New Group", indented under the window (main + enabled).
-                if (!t.isReader && groupsEnabled) {
-                    const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
-                    for (const g of winGroups) {
-                        const gi = doc.createXULElement("menuitem");
-                        gi.classList.add("menuitem-iconic");
-                        gi.setAttribute("label", g.name || "Group");
-                        gi.setAttribute("style", INDENT);
-                        try { gi.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
-                        const gid = g.id;
-                        gi.addEventListener("command", () => { try { onPick({ win: w, isReader: false, groupId: gid }); } catch (e) {} });
-                        place(gi);
+                // Groups + "New Group", indented under the window. Main windows list
+                // their existing groups too; reader windows host groups (wvGroupId
+                // stamps) but only offer "New Group" there — moving into an existing
+                // reader-homed group would go through the main-home group path, out
+                // of scope here.
+                if (groupsEnabled) {
+                    if (!t.isReader) {
+                        const winGroups = groups.filter((g: any) => this._wvTabGroupHomeWin(g.id) === w);
+                        for (const g of winGroups) {
+                            const gi = doc.createXULElement("menuitem");
+                            gi.classList.add("menuitem-iconic");
+                            gi.setAttribute("label", g.name || "Group");
+                            gi.setAttribute("style", INDENT);
+                            try { gi.setAttribute("image", this._wvGroupColorDotURI(this._tabGroupColorHex(g.color))); } catch (e) {}
+                            const gid = g.id;
+                            gi.addEventListener("command", () => { try { onPick({ win: w, isReader: false, groupId: gid }); } catch (e) {} });
+                            place(gi);
+                        }
                     }
+                    const isRdr = t.isReader;
                     const ng = doc.createXULElement("menuitem");
                     ng.classList.add("menuitem-iconic");
                     ng.setAttribute("label", "New Group");
                     ng.setAttribute("style", INDENT);
                     try { if (plusIcon) ng.setAttribute("image", plusIcon); } catch (e) {}
-                    ng.addEventListener("command", () => { try { onPick({ win: w, isReader: false, newGroup: true }); } catch (e) {} });
+                    ng.addEventListener("command", () => { try { onPick({ win: w, isReader: isRdr, newGroup: true }); } catch (e) {} });
                     place(ng);
                 }
             }
+            // Bottom — move the tab(s) into a BRAND-NEW window, reader or main, each
+            // with an indented "+ New Group" variant. Identical in every window's
+            // Move Tab menu (replaces the old per-menu "Move to New Window"). The
+            // reader-window icon for the reader option, the main "+window" icon for
+            // the main option (same icons as the items "Open in" menu).
+            const nwSep = doc.createXULElement("menuseparator");
+            place(nwSep);
+            const mkBottom = (label: string, icon: string, pick: () => void) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.classList.add("menuitem-iconic");
+                mi.setAttribute("label", label);
+                try { if (icon) mi.setAttribute("image", icon); } catch (e) {}
+                mi.addEventListener("command", () => { try { pick(); } catch (e) {} });
+                place(mi); added++;
+            };
+            const mkBottomGroup = (pick: () => void) => {
+                if (!groupsEnabled) return;
+                const ng = doc.createXULElement("menuitem");
+                ng.classList.add("menuitem-iconic");
+                ng.setAttribute("label", "New Group");
+                ng.setAttribute("style", INDENT);
+                try { if (plusIcon) ng.setAttribute("image", plusIcon); } catch (e) {}
+                ng.addEventListener("command", () => { try { pick(); } catch (e) {} });
+                place(ng);
+            };
+            mkBottom("Move to New Reader Window", newReaderWinIcon, () => onPick({ newReaderWindow: true }));
+            mkBottomGroup(() => onPick({ newReaderWindow: true, newGroup: true }));
+            mkBottom("Move to New Main Window", newWinIcon, () => onPick({ newMainWindow: true }));
+            mkBottomGroup(() => onPick({ newMainWindow: true, newGroup: true }));
         } catch (e) { Zotero.debug("[Weavero] _wvBuildMoveTargetsInto err: " + e); }
         return added;
     }
@@ -4182,6 +4244,26 @@ class _TabGroupsMixin {
                 } catch (e) {}
             }, 150);
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupNewFromDeckTabs err: " + e); }
+    }
+
+    /** Stamp ONE reader-window deck tab into an existing group (no group
+     *  creation, no editor) — the silent building block behind "Open into / Move
+     *  into New Group" for a reader window. Re-renders the strip, persists, and
+     *  re-applies the group chips. */
+    _wvReaderStampTabGroup(win: any, tabId: any, groupId: any) {
+        try {
+            const st = win && win._wvWT;
+            if (!st || !st.tabs) return;
+            const t = st.tabs.find((x: any) => String(x.id) === String(tabId));
+            if (!t) return;
+            const k = this._wvTabGroupDeckKey(t);
+            if (!k) return;
+            this._wvTabGroupSetStamp(t, groupId);
+            this._tabGroupAddKey(groupId, k);
+            try { (this as any)._wvWTRenderStrip(win); } catch (e) {}
+            try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
+            try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderStampTabGroup err: " + e); }
     }
 
     /** "New Group" from one or several tabs: create (auto-cycled color, no

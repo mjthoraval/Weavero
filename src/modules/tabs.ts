@@ -285,26 +285,54 @@ class _TabsMixin {
         // leave sorting / headers alone. Tab-bar mirror still runs.
         if (this._tabsMenuGroupByLibrary === false) {
             panel.classList.remove("wv-tabs-menu-grouped");
-            for (const row of allRows) {
-                const passes = this._tabPassesFileTypeFilter(
-                    win, row.dataset.tabId);
-                if (passes) row.classList.remove("wv-tabs-menu-row-hidden");
+            // Per-row: file-type filter AND the funnel's library filter (each row is
+            // stamped with `data-wv-library`), so the user can filter My Library vs
+            // group libraries without switching to the library-sorted view.
+            const lf = this._tabsMenuLibraryFilter;
+            const lfAnyInc = !!(lf && [...lf.values()].includes("include"));
+            const libVisible = (libID: any) => {
+                if (!lf || lf.size === 0) return true;
+                const v = lf.get(libID);
+                if (v === "exclude") return false;
+                if (lfAnyInc) return v === "include";
+                return true;
+            };
+            // Filter EVERY tab row in the popup — the current window's native rows
+            // (have `data-tab-id`) AND the other-window / session rows built by
+            // _wvTabsMenuTabRow (have `data-wv-library`/`data-wv-itemtype` but no
+            // Zotero_Tabs id). So the filter spans all windows, not just this one.
+            const filterRows = [...tabsList.querySelectorAll(".row[data-tab-id], .row[data-wv-library]")] as any[];
+            for (const row of filterRows) {
+                // Stamp native current-window rows (built by Zotero, not us) so the
+                // per-row checks below work uniformly.
+                if (!(row.getAttribute && row.getAttribute("data-wv-itemtype"))) {
+                    try {
+                        const tab = Zotero_Tabs._tabs.find((t: any) => t.id === row.dataset.tabId);
+                        const iid = tab && tab.data && tab.data.itemID;
+                        const it: any = iid && Zotero.Items.get(iid);
+                        if (it) {
+                            if (it.libraryID != null && !row.getAttribute("data-wv-library")) row.setAttribute("data-wv-library", String(it.libraryID));
+                            if (it.getItemTypeIconName) row.setAttribute("data-wv-itemtype", it.getItemTypeIconName(true));
+                        }
+                    } catch (e) {}
+                }
+                const passesFt = this._rowPassesFileTypeFilter(row.getAttribute("data-wv-itemtype"));
+                const libRaw = row.getAttribute && row.getAttribute("data-wv-library");
+                const passesLib = (libRaw == null) ? true : libVisible(Number(libRaw));
+                if (passesFt && passesLib) row.classList.remove("wv-tabs-menu-row-hidden");
                 else row.classList.add("wv-tabs-menu-row-hidden");
             }
-            // Mirror file-type filter on the main window's tab bar
-            // (no library filter applies in this mode).
-            this._applyTabBarFilter(win,
-                () => null,
-                () => true);
+            // Tab-bar mirror keeps file-type only (a library filter on the popup
+            // list shouldn't hide tabs from the live bar).
+            this._applyTabBarFilter(win, () => null, () => true);
             try { this._refreshFileTypeFilterButtonState(panel); }
             catch (e) {}
             const ft = this._tabsMenuFileTypeFilter;
-            const ftActive = ft
-                && (ft.include.size > 0 || ft.exclude.size > 0);
+            const anyActive = !!(ft && (ft.include.size > 0 || ft.exclude.size > 0))
+                || !!(lf && lf.size > 0);
             const menuBtn = doc.getElementById("zotero-tb-tabs-menu");
             if (menuBtn) {
-                menuBtn.classList.toggle("wv-tabs-menu-filter-active",
-                    !!ftActive);
+                menuBtn.classList.toggle("wv-tabs-menu-filter-active", anyActive);
             }
             return;
         }
@@ -609,7 +637,10 @@ class _TabsMixin {
                         };
                     }
                 } catch (e) {}
-                const wIsAnchor = this._wvIsAnchorWindow(w);
+                // Show the anchor mark only when it's ALSO shown in the window's
+                // Library tab — i.e. only with >1 main window (matches the
+                // `.wv-anchor-window` library-tab gate).
+                const wIsAnchor = this._wvIsAnchorWindow(w) && Zotero.getMainWindows().length > 1;
                 if (tabs.length) sections.push({ label: this._wvWindowName(w), win: w, libraryTab, tabs, kind: "main", iconType: wIsAnchor ? "anchor" : "main", anchorIconClass: wIsAnchor ? this._wvAnchorLibIconClass(w) : "" });
             }
             // Reader windows.
@@ -629,7 +660,10 @@ class _TabsMixin {
                         const item = t.itemID != null && Zotero.Items.get(t.itemID);
                         if (!item) continue;
                         const tabId = t.id, rw = w;
-                        const r = liveStamp(item, null) as any;
+                        // Use the reader tab's OWN header title (citation-style, e.g.
+                        // "Azam et al. - 2026 - …") so the popup matches the tab header
+                        // and the main-window rows — not the parent doc title.
+                        const r = liveStamp(item, t.title) as any;
                         r.selected = (w === curWin && t.id === activeId);
                         r.onClick = () => {
                             try {
@@ -653,7 +687,7 @@ class _TabsMixin {
                         tabs.push(r);
                     }
                 }
-                if (tabs.length) sections.push({ label: rn > 1 ? "Reader window " + rn : "Reader window", win: w, tabs, kind: "reader" });
+                if (tabs.length) { const base = rn > 1 ? "Reader window " + rn : "Reader window"; sections.push({ label: this._wvWindowCustomTitle(w) || base, win: w, tabs, kind: "reader" }); }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuOtherWindowSections err: " + e); }
         // The window you're viewing from leads the list. For a MAIN window the
@@ -877,7 +911,9 @@ class _TabsMixin {
         // sub-headers.
         if (iconType === "anchor" || iconType === "main" || iconType === "reader" || iconType === "window") {
             const ic = doc.createElement("span");
-            ic.className = "wv-winicon";
+            // Main / anchor windows get the blue-tab variant; reader windows keep the
+            // plain frame (a main window has tabs — same cue as the menu icons).
+            ic.className = "wv-winicon" + (iconType === "reader" ? "" : " wv-winicon-main");
             header.appendChild(ic);
         } else if (iconType) {
             const ic = doc.createElement("span");
@@ -964,8 +1000,11 @@ class _TabsMixin {
                 }
             });
         }
-        // Right-click a (main) window header → context menu with a Rename option.
-        if (winRef && (iconType === "anchor" || iconType === "main")) {
+        // Right-click a window header → context menu with a Rename option. Reader
+        // windows are included too (session-level title via the per-window cache;
+        // they aren't index-keyed so it doesn't persist across restart, which
+        // matches reader windows being session-ephemeral).
+        if (winRef && (iconType === "anchor" || iconType === "main" || iconType === "reader")) {
             header.style.setProperty("pointer-events", "auto", "important");
             header.addEventListener("contextmenu", (e: any) => {
                 e.preventDefault(); e.stopPropagation();
@@ -995,6 +1034,13 @@ class _TabsMixin {
         const row = doc.createElement("div");
         row.className = "row " + (marker || "") + (tb.selected ? " selected" : "");
         row.style.cursor = "pointer";
+        // Stamp the row's library + item type so the funnel filters can hide/show it
+        // across ALL windows (these Weavero rows have no Zotero_Tabs id to look up).
+        try { if (tb.item && tb.item.libraryID != null) row.setAttribute("data-wv-library", String(tb.item.libraryID)); } catch (e) {}
+        try { if (tb.item && tb.item.getItemTypeIconName) row.setAttribute("data-wv-itemtype", tb.item.getItemTypeIconName(true)); } catch (e) {}
+        // Full title as a tooltip so an ellipsised row reveals its full name on
+        // hover — same as the tab header.
+        try { if (tb.title) row.setAttribute("title", tb.title); } catch (e) {}
         const title = doc.createElement("div");
         title.setAttribute("flex", "1");
         title.className = "zotero-tabs-menu-entry title";
@@ -1135,7 +1181,8 @@ class _TabsMixin {
             // tabs list is opened from. Right-click the header to rename.
             const count = wrap.querySelectorAll(".row[data-tab-id]").length;
             const w: any = doc.defaultView;
-            const isAnchor = this._wvIsAnchorWindow(w);
+            // Anchor mark only with >1 main window (matches the library-tab gate).
+            const isAnchor = this._wvIsAnchorWindow(w) && Zotero.getMainWindows().length > 1;
             const collapseKey = "live|current";
             if (this._wvTabsMenuIsWindowCollapsed(collapseKey)) wrap.classList.add("wv-win-collapsed");
             const hdr = this._wvTabsMenuWindowHeader(doc, this._wvWindowName(w), count, "wv-curwin-header", isAnchor ? "anchor" : "main", "", collapseKey, panel, w);
@@ -1155,6 +1202,9 @@ class _TabsMixin {
             // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;
+            // Sessions off → no session box at all, so the window boxes fill the
+            // popup's full height (matches the gated banner/list above & below).
+            if (!this._wvGetEnableTabSessions()) return;
             if (list.querySelector(".wv-cursess-scope")) return;   // already wrapped this pass
             const nodes = [...list.children];
             if (!nodes.length) return;
@@ -1288,6 +1338,8 @@ class _TabsMixin {
         // Wire drag listeners on the tab-bar container so dragging a
         // regular tab into the pinned region pins it (and vice-versa).
         try { this._wireTabBarDrag(win); } catch (e) {}
+        // Drop a library item onto the tab bar → open its best attachment.
+        try { this._wvWireItemDropOnTabBar(win); } catch (e) {}
         // Tab-group DnD: pointer tracking + group-chip drops.
         try { this._wvWireTabGroupDnD(win); } catch (e) {}
         // Ctrl/Shift+click multi-selection (for group commands on several tabs).
@@ -2893,6 +2945,255 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wireTabBarDrag err: " + e); }
     }
 
+    /** Viewport X where the drop indicator / new tab will land for a drop at
+     *  `clientX` — the LEFT edge of the tab the item inserts before, or the RIGHT
+     *  edge of the last tab when appending. Null if there are no tabs. */
+    _wvTabDropIndicatorX(win: any, clientX: number): number | null {
+        try {
+            const tabEls = this._wvVisibleTabEls(win);
+            if (!tabEls.length) return null;
+            const idx = this._wvTabIndexFromX(win, clientX);
+            if (idx == null) return null;
+            if (idx >= tabEls.length) return tabEls[tabEls.length - 1].getBoundingClientRect().right;
+            return tabEls[idx].getBoundingClientRect().left;
+        } catch (e) { return null; }
+    }
+
+    /** Get-or-create the Firefox-style drop indicator (a thin vertical blue bar
+     *  with a round cap on top) for `win`. position:fixed so it's placed by
+     *  viewport coords; pointer-events:none so it never eats the drop. Appended
+     *  inside the HTML `#tab-bar-container` (the XUL window root gives an HTML div
+     *  layout but never paints it); the container is static + untransformed +
+     *  overflow:visible, so the fixed bar paints at the right viewport spot and
+     *  the round cap isn't clipped. */
+    _wvTabDropIndicator(win: any): any {
+        try {
+            const ind = (win as any)._wvTabDropInd;
+            if (ind && ind.isConnected) return ind;
+            const doc = win.document;
+            const host = doc.getElementById("tab-bar-container");
+            if (!host) return null;
+            const blue = (this._detectUIDark && this._detectUIDark()) ? "#5b9bf8" : "#4072e5";
+            const bar = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            bar.style.cssText = "position:fixed;width:3px;background:" + blue
+                + ";pointer-events:none;z-index:2147483647;border-radius:1.5px;margin:0;padding:0;display:none;";
+            const dot = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            dot.style.cssText = "position:absolute;left:50%;top:-3px;transform:translateX(-50%);"
+                + "width:9px;height:9px;border-radius:50%;background:" + blue + ";";
+            bar.appendChild(dot);
+            host.appendChild(bar);
+            (win as any)._wvTabDropInd = bar;
+            return bar;
+        } catch (e) { return null; }
+    }
+
+    _wvShowTabDropIndicator(win: any, clientX: number) {
+        try {
+            const barEl = win.document.getElementById("tab-bar-container");
+            const x = this._wvTabDropIndicatorX(win, clientX);
+            if (!barEl || x == null) { this._wvHideTabDropIndicator(win); return; }
+            const ind = this._wvTabDropIndicator(win);
+            if (!ind) return;
+            const r = barEl.getBoundingClientRect();
+            // Inset the bar from the top of the tab strip so the round cap (which
+            // sits just above the bar) is FULLY visible — the strip touches the
+            // window's top edge, so a full-height bar would clip the cap. Firefox
+            // does the same (its toolbar has room above the tabs for the cap).
+            const TOP = 7, BOT = 5;
+            ind.style.left = (x - 1.5) + "px";
+            ind.style.top = (r.top + TOP) + "px";
+            ind.style.height = Math.max(8, r.height - TOP - BOT) + "px";
+            ind.style.display = "block";
+        } catch (e) {}
+    }
+
+    _wvHideTabDropIndicator(win: any) {
+        try { const ind = (win as any)._wvTabDropInd; if (ind) ind.style.display = "none"; } catch (e) {}
+    }
+
+    /** Drop a library item (or a multi-selection) onto the main-window tab bar
+     *  → open each item's best attachment in a new reader tab at the drop
+     *  position. Mirrors double-click / the items-menu "Open … in". Items with
+     *  no openable attachment (incl. notes) are skipped. Zotero's tab bar has no
+     *  drop handler of its own — its `handleTabBarDragOver` always preventDefaults
+     *  (for tab-reorder), so a `drop` does fire here; we only act on `zotero/item`
+     *  drags and leave `zotero/tab` (reorder) drags to Zotero. Wired once/window. */
+    _wvWireItemDropOnTabBar(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            const bar = doc.getElementById("tab-bar-container") || doc.getElementById("zotero-title-bar");
+            if (!bar || (bar as any)._wvItemDropWired) return;
+            const isItemDrag = (e: any) => {
+                try {
+                    const t = e.dataTransfer && e.dataTransfer.types;
+                    if (!t) return false;
+                    const has = (k: string) => (t.includes ? t.includes(k) : Array.prototype.indexOf.call(t, k) >= 0);
+                    return has("zotero/item") && !has("zotero/tab");
+                } catch (er) { return false; }
+            };
+            const onDragOver = (e: any) => {
+                if (!isItemDrag(e)) return;
+                e.preventDefault();
+                try { e.dataTransfer.dropEffect = "copy"; } catch (er) {}
+                e.stopPropagation();
+                // Firefox-style: show a vertical blue bar where the tab will land.
+                try { this._wvShowTabDropIndicator(win, e.clientX); } catch (er) {}
+            };
+            const onDragLeave = (e: any) => {
+                // Hide only when the cursor actually leaves the bar (dragleave also
+                // fires crossing child boundaries; dragover re-shows it otherwise).
+                try {
+                    const r = bar.getBoundingClientRect();
+                    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+                        this._wvHideTabDropIndicator(win);
+                    }
+                } catch (er) {}
+            };
+            const onDrop = (e: any) => {
+                try { this._wvHideTabDropIndicator(win); } catch (er) {}
+                if (!isItemDrag(e)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                let ids: any[] = [];
+                try {
+                    const dd = (Zotero as any).DragDrop.getDataFromDataTransfer(e.dataTransfer);
+                    if (dd && dd.dataType === "zotero/item") ids = dd.data || [];
+                } catch (er) {}
+                if (ids.length) this._wvOpenItemsFromTabBarDrop(win, ids, e.clientX);
+            };
+            bar.addEventListener("dragover", onDragOver, true);
+            bar.addEventListener("dragleave", onDragLeave, true);
+            bar.addEventListener("drop", onDrop, true);
+            (bar as any)._wvItemDropWired = true;
+            (win as any)._wvItemDropOff = () => {
+                try {
+                    bar.removeEventListener("dragover", onDragOver, true);
+                    bar.removeEventListener("dragleave", onDragLeave, true);
+                    bar.removeEventListener("drop", onDrop, true);
+                    (bar as any)._wvItemDropWired = false;
+                    const ind = (win as any)._wvTabDropInd;
+                    if (ind && ind.remove) { try { ind.remove(); } catch (e2) {} }
+                    (win as any)._wvTabDropInd = null;
+                } catch (er) {}
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvWireItemDropOnTabBar err: " + e); }
+    }
+
+    /** Open each dropped item at the drop position. Notes / attachment-less items
+     *  are skipped. Each tab is added as `reader-unloaded`/`note-unloaded` — the
+     *  same INSTANT, synchronous path Zotero's own session restore uses (~3ms vs.
+     *  the reader-render delay of Reader.open) — straight at the target slot, then
+     *  the last one is selected so it loads lazily. */
+    async _wvOpenItemsFromTabBarDrop(win: any, itemIDs: any[], clientX: number) {
+        try {
+            try { if (win.focus) win.focus(); } catch (e) {}
+            const ZT: any = win.Zotero_Tabs;
+            if (!ZT || typeof ZT.add !== "function") return;
+            const baseIndex = this._wvTabIndexFromX(win, clientX);
+            if (baseIndex == null) return;
+            // Dropping INTO a tab group → the new tab(s) join that group. Detected
+            // from the drop position (cursor over a grouped tab); the tab is added at
+            // the drop slot, INSIDE the group's contiguous run, then stamped.
+            const dropGroupId = (this._wvGroupIdAtTabBarX ? this._wvGroupIdAtTabBarX(win, clientX) : null);
+            let placed = 0, lastId: any = null, didGroup = false;
+            for (const id of itemIDs) {
+                const it = Zotero.Items.get(id);
+                if (!it) continue;
+                // Resolve the openable: the note itself, or the item's best reader-able
+                // attachment. Dedup within THIS window (select the existing tab).
+                let openItemID: any = null, type: any = null;
+                if (it.isNote && it.isNote()) { openItemID = it.id; type = "note-unloaded"; }
+                else {
+                    const att = this._wvGetBestAttachmentSync(it);
+                    if (!att) continue;
+                    openItemID = att.id; type = "reader-unloaded";
+                }
+                const ex = (ZT._tabs || []).find((t: any) => t && t.data && t.data.itemID === openItemID);
+                if (ex) { try { ZT.select(ex.id); } catch (e) {} continue; }
+                // Correct citation-style title up front so the tab shows the RIGHT
+                // title immediately (no placeholder flicker). getTabTitle() is ~1ms
+                // for an item that's loaded — which a dragged item is.
+                let title = "";
+                try { const x: any = Zotero.Items.get(openItemID); title = (await x.getTabTitle()) || ""; } catch (e) {}
+                if (!title) { try { const x: any = Zotero.Items.get(openItemID); title = (x.getNoteTitle && x.getNoteTitle()) || (x.getDisplayTitle && x.getDisplayTitle()) || ""; } catch (e) {} }
+                try {
+                    const res = ZT.add({ type, title, index: baseIndex + placed, data: { itemID: openItemID }, select: false });
+                    placed++;
+                    if (res && res.id) {
+                        lastId = res.id;
+                        // Stamp into the dropped-on group (no reposition → keep the
+                        // drop slot; the tab is already contiguous with the group).
+                        if (dropGroupId) {
+                            try {
+                                const tab = (ZT._tabs || []).find((t: any) => t.id === res.id);
+                                if (tab) {
+                                    this._wvTabGroupSetStamp(tab, dropGroupId);
+                                    const key = this._tabPinKey(tab);
+                                    if (key) this._tabGroupAddKey(dropGroupId, key);
+                                    didGroup = true;
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                } catch (e) { Zotero.debug("[Weavero] tab-bar drop add err: " + e); }
+            }
+            if (didGroup) { try { this._wvTabGroupApplyEverywhere(); } catch (e) {} }
+            // All tabs are added instantly (unloaded). DEFER selecting the last one
+            // to the next tick so the tabs PAINT first (instant), then it loads —
+            // like pressing Enter on the item: very fast tab + load after. The other
+            // dropped tabs stay unloaded (no render cost) until clicked.
+            if (lastId) {
+                const id = lastId;
+                try { (win.setTimeout || setTimeout)(() => { try { ZT.select(id); } catch (e) {} }, 0); } catch (e) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvOpenItemsFromTabBarDrop err: " + e); }
+    }
+
+    /** Tab index at drop X — never before the pinned library tab (index 0);
+     *  end of the strip if dropped past the last tab. */
+    _wvTabIndexFromX(win: any, clientX: number) {
+        try {
+            const tabEls = this._wvVisibleTabEls(win);
+            let idx = tabEls.length;
+            for (let i = 0; i < tabEls.length; i++) {
+                const r = tabEls[i].getBoundingClientRect();
+                if (clientX < r.left + r.width / 2) { idx = i; break; }
+            }
+            return Math.max(1, idx);
+        } catch (e) { return null; }
+    }
+
+    /** The visible tab elements in DOM order, EXCLUDING zero-width placeholders
+     *  (the tab bar can hold a hidden duplicate `zotero-pane` element, which would
+     *  otherwise offset the DOM index from the logical Zotero_Tabs index by one). */
+    _wvVisibleTabEls(win: any): any[] {
+        try {
+            return Array.prototype.slice.call(
+                win.document.querySelectorAll("#tab-bar-container .tab[data-id]"))
+                .filter((el: any) => { try { return el.getBoundingClientRect().width > 0; } catch (e) { return false; } });
+        } catch (e) { return []; }
+    }
+
+    /** The tab-group id at a drop X on the main-window tab bar, or null. A grouped
+     *  tab carries `data-wv-group`; we use the group of the tab the cursor is over,
+     *  or — when between tabs — the group shared by both sides. */
+    _wvGroupIdAtTabBarX(win: any, clientX: number): string | null {
+        try {
+            const els = this._wvVisibleTabEls(win);
+            for (const el of els) {
+                const r = el.getBoundingClientRect();
+                if (clientX >= r.left && clientX <= r.right) return el.getAttribute("data-wv-group") || null;
+            }
+            const idx = this._wvTabIndexFromX(win, clientX);
+            const a = (idx != null) ? els[idx - 1] : null, b = (idx != null) ? els[idx] : null;
+            const ga = a && a.getAttribute && a.getAttribute("data-wv-group");
+            const gb = b && b.getAttribute && b.getAttribute("data-wv-group");
+            if (ga && ga === gb) return ga;
+            return null;
+        } catch (e) { return null; }
+    }
+
     /** Append a tab to the pinned list AND move its DOM node to the slot
      *  just after the last currently-pinned tab — i.e. Firefox behaviour:
      *  newly-pinned tabs sit at the right end of the pinned group. The
@@ -3158,6 +3459,61 @@ class _TabsMixin {
         this._pinTabMenuID = null;
     }
 
+    /** CANONICAL tab context-menu order — the single source of truth for the
+     *  rich tab menu, shared by EVERY window's tab context menu:
+     *    - the reader-window strip menu builds its items in this order;
+     *    - the main-window native menu is reordered to match (its top cluster);
+     *    - the note-window menu (a small subset) follows it too.
+     *  Edit the order HERE and it changes everywhere — no per-window edits.
+     *  Keys map to: native Zotero items (by label) AND Weavero-added items
+     *  (by their `data-wv-*` markers / known labels); `_wvTabMenuItemKey`
+     *  resolves a popup child to one of these keys. */
+    _wvTabMenuOrder(): string[] {
+        return [
+            "showInLibrary",
+            "removeFromGroup",
+            "moveTab",
+            "viewOnline",
+            "showFile",
+            "externalViewer",
+            "openNotes",
+            "duplicate",
+            "pin",
+            "sep1",
+            "close",
+            "closeOther",
+            "reopen",
+            "copySelect",
+            "copyOpen",
+            "copyAs",
+        ];
+    }
+
+    /** Resolve a tab context-menu child element to a canonical key from
+     *  `_wvTabMenuOrder()`, or null if it isn't one of the ordered items.
+     *  Checks Weavero markers first (data-wv-*), then falls back to the native
+     *  Zotero labels so the SAME mapping works for the native main-window menu
+     *  and Weavero's custom reader/note menus. */
+    _wvTabMenuItemKey(el: any): string | null {
+        try {
+            if (!el || !el.getAttribute) return null;
+            const tagged = el.getAttribute("data-wv-key");
+            if (tagged) return tagged;                                          // tagged by our builders
+            if (el.getAttribute("data-wv-tab-viewonline") === "1") return "viewOnline";
+            if (el.getAttribute("data-wv-tab-showfile") === "1") return "showFile";
+            if (el.getAttribute("data-wv-tab-external") === "1") return "externalViewer";
+            const label = el.getAttribute("label") || "";
+            const S = (k: string, fb: string) => { try { return Zotero.getString(k); } catch (e) { return fb; } };
+            if (label === S("general.showInLibrary", "Show in Library")) return "showInLibrary";
+            if (label === S("tabs.move", "Move Tab") || label === "Move Tabs") return "moveTab";
+            if (label === S("tabs.duplicate", "Duplicate Tab") || /^Duplicate \d+ Tabs$/.test(label)) return "duplicate";
+            if (label === "Pin Tab" || label === "Unpin Tab") return "pin";
+            if (label === S("general.close", "Close") || /^Close \d+ Tabs$/.test(label)) return "close";
+            if (label === S("tabs.closeOther", "Close Other Tabs")) return "closeOther";
+            return null;
+        } catch (e) { return null; }
+    }
+
     /** Make the native tab context menu's "Move Tab" submenu multi-select aware.
      *  When several tabs are selected and the right-clicked tab is one of them,
      *  relabel it "Move Tabs" and make Move to Start / Move to End operate on the
@@ -3269,6 +3625,15 @@ class _TabsMixin {
             const tids = (targets && targets.length) ? targets.slice() : [];
             const onPick = (target: any) => {
                 try {
+                    // "New Reader/Main Window" move ALL the tabs into one new window.
+                    if (target && target.newMainWindow) {
+                        try { this._wvMoveTabsToNewMainWindow(win, tids.slice(), !!target.newGroup); } catch (e) {}
+                        return;
+                    }
+                    if (target && target.newReaderWindow) {
+                        try { this._wvMoveTabsToNewReaderWindow(win, tids.slice(), !!target.newGroup); } catch (e) {}
+                        return;
+                    }
                     let i = 0;
                     const step = () => {
                         if (i >= tids.length) return;
@@ -3279,6 +3644,11 @@ class _TabsMixin {
                 } catch (e) {}
             };
             this._wvBuildMoveTargetsInto(doc, submenu, win, onPick, before);
+            // Our "Move to New Reader Window" replaces the native "Move to New
+            // Window" (the `before` item) — hide the native one to avoid duplication.
+            // Hide only (no wv-mv-extra tag: that class is removed by the cleanup
+            // pass above, which would delete the native item permanently).
+            try { if (before && before.parentNode === submenu && before.tagName === "menuitem") before.hidden = true; } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvInjectMoveTargetsIntoNativeMoveMenu err: " + e); }
     }
 
@@ -3572,18 +3942,25 @@ class _TabsMixin {
                     } catch (e) {}
                 }
             } catch (e) { Zotero.debug("[Weavero] _wvInitDevMainWindow err: " + e); }
+            // Signal that the clean start (closeAll + restore/selectLibrary) is done,
+            // so a caller opening a tab into this window can wait it out.
+            try { win._wvDevInitDone = true; } catch (e) {}
         };
         const settle = () => {
             if (done) return;
             ticks++;
             let n = -1;
             try { n = win.Zotero_Tabs ? win.Zotero_Tabs.getState().length : -1; } catch (e) {}
+            // Dev windows open with a CLEARED session, so there's no native restore
+            // to wait for — once only the library tab is present, finish immediately
+            // (and restoreState the queued tabs) instead of polling ~550ms.
+            if (n === 1) { finish(); return; }
             if (n === lastCount) stableTicks++; else { stableTicks = 0; lastCount = n; }
             // Stable for ~2 ticks → native restore done; cap at ~3s as a backstop.
             if (stableTicks >= 2 || ticks >= 15) { finish(); return; }
-            try { win.setTimeout(settle, 200); } catch (e) { finish(); }
+            try { win.setTimeout(settle, 80); } catch (e) { finish(); }
         };
-        try { win.setTimeout(settle, 150); } catch (e) { finish(); }
+        try { win.setTimeout(settle, 50); } catch (e) { finish(); }
     }
 
     // ---- Unified Weavero WINDOW store (Phase 1: dev main windows) ---------
@@ -5035,6 +5412,55 @@ class _TabsMixin {
                     iconSrc: "chrome://zotero/skin/16/universal/note.svg",
                     accentColor: "var(--accent-yellow)",
                 }));
+
+            // Library filter — a chip per library the open tabs span (My Library +
+            // group libraries), shown only when there are ≥2. Same tri-state gesture
+            // as the file-type tiles (click = include, Alt+click = exclude), backed
+            // by `_tabsMenuLibraryFilter`.
+            try {
+                const libIds = new Set<number>();
+                for (const r of Array.from(panel.querySelectorAll("[data-wv-library]")) as any[]) {
+                    const v = r.getAttribute("data-wv-library");
+                    if (v != null) libIds.add(Number(v));
+                }
+                if (libIds.size >= 2) {
+                    const lf = this._tabsMenuLibraryFilter || (this._tabsMenuLibraryFilter = new Map());
+                    const libToggle = (libID: number, alt: boolean) => {
+                        const cur = lf.get(libID);
+                        if (alt) { if (cur === "exclude") lf.delete(libID); else lf.set(libID, "exclude"); }
+                        else { if (cur === "include") lf.delete(libID); else lf.set(libID, "include"); }
+                        renderButtons();
+                        this._refreshFileTypeFilterButtonState(panel);
+                        this._wvRegroupTabsMenu(panel);
+                    };
+                    const libRow = doc.createElementNS(NS_HTML, "div");
+                    libRow.className = "wv-tabs-menu-lib-row";
+                    libRow.style.cssText = "display:flex;flex-direction:column;gap:2px;margin-top:6px;padding-top:6px;border-top:1px solid var(--fill-quinary);";
+                    const libs = ([...libIds].map((id) => { try { return Zotero.Libraries.get(id); } catch (e) { return null; } }).filter(Boolean)) as any[];
+                    libs.sort((a, b) => (a.libraryType === "user" ? -1 : b.libraryType === "user" ? 1 : String(a.name || "").localeCompare(String(b.name || ""))));
+                    for (const lib of libs) {
+                        const chip = doc.createElementNS(NS_HTML, "button") as any;
+                        chip.type = "button";
+                        chip.className = "wv-filter-opt";
+                        chip.style.cssText = "display:flex;align-items:center;gap:6px;justify-content:flex-start;width:100%;padding:3px 6px;";
+                        chip.title = lib.name + " — click to show only this library, Alt+click to exclude.";
+                        const cur = lf.get(lib.libraryID);
+                        if (cur === "include") chip.dataset.selected = "true";
+                        if (cur === "exclude") chip.dataset.excluded = "true";
+                        const icon = doc.createElementNS(NS_HTML, "span") as any;
+                        icon.className = "icon icon-css " + (lib.libraryType === "group" ? "icon-library-group" : lib.libraryType === "feed" ? "icon-feed" : "icon-library");
+                        icon.style.cssText = "width:16px;height:16px;flex:0 0 16px;";
+                        chip.appendChild(icon);
+                        const nm = doc.createElementNS(NS_HTML, "span") as any;
+                        nm.textContent = lib.name;
+                        nm.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;";
+                        chip.appendChild(nm);
+                        chip.addEventListener("click", (e: any) => { e.stopPropagation(); libToggle(lib.libraryID, e.altKey); });
+                        libRow.appendChild(chip);
+                    }
+                    popup.appendChild(libRow);
+                }
+            } catch (e) { Zotero.debug("[Weavero] tabs-menu library chips err: " + e); }
         };
         renderButtons();
         panel.appendChild(popup);
@@ -5167,6 +5593,19 @@ class _TabsMixin {
         }
         catch (e) {}
         if (!kind) return false;
+        if (f.exclude.has(kind)) return false;
+        if (f.include.size && !f.include.has(kind)) return false;
+        return true;
+    }
+
+    /** Row-based file-type filter (works for ANY window's row): checks an
+     *  item-type string (`attachmentPDF` / `note` / …) against the include/
+     *  exclude sets. Unclassifiable rows (library/meta rows with no type) pass,
+     *  so they're never hidden by a file-type filter. */
+    _rowPassesFileTypeFilter(kind: any): boolean {
+        const f = this._tabsMenuFileTypeFilter;
+        if (!f || (!f.include.size && !f.exclude.size)) return true;
+        if (!kind) return true;
         if (f.exclude.has(kind)) return false;
         if (f.include.size && !f.include.has(kind)) return false;
         return true;

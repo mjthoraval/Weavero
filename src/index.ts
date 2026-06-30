@@ -2741,6 +2741,8 @@ class WeaveroPlugin {
         // Copy Open Link for the tab's attachment (via Zotero.MenuManager;
         // no-op on builds without that API).
         this._registerTabContextMenu();
+        // Keep reader-window tab titles in sync with the "Show tabs as" setting.
+        try { (this as any)._wvRegisterTabTitlePrefObserver(); } catch (e) {}
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
         // (The "Move Tab"→"Move Tabs" multi-select relabel is folded into the
@@ -2817,6 +2819,13 @@ class WeaveroPlugin {
                 : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) this._setupTabExternalRepositioner(w);
         } catch (e) { Zotero.debug("[Weavero] tab-ext repositioner init err: " + e); }
+        // Consolidate multi-open-in-new-window into one tabbed reader window
+        // (when reader-window tabs are active). Per-window; also re-applied on
+        // already-open windows here since onMainWindowLoad only fires for new ones.
+        try {
+            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) (this as any)._wvSetupMultiOpenConsolidation(w);
+        } catch (e) { Zotero.debug("[Weavero] multi-open consolidation init err: " + e); }
         // Ctrl+Shift+T (reopen closed reader window / group) on already-open main
         // windows — onMainWindowLoad only fires for NEW windows.
         try {
@@ -3673,6 +3682,7 @@ class WeaveroPlugin {
             this._setupItemsListContextMenu();
             this._setupCollectionsContextMenu();
             this._setupTabExternalRepositioner(_window);
+            try { (this as any)._wvSetupMultiOpenConsolidation(_window); } catch (e) {}
             if (this._getEnableLibraryBookmarks()) {
                 this._setupBookmarksToolbarButton(_window);
             }

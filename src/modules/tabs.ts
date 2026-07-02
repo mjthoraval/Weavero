@@ -4515,9 +4515,18 @@ class _TabsMixin {
                 try { tabs = w.Zotero_Tabs && w.Zotero_Tabs.getState(); } catch (e) {}
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
                 // Persist the window's stable id so its items-tree column layout
-                // can be re-bound to the same window on the next restart.
+                // can be re-bound to the same window on the next restart. Also
+                // the library-view state (selected collection + column/sort) —
+                // `_wvInitDevMainWindow` already applies `wvMainState`, the
+                // capture just never provided it outside session-switches.
+                let wvMainState: any;
+                try {
+                    const ms = (this as any)._wvTabSessionCaptureMainState
+                        ? (this as any)._wvTabSessionCaptureMainState(w) : null;
+                    if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                } catch (e) {}
                 groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
-                    geom: (this as any)._wvWindowGeom(w) });
+                    geom: (this as any)._wvWindowGeom(w), wvMainState });
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureDevWindows err: " + e); }
         return groups;
@@ -4716,8 +4725,14 @@ class _TabsMixin {
                 const path = PathUtils.join((Zotero as any).Profile.dir, "session.json");
                 const text: any = await Zotero.File.getContentsAsync(path);
                 const doc = JSON.parse(String(text));
-                const pane = (doc.windows || []).find((w: any) => w && w.type === "pane");
-                return (pane && pane.tabs) || null;
+                // ALL pane windows' tab lists — the reconcile matches the anchor
+                // by content overlap. "First pane entry" is not trustworthy: after
+                // a CRASH the file is stale and the pane order can differ from
+                // what Zotero restored (observed: the anchor got another window's
+                // note tab spliced in at that window's index).
+                return (doc.windows || [])
+                    .filter((w: any) => w && w.type === "pane" && Array.isArray(w.tabs))
+                    .map((w: any) => w.tabs);
             } catch (e) { return null; }
         })();
         return this._wvBootSessionPromise;
@@ -4736,12 +4751,28 @@ class _TabsMixin {
         try {
             if (this._wvAnchorReconciled) return;
             this._wvAnchorReconciled = true;
-            const saved: any[] = await this._wvStashBootSession();
-            if (!saved || saved.length < 2) return;
+            const paneLists: any[] = await this._wvStashBootSession();
+            if (!paneLists || !paneLists.length) return;
             const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
             if (!anchor || !anchor.Zotero_Tabs) return;
             const Z = anchor.Zotero_Tabs;
             const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+            // Pick the saved pane list that best OVERLAPS the anchor's live tabs
+            // (majority of its items already present). No majority → the file is
+            // stale/ambiguous (e.g. after a crash) — repairing would splice
+            // another window's tabs in; skip and say so.
+            let saved: any[] | null = null, bestFrac = 0;
+            for (const list of paneLists) {
+                const ids = (list || []).map((st: any) => st && st.data && st.data.itemID).filter((x: any) => x != null);
+                if (!ids.length) continue;
+                const frac = ids.filter((id: any) => live.has(id)).length / ids.length;
+                if (frac > bestFrac) { bestFrac = frac; saved = list; }
+            }
+            if (!saved || saved.length < 2 || bestFrac < 0.5) {
+                (this as any)._wvTrace("reconcile: no saved pane list matches the anchor (best overlap "
+                    + Math.round(bestFrac * 100) + "%) — skipping repair");
+                return;
+            }
             let added = 0;
             for (let i = 0; i < saved.length; i++) {
                 const st = saved[i];

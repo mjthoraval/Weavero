@@ -7423,7 +7423,10 @@ class _ReaderMixin {
      *  (globally consistent across monitors). */
     _wvWindowGeom(w: any) {
         try {
-            return { x: w.screenX, y: w.screenY, w: w.outerWidth, h: w.outerHeight, dpr: w.devicePixelRatio || 1 };
+            // st: nsIDOMChromeWindow windowState — 1 = maximized (restored as
+            // such, on the right monitor); minimized saves as normal.
+            return { x: w.screenX, y: w.screenY, w: w.outerWidth, h: w.outerHeight,
+                dpr: w.devicePixelRatio || 1, st: w.windowState };
         } catch (e) { return null; }
     }
 
@@ -7461,13 +7464,19 @@ class _ReaderMixin {
                     const curDevY = w.screenY * dpr;
                     const dx = targetDevX - curDevX;
                     const dy = targetDevY - curDevY;
-                    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
-                        if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
-                        return;
-                    }
+                    // A window saved MAXIMIZED: place it on the target monitor
+                    // first (a maximize follows the window's current screen),
+                    // then maximize instead of resizing.
+                    const finish = () => {
+                        try {
+                            if (geom.st === 1) { w.maximize && w.maximize(); return; }
+                            if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+                        } catch (e) {}
+                    };
+                    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) { finish(); return; }
                     w.moveTo(w.screenX + dx / dpr, w.screenY + dy / dpr);
                     if (++attempts < 4) w.setTimeout(step, 120);
-                    else if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+                    else finish();
                 } catch (e) {}
             };
             step();

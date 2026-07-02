@@ -764,13 +764,22 @@ class _TabsMixin {
      *  survives the list being rebuilt each refresh). */
     _wvWireTabsMenuRowDnD(panel: any) {
         try {
-            if (!panel || panel._wvRowDnDWired) return;
+            if (!panel) return;
+            // Instance-token guard, NOT a boolean: the main window's tabs-menu
+            // panel is a PERSISTENT XUL element, so a boolean flag survived a
+            // plugin reload and blocked re-wiring — leaving the panel with the
+            // OLD instance's listeners (stale logic; every popup-DnD fix was
+            // inert after a hot reload). Re-wire when a new instance takes over;
+            // the old listeners self-disable via the `self !== livePlugin()`
+            // check at the top of each handler below.
+            if (panel._wvRowDnDWiredBy === this) return;
+            panel._wvRowDnDWiredBy = this;
             // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list")
                 || panel.querySelector("#wv-wtl-list");
             if (!list) return;
-            panel._wvRowDnDWired = true;
             const self = this;
+            const isStale = () => panel._wvRowDnDWiredBy !== self;   // a newer instance re-wired
             const doc = list.ownerDocument;
             const panelWin = panel.ownerGlobal;
             const livePlugin = () => ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
@@ -830,6 +839,7 @@ class _TabsMixin {
             const DBG = (m: string) => { try { Zotero.debug("[Weavero][popupDnD] " + m); } catch (er) {} };
             list.addEventListener("dragstart", (e: any) => {
                 try {
+                    if (isStale()) return;
                     DBG("dragstart target=" + (e.target && e.target.className));
                     // Group source first — the bottom "Tab Groups" row or an inline
                     // group header. Dragging it moves the WHOLE group to a window.
@@ -898,6 +908,7 @@ class _TabsMixin {
 
             list.addEventListener("dragover", (e: any) => {
                 try {
+                    if (isStale()) return;
                     // Group drag → drop onto ANY window's scope to move/reorder the
                     // group there, at the precise slot under the cursor.
                     const gdrag = livePlugin()._wvPopupGroupDrag;
@@ -948,6 +959,7 @@ class _TabsMixin {
 
             list.addEventListener("drop", (e: any) => {
                 try {
+                    if (isStale()) return;
                     const lp = livePlugin();
                     // Group drag → move/reorder the whole group at the dropped slot.
                     const gdrag = lp._wvPopupGroupDrag;
@@ -1010,10 +1022,10 @@ class _TabsMixin {
             }, true);
 
             list.addEventListener("dragend", () => {
-                try { const lp = livePlugin(); lp._wvPopupRowDrag = null; lp._wvPopupGroupDrag = null; clearHighlight(); clearDragging(); } catch (er) {}
+                try { if (isStale()) return; const lp = livePlugin(); lp._wvPopupRowDrag = null; lp._wvPopupGroupDrag = null; clearHighlight(); clearDragging(); } catch (er) {}
             }, true);
             list.addEventListener("dragleave", (e: any) => {
-                try { if (!list.contains(e.relatedTarget)) clearHighlight(); } catch (er) {}
+                try { if (isStale()) return; if (!list.contains(e.relatedTarget)) clearHighlight(); } catch (er) {}
             }, true);
         } catch (e) { Zotero.debug("[Weavero] _wvWireTabsMenuRowDnD err: " + e); }
     }

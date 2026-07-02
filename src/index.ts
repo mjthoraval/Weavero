@@ -1922,6 +1922,10 @@ class WeaveroPlugin {
         // open) until the focused window's tab has painted. Must be installed
         // before Zotero.Reader.init's uiReady reopen loop fires.
         try { (this as any)._wvHoldReaderWindowOpens(); } catch (e) {}
+        // Restore takeover, save side: at quit Zotero's session records a
+        // library-only anchor and no reader windows (Weavero's store carries
+        // the real workspace and restores it itself next boot).
+        try { (this as any)._wvPatchReaderGetWindowStates(); } catch (e) {}
         // Register pref defaults FIRST so native settings-pane binding (and our
         // own getters) see the right initial values.
         try { this._wvRegisterDefaultPrefs(); } catch (e) {}
@@ -2788,11 +2792,21 @@ class WeaveroPlugin {
         try {
             (Zotero as any).uiReadyPromise
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
+                // Restore takeover, boot side: Zotero only restored the library
+                // tab — rebuild the anchor's real tab set first (it's the window
+                // the user is looking at). Needs the boot store doc, which the
+                // restore-map loader stashes.
+                .then(() => (async () => {
+                    try {
+                        await (this as any)._wvWTLoadRestoreMap();
+                        (this as any)._wvTrace("restore: anchor tabs");
+                        await (this as any)._wvRestoreAnchorTabs();
+                    } catch (e) {}
+                })())
                 .then(() => { try { (this as any)._wvTrace("restore: dev main windows"); this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
-                // Firefox-style: open EVERY window up-front. Reopen the reader
-                // windows Zotero's own loop drops (Items.exists cache race) NOW
-                // and in parallel — fire-and-forget; adopt + the unclaimed
-                // fallback handle the rest.
+                // Firefox-style: open EVERY window up-front (all held behind the
+                // focused tab). Post-takeover the store is the source of truth;
+                // Zotero-session entries merge in for pre-takeover stores.
                 .then(() => { try { (this as any)._wvPreemptReaderWindowReopen(); } catch (e) {} })
                 // Keep the user's quit-time window on top while background
                 // windows open (each steals focus as it appears).

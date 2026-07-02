@@ -4501,9 +4501,16 @@ class _TabsMixin {
     _wvPatchTabsGetState(win: any) {
         try {
             const Z = win && win.Zotero_Tabs;
-            if (!Z || Z._wvGetStatePatched) return;
-            const orig = Z.getState.bind(Z);
-            Z.getState = function () {
+            if (!Z) return;
+            // Version-based re-wrap: a plugin reload must replace an older
+            // wrap (the flag-guard once left a pre-takeover wrap in place and
+            // the quit save recorded a full session). Always wrap from the
+            // stored ORIGINAL, never over a previous wrap.
+            if (Z._wvGetStatePatchVer === 2) return;
+            if (!Z._wvGetStateOrig) Z._wvGetStateOrig = Z.getState.bind(Z);
+            const orig = Z._wvGetStateOrig;
+            // Full, normalized capture — what Weavero's OWN store records.
+            Z._wvGetStateFull = function () {
                 const state = orig();
                 try {
                     for (const t of (state || [])) {
@@ -4514,8 +4521,50 @@ class _TabsMixin {
                 } catch (e) {}
                 return state;
             };
-            Z._wvGetStatePatched = true;
+            // The public getState stays FULL (normalized): the anchor's tabs
+            // remain in Zotero's session so a Troubleshooting-Mode start (or a
+            // Weavero-disabled boot) still restores the main workspace
+            // natively. Only the READER-WINDOW half of the restore is taken
+            // over (see _wvPatchReaderGetWindowStates) — those are
+            // Weavero-only content already.
+            Z.getState = Z._wvGetStateFull;
+            Z._wvGetStatePatchVer = 2;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchTabsGetState err: " + e); }
+    }
+
+    /** RESTORE TAKEOVER, reader-window half: at quit, Zotero's session save
+     *  records NO reader windows — Weavero reopens them all itself at boot
+     *  (in parallel, held behind the focused tab, Firefox-style), so no
+     *  window can start rendering before the plugin is even loaded. Their
+     *  multi-tab content is Weavero-only anyway, so a Troubleshooting-Mode
+     *  boot loses nothing it could have used; the windows return on the next
+     *  normal start. Keyed on the quitting flag alone (internal captures use
+     *  the direct reader-window enumeration, never this). */
+    _wvPatchReaderGetWindowStates() {
+        try {
+            const R: any = (Zotero as any).Reader;
+            if (!R || typeof R.getWindowStates !== "function") return;
+            // Version-based re-wrap from the stored ORIGINAL (a plain guard
+            // once left a stale pre-reload wrap installed).
+            if (R._wvGWSPatchVer === 3) return;
+            if (!R._wvGWSOrig) R._wvGWSOrig = R.getWindowStates;
+            const orig = R._wvGWSOrig;
+            R.getWindowStates = function () {
+                try {
+                    // Gecko's own shutdown flag — no dependence on observer
+                    // ordering (Zotero's quit save can run before ANY of our
+                    // quit observers; `quit-application-requested` doesn't even
+                    // fire on the restart path).
+                    const shuttingDown = (() => { try { return Services.startup.shuttingDown; } catch (e) { return false; } })();
+                    const ns: any = (Zotero as any).Weavero;
+                    const lp: any = (ns && ns.plugin) || null;
+                    const quitting = shuttingDown || (lp && lp._wvQuitting) || (ns && ns._quitting);
+                    if (quitting) return [];
+                } catch (e) {}
+                return orig.apply(this, arguments);
+            };
+            R._wvGWSPatchVer = 3;
+        } catch (e) { Zotero.debug("[Weavero] _wvPatchReaderGetWindowStates err: " + e); }
     }
 
     /** Sync snapshot of every currently-open dev main window. Stores each
@@ -4530,7 +4579,10 @@ class _TabsMixin {
                 const w: any = en.getNext();
                 if (!w || !w._wvManagedWindow) continue;
                 let tabs = null;
-                try { tabs = w.Zotero_Tabs && w.Zotero_Tabs.getState(); } catch (e) {}
+                try {
+                    const Z = w.Zotero_Tabs;
+                    tabs = Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
+                } catch (e) {}
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
                 // Persist the window's stable id so its items-tree column layout
                 // can be re-bound to the same window on the next restart. Also
@@ -4592,14 +4644,36 @@ class _TabsMixin {
         } catch (e) { return null; }
     }
 
+    /** The ANCHOR window's full tab set — the RESTORE TAKEOVER's other half:
+     *  Zotero's own session keeps only the library tab, so Weavero must carry
+     *  the real list (captured on every save, crash-fresh like the rest). */
+    _wvWindowStoreCaptureAnchor() {
+        try {
+            const w: any = (Zotero.getMainWindows() || []).find((x: any) => !x._wvManagedWindow);
+            if (!w || !w.Zotero_Tabs) return null;
+            const Z = w.Zotero_Tabs;
+            const tabs = Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState();
+            if (!tabs || tabs.length < 2) return null;
+            let wvMainState: any;
+            try {
+                const ms = (this as any)._wvTabSessionCaptureMainState
+                    ? (this as any)._wvTabSessionCaptureMainState(w) : null;
+                if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+            } catch (e) {}
+            return { kind: "main-anchor", tabs, geom: (this as any)._wvWindowGeom(w), wvMainState };
+        } catch (e) { return null; }
+    }
+
     _wvWindowStoreSaveSync() {
         // Once quitting, ONLY the quit flush writes (teardown-triggered saves
         // would capture a half-closed world and clobber the final state —
         // Firefox: SessionSaver ignores saves while RunState.isQuitting).
         if (this._wvWindowStoreFrozen || (this as any)._wvQuitting) return;
-        // Unified doc: dev main windows + reader windows in one file, captured
-        // together on every save so neither path clobbers the other's entries.
+        // Unified doc: anchor + dev main windows + reader windows in one file,
+        // captured together on every save so nothing clobbers anything.
+        const anchor = this._wvWindowStoreCaptureAnchor();
         this._wvWindowStoreWrite({ version: 4, windows: [
+            ...(anchor ? [anchor] : []),
             ...this._wvWindowStoreCaptureDevWindows(),
             ...this._wvWindowStoreCaptureReaderWindows(),
         ], focused: this._wvWindowStoreFocusDescriptor() });
@@ -4876,10 +4950,12 @@ class _TabsMixin {
             if (this._wvManagedReconciled) return;
             this._wvManagedReconciled = true;
             const doc = (this as any)._wvBootWindowStoreDoc;
-            const entries = ((doc && doc.windows) || []).filter((g: any) => g && g.kind === "main-dev" && Array.isArray(g.tabs));
+            const entries = ((doc && doc.windows) || []).filter((g: any) =>
+                g && (g.kind === "main-dev" || g.kind === "main-anchor") && Array.isArray(g.tabs));
             for (const entry of entries) {
-                const win: any = (Zotero.getMainWindows() || []).find((w: any) => w._wvManagedWindow
-                    && (entry.wvWinId == null || w._wvWindowId === entry.wvWinId));
+                const win: any = (Zotero.getMainWindows() || []).find((w: any) => (entry.kind === "main-anchor")
+                    ? !w._wvManagedWindow
+                    : (w._wvManagedWindow && (entry.wvWinId == null || w._wvWindowId === entry.wvWinId)));
                 if (!win || !win.Zotero_Tabs) continue;
                 const Z = win.Zotero_Tabs;
                 const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
@@ -4904,6 +4980,53 @@ class _TabsMixin {
                 }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReconcileManagedWindows err: " + e); }
+    }
+
+    /** RESTORE TAKEOVER, boot half: Zotero natively restored only the library
+     *  tab (see the getState wrap) — rebuild the anchor's real tab set from
+     *  the store's `main-anchor` entry. Merge-style (skip itemIDs already
+     *  live), so a CRASH boot — where Zotero restored its own full session
+     *  from the last periodic save — just fills gaps. The saved selection
+     *  loads immediately when the anchor is the quit-time focused window,
+     *  else it defers to first activate like any background window. */
+    async _wvRestoreAnchorTabs() {
+        try {
+            if (this._wvAnchorTabsRestored) return;
+            this._wvAnchorTabsRestored = true;
+            const doc = (this as any)._wvBootWindowStoreDoc;
+            const entry = ((doc && doc.windows) || []).find((g: any) => g && g.kind === "main-anchor" && Array.isArray(g.tabs));
+            if (!entry) return;   // pre-takeover store → Zotero restored natively
+            const win: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
+            if (!win || !win.Zotero_Tabs) return;
+            const Z = win.Zotero_Tabs;
+            const f = (this as any)._wvBootFocusedEntry;
+            const anchorFocused = !f || f.kind === "anchor";   // default to anchor
+            const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+            let added = 0, deferItem = null, selectNow = null;
+            for (let i = 0; i < entry.tabs.length; i++) {
+                const st = entry.tabs[i];
+                const iid = st && st.data && st.data.itemID;
+                if (iid == null || live.has(iid)) continue;
+                const base = String(st.type || "").replace(/-(unloaded|loading)$/, "");
+                if (base !== "reader" && base !== "note") continue;
+                try {
+                    await Zotero.Items.getAsync(iid);
+                    if (!Zotero.Items.exists(iid)) continue;
+                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    live.add(iid);
+                    added++;
+                    if (st.selected) { if (anchorFocused) selectNow = iid; else deferItem = iid; }
+                } catch (e) {}
+            }
+            if (selectNow != null) {
+                try { const t = Z._tabs.find((x: any) => x.data && x.data.itemID === selectNow); if (t) Z.select(t.id); } catch (e) {}
+            } else if (deferItem != null) {
+                try { (this as any)._wvDeferSelect(win, deferItem); } catch (e) {}
+            }
+            (this as any)._wvTrace("restore: anchor tabs rebuilt from store — " + added + " tab(s)"
+                + (selectNow != null ? ", selected loading" : (deferItem != null ? ", selection deferred" : "")));
+            try { (this as any)._wvTabGroupStabilize(win); (this as any)._applyTabGroups(win); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvRestoreAnchorTabs err: " + e); }
     }
 
     /** Wire the restore hardening/tracing on main windows as EARLY as their
@@ -5405,7 +5528,9 @@ class _TabsMixin {
             // can't leak into the next session.
             try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._quitting = true; } catch (e) {}
             try { if (this._wvWindowStoreSaveTimer) { const w = Zotero.getMainWindow(); (w ? w.clearTimeout.bind(w) : clearTimeout)(this._wvWindowStoreSaveTimer); this._wvWindowStoreSaveTimer = null; } } catch (e) {}
+            const anchorEntry = this._wvWindowStoreCaptureAnchor();
             const live = [
+                ...(anchorEntry ? [anchorEntry] : []),
                 ...this._wvWindowStoreCaptureDevWindows(),
                 ...(this as any)._wvWindowStoreCaptureReaderWindows(),
             ];
@@ -5413,7 +5538,7 @@ class _TabsMixin {
             // that's genuinely absent from the live capture.
             const ids = (en: any) => {
                 try {
-                    if (en.kind === "main-dev") return (en.tabs || []).map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null);
+                    if (en.kind === "main-dev" || en.kind === "main-anchor") return (en.tabs || []).map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null);
                     if (en.kind === "reader") return [en.nativeItemID, ...(en.extras || []).map((x: any) => x.itemID)];
                     return (en.tabs || []).map((x: any) => x.itemID);
                 } catch (e) { return []; }
@@ -5443,6 +5568,11 @@ class _TabsMixin {
             }
             this._wvWindowStoreWrite({ version: 4, windows: live, focused: this._wvWindowStoreFocusDescriptor() });
             this._wvWindowStoreFrozen = true;
+            // Namespace copy (stale-closure-proof): with the capture frozen,
+            // the getState / getWindowStates wraps now hand Zotero's own
+            // session save a library-only anchor and no reader windows —
+            // the restore takeover.
+            try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._storeFrozen = true; } catch (e) {}
             this._wvTrace && this._wvTrace("quit-flush: wrote " + live.length + " window entr(ies), store FROZEN");
             try { this._wvTraceFlush && this._wvTraceFlush("quit"); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreQuitFlush err: " + e); }

@@ -7833,28 +7833,42 @@ class _ReaderMixin {
         try {
             if (this._wvReaderPreemptRan) return;
             this._wvReaderPreemptRan = true;
-            const entries = (((Zotero as any).Session && (Zotero as any).Session.state
-                && (Zotero as any).Session.state.windows) || [])
-                .filter((x: any) => x && x.type === "reader" && x.itemID != null);
-            if (!entries.length) return;
-            await Promise.all(entries.map(async (x: any) => {
+            // Source of truth is Weavero's OWN store (post-takeover, Zotero's
+            // session no longer lists reader windows at all): every kind:"reader"
+            // restore-map entry is a window to reopen; orphan heads are handled
+            // by the orphan restore. Zotero-session entries are merged in for
+            // pre-takeover stores (upgrade path).
+            await this._wvWTLoadRestoreMap();
+            const orphanHeads = new Set(this._wvOrphanReaderItemIDs || []);
+            const wanted = new Map();   // itemID -> {title?, secondViewState?}
+            for (const k of Object.keys(this._wvWTRestoreMap || {})) {
+                const id = Number(k);
+                if (!orphanHeads.has(id)) wanted.set(id, {});
+            }
+            for (const x of (((Zotero as any).Session && (Zotero as any).Session.state
+                && (Zotero as any).Session.state.windows) || [])) {
+                if (x && x.type === "reader" && x.itemID != null && !wanted.has(x.itemID)) {
+                    wanted.set(x.itemID, { title: x.title, secondViewState: x.secondViewState });
+                }
+            }
+            if (!wanted.size) return;
+            await Promise.all([...wanted.entries()].map(async ([itemID, meta]: any) => {
                 try {
-                    await Zotero.Items.getAsync(x.itemID);      // force the cache
-                    if (!Zotero.Items.exists(x.itemID)) return; // genuinely gone
-                    if (this._wvReaderWindowHostingItem(x.itemID)) return;
-                    // A ReaderWindow already opening for this item (Zotero's own
-                    // loop won the race)? Skip. Main-window READER TABS of the
-                    // same item don't count — only reader-window hosts.
+                    await Zotero.Items.getAsync(itemID);      // force the cache
+                    if (!Zotero.Items.exists(itemID)) return; // genuinely gone
+                    const it: any = Zotero.Items.get(itemID);
+                    if (it && typeof it.isNote === "function" && it.isNote()) return;   // note-head decks restore as orphans
+                    if (this._wvReaderWindowHostingItem(itemID)) return;
                     const inFlight = (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
                         try {
-                            return r.itemID === x.itemID && r._window && r._window.document
+                            return r.itemID === itemID && r._window && r._window.document
                                 && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
                         } catch (e) { return false; }
                     });
                     if (inFlight) return;
-                    (this as any)._wvTrace && (this as any)._wvTrace("restore: preemptive reader-window reopen for item " + x.itemID);
-                    await (Zotero as any).Reader.open(x.itemID, null, { title: x.title, openInWindow: true, secondViewState: x.secondViewState });
-                } catch (e) { Zotero.debug("[Weavero] preemptive reader reopen err (" + x.itemID + "): " + e); }
+                    (this as any)._wvTrace && (this as any)._wvTrace("restore: preemptive reader-window reopen for item " + itemID);
+                    await (Zotero as any).Reader.open(itemID, null, { title: meta.title, openInWindow: true, secondViewState: meta.secondViewState });
+                } catch (e) { Zotero.debug("[Weavero] preemptive reader reopen err (" + itemID + "): " + e); }
             }));
         } catch (e) { Zotero.debug("[Weavero] _wvPreemptReaderWindowReopen err: " + e); }
     }

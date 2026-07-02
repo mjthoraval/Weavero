@@ -4433,6 +4433,13 @@ class _ReaderMixin {
             win._wvReadersCleanupWired = true;
             const onUnload = (e: any) => {
                 try { if (e.target !== win.document) return; } catch (er) { return; }
+                // Resolve the LIVE plugin instance at event time: this closure is
+                // wired ONCE per window, so after a plugin reload `this` is the OLD
+                // instance — its `_wvQuitting` never flips, and a quit-teardown
+                // unload would run the user-close path (run 4 parked a group this
+                // way). Fall back to the closure instance only when the live one is
+                // already destroyed (real quit after plugin shutdown).
+                const lp: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
                 // Mid-session close: PARK (save) any group whose only members live in
                 // this closing window, so it persists for next launch instead of
                 // being deleted by the next main-window apply (Firefox saved-group
@@ -4440,7 +4447,15 @@ class _ReaderMixin {
                 // restored next launch and the group must stay live. Runs BEFORE the
                 // reader splice below, while this window's `_wvWT` tabs still exist.
                 let parkedGroupIds: any[] = [];
-                try { parkedGroupIds = (this as any)._wvTabGroupParkClosingWindowGroups(win) || []; } catch (er) {}
+                try { parkedGroupIds = lp._wvTabGroupParkClosingWindowGroups(win) || []; } catch (er) {}
+                // FIREFOX PATTERN (SessionStore `_shouldRestore`): a closing reader
+                // window may be the start of a quit-in-progress — window unloads can
+                // precede `quit-application-granted`, so `_wvQuitting` isn't a
+                // reliable gate here. Capture this window's store entry NOW (while
+                // `_wvWT` is intact) into the closed-in-series buffer; the quit
+                // flush folds recent entries back into the OPEN set and un-parks
+                // their groups. Mid-session closes simply let the entry expire.
+                try { lp._wvWindowStoreNoteClosingWindow(lp._wvWindowStoreCaptureReaderWindow(win), parkedGroupIds); } catch (er) {}
                 // Record this closing reader window for "Reopen Closed Window"
                 // (Ctrl+Shift+T). Skipped at quit (the window is restored next
                 // launch). Captured here while `win._wvWT.tabs` still exists. Each
@@ -4448,12 +4463,12 @@ class _ReaderMixin {
                 // groups this close PARKED, so reopen restores the grouping AND
                 // un-parks them (Firefox: reopening consumes the saved group).
                 try {
-                    if (!(this as any)._wvQuitting) {
+                    if (!lp._wvQuitting && !((Zotero as any).Weavero && (Zotero as any).Weavero._quitting)) {
                         const st = win._wvWT;
                         const tabs = ((st && st.tabs) ? st.tabs : [])
                             .filter((t: any) => t && t.itemID != null)
                             .map((t: any) => ({ itemID: t.itemID, isNote: t.type === "note", id: t.id, grp: t.wvGroupId || null }));
-                        if (tabs.length) (this as any)._wvClosedPush({ kind: "readerWindow", tabs, groupIds: parkedGroupIds });
+                        if (tabs.length) lp._wvClosedPush({ kind: "readerWindow", tabs, groupIds: parkedGroupIds });
                     }
                 } catch (er) {}
                 try {

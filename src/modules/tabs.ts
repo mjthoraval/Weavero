@@ -4518,6 +4518,10 @@ class _TabsMixin {
      *  capture is sync; the IOUtils write is flushed by Gecko's profile-before-
      *  change I/O barrier as long as it's *issued* here (no awaits before it). */
     _wvWindowStoreSaveSync() {
+        // Once quitting, ONLY the quit flush writes (teardown-triggered saves
+        // would capture a half-closed world and clobber the final state —
+        // Firefox: SessionSaver ignores saves while RunState.isQuitting).
+        if (this._wvWindowStoreFrozen || (this as any)._wvQuitting) return;
         // Unified doc: dev main windows + reader windows in one file, captured
         // together on every save so neither path clobbers the other's entries.
         this._wvWindowStoreWrite({ version: 4, windows: [
@@ -4528,6 +4532,7 @@ class _TabsMixin {
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
     _wvWindowStoreSaveDebounced() {
+        if (this._wvWindowStoreFrozen || (this as any)._wvQuitting) return;
         try {
             const win = Zotero.getMainWindow();
             const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
@@ -4628,14 +4633,31 @@ class _TabsMixin {
         try {
             if (this._wvWindowStoreQuitObserver) return;
             const self = this;
-            const obs = { observe() {
-                // Mark that we're quitting BEFORE windows tear down, so reader-window
-                // unload handlers don't PARK their groups (that's only for a genuine
-                // mid-session close — at quit the windows are restored next launch).
-                try { (self as any)._wvQuitting = true; } catch (e) {}
-                try { self._wvWindowStoreSaveSync(); } catch (e) {}
+            const obs = { observe(_s: any, topic: string) {
+                if (topic === "quit-application-requested") {
+                    try {
+                        (self as any)._wvQuitting = true;
+                        try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._quitting = true; } catch (e) {}
+                        self._wvTrace && self._wvTrace("quit-application-requested");
+                        const w = Zotero.getMainWindow();
+                        const setT = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                        if (self._wvQuitResetTimer) { try { ((w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout)(self._wvQuitResetTimer); } catch (e) {} }
+                        self._wvQuitResetTimer = setT(() => {
+                            // No grant arrived → the quit was vetoed; resume normal life.
+                            if (!self._wvWindowStoreFrozen) {
+                                (self as any)._wvQuitting = false;
+                                try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._quitting = false; } catch (e) {}
+                                self._wvTrace && self._wvTrace("quit vetoed — _wvQuitting reset");
+                            }
+                        }, 15000);
+                    } catch (e) {}
+                    return;
+                }
+                // quit-application-granted
+                try { self._wvWindowStoreQuitFlush(); } catch (e) {}
             } };
             this._wvWindowStoreQuitObserver = obs;
+            Services.obs.addObserver(obs, "quit-application-requested", false);
             Services.obs.addObserver(obs, "quit-application-granted", false);
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRegisterQuitFlush err: " + e); }
     }
@@ -4643,7 +4665,8 @@ class _TabsMixin {
     _wvWindowStoreUnregisterQuitFlush() {
         try {
             if (this._wvWindowStoreQuitObserver) {
-                Services.obs.removeObserver(this._wvWindowStoreQuitObserver, "quit-application-granted");
+                try { Services.obs.removeObserver(this._wvWindowStoreQuitObserver, "quit-application-requested"); } catch (e) {}
+                try { Services.obs.removeObserver(this._wvWindowStoreQuitObserver, "quit-application-granted"); } catch (e) {}
                 this._wvWindowStoreQuitObserver = null;
             }
         } catch (e) {}

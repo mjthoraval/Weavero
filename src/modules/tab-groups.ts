@@ -2462,7 +2462,12 @@ class _TabGroupsMixin {
     _wvTabGroupParkClosingWindowGroups(win: any): string[] {
         const parked: string[] = [];
         try {
+            // Check the instance flag AND the reload-surviving namespace flag —
+            // an unload closure wired before a plugin reload calls into the OLD
+            // instance, whose `_wvQuitting` never flips (run 4 parked a group
+            // during quit teardown this way).
             if ((this as any)._wvQuitting) return parked;
+            if ((Zotero as any).Weavero && (Zotero as any).Weavero._quitting) return parked;
             if (!this._getEnableTabGroups || !this._getEnableTabGroups()) return parked;
             const st = win && win._wvWT;
             if (!st || !st.tabs || !st.tabs.length) return parked;

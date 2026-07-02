@@ -3622,6 +3622,22 @@ class WeaveroPlugin {
                             ? group.wvWinId : this._wvNextWindowId();
                     } catch (e) {}
                     this._wvInitDevMainWindow(_window, group);
+                    // Closed-in-series capture (Firefox `_shouldRestore`): a managed
+                    // window closing may be quit-teardown running before the quit
+                    // notification — snapshot its store entry while Zotero_Tabs is
+                    // intact so the quit flush can fold it back into the open set.
+                    try {
+                        _window.addEventListener("unload", () => {
+                            try {
+                                const Z = _window.Zotero_Tabs;
+                                const tabs = Z && Z.getState ? Z.getState() : null;
+                                if (tabs && tabs.length > 1) {
+                                    (this as any)._wvWindowStoreNoteClosingWindow(
+                                        { kind: "main-dev", tabs, wvWinId: (_window._wvWindowId != null ? _window._wvWindowId : null) }, []);
+                                }
+                            } catch (e) {}
+                        }, { once: true });
+                    } catch (e) {}
                     // Give this managed window its own items-tree column layout
                     // (else it shares/clobbers the primary's via treePrefs.json).
                     try { this._wvScheduleApplyPerWindowColumns(_window); } catch (e) {}
@@ -3786,6 +3802,16 @@ class WeaveroPlugin {
     }
 
     destroy(reason) {
+        // 0. FINAL store capture, then freeze — teardown below dismantles
+        //    reader-window state (`_wvWT`), and any save it triggers after
+        //    that would capture an emptied world and clobber windows.json
+        //    (observed: a plugin reload dropped the reader entries). One
+        //    last full capture now; no further writes from this instance.
+        try {
+            if (!(this as any)._wvQuitting) (this as any)._wvWindowStoreSaveSync();
+            (this as any)._wvWindowStoreFrozen = true;
+        } catch (e) {}
+        try { (this as any)._wvUnwireEarlyRestoreTracing(); } catch (e) {}
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during

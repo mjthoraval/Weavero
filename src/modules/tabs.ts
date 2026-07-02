@@ -5009,6 +5009,40 @@ class _TabsMixin {
             }
         }
 
+        // List-all-tabs popup rows: current-window native rows carry data-tab-id;
+        // other-window / session rows carry data-wv-library + a `title` attr. Show
+        // the SAME rich card (group-library name + tab title) the tab header uses,
+        // else fall back to the plain overflow title.
+        const popRow = (triggerNode.closest && triggerNode.closest(".row")) || null;
+        if (popRow && !popRow.closest(".tab") && (popRow.getAttribute("data-wv-library") != null || popRow.getAttribute("data-tab-id"))) {
+            let pLib: any = null, pTitle: any = null;
+            const wvLib = popRow.getAttribute("data-wv-library");
+            if (wvLib != null) {
+                try { pLib = Zotero.Libraries.get(Number(wvLib)); } catch (e) {}
+            } else {
+                const tid = popRow.getAttribute("data-tab-id");
+                if (tid && tid !== "zotero-pane") {
+                    try {
+                        const zt: any = win.Zotero_Tabs;
+                        const t = zt && zt._tabs.find((x: any) => x.id === tid);
+                        const it: any = Zotero.Items.get(t && t.data && t.data.itemID);
+                        if (it) pLib = Zotero.Libraries.get(it.libraryID);
+                        if (t) pTitle = t.title;
+                    } catch (e) {}
+                }
+            }
+            if (!pTitle) pTitle = popRow.getAttribute("title")
+                || (popRow.querySelector("label") && popRow.querySelector("label").textContent)
+                || (popRow.querySelector("[title]") && popRow.querySelector("[title]").getAttribute("title"))
+                || null;
+            if (pLib && pLib.libraryType === "group") {
+                (this as any)._wvTabTooltipRichCard(doc, tooltip, pLib, pTitle);
+                return true;
+            }
+            if (pTitle) { renderPlainLabel(pTitle); return true; }
+            return false;
+        }
+
         const tab = (triggerNode.closest && triggerNode.closest(
             ".tab[data-id]")) || null;
 
@@ -5092,6 +5126,73 @@ class _TabsMixin {
 
         tooltip.appendChild(wrap);
         return true;
+    }
+
+    /** Build the rich library-card tooltip body (themed group-library icon + name,
+     *  and — when given — a separator + the tab title below). Shared by the tab
+     *  header and the List-all-tabs popup rows. */
+    _wvTabTooltipRichCard(doc: any, tooltip: any, lib: any, title: any) {
+        try {
+            const wrap = doc.createXULElement("vbox");
+            wrap.setAttribute("class", "wv-tab-tooltip-wrap");
+            const headerRow = doc.createXULElement("hbox");
+            headerRow.setAttribute("class", "wv-tab-tooltip-header");
+            headerRow.setAttribute("align", "center");
+            const iconEl = doc.createXULElement("image");
+            iconEl.setAttribute("class", "wv-tab-tooltip-icon");
+            const iconName = lib.libraryType === "feed" ? "feed-library.svg" : "library-group.svg";
+            iconEl.setAttribute("src", "chrome://zotero/skin/collection-tree/16/light/" + iconName);
+            headerRow.appendChild(iconEl);
+            const nameEl = doc.createXULElement("description");
+            nameEl.setAttribute("class", "wv-tab-tooltip-libname");
+            nameEl.textContent = lib.name;
+            headerRow.appendChild(nameEl);
+            wrap.appendChild(headerRow);
+            if (title) {
+                const sep = doc.createXULElement("box");
+                sep.setAttribute("class", "wv-tab-tooltip-sep");
+                wrap.appendChild(sep);
+                const titleEl = doc.createXULElement("description");
+                titleEl.setAttribute("class", "wv-tab-tooltip-title");
+                titleEl.textContent = title;
+                wrap.appendChild(titleEl);
+            }
+            tooltip.appendChild(wrap);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabTooltipRichCard err: " + e); }
+    }
+
+    /** Route the List-all-tabs popup's tooltips through the rich `wv-tab-library-
+     *  tooltip` (the panel is a XUL element, so the attribute applies to the HTML
+     *  rows). Creates the tooltip element if the tab-bar setup hasn't. Idempotent. */
+    _wvEnsureTabsMenuTooltip(panel: any) {
+        try {
+            if (!panel) return;
+            const win = panel.ownerGlobal;
+            const doc = panel.ownerDocument;
+            if (!win || !doc) return;
+            if (!doc.getElementById("wv-tab-library-tooltip")) {
+                const tooltip = doc.createXULElement("tooltip");
+                tooltip.id = "wv-tab-library-tooltip";
+                tooltip.addEventListener("popupshowing", (e: any) => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const ok = lp && lp._populateTabTooltip(win, tooltip);
+                        if (!ok) e.preventDefault();
+                    } catch (err) { Zotero.debug("[Weavero] tooltip err: " + err); e.preventDefault(); }
+                });
+                let popupset = doc.querySelector("popupset");
+                if (!popupset) { popupset = doc.createXULElement("popupset"); doc.documentElement.appendChild(popupset); }
+                popupset.appendChild(tooltip);
+            }
+            // The row container (#zotero-tabs-menu-list) natively carries
+            // tooltip="html-tooltip" — closer to the rows than the panel, so it wins
+            // resolution and Zotero's plain tooltip fires. Re-point the LIST (and the
+            // panel) at our rich tooltip. Done every refresh, since the native list
+            // keeps re-asserting html-tooltip.
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (list) list.setAttribute("tooltip", "wv-tab-library-tooltip");
+            panel.setAttribute("tooltip", "wv-tab-library-tooltip");
+        } catch (e) { Zotero.debug("[Weavero] _wvEnsureTabsMenuTooltip err: " + e); }
     }
 
     /** Funnel button at the right end of the tabs-menu search row.

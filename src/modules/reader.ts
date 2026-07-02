@@ -6304,9 +6304,10 @@ class _ReaderMixin {
             // Library tooltip + right-click context menu on every tab. Both
             // shared popups are tab-aware (resolve the hovered/right-clicked
             // tab), so they act on the correct document.
-            if (tab.reader) {
-                try { this._ensureReaderWindowTabTooltip(tab.reader, el); } catch (e) {}
-            }
+            // Bind on EVERY tab — the tooltip resolves the hovered tab's item from
+            // its id at hover time, so LAZY / not-yet-realised tabs still get the
+            // group-library card (gating on tab.reader left them plain-only).
+            try { this._ensureReaderWindowTabTooltip(win, tab, el); } catch (e) {}
             // Context menu works for reader AND note tabs. A note tab has no
             // reader instance, so pass null — the menu derives its window from
             // the element. (Gating this on tab.reader left note tabs with no
@@ -13489,11 +13490,9 @@ class _ReaderMixin {
      *  title. The tooltip element is created once per reader window
      *  document and wired via the XUL `tooltip="..."` attribute on the
      *  custom `.wv-window-tab` div. */
-    _ensureReaderWindowTabTooltip(reader, tab) {
+    _ensureReaderWindowTabTooltip(win, tab, el) {
         try {
-            if (!reader || !tab) return;
-            const win = reader._window;
-            if (!win || !win.document) return;
+            if (!win || !win.document || !tab || !el) return;
             const doc = win.document;
             const TOOLTIP_ID = "wv-window-tab-tooltip";
             let tooltip: any = doc.getElementById(TOOLTIP_ID);
@@ -13502,7 +13501,8 @@ class _ReaderMixin {
                 tooltip.id = TOOLTIP_ID;
                 tooltip.addEventListener("popupshowing", (e: any) => {
                     try {
-                        const ok = this._populateReaderTabTooltip(reader, tooltip);
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const ok = (lp || this)._populateReaderTabTooltip(win, tooltip);
                         if (!ok) e.preventDefault();
                     } catch (er) {
                         Zotero.debug("[Weavero] reader tab tooltip err: " + er);
@@ -13513,23 +13513,23 @@ class _ReaderMixin {
                 const popupset = doc.querySelector("popupset") || doc.documentElement;
                 popupset.appendChild(tooltip);
             }
-            // The XUL `tooltip="..."` attribute only auto-fires on XUL
-            // elements; our tab is an HTML <div>, so the tooltip never
-            // opens by itself. Wire mouseenter/mouseleave to open and
-            // close the XUL tooltip element manually at the mouse
-            // position, matching what XUL would do automatically on a
-            // XUL element. ~500ms delay matches Mozilla's default
-            // tooltip show timing.
-            if (!(tab as any)._wvTtBound) {
-                (tab as any)._wvTtBound = true;
+            // The XUL `tooltip="..."` attribute only auto-fires on XUL elements; the
+            // tab is an HTML <div>, so wire mouseenter/leave to open/close the XUL
+            // tooltip manually (~500 ms, matching Mozilla's default). The hovered
+            // tab's item is resolved from its id AT HOVER TIME (not from a reader),
+            // so lazy tabs work and re-rendered elements stay correct.
+            if (!(el as any)._wvTtBound) {
+                (el as any)._wvTtBound = true;
                 let showTimer: any = null;
-                let lastScreenX = 0, lastScreenY = 0;
-                let openX = 0, openY = 0;
-                let isOpen = false;
-                // Stash the trigger reader on the tooltip element so the
-                // popupshowing populator can read it. We attach to the
-                // tooltip object once.
-                (tooltip as any)._wvReader = reader;
+                let lastScreenX = 0, lastScreenY = 0, openX = 0, openY = 0, isOpen = false;
+                const stashHovered = () => {
+                    try {
+                        const tid = el.getAttribute("data-wv-tab-id");
+                        const st = win._wvWT;
+                        const t = st && st.tabs && st.tabs.find((x: any) => String(x.id) === String(tid));
+                        (tooltip as any)._wvTabInfo = t ? { itemID: t.itemID, title: t.title } : null;
+                    } catch (er) { (tooltip as any)._wvTabInfo = null; }
+                };
                 const hideTip = () => {
                     try {
                         if (showTimer) { win.clearTimeout(showTimer); showTimer = null; }
@@ -13538,11 +13538,9 @@ class _ReaderMixin {
                         isOpen = false;
                     } catch (er) {}
                 };
-                tab.addEventListener("mouseenter", (e: any) => {
+                el.addEventListener("mouseenter", (e: any) => {
                     try {
-                        // Point the shared tooltip at THIS tab's reader so the
-                        // popupshowing populator shows the hovered tab's item.
-                        (tooltip as any)._wvReader = reader;
+                        stashHovered();
                         lastScreenX = e.screenX; lastScreenY = e.screenY;
                         if (showTimer) win.clearTimeout(showTimer);
                         showTimer = win.setTimeout(() => {
@@ -13557,26 +13555,18 @@ class _ReaderMixin {
                         }, 500);
                     } catch (er) {}
                 });
-                // Every mousemove updates the tracked position. If the
-                // tooltip is currently open and the cursor has moved
-                // more than a few pixels from where the tooltip opened,
-                // hide it — matches native tooltip behaviour (tooltip
-                // follows you to a place, hides on cursor motion). The
-                // small threshold avoids flickering from sub-pixel
-                // mouse jitter.
-                tab.addEventListener("mousemove", (e: any) => {
+                el.addEventListener("mousemove", (e: any) => {
                     lastScreenX = e.screenX; lastScreenY = e.screenY;
                     if (isOpen) {
                         const dx = e.screenX - openX, dy = e.screenY - openY;
                         if (dx * dx + dy * dy > 25) hideTip();
                     }
                 });
-                tab.addEventListener("mouseleave", hideTip);
-                tab.addEventListener("mousedown", hideTip);
-                tab.addEventListener("contextmenu", hideTip);
+                el.addEventListener("mouseleave", hideTip);
+                el.addEventListener("mousedown", hideTip);
+                el.addEventListener("contextmenu", hideTip);
             }
-            // Keep the attribute for documentation purposes.
-            tab.setAttribute("tooltip", TOOLTIP_ID);
+            el.setAttribute("tooltip", TOOLTIP_ID);
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowTabTooltip err: " + e);
         }
@@ -13585,9 +13575,8 @@ class _ReaderMixin {
     /** popupshowing populator for the reader-window tab tooltip. Decides
      *  between rich (group library) and plain (My Library / no item)
      *  rendering — same dispatch the main-window tooltip uses. */
-    _populateReaderTabTooltip(reader, tooltip) {
+    _populateReaderTabTooltip(win, tooltip) {
         try {
-            const win = reader._window;
             const doc = win.document;
             while (tooltip.firstChild) tooltip.removeChild(tooltip.firstChild);
             tooltip.removeAttribute("label");
@@ -13600,19 +13589,16 @@ class _ReaderMixin {
                 tooltip.appendChild(desc);
             };
 
+            // The hovered tab's item + title were stashed at hover time (resolved
+            // from the tab id), so this works for lazy tabs that have no reader.
+            const info: any = (tooltip as any)._wvTabInfo || {};
             const item = (() => {
-                try { return reader.itemID ? Zotero.Items.get(reader.itemID) : null; }
+                try { return info.itemID ? Zotero.Items.get(info.itemID) : null; }
                 catch (e) { return null; }
             })();
-            // Use the reader's own `_title` (or the chrome window's
-            // document.title — same value) for tooltip text. The
-            // attachment item's `getDisplayTitle()` returns just the
-            // content-type label (e.g. "PDF") for PDF/EPUB attachments,
-            // which is NOT what the user wants to see — they want the
-            // same title shown in the tab strip, which is the parent
-            // document's title.
-            const title = reader._title || doc.title
-                || (item ? item.getDisplayTitle() : "");
+            // The tab's own strip title (citation-style, same as the tab shows) —
+            // NOT the attachment's getDisplayTitle() (which is just "PDF" etc.).
+            const title = info.title || (item ? item.getDisplayTitle() : "") || "";
 
             let lib = null;
             try { lib = item ? Zotero.Libraries.get(item.libraryID) : null; }
@@ -13624,36 +13610,10 @@ class _ReaderMixin {
                 return false;
             }
 
-            // Group library: rich card with title + library header. Same
-            // visual structure as the main-window tooltip (wv-tab-tooltip-
-            // wrap > title + sep + header-row[icon + libname]).
-            const wrap = doc.createXULElement("vbox");
-            wrap.setAttribute("class", "wv-tab-tooltip-wrap");
-
-            const titleEl = doc.createXULElement("description");
-            titleEl.setAttribute("class", "wv-tab-tooltip-title");
-            titleEl.textContent = title;
-            wrap.appendChild(titleEl);
-
-            const sep = doc.createXULElement("box");
-            sep.setAttribute("class", "wv-tab-tooltip-sep");
-            wrap.appendChild(sep);
-
-            const headerRow = doc.createXULElement("hbox");
-            headerRow.setAttribute("class", "wv-tab-tooltip-header");
-            headerRow.setAttribute("align", "center");
-            const iconEl = doc.createXULElement("image");
-            iconEl.setAttribute("class", "wv-tab-tooltip-icon");
-            iconEl.setAttribute("src",
-                "chrome://zotero/skin/collection-tree/16/light/library-group.svg");
-            headerRow.appendChild(iconEl);
-            const nameEl = doc.createXULElement("description");
-            nameEl.setAttribute("class", "wv-tab-tooltip-libname");
-            nameEl.textContent = lib.name;
-            headerRow.appendChild(nameEl);
-            wrap.appendChild(headerRow);
-
-            tooltip.appendChild(wrap);
+            // Group library: the SAME rich card as the main-window tab header —
+            // group icon + name ON TOP, then a separator, then the title (the
+            // reader tooltip previously had it reversed). Reuse the shared builder.
+            (this as any)._wvTabTooltipRichCard(doc, tooltip, lib, title);
             return true;
         } catch (e) {
             Zotero.debug("[Weavero] _populateReaderTabTooltip err: " + e);

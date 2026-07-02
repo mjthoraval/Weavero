@@ -659,30 +659,47 @@ class _PaneMixin {
      *  only — notes/links have no best attachment. */
     _appendOpenInToItemsMenu(doc: any, menu: any, selected: any[], win: any) {
         try {
-            // Representative best attachment → icon + file-type word.
+            // Representative openable → icon + type word. Attachments use their best
+            // attachment; a note is openable on its own (as a note tab).
             let repAtt: any = null;
+            let repNote: any = null;
             let typeWord: string | null = null;
             let mixedType = false;
+            let openableCount = 0;
             for (const it of selected) {
-                const att = this._wvGetBestAttachmentSync(it);
-                if (!att) continue;
-                if (!repAtt) repAtt = att;
-                const t = this._wvAttachmentTypeLabel(att);
-                if (typeWord == null) typeWord = t;
-                else if (typeWord !== t) mixedType = true;
+                let t: string | null = null;
+                if (it && typeof it.isNote === "function" && it.isNote()) {
+                    t = "Note";
+                    if (!repNote) repNote = it;
+                } else {
+                    const att = this._wvGetBestAttachmentSync(it);
+                    if (att) { if (!repAtt) repAtt = att; t = this._wvAttachmentTypeLabel(att); }
+                }
+                if (t) {
+                    openableCount++;
+                    if (typeWord == null) typeWord = t;
+                    else if (typeWord !== t) mixedType = true;
+                }
             }
-            if (!repAtt) return;
+            if (!repAtt && !repNote) return;   // nothing openable in the selection
 
             const targets = this._wvOpenInTargetWindows();
             const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
             // Always shown — "New Window" is always a valid destination.
 
-            const label = (typeWord && !mixedType) ? ("Open " + typeWord + " in") : "Open in";
+            // Pluralize the type word for multi-item selections, matching the
+            // native menu ("Open Notes in New Tab"): Note→Notes, PDF→PDFs, …
+            // "Audio"/"Text" work as mass nouns and stay singular.
+            const plural = openableCount > 1 && typeWord !== "Audio" && typeWord !== "Text";
+            const label = (typeWord && !mixedType)
+                ? ("Open " + typeWord + (plural ? "s" : "") + " in")
+                : "Open in";
             const parent = doc.createXULElement("menu");
             parent.id = "wv-itemmenu-open-in";
             parent.setAttribute("label", label);
-            const icon = this._wvAttachmentIconURL(repAtt);
+            const icon = repAtt ? this._wvAttachmentIconURL(repAtt)
+                : "chrome://zotero/skin/16/universal/note.svg";
             if (icon) { parent.classList.add("menu-iconic"); parent.setAttribute("image", icon); }
             const pop = doc.createXULElement("menupopup");
             parent.appendChild(pop);
@@ -747,16 +764,27 @@ class _PaneMixin {
             nwGroup.addEventListener("command", () => { this._wvOpenInNewMainWindow(win, true); });
             pop.appendChild(nwGroup);
 
-            // Place directly ABOVE the native "View Online" entry; fall back to the
-            // other open-actions, then the menu end.
-            const viewOnline = menu.querySelector(".zotero-menuitem-view-online");
-            if (viewOnline && viewOnline.parentNode === menu) {
-                menu.insertBefore(parent, viewOnline);
+            // Placement: an all-notes selection sits right BELOW the native "Open
+            // Note in New Tab / New Window" entries; otherwise directly above the
+            // native "View Online" entry, falling back to the other open-actions.
+            // Only VISIBLE note-open items — the menu also carries hidden
+            // `.zotero-menuitem-attach-note` entries sitting past the separator,
+            // which would otherwise pull the submenu into the next group.
+            const noteOpens = (repNote && !repAtt)
+                ? ([...menu.querySelectorAll(".zotero-menuitem-attach-note")] as any[]).filter((n: any) => n.parentNode === menu && !n.hidden)
+                : [];
+            if (noteOpens.length) {
+                noteOpens[noteOpens.length - 1].after(parent);
             } else {
-                const anchor = menu.querySelector("#wv-itemmenu-open-external")
-                    || menu.querySelector(".zotero-menuitem-show-file");
-                if (anchor && anchor.parentNode === menu) anchor.after(parent);
-                else menu.appendChild(parent);
+                const viewOnline = menu.querySelector(".zotero-menuitem-view-online");
+                if (viewOnline && viewOnline.parentNode === menu) {
+                    menu.insertBefore(parent, viewOnline);
+                } else {
+                    const anchor = menu.querySelector("#wv-itemmenu-open-external")
+                        || menu.querySelector(".zotero-menuitem-show-file");
+                    if (anchor && anchor.parentNode === menu) anchor.after(parent);
+                    else menu.appendChild(parent);
+                }
             }
         } catch (e) {
             Zotero.debug("[Weavero] open-in inject err: " + e);
@@ -780,39 +808,46 @@ class _PaneMixin {
                 try { const g = this._tabGroupCreate("", this._wvTabGroupNextColor()); if (isReaderWin) readerGroupID = g.id; else groupID = g.id; } catch (e) {}
             }
             for (const it of sel) {
-                const att = this._wvGetBestAttachmentSync(it);
-                if (!att) continue;
+                const isNote = !!(it && typeof it.isNote === "function" && it.isNote());
+                const att = isNote ? null : this._wvGetBestAttachmentSync(it);
+                if (!isNote && !att) continue;
                 try { if (targetWin && targetWin.focus) targetWin.focus(); } catch (e) {}
                 if (isReaderWin) {
-                    // A Weavero multi-tab reader window: add the attachment as a new
-                    // reader tab (lazy — realises on switch) and select it. For "New
-                    // Group", stamp the new tab into the group created above.
+                    // A Weavero multi-tab reader window: a note mounts a <note-editor>
+                    // tab (_wvWTMountTab dispatches on isNote), an attachment adds a
+                    // lazy reader tab. For "New Group", stamp the new tab into it.
                     try {
-                        const tabId = this._wvWTAddLazyReaderTab(targetWin, att.id);
-                        if (tabId && this._wvWTSwitch) this._wvWTSwitch(targetWin, tabId);
+                        let tabId: any;
+                        if (isNote) tabId = await this._wvWTMountTab(targetWin, it.id, { allowDuplicate: true, select: true });
+                        else { tabId = this._wvWTAddLazyReaderTab(targetWin, att.id); if (tabId && this._wvWTSwitch) this._wvWTSwitch(targetWin, tabId); }
                         if (tabId && readerGroupID != null) { try { this._wvReaderStampTabGroup(targetWin, tabId, readerGroupID); } catch (e) {} }
                     } catch (e) { Zotero.debug("[Weavero] open-in reader-win err: " + e); }
                     continue;
                 }
-                let reader: any = null;
-                try { reader = await (Zotero.Reader as any).open(att.id, null, { openInWindow: false, allowDuplicate: true }); }
-                catch (e) { Zotero.debug("[Weavero] open-in Reader.open err: " + e); continue; }
-                if (groupID) {
-                    const tabID = reader && reader.tabID;
-                    if (tabID && this._wvTabGroupAddTab) {
-                        let tries = 0;
-                        const tryAdd = () => {
-                            try {
-                                const Z = targetWin.Zotero_Tabs;
-                                if (Z && Z._tabs && Z._tabs.some((t: any) => t.id === tabID)) {
-                                    this._wvTabGroupAddTab(targetWin, tabID, groupID);
-                                    return;
-                                }
-                            } catch (e) {}
-                            if (tries++ < 20) (targetWin.setTimeout || setTimeout)(tryAdd, 50);
-                        };
-                        tryAdd();
-                    }
+                // Main window: a note opens as a note tab; an attachment via Reader.open.
+                let tabID: any = null;
+                if (isNote) {
+                    try { const r = targetWin.Zotero_Tabs.add({ type: "note", data: { itemID: it.id }, select: true }); tabID = r && r.id; }
+                    catch (e) { Zotero.debug("[Weavero] open-in note err: " + e); continue; }
+                } else {
+                    let reader: any = null;
+                    try { reader = await (Zotero.Reader as any).open(att.id, null, { openInWindow: false, allowDuplicate: true }); }
+                    catch (e) { Zotero.debug("[Weavero] open-in Reader.open err: " + e); continue; }
+                    tabID = reader && reader.tabID;
+                }
+                if (groupID && tabID && this._wvTabGroupAddTab) {
+                    let tries = 0;
+                    const tryAdd = () => {
+                        try {
+                            const Z = targetWin.Zotero_Tabs;
+                            if (Z && Z._tabs && Z._tabs.some((t: any) => t.id === tabID)) {
+                                this._wvTabGroupAddTab(targetWin, tabID, groupID);
+                                return;
+                            }
+                        } catch (e) {}
+                        if (tries++ < 20) (targetWin.setTimeout || setTimeout)(tryAdd, 50);
+                    };
+                    tryAdd();
                 }
             }
         } catch (e) {
@@ -831,23 +866,38 @@ class _PaneMixin {
         try {
             const zp = srcWin && srcWin.ZoteroPane;
             const sel = (zp && typeof zp.getSelectedItems === "function") ? zp.getSelectedItems() : [];
-            const atts: any[] = [];
-            for (const it of sel) { const a = this._wvGetBestAttachmentSync(it); if (a) atts.push(a); }
-            if (!atts.length) { LOG("no attachments -> abort"); return; }
-            // Build the new window's tab state: library tab (index 0) + one reader
-            // tab per item, so the window opens already containing them.
+            // One entry per openable item: a note (opens as a note tab) or an
+            // attachment's best reader-able file.
+            const entries: any[] = [];
+            for (const it of sel) {
+                if (it && typeof it.isNote === "function" && it.isNote()) entries.push({ itemID: it.id, isNote: true });
+                else { const a = this._wvGetBestAttachmentSync(it); if (a) entries.push({ itemID: a.id, isNote: false }); }
+            }
+            if (!entries.length) { LOG("nothing openable -> abort"); return; }
+            // Build the new window's tab state: library tab (index 0) + one tab per
+            // item (reader or note), so the window opens already containing them.
             const tabState: any[] = [{ type: "library", title: "My Library", data: { icon: "library" }, selected: false }];
-            for (const att of atts) {
+            for (const e of entries) {
+                const item: any = Zotero.Items.get(e.itemID);
                 let title = "";
                 try {
-                    const parent = att.parentID ? Zotero.Items.get(att.parentID) : null;
-                    title = (parent && parent.getDisplayTitle && parent.getDisplayTitle())
-                        || (att.getDisplayTitle && att.getDisplayTitle()) || "";
-                } catch (e) {}
-                const ct = String(att.attachmentContentType || "").toLowerCase();
-                const icon = ct === "application/pdf" ? "attachmentPDF"
-                    : ct === "application/epub+zip" ? "attachmentEPUB" : "attachmentSnapshot";
-                tabState.push({ type: "reader", title, data: { itemID: att.id, icon } });
+                    if (e.isNote) {
+                        title = (item && item.getNoteTitle && item.getNoteTitle())
+                            || (item && item.getDisplayTitle && item.getDisplayTitle()) || "Note";
+                    } else {
+                        const parent: any = item && item.parentID ? Zotero.Items.get(item.parentID) : null;
+                        title = (parent && parent.getDisplayTitle && parent.getDisplayTitle())
+                            || (item && item.getDisplayTitle && item.getDisplayTitle()) || "";
+                    }
+                } catch (er) {}
+                if (e.isNote) {
+                    tabState.push({ type: "note", title, data: { itemID: e.itemID } });
+                } else {
+                    const ct = String((item && item.attachmentContentType) || "").toLowerCase();
+                    const icon = ct === "application/pdf" ? "attachmentPDF"
+                        : ct === "application/epub+zip" ? "attachmentEPUB" : "attachmentSnapshot";
+                    tabState.push({ type: "reader", title, data: { itemID: e.itemID, icon } });
+                }
             }
             tabState[tabState.length - 1].selected = true;   // select the last item
             // Queue the state + open a clean managed window. _wvInitDevMainWindow
@@ -863,7 +913,7 @@ class _PaneMixin {
                 try { (this as any)._wvDevSpawnQueue.pop(); } catch (e2) {}
                 LOG("openMainWindow THREW: " + e); return;
             }
-            LOG("opened clean window, " + atts.length + " item tab(s) queued, createNewGroup=" + !!createNewGroup);
+            LOG("opened clean window, " + entries.length + " item tab(s) queued, createNewGroup=" + !!createNewGroup);
             if (!createNewGroup) return;
             // "New Group" variant: once the window is up + restored (its items are
             // already shown), group the item tabs into a fresh group.
@@ -882,7 +932,7 @@ class _PaneMixin {
             if (!newWin) { LOG("new window not found for grouping"); return; }
             try {
                 const groupID = this._tabGroupCreate("", this._wvTabGroupNextColor()).id;
-                const itemIDs = new Set(atts.map((a: any) => a.id));
+                const itemIDs = new Set(entries.map((e: any) => e.itemID));
                 for (const t of (newWin.Zotero_Tabs._tabs || [])) {
                     if (t.data && itemIDs.has(t.data.itemID)) {
                         try { this._wvTabGroupAddTab(newWin, t.id, groupID); } catch (e) {}

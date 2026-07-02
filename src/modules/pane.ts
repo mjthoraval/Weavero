@@ -4618,7 +4618,17 @@ class _PaneMixin {
                         return;
                     }
                     if (e.key === "Alt" && !e.repeat) {
-                        altAlone = !(e.ctrlKey || e.shiftKey || e.metaKey);
+                        const bare = !(e.ctrlKey || e.shiftKey || e.metaKey);
+                        if (bare && !isCollapsed()) {
+                            // Menubar already visible: a second Alt dismisses it
+                            // IMMEDIATELY on keydown — there's nothing to activate,
+                            // so no reason to wait for the release.
+                            MBLOG("keydown Alt: COLLAPSE (already visible)");
+                            altAlone = false;
+                            collapse();
+                            return;
+                        }
+                        altAlone = bare;
                         MBLOG("keydown Alt: ctrl=" + e.ctrlKey + " shift=" + e.shiftKey
                             + " meta=" + e.metaKey + " -> altAlone=" + altAlone
                             + " (collapsed=" + isCollapsed() + ")");

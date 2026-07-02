@@ -3586,9 +3586,19 @@ class _ReaderMixin {
             const MBLOG = (m: string) => { try { Zotero.debug("[Weavero][menubar:reader] " + m); } catch (er) {} };
             const onKeyDown = (e: any) => {
                 if (!altDown) {
-                    // Begin tracking only on a bare Alt press (no other modifier).
-                    if (e.key === "Alt" && !hasOtherMod(e)) { altDown = true; canceled = false; MBLOG("keydown Alt: tracking (bare)"); }
-                    else if (e.key === "Alt") MBLOG("keydown Alt: ignored, other modifier down (ctrl=" + e.ctrlKey + " shift=" + e.shiftKey + " meta=" + e.metaKey + ")");
+                    // Begin tracking only on a bare, non-repeat Alt press (no
+                    // other modifier). If the menubar is already visible, a
+                    // second Alt dismisses it IMMEDIATELY on keydown — nothing
+                    // to activate, so no reason to wait for the release.
+                    if (e.key === "Alt" && !e.repeat && !hasOtherMod(e)) {
+                        if (menubar.getAttribute("wv-compact-hidden") !== "true") {
+                            MBLOG("keydown Alt: COLLAPSE (already visible)");
+                            menubar.setAttribute("wv-compact-hidden", "true");
+                            return;
+                        }
+                        altDown = true; canceled = false; MBLOG("keydown Alt: tracking (bare)");
+                    }
+                    else if (e.key === "Alt" && !e.repeat) MBLOG("keydown Alt: ignored, other modifier down (ctrl=" + e.ctrlKey + " shift=" + e.shiftKey + " meta=" + e.metaKey + ")");
                     return;
                 }
                 // Alt is already held. Once canceled, stay canceled until keyup.
@@ -12836,8 +12846,15 @@ class _ReaderMixin {
                 try {
                     if (isDead()) return;
                     if (!altDown) {
-                        // Begin tracking only on a bare Alt press (no other modifier).
+                        // Begin tracking only on a bare, non-repeat Alt press (no
+                        // other modifier). If the menubar is already visible, a
+                        // second Alt dismisses it IMMEDIATELY on keydown.
                         if (e.key === "Alt" && !e.repeat && !hasOtherMod(e)) {
+                            if (!isCollapsed()) {
+                                MBLOG("keydown Alt: COLLAPSE (already visible)");
+                                collapse();
+                                return;
+                            }
                             altDown = true;
                             canceled = false;
                             MBLOG("keydown Alt: tracking (bare)");

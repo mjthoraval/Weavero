@@ -5168,6 +5168,24 @@ class _TabsMixin {
                     try {
                         const t = Z._tabs.find((x: any) => x.id === id);
                         self._wvTrace("tab-loaded[" + name() + "]: " + (t ? t.type : id));
+                        // Self-heal stale tab titles on load. A tab created with a
+                        // wrong explicit title (e.g. an attachment's own "Full Text
+                        // PDF") keeps it FOREVER — Zotero's updateTitle only fires
+                        // on item-metadata changes, and reader.updateTitle() alone
+                        // doesn't repaint the strip label; Zotero_Tabs.rename does.
+                        const iid = t && t.data && t.data.itemID;
+                        const it: any = iid && Zotero.Items.get(iid);
+                        if (it && typeof it.getTabTitle === "function") {
+                            it.getTabTitle().then((title: string) => {
+                                try {
+                                    const t2 = Z._tabs.find((x: any) => x.id === id);
+                                    if (title && t2 && t2.title !== title) {
+                                        Z.rename(id, title);
+                                        self._wvTrace("title self-heal[" + name() + "]: " + String(title).slice(0, 50));
+                                    }
+                                } catch (e) {}
+                            }).catch(() => {});
+                        }
                     } catch (e) {}
                     return r;
                 };

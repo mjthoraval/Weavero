@@ -7416,11 +7416,14 @@ class _ReaderMixin {
         return out;
     }
 
-    /** Window geometry for the store — restores multi-monitor placement
-     *  (screenX can be negative on a left-of-primary monitor). */
+    /** Window geometry for the store — restores multi-monitor placement.
+     *  `screenX`/`moveTo` are CSS pixels of the window's CURRENT screen, so
+     *  with mixed per-monitor DPI the same number means different desktop
+     *  positions; capture `dpr` too so restore can work in DEVICE pixels
+     *  (globally consistent across monitors). */
     _wvWindowGeom(w: any) {
         try {
-            return { x: w.screenX, y: w.screenY, w: w.outerWidth, h: w.outerHeight };
+            return { x: w.screenX, y: w.screenY, w: w.outerWidth, h: w.outerHeight, dpr: w.devicePixelRatio || 1 };
         } catch (e) { return null; }
     }
 
@@ -7435,12 +7438,39 @@ class _ReaderMixin {
         } catch (e) { return null; }
     }
 
-    /** Apply a persisted geometry to a window (multi-monitor placement). */
+    /** Apply a persisted geometry to a window (multi-monitor placement).
+     *  Works in DEVICE pixels and converges iteratively: a window restored on
+     *  the primary monitor interprets moveTo() in the primary's CSS scale, so
+     *  one absolute move lands wrong when the target monitor has a different
+     *  DPI (observed: 150% secondary → window stayed on the primary). Moving
+     *  by the remaining device-pixel DELTA, re-measured after each hop,
+     *  converges regardless of the scales involved; the resize runs at the
+     *  destination, where the captured CSS width/height are the right units. */
     _wvApplyWindowGeom(w: any, geom: any) {
         try {
             if (!w || !geom || geom.x == null) return;
-            w.moveTo(geom.x, geom.y);
-            if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+            const capDpr = geom.dpr || 1;
+            const targetDevX = geom.x * capDpr;
+            const targetDevY = geom.y * capDpr;
+            let attempts = 0;
+            const step = () => {
+                try {
+                    if (w.closed) return;
+                    const dpr = w.devicePixelRatio || 1;
+                    const curDevX = w.screenX * dpr;
+                    const curDevY = w.screenY * dpr;
+                    const dx = targetDevX - curDevX;
+                    const dy = targetDevY - curDevY;
+                    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
+                        if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+                        return;
+                    }
+                    w.moveTo(w.screenX + dx / dpr, w.screenY + dy / dpr);
+                    if (++attempts < 4) w.setTimeout(step, 120);
+                    else if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+                } catch (e) {}
+            };
+            step();
         } catch (e) {}
     }
 

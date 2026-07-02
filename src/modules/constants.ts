@@ -1755,6 +1755,26 @@ export const PLUGIN_CSS = [
     ".wv-tabs-menu-row-hidden {",
     "  display: none !important;",
     "}",
+    // Popup row drag-and-drop: dim the row being dragged, and outline the window
+    // scope / group row it would drop into (blue, matching the tab-bar indicator).
+    ".wv-tabsmenu-row-dragging {",
+    "  opacity: 0.45 !important;",
+    "}",
+    ".wv-tabsmenu-drop-into {",
+    "  outline: 2px solid var(--accent-blue, #4072e5) !important;",
+    "  outline-offset: -2px;",
+    "  border-radius: 4px;",
+    "  background: rgba(64, 114, 229, 0.10) !important;",
+    "}",
+    // Preview of the tab being dragged, shown where it will land in the target.
+    ".wv-tabsmenu-ghost {",
+    "  opacity: 0.7;",
+    "  pointer-events: none;",
+    "  border-radius: 4px;",
+    "  outline: 1px dashed var(--accent-blue, #4072e5);",
+    "  outline-offset: -1px;",
+    "  background: rgba(64, 114, 229, 0.12) !important;",
+    "}",
     // Tabs-menu toolbar button shows a small accent-blue dot at its
     // top-right when at least one library / file-type filter is active,
     // so the user can tell at a glance that the visible tab list is

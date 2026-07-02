@@ -1068,7 +1068,25 @@ class _TabGroupsMixin {
 
             // ---- GROUP target — groups live in a MAIN window (the home) ----
             if (groupId) {
-                const homeWin = this._wvTabGroupHomeWin(groupId) || tgtWin;
+                const grp = this._tabGroupsGet().find((x: any) => x.id === groupId);
+                const isSaved = !!(grp && (grp as any).saved);
+                const homeWin = this._wvTabGroupHomeWin(groupId) || (isSaved ? null : tgtWin);
+                // CLOSED (saved/parked) group → file the tab's item into the group's
+                // stored members and close it (Firefox addTabsToSavedGroup model); the
+                // group stays parked. No live home window to move into.
+                if (isSaved && !homeWin) {
+                    if (srcIsReader) {
+                        try {
+                            const item: any = Zotero.Items.get(itemID);
+                            if (item) this._tabGroupAddKey(groupId, { libraryID: item.libraryID, itemKey: item.key });
+                        } catch (e) {}
+                        try { (this as any)._wvWTCloseTab(srcWin, tabId); } catch (e) {}
+                        try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+                    } else {
+                        this._wvTabGroupAddTab(srcWin, tabId, groupId);   // handles saved → file + close
+                    }
+                    return;
+                }
                 if (!homeWin) return;
                 if (srcIsReader) {
                     this._wvMoveReaderTabToMainGroup(srcWin, tabId, itemID, homeWin, groupId);
@@ -1101,14 +1119,34 @@ class _TabGroupsMixin {
                     return;
                 }
                 if (srcWin === tgtWin) return;   // already in this reader window
-                try { await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true }); } catch (e) {}
+                let newRId: any = null;
+                try { newRId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true, await: true }); } catch (e) {}
+                // Precise slot from the popup: move the just-mounted tab there.
+                if (target.index != null) {
+                    try {
+                        const st = tgtWin._wvWT;
+                        if (st && st.tabs) {
+                            let from = (newRId != null) ? st.tabs.findIndex((t: any) => String(t.id) === String(newRId)) : -1;
+                            if (from < 0) { for (let i = st.tabs.length - 1; i >= 0; i--) { if (st.tabs[i].itemID === itemID) { from = i; break; } } }
+                            if (from >= 0) {
+                                const [m] = st.tabs.splice(from, 1);
+                                st.tabs.splice(Math.min(target.index, st.tabs.length), 0, m);
+                                try { (this as any)._wvWTRenderStrip(tgtWin); } catch (e) {}
+                                try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
+                            }
+                        }
+                    } catch (e) {}
+                }
                 try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
             } else if (srcIsReader) {
                 this._wvWTMoveTabToMain(srcWin, tabId, tgtWin);                      // reader → main window
             } else {
                 if (srcWin === tgtWin) return;   // same main window, loose → no-op
                 const Z = tgtWin.Zotero_Tabs;
-                const targetIndex = (Z && Z._tabs) ? Z._tabs.length : 1;            // append to end
+                // Precise drop index from the popup (after the anchor tab); else end.
+                const targetIndex = (target.index != null)
+                    ? target.index
+                    : ((Z && Z._tabs) ? Z._tabs.length : 1);
                 // maxOtherPinned = 0 so the moved tab is never auto-pinned.
                 this._wvMoveTabBetweenMains(srcWin, tgtWin,
                     { itemID, sourceTabId: tabId, readerType: isNote ? "note" : undefined }, targetIndex, 0);
@@ -2124,6 +2162,41 @@ class _TabGroupsMixin {
             this._wvTabGroupApplyEverywhere();
             return slot;
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveGroupTo err: " + e); return -1; }
+    }
+
+    /** Reader-window twin of _wvTabGroupMoveGroupTo: reorder a group's member
+     *  tabs to a contiguous block at the slot under `clientX` (a coordinate in
+     *  the reader strip), then re-render + persist. */
+    _wvTabGroupReaderMoveGroupTo(win: any, groupID: any, clientX: number) {
+        try {
+            const st = win && win._wvWT;
+            if (!st || !Array.isArray(st.tabs)) return -1;
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (!g) return -1;
+            const memberIDs: string[] = [];
+            for (const t of st.tabs) { if (this._wvTabGroupStamp(t) === g.id) memberIDs.push(String(t.id)); }
+            if (!memberIDs.length) return -1;
+            const memberSet = new Set(memberIDs);
+            const nonMembers: string[] = st.tabs.map((t: any) => String(t.id)).filter((id: string) => !memberSet.has(id));
+            let slot = nonMembers.length;   // default: end
+            try {
+                const els = win.document.querySelectorAll(".wv-window-tabstrip .wv-window-tabs > .wv-window-tab[data-wv-tab-id]");
+                for (const el of els) {
+                    const id = el.getAttribute("data-wv-tab-id");
+                    if (memberSet.has(id)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (!r.width) continue;
+                    if (clientX < r.left + r.width / 2) { const j = nonMembers.indexOf(id); if (j >= 0) { slot = j; break; } }
+                }
+            } catch (e) {}
+            const desired = [...nonMembers.slice(0, slot), ...memberIDs, ...nonMembers.slice(slot)];
+            const byId = new Map(st.tabs.map((t: any) => [String(t.id), t]));
+            st.tabs = desired.map((id: string) => byId.get(id)).filter(Boolean);
+            try { (this as any)._wvWTRenderStrip(win); } catch (e) {}
+            try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
+            this._wvTabGroupApplyEverywhere();
+            return slot;
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupReaderMoveGroupTo err: " + e); return -1; }
     }
 
     /** The minimum allowed insertion slot for a group within `nonMembers`:
@@ -3338,6 +3411,38 @@ class _TabGroupsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupOpenInWindow err: " + e); }
     }
 
+    /** Move a whole group to `tgtWin` at a precise position (`clientX` in the
+     *  target window's tab-bar/strip coordinate space; null/undefined → append).
+     *  Handles same-window reorder, cross-window migrate, and reopening a closed
+     *  (saved) group at the target slot. Used by the popup group drag. */
+    async _wvMoveGroupToWindowAt(groupID: any, tgtWin: any, isReaderTgt: boolean, clientX: number | null) {
+        try {
+            if (!tgtWin) return;
+            const home = this._wvTabGroupHomeWin(groupID);
+            const hasX = (typeof clientX === "number");
+            if (!home) {
+                // Closed / saved group → reopen in the target, then position it.
+                if (isReaderTgt) {
+                    await this._wvTabGroupReopenInReader(tgtWin, groupID);
+                    if (hasX) { try { this._wvTabGroupReaderMoveGroupTo(tgtWin, groupID, clientX as number); } catch (e) {} }
+                } else {
+                    await this._wvTabGroupReopen(tgtWin, groupID);
+                    if (hasX) { try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, clientX as number); } catch (e) {} }
+                }
+                return;
+            }
+            if (home === tgtWin) {
+                // Same window → reorder the group's block to the slot.
+                if (isReaderTgt) { try { this._wvTabGroupReaderMoveGroupTo(tgtWin, groupID, hasX ? (clientX as number) : 1e6); } catch (e) {} }
+                else { try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, hasX ? (clientX as number) : 1e6); } catch (e) {} }
+                return;
+            }
+            // Cross-window migrate, landing at the slot (clientX honoured by both
+            // the main-bar and reader-strip branches of migrate).
+            await this._wvTabGroupMigrateGroup(home, tgtWin, groupID, hasX ? (clientX as number) : 1e6);
+        } catch (e) { Zotero.debug("[Weavero] _wvMoveGroupToWindowAt err: " + e); }
+    }
+
     /** Right-click menu on a tabs-menu group row (Firefox: Open Group in
      *  This Window / Open Group in New Window / Delete Group). */
     _wvTabsMenuGroupContext(win: any, panel: any, groupID: any, e: any) {
@@ -3414,10 +3519,17 @@ class _TabGroupsMixin {
             const Z: any = win.Zotero_Tabs;
             if (!isReader && (!Z || !Z._tabs)) return;
             const groupOfRow = (row: any) => {
-                const id = row.getAttribute(idAttr);
                 let t: any = null;
-                if (isReader) { const st = win._wvWT; t = st && st.tabs.find((x: any) => String(x.id) === String(id)); }
-                else { t = Z._tabs.find((x: any) => x && x.id === id); }
+                const id = row.getAttribute(idAttr);
+                if (id) {
+                    if (isReader) { const st = win._wvWT; t = st && st.tabs.find((x: any) => String(x.id) === String(id)); }
+                    else { t = Z._tabs.find((x: any) => x && x.id === id); }
+                } else if ((row as any)._wvSrcTabId != null && (row as any)._wvSrcWin) {
+                    // Other-window / reader-window row (no native id) — resolve its
+                    // tab in its OWN window so groups nest for EVERY window, not just
+                    // the one the popup is open in.
+                    t = (this as any)._wvTabObjInWin((row as any)._wvSrcWin, (row as any)._wvSrcTabId, (row as any)._wvSrcIsReader);
+                }
                 if (!t || (t as any)._wvGroupExcluded) return null;   // separate copy kept out
                 const gid = this._wvTabGroupStamp(t);                  // per-tab membership
                 return gid ? (groups.find((g: any) => g.id === gid && !(g as any).saved) || null) : null;
@@ -3426,17 +3538,19 @@ class _TabGroupsMixin {
             // panel — and directly in the list for the reader clone. Scan EACH
             // container that holds rows, splitting into contiguous runs (library
             // sub-headers etc. break them) so a group nests within its library section.
-            const rowSel = ".row[" + idAttr + "]";
+            // A tab row is either a native row (data-tab-id) or a Weavero-built
+            // other-window row (_wvSrcTabId) — group runs cover both.
+            const isTabRow = (ch: any) => !!(ch && ch.classList && ch.classList.contains("row")
+                && ((ch.getAttribute && ch.getAttribute(idAttr)) || (ch as any)._wvSrcTabId != null));
             const containers = new Set<any>();
-            for (const r of list.querySelectorAll(rowSel)) containers.add(r.parentElement);
+            for (const r of list.querySelectorAll(".row")) { if (isTabRow(r) && r.parentElement) containers.add(r.parentElement); }
             if (!containers.size) containers.add(list);
             const sections: any[][] = [];
             for (const cont of containers) {
                 let cur: any[] = [];
                 for (const ch of [...cont.children]) {
-                    if (ch.classList && ch.classList.contains("row") && ch.getAttribute && ch.getAttribute(idAttr)) {
-                        cur.push(ch);
-                    } else if (cur.length) { sections.push(cur); cur = []; }
+                    if (isTabRow(ch)) cur.push(ch);
+                    else if (cur.length) { sections.push(cur); cur = []; }
                 }
                 if (cur.length) sections.push(cur);
             }
@@ -3459,6 +3573,10 @@ class _TabGroupsMixin {
                     const listCollapsed = collMap.has(gid) ? !!collMap.get(gid) : !!g.collapsed;
                     const header = doc.createElementNS(HTML_NS, "div");
                     header.className = "wv-tgrow-header";
+                    // Drag source: drag this inline group header onto another window
+                    // (in the popup) to move the whole group there.
+                    (header as any)._wvGroupId = gid;
+                    header.setAttribute("draggable", "true");
                     // Chip first, left-aligned with the tab icons of
                     // ungrouped rows (header padding tuned to the measured
                     // icon offset); twisty sits at the far right.
@@ -3569,6 +3687,11 @@ class _TabGroupsMixin {
                 }
                 row.appendChild(count);
                 const gid = g.id;
+                // Drop-target identity: dragging a popup tab row onto this group row
+                // joins the tab to the group (see _wvResolvePopupDropTarget). Also a
+                // DRAG SOURCE: drag the group row onto another window to move it there.
+                (row as any)._wvGroupId = gid;
+                row.setAttribute("draggable", "true");
                 row.addEventListener("click", (e: any) => {
                     try {
                         e.stopPropagation();

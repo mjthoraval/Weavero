@@ -126,6 +126,11 @@ class _TabsMixin {
                 if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
                 if (lp && lp._wvTabsMenuWrapCurrentSession) lp._wvTabsMenuWrapCurrentSession(panel);
                 if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
+                // Filter EVERY window's rows now that all sections exist (the
+                // per-branch filter only saw the current window's native rows).
+                if (lp && lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
+                if (lp && lp._wvWireTabsMenuRowDnD) lp._wvWireTabsMenuRowDnD(panel);
+                if (lp && lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
                 // Defer the height-fit until after the popup is positioned.
                 const w = panel.ownerGlobal;
                 if (w) w.setTimeout(() => { try { const l2 = Zotero.Weavero && Zotero.Weavero.plugin; if (l2 && l2._wvTabsMenuFitListHeight) l2._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
@@ -578,9 +583,409 @@ class _TabsMixin {
             if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
             if (lp && lp._wvTabsMenuWrapCurrentSession) lp._wvTabsMenuWrapCurrentSession(panel);
             if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
+            if (lp && lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
+            if (lp && lp._wvWireTabsMenuRowDnD) lp._wvWireTabsMenuRowDnD(panel);
+                if (lp && lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
             const w = panel.ownerGlobal;
             if (w) w.setTimeout(() => { try { const l2 = Zotero.Weavero && Zotero.Weavero.plugin; if (l2 && l2._wvTabsMenuFitListHeight) l2._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
         } catch (e) {}
+    }
+
+    /** Apply the funnel's file-type + library filters to EVERY tab row in the
+     *  popup — current window, other windows, sessions — and hide any window
+     *  scope that ends up fully filtered out. Must run AFTER all sections are
+     *  built: the per-branch filter in _groupTabsMenuByLibrary only sees the
+     *  current window's native rows, because the other-window / session rows
+     *  are appended later by _wvTabsMenuOtherWindows / the session sections.
+     *  Without this pass the filter would silently skip every other window. */
+    _wvApplyTabsMenuRowFilters(panel: any) {
+        try {
+            // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
+            const tabsList = panel._tabsList
+                || panel.querySelector("#zotero-tabs-menu-list")
+                || panel.querySelector("#wv-wtl-list");
+            if (!tabsList) return;
+            const lf = this._tabsMenuLibraryFilter;
+            const lfAnyInc = !!(lf && [...lf.values()].includes("include"));
+            const libVisible = (libID: any) => {
+                if (!lf || lf.size === 0) return true;
+                const v = lf.get(libID);
+                if (v === "exclude") return false;
+                if (lfAnyInc) return v === "include";
+                return true;
+            };
+            // Native current-window rows have `data-tab-id`; the other-window /
+            // session rows built by _wvTabsMenuTabRow carry `data-wv-library` +
+            // `data-wv-itemtype` but no current-window tab id.
+            const rows = [...tabsList.querySelectorAll(".row[data-tab-id], .row[data-wv-library]")] as any[];
+            for (const row of rows) {
+                // Stamp native current-window rows so the per-row checks work
+                // uniformly (other-window rows are already stamped at build time).
+                if (!(row.getAttribute && row.getAttribute("data-wv-itemtype"))) {
+                    try {
+                        const tab = Zotero_Tabs._tabs.find((t: any) => t.id === row.dataset.tabId);
+                        const iid = tab && tab.data && tab.data.itemID;
+                        const it: any = iid && Zotero.Items.get(iid);
+                        if (it) {
+                            if (it.libraryID != null && !row.getAttribute("data-wv-library")) row.setAttribute("data-wv-library", String(it.libraryID));
+                            if (it.getItemTypeIconName) row.setAttribute("data-wv-itemtype", it.getItemTypeIconName(true));
+                        }
+                    } catch (e) {}
+                }
+                const passesFt = this._rowPassesFileTypeFilter(row.getAttribute("data-wv-itemtype"));
+                const libRaw = row.getAttribute && row.getAttribute("data-wv-library");
+                const passesLib = (libRaw == null) ? true : libVisible(Number(libRaw));
+                if (passesFt && passesLib) row.classList.remove("wv-tabs-menu-row-hidden");
+                else row.classList.add("wv-tabs-menu-row-hidden");
+            }
+            // NB: window scopes and the Tab Groups section are deliberately left
+            // visible even when all their rows are filtered out — the headers let
+            // the user see the full window/group structure and toggle the filter
+            // back off without exiting the panel (same rule as the per-row hide).
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyTabsMenuRowFilters err: " + e); }
+    }
+
+    // ---- Popup row drag-and-drop (move a tab to a group / another window) ----
+    // Dragging a row in the "List all Tabs" popup onto a window scope moves that
+    // tab to the window; onto a group (a grouped tab row or the bottom Tab Groups
+    // row) joins the tab to the group. The actual move reuses the menu-based
+    // universal mover `_wvMoveTabToTarget`, so every source/target combo (main↔
+    // main, main↔reader, reader↔reader, +group) is handled in one place.
+
+    /** Live tab object for (win, tabId) — main window via Zotero_Tabs, reader
+     *  window via its `_wvWT.tabs`. */
+    _wvTabObjInWin(win: any, tabId: any, isReader: boolean) {
+        try {
+            if (!win || tabId == null) return null;
+            if (isReader) return (((win as any)._wvWT && (win as any)._wvWT.tabs) || []).find((t: any) => t.id === tabId) || null;
+            const Z = (win as any).Zotero_Tabs;
+            return (Z && Z._tabs) ? (Z._tabs.find((t: any) => t.id === tabId) || null) : null;
+        } catch (e) { return null; }
+    }
+
+    /** Resolve what a popup drop at `el` means: a group join, or a loose move to a
+     *  window. Returns `{ container, target }` (container = element to highlight,
+     *  target = the `_wvMoveTabToTarget` descriptor) or null when not droppable. */
+    _wvResolvePopupDropTarget(panel: any, el: any, _drag: any) {
+        try {
+            if (!el || !el.closest) return null;
+            const panelWin = panel.ownerGlobal;
+            // 1) Bottom "Tab Groups" saved-group row → join that group.
+            const grpRow = el.closest(".wv-tgmenu-row");
+            if (grpRow && (grpRow as any)._wvGroupId) {
+                return { container: grpRow, target: { groupId: (grpRow as any)._wvGroupId } };
+            }
+            // 2) A tab row → its window; if the row's tab is itself grouped, joining
+            //    that group reads more naturally than a loose move next to it.
+            const tabRow = el.closest(".row");
+            if (tabRow && tabRow.getAttribute && tabRow.getAttribute("draggable") === "true") {
+                const win = (tabRow as any)._wvSrcWin || panelWin;
+                const isReader = !!(tabRow as any)._wvSrcIsReader;
+                const tid = (tabRow as any)._wvSrcTabId || (tabRow.dataset && tabRow.dataset.tabId);
+                let gid: any = null;
+                try { const t = this._wvTabObjInWin(win, tid, isReader); if (t) gid = (this as any)._wvTabGroupStamp(t); } catch (e) {}
+                return gid
+                    ? { container: tabRow, target: { win, isReader, groupId: gid } }
+                    : { container: tabRow, target: { win, isReader } };
+            }
+            // 3) A window scope (header / library row / empty area) → move to it.
+            const scope = el.closest(".wv-winscope");
+            if (scope) {
+                const win = (scope as any)._wvWin || panelWin;
+                const isReader = !!(scope as any)._wvIsReader;
+                return { container: scope, target: { win, isReader } };
+            }
+            return null;
+        } catch (e) { return null; }
+    }
+
+    /** Compute the precise drop insertion within a window scope for cursor Y.
+     *  Returns `{ beforeRow, anchorTabId }` — `anchorTabId` is the target window's
+     *  tab to insert AFTER (null = at the very front). `opts.excludeTabId` skips
+     *  the dragged tab's own row; `opts.excludeGroupId` skips the dragged group's
+     *  own member rows (can't position relative to itself). */
+    _wvPopupDropPosition(scope: any, clientY: number, opts?: any) {
+        try {
+            const win = (scope as any)._wvWin;
+            const isReader = !!(scope as any)._wvIsReader;
+            const exclTab = opts && opts.excludeTabId;
+            const exclGrp = opts && opts.excludeGroupId;
+            const tidOf = (r: any) => (r as any)._wvSrcTabId || (r.dataset && r.dataset.tabId);
+            const rows = ([...scope.querySelectorAll(".row")] as any[]).filter((r: any) => {
+                if (r.classList.contains("wv-tabsmenu-ghost")) return false;
+                if (r.classList.contains("wv-tabs-menu-row-hidden")) return false;
+                const tid = tidOf(r);
+                if (!tid || tid === "zotero-pane") return false;
+                if (exclTab != null && tid === exclTab) return false;
+                if (exclGrp && win) {
+                    try { const t = this._wvTabObjInWin(win, tid, isReader); if (t && (this as any)._wvTabGroupStamp(t) === exclGrp) return false; } catch (e) {}
+                }
+                return true;
+            });
+            let beforeRow: any = null;
+            for (const r of rows) {
+                const rect = r.getBoundingClientRect();
+                if (rect.height && clientY < rect.top + rect.height / 2) { beforeRow = r; break; }
+            }
+            let anchorTabId: any = null;
+            if (beforeRow) {
+                const idx = rows.indexOf(beforeRow);
+                anchorTabId = idx > 0 ? tidOf(rows[idx - 1]) : null;
+            } else {
+                anchorTabId = rows.length ? tidOf(rows[rows.length - 1]) : null;
+            }
+            return { beforeRow, anchorTabId };
+        } catch (e) { return { beforeRow: null, anchorTabId: null }; }
+    }
+
+    /** A tab-bar X coordinate (in `win`'s viewport) that lands a drop right AFTER
+     *  `anchorTabId` — fed to the clientX-based group movers. null anchor → a
+     *  coordinate before the first tab (front). Returns null if it can't resolve
+     *  (caller then appends). */
+    _wvBarClientXForAnchor(win: any, anchorTabId: any, isReader: boolean): number | null {
+        try {
+            const doc = win && win.document;
+            if (!doc) return null;
+            const sel = isReader ? ".wv-window-tabstrip .wv-window-tab[data-wv-tab-id]" : "#tab-bar-container .tab[data-id]";
+            if (anchorTabId == null) {
+                const first = doc.querySelector(sel);
+                if (first) { const r = first.getBoundingClientRect(); return r.left - 6; }
+                return null;
+            }
+            const one = isReader
+                ? doc.querySelector('.wv-window-tabstrip .wv-window-tab[data-wv-tab-id="' + anchorTabId + '"]')
+                : doc.querySelector('#tab-bar-container .tab[data-id="' + anchorTabId + '"]');
+            if (one) { const r = one.getBoundingClientRect(); return r.left + r.width * 0.75; }   // past midpoint → after anchor
+            return null;
+        } catch (e) { return null; }
+    }
+
+    /** Wire row drag-and-drop on the tabs-menu list once (event-delegated, so it
+     *  survives the list being rebuilt each refresh). */
+    _wvWireTabsMenuRowDnD(panel: any) {
+        try {
+            if (!panel || panel._wvRowDnDWired) return;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            if (!list) return;
+            panel._wvRowDnDWired = true;
+            const self = this;
+            const doc = list.ownerDocument;
+            const panelWin = panel.ownerGlobal;
+            const livePlugin = () => ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
+            const clearHighlight = () => {
+                try { for (const e of list.querySelectorAll(".wv-tabsmenu-drop-into")) e.classList.remove("wv-tabsmenu-drop-into"); } catch (er) {}
+                try { for (const g of list.querySelectorAll(".wv-tabsmenu-ghost")) g.remove(); } catch (er) {}
+            };
+            // A preview of what's being dragged, appended at the END of the target
+            // window's scope (where the move lands). For a tab: its icon + title.
+            // For a group: its colour chip + name. Clearer than outlining an
+            // unrelated existing row.
+            const showGhostAt = (scope: any, beforeRow: any, info: any) => {
+                try {
+                    let ghost: any = list.querySelector(".wv-tabsmenu-ghost");
+                    if (!ghost) {
+                        if (info.isGroup) {
+                            // Mirror the inline group header so the preview chip/name
+                            // line up with the tab icons (a bare .row chip sat too far
+                            // left). The header's padding is tuned to the icon offset.
+                            ghost = doc.createElement("div");
+                            ghost.className = "wv-tgrow-header wv-tabsmenu-ghost";
+                            const chip = doc.createElement("span");
+                            chip.className = "wv-tgrow-chip";
+                            if (info.color) chip.style.background = info.color;
+                            ghost.appendChild(chip);
+                            const name = doc.createElement("span");
+                            name.textContent = info.title || "";
+                            ghost.appendChild(name);
+                        } else {
+                            ghost = doc.createElement("div");
+                            ghost.className = "row wv-tabsmenu-ghost";
+                            const title = doc.createElement("div");
+                            title.className = "zotero-tabs-menu-entry title";
+                            title.setAttribute("flex", "1");
+                            const icon = doc.createElement("span");
+                            icon.className = "icon icon-css tab-icon icon-item-type";
+                            if (info.itemType) icon.setAttribute("data-item-type", info.itemType);
+                            title.appendChild(icon);
+                            const label = doc.createElement("label");
+                            label.textContent = info.title || "";
+                            title.appendChild(label);
+                            ghost.appendChild(title);
+                        }
+                    }
+                    // Insert at the precise drop slot (before `beforeRow`), else end.
+                    if (beforeRow && beforeRow.parentNode) {
+                        if (ghost.nextSibling !== beforeRow || ghost.parentNode !== beforeRow.parentNode) beforeRow.parentNode.insertBefore(ghost, beforeRow);
+                    } else if (ghost.parentNode !== scope || ghost.nextSibling) {
+                        scope.appendChild(ghost);
+                    }
+                } catch (er) {}
+            };
+            const clearDragging = () => {
+                try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging")) r.classList.remove("wv-tabsmenu-row-dragging"); } catch (er) {}
+            };
+
+            list.addEventListener("dragstart", (e: any) => {
+                try {
+                    // Group source first — the bottom "Tab Groups" row or an inline
+                    // group header. Dragging it moves the WHOLE group to a window.
+                    const grpSrc = e.target && e.target.closest && e.target.closest(".wv-tgmenu-row[draggable='true'], .wv-tgrow-header[draggable='true']");
+                    if (grpSrc && (grpSrc as any)._wvGroupId) {
+                        const lp = livePlugin();
+                        const gid = (grpSrc as any)._wvGroupId;
+                        let name = "", color = "", homeWin = null;
+                        try {
+                            const g = lp._tabGroupsGet().find((x: any) => x.id === gid);
+                            if (g) { name = g.name || ""; color = lp._tabGroupColorHex(g.color); }
+                            homeWin = lp._wvTabGroupHomeWin(gid);
+                        } catch (er) {}
+                        lp._wvPopupGroupDrag = { groupId: gid, name, color, homeWin };
+                        try { e.dataTransfer.setData("application/x-weavero-popup-group-move", "1"); e.dataTransfer.effectAllowed = "move"; } catch (er) {}
+                        grpSrc.classList.add("wv-tabsmenu-row-dragging");
+                        return;
+                    }
+                    const row = e.target && e.target.closest && e.target.closest(".row[draggable='true']");
+                    if (!row) return;
+                    // Weavero rows carry _wvSrcWin; native current-window rows carry
+                    // only data-tab-id (their source is the panel's own window).
+                    let srcWin = (row as any)._wvSrcWin, tabId = (row as any)._wvSrcTabId, isReader = !!(row as any)._wvSrcIsReader;
+                    if (!srcWin) {
+                        const tid = row.dataset && row.dataset.tabId;
+                        if (!tid || tid === "zotero-pane") return;
+                        srcWin = panelWin; tabId = tid; isReader = false;
+                    }
+                    if (!srcWin || tabId == null) return;
+                    // Capture the moving tab's title + icon for the drag preview ghost.
+                    let title = "", itemType = "";
+                    try {
+                        const t = self._wvTabObjInWin(srcWin, tabId, isReader);
+                        if (t) {
+                            title = t.title || "";
+                            const iid = isReader ? t.itemID : (t.data && t.data.itemID);
+                            const it: any = iid && Zotero.Items.get(iid);
+                            if (it && it.getItemTypeIconName) itemType = it.getItemTypeIconName(true);
+                        }
+                    } catch (er) {}
+                    if (!title) { try { const lbl = row.querySelector("label"); if (lbl) title = lbl.textContent || ""; } catch (er) {} }
+                    if (!itemType) { try { const ic = row.querySelector(".icon-item-type"); if (ic) itemType = ic.getAttribute("data-item-type") || ""; } catch (er) {} }
+                    livePlugin()._wvPopupRowDrag = { srcWin, tabId, isReader, title, itemType };
+                    try { e.dataTransfer.setData("application/x-weavero-popup-tab-move", "1"); e.dataTransfer.effectAllowed = "move"; } catch (er) {}
+                    row.classList.add("wv-tabsmenu-row-dragging");
+                } catch (er) {}
+            }, true);
+
+            // Take over ONLY for cross-window moves and group joins. A same-window
+            // plain reorder is left to Zotero's native row drag (Zotero_Tabs.move),
+            // which the native popup already wires per row.
+            const shouldIntercept = (res: any, drag: any) =>
+                !!(res && res.target && (res.target.groupId || res.target.win !== drag.srcWin));
+
+            list.addEventListener("dragover", (e: any) => {
+                try {
+                    // Group drag → drop onto ANY window's scope to move/reorder the
+                    // group there, at the precise slot under the cursor.
+                    const gdrag = livePlugin()._wvPopupGroupDrag;
+                    if (gdrag) {
+                        clearHighlight();
+                        const scope = e.target && e.target.closest && e.target.closest(".wv-winscope");
+                        if (scope && (scope as any)._wvWin) {
+                            e.preventDefault();
+                            try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
+                            const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId });
+                            showGhostAt(scope, pos.beforeRow, { isGroup: true, color: gdrag.color, title: gdrag.name });
+                            scope.classList.add("wv-tabsmenu-drop-into");
+                        }
+                        return;
+                    }
+                    const drag = livePlugin()._wvPopupRowDrag;
+                    if (!drag) return;
+                    const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
+                    clearHighlight();
+                    if (!shouldIntercept(res, drag) || !res.container) return;
+                    e.preventDefault();
+                    try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
+                    if (res.target.win) {
+                        // Cross-window move: preview the moving tab at the precise
+                        // slot under the cursor (main targets); reader targets append.
+                        const scope = (res.container.closest && res.container.closest(".wv-winscope")) || res.container;
+                        const beforeRow = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId }).beforeRow;
+                        showGhostAt(scope, beforeRow, { itemType: drag.itemType, title: drag.title });
+                        scope.classList.add("wv-tabsmenu-drop-into");
+                    } else {
+                        // Pure group join (a Tab Groups row, including a closed group)
+                        // — highlight the group it will join.
+                        res.container.classList.add("wv-tabsmenu-drop-into");
+                    }
+                } catch (er) {}
+            }, true);
+
+            list.addEventListener("drop", (e: any) => {
+                try {
+                    const lp = livePlugin();
+                    // Group drag → move/reorder the whole group at the dropped slot.
+                    const gdrag = lp._wvPopupGroupDrag;
+                    if (gdrag) {
+                        clearHighlight(); clearDragging();
+                        lp._wvPopupGroupDrag = null;
+                        const scope = e.target && e.target.closest && e.target.closest(".wv-winscope");
+                        if (!scope || !(scope as any)._wvWin) return;
+                        e.preventDefault(); e.stopPropagation();
+                        const tgtWin = (scope as any)._wvWin;
+                        const isReaderTgt = !!(scope as any)._wvIsReader;
+                        const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId });
+                        const clientX = self._wvBarClientXForAnchor(tgtWin, pos.anchorTabId, isReaderTgt);
+                        Promise.resolve(lp._wvMoveGroupToWindowAt(gdrag.groupId, tgtWin, isReaderTgt, clientX)).then(() => {
+                            try { if (typeof panel.refreshList === "function") panel.refreshList(); else lp._wvRegroupTabsMenu(panel); } catch (er) {}
+                        }).catch(() => {});
+                        return;
+                    }
+                    const drag = lp._wvPopupRowDrag;
+                    clearHighlight(); clearDragging();
+                    if (!drag) return;
+                    const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
+                    if (!shouldIntercept(res, drag)) return;   // native handles same-window reorder
+                    e.preventDefault(); e.stopPropagation();
+                    lp._wvPopupRowDrag = null;
+                    const target: any = res.target;
+                    // Precise insertion index for a loose move to another window
+                    // (a group join lands after the group, so skip those).
+                    if (target.win && !target.groupId) {
+                        try {
+                            const scope = e.target && e.target.closest && e.target.closest(".wv-winscope");
+                            if (scope) {
+                                const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId });
+                                if (target.isReader) {
+                                    const st: any = target.win._wvWT;
+                                    if (st && st.tabs) {
+                                        if (pos.anchorTabId == null) target.index = 0;
+                                        else { const ai = st.tabs.findIndex((t: any) => String(t.id) === String(pos.anchorTabId)); if (ai >= 0) target.index = ai + 1; }
+                                    }
+                                } else {
+                                    const Z: any = target.win.Zotero_Tabs;
+                                    if (Z && Z._tabs) {
+                                        if (pos.anchorTabId == null) target.index = 1;   // front (after library)
+                                        else { const ai = Z._tabs.findIndex((t: any) => t && t.id === pos.anchorTabId); if (ai >= 0) target.index = ai + 1; }
+                                    }
+                                }
+                            }
+                        } catch (er) {}
+                    }
+                    Promise.resolve(lp._wvMoveTabToTarget(drag.srcWin, drag.tabId, target)).then(() => {
+                        // A loose drop can land between a group's members and split
+                        // its run — re-cluster so the group stays contiguous.
+                        try { if (target.win && !target.groupId && !target.isReader && lp._wvTabGroupStabilize) lp._wvTabGroupStabilize(target.win); } catch (er) {}
+                        try { if (typeof panel.refreshList === "function") panel.refreshList(); else lp._wvRegroupTabsMenu(panel); } catch (er) {}
+                    }).catch(() => {});
+                } catch (er) {}
+            }, true);
+
+            list.addEventListener("dragend", () => {
+                try { const lp = livePlugin(); lp._wvPopupRowDrag = null; lp._wvPopupGroupDrag = null; clearHighlight(); clearDragging(); } catch (er) {}
+            }, true);
+            list.addEventListener("dragleave", (e: any) => {
+                try { if (!list.contains(e.relatedTarget)) clearHighlight(); } catch (er) {}
+            }, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvWireTabsMenuRowDnD err: " + e); }
     }
 
     // ---- All-windows tab list ----------------------------------------------
@@ -620,6 +1025,9 @@ class _TabsMixin {
                     if (!item) continue;
                     const tabId = t.id, tw = w, tZ = Z;
                     const r = liveStamp(item, t.title) as any;
+                    // Drag-source identity (popup row → move/group). Window objects
+                    // can't be data attrs, so they ride on the section/row object.
+                    r.win = w; r.tabId = t.id; r.itemID = t.data && t.data.itemID; r.isReader = false;
                     r.onClick = () => { try { tw.focus(); tZ.select(tabId); } catch (e) {} };
                     tabs.push(r);
                 }
@@ -664,6 +1072,7 @@ class _TabsMixin {
                         // "Azam et al. - 2026 - …") so the popup matches the tab header
                         // and the main-window rows — not the parent doc title.
                         const r = liveStamp(item, t.title) as any;
+                        r.win = w; r.tabId = t.id; r.itemID = t.itemID; r.isReader = true;
                         r.selected = (w === curWin && t.id === activeId);
                         r.onClick = () => {
                             try {
@@ -1041,6 +1450,17 @@ class _TabsMixin {
         // Full title as a tooltip so an ellipsised row reveals its full name on
         // hover — same as the tab header.
         try { if (tb.title) row.setAttribute("title", tb.title); } catch (e) {}
+        // Drag-source identity: a row that maps to a real tab (not a library home
+        // row) becomes draggable so it can be moved to a group / another window.
+        try {
+            if (tb.win && tb.tabId != null) {
+                (row as any)._wvSrcWin = tb.win;
+                (row as any)._wvSrcTabId = tb.tabId;
+                (row as any)._wvSrcIsReader = !!tb.isReader;
+                if (tb.itemID != null) (row as any)._wvSrcItemID = tb.itemID;
+                row.setAttribute("draggable", "true");
+            }
+        } catch (e) {}
         const title = doc.createElement("div");
         title.setAttribute("flex", "1");
         title.className = "zotero-tabs-menu-entry title";
@@ -1123,6 +1543,9 @@ class _TabsMixin {
             // rail spans the whole window. No window icon (the rail + label say it).
             const winWrap = doc.createElement("div");
             winWrap.className = "wv-winscope " + (marker.scope || "");
+            // Drop-target identity: the window this scope represents.
+            (winWrap as any)._wvWin = sec.win;
+            (winWrap as any)._wvIsReader = (sec.kind === "reader");
             const collapseKey = keyPrefix ? (keyPrefix + "|" + sec.label) : undefined;
             if (collapseKey && this._wvTabsMenuIsWindowCollapsed(collapseKey)) winWrap.classList.add("wv-win-collapsed");
             winWrap.appendChild(this._wvTabsMenuWindowHeader(doc, sec.label, sec.tabs.length, marker.header, sec.iconType || (sec.kind === "reader" ? "reader" : "main"), sec.anchorIconClass, collapseKey, panel, sec.win));
@@ -1164,21 +1587,41 @@ class _TabsMixin {
             const doc = panel.ownerDocument;
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
             if (!list) return;
-            if (list.querySelector(".wv-winscope-current")) return;   // already wrapped this pass
-            // Everything that isn't the banner or an existing scope wrapper is the
-            // native current-window content.
-            const nodes = [...list.children].filter((n: any) =>
-                !n.classList.contains("wv-cursess-header")
-                && !n.classList.contains("wv-winscope")
-                && !n.classList.contains("wv-sessscope"));
-            if (!nodes.length) return;
-            const wrap = doc.createElement("div");
-            wrap.className = "wv-winscope wv-winscope-current";
-            list.insertBefore(wrap, nodes[0]);
-            for (const n of nodes) wrap.appendChild(n);
-            // Label the current window by its STABLE name (custom title, else
-            // "Window N" by creation order) — consistent no matter which window the
-            // tabs list is opened from. Right-click the header to rename.
+            let wrap: any = list.querySelector(".wv-winscope-current");
+            if (wrap) {
+                // Already wrapped this pass — but _groupTabsMenuByLibrary strips
+                // every `.wv-tabs-menu-library-header`, and the current-window header
+                // shares that class, so a regroup (e.g. applying a filter, which
+                // doesn't clear the list) leaves the scope WITHOUT its header.
+                // Rebuild just the header in that case; if it's still there, done.
+                if (wrap.querySelector(".wv-curwin-header")) return;
+            } else {
+                // Everything that isn't the banner or an existing scope wrapper is
+                // the native current-window content.
+                const nodes = [...list.children].filter((n: any) =>
+                    !n.classList.contains("wv-cursess-header")
+                    && !n.classList.contains("wv-winscope")
+                    && !n.classList.contains("wv-sessscope"));
+                if (!nodes.length) return;
+                wrap = doc.createElement("div");
+                wrap.className = "wv-winscope wv-winscope-current";
+                list.insertBefore(wrap, nodes[0]);
+                for (const n of nodes) wrap.appendChild(n);
+                // Drop-target identity.
+                (wrap as any)._wvWin = doc.defaultView;
+                (wrap as any)._wvIsReader = false;
+            }
+            // Make the native current-window rows draggable (the library home row is
+            // structural — leave it out). Idempotent, so safe on an existing scope.
+            try {
+                for (const r of wrap.querySelectorAll(".row[data-tab-id]")) {
+                    if ((r as any).dataset && (r as any).dataset.tabId === "zotero-pane") continue;
+                    (r as any).setAttribute("draggable", "true");
+                }
+            } catch (e) {}
+            // (Re)build the header at the top of the scope. Label the current window
+            // by its STABLE name (custom title, else "Window N" by creation order) —
+            // consistent no matter which window the tabs list is opened from.
             const count = wrap.querySelectorAll(".row[data-tab-id]").length;
             const w: any = doc.defaultView;
             // Anchor mark only with >1 main window (matches the library-tab gate).

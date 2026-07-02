@@ -2117,6 +2117,20 @@ class _TabsMixin {
                     node.classList.remove("wv-pinned-tab");
                 }
             }
+            // Enforce the canonical order (loose-pinned tabs cluster at the far
+            // left; group/pin-first handled together). _applyTabGroups also does
+            // this, but it returns early when there are no groups — so a pin with
+            // no groups present would otherwise never re-cluster. Cheap no-op
+            // when already ordered; skipped during restore + native drag + a
+            // re-entrant stabilize.
+            try {
+                if (!(this as any)._wvTabGroupRestoreGuard && !(this as any)._wvStabilizing
+                        && win._wvTabGroupDragTabID == null) {
+                    (this as any)._wvStabilizing = true;
+                    try { (this as any)._wvTabGroupStabilize(win); } catch (e) {}
+                    (this as any)._wvStabilizing = false;
+                }
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
     }
 

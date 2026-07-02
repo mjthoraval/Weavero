@@ -2339,44 +2339,49 @@ class _TabGroupsMixin {
         try {
             const Z_Tabs: any = win.Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return;
-            const groups = this._tabGroupsGet();
-            if (!groups.length) return;
             const groupAt = (t: any) => this._wvTabGroupStamp(t) || null;   // per-tab
-            // Detect non-contiguity: a group id that re-appears after a
-            // different id interrupted its run.
-            const seenClosed = new Set<string>();
-            let lastGid: string | null = null, broken = false;
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
-                const gid = groupAt(Z_Tabs._tabs[i]);
-                if (gid !== lastGid) {
-                    if (lastGid) seenClosed.add(lastGid);
-                    if (gid && seenClosed.has(gid)) { broken = true; break; }
-                    lastGid = gid;
-                }
-            }
-            if (!broken) return;
-            this._wvTGDbg("stabilize: regrouping non-contiguous members");
-            // Rebuild the full order: walk tabs; when a group's FIRST member is
-            // hit, emit ALL its members in display order; skip later strays.
+            const isPinned = (t: any) => { try { const k = (this as any)._tabPinKey(t); return !!(k && this._pinnedTabsHas(k.libraryID, k.itemKey)); } catch (e) { return false; } };
+            const isLoosePinned = (t: any) => isPinned(t) && !groupAt(t);
+            // CANONICAL tab order (this function is the single source of truth,
+            // called on the common _applyTabGroups path so no operation can leave
+            // a violating order):
+            //   0. library (index 0, untouched)
+            //   1. LOOSE pinned tabs (pinned + ungrouped) — the leftmost pinned
+            //      cluster (a pin done anywhere else drifts here)
+            //   2. the rest in place: each group as ONE contiguous run with its
+            //      PINNED members first; loose unpinned tabs where they are
             const emitted = new Set<string>();
             const desired: string[] = [];
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const t = Z_Tabs._tabs[i];
+                if (isLoosePinned(t)) { desired.push(t.id); emitted.add(t.id); }
+            }
             const membersOf = (gid: string) => {
-                const out: string[] = [];
+                const pinned: string[] = [], unpinned: string[] = [];
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
-                    if (this._wvTabGroupStamp(t) === gid) out.push(t.id);   // per-tab
+                    if (groupAt(t) === gid) (isPinned(t) ? pinned : unpinned).push(t.id);
                 }
-                return out;
+                return pinned.concat(unpinned);
             };
-            for (const t of Z_Tabs._tabs) {
+            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                const t = Z_Tabs._tabs[i];
                 if (!t || emitted.has(t.id)) continue;
                 const gid = groupAt(t);
                 if (gid) { for (const id of membersOf(gid)) { if (!emitted.has(id)) { desired.push(id); emitted.add(id); } } }
                 else { desired.push(t.id); emitted.add(t.id); }
             }
+            // Only reorder if the current order already differs — keeps this a
+            // cheap O(n) no-op on the frequent _applyTabGroups path.
+            let differs = false;
+            for (let i = 0; i < desired.length; i++) {
+                if (!Z_Tabs._tabs[i + 1] || Z_Tabs._tabs[i + 1].id !== desired[i]) { differs = true; break; }
+            }
+            if (!differs) return;
+            this._wvTGDbg("stabilize: reordering (loose-pin left / group contiguity / pin-first)");
             for (let i = 0; i < desired.length; i++) {
                 const cur = Z_Tabs._tabs.findIndex((t: any) => t && t.id === desired[i]);
-                if (cur >= 0 && cur !== i) { try { Z_Tabs.move(desired[i], i); } catch (e) {} }
+                if (cur >= 0 && cur !== i + 1) { try { Z_Tabs.move(desired[i], i + 1); } catch (e) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupStabilize err: " + e); }
     }

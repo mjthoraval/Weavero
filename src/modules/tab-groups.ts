@@ -192,7 +192,7 @@ class _TabGroupsMixin {
 
     _ensureTabGroupStyles(doc: any) {
         try {
-            const STYLE_VERSION = "21";
+            const STYLE_VERSION = "22";
             const old = doc.getElementById("wv-tab-group-styles");
             if (old) {
                 if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
@@ -215,9 +215,10 @@ class _TabGroupsMixin {
                 "#tab-bar-container .tab.wv-group-first::after { left: -7px; }",
                 // DRAG PREVIEW: while dragging a tab over a group (release = join),
                 // the lifted tab carries that group's underline so it reads as a
-                // member-to-be. Its own ::after (independent of wv-grouped-tab so
-                // it doesn't disturb the dragged tab's real group state).
-                "#tab-bar-container .tab.wv-drag-join-preview::after {",
+                // member-to-be. Keyed on a DATA ATTRIBUTE (not a class): React
+                // rewrites className on every re-render and would strip a class
+                // mid-drag; it leaves data-* + inline style untouched.
+                "#tab-bar-container .tab[data-wv-drag-join]::after {",
                 "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
                 "  left: -4px; right: 0; border-radius: 1px;",
                 "  background: var(--wv-group-color, #4f7ce0);",
@@ -2013,10 +2014,10 @@ class _TabGroupsMixin {
                     if (res.joinGroupId) {
                         const g = this._tabGroupsGet().find((x: any) => x.id === res.joinGroupId);
                         const hex = g ? this._tabGroupColorHex(g.color) : "";
-                        geom.draggedEl.classList.add("wv-drag-join-preview");
+                        geom.draggedEl.setAttribute("data-wv-drag-join", "1");
                         if (hex) geom.draggedEl.style.setProperty("--wv-group-color", hex);
                     } else {
-                        geom.draggedEl.classList.remove("wv-drag-join-preview");
+                        geom.draggedEl.removeAttribute("data-wv-drag-join");
                         geom.draggedEl.style.removeProperty("--wv-group-color");
                     }
                 } catch (er) {}
@@ -2060,7 +2061,7 @@ class _TabGroupsMixin {
                     try {
                         const s = geom.draggedEl.style;
                         s.transform = ""; s.transition = ""; s.zIndex = ""; s.position = ""; s.pointerEvents = "";
-                        geom.draggedEl.classList.remove("wv-drag-join-preview");
+                        geom.draggedEl.removeAttribute("data-wv-drag-join");
                         s.removeProperty("--wv-group-color");
                     } catch (er) {}
                 }
@@ -2325,7 +2326,13 @@ class _TabGroupsMixin {
             for (let j = 1; j < nonMembers.length; j++) {
                 const t = Z_Tabs._tabs.find((x: any) => x && x.id === nonMembers[j]);
                 const k = t && (this as any)._tabPinKey(t);
-                if (k && (this as any)._pinnedTabsHas(k.libraryID, k.itemKey)) min = j + 1;
+                const pinned = !!(k && (this as any)._pinnedTabsHas(k.libraryID, k.itemKey));
+                // Only LOOSE pinned tabs form the leftmost boundary a moving group
+                // can't cross. A GROUPED pinned tab (pinned-in-group is allowed)
+                // travels with its own group, so it must NOT clamp another group's
+                // move — that was blocking a group from being reordered before a
+                // group containing a pinned member.
+                if (pinned && !this._wvTabGroupStamp(t)) min = j + 1;
             }
         } catch (e) {}
         return min;

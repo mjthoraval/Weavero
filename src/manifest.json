@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Weavero",
-  "version": "0.15.3-dev.42",
+  "version": "0.15.3-dev.45",
   "description": "A Zotero plugin with filters, clickable links, bookmarks, tabs management and other improvements.",
   "author": "mjthoraval",
   "homepage_url": "https://github.com/mjthoraval/Weavero",

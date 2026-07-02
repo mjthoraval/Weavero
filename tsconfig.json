@@ -37,6 +37,8 @@
     ".scaffold",
     "build",
     "typings",
-    "docs"
+    "docs",
+    // Paste-into-console scripts (top-level await/return) — not modules.
+    "test/restart"
   ]
 }

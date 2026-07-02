@@ -4601,7 +4601,9 @@ class _ReaderMixin {
 
             // Inherit the window's SHARED display state (sidebar open/width) so a
             // newly-realized tab matches the window's other tabs — like the main
-            // window, where all reader tabs share the sidebar.
+            // window, where all reader tabs share the sidebar. Refresh from the
+            // active tab's LIVE state first so a just-toggled sidebar carries over.
+            try { this._wvWTCaptureSharedDisplay(win); } catch (e) {}
             const _sh: any = (win._wvWT && win._wvWT.shared) || {};
             const _sbOpen = (typeof _sh.sidebarOpen === "boolean") ? _sh.sidebarOpen : false;
             const _sbWidth = (typeof _sh.sidebarWidth === "number") ? _sh.sidebarWidth : 240;
@@ -4884,7 +4886,9 @@ class _ReaderMixin {
             if (!vbox) return Promise.resolve(false);
             // Inherit the window's SHARED display state (sidebar open/width) so a
             // newly-realized tab matches the window's other tabs — like the main
-            // window, where all reader tabs share the sidebar.
+            // window, where all reader tabs share the sidebar. Refresh from the
+            // active tab's LIVE state first so a just-toggled sidebar carries over.
+            try { this._wvWTCaptureSharedDisplay(win); } catch (e) {}
             const _sh: any = (win._wvWT && win._wvWT.shared) || {};
             const _sbOpen = (typeof _sh.sidebarOpen === "boolean") ? _sh.sidebarOpen : false;
             const _sbWidth = (typeof _sh.sidebarWidth === "number") ? _sh.sidebarWidth : 240;
@@ -5189,6 +5193,28 @@ class _ReaderMixin {
 
     /** Switch the active tab: collapse every reader browser except the
      *  target, update the window title, and focus the active reader. */
+    /** The reader's LIVE sidebar state. The chrome instance's `_sidebarOpen`/
+     *  `_sidebarWidth` are only stamped at realize time and go stale the moment
+     *  the user toggles the sidebar in the UI (the toggle updates the CONTENT
+     *  reader's `_state`, not the chrome property). So read the content state
+     *  (`_internalReader._state`) and fall back to the stamped values only when
+     *  the reader isn't loaded yet. */
+    _wvWTReaderSidebar(r: any): { open?: boolean; width?: number } {
+        try {
+            const s = r && r._internalReader && r._internalReader._state;
+            if (s) {
+                return {
+                    open: (typeof s.sidebarOpen === "boolean") ? s.sidebarOpen : undefined,
+                    width: (typeof s.sidebarWidth === "number") ? s.sidebarWidth : undefined,
+                };
+            }
+        } catch (e) {}
+        return {
+            open: (r && typeof r._sidebarOpen === "boolean") ? r._sidebarOpen : undefined,
+            width: (r && typeof r._sidebarWidth === "number") ? r._sidebarWidth : undefined,
+        };
+    }
+
     /** Capture the currently-active reader tab's sidebar state into the window's
      *  SHARED state (so switching away remembers any change the user made). */
     _wvWTCaptureSharedDisplay(win: any) {
@@ -5199,8 +5225,9 @@ class _ReaderMixin {
             const r = cur && cur.reader;
             if (!r) return;
             st.shared = st.shared || {};
-            if (typeof r._sidebarOpen === "boolean") st.shared.sidebarOpen = r._sidebarOpen;
-            if (typeof r._sidebarWidth === "number" && r._sidebarWidth > 0) st.shared.sidebarWidth = r._sidebarWidth;
+            const sb = this._wvWTReaderSidebar(r);
+            if (typeof sb.open === "boolean") st.shared.sidebarOpen = sb.open;
+            if (typeof sb.width === "number" && sb.width > 0) st.shared.sidebarWidth = sb.width;
         } catch (e) {}
     }
 
@@ -5212,11 +5239,12 @@ class _ReaderMixin {
             const s = st && st.shared;
             const r = tab && tab.reader;
             if (!s || !r) return;
-            if (typeof s.sidebarOpen === "boolean" && r._sidebarOpen !== s.sidebarOpen && typeof r.toggleSidebar === "function") {
-                r.toggleSidebar(s.sidebarOpen);
+            const sb = this._wvWTReaderSidebar(r);
+            if (typeof s.sidebarOpen === "boolean" && sb.open !== s.sidebarOpen && typeof r.toggleSidebar === "function") {
+                try { r.toggleSidebar(s.sidebarOpen); } catch (e) {}
             }
-            if (typeof s.sidebarWidth === "number" && s.sidebarWidth > 0 && r._sidebarWidth !== s.sidebarWidth && typeof r.setSidebarWidth === "function") {
-                r.setSidebarWidth(s.sidebarWidth);
+            if (typeof s.sidebarWidth === "number" && s.sidebarWidth > 0 && sb.width !== s.sidebarWidth && typeof r.setSidebarWidth === "function") {
+                try { r.setSidebarWidth(s.sidebarWidth); } catch (e) {}
             }
         } catch (e) {}
     }

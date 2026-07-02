@@ -3361,6 +3361,8 @@ class _TabGroupsMixin {
                 });
                 pop.appendChild(mi);
             };
+            mk("Rename Group…", (p: any) => p._wvTabGroupPromptRename(win, groupID));
+            pop.appendChild(doc.createXULElement("menuseparator"));
             mk("Open Group in This Window", (p: any) => p._wvTabGroupOpenInWindow(win, groupID));
             mk("Open Group in New Window", (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
             pop.appendChild(doc.createXULElement("menuseparator"));
@@ -3368,6 +3370,23 @@ class _TabGroupsMixin {
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (er) { Zotero.debug("[Weavero] _wvTabsMenuGroupContext err: " + er); }
+    }
+
+    /** Prompt for a new name and rename a tab group. Used by the list-all-tabs
+     *  popup group context menu — a modal prompt works for open, saved, and
+     *  other-window groups alike (no live anchor node needed, unlike the chip
+     *  editor _wvShowTabGroupEditor). */
+    _wvTabGroupPromptRename(win: any, groupID: any) {
+        try {
+            const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            if (!g) return;
+            const out = { value: g.name || "" };
+            const ok = Services.prompt.prompt(
+                win, "Rename Tab Group", "Group name:", out, null, { value: false });
+            if (!ok) return;
+            this._tabGroupUpdate(groupID, { name: (out.value || "").trim() });
+            this._wvTabGroupApplyEverywhere();
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupPromptRename err: " + e); }
     }
 
     /** Firefox-style nesting of the tabs-menu TAB ROWS: member tabs are

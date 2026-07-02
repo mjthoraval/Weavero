@@ -521,7 +521,16 @@ class _TabGroupsMixin {
             // item stays OUT. Single-window: only claim into a group whose home is
             // THIS window (or one with no stamped tab anywhere yet, i.e. freshly
             // created here).
-            {
+            // SKIPPED during startup restore: stamps round-trip via the session,
+            // so restored tabs arrive already stamped — but window restore order
+            // is arbitrary, and until a group's home window has its stamps back,
+            // `_wvTabGroupHomeWin` is null and the home guard below can't hold.
+            // Claiming in that gap grabbed a DUPLICATE copy of a member item
+            // open ungrouped in another window (restart-protocol run 1: main1's
+            // copy of an RT-B member got stamped into main2's group). The
+            // post-restore re-apply (index.ts, after the guard lifts) runs the
+            // claim with every window's stamps in place.
+            if (!(this as any)._wvTabGroupRestoreGuard) {
                 const claimedByGroup = new Map<string, Set<string>>();
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];

@@ -1918,6 +1918,10 @@ class WeaveroPlugin {
         // tab's OWNING window (upstream hardcodes getMainWindow — wedges the
         // tab at "note-loading" when another main window has focus).
         try { (this as any)._wvPatchNotesOpenForMultiWindow(); } catch (e) {}
+        // Focused-tab-first: queue reader-WINDOW opens (each renders a PDF on
+        // open) until the focused window's tab has painted. Must be installed
+        // before Zotero.Reader.init's uiReady reopen loop fires.
+        try { (this as any)._wvHoldReaderWindowOpens(); } catch (e) {}
         // Register pref defaults FIRST so native settings-pane binding (and our
         // own getters) see the right initial values.
         try { this._wvRegisterDefaultPrefs(); } catch (e) {}
@@ -2892,6 +2896,8 @@ class WeaveroPlugin {
                                         this._applyTabGroups(w);
                                     }
                                 } catch (e) {}
+                                // Safety: any still-held reader-window opens go now.
+                                try { (this as any)._wvReleaseReaderOpens("guard lift"); } catch (e) {}
                                 // Late verify-and-repair for managed windows (other
                                 // plugins mutate tabs during window load — see the
                                 // method comment; runs after they're done).

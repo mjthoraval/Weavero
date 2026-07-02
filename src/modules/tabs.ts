@@ -5153,6 +5153,57 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] Reader.open multi-window patch err: " + e); }
     }
 
+    /** FOCUSED-TAB-FIRST content loading: a reader WINDOW cannot open without
+     *  rendering its native PDF, so every reopening reader window competes
+     *  with the focused window's own tab for CPU. Wrap `Zotero.Reader.open`
+     *  during startup: `openInWindow` calls (Zotero's own reopen loop AND
+     *  Weavero's preemptive one) queue until the focused window's tab has
+     *  loaded — except a window the USER was focused in, which opens
+     *  immediately. Released by the shepherd (focused tab loaded / nothing to
+     *  load), the guard lift, or an 8 s backstop. */
+    _wvHoldReaderWindowOpens() {
+        try {
+            const R: any = (Zotero as any).Reader;
+            if (!R || typeof R.open !== "function" || R._wvHoldWrapped) return;
+            this._wvReaderOpenQueue = [];
+            this._wvReaderOpenHold = true;
+            const self = this;
+            const orig = R.open;
+            R.open = function (itemID: any, _location: any, opts: any) {
+                try {
+                    const lp: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
+                    if (lp._wvReaderOpenHold && opts && opts.openInWindow) {
+                        const f = lp._wvBootFocusedEntry;
+                        const isFocusedReader = !!(f && f.kind === "reader" && f.itemID === itemID);
+                        if (!isFocusedReader) {
+                            lp._wvTrace("hold: queued reader-window open for item " + itemID);
+                            const args = arguments;
+                            const ctx = this;
+                            return new Promise((resolve) => lp._wvReaderOpenQueue.push(() => resolve(orig.apply(ctx, args))));
+                        }
+                    }
+                } catch (e) {}
+                return orig.apply(this, arguments);
+            };
+            R._wvHoldWrapped = true;
+            // Hard backstop — the hold must never outlive startup.
+            const w0: any = Zotero.getMainWindow();
+            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                () => { try { this._wvReleaseReaderOpens("timeout backstop"); } catch (e) {} }, 8000);
+        } catch (e) { Zotero.debug("[Weavero] _wvHoldReaderWindowOpens err: " + e); }
+    }
+
+    _wvReleaseReaderOpens(reason: string) {
+        try {
+            if (!this._wvReaderOpenHold) return;
+            this._wvReaderOpenHold = false;
+            const q = this._wvReaderOpenQueue || [];
+            this._wvReaderOpenQueue = [];
+            if (q.length) this._wvTrace("hold released (" + reason + "): opening " + q.length + " reader window(s)");
+            for (const run of q) { try { run(); } catch (e) {} }
+        } catch (e) {}
+    }
+
     /** DEFERRED tab activation for BACKGROUND windows: restoring a window's
      *  saved selection immediately starts loading its content (PDF render),
      *  so N windows restore = N simultaneous loads competing with the one the
@@ -5255,6 +5306,24 @@ class _TabsMixin {
                 try {
                     const target = findTarget();
                     if (target) {
+                        // Release the queued reader-window opens as soon as the
+                        // focused window's selected tab is LOADED (no `-loading`/
+                        // `-unloaded` suffix) or has nothing to load (library tab
+                        // or a reader window, whose native is its content).
+                        try {
+                            if ((this as any)._wvReaderOpenHold) {
+                                const Zt = (target as any).Zotero_Tabs;
+                                if (!Zt) {
+                                    (this as any)._wvReleaseReaderOpens("focused reader window open");
+                                } else {
+                                    const sel = Zt._tabs.find((t: any) => t.id === Zt.selectedID);
+                                    const ty = String((sel && sel.type) || "");
+                                    if (ty === "library" || !(ty.endsWith("-loading") || ty.endsWith("-unloaded"))) {
+                                        (this as any)._wvReleaseReaderOpens("focused tab " + (ty === "library" ? "is library" : "loaded"));
+                                    }
+                                }
+                            }
+                        } catch (e) {}
                         const fw: any = Services.focus.activeWindow;
                         let oursElsewhere = false;
                         try {

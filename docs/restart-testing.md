@@ -26,7 +26,17 @@ scripts.
 - The named tab-sessions store is byte-identical (the active session must NOT
   absorb a half-restored workspace).
 - Companion plugins (Better BibTeX, Better Notes) are active and error-free
-  after the restart.
+  after the restart. (Better Notes recreates note tabs on window load —
+  Weavero's managed-window verify-and-repair covers the case where that
+  recreation fails in a secondary window.)
+- Reader page index per loaded tab (asserts Zotero's per-item view state
+  end-to-end), each main window's selected collection and item-pane
+  width/collapsed state, and window maximized state.
+- **Crash restore**: kill the process (no clean quit) and verify how much the
+  debounced saves recover — expected: everything up to the last ~1 s of
+  changes (windows.json debounce is 400 ms; Zotero's session save is
+  debounced 5 min but written on tab churn by plugins' `Session.debounceSave`
+  calls, so anchor tabs may lose the last few minutes after a hard crash).
 
 ## Running a cycle
 

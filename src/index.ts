@@ -2865,6 +2865,10 @@ class WeaveroPlugin {
                                         this._applyTabGroups(w);
                                     }
                                 } catch (e) {}
+                                // Late verify-and-repair for managed windows (other
+                                // plugins mutate tabs during window load — see the
+                                // method comment; runs after they're done).
+                                try { (this as any)._wvReconcileManagedWindows(); } catch (e) {}
                                 // Land the user where they left off (window focus).
                                 try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {}
                                 return;

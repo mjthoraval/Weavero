@@ -4767,6 +4767,81 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvReconcileAnchorSessionTabs err: " + e); }
     }
 
+    /** Hide the title-bar row BEFORE first paint when the compact-title-bar
+     *  feature is on — otherwise every restored window flashes the full title
+     *  bar/menubar until the (late) compact setup collapses it. Injects only
+     *  the hiding CSS + attribute; the full setup (button-box moves, Alt
+     *  wiring) still runs later and is idempotent about these. */
+    _wvEarlyHideTitleBar(w: any) {
+        try {
+            const doc = w && w.document;
+            if (!doc || !doc.documentElement) return;
+            const type = doc.documentElement.getAttribute("windowtype");
+            const HTML_NS = "http://www.w3.org/1999/xhtml";
+            if (type === "navigator:browser" && (this as any)._getCompactTitleBarMain && (this as any)._getCompactTitleBarMain()) {
+                if (!doc.getElementById("wv-early-compact-css")) {
+                    const st = doc.createElementNS(HTML_NS, "style");
+                    st.id = "wv-early-compact-css";
+                    st.textContent = "#toolbar-menubar[wv-compact-hidden='true']{height:0!important;min-height:0!important;overflow:hidden!important}"
+                        + "#titlebar:has(#toolbar-menubar[wv-compact-hidden='true']){height:0!important;min-height:0!important;overflow:hidden!important;border-width:0!important}";
+                    doc.documentElement.appendChild(st);
+                }
+                const mb = doc.getElementById("toolbar-menubar");
+                if (mb) mb.setAttribute("wv-compact-hidden", "true");
+                this._wvTrace && this._wvTrace("early: main-window title bar hidden at DOMContentLoaded");
+            }
+            else if (type === "zotero:reader" && (this as any)._getCompactTitleBarReader && (this as any)._getCompactTitleBarReader()) {
+                try { (this as any)._ensureReaderCompactMenubarStyles(doc); } catch (e) {}
+                const mb = doc.querySelector("menubar");
+                if (mb) mb.setAttribute("wv-compact-hidden", "true");
+                this._wvTrace && this._wvTrace("early: reader-window menubar hidden at DOMContentLoaded");
+            }
+        } catch (e) {}
+    }
+
+    /** VERIFY-AND-REPAIR for MANAGED main windows, against the boot-time copy
+     *  of windows.json. Runs at guard-lift (late) because other plugins mutate
+     *  tabs during window load — observed live: Better Notes'
+     *  `updateExistingNoteTabs` closes every note tab to re-open it through
+     *  `Zotero.Notes.open`, which targets `Zotero.getMainWindow()` and can
+     *  throw for a secondary window → BN swallows the error and the note tab
+     *  is simply GONE (run 13 lost a grouped note this way). Group stamps ride
+     *  along in tab.data.wvGroupId, so re-adding restores membership too. */
+    async _wvReconcileManagedWindows() {
+        try {
+            if (this._wvManagedReconciled) return;
+            this._wvManagedReconciled = true;
+            const doc = (this as any)._wvBootWindowStoreDoc;
+            const entries = ((doc && doc.windows) || []).filter((g: any) => g && g.kind === "main-dev" && Array.isArray(g.tabs));
+            for (const entry of entries) {
+                const win: any = (Zotero.getMainWindows() || []).find((w: any) => w._wvManagedWindow
+                    && (entry.wvWinId == null || w._wvWindowId === entry.wvWinId));
+                if (!win || !win.Zotero_Tabs) continue;
+                const Z = win.Zotero_Tabs;
+                const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+                let added = 0;
+                for (let i = 0; i < entry.tabs.length; i++) {
+                    const st = entry.tabs[i];
+                    const iid = st && st.data && st.data.itemID;
+                    if (iid == null || live.has(iid)) continue;
+                    const base = String(st.type || "").replace(/-(unloaded|loading)$/, "");
+                    if (base !== "reader" && base !== "note") continue;
+                    try {
+                        await Zotero.Items.getAsync(iid);
+                        if (!Zotero.Items.exists(iid)) continue;
+                        Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: !!st.selected });
+                        live.add(iid);
+                        added++;
+                        (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") in managed window");
+                    } catch (e) {}
+                }
+                if (added) {
+                    try { (this as any)._wvTabGroupStabilize(win); (this as any)._applyTabGroups(win); } catch (e) {}
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvReconcileManagedWindows err: " + e); }
+    }
+
     /** Wire the restore hardening/tracing on main windows as EARLY as their
      *  DOM exists — including the boot-time anchor window, which loads while
      *  plugin startup is still in flight (both `onMainWindowLoad` and the

@@ -7560,8 +7560,11 @@ class _ReaderMixin {
                 const doc = text ? JSON.parse(text) : null;
                 if (doc && Array.isArray(doc.windows)) {
                     // Which window was focused at quit — re-focused once the
-                    // restore chain settles (see _wvRestoreFocusedWindow).
-                    try { this._wvBootFocusedEntry = doc.focused || null; } catch (e) {}
+                    // restore chain settles (see _wvRestoreFocusedWindow). Keep
+                    // the whole BOOT doc too: post-restore debounced saves
+                    // rewrite windows.json with the LIVE (possibly degraded)
+                    // state, so late repairs must diff against this copy.
+                    try { this._wvBootFocusedEntry = doc.focused || null; this._wvBootWindowStoreDoc = doc; } catch (e) {}
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
                         if (g && g.kind === "reader" && g.nativeItemID != null) {

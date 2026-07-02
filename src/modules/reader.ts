@@ -7391,6 +7391,8 @@ class _ReaderMixin {
     // session isn't saved by Zotero, so its extras (keyed off an absent
     // native) aren't restored.
 
+    /** RETIRED legacy per-reader-window store (v2). Kept only so an old file
+     *  can be deleted at startup; never read anymore. */
     _wvWTStorePath() {
         return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "reader-tab-windows.json");
     }
@@ -7425,6 +7427,15 @@ class _ReaderMixin {
         try {
             // st: nsIDOMChromeWindow windowState — 1 = maximized (restored as
             // such, on the right monitor); minimized saves as normal.
+            // A MINIMIZED window reports Windows' off-screen parking position
+            // (−32000, −32000) — capturing that and faithfully restoring it
+            // left a window invisible outside every monitor. Skip the
+            // coordinates in that case (keep size); restore will leave
+            // placement to the window manager.
+            if (w.windowState === 2 || w.screenX <= -30000 || w.screenY <= -30000) {
+                return { x: null, y: null, w: w.outerWidth, h: w.outerHeight,
+                    dpr: w.devicePixelRatio || 1, st: 3 };
+            }
             return { x: w.screenX, y: w.screenY, w: w.outerWidth, h: w.outerHeight,
                 dpr: w.devicePixelRatio || 1, st: w.windowState };
         } catch (e) { return null; }
@@ -7452,6 +7463,9 @@ class _ReaderMixin {
     _wvApplyWindowGeom(w: any, geom: any) {
         try {
             if (!w || !geom || geom.x == null) return;
+            // Never move a window to off-screen parking coordinates (stale
+            // stores from before the capture-side guard may still hold them).
+            if (geom.x <= -30000 || geom.y <= -30000) return;
             const capDpr = geom.dpr || 1;
             const targetDevX = geom.x * capDpr;
             const targetDevY = geom.y * capDpr;
@@ -7600,16 +7614,12 @@ class _ReaderMixin {
                     this._wvOrphanReaderItemIDs = orphanIDs;
                 }
             } catch (e) { /* missing/unreadable → empty */ }
-            // Migration: fall back to the legacy reader-tab-windows.json (v2 map)
-            // if the unified store has no reader entries yet. It gets folded into
-            // the unified window store (windows.json) on the next save.
-            if (!Object.keys(map).length) {
-                try {
-                    const oldText: any = await Zotero.File.getContentsAsync(this._wvWTStorePath());
-                    const oldDoc = JSON.parse(oldText);
-                    if (oldDoc && oldDoc.windows && typeof oldDoc.windows === "object") map = oldDoc.windows;
-                } catch (e) { /* no legacy file → empty */ }
-            }
+            // (The legacy reader-tab-windows.json fallback is GONE: months-stale
+            // v2 entries got resurrected whenever the unified store momentarily
+            // had no reader entries — a plugin reload opened a June-era window
+            // with long-closed items. The unified store has been authoritative
+            // since v0.14.7; anyone upgrading across that boundary loses only
+            // reader-window extras from the final pre-upgrade session.)
             this._wvWTRestoreMap = map;
             // Active only while there's actually something to consume — an empty
             // map used to hold the flag (and the group guard behind it) for the

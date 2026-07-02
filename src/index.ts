@@ -2793,7 +2793,15 @@ class WeaveroPlugin {
                                 (this as any)._wvTabGroupRestoreGuard = false;
                                 try {
                                     const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
-                                    for (const w of wins) this._applyTabGroups(w);
+                                    for (const w of wins) {
+                                        // Re-cluster any group whose members were
+                                        // restored non-contiguously (session order can
+                                        // wedge a loose tab into a group's run) BEFORE
+                                        // chipping — otherwise a stamped member renders
+                                        // orphaned from its group.
+                                        try { (this as any)._wvTabGroupStabilize(w); } catch (e) {}
+                                        this._applyTabGroups(w);
+                                    }
                                 } catch (e) {}
                                 return;
                             }

@@ -581,11 +581,27 @@ class _TabGroupsMixin {
                     if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
                     continue;
                 }
-                // NOTE: `g.members` is the persistent item-key snapshot, kept
-                // intact (NOT re-synced from open tabs here) so a member that
-                // hasn't restored yet isn't dropped before it reappears — the
-                // claim pass re-stamps it when it does. Live membership is the
-                // stamp; members is only the snapshot the claim pass reads.
+                // SHADOW SYNC (fixes "broken groups"): for a LIVE group settled in
+                // its HOME window, prune `g.members` down to the OPEN members. The
+                // shadow used to be kept forever, so the claim pass would silently
+                // re-absorb any CLOSED member the next time its item was reopened
+                // (an item unexpectedly joining an old group; a wrong count). It's
+                // guarded so restore isn't disturbed: SAVED groups are skipped above
+                // (they keep their snapshot), and `reopening` / `_wvTabGroupRestoreGuard`
+                // prevent pruning while tabs are still coming back (a member not yet
+                // restored isn't dropped before the claim pass re-stamps it).
+                if (!reopening && !(this as any)._wvTabGroupRestoreGuard
+                        && this._wvTabGroupHomeWin(g.id) === win) {
+                    const openKeys: any[] = [];
+                    for (const om of openMembers) {
+                        const k = (this as any)._tabPinKey(om.tab);
+                        if (k) openKeys.push({ libraryID: k.libraryID, itemKey: k.itemKey });
+                    }
+                    const cur = g.members || [];
+                    const same = cur.length === openKeys.length
+                        && openKeys.every((ok: any) => cur.some((m: any) => m.libraryID === ok.libraryID && m.itemKey === ok.itemKey));
+                    if (!same) { g.members = openKeys; prefDirty = true; }
+                }
 
                 // Chip + member classes.
                 const chipID = "wv-tgchip-" + g.id;

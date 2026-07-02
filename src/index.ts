@@ -2831,6 +2831,7 @@ class WeaveroPlugin {
                         const win: any = Zotero.getMainWindow();
                         const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
                         let waited = 0;
+                        let structLogged = false;
                         const tick = () => {
                             waited += 1000;
                             const active = !!(this as any)._wvWTRestoreActive;
@@ -2838,6 +2839,17 @@ class WeaveroPlugin {
                             // (their restoreState carries group stamps).
                             const devBusy = !!(this._wvPendingDevWindow
                                 || (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length));
+                            // The user-visible milestone: every window and group
+                            // exists (tabs may still be loading their content).
+                            if (!active && !devBusy && !structLogged) {
+                                structLogged = true;
+                                try {
+                                    const nw = (Zotero.getMainWindows() || []).length;
+                                    let nr = 0; const en2 = Services.wm.getEnumerator("zotero:reader");
+                                    while (en2.hasMoreElements()) { en2.getNext(); nr++; }
+                                    (this as any)._wvTrace("restore: STRUCTURE READY — " + nw + " main + " + nr + " reader window(s), all groups placed; tab content continues loading");
+                                } catch (e) {}
+                            }
                             if ((!active && !devBusy && waited >= 5000) || waited >= 35000) {
                                 (this as any)._wvTabGroupRestoreGuard = false;
                                 try { (this as any)._wvTrace("restore: group guard lifted after " + waited + "ms (readerRestoreActive=" + active + ")"); } catch (e) {}

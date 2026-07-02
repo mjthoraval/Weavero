@@ -4773,7 +4773,7 @@ class _TabsMixin {
      *  late init loop can miss it, leaving its native session restore
      *  unhardened). Registered synchronously from init(); the wm listener
      *  covers windows opened later, the immediate sweep covers ones already
-     *  open in any load state. */
+     *  open in any load state. Also hides the title bar pre-paint (see above). */
     _wvWireEarlyRestoreTracing() {
         try {
             if (this._wvEarlyRestoreListener) return;
@@ -4782,16 +4782,18 @@ class _TabsMixin {
                 try { if (w && w.Zotero_Tabs) self._wvWireRestoreTracing(w); return !!(w && w.Zotero_Tabs); } catch (e) { return false; }
             };
             const wireWhenReady = (w: any) => {
+                try { self._wvEarlyHideTitleBar(w); } catch (e) {}
                 if (tryWire(w)) return;
                 const onDCL = () => {
                     try { w.removeEventListener("DOMContentLoaded", onDCL); } catch (e) {}
+                    try { self._wvEarlyHideTitleBar(w); } catch (e) {}
                     try {
                         if (String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1) tryWire(w);
                     } catch (e) {}
                 };
                 try { w.addEventListener("DOMContentLoaded", onDCL); } catch (e) {}
             };
-            const en = Services.wm.getEnumerator("navigator:browser");
+            const en = Services.wm.getEnumerator(null);
             while (en.hasMoreElements()) wireWhenReady(en.getNext());
             const listener: any = {
                 onOpenWindow(xul: any) {
@@ -4893,6 +4895,21 @@ class _TabsMixin {
                 } catch (e) {}
                 return origClose(ids);
             };
+            // Tab CONTENT loads (the slow phase, distinct from structure
+            // restore): markAsLoaded fires when a lazy tab's load hook
+            // resolves — trace each so the timeline separates "windows +
+            // groups present" from "tab content loaded".
+            if (typeof Z.markAsLoaded === "function") {
+                const origMark = Z.markAsLoaded.bind(Z);
+                Z.markAsLoaded = function (id: any) {
+                    const r = origMark(id);
+                    try {
+                        const t = Z._tabs.find((x: any) => x.id === id);
+                        self._wvTrace("tab-loaded[" + name() + "]: " + (t ? t.type : id));
+                    } catch (e) {}
+                    return r;
+                };
+            }
             // Stuck-loading WATCHDOG: if a selected tab still shows `-loading`
             // 6 s after its select, the load hook died silently (e.g. the
             // Notes.open wrong-window bug, patched separately, or any future

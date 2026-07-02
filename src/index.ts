@@ -2785,10 +2785,24 @@ class WeaveroPlugin {
                 // Grace for Zotero's native reader-window reopen, then recreate
                 // any saved reader window it did NOT bring back (extras would
                 // otherwise sit unclaimed in the restore map and be lost).
+                // ADAPTIVE: proceed once the open reader-window count is stable
+                // for 2 ticks (≥1.5 s) — or the restore map is already fully
+                // consumed — instead of a flat 6 s; 6 s stays as the cap.
                 .then(() => new Promise((res) => {
                     try {
                         const w: any = Zotero.getMainWindow();
-                        ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(res, 6000);
+                        const setT = ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout);
+                        let last = -1, stable = 0, waited = 0;
+                        const tick = () => {
+                            waited += 500;
+                            let n = 0;
+                            try { const en = Services.wm.getEnumerator("zotero:reader"); while (en.hasMoreElements()) { en.getNext(); n++; } } catch (e) {}
+                            if (n === last) stable++; else { stable = 0; last = n; }
+                            const mapDone = !(this as any)._wvWTRestoreActive;
+                            if (mapDone || (stable >= 2 && waited >= 1500) || waited >= 6000) { res(null); return; }
+                            setT(tick, 500);
+                        };
+                        setT(tick, 500);
                     } catch (e) { res(null); }
                 }))
                 .then(() => { try { (this as any)._wvTrace("restore: unclaimed reader windows check"); return (this as any)._wvWindowStoreRestoreUnclaimedReaderWindows(); } catch (e) { return null; } })
@@ -2804,9 +2818,10 @@ class WeaveroPlugin {
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 // Lift the startup group-deletion guard once reader-window restore
                 // has settled, then re-apply so any genuinely-empty group is
-                // cleaned. Wait until `_wvWTRestoreActive` is no longer set (reader
-                // restore done) past an 8s floor, with a 35s hard backstop so the
-                // guard never sticks (e.g. when no reader windows restore at all).
+                // cleaned. `_wvWTRestoreActive` is now consumption-based (flips
+                // off when the last store entry is applied), so the floor only
+                // needs to cover the managed-window restore's retry pass (~4 s)
+                // — was 8 s against a 30 s expiry timer. 35 s backstop unchanged.
                 .then(() => {
                     try {
                         const win: any = Zotero.getMainWindow();
@@ -2815,7 +2830,11 @@ class WeaveroPlugin {
                         const tick = () => {
                             waited += 1000;
                             const active = !!(this as any)._wvWTRestoreActive;
-                            if ((!active && waited >= 8000) || waited >= 35000) {
+                            // Managed dev windows must be spawned + initialized too
+                            // (their restoreState carries group stamps).
+                            const devBusy = !!(this._wvPendingDevWindow
+                                || (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length));
+                            if ((!active && !devBusy && waited >= 5000) || waited >= 35000) {
                                 (this as any)._wvTabGroupRestoreGuard = false;
                                 try { (this as any)._wvTrace("restore: group guard lifted after " + waited + "ms (readerRestoreActive=" + active + ")"); } catch (e) {}
                                 try {

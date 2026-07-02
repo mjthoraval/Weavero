@@ -7535,9 +7535,16 @@ class _ReaderMixin {
                 } catch (e) { /* no legacy file → empty */ }
             }
             this._wvWTRestoreMap = map;
-            this._wvWTRestoreActive = true;
+            // Active only while there's actually something to consume — an empty
+            // map used to hold the flag (and the group guard behind it) for the
+            // full 30 s expiry even with nothing to restore.
+            const n = Object.keys(map).length;
+            this._wvWTRestoreActive = n > 0;
+            if (!n) { try { (this as any)._wvTrace && (this as any)._wvTrace("restore: reader map empty — nothing to restore"); } catch (e) {} }
             // Close the restore window once startup settles, so a fresh open of
             // a previously-multi-tab item mid-session doesn't re-add old tabs.
+            // (Backstop — consumption clears the flag as entries are used, see
+            // _wvWTRestoreMaybeDone.)
             try {
                 const win = Zotero.getMainWindow();
                 const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
@@ -7546,6 +7553,19 @@ class _ReaderMixin {
             return map;
         })();
         return this._wvWTRestoreLoadPromise;
+    }
+
+    /** Clear the restore-active flag as soon as every map entry is consumed —
+     *  the group guard (index.ts) and any settle logic key off this, so an
+     *  accurate flag is what turns the fixed 30 s expiry into an event. */
+    _wvWTRestoreMaybeDone() {
+        try {
+            if (!this._wvWTRestoreActive) return;
+            if (this._wvWTRestoreMap && Object.keys(this._wvWTRestoreMap).length === 0) {
+                this._wvWTRestoreActive = false;
+                try { (this as any)._wvTrace && (this as any)._wvTrace("restore: all reader entries consumed"); } catch (e) {}
+            }
+        } catch (e) {}
     }
 
     /** When a reader window adopts its native tab during the startup restore
@@ -7644,6 +7664,10 @@ class _ReaderMixin {
                     // Reader-window group chips: the tabs were just stamped from the
                     // saved wvGroupId, so render this window's group chips/regions.
                     try { if ((this as any)._applyTabGroupsReader) (this as any)._applyTabGroupsReader(win); } catch (e) {}
+                    // This window's entry is fully applied (extras mounted, stamps
+                    // set) — if it was the last one, flip restore-active OFF now
+                    // instead of waiting out the 30 s expiry backstop.
+                    try { this._wvWTRestoreMaybeDone(); } catch (e) {}
                 } catch (e) { Zotero.debug("[Weavero] _wvWTMaybeRestore err: " + e); }
             })();
         } catch (e) { Zotero.debug("[Weavero] _wvWTMaybeRestore outer err: " + e); }
@@ -7689,16 +7713,19 @@ class _ReaderMixin {
             const ids = Object.keys(this._wvWTRestoreMap || {})
                 .map((k) => Number(k))
                 .filter((id) => !orphanHeads.has(id));
+            const consume = (id: any) => { try { delete this._wvWTRestoreMap[id]; } catch (e) {} };
             for (const itemID of ids) {
                 try {
-                    if (!Zotero.Items.exists(itemID)) continue;
-                    if (this._wvReaderWindowHostingItem(itemID)) continue;   // claimed after all
+                    if (!Zotero.Items.exists(itemID)) { consume(itemID); continue; }   // gone for good
+                    if (this._wvReaderWindowHostingItem(itemID)) { consume(itemID); continue; }   // claimed after all
                     const it: any = Zotero.Items.get(itemID);
-                    if (it && typeof it.isNote === "function" && it.isNote()) continue; // note-heads persist as orphans
+                    if (it && typeof it.isNote === "function" && it.isNote()) { consume(itemID); continue; } // note-heads persist as orphans
                     try { (this as any)._wvTrace && (this as any)._wvTrace("restore: unclaimed reader entry for item " + itemID + " — reopening window"); } catch (e) {}
                     await (Zotero as any).Reader.open(itemID, null, { openInWindow: true });
                 } catch (e) { Zotero.debug("[Weavero] unclaimed reader restore err (" + itemID + "): " + e); }
             }
+            // Entries consumed by skipping above may have been the last ones.
+            try { this._wvWTRestoreMaybeDone(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRestoreUnclaimedReaderWindows err: " + e); }
     }
 
@@ -7710,7 +7737,7 @@ class _ReaderMixin {
             const ids = (this._wvOrphanReaderItemIDs || []).slice();
             for (const itemID of ids) {
                 try {
-                    if (!Zotero.Items.exists(itemID)) continue;
+                    if (!Zotero.Items.exists(itemID)) { try { delete this._wvWTRestoreMap[itemID]; this._wvWTRestoreMaybeDone(); } catch (e) {} continue; }
                     const item: any = Zotero.Items.get(itemID);
                     // A NOTE head means a note-only / note-first deck window (e.g.
                     // one opened via noteOpenInDeckWindow). Zotero.Reader.open on a
@@ -7718,7 +7745,7 @@ class _ReaderMixin {
                     // window (anchor → mount note → drop anchor) and mount the
                     // rest of its tabs.
                     if (item && typeof item.isNote === "function" && item.isNote()) {
-                        if (this._wvReaderWindowHostingItem(itemID)) continue;   // already there (reload)
+                        if (this._wvReaderWindowHostingItem(itemID)) { try { delete this._wvWTRestoreMap[itemID]; this._wvWTRestoreMaybeDone(); } catch (e) {} continue; }   // already there (reload)
                         const win: any = await this._wvOpenNoteInDeckWindow(itemID, null);
                         if (win) {
                             const entry: any = this._wvWTRestoreMap && this._wvWTRestoreMap[itemID];
@@ -7751,10 +7778,13 @@ class _ReaderMixin {
                                 if (t) this._wvWTSwitch(win, t.id);
                             } catch (e) {}
                         }
+                        // Note-head entries are applied HERE (not via the adopt
+                        // path) — consume so the restore map can empty.
+                        try { delete this._wvWTRestoreMap[itemID]; this._wvWTRestoreMaybeDone(); } catch (e) {}
                         await new Promise((r) => setTimeout(r, 500));
                         continue;
                     }
-                    if (this._wvReaderWindowOpenForItem(itemID)) continue;   // already open (e.g. reload)
+                    if (this._wvReaderWindowOpenForItem(itemID)) { try { delete this._wvWTRestoreMap[itemID]; this._wvWTRestoreMaybeDone(); } catch (e) {} continue; }   // already open (e.g. reload)
                     (Zotero.Reader as any).open(itemID, null, { openInWindow: true, allowDuplicate: true });
                     // Space out window opens so each settles (and its restore runs)
                     // before the next.

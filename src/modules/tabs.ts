@@ -4446,6 +4446,37 @@ class _TabsMixin {
         return null;
     }
 
+    /** Wrap this window's `Zotero_Tabs.getState` so transient `-loading` tab
+     *  types serialize as their BASE type. Zotero flips a lazy tab to
+     *  `note-loading` / `reader-loading` while its load hook runs and only
+     *  renames it on completion — if the session is captured mid-load (or the
+     *  load hook stalls, as a background window's note tab can), the transient
+     *  type lands in session.json verbatim, and `restoreState` (which
+     *  dispatches on exact type names: library/reader/note) silently DROPS the
+     *  tab on the next startup. Observed as a lost selected note tab in the
+     *  restart-reliability protocol (work/restart-test/, run 1). Fixes BOTH
+     *  Zotero's native session capture (anchor window) and Weavero's own
+     *  managed-window capture below, which share getState. Idempotent. */
+    _wvPatchTabsGetState(win: any) {
+        try {
+            const Z = win && win.Zotero_Tabs;
+            if (!Z || Z._wvGetStatePatched) return;
+            const orig = Z.getState.bind(Z);
+            Z.getState = function () {
+                const state = orig();
+                try {
+                    for (const t of (state || [])) {
+                        if (t && typeof t.type === "string" && t.type.endsWith("-loading")) {
+                            t.type = t.type.replace(/-loading$/, "");
+                        }
+                    }
+                } catch (e) {}
+                return state;
+            };
+            Z._wvGetStatePatched = true;
+        } catch (e) { Zotero.debug("[Weavero] _wvPatchTabsGetState err: " + e); }
+    }
+
     /** Sync snapshot of every currently-open dev main window. Stores each
      *  window's full `Zotero_Tabs.getState()` (same shape Zotero's own pane
      *  session uses), so restore round-trips via `Zotero_Tabs.restoreState`.

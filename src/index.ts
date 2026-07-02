@@ -2840,6 +2840,12 @@ class WeaveroPlugin {
             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) (this as any)._wvWireReopenClosedShortcut(w);
         } catch (e) {}
+        // Session-save hardening: serialize transient `-loading` tab types as
+        // their base type so a mid-load tab isn't dropped on the next restore.
+        try {
+            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) (this as any)._wvPatchTabsGetState(w);
+        } catch (e) {}
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
         // see them, so wire a Window Mediator listener that catches
@@ -3585,6 +3591,8 @@ class WeaveroPlugin {
             // Ctrl+Shift+T → reopen last closed reader window / group (falls
             // through to Zotero's native tab-undo when Weavero's stack is empty).
             try { (this as any)._wvWireReopenClosedShortcut(_window); } catch (e) {}
+            // Session-save hardening (see startup pass): base types for -loading tabs.
+            try { (this as any)._wvPatchTabsGetState(_window); } catch (e) {}
             // Weavero managed window: a window spawned by the dev "New Main
             // Window" command (or by session-restore) is tagged `_wvManagedWindow`
             // — a Weavero-managed peer, as opposed to the untagged oldest

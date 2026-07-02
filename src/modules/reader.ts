@@ -7416,6 +7416,34 @@ class _ReaderMixin {
         return out;
     }
 
+    /** Window geometry for the store — restores multi-monitor placement
+     *  (screenX can be negative on a left-of-primary monitor). */
+    _wvWindowGeom(w: any) {
+        try {
+            return { x: w.screenX, y: w.screenY, w: w.outerWidth, h: w.outerHeight };
+        } catch (e) { return null; }
+    }
+
+    /** Reader-window sidebar snapshot (open + width) for the store — the
+     *  shared display state all the window's tabs inherit. */
+    _wvWTSidebarSnapshot(w: any) {
+        try {
+            this._wvWTCaptureSharedDisplay(w);
+            const sh = w._wvWT && w._wvWT.shared;
+            if (!sh) return null;
+            return { open: !!sh.sidebarOpen, width: (typeof sh.sidebarWidth === "number") ? sh.sidebarWidth : 240 };
+        } catch (e) { return null; }
+    }
+
+    /** Apply a persisted geometry to a window (multi-monitor placement). */
+    _wvApplyWindowGeom(w: any, geom: any) {
+        try {
+            if (!w || !geom || geom.x == null) return;
+            w.moveTo(geom.x, geom.y);
+            if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+        } catch (e) {}
+    }
+
     /** Store entry for ONE reader window (null when there's nothing to
      *  persist). Split out so a CLOSING window can be captured from its unload
      *  handler (closed-in-series quit merge — see _wvWindowStoreNoteClosingReaderWindow). */
@@ -7452,7 +7480,8 @@ class _ReaderMixin {
                     // this, the native always restores first and an extra that was
                     // BEFORE it (e.g. a note first, PDF second) lands after it.
                     const order = realTabs.map((t: any) => t.itemID);
-                    return { kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, nativeGrp: native.wvGroupId || null, order };
+                    return { kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, nativeGrp: native.wvGroupId || null, order,
+                        geom: this._wvWindowGeom(w), sb: this._wvWTSidebarSnapshot(w) };
                 }
                 else {
                     // ORPHAN window: the native tab was closed, so Zotero has no
@@ -7462,7 +7491,8 @@ class _ReaderMixin {
                     const tabs = realTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned, grp: t.wvGroupId || null }));
                     let activeIndex = realTabs.findIndex((t: any) => t.id === st.activeId);
                     if (activeIndex < 0) activeIndex = 0;
-                    return { kind: "reader-orphan", tabs, activeIndex };
+                    return { kind: "reader-orphan", tabs, activeIndex,
+                        geom: this._wvWindowGeom(w), sb: this._wvWTSidebarSnapshot(w) };
                 }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureReaderWindow err: " + e); }
@@ -7499,10 +7529,13 @@ class _ReaderMixin {
                 const text: any = await this._wvWindowStoreReadText();
                 const doc = text ? JSON.parse(text) : null;
                 if (doc && Array.isArray(doc.windows)) {
+                    // Which window was focused at quit — re-focused once the
+                    // restore chain settles (see _wvRestoreFocusedWindow).
+                    try { this._wvBootFocusedEntry = doc.focused || null; } catch (e) {}
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
                         if (g && g.kind === "reader" && g.nativeItemID != null) {
-                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, nativeGrp: g.nativeGrp || null, order: g.order };
+                            map[g.nativeItemID] = { extras: g.extras, activeIndex: g.activeIndex, nativePinned: g.nativePinned, nativeGrp: g.nativeGrp || null, order: g.order, geom: g.geom || null, sb: g.sb || null };
                         } else if (g && g.kind === "reader-orphan" && Array.isArray(g.tabs) && g.tabs.length) {
                             // Orphan: recreate by opening the FIRST tab as a fresh
                             // reader window (it becomes the new native); the rest
@@ -7516,6 +7549,7 @@ class _ReaderMixin {
                                     activeIndex: (g.activeIndex != null) ? g.activeIndex : 0,
                                     nativePinned: !!head.pinned,
                                     nativeGrp: head.grp || null,
+                                    geom: g.geom || null, sb: g.sb || null,
                                 };
                                 orphanIDs.push(head.itemID);
                             }
@@ -7583,6 +7617,17 @@ class _ReaderMixin {
                     if (!entry || !Array.isArray(entry.extras) || !entry.extras.length) return;
                     try { delete this._wvWTRestoreMap[nativeItemID]; } catch (e) {}   // consume once
                     try { (this as any)._wvTrace && (this as any)._wvTrace("restore: reader window adopt item " + nativeItemID + " + " + entry.extras.length + " extra(s)"); } catch (e) {}
+                    // Multi-monitor placement + shared sidebar state, saved at quit.
+                    try { this._wvApplyWindowGeom(win, entry.geom); } catch (e) {}
+                    try {
+                        if (entry.sb && win._wvWT) {
+                            // Later mounts inherit this shared state; apply to the
+                            // already-realized native tab explicitly.
+                            win._wvWT.shared = { sidebarOpen: !!entry.sb.open, sidebarWidth: entry.sb.width || 240 };
+                            const natTab = win._wvWT.tabs.find((t: any) => t.native);
+                            if (natTab) this._wvWTApplySharedDisplay(win, natTab);
+                        }
+                    } catch (e) {}
                     // Normalize both persisted shapes:
                     //   v1: extras = [itemID, ...]            → pinned:false
                     //   v2: extras = [{ itemID, pinned }, ...]
@@ -7750,6 +7795,12 @@ class _ReaderMixin {
                         if (win) {
                             const entry: any = this._wvWTRestoreMap && this._wvWTRestoreMap[itemID];
                             const extras: any[] = (entry && Array.isArray(entry.extras)) ? entry.extras : [];
+                            try { this._wvApplyWindowGeom(win, entry && entry.geom); } catch (e) {}
+                            try {
+                                if (entry && entry.sb && win._wvWT) {
+                                    win._wvWT.shared = { sidebarOpen: !!entry.sb.open, sidebarWidth: entry.sb.width || 240 };
+                                }
+                            } catch (e) {}
                             // Stamp the note-head's group (deterministic membership).
                             try { const nat = win._wvWT && win._wvWT.tabs.find((t: any) => t.native); if (nat && entry && entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; } catch (e) {}
                             for (const ex of extras) {

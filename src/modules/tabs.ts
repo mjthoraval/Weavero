@@ -4503,7 +4503,8 @@ class _TabsMixin {
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
                 // Persist the window's stable id so its items-tree column layout
                 // can be re-bound to the same window on the next restart.
-                groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null) });
+                groups.push({ kind: "main-dev", tabs, wvWinId: (w._wvWindowId != null ? w._wvWindowId : null),
+                    geom: (this as any)._wvWindowGeom(w) });
             }
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureDevWindows err: " + e); }
         return groups;
@@ -4527,6 +4528,30 @@ class _TabsMixin {
     /** Synchronous capture + issue write. Safe from `quit-application-granted`:
      *  capture is sync; the IOUtils write is flushed by Gecko's profile-before-
      *  change I/O barrier as long as it's *issued* here (no awaits before it). */
+    /** Which window has focus — restored at the end of the startup chain so
+     *  the user lands where they left off (anchor / managed main / reader). */
+    _wvWindowStoreFocusDescriptor() {
+        try {
+            const fw: any = Services.wm.getMostRecentWindow(null);
+            if (!fw) return null;
+            const type = fw.document && fw.document.documentElement
+                && fw.document.documentElement.getAttribute("windowtype");
+            if (type === "zotero:reader") {
+                const st = fw._wvWT;
+                const nat = st && st.tabs && st.tabs.find((t: any) => t.native && t.itemID != null);
+                const first = st && st.tabs && st.tabs.find((t: any) => t.itemID != null);
+                const iid = (nat && nat.itemID) != null ? nat.itemID : (first && first.itemID);
+                return (iid != null) ? { kind: "reader", itemID: iid } : null;
+            }
+            if (type === "navigator:browser") {
+                return fw._wvManagedWindow
+                    ? { kind: "main-dev", wvWinId: (fw._wvWindowId != null ? fw._wvWindowId : null) }
+                    : { kind: "anchor" };
+            }
+            return null;
+        } catch (e) { return null; }
+    }
+
     _wvWindowStoreSaveSync() {
         // Once quitting, ONLY the quit flush writes (teardown-triggered saves
         // would capture a half-closed world and clobber the final state —
@@ -4537,7 +4562,7 @@ class _TabsMixin {
         this._wvWindowStoreWrite({ version: 4, windows: [
             ...this._wvWindowStoreCaptureDevWindows(),
             ...this._wvWindowStoreCaptureReaderWindows(),
-        ] });
+        ], focused: this._wvWindowStoreFocusDescriptor() });
     }
 
     /** Debounced save — coalesces churn (e.g. closing a dev window). */
@@ -4926,7 +4951,7 @@ class _TabsMixin {
                     this._wvTrace && this._wvTrace("quit-flush: un-parked " + unparkIds.join(","));
                 } catch (e) {}
             }
-            this._wvWindowStoreWrite({ version: 4, windows: live });
+            this._wvWindowStoreWrite({ version: 4, windows: live, focused: this._wvWindowStoreFocusDescriptor() });
             this._wvWindowStoreFrozen = true;
             this._wvTrace && this._wvTrace("quit-flush: wrote " + live.length + " window entr(ies), store FROZEN");
             try { this._wvTraceFlush && this._wvTraceFlush("quit"); } catch (e) {}

@@ -3561,28 +3561,61 @@ class _ReaderMixin {
         }
     }
 
-    /** Wire Alt-up to toggle the menubar visibility on the note window.
-     *  Same press-and-release-alone gesture the main window uses. */
+    /** Wire Alt-up to toggle the menubar visibility on a reader / note window.
+     *  Faithfully mirrors Firefox's native `MenuBarListener` (dom/xul/
+     *  MenuBarListener.cpp): the menubar is revealed on the *release* of the
+     *  Alt key, and only when Alt was pressed ALONE — no other modifier down
+     *  and no other key pressed in between. So Ctrl+Alt (and any Alt+key
+     *  shortcut) never reveals it accidentally.
+     *
+     *  Two-state machine, exactly like Firefox's `mAccessKeyDown` /
+     *  `mAccessKeyDownCanceled`:
+     *   - `altDown`  — a bare Alt press is in progress (nothing else was down).
+     *   - `canceled` — some other key/modifier intervened, so the pending
+     *                  reveal is voided; it stays voided until Alt is released.
+     *  The reveal fires on Alt keyup iff `altDown && !canceled`. (Firefox's
+     *  key comment: "No other modifiers can be down. Especially CTRL. CTRL+ALT
+     *  == AltGR"; and it cancels on any intervening key, keypress, or mouse
+     *  press.) */
     _wvWireNoteMenubarAltReveal(win, menubar) {
         try {
             if ((win as any)._wvNoteAltWired) return;
-            let altAlone = false;
+            let altDown = false;      // ~ mAccessKeyDown
+            let canceled = false;     // ~ mAccessKeyDownCanceled
+            const hasOtherMod = (e: any) => !!(e.ctrlKey || e.shiftKey || e.metaKey);
             const onKeyDown = (e: any) => {
-                if (e.key !== "Alt") return;
-                altAlone = !(e.ctrlKey || e.shiftKey || e.metaKey);
+                if (!altDown) {
+                    // Begin tracking only on a bare Alt press (no other modifier).
+                    if (e.key === "Alt" && !hasOtherMod(e)) { altDown = true; canceled = false; }
+                    return;
+                }
+                // Alt is already held. Once canceled, stay canceled until keyup.
+                if (canceled) return;
+                // Any key other than a bare Alt auto-repeat means Alt is part of a
+                // combo — void the reveal (this is the case the old code missed:
+                // Alt held, then Ctrl / a letter pressed).
+                const bareAltRepeat = e.key === "Alt" && !hasOtherMod(e);
+                if (!bareAltRepeat) canceled = true;
             };
             const onKeyUp = (e: any) => {
                 try {
-                    if (e.key !== "Alt") { altAlone = false; return; }
-                    if (!altAlone) return;
-                    altAlone = false;
+                    if (e.key !== "Alt") return;   // only the access key toggles
+                    const reveal = altDown && !canceled && !hasOtherMod(e);
+                    altDown = false;
+                    canceled = false;
+                    if (!reveal) return;
                     const hidden = menubar.getAttribute("wv-compact-hidden") === "true";
                     if (hidden) menubar.removeAttribute("wv-compact-hidden");
                     else menubar.setAttribute("wv-compact-hidden", "true");
                 } catch (er) {}
             };
+            // A mouse press while Alt is held voids the reveal too (Firefox's
+            // MouseDown handler sets mAccessKeyDownCanceled).
+            const onMouseDown = () => { if (altDown) canceled = true; };
             const onBlur = () => {
                 try {
+                    altDown = false;
+                    canceled = false;
                     if (menubar.getAttribute("wv-compact-hidden") !== "true") {
                         menubar.setAttribute("wv-compact-hidden", "true");
                     }
@@ -3590,12 +3623,14 @@ class _ReaderMixin {
             };
             win.addEventListener("keydown", onKeyDown, true);
             win.addEventListener("keyup", onKeyUp, true);
+            win.addEventListener("mousedown", onMouseDown, true);
             win.addEventListener("blur", onBlur, true);
             (win as any)._wvNoteAltWired = true;
             (win as any)._wvNoteAltOff = () => {
                 try {
                     win.removeEventListener("keydown", onKeyDown, true);
                     win.removeEventListener("keyup", onKeyUp, true);
+                    win.removeEventListener("mousedown", onMouseDown, true);
                     win.removeEventListener("blur", onBlur, true);
                     (win as any)._wvNoteAltWired = false;
                 } catch (er) {}
@@ -12494,13 +12529,21 @@ class _ReaderMixin {
             // Inject collapsing CSS into this reader window's document.
             this._ensureReaderCompactMenubarStyles(doc);
 
-            // Same listener logic as the main-window apply: reveal on
-            // Alt-DOWN so Mozilla's native Alt-UP handler activates the
-            // menubar (focuses first menu, underlines accesskeys);
-            // toggle off on second Alt; Esc collapses only when no menu
-            // is open; mousedown outside collapses.
-            let altAlone = false;
-            let menubarWasVisibleAtAltDown = false;
+            // Toggle the menubar on the *release* of the Alt key, faithfully
+            // mirroring Firefox's native MenuBarListener (dom/xul/
+            // MenuBarListener.cpp): the reveal fires only when Alt was pressed
+            // ALONE — no other modifier down and no other key pressed in
+            // between — so Ctrl+Alt (and any Alt+key shortcut) never reveals it
+            // accidentally. Two-state machine, like Firefox's mAccessKeyDown /
+            // mAccessKeyDownCanceled:
+            //   altDown  — a bare Alt press is in progress.
+            //   canceled — a modifier / other key / mouse press intervened, so
+            //              the pending toggle is voided until Alt is released.
+            // Esc collapses only when no menu is open; mousedown outside
+            // collapses (and voids a pending reveal).
+            let altDown = false;      // ~ mAccessKeyDown
+            let canceled = false;     // ~ mAccessKeyDownCanceled
+            const hasOtherMod = (e: any) => !!(e.ctrlKey || e.shiftKey || e.metaKey);
             const isDead = () => {
                 try { return !win || win.closed; } catch (e) { return true; }
             };
@@ -12512,23 +12555,33 @@ class _ReaderMixin {
             const keyDown = (e: any) => {
                 try {
                     if (isDead()) return;
-                    if (e.key === "Alt" && !e.repeat) {
-                        altAlone = true;
-                        const wasCollapsed = isCollapsed();
-                        menubarWasVisibleAtAltDown = !wasCollapsed;
-                        if (wasCollapsed) menubar.removeAttribute("wv-compact-hidden");
-                    } else if (e.altKey) {
-                        altAlone = false;
+                    if (!altDown) {
+                        // Begin tracking only on a bare Alt press (no other modifier).
+                        if (e.key === "Alt" && !e.repeat && !hasOtherMod(e)) {
+                            altDown = true;
+                            canceled = false;
+                        }
+                        return;
                     }
+                    // Alt already held. Once canceled, stay canceled until keyup.
+                    if (canceled) return;
+                    // Any key other than a bare Alt auto-repeat means Alt is part
+                    // of a combo (e.g. Alt held, then Ctrl or a letter) — void it.
+                    const bareAltRepeat = e.key === "Alt" && !hasOtherMod(e);
+                    if (!bareAltRepeat) canceled = true;
                 } catch (er) {}
             };
             const keyUp = (e: any) => {
                 try {
                     if (isDead()) return;
-                    if (e.key !== "Alt") return;
-                    if (!altAlone) return;
-                    altAlone = false;
-                    if (menubarWasVisibleAtAltDown) collapse();
+                    if (e.key !== "Alt") return;   // only the access key toggles
+                    const act = altDown && !canceled && !hasOtherMod(e);
+                    altDown = false;
+                    canceled = false;
+                    if (!act) return;
+                    // Reveal if hidden, collapse if already visible (second Alt).
+                    if (isCollapsed()) menubar.removeAttribute("wv-compact-hidden");
+                    else collapse();
                 } catch (er) {}
             };
             const escapeKey = (e: any) => {
@@ -12542,7 +12595,11 @@ class _ReaderMixin {
             };
             const docMouseDown = (e: any) => {
                 try {
-                    if (isDead() || isCollapsed()) return;
+                    if (isDead()) return;
+                    // A mouse press while Alt is held voids the pending reveal
+                    // (Firefox's MouseDown handler sets mAccessKeyDownCanceled).
+                    if (altDown) canceled = true;
+                    if (isCollapsed()) return;
                     const t = e.target;
                     if (!t || typeof t.closest !== "function") return;
                     if (t.closest("menubar")) return;

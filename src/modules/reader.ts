@@ -4274,6 +4274,28 @@ class _ReaderMixin {
                 "  fill: currentColor; stroke: currentColor;",
                 "}",
                 "#wv-wtl-filetype-popup .wv-filter-opt .icon.icon-item-type { width: 16px; height: 16px; }",
+                /* Weavero note outline (reader-window notes) — a heading sidebar to
+                   the left of the note editor, the reader-window twin of Better
+                   Notes' outline (which never fires here). */
+                ".wv-note-outline-hbox { display: flex; height: 100%; min-height: 0; }",
+                ".wv-note-outline-editorbox { flex: 1 1 auto; min-width: 0; }",
+                ".wv-note-outline-pane {",
+                "  display: flex; flex-direction: column; width: 220px; min-width: 130px;",
+                "  overflow-y: auto; box-sizing: border-box; padding: 4px 0 8px;",
+                "  border-inline-end: 1px solid var(--fill-quinary);",
+                "}",
+                ".wv-note-outline-pane[collapsed=\"true\"] { display: none; }",
+                ".wv-note-outline-header {",
+                "  font-size: 11px; font-weight: 700; letter-spacing: .04em;",
+                "  text-transform: uppercase; opacity: .55; padding: 4px 12px 6px;",
+                "}",
+                ".wv-note-outline-row {",
+                "  padding: 3px 8px 3px 10px; margin: 0 4px; border-radius: 4px;",
+                "  cursor: pointer; font-size: 12px; line-height: 1.3;",
+                "}",
+                ".wv-note-outline-row:hover { background: var(--fill-quinary); }",
+                ".wv-note-outline-empty { padding: 6px 12px; opacity: .5; font-size: 12px; }",
+                ".wv-note-outline-splitter { width: 0; border: none; background: transparent; }",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
         } catch (e) {
@@ -4996,6 +5018,143 @@ class _ReaderMixin {
         }
     }
 
+    // ---- Note outline (reader-window notes) --------------------------------
+    // Better Notes injects its outline by patching the note-editor PER WINDOW and
+    // gating on a native tabID + a BN workspace — none of which exist for a note
+    // mounted in a Weavero standalone reader window. So Weavero builds its OWN
+    // heading outline for those tabs: a collapsible sidebar of the note's h1–h6,
+    // click-to-scroll, rebuilt from the live editor DOM.
+
+    /** The note's heading outline from its LIVE editor DOM: [{ level, text, el }]
+     *  (el = the rendered heading, for scroll-to). Empty until the editor loads. */
+    _wvNoteOutlineExtract(noteEditor: any): any[] {
+        try {
+            const ev = noteEditor && noteEditor.querySelector("#editor-view");
+            const cdoc = ev && ev.contentDocument;
+            if (!cdoc) return [];
+            return ([...cdoc.querySelectorAll("h1,h2,h3,h4,h5,h6")] as any[])
+                .map((h: any) => ({ level: parseInt(h.tagName.slice(1), 10), text: (h.textContent || "").trim(), el: h }))
+                .filter((o: any) => o.text);
+        } catch (e) { return []; }
+    }
+
+    /** Ensure the outline sidebar exists for a note tab and (re)populate it. Waits
+     *  for the editor to load (retries) before wrapping, since the inner box/iframe
+     *  mount asynchronously after a switch. */
+    _wvNoteOutlineEnsure(win: any, tab: any, attempt?: number) {
+        try {
+            if (!win || !win.document || !tab || tab.type !== "note" || !tab.noteEditor) return;
+            const ne = tab.noteEditor;
+            const doc = win.document;
+            const box = ne.querySelector && ne.querySelector("box");
+            // Wait for the editor BOX only (not its loaded content) — wrapping moves
+            // the #editor-view iframe, which reloads it, so we render AFTER the wrap
+            // once the content is (re)ready (see _wvNoteOutlineRenderWhenReady).
+            if (!box) {
+                if ((attempt || 0) < 40) { (win.setTimeout || setTimeout)(() => this._wvNoteOutlineEnsure(win, tab, (attempt || 0) + 1), 120); }
+                return;
+            }
+            if (!ne._wvOutlineWrapped) {
+                ne._wvOutlineWrapped = true;
+                ne.style.height = "100%";
+                const hbox = doc.createXULElement("hbox");
+                hbox.className = "wv-note-outline-hbox";
+                const pane = doc.createXULElement("vbox");
+                pane.className = "wv-note-outline-pane";
+                if ((win._wvWT && win._wvWT.noteOutlineCollapsed)) pane.setAttribute("collapsed", "true");
+                const splitter = doc.createXULElement("splitter");
+                splitter.className = "wv-note-outline-splitter";
+                splitter.setAttribute("collapse", "before");
+                box.classList.add("wv-note-outline-editorbox");
+                hbox.appendChild(pane);
+                hbox.appendChild(splitter);
+                hbox.appendChild(box);
+                ne.appendChild(hbox);
+                ne._wvOutlinePane = pane;
+            }
+            this._wvNoteOutlineRenderWhenReady(win, tab, 0);
+        } catch (e) { Zotero.debug("[Weavero] _wvNoteOutlineEnsure err: " + e); }
+    }
+
+    /** Render the outline once the editor iframe has (re)loaded its content — the
+     *  wrap reparents #editor-view, which reloads it, so headings appear a beat
+     *  later. Polls, then renders (empty state included) so it never hangs. */
+    _wvNoteOutlineRenderWhenReady(win: any, tab: any, attempt?: number) {
+        try {
+            const ne = tab && tab.noteEditor;
+            if (!ne || !ne._wvOutlinePane || !ne._wvOutlineWrapped) return;
+            const ev = ne.querySelector && ne.querySelector("#editor-view");
+            // "Loaded" = the editor instance exists AND its ProseMirror surface has
+            // mounted. The body's editor SHELL appears before the content, so check
+            // for ProseMirror (not just body.childElementCount) — else we'd render an
+            // empty outline before the headings render.
+            let loaded = false;
+            try { loaded = !!(ne._editorInstance && ev && ev.contentDocument && ev.contentDocument.querySelector(".ProseMirror")); } catch (e) {}
+            if (!loaded && (attempt || 0) < 50) {
+                (win.setTimeout || setTimeout)(() => this._wvNoteOutlineRenderWhenReady(win, tab, (attempt || 0) + 1), 120);
+                return;
+            }
+            this._wvNoteOutlineRender(win, tab);
+            // Live-refresh: re-render on content changes (catches headings that
+            // render just after load, and updates as the user edits).
+            this._wvNoteOutlineObserve(win, tab);
+        } catch (e) { Zotero.debug("[Weavero] _wvNoteOutlineRenderWhenReady err: " + e); }
+    }
+
+    /** Observe the note's ProseMirror content and re-render the outline on change
+     *  (debounced). Created once per editor, in the iframe's own window context. */
+    _wvNoteOutlineObserve(win: any, tab: any) {
+        try {
+            const ne = tab && tab.noteEditor;
+            if (!ne || (ne as any)._wvOutlineObserver) return;
+            const ev = ne.querySelector && ne.querySelector("#editor-view");
+            const cw = ev && ev.contentWindow;
+            const pm = ev && ev.contentDocument && ev.contentDocument.querySelector(".ProseMirror");
+            if (!cw || !cw.MutationObserver || !pm) return;
+            let deb: any = null;
+            const obs = new cw.MutationObserver(() => {
+                try {
+                    if (deb) cw.clearTimeout(deb);
+                    deb = cw.setTimeout(() => { try { this._wvNoteOutlineRender(win, tab); } catch (e) {} }, 250);
+                } catch (e) {}
+            });
+            obs.observe(pm, { childList: true, subtree: true, characterData: true });
+            (ne as any)._wvOutlineObserver = obs;
+        } catch (e) { Zotero.debug("[Weavero] _wvNoteOutlineObserve err: " + e); }
+    }
+
+    /** Rebuild the outline rows for a note tab from its current headings. */
+    _wvNoteOutlineRender(win: any, tab: any) {
+        try {
+            const ne = tab && tab.noteEditor;
+            const pane = ne && ne._wvOutlinePane;
+            if (!pane) return;
+            const doc = win.document;
+            const outline = this._wvNoteOutlineExtract(ne);
+            pane.replaceChildren();
+            const hdr = doc.createXULElement("description");
+            hdr.className = "wv-note-outline-header";
+            hdr.textContent = "Outline";
+            pane.appendChild(hdr);
+            const minLevel = outline.length ? Math.min(...outline.map((o: any) => o.level)) : 1;
+            for (const o of outline) {
+                const row = doc.createXULElement("description");
+                row.className = "wv-note-outline-row";
+                row.setAttribute("crop", "end");
+                row.style.paddingInlineStart = (10 + (o.level - minLevel) * 14) + "px";
+                row.textContent = o.text;
+                row.addEventListener("click", () => { try { o.el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) {} });
+                pane.appendChild(row);
+            }
+            if (!outline.length) {
+                const empty = doc.createXULElement("description");
+                empty.className = "wv-note-outline-empty";
+                empty.textContent = "No headings in this note";
+                pane.appendChild(empty);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvNoteOutlineRender err: " + e); }
+    }
+
     /** Open the child notes of a reader tab's item (its parent item's notes,
      *  plus the attachment's own notes) as note tabs in this reader window.
      *  Already-open notes are de-duped by _wvWTMountTab. Returns the count. */
@@ -5086,6 +5245,9 @@ class _ReaderMixin {
             // Bring the now-visible tab's sidebar in line with the shared state
             // (a previously-realized tab may have a stale sidebar).
             try { this._wvWTApplySharedDisplay(win, tab); } catch (e) {}
+            // Note tabs: build/refresh Weavero's own heading outline (Better Notes'
+            // outline never fires in a standalone reader window).
+            if (tab.type === "note") { try { this._wvNoteOutlineEnsure(win, tab); } catch (e) {} }
             // Re-derive the active-tab highlight from the single source of truth
             // (st.activeId) — the way Zotero derives `.tab.selected` from
             // Zotero_Tabs._selectedID (tabs.js:399) rather than via a hand-held

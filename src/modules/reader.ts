@@ -5146,6 +5146,10 @@ class _ReaderMixin {
             // Live-refresh: re-render on content changes (catches headings that
             // render just after load, and updates as the user edits).
             this._wvNoteOutlineObserve(win, tab);
+            // The editor content just became real — wire Weavero's note-link
+            // styling/handling into it (the global sweeps don't know about
+            // reader-window note tabs' load timing).
+            try { (this as any)._processNoteEditors && (this as any)._processNoteEditors(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvNoteOutlineRenderWhenReady err: " + e); }
     }
 

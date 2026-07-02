@@ -1226,8 +1226,26 @@ class _NoteEditorMixin {
         } catch (e) {
             Zotero.debug("[Weavero] note-window enumerate err: " + e);
         }
+        // Weavero's multi-tab READER windows host note tabs too (a surface
+        // added after this sweep was written — their editors showed native
+        // blue links because nothing ever wired them).
+        let readerCount = 0;
+        try {
+            const rEnum = Services.wm.getEnumerator("zotero:reader");
+            while (rEnum.hasMoreElements()) {
+                const w = rEnum.getNext() as any;
+                const wd = w && w.document;
+                if (!wd) continue;
+                for (const ne of wd.querySelectorAll("note-editor")) {
+                    this._setupNoteEditorObserver(ne);
+                    readerCount++;
+                }
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] reader-window note enumerate err: " + e);
+        }
         this._dbg("[Weavero] _processNoteEditors: main=" + mainCount
-            + " popout=" + popoutCount);
+            + " popout=" + popoutCount + " readerWin=" + readerCount);
     }
 
     /** Pop-out note window listener — onOpenWindow fires when a

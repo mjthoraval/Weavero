@@ -2785,7 +2785,29 @@ class WeaveroPlugin {
             (Zotero as any).uiReadyPromise
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 .then(() => { try { (this as any)._wvTrace("restore: dev main windows"); this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
+                // Keep the user's quit-time window on top while background
+                // windows open (each steals focus as it appears).
+                .then(() => { try { (this as any)._wvFocusShepherdStart(); } catch (e) {} })
                 .then(() => { try { (this as any)._wvTrace("restore: orphan reader windows"); this._wvWindowStoreRestoreOrphanReaderWindows(); } catch (e) {} })
+                // FOCUSED-FIRST: if the quit-time focus was a reader window,
+                // don't leave it behind the adaptive grace — give Zotero a
+                // short beat to reopen it natively, then jump the queue.
+                .then(() => (async () => {
+                    try {
+                        await (this as any)._wvWTLoadRestoreMap();
+                        const f = (this as any)._wvBootFocusedEntry;
+                        if (!f || f.kind !== "reader" || f.itemID == null) return;
+                        const wait = (ms: number) => new Promise((r) => { const w: any = Zotero.getMainWindow(); ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(r, ms); });
+                        for (let i = 0; i < 4; i++) {
+                            if ((this as any)._wvReaderWindowHostingItem(f.itemID)) return;
+                            await wait(400);
+                        }
+                        if ((this as any)._wvReaderWindowHostingItem(f.itemID)) return;
+                        if (!Zotero.Items.exists(f.itemID)) return;
+                        (this as any)._wvTrace("restore: focused reader window prioritized — reopening now");
+                        await (Zotero as any).Reader.open(f.itemID, null, { openInWindow: true });
+                    } catch (e) {}
+                })())
                 // Grace for Zotero's native reader-window reopen, then recreate
                 // any saved reader window it did NOT bring back (extras would
                 // otherwise sit unclaimed in the restore map and be lost).

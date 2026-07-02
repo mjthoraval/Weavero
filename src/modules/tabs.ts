@@ -4607,7 +4607,13 @@ class _TabsMixin {
         try {
             const text: any = await this._wvWindowStoreReadText();
             const doc = text ? JSON.parse(text) : null;
-            if (doc && Array.isArray(doc.windows)) return doc.windows;
+            if (doc && Array.isArray(doc.windows)) {
+                // Stash the focused descriptor here too — this loader can run
+                // before the reader restore-map loader that also stashes it,
+                // and the dev-window spawn queue sorts by it.
+                try { if (doc.focused && !(this as any)._wvBootFocusedEntry) (this as any)._wvBootFocusedEntry = doc.focused; } catch (e) {}
+                return doc.windows;
+            }
         } catch (e) { /* missing/unreadable → none */ }
         return [];
     }
@@ -4641,6 +4647,15 @@ class _TabsMixin {
             const groups = (await this._wvWindowStoreLoad())
                 .filter((g: any) => g && g.kind === "main-dev" && g.tabs && g.tabs.length > 1);
             if (!groups.length) return;
+            // FOCUSED-FIRST: when the quit-time focus was a managed window,
+            // spawn that one before its siblings so the user's window is
+            // usable while the rest assemble in the background.
+            try {
+                const f = (this as any)._wvBootFocusedEntry;
+                if (f && f.kind === "main-dev" && f.wvWinId != null && groups.length > 1) {
+                    groups.sort((a: any, b: any) => ((b.wvWinId === f.wvWinId) ? 1 : 0) - ((a.wvWinId === f.wvWinId) ? 1 : 0));
+                }
+            } catch (e) {}
             this._wvDevSpawnQueue = groups.slice();
             this._wvSpawnNextDevWindow();
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRestoreDevWindows err: " + e); }
@@ -5078,6 +5093,64 @@ class _TabsMixin {
             };
             N._wvOpenPatched = true;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
+    }
+
+    /** FOCUSED-FIRST restore: keep the user's quit-time window on top while
+     *  the rest of the workspace assembles in the background. Every window
+     *  opened during restore steals OS focus (`openMainWindow`, `Reader.open`
+     *  with openInWindow); this shepherd re-asserts the target whenever focus
+     *  lands on a DIFFERENT Zotero window — and never pulls focus back from
+     *  another application. Polls until the group guard lifts. */
+    _wvFocusShepherdStart() {
+        try {
+            if (this._wvFocusShepherdOn) return;
+            this._wvFocusShepherdOn = true;
+            const self = this;
+            const findTarget = () => {
+                const f = (self as any)._wvBootFocusedEntry;
+                if (!f || !f.kind) return null;
+                try {
+                    if (f.kind === "anchor") return (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow) || null;
+                    if (f.kind === "main-dev") return (Zotero.getMainWindows() || []).find((w: any) => w._wvManagedWindow && (f.wvWinId == null || w._wvWindowId === f.wvWinId)) || null;
+                    if (f.kind === "reader") {
+                        const en = Services.wm.getEnumerator("zotero:reader");
+                        while (en.hasMoreElements()) {
+                            const w: any = en.getNext();
+                            const st = w._wvWT;
+                            if (st && st.tabs && st.tabs.some((t: any) => t.itemID === f.itemID)) return w;
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            };
+            let ticks = 0;
+            const w0: any = Zotero.getMainWindow();
+            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const tick = () => {
+                ticks++;
+                const done = !(this as any)._wvTabGroupRestoreGuard || ticks > 45;
+                try {
+                    const target = findTarget();
+                    if (target) {
+                        const fw: any = Services.focus.activeWindow;
+                        let oursElsewhere = false;
+                        try {
+                            const t = fw && fw.document && fw.document.documentElement
+                                && fw.document.documentElement.getAttribute("windowtype");
+                            oursElsewhere = (t === "navigator:browser" || t === "zotero:reader") && fw !== target;
+                        } catch (e) {}
+                        if (oursElsewhere) {
+                            target.focus();
+                            (this as any)._wvTrace("focus-shepherd: re-asserted the "
+                                + (((self as any)._wvBootFocusedEntry || {}).kind) + " window");
+                        }
+                    }
+                } catch (e) {}
+                if (!done) setT(tick, 700);
+                else this._wvFocusShepherdOn = false;
+            };
+            setT(tick, 700);
+        } catch (e) {}
     }
 
     /** Re-focus the window the user was in at quit (recorded in the store's

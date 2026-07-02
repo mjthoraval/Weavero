@@ -827,8 +827,10 @@ class _TabsMixin {
                 try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging")) r.classList.remove("wv-tabsmenu-row-dragging"); } catch (er) {}
             };
 
+            const DBG = (m: string) => { try { Zotero.debug("[Weavero][popupDnD] " + m); } catch (er) {} };
             list.addEventListener("dragstart", (e: any) => {
                 try {
+                    DBG("dragstart target=" + (e.target && e.target.className));
                     // Group source first — the bottom "Tab Groups" row or an inline
                     // group header. Dragging it moves the WHOLE group to a window.
                     const grpSrc = e.target && e.target.closest && e.target.closest(".wv-tgmenu-row[draggable='true'], .wv-tgrow-header[draggable='true']");
@@ -847,14 +849,21 @@ class _TabsMixin {
                         return;
                     }
                     const row = e.target && e.target.closest && e.target.closest(".row[draggable='true']");
-                    if (!row) return;
+                    if (!row) { DBG("dragstart: no .row[draggable] ancestor → not a Weavero drag"); return; }
                     // Weavero rows carry _wvSrcWin; native current-window rows carry
                     // only data-tab-id (their source is the panel's own window).
                     let srcWin = (row as any)._wvSrcWin, tabId = (row as any)._wvSrcTabId, isReader = !!(row as any)._wvSrcIsReader;
+                    // A "native row" = the main popup's OWN current-window tab
+                    // (only data-tab-id, no _wvSrcWin). Zotero's per-row drag
+                    // handles its same-window reorder; every OTHER row (reader
+                    // clone, other-window) is Weavero-built with no native
+                    // handler, so Weavero must handle its same-window reorder too.
+                    let nativeRow = false;
                     if (!srcWin) {
                         const tid = row.dataset && row.dataset.tabId;
                         if (!tid || tid === "zotero-pane") return;
                         srcWin = panelWin; tabId = tid; isReader = false;
+                        nativeRow = true;
                     }
                     if (!srcWin || tabId == null) return;
                     // Capture the moving tab's title + icon for the drag preview ghost.
@@ -870,17 +879,22 @@ class _TabsMixin {
                     } catch (er) {}
                     if (!title) { try { const lbl = row.querySelector("label"); if (lbl) title = lbl.textContent || ""; } catch (er) {} }
                     if (!itemType) { try { const ic = row.querySelector(".icon-item-type"); if (ic) itemType = ic.getAttribute("data-item-type") || ""; } catch (er) {} }
-                    livePlugin()._wvPopupRowDrag = { srcWin, tabId, isReader, title, itemType };
+                    livePlugin()._wvPopupRowDrag = { srcWin, tabId, isReader, title, itemType, nativeRow };
+                    DBG("dragstart OK: tabId=" + tabId + " isReader=" + isReader + " nativeRow=" + nativeRow + " title=" + title.slice(0, 24));
                     try { e.dataTransfer.setData("application/x-weavero-popup-tab-move", "1"); e.dataTransfer.effectAllowed = "move"; } catch (er) {}
                     row.classList.add("wv-tabsmenu-row-dragging");
                 } catch (er) {}
             }, true);
 
-            // Take over ONLY for cross-window moves and group joins. A same-window
-            // plain reorder is left to Zotero's native row drag (Zotero_Tabs.move),
-            // which the native popup already wires per row.
+            // Intercept for: group joins, cross-window moves, AND same-window
+            // reorders of Weavero-built rows (reader clones + other-window rows,
+            // which have no native handler). A same-window reorder of the main
+            // popup's OWN current-window tab (nativeRow) is still left to
+            // Zotero's per-row native drag.
             const shouldIntercept = (res: any, drag: any) =>
-                !!(res && res.target && (res.target.groupId || res.target.win !== drag.srcWin));
+                !!(res && res.target && (res.target.groupId
+                    || res.target.win !== drag.srcWin
+                    || !drag.nativeRow));
 
             list.addEventListener("dragover", (e: any) => {
                 try {
@@ -903,6 +917,17 @@ class _TabsMixin {
                     if (!drag) return;
                     const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
                     clearHighlight();
+                    // Throttled: log only when the resolved target changes.
+                    try {
+                        const sig = res && res.target
+                            ? (res.target.groupId || "") + "|" + (res.target.win === drag.srcWin ? "same" : "other") + "|" + (res.target.isReader ? "R" : "M")
+                            : "null";
+                        if (sig !== self._wvDnDLastOverSig) {
+                            self._wvDnDLastOverSig = sig;
+                            DBG("dragover res=" + sig + " intercept=" + shouldIntercept(res, drag)
+                                + " target=" + (e.target && e.target.className));
+                        }
+                    } catch (er) {}
                     if (!shouldIntercept(res, drag) || !res.container) return;
                     e.preventDefault();
                     try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
@@ -943,8 +968,11 @@ class _TabsMixin {
                     }
                     const drag = lp._wvPopupRowDrag;
                     clearHighlight(); clearDragging();
-                    if (!drag) return;
+                    if (!drag) { DBG("drop: no _wvPopupRowDrag → not ours"); return; }
                     const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
+                    DBG("drop res=" + (res && res.target
+                        ? (res.target.groupId || "-") + "|" + (res.target.win === drag.srcWin ? "same" : "other") + "|" + (res.target.isReader ? "R" : "M")
+                        : "null") + " intercept=" + shouldIntercept(res, drag) + " target=" + (e.target && e.target.className));
                     if (!shouldIntercept(res, drag)) return;   // native handles same-window reorder
                     e.preventDefault(); e.stopPropagation();
                     lp._wvPopupRowDrag = null;

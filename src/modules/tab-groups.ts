@@ -563,6 +563,21 @@ class _TabGroupsMixin {
                     this._wvTabGroupSetStamp(t, g.id); set.add(kk);
                 }
             }
+            // SELF-HEAL a split group: any path that ended with a loose tab
+            // wedged between a group's members (a native reorder, a cross-window
+            // arrival, a drag that didn't run stabilize) is re-clustered here —
+            // NOW, after the claim pass, so every member is stamped. Runs on the
+            // common _applyTabGroups path so a split can never persist. Cheap:
+            // stabilize walks once and returns unless a group is truly
+            // non-contiguous; its Z.move re-enters _applyTabGroups async, which
+            // then finds it contiguous → no loop. Skipped during restore (that
+            // chain stabilizes explicitly once at the end) and drags (guarded
+            // above). Re-entry flag stops redundant nested passes.
+            if (!(this as any)._wvTabGroupRestoreGuard && !(this as any)._wvStabilizing) {
+                (this as any)._wvStabilizing = true;
+                try { this._wvTabGroupStabilize(win); } catch (e) {}
+                (this as any)._wvStabilizing = false;
+            }
             for (const g of groups) {
                 // SAVED (parked) group ("Save and close group"): keeps its item-key
                 // snapshot to reopen, shows no chip, never auto-deleted here.
@@ -1133,7 +1148,29 @@ class _TabGroupsMixin {
                     if (gid != null && newId != null) { try { this._wvReaderStampTabGroup(tgtWin, newId, gid); } catch (e) {} }
                     return;
                 }
-                if (srcWin === tgtWin) return;   // already in this reader window
+                if (srcWin === tgtWin) {
+                    // SAME reader window → reorder to the precise slot (the popup
+                    // has no native reader-row drag, so Weavero does it here).
+                    if (target.index != null) {
+                        try {
+                            const st = tgtWin._wvWT;
+                            if (st && st.tabs) {
+                                const from = st.tabs.findIndex((t: any) => String(t.id) === String(tabId));
+                                if (from >= 0) {
+                                    const [m] = st.tabs.splice(from, 1);
+                                    // Adjust for the removal when inserting later in the array.
+                                    let to = Math.min(target.index, st.tabs.length);
+                                    if (from < target.index) to = Math.max(0, to - 1);
+                                    st.tabs.splice(to, 0, m);
+                                    try { (this as any)._wvWTStabilizePinned(st); } catch (e) {}
+                                    try { (this as any)._wvWTRenderStrip(tgtWin); } catch (e) {}
+                                    try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
+                                }
+                            }
+                        } catch (e) {}
+                    }
+                    return;
+                }
                 let newRId: any = null;
                 try { newRId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true, await: true }); } catch (e) {}
                 // Precise slot from the popup: move the just-mounted tab there.
@@ -1156,7 +1193,18 @@ class _TabGroupsMixin {
             } else if (srcIsReader) {
                 this._wvWTMoveTabToMain(srcWin, tabId, tgtWin);                      // reader → main window
             } else {
-                if (srcWin === tgtWin) return;   // same main window, loose → no-op
+                if (srcWin === tgtWin) {
+                    // SAME main window → reorder via native move (for an
+                    // other-window row dragged within the main popup; the
+                    // panel's OWN current-window tab uses native per-row drag).
+                    if (target.index != null) {
+                        try {
+                            const Z2 = tgtWin.Zotero_Tabs;
+                            if (Z2 && typeof Z2.move === "function") Z2.move(tabId, target.index);
+                        } catch (e) {}
+                    }
+                    return;
+                }
                 const Z = tgtWin.Zotero_Tabs;
                 // Precise drop index from the popup (after the anchor tab); else end.
                 const targetIndex = (target.index != null)

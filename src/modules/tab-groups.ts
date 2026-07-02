@@ -460,6 +460,12 @@ class _TabGroupsMixin {
     _applyTabGroups(win: any) {
         try {
             if (!win || !win.document) return;
+            // Self-heal the chip stylesheet: plugin teardown removes it, and the
+            // per-window setup's idempotency guards can skip an already-wired
+            // window after a reload — leaving unstyled (squeezed, text-wrapped)
+            // chips. Version-checked + idempotent, so this is a cheap no-op in
+            // the steady state.
+            try { this._ensureTabGroupStyles(win.document); } catch (e) {}
             // Batched mutation in flight (e.g. a group migrate adding many
             // unloaded tabs): skip the per-event re-chip churn — the orchestrator
             // does ONE settling apply when the batch ends. Without this, each

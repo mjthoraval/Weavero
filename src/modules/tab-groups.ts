@@ -1013,7 +1013,7 @@ class _TabGroupsMixin {
      *  member (one-time positioning, like _pinTabByCommand). When the group
      *  lives in ANOTHER window, the tab moves there instead — a group never
      *  spans windows. */
-    _wvTabGroupAddTab(win: any, tabID: any, groupID: any) {
+    _wvTabGroupAddTab(win: any, tabID: any, groupID: any, desiredIndex?: number) {
         try {
             const Z_Tabs: any = win.Zotero_Tabs;
             const tab = Z_Tabs && Z_Tabs._tabs.find((t: any) => t.id === tabID);
@@ -1037,16 +1037,25 @@ class _TabGroupsMixin {
             }
             this._wvTabGroupSetStamp(tab, groupID);   // per-tab membership (authoritative)
             this._tabGroupAddKey(groupID, key);       // item-key shadow (saved/restart fallback)
-            // Position: directly after the group's last open member.
+            // Position. `desiredIndex` (from a precise popup drop) → clamp into
+            // the group's contiguous run so the tab lands where the user aimed
+            // WITHOUT splitting the group; else directly after the last member.
             try {
-                let lastIdx = -1, curIdx = -1;
+                let firstIdx = -1, lastIdx = -1, curIdx = -1;
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
                     if (t.id === tabID) { curIdx = i; continue; }   // exclude self
-                    if (this._wvTabGroupStamp(t) === groupID) lastIdx = i;
+                    if (this._wvTabGroupStamp(t) === groupID) { if (firstIdx < 0) firstIdx = i; lastIdx = i; }
                 }
                 if (lastIdx >= 0 && typeof Z_Tabs.move === "function") {
-                    let target = lastIdx + 1;
+                    let target: number;
+                    if (typeof desiredIndex === "number" && firstIdx >= 0) {
+                        // Keep the drop within [firstMember, lastMember+1] so the
+                        // group stays one run.
+                        target = Math.max(firstIdx, Math.min(desiredIndex, lastIdx + 1));
+                    } else {
+                        target = lastIdx + 1;
+                    }
                     if (curIdx >= 0 && curIdx < target) target--;   // removal shift
                     Z_Tabs.move(tabID, target);
                 }
@@ -1121,7 +1130,7 @@ class _TabGroupsMixin {
                 if (srcIsReader) {
                     this._wvMoveReaderTabToMainGroup(srcWin, tabId, itemID, homeWin, groupId);
                 } else if (srcWin === homeWin) {
-                    this._wvTabGroupAddTab(srcWin, tabId, groupId);                  // already home → just group it
+                    this._wvTabGroupAddTab(srcWin, tabId, groupId, target.index);    // already home → group it at the precise slot
                 } else {
                     this._wvTabGroupSendTabToWin(srcWin, tabId, homeWin, groupId);   // other main → home + stamp
                 }
@@ -1252,6 +1261,13 @@ class _TabGroupsMixin {
         try {
             const groupsEnabled = this._getEnableTabGroups ? !!this._getEnableTabGroups() : true;
             const targets = this._wvOpenInTargetWindows();
+            // Put the SOURCE window at the TOP — its "(here)" entry should head
+            // the list (esp. in a reader window, where it otherwise sank below
+            // the main windows).
+            try {
+                const si = targets.findIndex((t: any) => t.win === srcWin);
+                if (si > 0) { const [s] = targets.splice(si, 1); targets.unshift(s); }
+            } catch (e) {}
             const groups = (this._tabGroupsGet ? this._tabGroupsGet() : [])
                 .filter((g: any) => g && !g.saved && this._wvTabGroupHomeWin(g.id));
             const dark = !!(this._detectUIDark && this._detectUIDark());

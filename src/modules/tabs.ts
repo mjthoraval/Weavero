@@ -810,7 +810,9 @@ class _TabsMixin {
                             ghost.appendChild(name);
                         } else {
                             ghost = doc.createElement("div");
-                            ghost.className = "row wv-tabsmenu-ghost";
+                            // `wv-tgrow-member` gives the group-member indent so the
+                            // preview lines up inside the group it will join.
+                            ghost.className = "row wv-tabsmenu-ghost" + (info.inGroup ? " wv-tgrow-member" : "");
                             const title = doc.createElement("div");
                             title.className = "zotero-tabs-menu-entry title";
                             title.setAttribute("flex", "1");
@@ -824,6 +826,9 @@ class _TabsMixin {
                             ghost.appendChild(title);
                         }
                     }
+                    // Keep the group-member indent in sync as the cursor moves
+                    // in/out of a group (the ghost is reused across dragovers).
+                    if (!info.isGroup) { try { ghost.classList.toggle("wv-tgrow-member", !!info.inGroup); } catch (er) {} }
                     // Insert at the precise drop slot (before `beforeRow`), else end.
                     if (beforeRow && beforeRow.parentNode) {
                         if (ghost.nextSibling !== beforeRow || ghost.parentNode !== beforeRow.parentNode) beforeRow.parentNode.insertBefore(ghost, beforeRow);
@@ -890,6 +895,7 @@ class _TabsMixin {
                     if (!title) { try { const lbl = row.querySelector("label"); if (lbl) title = lbl.textContent || ""; } catch (er) {} }
                     if (!itemType) { try { const ic = row.querySelector(".icon-item-type"); if (ic) itemType = ic.getAttribute("data-item-type") || ""; } catch (er) {} }
                     livePlugin()._wvPopupRowDrag = { srcWin, tabId, isReader, title, itemType, nativeRow };
+                    livePlugin()._wvPopupOverRes = null; livePlugin()._wvPopupOverY = null;
                     DBG("dragstart OK: tabId=" + tabId + " isReader=" + isReader + " nativeRow=" + nativeRow + " title=" + title.slice(0, 24));
                     try { e.dataTransfer.setData("application/x-weavero-popup-tab-move", "1"); e.dataTransfer.effectAllowed = "move"; } catch (er) {}
                     row.classList.add("wv-tabsmenu-row-dragging");
@@ -940,6 +946,11 @@ class _TabsMixin {
                         }
                     } catch (er) {}
                     if (!shouldIntercept(res, drag) || !res.container) return;
+                    // Remember the last INTERCEPTABLE hover — the drop's own
+                    // e.target is unreliable (the dragged row follows the cursor
+                    // and is what's under the pointer at release), so the drop
+                    // handler falls back to this.
+                    self._wvPopupOverRes = res; self._wvPopupOverY = e.clientY;
                     e.preventDefault();
                     try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
                     if (res.target.win) {
@@ -947,7 +958,7 @@ class _TabsMixin {
                         // slot under the cursor (main targets); reader targets append.
                         const scope = (res.container.closest && res.container.closest(".wv-winscope")) || res.container;
                         const beforeRow = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId }).beforeRow;
-                        showGhostAt(scope, beforeRow, { itemType: drag.itemType, title: drag.title });
+                        showGhostAt(scope, beforeRow, { itemType: drag.itemType, title: drag.title, inGroup: !!res.target.groupId });
                         scope.classList.add("wv-tabsmenu-drop-into");
                     } else {
                         // Pure group join (a Tab Groups row, including a closed group)
@@ -981,19 +992,37 @@ class _TabsMixin {
                     const drag = lp._wvPopupRowDrag;
                     clearHighlight(); clearDragging();
                     if (!drag) { DBG("drop: no _wvPopupRowDrag → not ours"); return; }
-                    const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
+                    let res = self._wvResolvePopupDropTarget(panel, e.target, drag);
+                    // The drop's e.target is the element under the pointer at
+                    // RELEASE — the dragged row itself follows the cursor and is
+                    // usually what's there, giving a groupless, uninterceptable
+                    // result. Fall back to the last INTERCEPTABLE dragover
+                    // target (what the user hovered + saw highlighted), when the
+                    // release was within ~1 row of it.
+                    if (!shouldIntercept(res, drag) && self._wvPopupOverRes
+                            && self._wvPopupOverY != null
+                            && Math.abs(e.clientY - self._wvPopupOverY) < 30) {
+                        DBG("drop: e.target uninterceptable → using remembered hover target");
+                        res = self._wvPopupOverRes;
+                    }
                     DBG("drop res=" + (res && res.target
                         ? (res.target.groupId || "-") + "|" + (res.target.win === drag.srcWin ? "same" : "other") + "|" + (res.target.isReader ? "R" : "M")
                         : "null") + " intercept=" + shouldIntercept(res, drag) + " target=" + (e.target && e.target.className));
+                    self._wvPopupOverRes = null; self._wvPopupOverY = null;
                     if (!shouldIntercept(res, drag)) return;   // native handles same-window reorder
                     e.preventDefault(); e.stopPropagation();
                     lp._wvPopupRowDrag = null;
                     const target: any = res.target;
-                    // Precise insertion index for a loose move to another window
-                    // (a group join lands after the group, so skip those).
-                    if (target.win && !target.groupId) {
+                    // Precise insertion index — for a loose move AND a group
+                    // join (the group branch clamps it into the group's run, so
+                    // the tab lands at the exact slot the user aimed at).
+                    if (target.win) {
                         try {
-                            const scope = e.target && e.target.closest && e.target.closest(".wv-winscope");
+                            // Scope from the RESOLVED container (which may be the
+                            // remembered hover target — the release often lands on
+                            // the dragged row, whose closest scope would be wrong).
+                            let scope = (res && res.container && res.container.closest && res.container.closest(".wv-winscope"))
+                                || (e.target && e.target.closest && e.target.closest(".wv-winscope"));
                             if (scope) {
                                 const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId });
                                 if (target.isReader) {

@@ -765,7 +765,9 @@ class _TabsMixin {
     _wvWireTabsMenuRowDnD(panel: any) {
         try {
             if (!panel || panel._wvRowDnDWired) return;
-            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list");
+            // Main panel → #zotero-tabs-menu-list; reader-window clone → #wv-wtl-list.
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list")
+                || panel.querySelector("#wv-wtl-list");
             if (!list) return;
             panel._wvRowDnDWired = true;
             const self = this;

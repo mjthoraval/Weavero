@@ -5995,6 +5995,10 @@ class _ReaderMixin {
                     // state) to every row now that all sections exist — same post-pass
                     // the main window runs, so the reader clone filters identically.
                     if (lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
+                    // Row drag-and-drop (reorder / move tabs & groups) — the same
+                    // wiring the main popup gets; it was never called for this
+                    // clone, so dragging rows here silently did nothing.
+                    if (lp._wvWireTabsMenuRowDnD) lp._wvWireTabsMenuRowDnD(panel);
                     // Rich library-card tooltip on the clone rows too — same shared
                     // rows (data-wv-library) as the main popup, so the same resolver
                     // handles them; the clone panel is the XUL tooltip anchor.

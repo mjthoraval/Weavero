@@ -3034,10 +3034,21 @@ class _TabsMixin {
                                 // / attachmentSnapshot / note) — kebab-case
                                 // won't match Zotero's CSS rule.
                                 const rt = String(info.readerType || "").toLowerCase();
-                                const itemType = rt === "note" ? "note"
+                                let itemType = rt === "note" ? "note"
                                     : rt === "epub" ? "attachmentEPUB"
                                     : rt === "snapshot" ? "attachmentSnapshot"
                                     : "attachmentPDF";
+                                // Derive from the ITEM when possible — a payload
+                                // with a blank/odd readerType otherwise defaults
+                                // every ghost to a PDF icon (a dragged NOTE tab
+                                // showed a PDF ghost).
+                                try {
+                                    if (info.itemID != null) {
+                                        const it: any = Zotero.Items.get(info.itemID);
+                                        const n = it && it.getItemTypeIconName && it.getItemTypeIconName(true);
+                                        if (n) itemType = n;
+                                    }
+                                } catch (er4) {}
                                 iconNode.setAttribute("data-item-type", itemType);
                             }
                             if (nameNode) nameNode.textContent = info.title || "";

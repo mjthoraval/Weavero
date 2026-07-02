@@ -2893,6 +2893,10 @@ class WeaveroPlugin {
                                 try { (this as any)._wvReconcileManagedWindows(); } catch (e) {}
                                 // Land the user where they left off (window focus).
                                 try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {}
+                                // Warm deferred background tabs once the dust has
+                                // settled (one at a time, so nothing competes with
+                                // whatever the user is doing).
+                                try { setT(() => { try { (this as any)._wvIdleLoadDeferred(); } catch (e) {} }, 6000); } catch (e) {}
                                 return;
                             }
                             setT(tick, 1000);

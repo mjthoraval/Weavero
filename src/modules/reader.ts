@@ -7741,11 +7741,39 @@ class _ReaderMixin {
                         if (st2) { this._wvWTStabilizePinned(st2); this._wvWTRenderStrip(win); }
                     } catch (e) {}
                     // Restore the active tab by index into [native, ...extras].
+                    // A LAZY extra as the saved active tab would realize (load
+                    // its PDF) right now — in a BACKGROUND window, defer that to
+                    // the window's first activate / the idle loader instead; the
+                    // native tab (already loading — it IS the window) stays shown.
                     try {
                         const st = win._wvWT;
                         const activeId = (entry.activeIndex != null) ? restoreOrderIds[entry.activeIndex] : null;
-                        if (st && st.tabs && activeId && st.tabs.find((t: any) => t.id === activeId)) {
-                            this._wvWTSwitch(win, activeId);
+                        const tgt = st && st.tabs && activeId && st.tabs.find((t: any) => t.id === activeId);
+                        if (tgt) {
+                            const f = (this as any)._wvBootFocusedEntry;
+                            const isFocusTarget = !!(f && f.kind === "reader"
+                                && st.tabs.some((t: any) => t.itemID === f.itemID));
+                            if (tgt.reader || tgt.native || isFocusTarget) {
+                                this._wvWTSwitch(win, activeId);
+                            } else {
+                                win._wvWTDeferredActiveId = activeId;
+                                const self = this;
+                                if (!win._wvWTDeferredWired) {
+                                    win._wvWTDeferredWired = true;
+                                    const fire = () => {
+                                        try {
+                                            const id = win._wvWTDeferredActiveId;
+                                            if (id == null) return;
+                                            win._wvWTDeferredActiveId = null;
+                                            self._wvWTSwitch(win, id);
+                                            (self as any)._wvTrace && (self as any)._wvTrace("deferred switch: realized saved active tab in reader window");
+                                        } catch (e) {}
+                                    };
+                                    win._wvWTDeferredFire = fire;
+                                    win.addEventListener("activate", fire, { once: true });
+                                }
+                                (this as any)._wvTrace && (this as any)._wvTrace("restore: deferred active-tab load in background reader window");
+                            }
                         }
                     } catch (e) {}
                     // Reader-window group chips: the tabs were just stamped from the

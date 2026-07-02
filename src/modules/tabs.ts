@@ -4383,7 +4383,25 @@ class _TabsMixin {
                     try { tabs.closeAll(); } catch (e) {}     // clears native-restored tabs (keeps library)
                 }
                 if (group && group.tabs && group.tabs.length > 1) {
-                    try { tabs.restoreState(group.tabs); }    // re-add this dev window's own tabs
+                    // BACKGROUND window: restore the STRUCTURE only — selecting
+                    // the saved tab would start rendering its content right now,
+                    // and N restoring windows = N simultaneous loads. Defer the
+                    // selection to the window's first activate / the idle loader.
+                    // The quit-time FOCUSED window keeps its immediate selection.
+                    let restoreTabs = group.tabs;
+                    try {
+                        const f = (this as any)._wvBootFocusedEntry;
+                        const isFocusTarget = !!(f && f.kind === "main-dev"
+                            && (f.wvWinId == null || f.wvWinId === win._wvWindowId));
+                        const selRec = group.tabs.find((t) => t && t.selected && t.data && t.data.itemID != null);
+                        if (!isFocusTarget && selRec) {
+                            restoreTabs = group.tabs.map((t) => (t && t.selected) ? { ...t, selected: false } : t);
+                            (this as any)._wvDeferSelect(win, selRec.data.itemID);
+                            (this as any)._wvTrace("restore: deferred selected-tab load in background window "
+                                + ((this as any)._wvWindowName ? (this as any)._wvWindowName(win) : ""));
+                        }
+                    } catch (e) {}
+                    try { tabs.restoreState(restoreTabs); }    // re-add this dev window's own tabs
                     catch (e) { Zotero.debug("[Weavero] dev restore err: " + e); }
                     // Session reconstruct carries this window's library-view state
                     // (collection + items-tree columns/sort); the dev "New Window"
@@ -5046,10 +5064,21 @@ class _TabsMixin {
                             if (!String(t.type).endsWith("-loading")) return;
                             if (t._wvWatchdogRetried) return;   // one retry only
                             t._wvWatchdogRetried = true;
-                            self._wvTrace("watchdog[" + name() + "]: tab " + id + " stuck at " + t.type + " — retrying load");
                             t.type = String(t.type).replace(/-loading$/, "-unloaded");
-                            origSelect("zotero-pane");
-                            win.setTimeout(() => { try { origSelect(id); } catch (e) {} }, 80);
+                            // A retry can only succeed when THIS window is the most
+                            // recent one (ReaderTab resolves its container there);
+                            // otherwise show the library tab and re-defer the load
+                            // to the window's next activate.
+                            const front = (() => { try { return Services.wm.getMostRecentWindow("navigator:browser") === win; } catch (e) { return true; } })();
+                            if (front) {
+                                self._wvTrace("watchdog[" + name() + "]: tab " + id + " stuck — retrying load");
+                                origSelect("zotero-pane");
+                                win.setTimeout(() => { try { origSelect(id); } catch (e) {} }, 80);
+                            } else {
+                                self._wvTrace("watchdog[" + name() + "]: tab " + id + " stuck in a background window — re-deferring to activate");
+                                origSelect("zotero-pane");
+                                try { self._wvDeferSelect(win, t.data && t.data.itemID); } catch (e) {}
+                            }
                         } catch (e) {}
                     }, 6000);
                 } catch (e) {}
@@ -5093,6 +5122,100 @@ class _TabsMixin {
             };
             N._wvOpenPatched = true;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
+        // Zotero.Reader.open has the IDENTICAL hardcoded-getMainWindow flaw
+        // (xpcom/reader.js): loading a reader tab that lives in a background
+        // main window resolves the tab container in the focused window → the
+        // load hook dies silently and the tab wedges at "reader-loading"
+        // (validated live via the deferred-load idle warmer). Same fix.
+        try {
+            const R: any = (Zotero as any).Reader;
+            if (!R || typeof R.open !== "function" || R._wvOpenPatched) return;
+            const origR = R.open;
+            R.open = async function (_itemID: any, _location: any, opts: any) {
+                let owner: any = null;
+                try {
+                    const tabID = opts && opts.tabID;
+                    if (tabID) {
+                        for (const w of Zotero.getMainWindows()) {
+                            const Zt = (w as any).Zotero_Tabs;
+                            if (Zt && Zt._tabs && Zt._tabs.some((t: any) => t.id === tabID)) { owner = w; break; }
+                        }
+                    }
+                } catch (e) {}
+                const zAny: any = Zotero;
+                if (!owner || owner === zAny.getMainWindow()) return origR.apply(this, arguments);
+                const origGMW = zAny.getMainWindow;
+                zAny.getMainWindow = () => owner;
+                try { return await origR.apply(this, arguments); }
+                finally { zAny.getMainWindow = origGMW; }
+            };
+            R._wvOpenPatched = true;
+        } catch (e) { Zotero.debug("[Weavero] Reader.open multi-window patch err: " + e); }
+    }
+
+    /** DEFERRED tab activation for BACKGROUND windows: restoring a window's
+     *  saved selection immediately starts loading its content (PDF render),
+     *  so N windows restore = N simultaneous loads competing with the one the
+     *  user is actually looking at. Instead the background window keeps its
+     *  library tab; the saved selection fires on the window's first `activate`
+     *  (the user looks at it) — or from the post-settle idle loader. */
+    _wvDeferSelect(win: any, itemID: any) {
+        try {
+            if (!win || itemID == null) return;
+            win._wvDeferredSelectItemID = itemID;
+            // Re-arm cleanly: the previous listener was {once} and may have fired.
+            if (win._wvDeferredSelectFire) { try { win.removeEventListener("activate", win._wvDeferredSelectFire); } catch (e) {} }
+            const self = this;
+            const fire = () => {
+                try {
+                    const iid = win._wvDeferredSelectItemID;
+                    if (iid == null) return;
+                    win._wvDeferredSelectItemID = null;
+                    const Z = win.Zotero_Tabs;
+                    const t = Z && Z._tabs.find((x: any) => x.data && x.data.itemID === iid);
+                    if (t && Z.selectedID !== t.id) {
+                        Z.select(t.id);
+                        self._wvTrace("deferred select: loading " + t.type + " in " + self._wvWindowName(win));
+                    }
+                } catch (e) {}
+            };
+            win._wvDeferredSelectFire = fire;
+            win.addEventListener("activate", fire, { once: true });
+        } catch (e) {}
+    }
+
+    /** Post-settle idle loader — READER windows only. Main-window deferred
+     *  selections CANNOT be warmed in the background: Zotero's ReaderTab
+     *  constructor resolves its tab container via
+     *  `Services.wm.getMostRecentWindow('navigator:browser')` (not even
+     *  getMainWindow), so loading a tab in a non-focused main window throws
+     *  `_tabContainer is null` and wedges at `reader-loading` (validated
+     *  live; upstream-reportable). Those load on the window's first activate
+     *  — which is both correct-by-construction and exactly "when the user
+     *  looks at it". Reader-window deferred tabs use Weavero's own mount
+     *  machinery (window-correct), so warming them here is safe. */
+    _wvIdleLoadDeferred() {
+        try {
+            const targets: any[] = [];
+            try {
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    if (w._wvWTDeferredFire && w._wvWTDeferredActiveId != null) targets.push(w._wvWTDeferredFire);
+                }
+            } catch (e) {}
+            if (!targets.length) return;
+            this._wvTrace("idle loader: warming " + targets.length + " deferred reader-window tab(s) in the background");
+            const w0: any = Zotero.getMainWindow();
+            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            let i = 0;
+            const next = () => {
+                if (i >= targets.length) return;
+                try { targets[i++](); } catch (e) {}
+                setT(next, 2500);
+            };
+            next();
+        } catch (e) {}
     }
 
     /** FOCUSED-FIRST restore: keep the user's quit-time window on top while

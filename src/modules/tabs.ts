@@ -727,6 +727,24 @@ class _TabsMixin {
                 const rect = r.getBoundingClientRect();
                 if (rect.height && clientY < rect.top + rect.height / 2) { beforeRow = r; break; }
             }
+            // GROUP DRAG: a group can't nest inside another group, so snap the
+            // drop position OUT of any group the cursor is over — to that
+            // group's start (upper half) or past its end (lower half).
+            if ((opts && opts.snapOutOfGroups) && win) {
+                try {
+                    const groupOf = (r: any) => { const t = r && this._wvTabObjInWin(win, tidOf(r), isReader); return (t && (this as any)._wvTabGroupStamp(t)) || null; };
+                    const overRow = beforeRow || (rows.length ? rows[rows.length - 1] : null);
+                    const og = overRow && groupOf(overRow);
+                    if (og && og !== exclGrp) {
+                        const members = rows.filter((r: any) => groupOf(r) === og);
+                        const firstM = members[0], lastM = members[members.length - 1];
+                        const fr = firstM.getBoundingClientRect(), lr = lastM.getBoundingClientRect();
+                        const groupMid = (fr.top + lr.bottom) / 2;
+                        if (clientY < groupMid) beforeRow = firstM;                 // before the whole group
+                        else { const li = rows.indexOf(lastM); beforeRow = (li + 1 < rows.length) ? rows[li + 1] : null; }   // after it
+                    }
+                } catch (e) {}
+            }
             let anchorTabId: any = null;
             if (beforeRow) {
                 const idx = rows.indexOf(beforeRow);
@@ -783,10 +801,17 @@ class _TabsMixin {
             const doc = list.ownerDocument;
             const panelWin = panel.ownerGlobal;
             const livePlugin = () => ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
-            const clearHighlight = () => {
+            // Clear ONLY the drop-into outline classes — keep the ghost so
+            // dragover can REUSE + reposition it (removing + recreating it every
+            // dragover event was the flicker source).
+            const clearDropInto = () => {
                 try { for (const e of list.querySelectorAll(".wv-tabsmenu-drop-into")) e.classList.remove("wv-tabsmenu-drop-into"); } catch (er) {}
+            };
+            const clearGhost = () => {
                 try { for (const g of list.querySelectorAll(".wv-tabsmenu-ghost")) g.remove(); } catch (er) {}
             };
+            // Full clear (outline + ghost) — for drop / dragend / dragleave.
+            const clearHighlight = () => { clearDropInto(); clearGhost(); };
             // A preview of what's being dragged, appended at the END of the target
             // window's scope (where the move lands). For a tab: its icon + title.
             // For a group: its colour chip + name. Clearer than outlining an
@@ -924,7 +949,7 @@ class _TabsMixin {
                         if (scope && (scope as any)._wvWin) {
                             e.preventDefault();
                             try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
-                            const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId });
+                            const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
                             showGhostAt(scope, pos.beforeRow, { isGroup: true, color: gdrag.color, title: gdrag.name });
                             scope.classList.add("wv-tabsmenu-drop-into");
                         }
@@ -933,7 +958,7 @@ class _TabsMixin {
                     const drag = livePlugin()._wvPopupRowDrag;
                     if (!drag) return;
                     const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
-                    clearHighlight();
+                    clearDropInto();   // outline classes only — keep ghost (anti-flicker)
                     // Throttled: log only when the resolved target changes.
                     try {
                         const sig = res && res.target
@@ -945,7 +970,7 @@ class _TabsMixin {
                                 + " target=" + (e.target && e.target.className));
                         }
                     } catch (er) {}
-                    if (!shouldIntercept(res, drag) || !res.container) return;
+                    if (!shouldIntercept(res, drag) || !res.container) { clearGhost(); return; }
                     // Remember the last INTERCEPTABLE hover — the drop's own
                     // e.target is unreliable (the dragged row follows the cursor
                     // and is what's under the pointer at release), so the drop
@@ -957,10 +982,16 @@ class _TabsMixin {
                         // Cross-window move: preview the moving tab at the precise
                         // slot under the cursor (main targets); reader targets append.
                         const scope = (res.container.closest && res.container.closest(".wv-winscope")) || res.container;
-                        const beforeRow = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId }).beforeRow;
-                        showGhostAt(scope, beforeRow, { itemType: drag.itemType, title: drag.title, inGroup: !!res.target.groupId });
+                        const posInfo = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId });
+                        showGhostAt(scope, posInfo.beforeRow, { itemType: drag.itemType, title: drag.title, inGroup: !!res.target.groupId });
                         scope.classList.add("wv-tabsmenu-drop-into");
+                        try {
+                            if (self._wvGhostDbgN == null) self._wvGhostDbgN = 0;
+                            self._wvGhostDbgN++;
+                            if (self._wvGhostDbgN % 8 === 0) DBG("ghost move #" + self._wvGhostDbgN + " before=" + (posInfo.beforeRow && (posInfo.beforeRow.dataset && posInfo.beforeRow.dataset.tabId || "row")) + " inGroup=" + !!res.target.groupId);
+                        } catch (er) {}
                     } else {
+                        clearGhost();
                         // Pure group join (a Tab Groups row, including a closed group)
                         // — highlight the group it will join.
                         res.container.classList.add("wv-tabsmenu-drop-into");
@@ -982,7 +1013,7 @@ class _TabsMixin {
                         e.preventDefault(); e.stopPropagation();
                         const tgtWin = (scope as any)._wvWin;
                         const isReaderTgt = !!(scope as any)._wvIsReader;
-                        const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId });
+                        const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
                         const clientX = self._wvBarClientXForAnchor(tgtWin, pos.anchorTabId, isReaderTgt);
                         Promise.resolve(lp._wvMoveGroupToWindowAt(gdrag.groupId, tgtWin, isReaderTgt, clientX)).then(() => {
                             try { if (typeof panel.refreshList === "function") panel.refreshList(); else lp._wvRegroupTabsMenu(panel); } catch (er) {}

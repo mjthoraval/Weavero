@@ -1041,11 +1041,16 @@ class _TabGroupsMixin {
             // the group's contiguous run so the tab lands where the user aimed
             // WITHOUT splitting the group; else directly after the last member.
             try {
-                let firstIdx = -1, lastIdx = -1, curIdx = -1;
+                let firstIdx = -1, lastIdx = -1, curIdx = -1, lastPinnedInGroup = -1;
                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                     const t = Z_Tabs._tabs[i];
                     if (t.id === tabID) { curIdx = i; continue; }   // exclude self
-                    if (this._wvTabGroupStamp(t) === groupID) { if (firstIdx < 0) firstIdx = i; lastIdx = i; }
+                    if (this._wvTabGroupStamp(t) === groupID) {
+                        if (firstIdx < 0) firstIdx = i;
+                        lastIdx = i;
+                        const k2 = (this as any)._tabPinKey(t);
+                        if (k2 && this._pinnedTabsHas(k2.libraryID, k2.itemKey)) lastPinnedInGroup = i;
+                    }
                 }
                 if (lastIdx >= 0 && typeof Z_Tabs.move === "function") {
                     let target: number;
@@ -1056,7 +1061,15 @@ class _TabGroupsMixin {
                     } else {
                         target = lastIdx + 1;
                     }
+                    // Pinned-first invariant: an UNPINNED tab can't land before a
+                    // pinned member of the same group (Zotero forbids an unpinned
+                    // tab left of a pinned one).
+                    const dragPinned = this._pinnedTabsHas(key.libraryID, key.itemKey);
+                    if (!dragPinned && lastPinnedInGroup >= 0) target = Math.max(target, lastPinnedInGroup + 1);
                     if (curIdx >= 0 && curIdx < target) target--;   // removal shift
+                    this._wvTGDbg("addTab: gid=" + String(groupID).slice(-4) + " desired=" + desiredIndex
+                        + " run=[" + firstIdx + "," + lastIdx + "] pinnedInGrp=" + lastPinnedInGroup
+                        + " dragPinned=" + dragPinned + " → move to " + target);
                     Z_Tabs.move(tabID, target);
                 }
             } catch (e) {}

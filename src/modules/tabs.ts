@@ -4739,7 +4739,10 @@ class _TabsMixin {
                 try {
                     await Zotero.Items.getAsync(iid);          // force the item into the cache
                     if (!Zotero.Items.exists(iid)) continue;   // genuinely gone → stay dropped
-                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    // Keep the saved selection: the dropped tab is usually the one
+                    // the user was ON at quit (a selected note is the chronic native
+                    // drop) — re-adding it unselected left focus on a neighbor.
+                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: !!st.selected });
                     live.add(iid);
                     added++;
                     (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") at index " + i);
@@ -4877,6 +4880,92 @@ class _TabsMixin {
                 } catch (e) {}
                 return origClose(ids);
             };
+            // Stuck-loading WATCHDOG: if a selected tab still shows `-loading`
+            // 6 s after its select, the load hook died silently (e.g. the
+            // Notes.open wrong-window bug, patched separately, or any future
+            // wedge) — reset to `-unloaded` and re-drive the select once.
+            const origSelect = Z.select.bind(Z);
+            Z.select = function (id: any, reopening?: any, opts?: any) {
+                const r = origSelect(id, reopening, opts);
+                try {
+                    win.setTimeout(() => {
+                        try {
+                            const t = Z._tabs.find((x: any) => x.id === id);
+                            if (!t || Z.selectedID !== id) return;
+                            if (!String(t.type).endsWith("-loading")) return;
+                            if (t._wvWatchdogRetried) return;   // one retry only
+                            t._wvWatchdogRetried = true;
+                            self._wvTrace("watchdog[" + name() + "]: tab " + id + " stuck at " + t.type + " — retrying load");
+                            t.type = String(t.type).replace(/-loading$/, "-unloaded");
+                            origSelect("zotero-pane");
+                            win.setTimeout(() => { try { origSelect(id); } catch (e) {} }, 80);
+                        } catch (e) {}
+                    }, 6000);
+                } catch (e) {}
+                return r;
+            };
+        } catch (e) {}
+    }
+
+    /** Zotero.Notes.open hardcodes `Zotero.getMainWindow()` (the most recently
+     *  focused main window) — with MULTIPLE main windows, loading a note tab
+     *  that lives in another window makes `document.getElementById(tabID)`
+     *  return null there, the load hook rejects silently, and the tab sticks
+     *  at "note-loading" forever (upstream zotero/xpcom/data/notes.js:49; hit
+     *  repeatedly in the restart protocol). Wrap: resolve the tab's OWNING
+     *  window and point getMainWindow at it for the duration of the call. */
+    _wvPatchNotesOpenForMultiWindow() {
+        try {
+            const N: any = (Zotero as any).Notes;
+            if (!N || typeof N.open !== "function" || N._wvOpenPatched) return;
+            const orig = N.open;
+            N.open = async function (_itemID: any, _location: any, opts: any) {
+                let owner: any = null;
+                try {
+                    const tabID = opts && opts.tabID;
+                    if (tabID) {
+                        for (const w of Zotero.getMainWindows()) {
+                            const Zt = (w as any).Zotero_Tabs;
+                            if (Zt && Zt._tabs && Zt._tabs.some((t: any) => t.id === tabID)) { owner = w; break; }
+                        }
+                    }
+                } catch (e) {}
+                const zAny: any = Zotero;
+                if (!owner || owner === zAny.getMainWindow()) return orig.apply(this, arguments);
+                // Temporary, restored in finally; other getMainWindow callers in
+                // this narrow window get the owning window — harmless for the
+                // rare mid-load overlap, and strictly better than a wedged tab.
+                const origGMW = zAny.getMainWindow;
+                zAny.getMainWindow = () => owner;
+                try { return await orig.apply(this, arguments); }
+                finally { zAny.getMainWindow = origGMW; }
+            };
+            N._wvOpenPatched = true;
+        } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
+    }
+
+    /** Re-focus the window the user was in at quit (recorded in the store's
+     *  `focused` descriptor, stashed by _wvWTLoadRestoreMap). Runs once the
+     *  restore chain settles so a late-restoring window can't steal it back. */
+    _wvRestoreFocusedWindow() {
+        try {
+            const f = (this as any)._wvBootFocusedEntry;
+            if (!f || !f.kind) return;
+            let target: any = null;
+            if (f.kind === "anchor") {
+                target = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
+            } else if (f.kind === "main-dev") {
+                target = (Zotero.getMainWindows() || []).find((w: any) => w._wvManagedWindow
+                    && (f.wvWinId == null || w._wvWindowId === f.wvWinId));
+            } else if (f.kind === "reader") {
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    const st = w._wvWT;
+                    if (st && st.tabs && st.tabs.some((t: any) => t.itemID === f.itemID)) { target = w; break; }
+                }
+            }
+            if (target) { target.focus(); (this as any)._wvTrace("restore: focused " + f.kind + " window"); }
         } catch (e) {}
     }
 

@@ -1914,6 +1914,10 @@ class WeaveroPlugin {
         // Stash last quit's session file NOW, before anything overwrites it —
         // feeds the anchor-window verify-and-repair pass in the uiReady chain.
         try { (this as any)._wvStashBootSession(); } catch (e) {}
+        // Note tabs in secondary main windows: route Zotero.Notes.open to the
+        // tab's OWNING window (upstream hardcodes getMainWindow — wedges the
+        // tab at "note-loading" when another main window has focus).
+        try { (this as any)._wvPatchNotesOpenForMultiWindow(); } catch (e) {}
         // Register pref defaults FIRST so native settings-pane binding (and our
         // own getters) see the right initial values.
         try { this._wvRegisterDefaultPrefs(); } catch (e) {}

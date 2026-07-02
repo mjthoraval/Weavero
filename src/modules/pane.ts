@@ -4538,7 +4538,6 @@ class _PaneMixin {
             //    crash). The popup-hide handler now runs synchronously
             //    (no setTimeout) and bails on a closed window.
             let altAlone = false;
-            let menubarWasVisibleAtAltDown = false;
             const isDead = () => {
                 try { return !win || win.closed; } catch (e) { return true; }
             };
@@ -4595,42 +4594,43 @@ class _PaneMixin {
                 } catch (er) {}
                 return false;
             };
-            // Alt-DOWN — if the menubar is currently collapsed, reveal it
-            // synchronously. By the time Mozilla's native Alt-UP handler
-            // fires, the menubar is visible and focusable, so Mozilla can
-            // activate it the usual way: focus the first menu, underline
-            // accesskey letters, arm letter-key shortcuts. JS can't trigger
-            // that activation directly (the menubar is a plain HTMLDivElement
-            // with no MozMenuBarController — activation is in C++ widget
-            // code), but it does happen automatically when Mozilla sees an
-            // Alt keystroke on a visible-and-focusable menubar.
+            // Firefox MenuBarListener model: the menubar toggles on the
+            // *release* of a bare Alt press — Alt must go down with no other
+            // modifier held ("No other modifiers can be down. Especially
+            // CTRL. CTRL+ALT == AltGR"), and any intervening key or mouse
+            // press voids the pending toggle. Reveal happens at keyUP: the
+            // collapse CSS is height:0 (NOT display:none/visibility:collapse),
+            // so the XUL menubar stays laid-in and focusable while hidden,
+            // and this default-group capture listener runs BEFORE Mozilla's
+            // system-group Alt-up handler — by the time Mozilla activates
+            // the menubar (focus first menu, underline access keys) it is
+            // already visible.
+            const MBLOG = (m: string) => { try { Zotero.debug("[Weavero][menubar] " + m); } catch (er) {} };
             const keyDown = (e: any) => {
                 try {
                     if (isDead()) return;
                     // When the Weavero filter popup is open, Alt is part
                     // of an alt-click "exclude" gesture, not a menubar
-                    // request — bail before touching menubar state so
-                    // we don't reveal the menubar AND so menubarWasVisibleAtAltDown
-                    // stays in the right state for the next real Alt.
+                    // request — bail before touching menubar state.
                     if (isFilterPopupOpen()) {
+                        if (e.key === "Alt") MBLOG("keydown Alt ignored (filter popup open)");
                         altAlone = false;
                         return;
                     }
                     if (e.key === "Alt" && !e.repeat) {
-                        altAlone = true;
-                        const wasCollapsed = isCollapsed();
-                        menubarWasVisibleAtAltDown = !wasCollapsed;
-                        if (wasCollapsed) menubar.removeAttribute("wv-compact-hidden");
-                    } else if (e.altKey) {
-                        altAlone = false;   // Alt+other-key combo
+                        altAlone = !(e.ctrlKey || e.shiftKey || e.metaKey);
+                        MBLOG("keydown Alt: ctrl=" + e.ctrlKey + " shift=" + e.shiftKey
+                            + " meta=" + e.metaKey + " -> altAlone=" + altAlone
+                            + " (collapsed=" + isCollapsed() + ")");
+                    } else if (e.key !== "Alt") {
+                        // Any other key voids a pending Alt toggle
+                        // (Alt+shortcut, or Ctrl pressed after Alt).
+                        if (altAlone) MBLOG("keydown '" + e.key + "' cancels pending Alt toggle");
+                        altAlone = false;
                     }
                 } catch (er) {}
             };
-            // Alt-UP — handle the "Alt as a toggle" case (press Alt again to
-            // dismiss). If the menubar was already visible when Alt went
-            // down, this is the user toggling off → collapse. Otherwise the
-            // keydown already revealed it and Mozilla activates it; we do
-            // nothing here.
+            // Alt-UP — the actual toggle, iff the press stayed "alone".
             const keyUp = (e: any) => {
                 try {
                     if (isDead()) return;
@@ -4638,12 +4638,23 @@ class _PaneMixin {
                     // Same suppression as keyDown — keep alt-release inside
                     // the filter popup a non-event for the menubar.
                     if (isFilterPopupOpen()) {
+                        MBLOG("keyup Alt ignored (filter popup open)");
                         altAlone = false;
                         return;
                     }
-                    if (!altAlone) return;
+                    if (!altAlone) { MBLOG("keyup Alt: no pending toggle (canceled or modified)"); return; }
                     altAlone = false;
-                    if (menubarWasVisibleAtAltDown) collapse();
+                    if (isCollapsed()) {
+                        MBLOG("keyup Alt: REVEAL");
+                        menubar.removeAttribute("wv-compact-hidden");
+                        // Force a synchronous reflow so the menubar is fully
+                        // laid out before Mozilla's own Alt-up handler
+                        // (system event group, runs after us) activates it.
+                        try { (menubar as any).getBoundingClientRect(); } catch (er2) {}
+                    } else {
+                        MBLOG("keyup Alt: COLLAPSE (toggle off)");
+                        collapse();
+                    }
                 } catch (er) {}
             };
             // Esc behaviour matches Firefox: if a menu (File/Edit/...) is
@@ -4669,6 +4680,9 @@ class _PaneMixin {
             const docMouseDown = (e: any) => {
                 try {
                     if (isDead()) return;
+                    // A mouse press while Alt is held voids the pending toggle
+                    // (Firefox's MouseDown handler sets mAccessKeyDownCanceled).
+                    altAlone = false;
                     if (isCollapsed()) return;
                     const t = e.target;
                     if (!t || typeof t.closest !== "function") return;

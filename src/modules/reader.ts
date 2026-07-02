@@ -3583,10 +3583,12 @@ class _ReaderMixin {
             let altDown = false;      // ~ mAccessKeyDown
             let canceled = false;     // ~ mAccessKeyDownCanceled
             const hasOtherMod = (e: any) => !!(e.ctrlKey || e.shiftKey || e.metaKey);
+            const MBLOG = (m: string) => { try { Zotero.debug("[Weavero][menubar:reader] " + m); } catch (er) {} };
             const onKeyDown = (e: any) => {
                 if (!altDown) {
                     // Begin tracking only on a bare Alt press (no other modifier).
-                    if (e.key === "Alt" && !hasOtherMod(e)) { altDown = true; canceled = false; }
+                    if (e.key === "Alt" && !hasOtherMod(e)) { altDown = true; canceled = false; MBLOG("keydown Alt: tracking (bare)"); }
+                    else if (e.key === "Alt") MBLOG("keydown Alt: ignored, other modifier down (ctrl=" + e.ctrlKey + " shift=" + e.shiftKey + " meta=" + e.metaKey + ")");
                     return;
                 }
                 // Alt is already held. Once canceled, stay canceled until keyup.
@@ -3595,16 +3597,18 @@ class _ReaderMixin {
                 // combo — void the reveal (this is the case the old code missed:
                 // Alt held, then Ctrl / a letter pressed).
                 const bareAltRepeat = e.key === "Alt" && !hasOtherMod(e);
-                if (!bareAltRepeat) canceled = true;
+                if (!bareAltRepeat) { canceled = true; MBLOG("keydown '" + e.key + "' cancels pending Alt toggle"); }
             };
             const onKeyUp = (e: any) => {
                 try {
                     if (e.key !== "Alt") return;   // only the access key toggles
                     const reveal = altDown && !canceled && !hasOtherMod(e);
+                    if (!reveal) MBLOG("keyup Alt: no toggle (altDown=" + altDown + " canceled=" + canceled + ")");
                     altDown = false;
                     canceled = false;
                     if (!reveal) return;
                     const hidden = menubar.getAttribute("wv-compact-hidden") === "true";
+                    MBLOG("keyup Alt: " + (hidden ? "REVEAL" : "COLLAPSE (toggle off)"));
                     if (hidden) menubar.removeAttribute("wv-compact-hidden");
                     else menubar.setAttribute("wv-compact-hidden", "true");
                 } catch (er) {}
@@ -12827,6 +12831,7 @@ class _ReaderMixin {
                 try { if (!isDead()) menubar.setAttribute("wv-compact-hidden", "true"); }
                 catch (e) {}
             };
+            const MBLOG = (m: string) => { try { Zotero.debug("[Weavero][menubar:readerwin] " + m); } catch (er) {} };
             const keyDown = (e: any) => {
                 try {
                     if (isDead()) return;
@@ -12835,7 +12840,9 @@ class _ReaderMixin {
                         if (e.key === "Alt" && !e.repeat && !hasOtherMod(e)) {
                             altDown = true;
                             canceled = false;
+                            MBLOG("keydown Alt: tracking (bare)");
                         }
+                        else if (e.key === "Alt" && !e.repeat) MBLOG("keydown Alt: ignored, other modifier down (ctrl=" + e.ctrlKey + " shift=" + e.shiftKey + " meta=" + e.metaKey + ")");
                         return;
                     }
                     // Alt already held. Once canceled, stay canceled until keyup.
@@ -12843,7 +12850,7 @@ class _ReaderMixin {
                     // Any key other than a bare Alt auto-repeat means Alt is part
                     // of a combo (e.g. Alt held, then Ctrl or a letter) — void it.
                     const bareAltRepeat = e.key === "Alt" && !hasOtherMod(e);
-                    if (!bareAltRepeat) canceled = true;
+                    if (!bareAltRepeat) { canceled = true; MBLOG("keydown '" + e.key + "' cancels pending Alt toggle"); }
                 } catch (er) {}
             };
             const keyUp = (e: any) => {
@@ -12851,10 +12858,12 @@ class _ReaderMixin {
                     if (isDead()) return;
                     if (e.key !== "Alt") return;   // only the access key toggles
                     const act = altDown && !canceled && !hasOtherMod(e);
+                    if (!act) MBLOG("keyup Alt: no toggle (altDown=" + altDown + " canceled=" + canceled + ")");
                     altDown = false;
                     canceled = false;
                     if (!act) return;
                     // Reveal if hidden, collapse if already visible (second Alt).
+                    MBLOG("keyup Alt: " + (isCollapsed() ? "REVEAL" : "COLLAPSE (toggle off)"));
                     if (isCollapsed()) menubar.removeAttribute("wv-compact-hidden");
                     else collapse();
                 } catch (er) {}

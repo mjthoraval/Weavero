@@ -85,6 +85,24 @@ try {
 		tabs: (s.windows || []).reduce((a, w2) => a + ((w2.tabs || []).length), 0),
 	}));
 } catch (e) {}
+// Weavero note-link wiring: every LOADED note editor must carry Weavero's
+// stylesheet + click handling in its CURRENT content document (the editor
+// iframe reloads its document when the note loads, which once left restored
+// notes with native blue links). `wired: false` on a loaded editor = bug.
+snap.noteEditors = [];
+for (const w of Zotero.getMainWindows()) {
+	for (const ne of w.document.querySelectorAll("note-editor")) {
+		try {
+			const iframe = ne.querySelector("iframe#editor-view") || ne.querySelector("iframe");
+			const idoc = iframe && iframe.contentDocument;
+			if (!idoc || !idoc.body || !idoc.body.childElementCount) continue;   // not loaded
+			snap.noteEditors.push({
+				win: lp._wvWindowName(w),
+				wired: !!(idoc._wvNoteLinksWired && idoc.getElementById("weavero-note-editor-styles")),
+			});
+		} catch (e) {}
+	}
+}
 // Companion-plugin smoke check (both patch tab/note machinery Weavero touches).
 try {
 	const { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");

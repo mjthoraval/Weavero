@@ -5124,6 +5124,21 @@ class _ReaderMixin {
             let loaded = false;
             try { loaded = !!(ne._editorInstance && ev && ev.contentDocument && ev.contentDocument.querySelector(".ProseMirror")); } catch (e) {}
             if (!loaded && (attempt || 0) < 50) {
+                // RECOVERY at ~2.4 s: the outline wrap reparents #editor-view,
+                // which reloads it — if that happened AFTER the editor had
+                // initialized, the fresh document stays a blank shell (empty
+                // #editor-container) because the CE doesn't re-init on its own
+                // (`set item` dedupes same-id). Kick initEditor() directly.
+                if ((attempt || 0) === 20) {
+                    try {
+                        const cont = ev && ev.contentDocument
+                            && ev.contentDocument.getElementById("editor-container");
+                        if (cont && !cont.childElementCount && typeof ne.initEditor === "function") {
+                            ne.initEditor();
+                            (this as any)._wvTrace && (this as any)._wvTrace("note outline: blank editor after wrap-reload — re-initialized");
+                        }
+                    } catch (e) {}
+                }
                 (win.setTimeout || setTimeout)(() => this._wvNoteOutlineRenderWhenReady(win, tab, (attempt || 0) + 1), 120);
                 return;
             }

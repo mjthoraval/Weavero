@@ -187,20 +187,40 @@ class _NoteEditorMixin {
         if (!this._noteEditorObservers) {
             this._noteEditorObservers = new WeakMap();
         }
-        if (this._noteEditorObservers.has(noteEditorEl)) {
-            this._dbg("[Weavero] note-editor: already wired, skip");
-            return;
-        }
+        // Guard on the IFRAME, not the <note-editor> element: Better Notes'
+        // editor rebuild swaps the iframe inside the SAME element, so an
+        // element-level flag left the replacement iframe without a load
+        // listener (native blue links after restore). Each sweep re-checks
+        // the CURRENT iframe; wireUp itself is idempotent per document.
         const iframe = noteEditorEl.querySelector("iframe#editor-view")
             || noteEditorEl.querySelector("iframe");
         if (!iframe) {
             this._dbg("[Weavero] note-editor: no iframe found inside <note-editor>");
             return;
         }
+        // Instance-identity tokens (not booleans): a plugin reload tears down
+        // styles/listeners but leaves stale flags on surviving documents and
+        // iframes — a boolean guard then blocks the NEW instance from ever
+        // re-wiring (observed live: every editor unwired after a reload).
+        // NO early return when already claimed: BN can replace the iframe's
+        // DOCUMENT through paths that never fire the iframe `load` event, so
+        // every sweep must re-attempt the CURRENT document (wireUp is
+        // idempotent per document). Only the load-listener attach is once.
+        const alreadyClaimed = iframe._wvLoadWired === this;
+        iframe._wvLoadWired = this;
         const wireUp = () => {
             try {
                 const idoc = iframe.contentDocument;
                 if (!idoc) return;
+                // Idempotent PER DOCUMENT — the editor iframe RELOADS its
+                // content document when the note actually loads (the initial
+                // about:blank reports readyState "complete", so a one-shot
+                // wire-up landed on the placeholder and the REAL document came
+                // up unwired: native blue links after every session restore).
+                // The persistent load listener below re-runs this for each
+                // fresh document; the old doc's listeners die with it.
+                if (idoc._wvNoteLinksWired === this) return;
+                idoc._wvNoteLinksWired = this;
                 const iwin = idoc.defaultView;
                 this._ensureNoteEditorStyles(idoc);
 
@@ -426,12 +446,12 @@ class _NoteEditorMixin {
             }
         };
         try {
-            const ready = iframe.contentDocument
-                && iframe.contentDocument.readyState === "complete";
-            if (ready) {
+            // PERSISTENT load listener (not {once}) — every reload of the
+            // editor iframe (initial real load, note switch, DOM re-mount)
+            // gets a fresh wire-up; wireUp itself is idempotent per document.
+            if (!alreadyClaimed) iframe.addEventListener("load", wireUp);
+            if (iframe.contentDocument && iframe.contentDocument.readyState === "complete") {
                 wireUp();
-            } else {
-                iframe.addEventListener("load", wireUp, { once: true });
             }
         } catch (e) {
             Zotero.debug("[Weavero] note-editor setup err: " + e);

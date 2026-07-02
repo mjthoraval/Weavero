@@ -2895,7 +2895,7 @@ class WeaveroPlugin {
                                     (this as any)._wvTrace("restore: STRUCTURE READY — " + nw + " main + " + nr + " reader window(s), all groups placed; tab content continues loading");
                                 } catch (e) {}
                             }
-                            if ((!active && !devBusy && waited >= 5000) || waited >= 35000) {
+                            if ((!active && !devBusy && waited >= 3000) || waited >= 35000) {
                                 (this as any)._wvTabGroupRestoreGuard = false;
                                 try { (this as any)._wvTrace("restore: group guard lifted after " + waited + "ms (readerRestoreActive=" + active + ")"); } catch (e) {}
                                 try {

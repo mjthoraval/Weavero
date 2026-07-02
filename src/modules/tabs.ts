@@ -5173,6 +5173,15 @@ class _TabsMixin {
                         // PDF") keeps it FOREVER — Zotero's updateTitle only fires
                         // on item-metadata changes, and reader.updateTitle() alone
                         // doesn't repaint the strip label; Zotero_Tabs.rename does.
+                        // A NOTE tab finishing its load is exactly when its
+                        // editor document exists — sweep the note-link wiring
+                        // now (the boot sweep runs before restored editors
+                        // exist, and BN's editor rebuild can swap the iframe
+                        // at times no MutationObserver batch flags).
+                        if (t && String(t.type).indexOf("note") === 0) {
+                            win.setTimeout(() => { try { self._processNoteEditors(win.document); } catch (e) {} }, 400);
+                            win.setTimeout(() => { try { self._processNoteEditors(win.document); } catch (e) {} }, 2500);
+                        }
                         const iid = t && t.data && t.data.itemID;
                         const it: any = iid && Zotero.Items.get(iid);
                         if (it && typeof it.getTabTitle === "function") {
@@ -5320,6 +5329,18 @@ class _TabsMixin {
                             lp._wvTrace("hold: queued reader-window open for item " + itemID);
                             const args = arguments;
                             const ctx = this;
+                            // Cap the hold at 1.5 s FROM THE FIRST QUEUED OPEN:
+                            // a short head start for the focused tab, then the
+                            // windows come up regardless (the full-load wait
+                            // bought ~0.5-1 s but delayed windows by ~2 s).
+                            if (!lp._wvReaderOpenCapArmed) {
+                                lp._wvReaderOpenCapArmed = true;
+                                try {
+                                    const w1: any = Zotero.getMainWindow();
+                                    ((w1 && w1.setTimeout) ? w1.setTimeout.bind(w1) : setTimeout)(
+                                        () => { try { lp._wvReleaseReaderOpens("1.5s cap"); } catch (e) {} }, 1500);
+                                } catch (e) {}
+                            }
                             return new Promise((resolve) => lp._wvReaderOpenQueue.push(() => resolve(orig.apply(ctx, args))));
                         }
                     }
@@ -5327,10 +5348,11 @@ class _TabsMixin {
                 return orig.apply(this, arguments);
             };
             R._wvHoldWrapped = true;
-            // Hard backstop — the hold must never outlive startup.
+            // Hard backstop from install — the hold must never outlive startup
+            // (the 1.5 s cap arms on the first queued open; see the wrap).
             const w0: any = Zotero.getMainWindow();
             ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
-                () => { try { this._wvReleaseReaderOpens("timeout backstop"); } catch (e) {} }, 8000);
+                () => { try { this._wvReleaseReaderOpens("timeout backstop"); } catch (e) {} }, 10000);
         } catch (e) { Zotero.debug("[Weavero] _wvHoldReaderWindowOpens err: " + e); }
     }
 

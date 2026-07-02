@@ -80,3 +80,18 @@ JavaScript works; an MCP/RDP dev bridge makes it scriptable.
   at restore); `Zotero.Notes.open` hardcoding `getMainWindow()` (note tabs
   wedge at "Loading…" with multiple main windows); only one of several saved
   reader windows natively reopened. Weavero works around all three.
+
+## Troubleshooting-Mode leg
+
+After a normal quit (takeover: full panes, no reader windows in session.json),
+restart INTO Troubleshooting Mode (`Services.startup.restartInSafeMode(
+Ci.nsIAppStartup.eAttemptQuit)`), then restart normally from there. Checks:
+
+1. In safe mode (no plugins): the main windows' tabs restore natively — the
+   user's core workspace must be visible. Reader windows are absent (their
+   content is Weavero-only) — expected.
+2. The safe-mode session's CLEAN QUIT rewrites session.json without Weavero's
+   wraps — verify `weavero/windows.json` is untouched (no plugin, no writes)
+   and session.json still carries the full panes.
+3. After the normal restart: the FULL checklist must pass — reader windows,
+   groups, pins, sessions, note-link wiring all restored from Weavero's store.

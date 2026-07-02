@@ -5943,6 +5943,14 @@ class _ReaderMixin {
                     lp._wvTabsMenuGroupsSection(panel);
                     lp._wvTabsMenuWrapCurrentSession(panel);   // box around the current session
                     lp._wvTabSessionsMenuSection(panel);
+                    // Apply the funnel's file-type + library filters (shared global
+                    // state) to every row now that all sections exist — same post-pass
+                    // the main window runs, so the reader clone filters identically.
+                    if (lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
+                    // Rich library-card tooltip on the clone rows too — same shared
+                    // rows (data-wv-library) as the main popup, so the same resolver
+                    // handles them; the clone panel is the XUL tooltip anchor.
+                    if (lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
                     const w2 = panel.ownerGlobal;
                     if (w2) w2.setTimeout(() => { try { lp._wvTabsMenuFitListHeight && lp._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
                 }
@@ -5962,9 +5970,12 @@ class _ReaderMixin {
             const doc = win && win.document;
             const btn = doc && doc.getElementById("wv-wtl-filetype-btn");
             if (!btn) return;
-            const ps = this._wvWTPanelState(win);
-            const f = ps && ps.fileType;
-            const active = !!(f && (f.include.size > 0 || f.exclude.size > 0));
+            // Reflect the SHARED global filter state (file-type + library), the same
+            // state the main window's funnel dot reflects.
+            const f = this._tabsMenuFileTypeFilter;
+            const lf = this._tabsMenuLibraryFilter;
+            const active = !!((f && (f.include.size > 0 || f.exclude.size > 0))
+                || (lf && lf.size > 0));
             btn.classList.toggle("wv-active", active);
         } catch (e) {}
     }
@@ -5979,6 +5990,13 @@ class _ReaderMixin {
             const HTML = "http://www.w3.org/1999/xhtml";
             const ps = this._wvWTPanelState(win);
             if (!ps) return;
+            // The funnel filters the SAME plugin-global state as the main window's
+            // tabs menu (`_tabsMenuFileTypeFilter` + `_tabsMenuLibraryFilter`), so the
+            // consolidated reader render applies them and both menus stay in lock-step.
+            if (!this._tabsMenuFileTypeFilter) {
+                this._tabsMenuFileTypeFilter = { include: new Set(), exclude: new Set() };
+            }
+            if (!this._tabsMenuLibraryFilter) this._tabsMenuLibraryFilter = new Map();
 
             const existing = wrapper.querySelector("#wv-wtl-filetype-popup");
             if (existing) {
@@ -5995,9 +6013,9 @@ class _ReaderMixin {
             popup.id = "wv-wtl-filetype-popup";
 
             const clearAll = () => {
-                ps.fileType.include.clear();
-                ps.fileType.exclude.clear();
-                ps.libFilter.clear();
+                this._tabsMenuFileTypeFilter.include.clear();
+                this._tabsMenuFileTypeFilter.exclude.clear();
+                this._tabsMenuLibraryFilter.clear();
                 renderButtons();
                 this._wvWTRefreshFunnelState(win);
                 this._wvWTRenderTabListPanel(win);
@@ -6040,16 +6058,16 @@ class _ReaderMixin {
                 });
                 topBar.appendChild(clearBtn);
                 const anyActive
-                    = (ps.fileType.include.size > 0 || ps.fileType.exclude.size > 0)
-                    || ps.libFilter.size > 0;
+                    = (this._tabsMenuFileTypeFilter.include.size > 0 || this._tabsMenuFileTypeFilter.exclude.size > 0)
+                    || this._tabsMenuLibraryFilter.size > 0;
                 if (!anyActive) {
                     clearTextBtn.style.visibility = "hidden";
                     clearBtn.style.visibility = "hidden";
                 }
                 popup.appendChild(topBar);
 
-                const inc = ps.fileType.include;
-                const exc = ps.fileType.exclude;
+                const inc = this._tabsMenuFileTypeFilter.include;
+                const exc = this._tabsMenuFileTypeFilter.exclude;
                 const toggle = (val: any, alt: boolean) => {
                     if (alt) {
                         if (exc.has(val)) exc.delete(val);
@@ -6109,6 +6127,55 @@ class _ReaderMixin {
                     iconSrc: "chrome://zotero/skin/16/universal/note.svg",
                     accentColor: "var(--accent-yellow)",
                 }));
+
+                // Library filter — a chip per library the popup's tabs span, shown
+                // only when there are ≥2. Same tri-state gesture + shared
+                // `_tabsMenuLibraryFilter` state as the main window's tabs menu.
+                try {
+                    const libIds = new Set<number>();
+                    const listEl: any = doc.getElementById("wv-wtl-list");
+                    for (const r of (listEl ? Array.from(listEl.querySelectorAll("[data-wv-library]")) : []) as any[]) {
+                        const v = r.getAttribute("data-wv-library");
+                        if (v != null) libIds.add(Number(v));
+                    }
+                    if (libIds.size >= 2) {
+                        const lf = this._tabsMenuLibraryFilter;
+                        const libToggle = (libID: number, alt: boolean) => {
+                            const cur = lf.get(libID);
+                            if (alt) { if (cur === "exclude") lf.delete(libID); else lf.set(libID, "exclude"); }
+                            else { if (cur === "include") lf.delete(libID); else lf.set(libID, "include"); }
+                            renderButtons();
+                            this._wvWTRefreshFunnelState(win);
+                            this._wvWTRenderTabListPanel(win);
+                        };
+                        const libRow: any = doc.createElementNS(HTML, "div");
+                        libRow.className = "wv-tabs-menu-lib-row";
+                        libRow.style.cssText = "display:flex;flex-direction:column;gap:2px;margin-top:6px;padding-top:6px;border-top:1px solid var(--fill-quinary);";
+                        const libs = ([...libIds].map((id) => { try { return Zotero.Libraries.get(id); } catch (e) { return null; } }).filter(Boolean)) as any[];
+                        libs.sort((a, b) => (a.libraryType === "user" ? -1 : b.libraryType === "user" ? 1 : String(a.name || "").localeCompare(String(b.name || ""))));
+                        for (const lib of libs) {
+                            const chip: any = doc.createElementNS(HTML, "button");
+                            chip.type = "button";
+                            chip.className = "wv-filter-opt";
+                            chip.style.cssText = "display:flex;align-items:center;gap:6px;justify-content:flex-start;width:100%;padding:3px 6px;";
+                            chip.title = lib.name + " — click to show only this library, Alt+click to exclude.";
+                            const cur = lf.get(lib.libraryID);
+                            if (cur === "include") chip.dataset.selected = "true";
+                            if (cur === "exclude") chip.dataset.excluded = "true";
+                            const icon: any = doc.createElementNS(HTML, "span");
+                            icon.className = "icon icon-css " + (lib.libraryType === "group" ? "icon-library-group" : lib.libraryType === "feed" ? "icon-feed" : "icon-library");
+                            icon.style.cssText = "width:16px;height:16px;flex:0 0 16px;";
+                            chip.appendChild(icon);
+                            const nm: any = doc.createElementNS(HTML, "span");
+                            nm.textContent = lib.name;
+                            nm.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;";
+                            chip.appendChild(nm);
+                            chip.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (er) {} libToggle(lib.libraryID, e.altKey); });
+                            libRow.appendChild(chip);
+                        }
+                        popup.appendChild(libRow);
+                    }
+                } catch (e) { Zotero.debug("[Weavero] reader tabs-menu library chips err: " + e); }
             };
             renderButtons();
             wrapper.appendChild(popup);
@@ -6149,6 +6216,19 @@ class _ReaderMixin {
                 return;
             }
 
+            // Sort-by-Library / annotation-count are plugin-GLOBAL state shared
+            // with the main window's tabs menu — the consolidated reader render
+            // reads those globals, so this settings popup must toggle THEM (not the
+            // per-panel `ps`), exactly like the main window. Lazily init from prefs.
+            if (this._tabsMenuGroupByLibrary === undefined) {
+                const v = Zotero.Prefs.get("weavero.tabsMenuGroupByLibrary");
+                this._tabsMenuGroupByLibrary = (typeof v === "boolean") ? v : false;
+            }
+            if (this._tabsMenuShowAnnotationCount === undefined) {
+                const v = Zotero.Prefs.get("weavero.tabsMenuShowAnnotationCount");
+                this._tabsMenuShowAnnotationCount = (typeof v === "boolean") ? v : false;
+            }
+
             const popup: any = doc.createElementNS(HTML, "div");
             popup.id = "wv-wtl-settings-popup";
 
@@ -6158,9 +6238,13 @@ class _ReaderMixin {
                 const cb: any = doc.createElementNS(HTML, "input");
                 cb.type = "checkbox";
                 cb.className = "wv-tabs-menu-settings-cb";
-                cb.checked = !!ps[key];
+                cb.checked = !!(this as any)[key];
                 cb.addEventListener("change", () => {
-                    ps[key] = cb.checked;
+                    (this as any)[key] = cb.checked;
+                    // Persist so the choice survives restart/reload, and re-render
+                    // this clone. Pref name derives from the field, same as the main
+                    // window: `_tabsMenuGroupByLibrary` → `weavero.tabsMenuGroupByLibrary`.
+                    try { Zotero.Prefs.set("weavero." + key.replace(/^_/, ""), cb.checked); } catch (e) {}
                     this._wvWTRenderTabListPanel(win);
                 });
                 const lbl: any = doc.createElementNS(HTML, "span");
@@ -6171,8 +6255,8 @@ class _ReaderMixin {
                 return row;
             };
 
-            popup.appendChild(makeRow("groupByLibrary", "Sort by Library"));
-            popup.appendChild(makeRow("showAnnCount", "Show Annotations Count"));
+            popup.appendChild(makeRow("_tabsMenuGroupByLibrary", "Sort by Library"));
+            popup.appendChild(makeRow("_tabsMenuShowAnnotationCount", "Show Annotations Count"));
             wrapper.appendChild(popup);
 
             const onOutside = (e: any) => {

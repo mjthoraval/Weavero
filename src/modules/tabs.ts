@@ -1958,15 +1958,28 @@ class _TabsMixin {
             // user re-opens them). Stale pins (item gone) are dropped.
             const openSet = new Set<string>();
             for (const p of pinnedOpenInOrder) openSet.add(p.libraryID + ":" + p.itemKey);
-            // itemIDs of ALL open tabs (incl. ones whose item isn't cached yet on
-            // restart) — lets us tell a still-open-but-unloaded pinned tab from a
-            // genuinely CLOSED one.
+            // itemIDs of ALL open tabs in EVERY main window (the pin store is
+            // global, this apply is per-window — pruning against only THIS
+            // window's tabs silently forgot pins living in the others). Also
+            // catches tabs whose item isn't cached yet on restart.
             const openTabItemIDs = new Set<number>();
-            for (let i = 1; i < Z_Tabs._tabs.length; i++) {
-                const iid = Z_Tabs._tabs[i] && Z_Tabs._tabs[i].data && Z_Tabs._tabs[i].data.itemID;
-                if (iid != null) openTabItemIDs.add(iid);
-            }
+            try {
+                const allWins = Zotero.getMainWindows ? Zotero.getMainWindows() : [win];
+                for (const w2 of allWins) {
+                    const tabs2 = (w2 as any).Zotero_Tabs && (w2 as any).Zotero_Tabs._tabs;
+                    if (!tabs2) continue;
+                    for (let i = 1; i < tabs2.length; i++) {
+                        const iid = tabs2[i] && tabs2[i].data && tabs2[i].data.itemID;
+                        if (iid != null) openTabItemIDs.add(iid);
+                    }
+                }
+            } catch (e) {}
             const quitting = !!(this as any)._wvQuitting;
+            // While the startup restore is still in flight, item lookups can
+            // miss (group libraries load late) and tabs aren't all back yet —
+            // pruning then silently forgets pins (a group-library pin was lost
+            // on every restart). Keep everything until the guard lifts.
+            const restoring = !!(this as any)._wvTabGroupRestoreGuard;
             const newPref: Array<{ libraryID: number, itemKey: string }> = pinnedOpenInOrder
                 .map(p => ({ libraryID: p.libraryID, itemKey: p.itemKey }));
             for (const p of pinPref) {
@@ -1977,8 +1990,8 @@ class _TabsMixin {
                 // we're quitting (keep so it restores pinned next launch).
                 try {
                     const id = Zotero.Items.getIDFromLibraryAndKey(p.libraryID, p.itemKey);
-                    if (!id) continue;                          // item gone → drop
-                    if (quitting || openTabItemIDs.has(id)) newPref.push(p);
+                    if (!id) { if (restoring) newPref.push(p); continue; }   // unresolvable mid-restore ≠ gone
+                    if (quitting || restoring || openTabItemIDs.has(id)) newPref.push(p);
                 } catch (e) {}
             }
             // Persist only if the array changed (order or content).

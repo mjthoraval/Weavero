@@ -2785,6 +2785,11 @@ class WeaveroPlugin {
             (Zotero as any).uiReadyPromise
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
                 .then(() => { try { (this as any)._wvTrace("restore: dev main windows"); this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
+                // Firefox-style: open EVERY window up-front. Reopen the reader
+                // windows Zotero's own loop drops (Items.exists cache race) NOW
+                // and in parallel — fire-and-forget; adopt + the unclaimed
+                // fallback handle the rest.
+                .then(() => { try { (this as any)._wvPreemptReaderWindowReopen(); } catch (e) {} })
                 // Keep the user's quit-time window on top while background
                 // windows open (each steals focus as it appears).
                 .then(() => { try { (this as any)._wvFocusShepherdStart(); } catch (e) {} })

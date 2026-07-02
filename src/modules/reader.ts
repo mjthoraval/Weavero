@@ -7811,6 +7811,44 @@ class _ReaderMixin {
      *  synthetic augment-map entry built in `_wvWTLoadRestoreMap`. Runs once per
      *  session after `uiReadyPromise`; dup-guarded so a hot-reload (where the
      *  recreated window already exists) doesn't open duplicates. */
+    /** PREEMPTIVE reader-window reopen, Firefox-style (open every window
+     *  up-front, wait for nothing). Zotero's own reopen loop
+     *  (reader.js init: `Session.state.windows.filter(x => x.type == 'reader'
+     *  && Zotero.Items.exists(x.itemID))`) silently drops any window whose
+     *  item isn't in the memory cache at uiReady — the same early-cache race
+     *  that dropped note tabs; it's why one saved reader window went missing
+     *  in EVERY test run. Re-run the loop correctly: force-load each item
+     *  first, then open all still-missing windows in PARALLEL. */
+    async _wvPreemptReaderWindowReopen() {
+        try {
+            if (this._wvReaderPreemptRan) return;
+            this._wvReaderPreemptRan = true;
+            const entries = (((Zotero as any).Session && (Zotero as any).Session.state
+                && (Zotero as any).Session.state.windows) || [])
+                .filter((x: any) => x && x.type === "reader" && x.itemID != null);
+            if (!entries.length) return;
+            await Promise.all(entries.map(async (x: any) => {
+                try {
+                    await Zotero.Items.getAsync(x.itemID);      // force the cache
+                    if (!Zotero.Items.exists(x.itemID)) return; // genuinely gone
+                    if (this._wvReaderWindowHostingItem(x.itemID)) return;
+                    // A ReaderWindow already opening for this item (Zotero's own
+                    // loop won the race)? Skip. Main-window READER TABS of the
+                    // same item don't count — only reader-window hosts.
+                    const inFlight = (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
+                        try {
+                            return r.itemID === x.itemID && r._window && r._window.document
+                                && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
+                        } catch (e) { return false; }
+                    });
+                    if (inFlight) return;
+                    (this as any)._wvTrace && (this as any)._wvTrace("restore: preemptive reader-window reopen for item " + x.itemID);
+                    await (Zotero as any).Reader.open(x.itemID, null, { title: x.title, openInWindow: true, secondViewState: x.secondViewState });
+                } catch (e) { Zotero.debug("[Weavero] preemptive reader reopen err (" + x.itemID + "): " + e); }
+            }));
+        } catch (e) { Zotero.debug("[Weavero] _wvPreemptReaderWindowReopen err: " + e); }
+    }
+
     /** FALLBACK for `kind:"reader"` store entries whose native window Zotero
      *  did NOT reopen (observed: only one of two saved reader windows came
      *  back natively — the other's extras sat unclaimed in the restore map
@@ -7829,10 +7867,17 @@ class _ReaderMixin {
                 .map((k) => Number(k))
                 .filter((id) => !orphanHeads.has(id));
             const consume = (id: any) => { try { delete this._wvWTRestoreMap[id]; } catch (e) {} };
+            const inFlight = (itemID: any) => (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
+                try {
+                    return r.itemID === itemID && r._window && r._window.document
+                        && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
+                } catch (e) { return false; }
+            });
             for (const itemID of ids) {
                 try {
                     if (!Zotero.Items.exists(itemID)) { consume(itemID); continue; }   // gone for good
                     if (this._wvReaderWindowHostingItem(itemID)) { consume(itemID); continue; }   // claimed after all
+                    if (inFlight(itemID)) continue;   // preemptive reopen already opening it — adopt will consume
                     const it: any = Zotero.Items.get(itemID);
                     if (it && typeof it.isNote === "function" && it.isNote()) { consume(itemID); continue; } // note-heads persist as orphans
                     try { (this as any)._wvTrace && (this as any)._wvTrace("restore: unclaimed reader entry for item " + itemID + " — reopening window"); } catch (e) {}

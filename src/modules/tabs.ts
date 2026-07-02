@@ -1143,6 +1143,13 @@ class _TabsMixin {
                 return;
             }
             const avail = Math.max(200, Math.floor(win.innerHeight - top - 18));
+            // Reset the height first so scrollHeight reflects the ACTUAL content.
+            // A previously-set (larger) height makes scrollHeight report that height
+            // when the content no longer overflows, so the list would never shrink
+            // when content shrinks (e.g. after disabling sessions) — leaving empty
+            // space at the bottom. Measure + re-set happen in the same frame, so
+            // there's no visible flicker.
+            list.style.removeProperty("height");
             const content = list.scrollHeight;
             const h = Math.min(content, avail);
             // The list is a XUL vbox — CSS max-height is ignored, but an explicit

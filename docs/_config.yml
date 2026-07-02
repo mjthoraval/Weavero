@@ -1,0 +1,11 @@
+title: Weavero
+description: A free, open-source Zotero plugin — clickable links in annotation comments and notes, a powerful library filter, bookmarks, tab groups, and window management.
+url: "https://mjthoraval.github.io"
+baseurl: "/Weavero"
+lang: en
+theme: jekyll-theme-cayman
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+exclude:
+  - restart-testing.md

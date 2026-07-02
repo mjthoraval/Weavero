@@ -7409,17 +7409,29 @@ class _ReaderMixin {
         try {
             const en = Services.wm.getEnumerator("zotero:reader");
             while (en.hasMoreElements()) {
-                const w: any = en.getNext();
+                const entry = this._wvWindowStoreCaptureReaderWindow(en.getNext());
+                if (entry) out.push(entry);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureReaderWindows err: " + e); }
+        return out;
+    }
+
+    /** Store entry for ONE reader window (null when there's nothing to
+     *  persist). Split out so a CLOSING window can be captured from its unload
+     *  handler (closed-in-series quit merge — see _wvWindowStoreNoteClosingReaderWindow). */
+    _wvWindowStoreCaptureReaderWindow(w: any) {
+        try {
+            {
                 const st = w && w._wvWT;
-                if (!st || !st.tabs || !st.tabs.length) continue;
+                if (!st || !st.tabs || !st.tabs.length) return null;
                 const realTabs = st.tabs.filter((t: any) => t.itemID != null);
-                if (!realTabs.length) continue;
+                if (!realTabs.length) return null;
                 const native = st.tabs.find((t: any) => t.native && t.itemID != null);
                 if (native) {
                     // ANCHORED window: Zotero restores the native tab; we persist
                     // only the EXTRAS (skip if none — Zotero handles it alone).
                     const extraTabs = st.tabs.filter((t: any) => !t.native && t.itemID != null);
-                    if (!extraTabs.length) continue;
+                    if (!extraTabs.length) return null;
                     // Persist each tab's group stamp (`wvGroupId`) so reader-window
                     // group membership is restored DETERMINISTICALLY — not rebuilt by
                     // the lossy claim pass (first-come per item-key drops a duplicate
@@ -7440,8 +7452,9 @@ class _ReaderMixin {
                     // this, the native always restores first and an extra that was
                     // BEFORE it (e.g. a note first, PDF second) lands after it.
                     const order = realTabs.map((t: any) => t.itemID);
-                    out.push({ kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, nativeGrp: native.wvGroupId || null, order });
-                } else {
+                    return { kind: "reader", nativeItemID: native.itemID, extras, activeIndex, nativePinned: !!native.pinned, nativeGrp: native.wvGroupId || null, order };
+                }
+                else {
                     // ORPHAN window: the native tab was closed, so Zotero has no
                     // entry for it (it'd be lost). Weavero owns full recreation —
                     // persist every tab; on restore the first becomes the new
@@ -7449,11 +7462,11 @@ class _ReaderMixin {
                     const tabs = realTabs.map((t: any) => ({ itemID: t.itemID, pinned: !!t.pinned, grp: t.wvGroupId || null }));
                     let activeIndex = realTabs.findIndex((t: any) => t.id === st.activeId);
                     if (activeIndex < 0) activeIndex = 0;
-                    out.push({ kind: "reader-orphan", tabs, activeIndex });
+                    return { kind: "reader-orphan", tabs, activeIndex };
                 }
             }
-        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureReaderWindows err: " + e); }
-        return out;
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreCaptureReaderWindow err: " + e); }
+        return null;
     }
 
     /** Reader-window tab change → persist. Routes through the UNIFIED window
@@ -7549,6 +7562,7 @@ class _ReaderMixin {
                     const entry = this._wvWTRestoreMap && this._wvWTRestoreMap[nativeItemID];
                     if (!entry || !Array.isArray(entry.extras) || !entry.extras.length) return;
                     try { delete this._wvWTRestoreMap[nativeItemID]; } catch (e) {}   // consume once
+                    try { (this as any)._wvTrace && (this as any)._wvTrace("restore: reader window adopt item " + nativeItemID + " + " + entry.extras.length + " extra(s)"); } catch (e) {}
                     // Normalize both persisted shapes:
                     //   v1: extras = [itemID, ...]            → pinned:false
                     //   v2: extras = [{ itemID, pinned }, ...]
@@ -7658,6 +7672,36 @@ class _ReaderMixin {
      *  synthetic augment-map entry built in `_wvWTLoadRestoreMap`. Runs once per
      *  session after `uiReadyPromise`; dup-guarded so a hot-reload (where the
      *  recreated window already exists) doesn't open duplicates. */
+    /** FALLBACK for `kind:"reader"` store entries whose native window Zotero
+     *  did NOT reopen (observed: only one of two saved reader windows came
+     *  back natively — the other's extras sat unclaimed in the restore map
+     *  until expiry and were lost). After a grace period, any still-unclaimed
+     *  entry gets its native item opened in a fresh reader window; the normal
+     *  adopt path (`_wvWTMaybeRestore`) then consumes the entry and mounts
+     *  its extras/groups exactly as if Zotero had reopened it. */
+    async _wvWindowStoreRestoreUnclaimedReaderWindows() {
+        try {
+            if (this._wvUnclaimedReaderRestoreRan) return;
+            this._wvUnclaimedReaderRestoreRan = true;
+            await this._wvWTLoadRestoreMap();
+            if (!this._wvWTRestoreActive) return;
+            const orphanHeads = new Set(this._wvOrphanReaderItemIDs || []);
+            const ids = Object.keys(this._wvWTRestoreMap || {})
+                .map((k) => Number(k))
+                .filter((id) => !orphanHeads.has(id));
+            for (const itemID of ids) {
+                try {
+                    if (!Zotero.Items.exists(itemID)) continue;
+                    if (this._wvReaderWindowHostingItem(itemID)) continue;   // claimed after all
+                    const it: any = Zotero.Items.get(itemID);
+                    if (it && typeof it.isNote === "function" && it.isNote()) continue; // note-heads persist as orphans
+                    try { (this as any)._wvTrace && (this as any)._wvTrace("restore: unclaimed reader entry for item " + itemID + " — reopening window"); } catch (e) {}
+                    await (Zotero as any).Reader.open(itemID, null, { openInWindow: true });
+                } catch (e) { Zotero.debug("[Weavero] unclaimed reader restore err (" + itemID + "): " + e); }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRestoreUnclaimedReaderWindows err: " + e); }
+    }
+
     async _wvWindowStoreRestoreOrphanReaderWindows() {
         try {
             if (this._wvOrphanRestored) return;

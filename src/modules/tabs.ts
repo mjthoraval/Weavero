@@ -4399,15 +4399,25 @@ class _TabsMixin {
         const settle = () => {
             if (done) return;
             ticks++;
+            // The React tab bar must be MOUNTED before we touch the tab set:
+            // `Zotero_Tabs.add` (inside restoreState) dereferences
+            // `_tabBarRef.current` and a too-early call THROWS, aborting the
+            // restore mid-list (caught live by the restore tracer: 3 of 5 tabs
+            // lost). Poll until it exists — same backstop cap below applies.
+            let barReady = false;
+            try { barReady = !!(win.Zotero_Tabs && win.Zotero_Tabs._tabBarRef && win.Zotero_Tabs._tabBarRef.current); } catch (e) {}
             let n = -1;
             try { n = win.Zotero_Tabs ? win.Zotero_Tabs.getState().length : -1; } catch (e) {}
-            // Dev windows open with a CLEARED session, so there's no native restore
-            // to wait for — once only the library tab is present, finish immediately
-            // (and restoreState the queued tabs) instead of polling ~550ms.
-            if (n === 1) { finish(); return; }
-            if (n === lastCount) stableTicks++; else { stableTicks = 0; lastCount = n; }
-            // Stable for ~2 ticks → native restore done; cap at ~3s as a backstop.
-            if (stableTicks >= 2 || ticks >= 15) { finish(); return; }
+            if (barReady) {
+                // Dev windows open with a CLEARED session, so there's no native restore
+                // to wait for — once only the library tab is present, finish immediately
+                // (and restoreState the queued tabs) instead of polling ~550ms.
+                if (n === 1) { finish(); return; }
+                if (n === lastCount) stableTicks++; else { stableTicks = 0; lastCount = n; }
+                // Stable for ~2 ticks → native restore done; cap as a backstop.
+                if (stableTicks >= 2) { finish(); return; }
+            }
+            if (ticks >= 60) { finish(); return; }   // ~5s hard backstop
             try { win.setTimeout(settle, 80); } catch (e) { finish(); }
         };
         try { win.setTimeout(settle, 50); } catch (e) { finish(); }
@@ -4594,6 +4604,7 @@ class _TabsMixin {
     _wvSpawnNextDevWindow() {
         try {
             if (!this._wvDevSpawnQueue || !this._wvDevSpawnQueue.length) return;
+            try { (this as any)._wvTrace && (this as any)._wvTrace("restore: spawning dev main window (" + this._wvDevSpawnQueue.length + " queued)"); } catch (e) {}
             this._wvPendingDevWindow = true;
             this._wvClearSessionPaneState();        // open clean — no flash of the original's tabs
             (Zotero as any).openMainWindow();
@@ -4625,10 +4636,307 @@ class _TabsMixin {
      *  in-memory state self-heals on the next `Session.save`. */
     _wvRestoreSessionPaneState() {}
 
-    /** Register a `quit-application-granted` observer that synchronously
-     *  captures the open dev windows and issues the store write — the
-     *  authoritative final save (the debounced ones may not flush at quit).
-     *  Same hook + timing Zotero's own `Session.save` relies on. */
+    /** Restore/quit breadcrumbs. Every entry goes to Zotero.debug (visible in
+     *  Debug Output) AND an in-memory ring buffer; `_wvTraceFlush` persists the
+     *  buffer to `<data>/weavero/trace-<tag>.json` (quit-side events would
+     *  otherwise be unreadable after the process dies). Timestamps are
+     *  relative to the first entry, so startup phases read as offsets. */
+    _wvTrace(msg: string) {
+        try {
+            if (!this._wvTraceLog) { this._wvTraceLog = []; this._wvTraceT0 = Date.now(); }
+            const rel = Date.now() - this._wvTraceT0;
+            this._wvTraceLog.push({ t: rel, m: msg });
+            if (this._wvTraceLog.length > 1500) this._wvTraceLog.splice(0, 500);
+            Zotero.debug("[Weavero][trace] +" + rel + "ms " + msg);
+        } catch (e) {}
+    }
+
+    /** Persist the trace buffer (fire-and-forget; same write mechanism as the
+     *  window store, so a quit-time flush rides the shutdown I/O barrier). */
+    _wvTraceFlush(tag: string) {
+        try {
+            if (!this._wvTraceLog || !this._wvTraceLog.length) return;
+            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+            const path = PathUtils.join(dir, "trace-" + tag + ".json");
+            const body = JSON.stringify({ t0: this._wvTraceT0, entries: this._wvTraceLog }, null, 1);
+            (async () => {
+                try {
+                    await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                    await IOUtils.writeUTF8(path, body, { tmpPath: path + ".tmp" });
+                } catch (e) {}
+            })();
+        } catch (e) {}
+    }
+
+    /** Stash the PROFILE session.json (what Zotero saved at last quit) before
+     *  anything can overwrite it — the raw source for the anchor-window
+     *  reconciliation below. Fire-and-forget from init(). */
+    _wvStashBootSession() {
+        if (this._wvBootSessionPromise) return this._wvBootSessionPromise;
+        this._wvBootSessionPromise = (async () => {
+            try {
+                const path = PathUtils.join((Zotero as any).Profile.dir, "session.json");
+                const text: any = await Zotero.File.getContentsAsync(path);
+                const doc = JSON.parse(String(text));
+                const pane = (doc.windows || []).find((w: any) => w && w.type === "pane");
+                return (pane && pane.tabs) || null;
+            } catch (e) { return null; }
+        })();
+        return this._wvBootSessionPromise;
+    }
+
+    /** VERIFY-AND-REPAIR the anchor window's native session restore. Zotero's
+     *  `restoreState` (zoteroPane.js, end of makeVisible) runs on the same
+     *  `initializationPromise` turn plugin startup awaits — structurally
+     *  BEFORE Weavero can harden it — and its loop silently skips any tab
+     *  whose item isn't in the memory cache yet (`Zotero.Items.exists` false
+     *  during early load; repeatedly dropped a note tab in the restart
+     *  protocol). Once startup settles and items are loaded, compare the
+     *  anchor's live tabs against the stashed quit-time session and re-add
+     *  anything that was dropped, at its saved position, as an unloaded tab. */
+    async _wvReconcileAnchorSessionTabs() {
+        try {
+            if (this._wvAnchorReconciled) return;
+            this._wvAnchorReconciled = true;
+            const saved: any[] = await this._wvStashBootSession();
+            if (!saved || saved.length < 2) return;
+            const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
+            if (!anchor || !anchor.Zotero_Tabs) return;
+            const Z = anchor.Zotero_Tabs;
+            const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+            let added = 0;
+            for (let i = 0; i < saved.length; i++) {
+                const st = saved[i];
+                const iid = st && st.data && st.data.itemID;
+                if (iid == null || live.has(iid)) continue;   // (a same-window dup pair is matched once — acceptable)
+                const base = String(st.type || "").replace(/-(unloaded|loading)$/, "");
+                if (base !== "reader" && base !== "note") continue;
+                try {
+                    await Zotero.Items.getAsync(iid);          // force the item into the cache
+                    if (!Zotero.Items.exists(iid)) continue;   // genuinely gone → stay dropped
+                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    live.add(iid);
+                    added++;
+                    (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") at index " + i);
+                } catch (e) {}
+            }
+            (this as any)._wvTrace(added
+                ? ("reconcile: restored " + added + " tab(s) the native anchor restore dropped")
+                : "reconcile: anchor matches the saved session");
+        } catch (e) { Zotero.debug("[Weavero] _wvReconcileAnchorSessionTabs err: " + e); }
+    }
+
+    /** Wire the restore hardening/tracing on main windows as EARLY as their
+     *  DOM exists — including the boot-time anchor window, which loads while
+     *  plugin startup is still in flight (both `onMainWindowLoad` and the
+     *  late init loop can miss it, leaving its native session restore
+     *  unhardened). Registered synchronously from init(); the wm listener
+     *  covers windows opened later, the immediate sweep covers ones already
+     *  open in any load state. */
+    _wvWireEarlyRestoreTracing() {
+        try {
+            if (this._wvEarlyRestoreListener) return;
+            const self = this;
+            const tryWire = (w: any) => {
+                try { if (w && w.Zotero_Tabs) self._wvWireRestoreTracing(w); return !!(w && w.Zotero_Tabs); } catch (e) { return false; }
+            };
+            const wireWhenReady = (w: any) => {
+                if (tryWire(w)) return;
+                const onDCL = () => {
+                    try { w.removeEventListener("DOMContentLoaded", onDCL); } catch (e) {}
+                    try {
+                        if (String(w.location && w.location.href).indexOf("zoteroPane.xhtml") !== -1) tryWire(w);
+                    } catch (e) {}
+                };
+                try { w.addEventListener("DOMContentLoaded", onDCL); } catch (e) {}
+            };
+            const en = Services.wm.getEnumerator("navigator:browser");
+            while (en.hasMoreElements()) wireWhenReady(en.getNext());
+            const listener: any = {
+                onOpenWindow(xul: any) {
+                    try { wireWhenReady(xul.docShell.domWindow); } catch (e) {}
+                },
+                onCloseWindow() {},
+            };
+            Services.wm.addListener(listener);
+            this._wvEarlyRestoreListener = listener;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireEarlyRestoreTracing err: " + e); }
+    }
+
+    _wvUnwireEarlyRestoreTracing() {
+        try {
+            if (this._wvEarlyRestoreListener) {
+                Services.wm.removeListener(this._wvEarlyRestoreListener);
+                this._wvEarlyRestoreListener = null;
+            }
+        } catch (e) {}
+    }
+
+    /** Log-only wraps around this window's `Zotero_Tabs.restoreState` / `close`
+     *  — the direct witnesses for restore-time tab loss (what types went IN to
+     *  restoreState, which handler dropped what, and who closes tabs during the
+     *  first minute). Idempotent per window; negligible steady-state cost. */
+    _wvWireRestoreTracing(win: any) {
+        try {
+            const Z = win && win.Zotero_Tabs;
+            if (!Z || Z._wvRestoreTraceWired) return;
+            Z._wvRestoreTraceWired = true;
+            const self = this;
+            const name = () => { try { return self._wvWindowName(win); } catch (e) { return "?"; } };
+            const origRestore = Z.restoreState.bind(Z);
+            Z.restoreState = async function (tabs: any) {
+                try { self._wvTrace("restoreState[" + name() + "] IN: " + (tabs || []).map((t: any) => t.type + (t.selected ? "*" : "")).join(",")); } catch (e) {}
+                // HARDENED per-tab restore. Upstream's loop awaits each type
+                // hook in sequence and a single throw aborts the WHOLE list —
+                // every later tab is silently dropped (caught live: a managed
+                // window lost 3 of 5 tabs to one early `_tabBarRef` error; a
+                // selected note tab, last in the saved order, vanished the same
+                // way). Replicate the same loop with per-tab isolation + ONE
+                // deferred retry for failures; fall back to the original when
+                // the hook API isn't there (older Zotero).
+                if (Z.tabHooks && Z.parseTabType && Z._getHook) {
+                    const itemIDs: any[] = [];
+                    const failed: any[] = [];
+                    const runOne = async (tab: any, i: number) => {
+                        const { tabContentType } = Z.parseTabType(tab.type);
+                        const hook = Z._getHook(tabContentType, "restoreState");
+                        const r = await hook(tab, i);
+                        if (r && r.itemID) itemIDs.push(r.itemID);
+                        // A tab that CARRIES an item but produced none was silently
+                        // skipped by the hook — during early startup that's usually
+                        // `Zotero.Items.exists()` returning false because the item
+                        // cache hasn't loaded yet (dropped a note tab in runs 1/2/5).
+                        // Surface it as a failure so the retry pass force-loads it.
+                        const wanted = tab && tab.data && tab.data.itemID;
+                        if (wanted && !(r && r.itemID)) throw new Error("item " + wanted + " not available (cache not loaded yet?)");
+                    };
+                    for (let i = 0; i < (tabs || []).length; i++) {
+                        try { await runOne(tabs[i], i); }
+                        catch (e) { failed.push(tabs[i]); self._wvTrace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
+                    }
+                    if (failed.length) {
+                        await new Promise((res) => { try { win.setTimeout(res, 1500); } catch (e) { res(null); } });
+                        for (const tab of failed) {
+                            try {
+                                // Force-load the item into the cache first — the usual
+                                // failure is a too-early Zotero.Items.exists() miss.
+                                try { if (tab.data && tab.data.itemID) await Zotero.Items.getAsync(tab.data.itemID); } catch (e2) {}
+                                await runOne(tab, Z._tabs.length);
+                                self._wvTrace("restoreState[" + name() + "] retry OK: " + tab.type);
+                            }
+                            catch (e) { self._wvTrace("restoreState[" + name() + "] retry FAILED (" + tab.type + "): " + e); }
+                        }
+                    }
+                    Z._prevSelectedID = null;
+                    try {
+                        const items = await Zotero.Items.getAsync(itemIDs.filter((x: any) => x));
+                        await Zotero.Items.loadDataTypes(items);
+                    } catch (e) {}
+                    try { self._wvTrace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
+                    return;
+                }
+                let r;
+                try { r = await origRestore(tabs); }
+                catch (e) { self._wvTrace("restoreState[" + name() + "] THREW: " + e); throw e; }
+                try { self._wvTrace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
+                return r;
+            };
+            const wiredAt = Date.now();
+            const origClose = Z.close.bind(Z);
+            Z.close = function (ids: any) {
+                try {
+                    if (Date.now() - wiredAt < 90000) {
+                        const stack = String(new Error().stack || "").split("\n").slice(1, 4).join(" <- ");
+                        self._wvTrace("close[" + name() + "]: " + JSON.stringify(ids) + " via " + stack);
+                    }
+                } catch (e) {}
+                return origClose(ids);
+            };
+        } catch (e) {}
+    }
+
+    /** Closed-in-series buffer (Firefox SessionStore's `_shouldRestore` idea):
+     *  a window closing may be part of a quit already in progress — unloads can
+     *  fire BEFORE `quit-application-granted`, so the `_wvQuitting` flag alone
+     *  can't classify the close. Every closing window's store entry is parked
+     *  here (with any group ids its close PARKED); the quit flush folds recent
+     *  entries back into the OPEN set and un-parks their groups. Mid-session
+     *  closes just age out. */
+    _wvWindowStoreNoteClosingWindow(entry: any, parkedGroupIds?: any[]) {
+        try {
+            if (!entry) return;
+            if (!this._wvClosedInSeries) this._wvClosedInSeries = [];
+            const now = Date.now();
+            this._wvClosedInSeries = this._wvClosedInSeries
+                .filter((e: any) => now - e.t < 60000)
+                .slice(-7);
+            this._wvClosedInSeries.push({ t: now, entry, parkedGroupIds: parkedGroupIds || [] });
+            this._wvTrace && this._wvTrace("closed-in-series: noted " + entry.kind
+                + (parkedGroupIds && parkedGroupIds.length ? " (parked " + parkedGroupIds.join(",") + ")" : ""));
+        } catch (e) {}
+    }
+
+    /** The authoritative FINAL capture at quit: cancel pending debounced saves,
+     *  capture every still-open window, fold in windows closed in the final
+     *  series (last 20 s) that the live capture no longer sees, un-park the
+     *  groups those closes parked, write once — then FREEZE the store so no
+     *  teardown-triggered save can clobber the result. */
+    _wvWindowStoreQuitFlush() {
+        try {
+            (this as any)._wvQuitting = true;
+            // Namespace flag too: unload closures wired before a plugin reload
+            // hold the OLD instance, whose field this observer can't reach.
+            // `Zotero.Weavero` is rebuilt on every plugin startup, so the flag
+            // can't leak into the next session.
+            try { if ((Zotero as any).Weavero) (Zotero as any).Weavero._quitting = true; } catch (e) {}
+            try { if (this._wvWindowStoreSaveTimer) { const w = Zotero.getMainWindow(); (w ? w.clearTimeout.bind(w) : clearTimeout)(this._wvWindowStoreSaveTimer); this._wvWindowStoreSaveTimer = null; } } catch (e) {}
+            const live = [
+                ...this._wvWindowStoreCaptureDevWindows(),
+                ...(this as any)._wvWindowStoreCaptureReaderWindows(),
+            ];
+            // Item-id fingerprint per entry, to detect a closed-series window
+            // that's genuinely absent from the live capture.
+            const ids = (en: any) => {
+                try {
+                    if (en.kind === "main-dev") return (en.tabs || []).map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null);
+                    if (en.kind === "reader") return [en.nativeItemID, ...(en.extras || []).map((x: any) => x.itemID)];
+                    return (en.tabs || []).map((x: any) => x.itemID);
+                } catch (e) { return []; }
+            };
+            const liveSets = live.map((en: any) => new Set(ids(en)));
+            const now = Date.now();
+            const unparkIds: string[] = [];
+            for (const rec of (this._wvClosedInSeries || [])) {
+                if (now - rec.t > 20000) continue;             // not part of this quit
+                const recIds = ids(rec.entry);
+                const represented = liveSets.some((s: any) => recIds.some((i: any) => s.has(i)));
+                if (represented) continue;
+                live.push(rec.entry);
+                for (const gid of (rec.parkedGroupIds || [])) unparkIds.push(gid);
+                this._wvTrace && this._wvTrace("quit-flush: merged closed-in-series " + rec.entry.kind);
+            }
+            if (unparkIds.length) {
+                // The park was a misclassified quit-teardown close — the window is
+                // in the store and restores next launch, so its groups stay LIVE.
+                try {
+                    const groups = (this as any)._tabGroupsGet();
+                    let dirty = false;
+                    for (const g of groups) if (unparkIds.includes(g.id) && (g as any).saved) { (g as any).saved = false; dirty = true; }
+                    if (dirty) (this as any)._tabGroupsSet(groups);
+                    this._wvTrace && this._wvTrace("quit-flush: un-parked " + unparkIds.join(","));
+                } catch (e) {}
+            }
+            this._wvWindowStoreWrite({ version: 4, windows: live });
+            this._wvWindowStoreFrozen = true;
+            this._wvTrace && this._wvTrace("quit-flush: wrote " + live.length + " window entr(ies), store FROZEN");
+            try { this._wvTraceFlush && this._wvTraceFlush("quit"); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreQuitFlush err: " + e); }
+    }
+
+    /** Quit detection, Firefox `RunState` model: `_wvQuitting` flips on the
+     *  EARLIEST signal (`quit-application-requested`, before any window closes)
+     *  and the final capture runs at `quit-application-granted`. A vetoed quit
+     *  (requested but never granted) resets the flag after a grace period. */
     _wvWindowStoreRegisterQuitFlush() {
         try {
             if (this._wvWindowStoreQuitObserver) return;

@@ -1902,6 +1902,18 @@ class WeaveroPlugin {
         // otherwise be deleted as "empty" before it restores. Cleared once reader
         // restore settles (see the uiReadyPromise chain below).
         (this as any)._wvTabGroupRestoreGuard = true;
+        // EARLY (before any await): hook the ANCHOR window's Zotero_Tabs the
+        // moment the window's DOM exists. The anchor's session restore runs at
+        // the end of ZoteroPane.makeVisible(), while `onMainWindowLoad` and the
+        // late all-windows loop can both miss the boot window (plugin startup is
+        // still in flight when it loads) — leaving its restoreState UNHARDENED:
+        // Zotero's native loop silently drops any tab whose item isn't in the
+        // memory cache yet (Zotero.Items.exists === false during early load;
+        // cost a note tab in restart-protocol runs 1/2/5).
+        try { (this as any)._wvWireEarlyRestoreTracing(); } catch (e) {}
+        // Stash last quit's session file NOW, before anything overwrites it —
+        // feeds the anchor-window verify-and-repair pass in the uiReady chain.
+        try { (this as any)._wvStashBootSession(); } catch (e) {}
         // Register pref defaults FIRST so native settings-pane binding (and our
         // own getters) see the right initial values.
         try { this._wvRegisterDefaultPrefs(); } catch (e) {}
@@ -2768,8 +2780,22 @@ class WeaveroPlugin {
         try {
             (Zotero as any).uiReadyPromise
                 .then(() => { try { this._wvGuardAllContextPanes(); } catch (e) {} })
-                .then(() => { try { this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
-                .then(() => { try { this._wvWindowStoreRestoreOrphanReaderWindows(); } catch (e) {} })
+                .then(() => { try { (this as any)._wvTrace("restore: dev main windows"); this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
+                .then(() => { try { (this as any)._wvTrace("restore: orphan reader windows"); this._wvWindowStoreRestoreOrphanReaderWindows(); } catch (e) {} })
+                // Grace for Zotero's native reader-window reopen, then recreate
+                // any saved reader window it did NOT bring back (extras would
+                // otherwise sit unclaimed in the restore map and be lost).
+                .then(() => new Promise((res) => {
+                    try {
+                        const w: any = Zotero.getMainWindow();
+                        ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(res, 6000);
+                    } catch (e) { res(null); }
+                }))
+                .then(() => { try { (this as any)._wvTrace("restore: unclaimed reader windows check"); return (this as any)._wvWindowStoreRestoreUnclaimedReaderWindows(); } catch (e) { return null; } })
+                // Verify-and-repair the anchor window against last quit's saved
+                // session (native restore drops tabs whose items weren't cached
+                // yet); items are loaded by this point in the chain.
+                .then(() => { try { return (this as any)._wvReconcileAnchorSessionTabs(); } catch (e) { return null; } })
                 // Pull reader tabs that a previous DISABLE migrated into the main
                 // window back into their reader windows (consumes the hand-off
                 // file; no-op if absent). After the orphan restore so any windows
@@ -2791,6 +2817,7 @@ class WeaveroPlugin {
                             const active = !!(this as any)._wvWTRestoreActive;
                             if ((!active && waited >= 8000) || waited >= 35000) {
                                 (this as any)._wvTabGroupRestoreGuard = false;
+                                try { (this as any)._wvTrace("restore: group guard lifted after " + waited + "ms (readerRestoreActive=" + active + ")"); } catch (e) {}
                                 try {
                                     const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                                     for (const w of wins) {
@@ -2842,9 +2869,13 @@ class WeaveroPlugin {
         } catch (e) {}
         // Session-save hardening: serialize transient `-loading` tab types as
         // their base type so a mid-load tab isn't dropped on the next restore.
+        // Plus restore tracing (restoreState in/out, early closes) per window.
         try {
             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
-            for (const w of wins) (this as any)._wvPatchTabsGetState(w);
+            for (const w of wins) {
+                (this as any)._wvPatchTabsGetState(w);
+                try { (this as any)._wvWireRestoreTracing(w); } catch (e) {}
+            }
         } catch (e) {}
 
         // 7c. Pop-out note windows — main-window pane observer doesn't
@@ -3593,6 +3624,9 @@ class WeaveroPlugin {
             try { (this as any)._wvWireReopenClosedShortcut(_window); } catch (e) {}
             // Session-save hardening (see startup pass): base types for -loading tabs.
             try { (this as any)._wvPatchTabsGetState(_window); } catch (e) {}
+            // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
+            try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}
+            try { (this as any)._wvWireRestoreTracing(_window); } catch (e) {}
             // Weavero managed window: a window spawned by the dev "New Main
             // Window" command (or by session-restore) is tagged `_wvManagedWindow`
             // — a Weavero-managed peer, as opposed to the untagged oldest

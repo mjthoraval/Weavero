@@ -463,6 +463,14 @@ class _TabSessionsMixin {
             if (!this._wvGetEnableTabSessions()) return;
             if (this._wvTabSessionSwitching) return;
             if (!this._wvTabSessionGetActiveId()) return;
+            // Half-restored startup or quit-teardown must NOT be captured into
+            // the active session — a lossy restore would overwrite the saved
+            // session with the degraded workspace (restart-protocol run 2: a
+            // lost reader window silently shrank "Main session" 17 → 13 tabs).
+            // The workspace settles before the group restore-guard lifts; any
+            // churn after that re-triggers tracking normally.
+            if ((this as any)._wvTabGroupRestoreGuard) return;
+            if ((this as any)._wvQuitting) return;
             if (this._wvTabSessionTrackTimer) {
                 try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
             }

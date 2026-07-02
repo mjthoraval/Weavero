@@ -819,6 +819,8 @@ class _TabsMixin {
             const showGhostAt = (scope: any, beforeRow: any, info: any) => {
                 try {
                     let ghost: any = list.querySelector(".wv-tabsmenu-ghost");
+                    const reused = !!ghost;
+                    try { Zotero.debug("[Weavero][popupDnD] showGhost " + (reused ? "REUSE" : "CREATE") + " inGroup=" + !!info.inGroup + " before=" + (beforeRow && (beforeRow.dataset && beforeRow.dataset.tabId || beforeRow.className) || "end")); } catch (er) {}
                     if (!ghost) {
                         if (info.isGroup) {
                             // Mirror the inline group header so the preview chip/name

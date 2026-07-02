@@ -192,7 +192,7 @@ class _TabGroupsMixin {
 
     _ensureTabGroupStyles(doc: any) {
         try {
-            const STYLE_VERSION = "20";
+            const STYLE_VERSION = "21";
             const old = doc.getElementById("wv-tab-group-styles");
             if (old) {
                 if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
@@ -213,6 +213,16 @@ class _TabGroupsMixin {
                 "  pointer-events: none;",
                 "}",
                 "#tab-bar-container .tab.wv-group-first::after { left: -7px; }",
+                // DRAG PREVIEW: while dragging a tab over a group (release = join),
+                // the lifted tab carries that group's underline so it reads as a
+                // member-to-be. Its own ::after (independent of wv-grouped-tab so
+                // it doesn't disturb the dragged tab's real group state).
+                "#tab-bar-container .tab.wv-drag-join-preview::after {",
+                "  content: \"\"; position: absolute; bottom: 0; height: 2px;",
+                "  left: -4px; right: 0; border-radius: 1px;",
+                "  background: var(--wv-group-color, #4f7ce0);",
+                "  pointer-events: none;",
+                "}",
                 // Collapsed members: ZERO-WIDTH collapse, NOT display:none.
                 // A display:none tab has a 0x0 rect at the window origin, so
                 // Zotero's drag-midpoint math sees phantom tabs at the LEFT
@@ -1998,6 +2008,18 @@ class _TabGroupsMixin {
                 const tx = Math.round((clientX - geom.grab) - geom.originLeft);
                 const tf = "translateX(" + tx + "px)";
                 if (geom.draggedEl.style.transform !== tf) geom.draggedEl.style.transform = tf;
+                // Carry the target group's underline while a join is pending.
+                try {
+                    if (res.joinGroupId) {
+                        const g = this._tabGroupsGet().find((x: any) => x.id === res.joinGroupId);
+                        const hex = g ? this._tabGroupColorHex(g.color) : "";
+                        geom.draggedEl.classList.add("wv-drag-join-preview");
+                        if (hex) geom.draggedEl.style.setProperty("--wv-group-color", hex);
+                    } else {
+                        geom.draggedEl.classList.remove("wv-drag-join-preview");
+                        geom.draggedEl.style.removeProperty("--wv-group-color");
+                    }
+                } catch (er) {}
             }
             // Tint the target group's chip when releasing would join it.
             const wantChip = res.joinGroupId ? ("wv-tgchip-" + res.joinGroupId) : null;
@@ -2038,6 +2060,8 @@ class _TabGroupsMixin {
                     try {
                         const s = geom.draggedEl.style;
                         s.transform = ""; s.transition = ""; s.zIndex = ""; s.position = ""; s.pointerEvents = "";
+                        geom.draggedEl.classList.remove("wv-drag-join-preview");
+                        s.removeProperty("--wv-group-color");
                     } catch (er) {}
                 }
             }

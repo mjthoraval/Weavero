@@ -2823,9 +2823,16 @@ class WeaveroPlugin {
                         const wait = (ms: number) => new Promise((r) => { const w: any = Zotero.getMainWindow(); ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(r, ms); });
                         for (let i = 0; i < 4; i++) {
                             if ((this as any)._wvReaderWindowHostingItem(f.itemID)) return;
+                            // A window for the item is already OPENING (the
+                            // preemptive reopen fires before this prioritizer)
+                            // — reopening here created a DUPLICATE that won the
+                            // adopt while the original was culled seconds later:
+                            // user-visible window churn + a late final window.
+                            if ((this as any)._wvReaderWindowInFlight && (this as any)._wvReaderWindowInFlight(f.itemID)) return;
                             await wait(400);
                         }
                         if ((this as any)._wvReaderWindowHostingItem(f.itemID)) return;
+                        if ((this as any)._wvReaderWindowInFlight && (this as any)._wvReaderWindowInFlight(f.itemID)) return;
                         if (!Zotero.Items.exists(f.itemID)) return;
                         (this as any)._wvTrace("restore: focused reader window prioritized — reopening now");
                         await (Zotero as any).Reader.open(f.itemID, null, { openInWindow: true });
@@ -2858,7 +2865,17 @@ class WeaveroPlugin {
                 // Verify-and-repair the anchor window against last quit's saved
                 // session (native restore drops tabs whose items weren't cached
                 // yet); items are loaded by this point in the chain.
-                .then(() => { try { return (this as any)._wvReconcileAnchorSessionTabs(); } catch (e) { return null; } })
+                .then(() => {
+                    // BOOT-ONLY: the verify-and-repair compares live tabs to the
+                    // BOOT session snapshot. On a hot-reload/enable mid-session
+                    // that snapshot is stale — the repair re-added tabs the user
+                    // (or a group migrate) had deliberately closed, resurrecting
+                    // them with group stamps (2026-07-03). APP_STARTUP=1;
+                    // undefined = old bootstrap shim → behave as before.
+                    const rsn = (this as any)._wvStartupReason;
+                    if (rsn !== undefined && rsn !== 1) return null;
+                    try { return (this as any)._wvReconcileAnchorSessionTabs(); } catch (e) { return null; }
+                })
                 // Pull reader tabs that a previous DISABLE migrated into the main
                 // window back into their reader windows (consumes the hand-off
                 // file; no-op if absent). After the orphan restore so any windows
@@ -2882,8 +2899,25 @@ class WeaveroPlugin {
                             const active = !!(this as any)._wvWTRestoreActive;
                             // Managed dev windows must be spawned + initialized too
                             // (their restoreState carries group stamps).
-                            const devBusy = !!(this._wvPendingDevWindow
+                            let devBusy = !!(this._wvPendingDevWindow
                                 || (this._wvDevSpawnQueue && this._wvDevSpawnQueue.length));
+                            // A spawned managed window is STILL BUSY until its
+                            // restoreState has filled its tabs (that's what
+                            // carries the group stamps back). Lifting between
+                            // spawn and restoreState-out left a ~200ms window
+                            // where a group's home was unresolvable and the
+                            // claim pass grabbed a duplicate member copy in the
+                            // ANCHOR window → group split across two windows.
+                            // (Restored managed windows always have >1 tab —
+                            // the store only saves them that way.)
+                            try {
+                                if (!devBusy) {
+                                    for (const w of (Zotero.getMainWindows() || [])) {
+                                        if ((w as any)._wvManagedWindow && w.Zotero_Tabs
+                                                && w.Zotero_Tabs._tabs.length <= 1) { devBusy = true; break; }
+                                    }
+                                }
+                            } catch (e) {}
                             // The user-visible milestone: every window and group
                             // exists (tabs may still be loading their content).
                             if (!active && !devBusy && !structLogged) {
@@ -2915,7 +2949,10 @@ class WeaveroPlugin {
                                 // Late verify-and-repair for managed windows (other
                                 // plugins mutate tabs during window load — see the
                                 // method comment; runs after they're done).
-                                try { (this as any)._wvReconcileManagedWindows(); } catch (e) {}
+                                try {
+                                    const rsn2 = (this as any)._wvStartupReason;
+                                    if (rsn2 === undefined || rsn2 === 1) (this as any)._wvReconcileManagedWindows();
+                                } catch (e) {}
                                 // Land the user where they left off (window focus).
                                 try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {}
                                 // Warm deferred background tabs once the dust has
@@ -3700,6 +3737,29 @@ class WeaveroPlugin {
             Zotero.debug("[Weavero] pref observer registered on root branch");
         } catch(e) { Zotero.debug("[Weavero] pref observer error: " + e); }
 
+        // MID-SESSION ENABLE: Zotero dispatches `onMainWindowLoad` only for
+        // NEWLY-OPENED windows (verified upstream: plugins.js wires a window-
+        // mediator onOpenWindow listener, nothing for already-open ones), and
+        // the getMainWindow()-based setup above covers only the focused
+        // window. Run the per-window wiring for every OTHER open main window
+        // so enabling with several windows doesn't leave them half-wired
+        // (observed: no styles / no decoration observer / pins not collapsed
+        // in the background window). No-op on app startup (no windows yet).
+        try {
+            const focused = Zotero.getMainWindow();
+            const all = Zotero.getMainWindows ? Zotero.getMainWindows() : [];
+            for (const w of all) {
+                if (w === focused) continue;
+                try { this.onMainWindowLoad(w); } catch (e) { Zotero.debug("[Weavero] init extra-window wiring err: " + e); }
+            }
+        } catch (e) {}
+
+        // DISABLE→ENABLE window round-trip: if the previous disable saved and
+        // closed extra windows, restore them from the frozen store now.
+        // (Once-guards in the restore entry points make racing the normal
+        // startup restore a harmless no-op.)
+        try { (this as any)._wvEnableRestoreClosedWindows(); } catch (e) {}
+
         Zotero.debug("[Weavero] initialized");
     }
 
@@ -3836,7 +3896,13 @@ class WeaveroPlugin {
                     && _window.document.getElementById(PANEL_ID);
                 if (oldPanel) oldPanel.remove();
             } catch(e) {}
-            this.injectStyles();
+            // Inject into THIS window's document — `injectStyles()` targets
+            // `Zotero.getMainWindow()` (the most-recently-focused window),
+            // which is wrong when this hook runs for a BACKGROUND window
+            // (mid-session enable wiring pass): the focused window got the
+            // styles twice and this one got none.
+            try { this.injectStylesInto(_window && _window.document); }
+            catch (e) { this.injectStyles(); }
             // Re-attach to the now-live document.
             this._setupTreeClickDelegate();
             this._setupItemsListContextMenu();
@@ -3867,6 +3933,23 @@ class WeaveroPlugin {
             // be missing on those rows until the user scrolls or the
             // annotation otherwise re-renders.
             try { this._reinjectAllSidebars(); } catch(e) {}
+            // Deferred note-editor sweeps for THIS window: a restored managed
+            // window's editors (note tab + context pane) finish loading well
+            // after the boot sweeps ran, and nothing event-driven covers the
+            // context-pane editor — they sat unwired (native blue links)
+            // until some later sweep happened by. Two delayed passes bracket
+            // the restore window; resolve the live plugin at fire time.
+            try {
+                const wref: any = _window;
+                for (const d of [3000, 10000]) {
+                    wref.setTimeout(() => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (lp && !lp._wvDestroyed) lp._processNoteEditors(wref.document);
+                        } catch (e) {}
+                    }, d);
+                }
+            } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }
@@ -3929,7 +4012,131 @@ class WeaveroPlugin {
         }
     }
 
+    /** Remove every Weavero DOM artifact from one main window: injected
+     *  <style> elements, toolbar buttons, group chips, tooltips, per-tab
+     *  attributes/classes and root classes. Used by destroy() for EVERY
+     *  open main window (the detailed unwrap pass in destroy() only covers
+     *  the first window; this generic sweep covers the rest and anything
+     *  the detailed pass missed). Idempotent. */
+    _wvStripWindowChrome(w) {
+        const doc = w && w.document;
+        if (!doc) return;
+        // All our injected UI/style elements carry a wv- id prefix.
+        try {
+            for (const el of [...doc.querySelectorAll("[id^='wv-']")]) {
+                try { el.remove(); } catch (e) {}
+            }
+        } catch (e) {}
+        try { doc.getElementById(STYLE_ID)?.remove(); } catch (e) {}
+        // Class-only Weavero elements (no wv- id — e.g. the quick-search
+        // scope button): if EVERY class is wv-* and there's no id, the
+        // element is ours. If it WRAPS native content (any descendant with
+        // an id or a non-wv class), UNWRAP it — removing the shell outright
+        // once deleted the native tabs-menu list inside a `.wv-winscope`
+        // wrapper, leaving the List All Tabs popup permanently EMPTY (rows
+        // rebuilt into the detached node). Leaf elements are removed whole.
+        // Native elements we merely decorated keep the element and lose
+        // just the wv- classes.
+        try {
+            for (const el of [...doc.querySelectorAll("[class*='wv-']")]) {
+                try {
+                    if (!el.isConnected) continue;   // already handled via an ancestor
+                    const classes = [...el.classList];
+                    const wv = classes.filter((c) => c.startsWith("wv-"));
+                    if (!wv.length) continue;
+                    if (wv.length === classes.length && !el.id) {
+                        let hasNative = false;
+                        try {
+                            for (const d of el.querySelectorAll("[id], [class]")) {
+                                if (d.id || [...d.classList].some((c) => c && !c.startsWith("wv-"))) { hasNative = true; break; }
+                            }
+                        } catch (e) {}
+                        if (hasNative) {
+                            const p = el.parentNode;
+                            if (p) { while (el.firstChild) p.insertBefore(el.firstChild, el); }
+                        }
+                        el.remove();
+                        continue;
+                    }
+                    for (const c of wv) el.classList.remove(c);
+                } catch (e) {}
+            }
+        } catch (e) {}
+        // Belt-and-braces: if the native tabs-menu list somehow ended up
+        // DETACHED (a wrapper removal took it along), re-attach it — an
+        // orphaned `_tabsList` makes every future refresh render into a
+        // dead node and the popup shows empty forever.
+        try {
+            const panel: any = doc.getElementById("zotero-tabs-menu-panel");
+            const list = panel && panel._tabsList;
+            if (panel && list && !list.isConnected) {
+                const home = panel.querySelector("#zotero-tabs-menu-wrapper") || panel;
+                home.appendChild(list);
+            }
+        } catch (e) {}
+        // Per-tab decorations (React re-creates tabs, but live nodes keep
+        // whatever we stamped on them).
+        try {
+            for (const t of doc.querySelectorAll("#tab-bar-container .tab")) {
+                try {
+                    t.classList.remove("wv-pinned-tab");
+                    t.removeAttribute("data-wv-pin-sticky");
+                    t.removeAttribute("data-wv-pin-mirrored");
+                    t.removeAttribute("data-wv-pin-preview");
+                    t.removeAttribute("data-wv-drag-join");
+                    t.style.removeProperty("--wv-group-color");
+                } catch (e) {}
+            }
+        } catch (e) {}
+        // Render/wiring marker attributes, doc-wide. The detailed cleanup in
+        // destroy() only covers the FOCUSED window — the anchor kept its
+        // `data-wv-ctx-wired` markers when a managed window was focused at
+        // disable-time.
+        try {
+            for (const attr of ["data-wv-source", "data-wv-rendered", "data-wv-raw",
+                "data-wv-related-rendered", "data-wv-ctx-wired", "data-wv-last-rebuild",
+                "data-has-rich", "data-icon-wanted", "data-truncated", "data-has-url"]) {
+                for (const el of doc.querySelectorAll("[" + attr + "]")) {
+                    try { el.removeAttribute(attr); } catch (e) {}
+                }
+            }
+        } catch (e) {}
+        // Root mode classes.
+        try {
+            doc.documentElement.classList.remove(
+                "wv-icons-only", "wv-ui-dark", "wv-anchor-window");
+        } catch (e) {}
+        // Simple unwraps for SECONDARY windows only — the primary window
+        // gets the detailed source-restoring pass later in destroy()
+        // (which re-emits markdown markers); a naive unwrap before it
+        // would lose them.
+        try { if (w === Zotero.getMainWindow()) return; } catch (e) {}
+        try {
+            for (const span of doc.querySelectorAll(".wv-md, .wv-url-span")) {
+                try { span.replaceWith(doc.createTextNode(span.textContent || "")); } catch (e) {}
+            }
+            for (const wrap of doc.querySelectorAll(".wv-text-wrap")) {
+                try {
+                    const p = wrap.parentNode;
+                    if (!p) continue;
+                    while (wrap.firstChild) p.insertBefore(wrap.firstChild, wrap);
+                    p.removeChild(wrap);
+                } catch (e) {}
+            }
+            for (const el of doc.querySelectorAll(".wv-btn, .wv-tree-icon")) {
+                try { el.remove(); } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
     destroy(reason) {
+        // HARD STOP for every re-apply path (tab-bar decoration observer,
+        // note-editor load listeners, style ensurers). These fire from
+        // observers/listeners that outlive parts of this teardown — without
+        // the flag, destroy's own DOM strips TRIGGER them and the chips /
+        // pinned styles / note wiring resurrect right after removal
+        // (observed on plugin disable, 2026-07-03).
+        (this as any)._wvDestroyed = true;
         // 0. FINAL store capture, then freeze — teardown below dismantles
         //    reader-window state (`_wvWT`), and any save it triggers after
         //    that would capture an emptied world and clobber windows.json
@@ -4069,29 +4276,62 @@ class WeaveroPlugin {
         try {
             if (!Services.startup.shuttingDown) {
                 // On a genuine plugin DISABLE/UNINSTALL (reason 4/6 — NOT a
-                // hot-reload/upgrade), rescue each reader window's extra tabs
-                // into main-window tabs first, recording a hand-off so the next
-                // enable pulls them back. Must run BEFORE the strip teardown.
+                // hot-reload/upgrade), SAVE + CLOSE every extra window (reader
+                // windows + managed main windows; the anchor stays). The store
+                // was captured + frozen above, so the snapshot is immutable
+                // while the plugin is off — it survives restarts-while-disabled
+                // and can't lose its anchor; the next enable restores it all.
+                // (Replaces the old migrate-extras-to-main-tabs hand-off.)
                 try {
                     if (reason === 4 /* ADDON_DISABLE */ || reason === 6 /* ADDON_UNINSTALL */) {
-                        this._wvDisableMigrateReaderTabs();
+                        (this as any)._wvDisableCloseExtraWindows();
                     }
-                } catch (e) { Zotero.debug("[Weavero] disable-migrate err: " + e); }
+                } catch (e) { Zotero.debug("[Weavero] disable-close err: " + e); }
                 const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                 for (const w of wins) {
                     try { this._revertCompactTitleBar(w); } catch(e) {}
+                    // Per-window chrome teardown for EVERY main window — these
+                    // were only run from onMainWindowUnload (window close), so
+                    // plugin DISABLE left every open window with live re-apply
+                    // observers (which resurrected chips/pins right after the
+                    // strip below) plus our buttons/styles/attributes.
+                    try { this._teardownTabBarLibraryDecoration(w); } catch (e) {}
+                    try { this._teardownBookmarksToolbarButton(w); } catch (e) {}
+                    try { this._teardownTabExternalRepositioner(w); } catch (e) {}
+                    // Restore native restoreState/close/markAsLoaded/select —
+                    // the wrapped versions carry the note re-process + watchdog
+                    // side effects that re-wired editors after disable.
+                    try { this._wvUnwireRestoreTracing(w); } catch (e) {}
+                    // Unpatch THIS window's tabs-menu refreshList (the single
+                    // later call covers only the focused window — the anchor's
+                    // wrapped refreshList kept decorating rows from dead code
+                    // whenever the popup re-rendered post-disable).
+                    try { this._teardownTabsMenuLibrarySort(w); } catch (e) {}
+                    try { this._wvStripWindowChrome(w); } catch (e) {}
                 }
                 const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);
                 for (const r of readers) {
                     try { this._revertReaderCompactMenubar(r); } catch(e) {}
                     try { this._removeReaderWindowTabStrip(r); } catch(e) {}
                 }
+                // Reader WINDOWS also carry Weavero-only chrome beyond the tab
+                // strip (right pane + splitter, tooltips, context menus,
+                // injected styles) — sweep them like the main windows, else a
+                // disable leaves a dead right-pane skeleton in each one.
+                try {
+                    const ren = Services.wm.getEnumerator("zotero:reader");
+                    while (ren.hasMoreElements()) {
+                        const rw: any = ren.getNext();
+                        try { this._wvStripWindowChrome(rw); } catch (e) {}
+                    }
+                } catch (e) {}
             } else {
                 Zotero.debug("[Weavero] destroy: app shutting down, skipping compact-title-bar revert");
             }
         } catch (e) {}
         this._unregisterItemTreeColumns();
         try { this._unpatchAnnotationRow(); } catch (e) {}
+        try { (this as any)._unpatchHideContextAttachments(); } catch (e) {}
 
         for (const id of this._notifierIDs || []) {
             try { Zotero.Notifier.unregisterObserver(id); } catch(e) {}
@@ -4146,27 +4386,6 @@ class WeaveroPlugin {
             // Drop the mode classes we add to <html>
             root.classList.remove("wv-icons-only", "wv-ui-dark");
 
-            // DIAG: pre-unwrap snapshot of related-box labels so we can
-            // see the live state at disable-time.
-            try {
-                const relLabels: any = doc.querySelectorAll(
-                    "related-box .body .row .box .label");
-                Zotero.debug("[Weavero][diag] destroy: "
-                    + relLabels.length + " related-box label(s) before unwrap");
-                let i = 0;
-                for (const l of relLabels) {
-                    if (i >= 3) break;
-                    const box = l.closest(".box");
-                    Zotero.debug("[Weavero][diag] destroy pre[" + i + "]"
-                        + " live=" + JSON.stringify(
-                            (l.textContent || "").slice(0, 80))
-                        + " aria=" + JSON.stringify(
-                            ((box && box.getAttribute("aria-label")) || "").slice(0, 80))
-                        + " wvMd=" + l.querySelectorAll(".wv-md").length
-                        + " wvUrl=" + l.querySelectorAll(".wv-url-span").length);
-                    i++;
-                }
-            } catch (e) {}
 
             // Strip notes surfaces (items-tree note rows, right-pane
             // notes-box labels, note-editor iframes — both right-pane
@@ -4266,21 +4485,6 @@ class WeaveroPlugin {
                 el.remove();
             }
 
-            // DIAG: post-unwrap snapshot of related-box labels.
-            try {
-                const relLabels: any = doc.querySelectorAll(
-                    "related-box .body .row .box .label");
-                let i = 0;
-                for (const l of relLabels) {
-                    if (i >= 3) break;
-                    Zotero.debug("[Weavero][diag] destroy post[" + i + "]"
-                        + " live=" + JSON.stringify(
-                            (l.textContent || "").slice(0, 80))
-                        + " wvMd=" + l.querySelectorAll(".wv-md").length
-                        + " wvUrl=" + l.querySelectorAll(".wv-url-span").length);
-                    i++;
-                }
-            } catch (e) {}
 
             // Drop our cache markers from any element that wasn't already
             // wiped above (related-box labels, right-pane comments, note
@@ -4536,7 +4740,7 @@ let _Weavero = null;
 Zotero.Weavero = {
     plugin: null,
     hooks: {
-        onStartup({ id, version, rootURI }) {
+        onStartup({ id, version, rootURI, reason }) {
             _rootURI = rootURI;
             try {
                 _Weavero = new WeaveroPlugin();
@@ -4545,6 +4749,8 @@ Zotero.Weavero = {
                 // can read the absolute rootURI without needing to
                 // import the index.ts closure.
                 _Weavero._rootURI = rootURI;
+                // Boot-only machinery (session verify-and-repair) keys off this.
+                _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
                 _Weavero.init().catch(e =>
                     Zotero.debug("[Weavero] init error: " + e)

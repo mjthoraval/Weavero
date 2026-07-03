@@ -6426,7 +6426,8 @@ class _TabsMixin {
                 return self._wvRestoreFindTargetWin();
             };
             let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null,
-                GetWindowLongPtr: any = null, SetWindowLongPtr: any = null;
+                GetWindowLongPtr: any = null, SetWindowLongPtr: any = null,
+                dwmapi: any = null, DwmSetWindowAttribute: any = null;
             try {
                 const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
                 ctypesRef = ctypes;
@@ -6437,6 +6438,9 @@ class _TabsMixin {
                     ctypes.voidptr_t, ctypes.int);
                 SetWindowLongPtr = user32.declare("SetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t,
                     ctypes.voidptr_t, ctypes.int, ctypes.intptr_t);
+                dwmapi = ctypes.open("dwmapi.dll");
+                DwmSetWindowAttribute = dwmapi.declare("DwmSetWindowAttribute", ctypes.winapi_abi, ctypes.long,
+                    ctypes.voidptr_t, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t);
             } catch (e) {}
             const hwndOf = (w: any) => {
                 const base = w.docShell.treeOwner
@@ -6478,7 +6482,30 @@ class _TabsMixin {
                     SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur & ~WS_EX_NOACTIVATE));
                 } catch (e) {}
             };
-            (this as any)._wvBgClearNoActivate = clearNoActivate;
+            // DWM CLOAKING - the definitive fix for the blink. Style bits
+            // and refocus handlers cannot beat explicit programmatic focus
+            // (the reader calls _iframeWindow.focus() during init, which
+            // activates the top-level window regardless of WS_EX_NOACTIVATE).
+            // A cloaked window (DWMWA_CLOAK, what Windows uses for suspended
+            // UWP apps) shows, loads, lays out and MEASURES normally - it
+            // just composites to nothing, so even a stolen activation has
+            // nothing to paint. Uncloaked at teardown (the workspace appears
+            // at once, at the BACK), on becoming the refocus target, and on
+            // a user mousedown.
+            const DWMWA_CLOAK = 13;
+            const cloaked = new Set();
+            const setCloak = (w: any, on: boolean) => {
+                try {
+                    if (!DwmSetWindowAttribute || !w || w.closed) { cloaked.delete(w); return; }
+                    if (on && cloaked.has(w)) return;
+                    if (!on && !cloaked.has(w)) return;
+                    const val = ctypesRef.int32_t(on ? 1 : 0);
+                    DwmSetWindowAttribute(hwndOf(w), DWMWA_CLOAK, val.address(), 4);
+                    if (on) cloaked.add(w); else cloaked.delete(w);
+                } catch (e) {}
+            };
+            const reveal = (w: any) => { clearNoActivate(w); setCloak(w, false); };
+            (this as any)._wvBgClearNoActivate = reveal;
             // "Is this one of ours?" — with a pre-parse grace: at
             // `domwindowopened` (and often at the FIRST activate) the XUL
             // document hasn't parsed yet, so windowtype is empty. During the
@@ -6503,12 +6530,12 @@ class _TabsMixin {
                     // OS-level: never activatable while the restore holds. The
                     // native handle exists at domwindowopened; retry once on a
                     // 0-timeout if the docShell is not wired yet.
-                    const arm = () => { setNoActivate(w); pushToBottom(w); };
+                    const arm = () => { setNoActivate(w); setCloak(w, true); pushToBottom(w); };
                     try { arm(); } catch (e2) {}
                     try { if (!noActivated.has(w) && w.setTimeout) w.setTimeout(arm, 0); } catch (e2) {}
                     // The user clicking the window overrides everything.
                     w.addEventListener("mousedown", () => {
-                        try { clearNoActivate(w); w.focus(); } catch (e2) {}
+                        try { reveal(w); w.focus(); } catch (e2) {}
                     }, { capture: true, once: true });
                     w.addEventListener("activate", () => {
                         try {
@@ -6517,7 +6544,7 @@ class _TabsMixin {
                             const t2 = resolveTarget();
                             if (t2 && t2 !== w) {
                                 pushToBottom(w);
-                                clearNoActivate(t2);
+                                reveal(t2);
                                 t2.focus();
                                 try {
                                     (self as any)._wvTrace("bg-restore: "
@@ -6534,9 +6561,9 @@ class _TabsMixin {
                 try {
                     if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
                     const target = resolveTarget();
-                    if (target === w) { clearNoActivate(w); return; }   // the target itself may restore late
+                    if (target === w) { reveal(w); return; }   // the target itself may restore late
                     pushToBottom(w);
-                    if (target && Services.focus.activeWindow === w) { try { clearNoActivate(target); target.focus(); } catch (e) {} }
+                    if (target && Services.focus.activeWindow === w) { try { reveal(target); target.focus(); } catch (e) {} }
                     hook(w);   // no-op if the open-time hook already landed
                 } catch (e) {}
             };
@@ -6563,9 +6590,11 @@ class _TabsMixin {
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
+                try { for (const w of [...cloaked]) setCloak(w, false); } catch (e) {}
                 try { for (const w of [...noActivated]) clearNoActivate(w); } catch (e) {}
                 (this as any)._wvBgClearNoActivate = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}
+                try { if (dwmapi) dwmapi.close(); } catch (e) {}
                 try { if (user32) user32.close(); } catch (e) {}
             };
             setT(tick, 700);

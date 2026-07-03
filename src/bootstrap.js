@@ -13,7 +13,7 @@
 function install() {}
 function uninstall() {}
 
-async function startup({ id, version, rootURI }) {
+async function startup({ id, version, rootURI }, reason) {
     await Zotero.initializationPromise;
     try {
         // `ignoreCache: true` so a fresh install of the same version
@@ -29,7 +29,12 @@ async function startup({ id, version, rootURI }) {
     }
     if (Zotero.Weavero && Zotero.Weavero.hooks
             && Zotero.Weavero.hooks.onStartup) {
-        Zotero.Weavero.hooks.onStartup({ id, version, rootURI });
+        // `reason` (APP_STARTUP=1, ADDON_ENABLE=3, ADDON_INSTALL=5,
+        // ADDON_UPGRADE=7, …) lets the plugin run boot-only machinery —
+        // e.g. the session verify-and-repair — ONLY on a real app startup
+        // (a hot-reload's repair once resurrected deliberately-closed tabs
+        // from a stale boot snapshot).
+        Zotero.Weavero.hooks.onStartup({ id, version, rootURI, reason });
     } else {
         Zotero.debug("[Weavero] index.js loaded but hooks missing");
     }

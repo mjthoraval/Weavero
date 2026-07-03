@@ -1968,6 +1968,10 @@ class _ReaderMixin {
                     // "List all tabs" button, just left of the hamburger.
                     const ham = strip2.querySelector(":scope > .wv-hamburger-btn");
                     this._wvWTEnsureTabListButton(win, strip2, ham || ctlBox);
+                    // Firefox-style "+" (new tab), just right of the tabs region
+                    // (i.e. left of the tab-list button).
+                    const tl = strip2.querySelector(":scope > .wv-window-tablist-btn");
+                    this._wvWTEnsureNewTabButton(win, strip2, tl || ham || ctlBox);
                 }
             } catch (e) {}
             // Render the tab(s) from the multi-tab model into the strip's
@@ -3659,9 +3663,18 @@ class _ReaderMixin {
      *  Zotero's design tokens with solid fallbacks. */
     _ensureReaderWindowTabStripStyles(doc) {
         try {
-            if (doc.getElementById("wv-window-tabstrip-styles")) return;
+            // Version-guarded: bump WV_STRIP_STYLE_VER when the CSS below
+            // changes so windows that predate a plugin reload get the new
+            // rules re-injected instead of keeping the stale sheet.
+            const WV_STRIP_STYLE_VER = "2";
+            const prev = doc.getElementById("wv-window-tabstrip-styles");
+            if (prev) {
+                if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
+                try { prev.remove(); } catch (e) {}
+            }
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-window-tabstrip-styles";
+            style.setAttribute("data-wv-ver", WV_STRIP_STYLE_VER);
             style.textContent = [
                 /* Tab strip — matches the main-window title region (1px dark top
                    row + 36px tab area + 1px bottom divider = 38px) and styling so
@@ -3870,7 +3883,7 @@ class _ReaderMixin {
                 // Hamburger + tab-list buttons share the sync-button hover-box
                 // geometry (28×28, 5px corners), pinned (flex 0 0 auto) to the
                 // right of the scrollable tabs region.
-                ".wv-hamburger-btn, .wv-window-tablist-btn {",
+                ".wv-hamburger-btn, .wv-window-tablist-btn, .wv-window-newtab-btn {",
                 "  display: flex; align-items: center; justify-content: center;",
                 "  flex: 0 0 auto;",
                 "  width: 28px; height: 28px; align-self: center;",
@@ -3882,14 +3895,14 @@ class _ReaderMixin {
                 "  cursor: default;",
                 "  -moz-window-dragging: no-drag;",
                 "}",
-                ".wv-hamburger-btn svg, .wv-window-tablist-btn svg {",
+                ".wv-hamburger-btn svg, .wv-window-tablist-btn svg, .wv-window-newtab-btn svg {",
                 "  width: 16px; height: 16px;",
                 "  fill: currentColor;",
                 "}",
-                ".wv-hamburger-btn:hover, .wv-window-tablist-btn:hover { background-color: rgba(127,127,127,0.18); }",
-                ".wv-hamburger-btn:active, .wv-window-tablist-btn:active { background-color: rgba(127,127,127,0.30); }",
+                ".wv-hamburger-btn:hover, .wv-window-tablist-btn:hover, .wv-window-newtab-btn:hover { background-color: rgba(127,127,127,0.18); }",
+                ".wv-hamburger-btn:active, .wv-window-tablist-btn:active, .wv-window-newtab-btn:active { background-color: rgba(127,127,127,0.30); }",
                 "@media (prefers-color-scheme: dark) {",
-                "  .wv-hamburger-btn, .wv-window-tablist-btn { color: rgba(255, 255, 255, 0.70); }",
+                "  .wv-hamburger-btn, .wv-window-tablist-btn, .wv-window-newtab-btn { color: rgba(255, 255, 255, 0.70); }",
                 "}",
                 /* Widen the hamburger popup so submenu labels + chevron
                    don't run together. 147px (~2/3 of the original 220px
@@ -5694,6 +5707,77 @@ class _ReaderMixin {
      *  opens a popup listing every tab (icon + title, active one checked);
      *  choosing one switches to it and scrolls it into view (handy when many
      *  tabs overflow the scroll region). Idempotent per window. */
+    /** Firefox-style "+" (new tab) button at the right end of the reader
+     *  window's tab strip. Opens Zotero's item picker (selectItemsDialog —
+     *  the same dialog "Add Related" uses) and mounts each selected item as
+     *  a tab in THIS window: notes and reader-able attachments directly,
+     *  regular items via their best attachment. */
+    _wvWTEnsureNewTabButton(win: any, stripEl: any, beforeEl: any) {
+        try {
+            if (!win || !win.document || !stripEl) return null;
+            const doc = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const SVG_NS = "http://www.w3.org/2000/svg";
+            let btn = stripEl.querySelector(":scope > .wv-window-newtab-btn");
+            if (btn) return btn;
+            btn = doc.createElementNS(HTML, "button");
+            btn.className = "wv-window-newtab-btn";
+            btn.setAttribute("title", "New tab — open a library item");
+            btn.setAttribute("tabindex", "-1");
+            btn.setAttribute("aria-label", "New tab");
+            const svg: any = doc.createElementNS(SVG_NS, "svg");
+            // Zotero's native plus icon, verbatim from
+            // chrome://zotero/skin/16/universal/plus.svg (whole-pixel path,
+            // inherits currentColor via the shared svg fill rule).
+            svg.setAttribute("viewBox", "0 0 16 16");
+            svg.setAttribute("aria-hidden", "true");
+            const path: any = doc.createElementNS(SVG_NS, "path");
+            path.setAttribute("d", "M14 8H9V3H8V8H3V9H8V14H9V9H14V8Z");
+            svg.appendChild(path);
+            btn.appendChild(svg);
+            const self = this;
+            btn.addEventListener("click", (e: any) => {
+                try { e.stopPropagation(); e.preventDefault(); } catch (er) {}
+                (async () => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp) return;
+                        const io: any = {
+                            dataIn: null,
+                            dataOut: null,
+                            deferred: Zotero.Promise.defer(),
+                            itemTreeID: "weavero-reader-newtab-select",
+                        };
+                        win.openDialog(
+                            "chrome://zotero/content/selectItemsDialog.xhtml", "",
+                            "chrome,dialog=no,centerscreen,resizable=yes", io);
+                        await io.deferred.promise;
+                        if (!io.dataOut || !io.dataOut.length) return;
+                        const items: any = await Zotero.Items.getAsync(io.dataOut);
+                        let first = true;
+                        for (const it of items) {
+                            try {
+                                let openID: any = null;
+                                if (it.isNote && it.isNote()) openID = it.id;
+                                else if (it.attachmentReaderType) openID = it.id;
+                                else if (it.isRegularItem && it.isRegularItem()) {
+                                    const att: any = await it.getBestAttachment();
+                                    if (att && att.attachmentReaderType) openID = att.id;
+                                }
+                                if (openID == null) continue;
+                                await lp._wvWTMountTab(win, openID, { allowDuplicate: false, select: first, await: true });
+                                first = false;
+                            } catch (er) {}
+                        }
+                    } catch (er) { Zotero.debug("[Weavero] reader new-tab err: " + er); }
+                })();
+            });
+            if (beforeEl && beforeEl.parentNode === stripEl) stripEl.insertBefore(btn, beforeEl);
+            else stripEl.appendChild(btn);
+            return btn;
+        } catch (e) { return null; }
+    }
+
     _wvWTEnsureTabListButton(win: any, stripEl: any, beforeEl: any) {
         try {
             if (!win || !win.document || !stripEl) return null;

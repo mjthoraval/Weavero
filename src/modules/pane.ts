@@ -4133,13 +4133,6 @@ class _PaneMixin {
         const labels = doc.querySelectorAll(
             "related-box .body .row .box .label");
         let touched = 0;
-        // DIAG: log how many labels we found and a sample of their state.
-        // Crucial for diagnosing why disable+re-enable doesn't restore the
-        // visual rendering — tells us whether labels are even present, and
-        // whether the live textContent matches the aria-label source.
-        Zotero.debug("[Weavero][diag] _processRelatedBoxes: "
-            + labels.length + " label(s) found");
-        let diagIdx = 0;
         for (const label of labels) {
             try {
                 const box = label.closest(".box");
@@ -4148,13 +4141,6 @@ class _PaneMixin {
                 const wvMdBefore = label.querySelectorAll(".wv-md").length;
                 const wvUrlBefore = label.querySelectorAll(".wv-url-span").length;
                 const sourceAttr = label.getAttribute("data-wv-source");
-                if (diagIdx < 3) {
-                    Zotero.debug("[Weavero][diag] label[" + diagIdx + "]"
-                        + " live=" + JSON.stringify(liveTextBefore.slice(0, 80))
-                        + " aria=" + JSON.stringify((ariaText || "").slice(0, 80))
-                        + " wvMd=" + wvMdBefore + " wvUrl=" + wvUrlBefore
-                        + " src=" + JSON.stringify(sourceAttr));
-                }
                 // Recover the original raw displayTitle from the parent
                 // .box's aria-label. Zotero sets aria-label = label.textContent
                 // exactly once at row-render time and never updates it
@@ -4195,17 +4181,6 @@ class _PaneMixin {
                 } else {
                     renderResult = "no-rebuild";
                 }
-                if (diagIdx < 3) {
-                    const wvMdAfter = label.querySelectorAll(".wv-md").length;
-                    const wvUrlAfter = label.querySelectorAll(".wv-url-span").length;
-                    Zotero.debug("[Weavero][diag] label[" + diagIdx + "]"
-                        + " reset=" + didReset
-                        + " result=" + renderResult
-                        + " wvMd=" + wvMdAfter + " wvUrl=" + wvUrlAfter
-                        + " liveAfter=" + JSON.stringify(
-                            (label.textContent || "").slice(0, 80)));
-                }
-                diagIdx++;
             } catch (e) {
                 Zotero.debug("[Weavero] related label render err: " + e);
             }

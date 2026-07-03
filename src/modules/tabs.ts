@@ -7444,15 +7444,31 @@ class _TabsMixin {
                 '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + WV_ANCHOR_VIEWBOX + '">'
                 + '<path fill="black" d="' + WV_ANCHOR_PATH + '"/>'
                 + "</svg>");
-            const css = `.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
-                + `content:"";display:inline-block;width:15px;height:15px;margin-inline-start:6px;`
-                + `background-color:#3d6fe0;`
-                + `mask:url("data:image/svg+xml,${anchorSvg}") center/contain no-repeat;`
-                + `align-self:center;flex:0 0 auto;}`
-                // Dark UI: the accent blue is too dim against the dark tab bar —
-                // use a bright sky blue instead.
-                + `.wv-ui-dark.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
-                + `background-color:#9dbcff;}`;
+            // Preferred spot: the compact title bar's draggable SPACER between
+            // the hamburger and the window controls — on the library tab the
+            // icon squeezed the tab's own title ("hiding some useful text in
+            // the header of the library tab", 2026-07-03). Fallback to the old
+            // library-tab position when the compact title bar (and thus the
+            // spacer) isn't present.
+            const hasSpacer = !!d.querySelector("#zotero-title-bar > .wv-titlebar-spacer");
+            const css = hasSpacer
+                ? (`.wv-anchor-window #zotero-title-bar > .wv-titlebar-spacer{`
+                    + `display:flex;align-items:center;justify-content:center;}`
+                    + `.wv-anchor-window #zotero-title-bar > .wv-titlebar-spacer::before{`
+                    + `content:"";display:block;width:15px;height:15px;`
+                    + `background-color:#3d6fe0;`
+                    + `mask:url("data:image/svg+xml,${anchorSvg}") center/contain no-repeat;}`
+                    + `.wv-ui-dark.wv-anchor-window #zotero-title-bar > .wv-titlebar-spacer::before{`
+                    + `background-color:#9dbcff;}`)
+                : (`.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
+                    + `content:"";display:inline-block;width:15px;height:15px;margin-inline-start:6px;`
+                    + `background-color:#3d6fe0;`
+                    + `mask:url("data:image/svg+xml,${anchorSvg}") center/contain no-repeat;`
+                    + `align-self:center;flex:0 0 auto;}`
+                    // Dark UI: the accent blue is too dim against the dark tab bar —
+                    // use a bright sky blue instead.
+                    + `.wv-ui-dark.wv-anchor-window #tab-bar-container .tab[data-id="zotero-pane"]::after{`
+                    + `background-color:#9dbcff;}`);
             let st: any = d.getElementById("wv-anchor-indicator-style");
             if (!st) {
                 st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");

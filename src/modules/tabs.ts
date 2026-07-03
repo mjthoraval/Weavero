@@ -982,7 +982,7 @@ class _TabsMixin {
                             if (info.color) chip.style.background = info.color;
                             ghost.appendChild(chip);
                             const name = doc.createElement("span");
-                            name.textContent = info.title || "";
+                            name.textContent = (info.title || "") + (info.count ? ("  (" + info.count + ")") : "");
                             ghost.appendChild(name);
                         } else {
                             ghost = doc.createElement("div");
@@ -1039,7 +1039,9 @@ class _TabsMixin {
                             if (g) { name = g.name || ""; color = lp._tabGroupColorHex(g.color); }
                             homeWin = lp._wvTabGroupHomeWin(gid);
                         } catch (er) {}
-                        lp._wvPopupGroupDrag = { groupId: gid, name, color, homeWin };
+                        let count = 0;
+                        try { count = lp._wvTabGroupOpenCount(gid) || 0; } catch (er2) {}
+                        lp._wvPopupGroupDrag = { groupId: gid, name, color, homeWin, count };
                         try { e.dataTransfer.setData("application/x-weavero-popup-group-move", "1"); e.dataTransfer.effectAllowed = "move"; } catch (er) {}
                         grpSrc.classList.add("wv-tabsmenu-row-dragging");
                         return;
@@ -1113,7 +1115,23 @@ class _TabsMixin {
                             e.preventDefault();
                             try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
                             const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
-                            showGhostAt(scope, pos.beforeRow, { isGroup: true, color: gdrag.color, title: gdrag.name });
+                            showGhostAt(scope, pos.beforeRow, { isGroup: true, color: gdrag.color, title: gdrag.name, count: gdrag.count });
+                            // The whole group travels: hide the SOURCE block
+                            // (header + member rows) while the ghost previews
+                            // the drop - otherwise only a thin ghost line
+                            // moved and the group sat immobile at the source.
+                            // clearGhost() unhides on drop/dragend/leave.
+                            try {
+                                for (const hdr of list.querySelectorAll(".wv-tgrow-header")) {
+                                    if ((hdr as any)._wvGroupId !== gdrag.groupId) continue;
+                                    if (!hdr.classList.contains("wv-tabsmenu-row-drag-hidden")) hdr.classList.add("wv-tabsmenu-row-drag-hidden");
+                                    let n = hdr.nextElementSibling;
+                                    while (n && n.classList && (n.classList.contains("wv-tgrow-member") || n.classList.contains("wv-tabsmenu-ghost"))) {
+                                        if (n.classList.contains("wv-tgrow-member") && !n.classList.contains("wv-tabsmenu-row-drag-hidden")) n.classList.add("wv-tabsmenu-row-drag-hidden");
+                                        n = n.nextElementSibling;
+                                    }
+                                }
+                            } catch (er) {}
                             // No scope outline (same- or cross-window) — the
                             // group ghost alone marks the drop.
                         }

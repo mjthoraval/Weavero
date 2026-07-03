@@ -343,6 +343,10 @@ class _TabGroupsMixin {
                 "  font-size: 9px; opacity: 0.6; width: 12px; text-align: center;",
                 "}",
                 "#zotero-tabs-menu-list .row.wv-tgrow-member { margin-left: 18px; }",
+                // Group-chip drag: the whole group travels - member tabs
+                // hide while their chip is dragged (the drop ghost is the
+                // single visible copy).
+                "#tab-bar-container .tabs .tab[data-wv-grpdrag-hidden] { display: none !important; }",
                 "#zotero-tabs-menu-list .row.wv-tgrow-hidden { display: none !important; }",
                 // The DROP GHOST is a hand-built div lacking the `data-tab-id`
                 // that makes REAL tab rows (loose AND grouped) match the
@@ -895,6 +899,9 @@ class _TabGroupsMixin {
                 p._wvGroupDrag = { groupID, sourceWin: win };
                 // Drag image: the chip itself (it's small and recognizable).
                 try { e.dataTransfer.setDragImage(chip, 10, 10); } catch (er2) {}
+                // AFTER the drag image is captured: hide the member tabs so
+                // the whole group visibly travels with the chip.
+                try { win.setTimeout(() => { try { const p2: any = live(); if (p2 && p2._wvGroupDrag && p2._wvGroupDrag.groupID === groupID) p2._wvGrpDragSetMembersHidden(win, groupID, true); } catch (er3) {} }, 0); } catch (er2) {}
             } catch (er) {}
         });
         chip.addEventListener("dragend", (e: any) => {
@@ -903,6 +910,7 @@ class _TabGroupsMixin {
                 chip.classList.remove("wv-tg-dragging");
                 win._wvGroupDragSlot = null;
                 const p: any = live();
+                try { if (p) p._wvGrpDragSetMembersHidden(win, groupID, false); } catch (er2) {}
                 // Tear-out: every strip drop handler (main + reader, same- and
                 // cross-window) consumes _wvGroupDrag before this dragend fires,
                 // so its survival means the chip was released off ALL strips —
@@ -1852,8 +1860,15 @@ class _TabGroupsMixin {
             win._wvGroupDragSlot = null;
             this._wvTabGroupHideAllDropGhosts();
             if (gd.sourceWin === win) {
+                // Compute the slot BEFORE unhiding: the drop x was aimed at the
+                // compressed strip (members hidden while the group travels);
+                // unhiding first re-expands the layout and the same x lands in
+                // the wrong slot (observed: drop-to-end became a no-op). The
+                // mover skips member rects, so hidden members don't distort it.
                 this._wvTabGroupMoveGroupTo(win, gd.groupID, e.clientX);
+                try { this._wvGrpDragSetMembersHidden(gd.sourceWin, gd.groupID, false); } catch (er) {}
             } else {
+                try { this._wvGrpDragSetMembersHidden(gd.sourceWin, gd.groupID, false); } catch (er) {}
                 // Cross-window: migrate the whole group here (from another
                 // main window or from a reader window).
                 this._wvTGDbg("group drop on MAIN window from " + (this._wvTabGroupIsReaderWin(gd.sourceWin) ? "reader" : "main"));
@@ -2293,6 +2308,26 @@ class _TabGroupsMixin {
             this._wvTabGroupStabilize(win);
             this._wvTabGroupApplyEverywhere();
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupHandleNativeDragEnd err: " + e); }
+    }
+
+    /** Firefox-style "the whole group travels": while a group CHIP drag is
+     *  active, hide the group's member tabs in the source strip so the drop
+     *  ghost is the single visible copy (previously only the chip's drag
+     *  image moved and the tabs sat frozen until the drop). Attribute-based
+     *  (survives React re-renders); cleared on drop/dragend. */
+    _wvGrpDragSetMembersHidden(win: any, groupID: any, on: boolean) {
+        try {
+            const doc = win && win.document;
+            const Z = win && win.Zotero_Tabs;
+            if (!doc || !Z) return;
+            for (const t of Z._tabs) {
+                if (this._wvTabGroupStamp(t) !== groupID) continue;
+                const node = doc.querySelector('#tab-bar-container .tab[data-id="' + t.id + '"]');
+                if (!node) continue;
+                if (on) node.setAttribute("data-wv-grpdrag-hidden", "1");
+                else node.removeAttribute("data-wv-grpdrag-hidden");
+            }
+        } catch (e) {}
     }
 
     /** Move a whole group (all its open member tabs, keeping their order) to

@@ -2383,6 +2383,12 @@ class _TabsMixin {
                     stickyByTabID.set(tab.id, stickyByTabID.size);
                 }
             }
+            // Publish the DESIGNATED pin tabs (one per pinned item) so other
+            // surfaces (tabs-menu pin glyphs) can mark only these — the pin
+            // store is item-keyed, and key-matching marked every duplicate
+            // copy of a pinned item as pinned ("why do I see so many pinned
+            // tabs when there are only 2?", 2026-07-04).
+            (win as any)._wvPinnedTabIDs = pinnedTabIDs;
 
             // Rebuild the pref array: pinned tabs that are OPEN go first
             // (in Zotero's current order — captures drag-reorder), then
@@ -8507,7 +8513,11 @@ class _TabsMixin {
             if (!tab) return;
             const key = this._tabPinKey(tab);
             if (!key) return;
-            if (!this._pinnedTabsHas(key.libraryID, key.itemKey)) return;
+            // Only the DESIGNATED pin tab (one per pinned item) gets the
+            // glyph; duplicate copies of a pinned item are normal tabs.
+            const des = (win as any)._wvPinnedTabIDs;
+            if (des instanceof Set) { if (!des.has(tabId)) return; }
+            else if (!this._pinnedTabsHas(key.libraryID, key.itemKey)) return;
 
             // Inline SVG pushpin — themed via currentColor so it adapts
             // to light / dark mode. Built via createElementNS (SVG namespace)

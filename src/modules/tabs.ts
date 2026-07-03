@@ -5663,10 +5663,14 @@ class _TabsMixin {
                 try {
                     await Zotero.Items.getAsync(iid);          // force the item into the cache
                     if (!Zotero.Items.exists(iid)) continue;   // genuinely gone → stay dropped
-                    // Keep the saved selection: the dropped tab is usually the one
-                    // the user was ON at quit (a selected note is the chronic native
-                    // drop) — re-adding it unselected left focus on a neighbor.
-                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: !!st.selected });
+                    // NEVER select on re-add: session.json's per-tab `selected`
+                    // flag is written by Zotero's quit save, which can run AFTER
+                    // the teardown's tab closes re-selected a neighbor — honoring
+                    // it kept booting the anchor onto a note tab the user wasn't
+                    // on ("restart from the library tab ends on a note tab",
+                    // 2026-07-04). Selection is enforced below from Weavero's
+                    // OWN store, captured atomically at quit-request.
+                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
                     live.add(iid);
                     added++;
                     (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") at index " + i);
@@ -5675,6 +5679,31 @@ class _TabsMixin {
             (this as any)._wvTrace(added
                 ? ("reconcile: restored " + added + " tab(s) the native anchor restore dropped")
                 : "reconcile: anchor matches the saved session");
+            // SELECTION truth: the store's anchor entry, captured at
+            // quit-REQUEST (before teardown churn poisons session.json's
+            // flags). Enforce it whether or not anything was re-added —
+            // Zotero's native restore reads the same poisoned session file
+            // and can land on the wrong tab all by itself.
+            try {
+                const doc0: any = (this as any)._wvBootWindowStoreDoc;
+                const entry = doc0 && (doc0.windows || []).find((x: any) => x && x.kind === "main-anchor");
+                const selSt = entry && (entry.tabs || []).find((t: any) => t && t.selected);
+                if (selSt) {
+                    let wantID: string | null = null;
+                    const sBase = String(selSt.type || "").replace(/-(unloaded|loading)$/, "");
+                    if (sBase === "library" || selSt.id === "zotero-pane") wantID = "zotero-pane";
+                    else {
+                        const iid2 = selSt.data && selSt.data.itemID;
+                        const t2 = iid2 != null && Z._tabs.find((x: any) => x.data && x.data.itemID === iid2);
+                        if (t2) wantID = t2.id;
+                    }
+                    if (wantID && Z.selectedID !== wantID) {
+                        Z.select(wantID);
+                        (this as any)._wvTrace("reconcile: anchor selection enforced from the quit capture ("
+                            + (wantID === "zotero-pane" ? "library" : wantID) + ")");
+                    }
+                }
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReconcileAnchorSessionTabs err: " + e); }
     }
 
@@ -5742,7 +5771,7 @@ class _TabsMixin {
                     try {
                         await Zotero.Items.getAsync(iid);
                         if (!Zotero.Items.exists(iid)) continue;
-                        Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: !!st.selected });
+                        Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
                         live.add(iid);
                         added++;
                         (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") in managed window");
@@ -5751,6 +5780,42 @@ class _TabsMixin {
                 if (added) {
                     try { (this as any)._wvTabGroupStabilize(win); (this as any)._applyTabGroups(win); } catch (e) {}
                 }
+                // SELECTION: enforce the store's captured flag AFTER other
+                // plugins' window-load churn — Better Notes reopens note tabs
+                // through Zotero.Notes.open, and the reopen SELECTS, leaving a
+                // background window sitting on a random note tab (2026-07-04).
+                // Background semantics preserved: an item selection re-arms
+                // the deferred activate-time select behind the library
+                // placeholder instead of loading content now.
+                try {
+                    const selSt = (entry.tabs || []).find((t: any) => t && t.selected);
+                    if (selSt) {
+                        const sBase = String(selSt.type || "").replace(/-(unloaded|loading)$/, "");
+                        const wantIID = (sBase === "library") ? null : (selSt.data && selSt.data.itemID);
+                        const curSel = Z._tabs.find((x: any) => x.id === Z.selectedID);
+                        const curIID = curSel && curSel.data && curSel.data.itemID;
+                        if (wantIID == null) {
+                            if (Z.selectedID !== "zotero-pane") {
+                                Z.select("zotero-pane");
+                                (this as any)._wvTrace("reconcile: " + entry.kind + " selection enforced (library)");
+                            }
+                        } else if (curIID !== wantIID) {
+                            // The FOCUSED window selects now (its activate event
+                            // may never re-fire); background windows defer.
+                            let focusedHere = false;
+                            try { focusedHere = Services.focus.activeWindow === win; } catch (e) {}
+                            const t2 = Z._tabs.find((x: any) => x.data && x.data.itemID === wantIID);
+                            if (focusedHere && t2) {
+                                Z.select(t2.id);
+                                (this as any)._wvTrace("reconcile: " + entry.kind + " selection enforced (item " + wantIID + ")");
+                            } else {
+                                if (Z.selectedID !== "zotero-pane") Z.select("zotero-pane");
+                                (this as any)._wvDeferSelect(win, wantIID);
+                                (this as any)._wvTrace("reconcile: " + entry.kind + " selection re-deferred to item " + wantIID);
+                            }
+                        }
+                    }
+                } catch (e) {}
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReconcileManagedWindows err: " + e); }
     }

@@ -6607,6 +6607,13 @@ class _TabsMixin {
                     }, { capture: true, once: true });
                     w.addEventListener("activate", () => {
                         try {
+                            // Stale-closure guard: hooks survive plugin reloads
+                            // (they're anonymous listeners), and a stuck flag on
+                            // a dead instance turned every USER click on these
+                            // windows into a "steal" that got pushed back down
+                            // ("I cannot access the other windows", 2026-07-04).
+                            const liveP = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (liveP !== self) return;
                             if (!(self as any)._wvBgRestoreOn) return;
                             if (!isZoteroWin(w, true)) return;
                             const t2 = resolveTarget();

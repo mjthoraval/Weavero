@@ -4172,6 +4172,14 @@ class WeaveroPlugin {
         // pinned styles / note wiring resurrect right after removal
         // (observed on plugin disable, 2026-07-03).
         (this as any)._wvDestroyed = true;
+        // Stop the background-restore observer NOW: its per-window hooks and
+        // tick loop otherwise keep acting for this dead instance after a
+        // reload mid-hold (user activations got hijacked).
+        try {
+            (this as any)._wvBgRestoreOn = false;
+            (this as any)._wvBgRestoreHoldUntil = 0;
+            (this as any)._wvBgRestoreTargetWin = null;
+        } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
         //    reader-window state (`_wvWT`), and any save it triggers after
         //    that would capture an emptied world and clobber windows.json

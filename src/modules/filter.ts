@@ -1382,6 +1382,7 @@ class _FilterMixin {
      *  because notes are a deliberately separate content stream and
      *  the user-facing toggle is scoped to attachments. */
     _patchHideContextAttachments() {
+        if ((this as any)._wvDestroyed) return;   // torn down — never re-patch
         try {
             // We want `ZoteroItemTreeRow.prototype` — but the
             // bundled IIFE can't reach `globalThis.require` (esbuild
@@ -2592,6 +2593,50 @@ class _FilterMixin {
         // the badge appears immediately rather than waiting for the
         // next data event.
         try { itemsView.tree && itemsView.tree.invalidate(); } catch (e) {}
+    }
+
+    /** Restore `ZoteroItemTreeRow.prototype.getChildItems` — peel every one
+     *  of our wrappers back to Zotero's true original. Called from destroy();
+     *  without it the prototype patch outlives plugin disable and keeps
+     *  filtering context-attachment rows from dead code. Mirrors the peel
+     *  loop in `_patchHideContextAttachments`. */
+    _unpatchHideContextAttachments() {
+        try {
+            // EVERY main window has its OWN ZoteroItemTreeRow prototype (the
+            // itemTree module loads per window scope) — peel each of them, not
+            // just the focused window's (the anchor's prototype stayed wrapped
+            // after a disable when a managed window happened to be focused).
+            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const win of wins) {
+                try {
+                    const rp: any = win && win.ZoteroPane
+                        && win.ZoteroPane.itemsView
+                        && win.ZoteroPane.itemsView.rowProvider;
+                    if (!rp || !rp._rows || !rp._rows.length) continue;
+                    let ZIRProto: any = null;
+                    for (const r of rp._rows) {
+                        const it = r && r.ref;
+                        if (!it) continue;
+                        if (it.isRegularItem && it.isRegularItem()) {
+                            ZIRProto = Object.getPrototypeOf(r);
+                            break;
+                        }
+                    }
+                    if (!ZIRProto) continue;
+                    let guard = 0;
+                    while (guard++ < 8) {
+                        const cur: any = ZIRProto.getChildItems;
+                        const isOurs = cur && (cur._wvWeaveroWrapper
+                            || /weavero\.showContextAttachmentRows/.test(String(cur)));
+                        if (!isOurs) break;
+                        if (!ZIRProto._wvOrigGetChildItems) break;   // legacy layer, no stored original — restart clears
+                        ZIRProto.getChildItems = ZIRProto._wvOrigGetChildItems;
+                        delete ZIRProto._wvOrigGetChildItems;
+                    }
+                    delete ZIRProto._wvHideCtxAttPatched;
+                } catch (e) {}
+            }
+        } catch (e) {}
     }
 
     _unpatchAnnotationRow() {

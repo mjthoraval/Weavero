@@ -141,6 +141,7 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-svg{display:inline-block;width:16px;height:16px;",
     "  -moz-context-properties:fill,stroke,fill-opacity,stroke-opacity;fill:currentColor;stroke:currentColor;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-swatch-native{display:block;flex:0 0 auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-vertical-separator{width:1px;align-self:stretch;background:rgba(127,127,127,0.45);margin:2px 4px;}",
     // OR-group card tint (same as the library's .wv-filter-or-group) for
     // the "pick any of these" rows (colour, tags, added/modified by).
@@ -504,6 +505,7 @@ const RP_BM_CSS = [
     ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]:hover{background:rgba(94,106,210,0.45);}",
     ".wv-bm-chip-popup .wv-filter-opt-icon{padding:4px 6px;min-width:26px;height:28px;box-sizing:border-box;justify-content:center;gap:0;}",
     ".wv-bm-chip-popup .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
+    ".wv-bm-chip-popup .wv-swatch-native{display:block;flex:0 0 auto;}",
     // OR-group card tint — applied to each chip row so the popup reads
     // as a stack of "pick any of these" sets, matching the library
     // filter / reader annotations filter (`#wv-reader-filter-popup
@@ -1517,7 +1519,7 @@ class _ReaderPanelsMixin {
                 }
                 opts.appendChild(mkNativeOpt("colors", nat.colors, st.colorsExcl, def.value,
                     def.label + " — Alt+click to exclude",
-                    (b: any) => { const sw = mk("span", "wv-chip-swatch"); sw.style.background = def.value; b.appendChild(sw); },
+                    (b: any) => { b.appendChild((this as any)._wvNativeColorSwatch(idoc, def.value)); },
                     actColors));
             }
         }, true);
@@ -3233,19 +3235,17 @@ class _ReaderPanelsMixin {
                         row.appendChild(sep);
                     }
                     // Unified with the filter popup (popups 1 & 2):
-                    // 26×28 button with a 12×12 colored circle inside
-                    // (`.wv-chip-swatch`), `data-selected="true"` for
-                    // the highlight state. Replaces the earlier 20×20
-                    // wrapper holding a 16×16 IconColor16 SVG.
+                    // 26×28 button holding the Zotero-native rounded-
+                    // square swatch (IconColor16 — the same shape this
+                    // site briefly used before the circle unification;
+                    // now ALL filters use it via _wvNativeColorSwatch),
+                    // `data-selected="true"` for the highlight state.
                     const btn = idoc.createElementNS(NS, "button");
                     (btn as any).type = "button";
                     btn.className = "wv-filter-opt wv-filter-opt-icon";
                     btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
                     if (st.colors.has(c)) (btn as any).dataset.selected = "true";
-                    const sw = idoc.createElementNS(NS, "span");
-                    sw.className = "wv-chip-swatch";
-                    (sw as any).style.background = c;
-                    btn.appendChild(sw);
+                    btn.appendChild((this as any)._wvNativeColorSwatch(idoc, c));
                     btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
                     row.appendChild(btn);
                 }

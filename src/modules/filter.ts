@@ -1947,11 +1947,11 @@ class _FilterMixin {
      *  rounded square (r≈2) filled with the colour plus a 10%-black
      *  inner stroke so near-white swatches stay legible. Matches the
      *  annotation-popup colour picker exactly. */
-    _wvNativeColorSwatch(doc: any, color: string) {
+    _wvNativeColorSwatch(doc: any, color: string, size?: number) {
         const SVG_NS = "http://www.w3.org/2000/svg";
         const svg = doc.createElementNS(SVG_NS, "svg");
-        svg.setAttribute("width", "16");
-        svg.setAttribute("height", "16");
+        svg.setAttribute("width", String(size || 16));
+        svg.setAttribute("height", String(size || 16));
         svg.setAttribute("viewBox", "0 0 16 16");
         svg.setAttribute("fill", "none");
         svg.classList.add("wv-swatch-native");
@@ -5156,10 +5156,8 @@ class _FilterMixin {
             fillValue: (valSeg) => {
                 const NS_HTML = "http://www.w3.org/1999/xhtml";
                 for (const c of colors) {
-                    const sw = doc.createElementNS(NS_HTML, "span");
-                    sw.className = "wv-chip-swatch";
-                    sw.style.background = c;
-                    valSeg.appendChild(sw);
+                    // Native rounded-square swatch, chip-sized (12px).
+                    valSeg.appendChild(this._wvNativeColorSwatch(doc, c, 12));
                 }
                 const labelText = colors.map(c => {
                     const def = this._ANNOTATION_COLORS.find(x => x.value === c);

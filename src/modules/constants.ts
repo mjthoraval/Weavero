@@ -682,8 +682,10 @@ export const PLUGIN_CSS = [
     // IconColor16 — see filter.ts _wvNativeColorSwatch), used by the
     // filter popup's Annotation Color options. The SVG carries its own
     // 10%-black legibility ring, so no CSS border here.
+    // (Size comes from the SVG's own width/height attributes — 16px in
+    // option grids, 12px inside filter-bar chips.)
     ".wv-swatch-native {",
-    "  display: block; width: 16px; height: 16px; flex: 0 0 auto;",
+    "  display: block; flex: 0 0 auto;",
     "}",
     // Tags-column counts: manual in blue, automatic in default text
     // colour. Tracks Zotero's accent palette via a CSS var fallback

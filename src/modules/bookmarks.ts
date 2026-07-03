@@ -1279,17 +1279,15 @@ class _BookmarksMixin {
                     row.appendChild(sep);
                 }
                 // Unified with the library filter popup (popup 1):
-                // 26×28 button with a 12×12 colored circle (`.wv-chip-swatch`)
-                // inside, `data-selected="true"` for the highlight state.
+                // 26×28 button holding the Zotero-native rounded-square
+                // swatch (filter.ts _wvNativeColorSwatch),
+                // `data-selected="true"` for the highlight state.
                 const btn: any = doc.createElementNS(NS_HTML, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-opt-icon";
                 btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
                 if (st.colors.has(c)) btn.dataset.selected = "true";
-                const sw: any = doc.createElementNS(NS_HTML, "span");
-                sw.className = "wv-chip-swatch";
-                sw.style.background = c;
-                btn.appendChild(sw);
+                btn.appendChild((this as any)._wvNativeColorSwatch(doc, c));
                 btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
                 row.appendChild(btn);
             }

@@ -7434,8 +7434,11 @@ class _ReaderMixin {
      *  then opens the item as a main-window tab. Works uniformly for the native
      *  and mounted tabs. Used by the per-tab context menu's "Move Tab to Main
      *  Window" (a non-drag way out for any tab). */
-    _wvWTMoveTabToMain(win: any, tabId: any, targetWin?: any) {
+    _wvWTMoveTabToMain(win: any, tabId: any, targetWin?: any, opts?: any) {
         try {
+            // noFocus (popup-initiated move): background arrival — no focus, no
+            // selection change anywhere.
+            const noFocus = !!(opts && opts.noFocus);
             const st = this._wvWTState(win);
             const tab = st && st.tabs.find((t: any) => t.id === tabId);
             if (!tab) return;
@@ -7456,7 +7459,11 @@ class _ReaderMixin {
             // Detachable when it's the LAST tab (source window closes) or a
             // non-native tab — _wvWTDetachTabKeepReader handles both.
             const detachable = !!(st && st.tabs && (st.tabs.length === 1 || !tab.native));
-            if (swappable && detachable && mainWin) {
+            // noFocus skips the swap: the donor Reader.open routes by the
+            // FOCUSED main window, so the swap can't run without surfacing the
+            // target. The classic path below has a window-explicit background
+            // route instead.
+            if (swappable && detachable && mainWin && !noFocus) {
                 this._wvWTDbg("reader→main: swapping item=" + itemID + " srcTab=" + tabId);
                 try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
                 (async () => {
@@ -7506,6 +7513,28 @@ class _ReaderMixin {
             // Leaving the window leaves the group (don't carry it to the main bar).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             try { this._wvWTCloseTab(win, tabId); } catch (e) {}
+            // Background arrival (popup move): a window-explicit UNLOADED add —
+            // no Reader.open / openNote (those route by focus and/or select the
+            // new tab). Deferred like the loading path so the closing reader's
+            // state write lands before a later lazy load reads it back.
+            if (noFocus) {
+                const setTB = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+                setTB(() => {
+                    try {
+                        const MZ: any = mainWin.Zotero_Tabs;
+                        if (!MZ || typeof MZ.add !== "function") return;
+                        const r = MZ.add({
+                            type: isNote ? "note-unloaded" : "reader-unloaded",
+                            data: { itemID },
+                            select: false,
+                            preventJumpback: true,
+                        });
+                        // Preserve the tab id if the reader tab carried a real `tab-…` id.
+                        try { if (r && r.id && /^tab-/.test(String(tabId)) && r.id !== tabId) (this as any)._wvRenameTab(mainWin, r.id, tabId); } catch (e) {}
+                    } catch (e) { Zotero.debug("[Weavero] _wvWTMoveTabToMain background add err: " + e); }
+                }, 150);
+                return;
+            }
             // A note isn't reader-able — dock it as a main-window note tab
             // (ZoteroPane.openNote) instead of Zotero.Reader.open, which would
             // silently fail and leave the note nowhere.

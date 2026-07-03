@@ -1261,7 +1261,10 @@ class _TabsMixin {
                         const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
                         const clientX = self._wvBarClientXForAnchor(tgtWin, pos.anchorTabId, isReaderTgt);
                         clearHighlight(); clearDragging();
-                        Promise.resolve(lp._wvMoveGroupToWindowAt(gdrag.groupId, tgtWin, isReaderTgt, clientX)).then(() => {
+                        // noFocus: a popup move rearranges windows in the
+                        // BACKGROUND — stay on the current window's selected
+                        // tab, don't surface the moved group.
+                        Promise.resolve(lp._wvMoveGroupToWindowAt(gdrag.groupId, tgtWin, isReaderTgt, clientX, { noFocus: true })).then(() => {
                             try { if (typeof panel.refreshList === "function") panel.refreshList(); else lp._wvRegroupTabsMenu(panel); } catch (er) {}
                         }).catch(() => {});
                         return;
@@ -1290,6 +1293,9 @@ class _TabsMixin {
                     e.preventDefault(); e.stopPropagation();
                     lp._wvPopupRowDrag = null;
                     const target: any = res.target;
+                    // Popup moves happen in the BACKGROUND: keep the current
+                    // window's selection/focus, don't surface the moved tab.
+                    target.noFocus = true;
                     // Precise insertion index — for a loose move AND a group
                     // join (the group branch clamps it into the group's run, so
                     // the tab lands at the exact slot the user aimed at).
@@ -2564,11 +2570,15 @@ class _TabsMixin {
      *  reader is moved WITHOUT reloading — its live docshell is swapped into the
      *  target window (Firefox-style; see `_wvSwapMoveToMain`). Notes or any
      *  pre-commit failure fall back to the classic close+reopen. */
-    _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
+    _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned, opts?: any) {
         const isNote = payload && (payload.readerType === "note" || String(payload.tabType || "").indexOf("note") === 0);
-        if (!isNote && payload && typeof payload.itemID === "number") {
+        // noFocus (popup-initiated move): skip the no-reload swap — its donor
+        // Reader.open routes by the FOCUSED main window, so the swap can't run
+        // without surfacing the target. The classic path's noFocus branch adds
+        // the tab unloaded/window-explicit instead.
+        if (!isNote && payload && typeof payload.itemID === "number" && !(opts && opts.noFocus)) {
             const classic = () => {
-                try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned); }
+                try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned, opts); }
                 catch (e) { Zotero.debug("[Weavero] classic move fallback err: " + e); }
             };
             Promise.resolve()
@@ -2577,7 +2587,7 @@ class _TabsMixin {
                 .catch((e) => { Zotero.debug("[Weavero] swap-move err, classic fallback: " + e); classic(); });
             return;
         }
-        this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned);
+        this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned, opts);
     }
 
     /** Before closing a source tab during a cross-window move: if it's the source
@@ -3075,10 +3085,11 @@ class _TabsMixin {
      *  the most-recently-active main window (reader.js:2731) — so we focus the
      *  target first; notes go through that window's own `ZoteroPane.openNote`.
      *  Mirrors the reader-merge drop's place-and-pin poll. */
-    _wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
+    _wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned, opts?: any) {
         try {
             const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
             if (itemID == null || !targetWin) return;
+            const noFocus = !!(opts && opts.noFocus);
             const isNote = payload.readerType === "note" || String(payload.tabType || "").indexOf("note") === 0;
             // Leaving the window leaves the group (don't carry it to the target).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
@@ -3091,7 +3102,8 @@ class _TabsMixin {
                 }
             } catch (e) {}
             // 2) Focus the target so getMainWindow() resolves to it, then open.
-            try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
+            // (noFocus skips this — its open route below is window-explicit.)
+            try { if (!noFocus && targetWin.focus) targetWin.focus(); } catch (e) {}
             const Z_Tabs: any = (targetWin as any).Zotero_Tabs;
             const place = () => {
                 const startTs = Date.now();
@@ -3133,7 +3145,44 @@ class _TabsMixin {
             };
             const open = () => {
                 try {
-                    if (isNote) {
+                    if (noFocus) {
+                        // Background arrival (popup move): a window-explicit
+                        // UNLOADED add — no Reader.open (routes by focus +
+                        // selects the new tab). Loads lazily when the user
+                        // selects it; the current window keeps focus and
+                        // selection. The add is synchronous, so rename/position/
+                        // pin the EXACT returned tab here — the generic place()
+                        // poll matches by itemID and can grab a pre-existing
+                        // duplicate of the same item instead.
+                        const r = Z_Tabs.add({
+                            type: isNote ? "note-unloaded" : "reader-unloaded",
+                            data: { itemID },
+                            select: false,
+                            preventJumpback: true,
+                        });
+                        if (r && r.id) {
+                            let nid = r.id;
+                            try {
+                                const sid = payload && payload.sourceTabId;
+                                if (sid && sid !== nid && /^tab-/.test(String(sid)) && this._wvRenameTab(targetWin, nid, sid)) nid = sid;
+                            } catch (e) {}
+                            try {
+                                if (typeof Z_Tabs.move === "function") {
+                                    const clamped = Math.max(1, Math.min(targetIndex, Z_Tabs._tabs.length - 1));
+                                    Z_Tabs.move(nid, clamped);
+                                }
+                            } catch (e) {}
+                            try {
+                                const tab = Z_Tabs._tabs.find((t: any) => t && t.id === nid);
+                                const curIdx = tab ? Z_Tabs._tabs.indexOf(tab) : -1;
+                                if (curIdx <= maxOtherPinned && curIdx > 0) {
+                                    const item: any = Zotero.Items.get(itemID);
+                                    if (item) { this._pinnedTabsAdd(item.libraryID, item.key); this._applyPinnedTabs(targetWin); }
+                                }
+                            } catch (e) {}
+                        }
+                        return;
+                    } else if (isNote) {
                         const ZP: any = (targetWin as any).ZoteroPane;
                         if (ZP && typeof ZP.openNote === "function") ZP.openNote(itemID, { openInWindow: false });
                         else if (ZP && typeof ZP.viewNote === "function") ZP.viewNote(itemID);

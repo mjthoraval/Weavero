@@ -1003,7 +1003,7 @@ class _TabGroupsMixin {
      *  grouped on arrival), close it here, reopen it there. Main targets ride
      *  _wvMoveTabBetweenMains (focus-then-open + slot poll); reader targets
      *  mount into the deck next to the group's last member. */
-    _wvTabGroupSendTabToWin(srcWin: any, tabID: any, tgtWin: any, groupID: any) {
+    _wvTabGroupSendTabToWin(srcWin: any, tabID: any, tgtWin: any, groupID: any, opts?: any) {
         try {
             const Z: any = srcWin.Zotero_Tabs;
             const tab = Z && Z._tabs.find((t: any) => t.id === tabID);
@@ -1073,7 +1073,7 @@ class _TabGroupsMixin {
                     }
                 } catch (e) {}
                 const payload = { itemID, sourceTabId: tabID, readerType: isNote ? "note" : undefined };
-                (this as any)._wvClassicMoveTabBetweenMains(srcWin, tgtWin, payload, targetIndex, 0);
+                (this as any)._wvClassicMoveTabBetweenMains(srcWin, tgtWin, payload, targetIndex, 0, opts);
                 // STAMP THE ARRIVAL DIRECTLY (retrying until the moved tab
                 // lands). The old flow relied on the CLAIM PASS finding the
                 // item-key in the members shadow — but the shadow SYNC in
@@ -1186,6 +1186,10 @@ class _TabGroupsMixin {
             const tgtWin = target.win;
             const tgtIsReader = !!target.isReader;
             const srcIsReader = !!(srcWin && srcWin._wvWT);
+            // Popup-initiated move: land the tab in the BACKGROUND — don't
+            // select it in the target, don't focus the target window; the
+            // user stays on their current tab.
+            const noFocus = !!target.noFocus;
 
             // "New Group in this window" → create one (empty name, next colour),
             // then move into it as a normal group target. Groups live in main
@@ -1238,11 +1242,11 @@ class _TabGroupsMixin {
                 }
                 if (!homeWin) return;
                 if (srcIsReader) {
-                    this._wvMoveReaderTabToMainGroup(srcWin, tabId, itemID, homeWin, groupId);
+                    this._wvMoveReaderTabToMainGroup(srcWin, tabId, itemID, homeWin, groupId, { noFocus });
                 } else if (srcWin === homeWin) {
                     this._wvTabGroupAddTab(srcWin, tabId, groupId, target.index);    // already home → group it at the precise slot
                 } else {
-                    this._wvTabGroupSendTabToWin(srcWin, tabId, homeWin, groupId);   // other main → home + stamp
+                    this._wvTabGroupSendTabToWin(srcWin, tabId, homeWin, groupId, { noFocus });   // other main → home + stamp
                 }
                 return;
             }
@@ -1261,7 +1265,7 @@ class _TabGroupsMixin {
                     let newId: any = tabId;
                     if (srcWin !== tgtWin) {
                         newId = null;
-                        try { newId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true, await: true }); } catch (e) {}
+                        try { newId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
                         try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
                     }
                     if (gid != null && newId != null) { try { this._wvReaderStampTabGroup(tgtWin, newId, gid); } catch (e) {} }
@@ -1291,7 +1295,7 @@ class _TabGroupsMixin {
                     return;
                 }
                 let newRId: any = null;
-                try { newRId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: true, await: true }); } catch (e) {}
+                try { newRId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
                 // Precise slot from the popup: move the just-mounted tab there.
                 if (target.index != null) {
                     try {
@@ -1310,7 +1314,7 @@ class _TabGroupsMixin {
                 }
                 try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
             } else if (srcIsReader) {
-                this._wvWTMoveTabToMain(srcWin, tabId, tgtWin);                      // reader → main window
+                this._wvWTMoveTabToMain(srcWin, tabId, tgtWin, { noFocus });         // reader → main window
             } else {
                 if (srcWin === tgtWin) {
                     // SAME main window → reorder via native move (for an
@@ -1331,7 +1335,7 @@ class _TabGroupsMixin {
                     : ((Z && Z._tabs) ? Z._tabs.length : 1);
                 // maxOtherPinned = 0 so the moved tab is never auto-pinned.
                 this._wvMoveTabBetweenMains(srcWin, tgtWin,
-                    { itemID, sourceTabId: tabId, readerType: isNote ? "note" : undefined }, targetIndex, 0);
+                    { itemID, sourceTabId: tabId, readerType: isNote ? "note" : undefined }, targetIndex, 0, { noFocus });
             }
         } catch (e) { Zotero.debug("[Weavero] _wvMoveTabToTarget err: " + e); }
     }
@@ -1339,11 +1343,11 @@ class _TabGroupsMixin {
     /** reader-window tab → a tab GROUP: move it to the group's home main window,
      *  then file the freshly-landed tab into the group (found by diffing the home
      *  window's tab ids against a pre-move snapshot). */
-    _wvMoveReaderTabToMainGroup(srcReaderWin: any, tabId: any, itemID: any, homeWin: any, groupId: any) {
+    _wvMoveReaderTabToMainGroup(srcReaderWin: any, tabId: any, itemID: any, homeWin: any, groupId: any, opts?: any) {
         try {
             const Z = homeWin.Zotero_Tabs;
             const before = new Set((Z && Z._tabs ? Z._tabs : []).map((t: any) => t.id));
-            this._wvWTMoveTabToMain(srcReaderWin, tabId, homeWin);
+            this._wvWTMoveTabToMain(srcReaderWin, tabId, homeWin, opts);
             let tries = 0;
             const land = () => {
                 try {
@@ -3107,8 +3111,9 @@ class _TabGroupsMixin {
      *  re-renders in the target once its tabs live there. Close-then-reopen
      *  per tab — the same semantics as the existing single-tab cross-window
      *  drags (reader state saved on close, restored on open). */
-    async _wvTabGroupMigrateGroup(srcWin: any, tgtWin: any, groupID: any, clientX: any) {
+    async _wvTabGroupMigrateGroup(srcWin: any, tgtWin: any, groupID: any, clientX: any, opts?: any) {
         try {
+            const noFocus = !!(opts && opts.noFocus);   // popup move: don't surface the target
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (!g || !srcWin || !tgtWin || srcWin === tgtWin) return;
             const srcIsReader = this._wvTabGroupIsReaderWin(srcWin);
@@ -3192,8 +3197,9 @@ class _TabGroupsMixin {
                     if (tgtIsReader) {
                         // Surface the arriving group — without this the reader
                         // window stays behind the main window and the migrated
-                        // group looks like it vanished.
-                        try { tgtWin.focus(); } catch (e) {}
+                        // group looks like it vanished. (Skipped for popup
+                        // moves: the popup lists the target, nothing "vanishes".)
+                        if (!noFocus) { try { tgtWin.focus(); } catch (e) {} }
                         // Drop slot from the pointer, computed against the
                         // PRE-mount deck (mounts append at the end, so the
                         // pre-existing indices stay valid).
@@ -3268,7 +3274,7 @@ class _TabGroupsMixin {
                         // bar one at a time (re-rendering repeatedly); unloaded adds
                         // appear at once and load lazily only when selected. We never
                         // select a member, so a COLLAPSED group stays collapsed.
-                        try { tgtWin.focus(); } catch (e) {}
+                        if (!noFocus) { try { tgtWin.focus(); } catch (e) {} }
                         const Z: any = tgtWin.Zotero_Tabs;
                         // Suppress per-event re-chips while the whole group's
                         // unloaded tabs are added + positioned. Each Z.add fires
@@ -3487,8 +3493,9 @@ class _TabGroupsMixin {
 
     /** Reopen a saved/dormant group's tabs in `targetWin` (background-opened,
      *  staggered, then clustered). Mirrors the migrate flow's reopen branch. */
-    async _wvTabGroupReopen(targetWin: any, groupID: any) {
+    async _wvTabGroupReopen(targetWin: any, groupID: any, opts?: any) {
         const reopenSet = this._wvReopeningGroups();
+        const noFocus = !!(opts && opts.noFocus);   // popup move: background reopen, no selection change
         try {
             const g0 = this._tabGroupsGet().find((x: any) => x.id === groupID);
             const members = (g0 && g0.members) || [];
@@ -3496,7 +3503,7 @@ class _TabGroupsMixin {
             // Reopening the saved group consumes it: drop it from any closed-window
             // entry so reopening that window won't duplicate it (Firefox parity).
             try { (this as any)._wvClosedForgetGroup(groupID); } catch (e) {}
-            try { targetWin.focus(); } catch (e) {}   // Reader.open targets the focused main window
+            if (!noFocus) { try { targetWin.focus(); } catch (e) {} }   // Reader.open targets the focused main window
             const setT = (targetWin.setTimeout ? targetWin.setTimeout.bind(targetWin) : setTimeout);
             const Z: any = targetWin.Zotero_Tabs;
             // Clear the saved flag + mark the group reopening BEFORE opening, so
@@ -3552,17 +3559,17 @@ class _TabGroupsMixin {
             // the strip scrolls to it (feedback) and only that one loads.
             try { this._wvTabGroupStabilize(targetWin); } catch (e) {}
             try { this._applyTabGroups(targetWin); } catch (e) {}
-            if (firstId) { try { Z.select(firstId); } catch (e) {} }
+            if (firstId && !noFocus) { try { Z.select(firstId); } catch (e) {} }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupReopen err: " + e); }
         finally {
             reopenSet.delete(groupID);
             try { this._wvTabGroupStabilize(targetWin); } catch (e) {}
             this._wvTabGroupApplyEverywhere();
-            try { this._wvTabGroupFocusFirst(targetWin, groupID); } catch (e) {}
+            if (!noFocus) { try { this._wvTabGroupFocusFirst(targetWin, groupID); } catch (e) {} }
             // The synchronous passes above may run before React has rendered the
             // new tab nodes — re-apply once they exist so the group chips/classes
             // settle and the first tab is scrolled into view.
-            try { targetWin.setTimeout(() => { try { this._wvTabGroupStabilize(targetWin); this._wvTabGroupApplyEverywhere(); this._wvTabGroupFocusFirst(targetWin, groupID); } catch (e) {} }, 60); } catch (e) {}
+            try { targetWin.setTimeout(() => { try { this._wvTabGroupStabilize(targetWin); this._wvTabGroupApplyEverywhere(); if (!noFocus) this._wvTabGroupFocusFirst(targetWin, groupID); } catch (e) {} }, 60); } catch (e) {}
         }
     }
 
@@ -3579,7 +3586,7 @@ class _TabGroupsMixin {
     /** Reopen a saved/dormant group's tabs into a READER window's deck
      *  (the reader twin of _wvTabGroupReopen — mounts sequentially, then
      *  re-renders the strip). */
-    async _wvTabGroupReopenInReader(win: any, groupID: any) {
+    async _wvTabGroupReopenInReader(win: any, groupID: any, opts?: any) {
         try {
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             const members = (g && g.members) || [];
@@ -3616,7 +3623,7 @@ class _TabGroupsMixin {
             try { (this as any)._wvWTRenderStrip(win); } catch (e) {}
             try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
             this._wvTabGroupApplyEverywhere();
-            try { win.focus(); } catch (e) {}
+            if (!(opts && opts.noFocus)) { try { win.focus(); } catch (e) {} }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupReopenInReader err: " + e); }
     }
 
@@ -3769,7 +3776,7 @@ class _TabGroupsMixin {
      *  target window's tab-bar/strip coordinate space; null/undefined → append).
      *  Handles same-window reorder, cross-window migrate, and reopening a closed
      *  (saved) group at the target slot. Used by the popup group drag. */
-    async _wvMoveGroupToWindowAt(groupID: any, tgtWin: any, isReaderTgt: boolean, clientX: number | null) {
+    async _wvMoveGroupToWindowAt(groupID: any, tgtWin: any, isReaderTgt: boolean, clientX: number | null, opts?: any) {
         try {
             if (!tgtWin) return;
             const home = this._wvTabGroupHomeWin(groupID);
@@ -3777,10 +3784,10 @@ class _TabGroupsMixin {
             if (!home) {
                 // Closed / saved group → reopen in the target, then position it.
                 if (isReaderTgt) {
-                    await this._wvTabGroupReopenInReader(tgtWin, groupID);
+                    await this._wvTabGroupReopenInReader(tgtWin, groupID, opts);
                     if (hasX) { try { this._wvTabGroupReaderMoveGroupTo(tgtWin, groupID, clientX as number); } catch (e) {} }
                 } else {
-                    await this._wvTabGroupReopen(tgtWin, groupID);
+                    await this._wvTabGroupReopen(tgtWin, groupID, opts);
                     if (hasX) { try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, clientX as number); } catch (e) {} }
                 }
                 return;
@@ -3793,7 +3800,7 @@ class _TabGroupsMixin {
             }
             // Cross-window migrate, landing at the slot (clientX honoured by both
             // the main-bar and reader-strip branches of migrate).
-            await this._wvTabGroupMigrateGroup(home, tgtWin, groupID, hasX ? (clientX as number) : 1e6);
+            await this._wvTabGroupMigrateGroup(home, tgtWin, groupID, hasX ? (clientX as number) : 1e6, opts);
         } catch (e) { Zotero.debug("[Weavero] _wvMoveGroupToWindowAt err: " + e); }
     }
 

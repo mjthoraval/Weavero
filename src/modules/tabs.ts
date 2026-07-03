@@ -6439,7 +6439,8 @@ class _TabsMixin {
             };
             let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null,
                 GetWindowLongPtr: any = null, SetWindowLongPtr: any = null,
-                dwmapi: any = null, DwmSetWindowAttribute: any = null, ShowWindowFn: any = null;
+                dwmapi: any = null, DwmSetWindowAttribute: any = null, ShowWindowFn: any = null,
+                GetAsyncKeyState: any = null;
             try {
                 const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
                 ctypesRef = ctypes;
@@ -6452,6 +6453,7 @@ class _TabsMixin {
                     ctypes.voidptr_t, ctypes.int, ctypes.intptr_t);
                 ShowWindowFn = user32.declare("ShowWindow", ctypes.winapi_abi, ctypes.bool,
                     ctypes.voidptr_t, ctypes.int);
+                GetAsyncKeyState = user32.declare("GetAsyncKeyState", ctypes.winapi_abi, ctypes.short, ctypes.int);
                 dwmapi = ctypes.open("dwmapi.dll");
                 DwmSetWindowAttribute = dwmapi.declare("DwmSetWindowAttribute", ctypes.winapi_abi, ctypes.long,
                     ctypes.voidptr_t, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t);
@@ -6581,21 +6583,26 @@ class _TabsMixin {
                     // which the user traced to in-window tab-group churn
                     // anyway (2026-07-04). NOACTIVATE + APPWINDOW + instant
                     // refocus + beneath-target stacking remain.
+                    // NOACTIVATE RETIRED: it also blocked USER clicks — and a
+                    // click on the reader's PDF lands inside its iframe, which
+                    // the chrome mousedown claim never sees, so the reader
+                    // window was unfocusable during startup (2026-07-04).
+                    // Windows now activate natively; the activate hook below
+                    // tells user input from programmatic raises via the live
+                    // input state and reverts only the latter.
                     const arm = (stage: string) => {
                         try {
-                            setNoActivate(w);
                             pushToBottom(w);
-                            if (noActivated.has(w)) {
-                                (self as any)._wvTrace("bg-restore: window armed at " + stage);
-                                return true;
-                            }
+                            (w as any)._wvBgArmed = true;
+                            (self as any)._wvTrace("bg-restore: window armed at " + stage);
+                            return true;
                         } catch (e2) {}
                         return false;
                     };
                     if (!arm("open")) {
                         let tries = 0;
                         const again = (stage: string) => {
-                            if (noActivated.has(w) || w.closed || !(self as any)._wvBgRestoreOn) return;
+                            if ((w as any)._wvBgArmed || w.closed || !(self as any)._wvBgRestoreOn) return;
                             if (!arm(stage) && stage === "timer" && ++tries < 10) setT(() => again("timer"), 30);
                         };
                         setT(() => again("timer"), 15);
@@ -6621,6 +6628,19 @@ class _TabsMixin {
                             if (liveP !== self) return;
                             if (!(self as any)._wvBgRestoreOn) return;
                             if ((w as any)._wvBgUserClaimed) return;   // the user chose this window
+                            // USER-INITIATED activation (mouse button or Alt/Tab
+                            // held right now — true for clicks anywhere incl. the
+                            // PDF content and the taskbar, and for Alt+Tab; never
+                            // for Zotero's programmatic raises) → claim + allow.
+                            try {
+                                if (GetAsyncKeyState) {
+                                    const down = (k: number) => (Number(GetAsyncKeyState(k)) & 0x8000) !== 0;
+                                    if (down(0x01) || down(0x02) || down(0x04) || down(0x12)) {
+                                        (w as any)._wvBgUserClaimed = true;
+                                        return;
+                                    }
+                                }
+                            } catch (e2) {}
                             // Fight only the raises WE cause: the whole guarded
                             // early-restore phase, plus a short window around
                             // each background warm-load (which the warmer marks).

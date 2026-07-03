@@ -6450,8 +6450,17 @@ class _TabsMixin {
             const pushToBottom = (w: any) => {
                 try {
                     if (!SetWindowPos || !w || w.closed) return;
-                    // HWND_BOTTOM; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-                    SetWindowPos(hwndOf(w), ctypesRef.voidptr_t(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
+                    // Place just BENEATH the refocus target, so the Zotero
+                    // window stack stays together ABOVE unrelated apps —
+                    // HWND_BOTTOM buried restored windows under every other
+                    // application ("only one window is back", 2026-07-04).
+                    let after = ctypesRef.voidptr_t(1);   // HWND_BOTTOM fallback
+                    try {
+                        const t = resolveTarget();
+                        if (t && t !== w && !t.closed) after = hwndOf(t);
+                    } catch (e2) {}
+                    // SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                    SetWindowPos(hwndOf(w), after, 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
                 } catch (e) {}
             };
             // WS_EX_NOACTIVATE: a JS-side refocus reacts AFTER the OS already
@@ -6527,12 +6536,35 @@ class _TabsMixin {
                 try {
                     if (w._wvBgHooked) return;
                     w._wvBgHooked = true;
-                    // OS-level: never activatable while the restore holds. The
-                    // native handle exists at domwindowopened; retry once on a
-                    // 0-timeout if the docShell is not wired yet.
-                    const arm = () => { setNoActivate(w); setCloak(w, true); pushToBottom(w); };
-                    try { arm(); } catch (e2) {}
-                    try { if (!noActivated.has(w) && w.setTimeout) w.setTimeout(arm, 0); } catch (e2) {}
+                    // OS-level: never activatable AND cloaked (invisible) while
+                    // the restore holds. The native handle is often NOT ready
+                    // at domwindowopened, and a single silent retry left the
+                    // window uncloaked -> the blink survived (2026-07-04).
+                    // Arm relentlessly (open / timer x10 / DOMContentLoaded /
+                    // load) until the cloak verifiably sticks, and TRACE the
+                    // stage so the next run tells us where it landed.
+                    const arm = (stage: string) => {
+                        try {
+                            setNoActivate(w);
+                            setCloak(w, true);
+                            pushToBottom(w);
+                            if (cloaked.has(w)) {
+                                (self as any)._wvTrace("bg-restore: window cloaked at " + stage);
+                                return true;
+                            }
+                        } catch (e2) {}
+                        return false;
+                    };
+                    if (!arm("open")) {
+                        let tries = 0;
+                        const again = (stage: string) => {
+                            if (cloaked.has(w) || w.closed || !(self as any)._wvBgRestoreOn) return;
+                            if (!arm(stage) && stage === "timer" && ++tries < 10) setT(() => again("timer"), 30);
+                        };
+                        setT(() => again("timer"), 15);
+                        try { w.addEventListener("DOMContentLoaded", () => again("DOMContentLoaded"), { once: true, capture: true }); } catch (e2) {}
+                        try { w.addEventListener("load", () => again("load"), { once: true }); } catch (e2) {}
+                    }
                     // The user clicking the window overrides everything.
                     w.addEventListener("mousedown", () => {
                         try { reveal(w); w.focus(); } catch (e2) {}
@@ -6590,7 +6622,7 @@ class _TabsMixin {
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
-                try { for (const w of [...cloaked]) setCloak(w, false); } catch (e) {}
+                try { for (const w of [...cloaked]) { pushToBottom(w); setCloak(w, false); } } catch (e) {}
                 try { for (const w of [...noActivated]) clearNoActivate(w); } catch (e) {}
                 (this as any)._wvBgClearNoActivate = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}

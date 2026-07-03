@@ -5315,6 +5315,28 @@ class _ReaderMixin {
             // window. The realize path also seeds new tabs from st.shared.
             if (tabId !== st.activeId) { try { this._wvWTCaptureSharedDisplay(win); } catch (e) {} }
             try { this._wvWTDbg("SWITCH → " + tabId + " native=" + !!tab.native + " ctor=" + (tab.reader && tab.reader.constructor && tab.reader.constructor.name) + " activeWas=" + st.activeId); } catch (e) {}
+            // ZOMBIE self-heal: a reader whose iframe window died with its
+            // owning context (window-hop residue) still reads as "loaded" but
+            // renders blank forever — the switch never remounts it. Detect a
+            // DEAD wrapper (an `_iframeWindow` that is merely not-yet-set is a
+            // reader mid-init and must be left alone) and reset the tab to
+            // lazy so the realize below mounts a fresh instance.
+            try {
+                if (tab.reader) {
+                    let deadR = false;
+                    try {
+                        const iw = tab.reader._iframeWindow;
+                        if (iw && (Components as any).utils.isDeadWrapper(iw)) deadR = true;
+                        else if (iw) { void iw.document; }   // throws on dead
+                    } catch (e) { deadR = true; }
+                    if (deadR) {
+                        this._wvWTDbg("SWITCH: dead reader on " + tabId + " — re-realizing");
+                        try { if (tab.browser && tab.browser.isConnected) tab.browser.remove(); } catch (e) {}
+                        try { const di = ((Zotero as any).Reader._readers || []).indexOf(tab.reader); if (di >= 0) (Zotero as any).Reader._readers.splice(di, 1); } catch (e) {}
+                        tab.reader = null; tab.browser = null; tab.lazy = true;
+                    }
+                }
+            } catch (e) {}
             // Lazy (unloaded) tab → build its reader instance now. The realize's
             // synchronous prefix creates the <browser>, so the collapse toggle
             // below has something to reveal; the document loads in place.

@@ -2808,6 +2808,14 @@ class WeaveroPlugin {
                 // activation and focus snaps straight back to the quit-time
                 // window (Windows-only; the shepherd below stays as backstop).
                 .then(() => { try { (this as any)._wvBgRestoreStart(); } catch (e) {} })
+                // One-step tab-bar reveal: hide the bars' contents through the
+                // restore churn; the guard-lift apply below reveals them fully
+                // grouped in a single step.
+                .then(() => {
+                    try {
+                        for (const w of (Zotero.getMainWindows() || [])) (this as any)._wvTabBarRestoreHoldSet(w, true);
+                    } catch (e) {}
+                })
                 .then(() => { try { (this as any)._wvTrace("restore: dev main windows"); this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
                 // Firefox-style: open EVERY window up-front (all held behind the
                 // focused tab). Post-takeover the store is the source of truth;
@@ -2947,6 +2955,9 @@ class WeaveroPlugin {
                                         // orphaned from its group.
                                         try { (this as any)._wvTabGroupStabilize(w); } catch (e) {}
                                         this._applyTabGroups(w);
+                                        // Bar contents were held hidden through the
+                                        // churn — reveal them now, fully grouped.
+                                        try { (this as any)._wvTabBarRestoreHoldSet(w, false); } catch (e) {}
                                     }
                                 } catch (e) {}
                                 // Safety: any still-held reader-window opens go now.
@@ -3811,6 +3822,9 @@ class WeaveroPlugin {
             try { (this as any)._wvWireReopenClosedShortcut(_window); } catch (e) {}
             // Session-save hardening (see startup pass): base types for -loading tabs.
             try { (this as any)._wvPatchTabsGetState(_window); } catch (e) {}
+            // A window spawning DURING the restore joins the one-step tab-bar
+            // reveal (its restoreState churn stays hidden until guard-lift).
+            try { if ((this as any)._wvTabGroupRestoreGuard) (this as any)._wvTabBarRestoreHoldSet(_window, true); } catch (e) {}
             // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
             try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}
             try { (this as any)._wvWireRestoreTracing(_window); } catch (e) {}

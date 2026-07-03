@@ -5677,6 +5677,35 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    /** ONE-STEP tab-bar reveal for the restore: tabs used to appear plain
+     *  first and get their group chips seconds later at guard-lift ("the tab
+     *  groups appeared in two steps", 2026-07-04). While the hold attribute
+     *  is set the bar's CONTENTS are hidden (the bar keeps its height and
+     *  the window stays fully usable); the guard-lift group apply removes it
+     *  everywhere, so the bar materializes once, fully grouped. A 25 s
+     *  per-window backstop removes it even if the lift path dies. */
+    _wvTabBarRestoreHoldSet(win: any, on: boolean) {
+        try {
+            const doc = win && win.document;
+            const bar = doc && doc.getElementById("tab-bar-container");
+            if (!bar) return;
+            if (on) {
+                if (!doc.getElementById("wv-restore-hold-css")) {
+                    const st = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                    st.id = "wv-restore-hold-css";
+                    st.textContent = "#tab-bar-container[wv-restore-hold] .tab-bar-inner-container { visibility: hidden; }";
+                    (doc.head || doc.documentElement).appendChild(st);
+                }
+                bar.setAttribute("wv-restore-hold", "true");
+                const setT = (win.setTimeout ? win.setTimeout.bind(win) : setTimeout);
+                setT(() => { try { bar.removeAttribute("wv-restore-hold"); } catch (e) {} }, 25000);
+            } else if (bar.hasAttribute("wv-restore-hold")) {
+                bar.removeAttribute("wv-restore-hold");
+                (this as any)._wvTrace && (this as any)._wvTrace("restore: tab bar revealed (grouped) in " + this._wvWindowName(win));
+            }
+        } catch (e) {}
+    }
+
     /** VERIFY-AND-REPAIR the anchor window's native session restore. Zotero's
      *  `restoreState` (zoteroPane.js, end of makeVisible) runs on the same
      *  `initializationPromise` turn plugin startup awaits — structurally

@@ -1120,6 +1120,13 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    _getEnableReadStatusFilter() {
+        if (!this._getEnableItemsTreeFilter()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableReadStatusFilter");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
     _getEnableSelectionTarget() {
         if (!this._getEnableFilters()) return false;
         try {

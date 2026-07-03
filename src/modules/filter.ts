@@ -5480,7 +5480,9 @@ class _FilterMixin {
      *  when the Reading List plugin isn't active. */
     _renderReadStatusSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
-        if (!this._wvReadingListActive()) {
+        const rsEnabled = (this as any)._getEnableReadStatusFilter
+            ? (this as any)._getEnableReadStatusFilter() : true;
+        if (!rsEnabled || !this._wvReadingListActive()) {
             section.style.display = "none";
             section.className = "";
             return;

@@ -4415,6 +4415,10 @@ class _FilterMixin {
         const treeInner = doc.getElementById("item-tree-main")
             || doc.getElementById("zotero-items-tree");
         if (treeInner && win.MutationObserver) {
+            // Disconnect any previous observer FIRST — re-setup (plugin reload,
+            // pref toggles) otherwise stacks a dead instance's observer that
+            // keeps re-applying the filter from stale code on every mutation.
+            try { if (this._filterTreeObserver) this._filterTreeObserver.disconnect(); } catch (e) {}
             this._filterTreeObserver = new win.MutationObserver(() => {
                 // Skip the apply during a collection swap — the
                 // `changeCollectionTreeRow` wrap will re-apply

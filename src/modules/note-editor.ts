@@ -27,8 +27,14 @@ class _NoteEditorMixin {
      *  note-annotation rows already use. */
     _processNoteRows(doc) {
         if (!this._getEnableNotes()) return;
-        doc = doc || Zotero.getMainWindow().document;
-        if (!doc) return;
+        // No doc → sweep EVERY main window (not just the focused one).
+        if (!doc) {
+            try {
+                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of mains) { if (w && w.document) this._processNoteRows(w.document); }
+            } catch (e) {}
+            return;
+        }
         const rows = doc.querySelectorAll("note-row .note-content");
         this._dbg("[Weavero] _processNoteRows: " + rows.length + " row(s)");
         for (const el of rows) {
@@ -42,8 +48,14 @@ class _NoteEditorMixin {
      *  row's `.label` span holds the note's first-line excerpt. */
     _processNotesBoxes(doc) {
         if (!this._getEnableNotes()) return;
-        doc = doc || Zotero.getMainWindow().document;
-        if (!doc) return;
+        // No doc → sweep EVERY main window (not just the focused one).
+        if (!doc) {
+            try {
+                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of mains) { if (w && w.document) this._processNotesBoxes(w.document); }
+            } catch (e) {}
+            return;
+        }
         const labels = doc.querySelectorAll("notes-box .body .row .label");
         this._dbg("[Weavero] _processNotesBoxes: " + labels.length + " label(s)");
         for (const el of labels) {
@@ -1180,8 +1192,10 @@ class _NoteEditorMixin {
             // Right-pane editors live in the main window; pop-out
             // editors in `zotero:note` windows.
             const docs = [];
-            try { docs.push(Zotero.getMainWindow().document); }
-            catch (e) {}
+            try {
+                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of mains) { if (w && w.document) docs.push(w.document); }
+            } catch (e) {}
             try {
                 const winEnum = Services.wm.getEnumerator("zotero:note");
                 while (winEnum.hasMoreElements()) {

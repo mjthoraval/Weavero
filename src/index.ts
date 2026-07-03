@@ -4307,6 +4307,9 @@ class WeaveroPlugin {
                     // wrapped refreshList kept decorating rows from dead code
                     // whenever the popup re-rendered post-disable).
                     try { this._teardownTabsMenuLibrarySort(w); } catch (e) {}
+                    // Libraries-box highlight observer — per-window; the single
+                    // later call covers only the focused window.
+                    try { this._teardownLibrariesBoxHighlight(w); } catch (e) {}
                     try { this._wvStripWindowChrome(w); } catch (e) {}
                 }
                 const readers = (Zotero.Reader._readers || []).filter(r => !r.tabID && r._window);

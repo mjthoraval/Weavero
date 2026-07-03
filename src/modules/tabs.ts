@@ -6354,6 +6354,7 @@ class _TabsMixin {
                 // persist and revive with the flag. Assert the focused window
                 // once all warming is done.
                 try { (this as any)._wvBgRestoreStart({ holdMs: 20000 }); } catch (e) {}
+                (this as any)._wvBgExpectSteal = Date.now() + 6000;   // this load may raise its window
                 if (i >= targets.length) {
                     try { setT(() => { try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {} }, 3000); } catch (e) {}
                     return;
@@ -6601,10 +6602,14 @@ class _TabsMixin {
                         try { w.addEventListener("DOMContentLoaded", () => again("DOMContentLoaded"), { once: true, capture: true }); } catch (e2) {}
                         try { w.addEventListener("load", () => again("load"), { once: true }); } catch (e2) {}
                     }
-                    // The user clicking the window overrides everything.
+                    // The user clicking the window overrides everything —
+                    // PERMANENTLY for this window (the claim flag disarms the
+                    // activate hook below; the old {once} listener revealed the
+                    // window but the hook then fought the very focus it granted,
+                    // so windows were unclickable during the restore, 2026-07-04).
                     w.addEventListener("mousedown", () => {
-                        try { reveal(w); w.focus(); } catch (e2) {}
-                    }, { capture: true, once: true });
+                        try { (w as any)._wvBgUserClaimed = true; reveal(w); w.focus(); } catch (e2) {}
+                    }, { capture: true });
                     w.addEventListener("activate", () => {
                         try {
                             // Stale-closure guard: hooks survive plugin reloads
@@ -6615,6 +6620,13 @@ class _TabsMixin {
                             const liveP = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                             if (liveP !== self) return;
                             if (!(self as any)._wvBgRestoreOn) return;
+                            if ((w as any)._wvBgUserClaimed) return;   // the user chose this window
+                            // Fight only the raises WE cause: the whole guarded
+                            // early-restore phase, plus a short window around
+                            // each background warm-load (which the warmer marks).
+                            // A user's taskbar click outside those wins.
+                            if (!(self as any)._wvTabGroupRestoreGuard
+                                    && !(Date.now() < ((self as any)._wvBgExpectSteal || 0))) return;
                             if (!isZoteroWin(w, true)) return;
                             const t2 = resolveTarget();
                             if (t2 && t2 !== w) {

@@ -6443,30 +6443,38 @@ class _TabsMixin {
                     SetWindowPos(hwnd, ctypesRef.voidptr_t(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
                 } catch (e) {}
             };
-            const isZoteroWin = (w: any) => {
+            // "Is this one of ours?" — with a pre-parse grace: at
+            // `domwindowopened` (and often at the FIRST activate) the XUL
+            // document hasn't parsed yet, so windowtype is empty. During the
+            // restore hold, an unidentified window is treated as ours — the
+            // only windows opening then ARE the restore's.
+            const isZoteroWin = (w: any, allowUnknown?: boolean) => {
                 try {
                     const t = w.document && w.document.documentElement
                         && w.document.documentElement.getAttribute("windowtype");
+                    if (!t) return !!allowUnknown;
                     return t === "navigator:browser" || t === "zotero:reader";
                 } catch (e) { return false; }
             };
-            const settle = (w: any) => {
+            // Hook a window the moment it EXISTS: the first activation fires
+            // BEFORE `load` completes, so a load-time hook let every new
+            // window flash to the front once (the residual "very short jump",
+            // caught by the activation trace at +1969ms/+3521ms, 2026-07-04).
+            const hook = (w: any) => {
                 try {
-                    if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
-                    const target = resolveTarget();
-                    if (target === w) return;              // the target itself may restore late
-                    pushToBottom(w);
-                    if (target && Services.focus.activeWindow === w) { try { target.focus(); } catch (e) {} }
+                    if (w._wvBgHooked) return;
+                    w._wvBgHooked = true;
                     w.addEventListener("activate", () => {
                         try {
                             if (!(self as any)._wvBgRestoreOn) return;
+                            if (!isZoteroWin(w, true)) return;
                             const t2 = resolveTarget();
                             if (t2 && t2 !== w) {
                                 pushToBottom(w);
                                 t2.focus();
                                 try {
                                     (self as any)._wvTrace("bg-restore: "
-                                        + (w.document.documentElement.getAttribute("windowtype") || "?")
+                                        + (w.document.documentElement.getAttribute("windowtype") || "pre-parse")
                                         + " '" + String(w.document.title || "").slice(0, 30)
                                         + "' stole activation — refocused the target");
                                 } catch (e2) {}
@@ -6475,11 +6483,22 @@ class _TabsMixin {
                     });
                 } catch (e) {}
             };
+            const settle = (w: any) => {
+                try {
+                    if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
+                    const target = resolveTarget();
+                    if (target === w) return;              // the target itself may restore late
+                    pushToBottom(w);
+                    if (target && Services.focus.activeWindow === w) { try { target.focus(); } catch (e) {} }
+                    hook(w);   // no-op if the open-time hook already landed
+                } catch (e) {}
+            };
             const obs: any = {
                 observe(subject: any, topic: string) {
                     try {
                         if (topic !== "domwindowopened") return;
                         const w: any = subject;
+                        hook(w);                                   // BEFORE first show/activate
                         w.addEventListener("load", () => settle(w), { once: true });
                     } catch (e) {}
                 },

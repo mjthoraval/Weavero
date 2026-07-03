@@ -598,6 +598,15 @@ class _TabGroupsMixin {
                     if (!home && ((this as any)._wvWTRestoreActive
                             || (this as any)._wvPendingDevWindow
                             || ((this as any)._wvDevSpawnQueue && (this as any)._wvDevSpawnQueue.length))) continue;
+                    // Same trap MID-MIGRATE: between the source closes and the
+                    // target mounts the group is briefly homeless, and the async
+                    // close notifications land _applyTabGroups in OTHER windows
+                    // right inside that gap — claiming then stamps a loose
+                    // duplicate copy of a member ("moved the group to a reader
+                    // window, it left behind tabs with a duplicate of the
+                    // group", 2026-07-03). The migrate keeps the group in the
+                    // reopening set for exactly this window of time.
+                    if (!home && this._wvReopeningGroups().has(g.id)) continue;
                     let set = claimedByGroup.get(g.id); if (!set) { set = new Set(); claimedByGroup.set(g.id, set); }
                     if (set.has(kk)) continue;                          // duplicate copy stays out
                     this._wvTabGroupSetStamp(t, g.id); set.add(kk);
@@ -2832,6 +2841,10 @@ class _TabGroupsMixin {
                     if (!g) continue;
                     const home = this._wvTabGroupHomeWin(g.id);
                     if (home && home !== win) continue;
+                    // Homeless + mid-migrate → not claimable (see the main-bar
+                    // claim pass twin: the close→mount gap must not grab loose
+                    // duplicate copies in other windows).
+                    if (!home && this._wvReopeningGroups().has(g.id)) continue;
                     let set = claimedByGroup.get(g.id); if (!set) { set = new Set(); claimedByGroup.set(g.id, set); }
                     if (set.has(kk)) continue;
                     this._wvTabGroupSetStamp(tab, g.id); set.add(kk);
@@ -3103,23 +3116,48 @@ class _TabGroupsMixin {
             // Collect open members (STAMPED with this group, per-tab) in SOURCE
             // display order — a duplicate of a member's item that isn't itself in
             // the group is correctly left behind.
-            const entries: Array<{ itemID: number; isNote: boolean; srcTabID: any }> = [];
-            if (srcIsReader) {
-                const st = srcWin._wvWT;
-                for (const t of (st && st.tabs) || []) {
-                    if (this._wvTabGroupStamp(t) === g.id) {
-                        entries.push({ itemID: t.itemID, isNote: t.type === "note", srcTabID: t.id });
+            const entries: Array<{ itemID: number; isNote: boolean; srcTabID: any; fromWin: any; fromReader: boolean; skipReopen?: boolean }> = [];
+            const collectFrom = (w: any) => {
+                if (this._wvTabGroupIsReaderWin(w)) {
+                    const st = w._wvWT;
+                    for (const t of (st && st.tabs) || []) {
+                        if (this._wvTabGroupStamp(t) === g.id) {
+                            entries.push({ itemID: t.itemID, isNote: t.type === "note", srcTabID: t.id, fromWin: w, fromReader: true });
+                        }
+                    }
+                } else {
+                    const Z: any = w.Zotero_Tabs;
+                    for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
+                        const t = Z._tabs[i];
+                        if (this._wvTabGroupStamp(t) === g.id) {
+                            entries.push({ itemID: t.data && t.data.itemID, isNote: String(t.type || "").indexOf("note") === 0, srcTabID: t.id, fromWin: w, fromReader: false });
+                        }
                     }
                 }
-            } else {
-                const Z: any = srcWin.Zotero_Tabs;
-                for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
-                    const t = Z._tabs[i];
-                    if (this._wvTabGroupStamp(t) === g.id) {
-                        entries.push({ itemID: t.data && t.data.itemID, isNote: String(t.type || "").indexOf("note") === 0, srcTabID: t.id });
-                    }
+            };
+            collectFrom(srcWin);
+            // A SPLIT group (stamped members in more than one window — fallout
+            // of an earlier partial move or claim) must travel as a WHOLE:
+            // sweep every other window's stamped members too, so the move
+            // RE-UNIFIES the group instead of leaving the minority window
+            // holding a duplicate chip + leftover tabs (2026-07-03).
+            try {
+                const extraWins = new Set<any>();
+                this._wvTabGroupForEachOpenTab((t: any, w: any) => {
+                    if (w === srcWin || w === tgtWin) return;
+                    if (this._wvTabGroupStamp(t) === g.id) extraWins.add(w);
+                });
+                for (const w of extraWins) collectFrom(w);
+            } catch (e) {}
+            // The same ITEM can be stamped in two windows (the split-dupe
+            // case): close every copy, but reopen it in the target only once.
+            try {
+                const seenItems = new Set<any>();
+                for (const en0 of entries) {
+                    if (seenItems.has(en0.itemID)) en0.skipReopen = true;
+                    else seenItems.add(en0.itemID);
                 }
-            }
+            } catch (e) {}
             if (!entries.length) return;
             this._wvTGDbg("migrate " + entries.length + " tab(s) " + (srcIsReader ? "reader" : "main")
                 + "→" + (tgtIsReader ? "reader" : "main"));
@@ -3140,8 +3178,8 @@ class _TabGroupsMixin {
             try {
                 for (const en2 of entries) {
                     try {
-                        if (srcIsReader) this._wvWTCloseTab(srcWin, en2.srcTabID);
-                        else srcWin.Zotero_Tabs.close(en2.srcTabID);
+                        if (en2.fromReader) this._wvWTCloseTab(en2.fromWin, en2.srcTabID);
+                        else en2.fromWin.Zotero_Tabs.close(en2.srcTabID);
                     } catch (e) {}
                 }
             } finally {
@@ -3183,6 +3221,7 @@ class _TabGroupsMixin {
                         // the drop position).
                         let placed = 0;
                         for (const en2 of entries) {
+                            if (en2.skipReopen) continue;
                             try {
                                 // NOT awaited: the mount's SYNCHRONOUS prefix
                                 // already registers the tab in st.tabs (the
@@ -3217,6 +3256,9 @@ class _TabGroupsMixin {
                             } catch (e) {}
                         }
                         try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
+                        // STRAGGLER SWEEP (reader target too — it was main-only,
+                        // so a failed source close left a duplicate chip behind).
+                        try { this._wvTabGroupSweepMigrateStragglers(entries, groupID); } catch (e) {}
                     } else {
                         // Re-open each member as an UNLOADED main-window tab —
                         // synchronous, no document load, appended contiguously,
@@ -3238,6 +3280,7 @@ class _TabGroupsMixin {
                         const arrivedIDs: string[] = [];
                         if (Z && typeof Z.add === "function") {
                             for (const en2 of entries) {
+                                if (en2.skipReopen) continue;
                                 try {
                                     if (!Zotero.Items.exists(en2.itemID)) continue;
                                     const r = Z.add({
@@ -3282,23 +3325,7 @@ class _TabGroupsMixin {
                             // retry the close; if it still won't close, unstamp
                             // it (the tab survives as a loose duplicate, the
                             // group stays single-window).
-                            try {
-                                for (const en3 of entries) {
-                                    if (srcIsReader) {
-                                        const st3 = srcWin._wvWT;
-                                        if (st3 && st3.tabs.some((x: any) => x.id === en3.srcTabID)) {
-                                            try { (this as any)._wvWTCloseTab(srcWin, en3.srcTabID); } catch (e) {}
-                                        }
-                                    } else {
-                                        const SZ: any = srcWin.Zotero_Tabs;
-                                        if (SZ && SZ._tabs.some((x: any) => x.id === en3.srcTabID)) {
-                                            try { SZ.close(en3.srcTabID); } catch (e) {}
-                                            const t3 = SZ._tabs.find((x: any) => x.id === en3.srcTabID);
-                                            if (t3 && this._wvTabGroupStamp(t3) === groupID) this._wvTabGroupSetStamp(t3, null);
-                                        }
-                                    }
-                                }
-                            } catch (e) {}
+                            try { this._wvTabGroupSweepMigrateStragglers(entries, groupID); } catch (e) {}
                         });
                         return;   // main-target settles itself via the poll above
                     }
@@ -3315,6 +3342,35 @@ class _TabGroupsMixin {
                 }
             }, 180);
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMigrateGroup err: " + e); }
+    }
+
+    /** STRAGGLER SWEEP for a group migrate: any member whose source close
+     *  silently failed would keep the group spanning two windows (a duplicate
+     *  chip + leftover tabs in the source) — retry the close; if it STILL
+     *  won't close, unstamp it so the tab survives only as a loose duplicate
+     *  and the group stays single-window. Entries carry their own source
+     *  window (`fromWin`/`fromReader`) — a split group migrates from several
+     *  windows at once. */
+    _wvTabGroupSweepMigrateStragglers(entries: Array<{ srcTabID: any; fromWin: any; fromReader: boolean }>, groupID: any) {
+        for (const en3 of entries) {
+            try {
+                if (en3.fromReader) {
+                    const st3 = en3.fromWin._wvWT;
+                    if (st3 && st3.tabs.some((x: any) => x.id === en3.srcTabID)) {
+                        try { (this as any)._wvWTCloseTab(en3.fromWin, en3.srcTabID); } catch (e) {}
+                        const t3 = st3.tabs.find((x: any) => x.id === en3.srcTabID);
+                        if (t3 && this._wvTabGroupStamp(t3) === groupID) this._wvTabGroupSetStamp(t3, null);
+                    }
+                } else {
+                    const SZ: any = en3.fromWin.Zotero_Tabs;
+                    if (SZ && SZ._tabs.some((x: any) => x.id === en3.srcTabID)) {
+                        try { SZ.close(en3.srcTabID); } catch (e) {}
+                        const t3 = SZ._tabs.find((x: any) => x.id === en3.srcTabID);
+                        if (t3 && this._wvTabGroupStamp(t3) === groupID) this._wvTabGroupSetStamp(t3, null);
+                    }
+                }
+            } catch (e) {}
+        }
     }
 
     /** Drop the migrate guards and chip the group ONCE, the moment every

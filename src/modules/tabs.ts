@@ -6425,24 +6425,60 @@ class _TabsMixin {
                 } catch (e) {}
                 return self._wvRestoreFindTargetWin();
             };
-            let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null;
+            let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null,
+                GetWindowLongPtr: any = null, SetWindowLongPtr: any = null;
             try {
                 const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
                 ctypesRef = ctypes;
                 user32 = ctypes.open("user32.dll");
                 SetWindowPos = user32.declare("SetWindowPos", ctypes.winapi_abi, ctypes.bool,
                     ctypes.voidptr_t, ctypes.voidptr_t, ctypes.int, ctypes.int, ctypes.int, ctypes.int, ctypes.uint32_t);
+                GetWindowLongPtr = user32.declare("GetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t,
+                    ctypes.voidptr_t, ctypes.int);
+                SetWindowLongPtr = user32.declare("SetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t,
+                    ctypes.voidptr_t, ctypes.int, ctypes.intptr_t);
             } catch (e) {}
+            const hwndOf = (w: any) => {
+                const base = w.docShell.treeOwner
+                    .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
+                return ctypesRef.voidptr_t(ctypesRef.UInt64(base.nativeHandle));
+            };
             const pushToBottom = (w: any) => {
                 try {
                     if (!SetWindowPos || !w || w.closed) return;
-                    const base = w.docShell.treeOwner
-                        .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
-                    const hwnd = ctypesRef.voidptr_t(ctypesRef.UInt64(base.nativeHandle));
                     // HWND_BOTTOM; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-                    SetWindowPos(hwnd, ctypesRef.voidptr_t(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
+                    SetWindowPos(hwndOf(w), ctypesRef.voidptr_t(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
                 } catch (e) {}
             };
+            // WS_EX_NOACTIVATE: a JS-side refocus reacts AFTER the OS already
+            // raised + painted the new window for a frame (the residual short
+            // jump survived even open-time activate hooks). This style bit
+            // bars the window from ACTIVATING at all at the OS level: it
+            // shows, loads and paints, but never comes to the front. Cleared
+            // at teardown, when a window becomes the refocus target, and
+            // instantly on a user mousedown (their click = their intent).
+            const WS_EX_NOACTIVATE = 0x08000000, GWL_EXSTYLE = -20;
+            const noActivated = new Set();
+            const setNoActivate = (w: any) => {
+                try {
+                    if (!SetWindowLongPtr || !w || w.closed || noActivated.has(w)) return;
+                    const h = hwndOf(w);
+                    const cur = Number(GetWindowLongPtr(h, GWL_EXSTYLE));
+                    SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur | WS_EX_NOACTIVATE));
+                    noActivated.add(w);
+                } catch (e) {}
+            };
+            const clearNoActivate = (w: any) => {
+                try {
+                    if (!SetWindowLongPtr || !w || !noActivated.has(w)) return;
+                    noActivated.delete(w);
+                    if (w.closed) return;
+                    const h = hwndOf(w);
+                    const cur = Number(GetWindowLongPtr(h, GWL_EXSTYLE));
+                    SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur & ~WS_EX_NOACTIVATE));
+                } catch (e) {}
+            };
+            (this as any)._wvBgClearNoActivate = clearNoActivate;
             // "Is this one of ours?" — with a pre-parse grace: at
             // `domwindowopened` (and often at the FIRST activate) the XUL
             // document hasn't parsed yet, so windowtype is empty. During the
@@ -6464,6 +6500,16 @@ class _TabsMixin {
                 try {
                     if (w._wvBgHooked) return;
                     w._wvBgHooked = true;
+                    // OS-level: never activatable while the restore holds. The
+                    // native handle exists at domwindowopened; retry once on a
+                    // 0-timeout if the docShell is not wired yet.
+                    const arm = () => { setNoActivate(w); pushToBottom(w); };
+                    try { arm(); } catch (e2) {}
+                    try { if (!noActivated.has(w) && w.setTimeout) w.setTimeout(arm, 0); } catch (e2) {}
+                    // The user clicking the window overrides everything.
+                    w.addEventListener("mousedown", () => {
+                        try { clearNoActivate(w); w.focus(); } catch (e2) {}
+                    }, { capture: true, once: true });
                     w.addEventListener("activate", () => {
                         try {
                             if (!(self as any)._wvBgRestoreOn) return;
@@ -6471,6 +6517,7 @@ class _TabsMixin {
                             const t2 = resolveTarget();
                             if (t2 && t2 !== w) {
                                 pushToBottom(w);
+                                clearNoActivate(t2);
                                 t2.focus();
                                 try {
                                     (self as any)._wvTrace("bg-restore: "
@@ -6487,9 +6534,9 @@ class _TabsMixin {
                 try {
                     if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
                     const target = resolveTarget();
-                    if (target === w) return;              // the target itself may restore late
+                    if (target === w) { clearNoActivate(w); return; }   // the target itself may restore late
                     pushToBottom(w);
-                    if (target && Services.focus.activeWindow === w) { try { target.focus(); } catch (e) {} }
+                    if (target && Services.focus.activeWindow === w) { try { clearNoActivate(target); target.focus(); } catch (e) {} }
                     hook(w);   // no-op if the open-time hook already landed
                 } catch (e) {}
             };
@@ -6516,6 +6563,8 @@ class _TabsMixin {
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
+                try { for (const w of [...noActivated]) clearNoActivate(w); } catch (e) {}
+                (this as any)._wvBgClearNoActivate = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}
                 try { if (user32) user32.close(); } catch (e) {}
             };
@@ -6598,7 +6647,11 @@ class _TabsMixin {
                     if (st && st.tabs && st.tabs.some((t: any) => t.itemID === f.itemID)) { target = w; break; }
                 }
             }
-            if (target) { target.focus(); (this as any)._wvTrace("restore: focused " + f.kind + " window"); }
+            if (target) {
+                try { if ((this as any)._wvBgClearNoActivate) (this as any)._wvBgClearNoActivate(target); } catch (e) {}
+                target.focus();
+                (this as any)._wvTrace("restore: focused " + f.kind + " window");
+            }
         } catch (e) {}
     }
 

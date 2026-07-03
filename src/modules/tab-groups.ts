@@ -3730,6 +3730,44 @@ class _TabGroupsMixin {
         } catch (e) { return false; }
     }
 
+    /** "Move group to new MAIN window": spawn a fresh managed main window
+     *  (library tab only, same dev-window spawn queue as the tabs' "Move to
+     *  New Main Window"), then move the whole group into it — migrate for an
+     *  open group, reopen for a saved one. Nothing is closed until the new
+     *  window is actually up, so a spawn failure leaves the group untouched. */
+    async _wvTabGroupMoveToNewMainWindow(win: any, groupID: any) {
+        try {
+            const before = new Set(Zotero.getMainWindows());
+            (this as any)._wvDevSpawnQueue = (this as any)._wvDevSpawnQueue || [];
+            (this as any)._wvDevSpawnQueue.push({
+                kind: "main-dev",
+                tabs: [{ type: "library", title: "My Library", data: { icon: "library" }, selected: true }],
+            });
+            (this as any)._wvPendingDevWindow = true;
+            try { (this as any)._wvClearSessionPaneState(); } catch (e) {}
+            try { (Zotero as any).openMainWindow(); }
+            catch (e) {
+                (this as any)._wvPendingDevWindow = false;
+                try { (this as any)._wvDevSpawnQueue.pop(); } catch (e2) {}
+                return;
+            }
+            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            let newWin: any = null;
+            await new Promise<void>((resolve) => {
+                let tries = 0;
+                const find = () => {
+                    const w = Zotero.getMainWindows().find((x: any) => !before.has(x)
+                        && x.Zotero_Tabs && x.Zotero_Tabs._tabs && (x as any)._wvDevInitDone);
+                    if (w) { newWin = w; resolve(); return; }
+                    if (tries++ < 150) st(find, 50); else resolve();
+                };
+                find();
+            });
+            if (!newWin) return;   // spawn failed — group untouched
+            this._wvTabGroupOpenInWindow(newWin, groupID);
+        } catch (e) { Zotero.debug("[Weavero] _wvTabGroupMoveToNewMainWindow err: " + e); }
+    }
+
     /** "Move group to new window": move the whole group into ONE new READER
      *  window (a multi-tab reader window), keeping it grouped. (The old version
      *  spawned a new MAIN window via openMainWindow(), which restored the entire
@@ -3901,11 +3939,59 @@ class _TabGroupsMixin {
         } catch (e) { return []; }
     }
 
+    /** Fill a XUL menupopup with the group's move targets — one row per open
+     *  window (window icons, the group's home disabled "(here)"), then "New
+     *  Reader Window" / "New Main Window" — the group-level twin of the tabs'
+     *  Move Tab target list. `closeFn` dismisses the host UI (context menu or
+     *  chip editor) before the picked command runs. Shared by the tabs-menu
+     *  group context submenu and the chip editor's "Move group to ▸" flyout. */
+    _wvFillGroupMoveTargetPopup(win: any, subPop: any, groupID: any, closeFn: () => void) {
+        try {
+            const doc = subPop.ownerDocument || win.document;
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const dark = !!(this._detectUIDark && this._detectUIDark());
+            const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
+            const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
+            const newReaderWinIcon = this._wvNewReaderWindowIconURI ? this._wvNewReaderWindowIconURI(dark) : readerIcon;
+            const newMainWinIcon = this._wvNewWindowIconURI ? this._wvNewWindowIconURI(dark) : mainIcon;
+            const mkTarget = (label: string, icon: string, disabled: boolean, fn: (p: any) => void) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.classList.add("menuitem-iconic");
+                mi.setAttribute("label", label);
+                try { if (icon) mi.setAttribute("image", icon); } catch (er) {}
+                if (disabled) mi.setAttribute("disabled", "true");
+                else mi.addEventListener("command", (ev: any) => {
+                    try {
+                        ev.stopPropagation();
+                        try { closeFn(); } catch (er) {}
+                        const p: any = live();
+                        if (p) fn(p);
+                    } catch (er) {}
+                });
+                subPop.appendChild(mi);
+            };
+            for (const t of this._wvGroupMoveTargets(groupID)) {
+                // Notices: the group's home is disabled "(group is here)"; the
+                // window the menu was invoked FROM is flagged "(this window)"
+                // so "Open Group in" makes clear which target is the current
+                // window (2026-07-04).
+                const suffix = t.isHome ? "  (group is here)" : (t.win === win ? "  (this window)" : "");
+                mkTarget(t.name + suffix, t.isReader ? readerIcon : mainIcon, t.isHome,
+                    (p: any) => p._wvMoveGroupToWindowAt(groupID, t.win, t.isReader, null));
+            }
+            subPop.appendChild(doc.createXULElement("menuseparator"));
+            mkTarget("New Reader Window", newReaderWinIcon, false,
+                (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
+            mkTarget("New Main Window", newMainWinIcon, false,
+                (p: any) => p._wvTabGroupMoveToNewMainWindow(win, groupID));
+        } catch (e) { Zotero.debug("[Weavero] _wvFillGroupMoveTargetPopup err: " + e); }
+    }
+
     /** Right-click menu on a tabs-menu group row. Verb matches the group's
      *  state — an OPEN group is *moved* ("Move Group to ▸"), a SAVED group is
      *  *opened* ("Open Group in ▸") — and the submenu lists every open window
-     *  (icons, the group's home disabled "(here)") plus "New Window", the
-     *  group-level twin of the tabs' Move Tab targets. */
+     *  (icons, the group's home disabled "(here)") plus New Reader / Main
+     *  Window, the group-level twin of the tabs' Move Tab targets. */
     _wvTabsMenuGroupContext(win: any, panel: any, groupID: any, e: any) {
         try {
             const doc = win.document;
@@ -3939,35 +4025,14 @@ class _TabGroupsMixin {
             sub.setAttribute("label", isSaved ? "Open Group in" : "Move Group to");
             const subPop = doc.createXULElement("menupopup");
             sub.appendChild(subPop);
-            const dark = !!(this._detectUIDark && this._detectUIDark());
-            const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
-            const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
-            const newReaderWinIcon = this._wvNewReaderWindowIconURI ? this._wvNewReaderWindowIconURI(dark) : readerIcon;
-            const mkTarget = (label: string, icon: string, disabled: boolean, fn: (p: any) => void) => {
-                const mi = doc.createXULElement("menuitem");
-                mi.classList.add("menuitem-iconic");
-                mi.setAttribute("label", label);
-                try { if (icon) mi.setAttribute("image", icon); } catch (er) {}
-                if (disabled) mi.setAttribute("disabled", "true");
-                else mi.addEventListener("command", (ev: any) => {
-                    try {
-                        ev.stopPropagation();
-                        try { panel.hidePopup(); } catch (er) {}
-                        const p: any = live();
-                        if (p) fn(p);
-                    } catch (er) {}
-                });
-                subPop.appendChild(mi);
-            };
-            for (const t of this._wvGroupMoveTargets(groupID)) {
-                mkTarget(t.name + (t.isHome ? "  (here)" : ""), t.isReader ? readerIcon : mainIcon, t.isHome,
-                    (p: any) => p._wvMoveGroupToWindowAt(groupID, t.win, t.isReader, null));
-            }
-            subPop.appendChild(doc.createXULElement("menuseparator"));
-            mkTarget("New Window", newReaderWinIcon, false,
-                (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
+            this._wvFillGroupMoveTargetPopup(win, subPop, groupID, () => { try { panel.hidePopup(); } catch (er) {} });
             pop.appendChild(sub);
             pop.appendChild(doc.createXULElement("menuseparator"));
+            // Save-and-close: park the group (tabs close, group stays reopenable).
+            // Only meaningful for an OPEN group — a saved one is already closed.
+            if (!isSaved) {
+                mk("Save and Close Group", (p: any) => p._wvTabGroupSaveAndClose(win, groupID));
+            }
             mk("Delete Group", (p: any) => p._wvTabGroupCloseTabs(win, groupID));
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
@@ -4473,19 +4538,33 @@ class _TabGroupsMixin {
             };
 
             mkSep();
-            // One "Move group to …" row per OTHER open window (main + reader) —
-            // the group-level twin of the tabs' Move Tab targets — then "new
-            // window". (Replaces the old fixed reader-only "main window" row.)
+            // "Move group to ▸" — a flyout menupopup with the full move-target
+            // list (every open window + New Reader/Main Window), shared with
+            // the tabs-menu group context submenu. The row itself must NOT
+            // close the editor panel (mkItem would), so it's built by hand.
             try {
-                for (const t of this._wvGroupMoveTargets(groupID)) {
-                    if (t.isHome || t.win === win) continue;
-                    const tw = t.win, tr = t.isReader;
-                    mkItem("Move group to " + t.name,
-                        () => { try { this._wvMoveGroupToWindowAt(groupID, tw, tr, null); } catch (e) {} });
-                }
+                const mvRow = doc.createElementNS(HTML_NS, "div");
+                mvRow.className = "wv-tg-menuitem";
+                mvRow.style.display = "flex";
+                mvRow.style.justifyContent = "space-between";
+                mvRow.style.alignItems = "center";
+                const mvLabel = doc.createElementNS(HTML_NS, "span");
+                mvLabel.textContent = "Move group to";
+                const mvArrow = doc.createElementNS(HTML_NS, "span");
+                mvArrow.textContent = "▸";
+                mvArrow.style.opacity = "0.6";
+                mvRow.appendChild(mvLabel); mvRow.appendChild(mvArrow);
+                let mvPop: any = doc.getElementById("wv-tg-move-targets");
+                if (mvPop) mvPop.remove();               // rebuild fresh each time
+                mvPop = doc.createXULElement("menupopup");
+                mvPop.id = "wv-tg-move-targets";
+                this._wvFillGroupMoveTargetPopup(win, mvPop, groupID, () => { try { panel.hidePopup(); } catch (e) {} });
+                (doc.querySelector("popupset") || doc.documentElement).appendChild(mvPop);
+                const openFlyout = () => { try { mvPop.openPopup(mvRow, "end_before", 0, 0, false, false); } catch (e) {} };
+                mvRow.addEventListener("click", openFlyout);
+                mvRow.addEventListener("mouseenter", openFlyout);
+                body.appendChild(mvRow);
             } catch (e) {}
-            mkItem("Move group to new window",
-                () => this._wvTabGroupMoveToNewWindow(win, groupID));
             // "Copy N links in group" — zotero://open links for every member
             // (Weavero's copy-link feature), like Firefox's copy-links entry.
             if ((this as any)._getEnableCopyItemLink && (this as any)._getEnableCopyItemLink()) {

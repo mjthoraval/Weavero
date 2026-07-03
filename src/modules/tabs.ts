@@ -85,6 +85,17 @@ class _TabsMixin {
             win.setTimeout(() => this._setupTabsMenuLibrarySort(win), 1000);
             return;
         }
+        // SELF-HEAL: if a previous teardown left the native list DETACHED
+        // (a wrapper removal once took `_tabsList` with it), re-attach it —
+        // otherwise every refresh renders into a dead node and the popup
+        // shows empty forever, plugin on or off.
+        try {
+            const lst: any = (panel as any)._tabsList;
+            if (lst && !lst.isConnected) {
+                const home = panel.querySelector("#zotero-tabs-menu-wrapper") || panel;
+                home.appendChild(lst);
+            }
+        } catch (e) {}
         // If a previous Weavero load left a patched refreshList on
         // this panel, restore the upstream version before re-binding
         // — otherwise we'd build the new wrapper on top of the old
@@ -246,6 +257,7 @@ class _TabsMixin {
      *  same colour-themed library icon used by Zotero's collection
      *  tree (`icon-library` / `icon-library-group` / `icon-feed`). */
     _groupTabsMenuByLibrary(panel) {
+        if ((this as any)._wvDestroyed) return;   // stale wrapper from a dead instance — never decorate
         if (!panel) return;
         const tabsList = panel._tabsList
             || panel.querySelector("#zotero-tabs-menu-list");
@@ -675,6 +687,15 @@ class _TabsMixin {
             if (grpRow && (grpRow as any)._wvGroupId) {
                 return { container: grpRow, target: { groupId: (grpRow as any)._wvGroupId } };
             }
+            // 1b) An inline group HEADER in a window section (the only visible
+            // handle of a COLLAPSED group) → join that group, appended after
+            // its last member (Firefox: dropping on a group label adds to the
+            // group). Without this, headers fell through to the window-scope
+            // case and the drop was a silent loose move.
+            const tgHdr = el.closest(".wv-tgrow-header");
+            if (tgHdr && (tgHdr as any)._wvGroupId) {
+                return { container: tgHdr, target: { groupId: (tgHdr as any)._wvGroupId } };
+            }
             // 2) A tab row → its window; if the row's tab is itself grouped, joining
             //    that group reads more naturally than a loose move next to it.
             const tabRow = el.closest(".row");
@@ -730,6 +751,7 @@ class _TabsMixin {
             // GROUP DRAG: a group can't nest inside another group, so snap the
             // drop position OUT of any group the cursor is over — to that
             // group's start (upper half) or past its end (lower half).
+            let anchorRowOverride: any;   // set by the snap (null = very front)
             if ((opts && opts.snapOutOfGroups) && win) {
                 try {
                     const groupOf = (r: any) => { const t = r && this._wvTabObjInWin(win, tidOf(r), isReader); return (t && (this as any)._wvTabGroupStamp(t)) || null; };
@@ -740,20 +762,146 @@ class _TabsMixin {
                         const firstM = members[0], lastM = members[members.length - 1];
                         const fr = firstM.getBoundingClientRect(), lr = lastM.getBoundingClientRect();
                         const groupMid = (fr.top + lr.bottom) / 2;
-                        if (clientY < groupMid) beforeRow = firstM;                 // before the whole group
+                        if (clientY < groupMid) {
+                            // Before the whole group. The GHOST must render above
+                            // the group's HEADER — anchoring it to the first
+                            // member draws it BELOW the header, i.e. visually
+                            // INSIDE the group (a group can't nest there).
+                            const fi = rows.indexOf(firstM);
+                            anchorRowOverride = fi > 0 ? rows[fi - 1] : null;
+                            let hdr: any = firstM.previousElementSibling;
+                            while (hdr && hdr.classList && (hdr.classList.contains("wv-tabsmenu-ghost") || hdr.classList.contains("wv-tgrow-hidden"))) hdr = hdr.previousElementSibling;
+                            beforeRow = (hdr && hdr.classList && hdr.classList.contains("wv-tgrow-header")) ? hdr : firstM;
+                        }
                         else { const li = rows.indexOf(lastM); beforeRow = (li + 1 < rows.length) ? rows[li + 1] : null; }   // after it
                     }
                 } catch (e) {}
             }
             let anchorTabId: any = null;
-            if (beforeRow) {
+            let prevRow: any = null;
+            if (anchorRowOverride !== undefined) {
+                // Snap placed the ghost on a HEADER (not in `rows`) — the
+                // generic index math below can't anchor it.
+                prevRow = anchorRowOverride;
+                anchorTabId = anchorRowOverride ? tidOf(anchorRowOverride) : null;
+            } else if (beforeRow) {
                 const idx = rows.indexOf(beforeRow);
-                anchorTabId = idx > 0 ? tidOf(rows[idx - 1]) : null;
+                prevRow = idx > 0 ? rows[idx - 1] : null;
+                anchorTabId = prevRow ? tidOf(prevRow) : null;
             } else {
-                anchorTabId = rows.length ? tidOf(rows[rows.length - 1]) : null;
+                prevRow = rows.length ? rows[rows.length - 1] : null;
+                anchorTabId = prevRow ? tidOf(prevRow) : null;
             }
-            return { beforeRow, anchorTabId };
-        } catch (e) { return { beforeRow: null, anchorTabId: null }; }
+            // slotGroupId: the group the INSERTION SLOT itself sits in. The
+            // dragover's hit-test resolver can't see this (over the gap/ghost
+            // the cursor hits the winscope background, not a member row), which
+            // made an in-group slot read as a LOOSE drop: wrong ghost indent
+            // AND a wrong drop (loose move instead of a group join). WYSIWYG
+            // rule: the ghost is inserted before `beforeRow`, so it renders
+            // inside a group's block exactly when `beforeRow` is one of its
+            // members. Drop membership must match what the preview shows.
+            //
+            // BOUNDARY disambiguation: "loose right before the group" and "into
+            // the group at slot 0" are the SAME index among tab rows — the
+            // group HEADER between them is the visual boundary. Cursor above
+            // the header's midline → loose (ghost renders ABOVE the header);
+            // below → first in-group slot (ghost below the header, indented).
+            let slotGroupId: any = null;
+            if (win && beforeRow) {
+                try {
+                    const stampOf = (r: any) => { const t2 = r && this._wvTabObjInWin(win, tidOf(r), isReader); return (t2 && (this as any)._wvTabGroupStamp(t2)) || null; };
+                    const g1 = stampOf(beforeRow);
+                    if (g1 && g1 !== exclGrp) {
+                        slotGroupId = g1;
+                        if (stampOf(prevRow) !== g1) {
+                            // beforeRow is the group's FIRST member → the header
+                            // sits directly above it (skip ghost/hidden rows).
+                            let hdr: any = beforeRow.previousElementSibling;
+                            while (hdr && (hdr.classList.contains("wv-tabsmenu-ghost") || hdr.classList.contains("wv-tgrow-hidden"))) hdr = hdr.previousElementSibling;
+                            if (hdr && hdr.classList && hdr.classList.contains("wv-tgrow-header")) {
+                                const hr = hdr.getBoundingClientRect();
+                                if (hr.height && clientY < hr.top + hr.height / 2) {
+                                    slotGroupId = null;
+                                    beforeRow = hdr;   // ghost above the header = loose
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+            // COLLAPSED-GROUP boundary. A collapsed group's member rows are
+            // hidden, so "before the group" and "after the group" collapse to
+            // ONE slot among visible rows — the ghost always landed below the
+            // header and the drop anchor always pointed above the group:
+            // there was NO way to drop just before a collapsed group.
+            // Disambiguate by cursor Y against each collapsed header in the
+            // gap: above its midline → slot BEFORE that group (ghost above
+            // the header, anchor unchanged); below every midline → slot
+            // AFTER the last collapsed group (anchor = its last member, so
+            // the drop index lands past the hidden members). Skipped for
+            // in-group slots (slotGroupId set) and for group drags.
+            try {
+                if (win && !slotGroupId && !(opts && opts.snapOutOfGroups)) {
+                    // Collect the header chain sitting directly above the slot.
+                    // NOTE: hidden (collapsed) member rows are still IN the
+                    // `rows` array (only their zero height skips them in the Y
+                    // loop), so `prevRow` here is typically the group's LAST
+                    // HIDDEN MEMBER — terminate on the first VISIBLE non-header
+                    // row instead of on prevRow.
+                    const hdrs: any[] = [];
+                    let n: any = beforeRow ? beforeRow.previousElementSibling
+                        : (scope.lastElementChild || null);
+                    while (n) {
+                        const cl = n.classList;
+                        if (cl && cl.contains("wv-tgrow-header") && (n as any)._wvGroupId) hdrs.unshift(n);
+                        else if (cl && (cl.contains("wv-tabsmenu-ghost") || cl.contains("wv-tgrow-hidden"))) { /* skip */ }
+                        else break;
+                        n = n.previousElementSibling;
+                    }
+                    const groupsAll = hdrs.length ? this._tabGroupsGet() : [];
+                    const collapsedHdrs = hdrs.filter((h: any) => {
+                        const g = groupsAll.find((x: any) => x.id === (h as any)._wvGroupId);
+                        return g && g.collapsed;
+                    });
+                    if (collapsedHdrs.length) {
+                        const lastMemberTid = (h: any) => {
+                            const gid = (h as any)._wvGroupId;
+                            let tid: any = null;
+                            try {
+                                if (isReader) { for (const t of ((win._wvWT && win._wvWT.tabs) || [])) { if (t.wvGroupId === gid) tid = t.id; } }
+                                else { for (const t of win.Zotero_Tabs._tabs) { if ((this as any)._wvTabGroupStamp(t) === gid) tid = t.id; } }
+                            } catch (e) {}
+                            return tid;
+                        };
+                        let placedBefore: any = null, idx = -1;
+                        for (let i = 0; i < collapsedHdrs.length; i++) {
+                            const r = collapsedHdrs[i].getBoundingClientRect();
+                            if (r.height && clientY < r.top + r.height / 2) { placedBefore = collapsedHdrs[i]; idx = i; break; }
+                        }
+                        if (placedBefore) {
+                            beforeRow = placedBefore;   // ghost ABOVE this collapsed header
+                            if (idx > 0) { const t = lastMemberTid(collapsedHdrs[idx - 1]); if (t != null) anchorTabId = t; }
+                            else {
+                                // BEFORE the first collapsed group: the native
+                                // anchor is the group's last HIDDEN member (see
+                                // the rows note above) — re-anchor to the first
+                                // VISIBLE row above the header chain, so the
+                                // drop index lands BEFORE the group's members.
+                                let v: any = placedBefore.previousElementSibling;
+                                while (v && v.classList && (v.classList.contains("wv-tgrow-hidden") || v.classList.contains("wv-tabsmenu-ghost") || v.classList.contains("wv-tgrow-header"))) v = v.previousElementSibling;
+                                anchorTabId = (v && ((v as any)._wvSrcTabId || (v.dataset && v.dataset.tabId))) || null;
+                                if (anchorTabId === "zotero-pane") anchorTabId = null;
+                            }
+                        } else {
+                            // Below every collapsed header → after the LAST group.
+                            const t = lastMemberTid(collapsedHdrs[collapsedHdrs.length - 1]);
+                            if (t != null) anchorTabId = t;
+                        }
+                    }
+                }
+            } catch (e) {}
+            return { beforeRow, anchorTabId, slotGroupId };
+        } catch (e) { return { beforeRow: null, anchorTabId: null, slotGroupId: null }; }
     }
 
     /** A tab-bar X coordinate (in `win`'s viewport) that lands a drop right AFTER
@@ -809,6 +957,8 @@ class _TabsMixin {
             };
             const clearGhost = () => {
                 try { for (const g of list.querySelectorAll(".wv-tabsmenu-ghost")) g.remove(); } catch (er) {}
+                // Ghost gone → the original row is the only copy again; unhide it.
+                try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-drag-hidden")) r.classList.remove("wv-tabsmenu-row-drag-hidden"); } catch (er) {}
             };
             // Full clear (outline + ghost) — for drop / dragend / dragleave.
             const clearHighlight = () => { clearDropInto(); clearGhost(); };
@@ -820,7 +970,6 @@ class _TabsMixin {
                 try {
                     let ghost: any = list.querySelector(".wv-tabsmenu-ghost");
                     const reused = !!ghost;
-                    try { Zotero.debug("[Weavero][popupDnD] showGhost " + (reused ? "REUSE" : "CREATE") + " inGroup=" + !!info.inGroup + " before=" + (beforeRow && (beforeRow.dataset && beforeRow.dataset.tabId || beforeRow.className) || "end")); } catch (er) {}
                     if (!ghost) {
                         if (info.isGroup) {
                             // Mirror the inline group header so the preview chip/name
@@ -862,17 +1011,22 @@ class _TabsMixin {
                     } else if (ghost.parentNode !== scope || ghost.nextSibling) {
                         scope.appendChild(ghost);
                     }
+                    // While the ghost preview is showing, hide the original
+                    // dragged row so the tab appears exactly once (it MOVES to
+                    // the ghost's slot rather than showing dimmed + previewed).
+                    // Scoped to ghost-visible drags only: native same-window
+                    // reorders never show a ghost and keep their row visible
+                    // (Zotero's native drop-slot math needs its layout box).
+                    try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging:not(.wv-tabsmenu-row-drag-hidden)")) r.classList.add("wv-tabsmenu-row-drag-hidden"); } catch (er) {}
                 } catch (er) {}
             };
             const clearDragging = () => {
                 try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging")) r.classList.remove("wv-tabsmenu-row-dragging"); } catch (er) {}
             };
 
-            const DBG = (m: string) => { try { Zotero.debug("[Weavero][popupDnD] " + m); } catch (er) {} };
             list.addEventListener("dragstart", (e: any) => {
                 try {
                     if (isStale()) return;
-                    DBG("dragstart target=" + (e.target && e.target.className));
                     // Group source first — the bottom "Tab Groups" row or an inline
                     // group header. Dragging it moves the WHOLE group to a window.
                     const grpSrc = e.target && e.target.closest && e.target.closest(".wv-tgmenu-row[draggable='true'], .wv-tgrow-header[draggable='true']");
@@ -891,7 +1045,7 @@ class _TabsMixin {
                         return;
                     }
                     const row = e.target && e.target.closest && e.target.closest(".row[draggable='true']");
-                    if (!row) { DBG("dragstart: no .row[draggable] ancestor → not a Weavero drag"); return; }
+                    if (!row) return;
                     // Weavero rows carry _wvSrcWin; native current-window rows carry
                     // only data-tab-id (their source is the panel's own window).
                     let srcWin = (row as any)._wvSrcWin, tabId = (row as any)._wvSrcTabId, isReader = !!(row as any)._wvSrcIsReader;
@@ -923,21 +1077,28 @@ class _TabsMixin {
                     if (!itemType) { try { const ic = row.querySelector(".icon-item-type"); if (ic) itemType = ic.getAttribute("data-item-type") || ""; } catch (er) {} }
                     livePlugin()._wvPopupRowDrag = { srcWin, tabId, isReader, title, itemType, nativeRow };
                     livePlugin()._wvPopupOverRes = null; livePlugin()._wvPopupOverY = null;
-                    DBG("dragstart OK: tabId=" + tabId + " isReader=" + isReader + " nativeRow=" + nativeRow + " title=" + title.slice(0, 24));
+                    livePlugin()._wvDnDLastSwitchY = null; livePlugin()._wvDnDLastOverSig = null;
                     try { e.dataTransfer.setData("application/x-weavero-popup-tab-move", "1"); e.dataTransfer.effectAllowed = "move"; } catch (er) {}
                     row.classList.add("wv-tabsmenu-row-dragging");
+                    // Weavero now handles ALL popup row drags (ghost preview +
+                    // Zotero_Tabs.move on drop). Suppress Zotero's per-row native
+                    // drag machinery — this capture-phase listener runs before
+                    // the row's own listeners, so stopPropagation keeps native's
+                    // dragstart from initialising (no live-row placeholder).
+                    e.stopPropagation();
                 } catch (er) {}
             }, true);
 
-            // Intercept for: group joins, cross-window moves, AND same-window
-            // reorders of Weavero-built rows (reader clones + other-window rows,
-            // which have no native handler). A same-window reorder of the main
-            // popup's OWN current-window tab (nativeRow) is still left to
-            // Zotero's per-row native drag.
-            const shouldIntercept = (res: any, drag: any) =>
-                !!(res && res.target && (res.target.groupId
-                    || res.target.win !== drag.srcWin
-                    || !drag.nativeRow));
+            // Intercept ALL popup tab-row drags: group joins, cross-window
+            // moves, and same-window reorders — including native rows. Zotero's
+            // per-row native drag (tabsMenuPanel.js) has no separate indicator
+            // (it drags the live row itself as the placeholder), so leaving it
+            // in charge shows no ghost preview; Weavero suppresses it entirely
+            // (capture-phase stopPropagation) and reorders via Zotero_Tabs.move
+            // on drop, so the dashed ghost + hidden original are consistent
+            // across every drag.
+            const shouldIntercept = (res: any, _drag: any) =>
+                !!(res && res.target);
 
             list.addEventListener("dragover", (e: any) => {
                 try {
@@ -953,26 +1114,74 @@ class _TabsMixin {
                             try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
                             const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
                             showGhostAt(scope, pos.beforeRow, { isGroup: true, color: gdrag.color, title: gdrag.name });
-                            scope.classList.add("wv-tabsmenu-drop-into");
+                            // No scope outline (same- or cross-window) — the
+                            // group ghost alone marks the drop.
                         }
                         return;
                     }
                     const drag = livePlugin()._wvPopupRowDrag;
                     if (!drag) return;
-                    const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
-                    clearDropInto();   // outline classes only — keep ghost (anti-flicker)
-                    // Throttled: log only when the resolved target changes.
+                    // Our drag → native's per-row dragover must never run (its
+                    // placeholder was never initialised, and its live-row
+                    // reordering would fight the ghost preview).
+                    e.stopPropagation();
+                    // IGNORE dragovers over the DRAGGED ROW itself. Inserting the
+                    // ghost pushes rows down so the dragged row (which follows the
+                    // cursor) slides under it; that reads as "uninterceptable",
+                    // clears the ghost, layout shifts back, the member re-appears,
+                    // the ghost is recreated — a flicker oscillation. Keeping the
+                    // ghost + state unchanged over our own row breaks the loop.
                     try {
-                        const sig = res && res.target
-                            ? (res.target.groupId || "") + "|" + (res.target.win === drag.srcWin ? "same" : "other") + "|" + (res.target.isReader ? "R" : "M")
-                            : "null";
-                        if (sig !== self._wvDnDLastOverSig) {
-                            self._wvDnDLastOverSig = sig;
-                            DBG("dragover res=" + sig + " intercept=" + shouldIntercept(res, drag)
-                                + " target=" + (e.target && e.target.className));
+                        const overRow = e.target && e.target.closest && e.target.closest(".row");
+                        if (overRow) {
+                            const overTid = (overRow as any)._wvSrcTabId || (overRow.dataset && overRow.dataset.tabId);
+                            if (overTid && overTid === drag.tabId) { e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch (er) {} return; }
+                            if (overRow.classList && overRow.classList.contains("wv-tabsmenu-row-dragging")) { e.preventDefault(); try { e.dataTransfer.dropEffect = "move"; } catch (er) {} return; }
                         }
                     } catch (er) {}
-                    if (!shouldIntercept(res, drag) || !res.container) { clearGhost(); return; }
+                    const res = self._wvResolvePopupDropTarget(panel, e.target, drag);
+                    // TARGET-SWITCH HYSTERESIS: honor a CHANGE of resolved target
+                    // only when the pointer actually moved. At the boundary
+                    // between tab rows and the Tab Groups section the ghost's
+                    // gap pushes a group row under the STATIONARY cursor, the
+                    // group branch clears the ghost, the layout snaps back, the
+                    // tab row returns, the ghost re-opens — an oscillation the
+                    // other guards can't see because BOTH targets intercept.
+                    try {
+                        const sig = res && res.target
+                            ? (res.target.groupId || "") + "|" + (res.target.win === drag.srcWin ? "same" : "other") + "|" + (res.target.isReader ? "R" : "M") + "|" + (res.target.win ? "w" : "g")
+                            : "null";
+                        if (sig !== self._wvDnDLastOverSig) {
+                            if (self._wvDnDLastSwitchY != null && self._wvPopupOverRes
+                                    && Math.abs(e.clientY - self._wvDnDLastSwitchY) < 18) {
+                                // Layout-induced flap, not user movement — keep the
+                                // current visual state + remembered drop target.
+                                e.preventDefault();
+                                try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
+                                return;
+                            }
+                            self._wvDnDLastSwitchY = e.clientY;
+                            self._wvDnDLastOverSig = sig;
+                        }
+                    } catch (er) {}
+                    clearDropInto();   // outline classes only — keep ghost (anti-flicker)
+                    if (!shouldIntercept(res, drag) || !res.container) {
+                        // GAP OSCILLATION guard: showing the ghost opens a gap the
+                        // cursor falls into (resolving to the empty scope, not a
+                        // row) — but the cursor didn't actually MOVE, the layout
+                        // shifted under it. If the pointer Y is ~unchanged from the
+                        // last interceptable hover, keep the ghost (a stationary
+                        // pointer must not flicker it away). Only a real vertical
+                        // move to a non-droppable area clears it.
+                        if (self._wvPopupOverY != null && Math.abs(e.clientY - self._wvPopupOverY) < 18) {
+                            e.preventDefault();
+                            try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
+                            return;   // keep ghost + remembered target
+                        }
+                        clearGhost();
+                        self._wvPopupOverRes = null; self._wvPopupOverY = null;
+                        return;
+                    }
                     // Remember the last INTERCEPTABLE hover — the drop's own
                     // e.target is unreliable (the dragged row follows the cursor
                     // and is what's under the pointer at release), so the drop
@@ -985,13 +1194,17 @@ class _TabsMixin {
                         // slot under the cursor (main targets); reader targets append.
                         const scope = (res.container.closest && res.container.closest(".wv-winscope")) || res.container;
                         const posInfo = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId });
+                        // The hit-test resolver misses a slot INSIDE a group when
+                        // the cursor is over the gap/ghost (it hits the winscope
+                        // background) — the slot's own neighbours are the truth.
+                        // Upgrading res.target (the remembered drop target) makes
+                        // the drop a group join at that slot, not a loose move.
+                        if (!res.target.groupId && posInfo.slotGroupId) res.target.groupId = posInfo.slotGroupId;
                         showGhostAt(scope, posInfo.beforeRow, { itemType: drag.itemType, title: drag.title, inGroup: !!res.target.groupId });
-                        scope.classList.add("wv-tabsmenu-drop-into");
-                        try {
-                            if (self._wvGhostDbgN == null) self._wvGhostDbgN = 0;
-                            self._wvGhostDbgN++;
-                            if (self._wvGhostDbgN % 8 === 0) DBG("ghost move #" + self._wvGhostDbgN + " before=" + (posInfo.beforeRow && (posInfo.beforeRow.dataset && posInfo.beforeRow.dataset.tabId || "row")) + " inGroup=" + !!res.target.groupId);
-                        } catch (er) {}
+                        // No scope outline for window targets (same- OR cross-
+                        // window) — framing a whole window is loud noise; the
+                        // ghost alone marks the drop. The drop-into highlight
+                        // remains only on group rows/headers (join targets).
                     } else {
                         clearGhost();
                         // Pure group join (a Tab Groups row, including a closed group)
@@ -1024,7 +1237,10 @@ class _TabsMixin {
                     }
                     const drag = lp._wvPopupRowDrag;
                     clearHighlight(); clearDragging();
-                    if (!drag) { DBG("drop: no _wvPopupRowDrag → not ours"); return; }
+                    if (!drag) return;
+                    // Ours → never let native's per-row drop run (its
+                    // Zotero_Tabs.move would double-apply or fight ours).
+                    e.stopPropagation();
                     let res = self._wvResolvePopupDropTarget(panel, e.target, drag);
                     // The drop's e.target is the element under the pointer at
                     // RELEASE — the dragged row itself follows the cursor and is
@@ -1035,14 +1251,11 @@ class _TabsMixin {
                     if (!shouldIntercept(res, drag) && self._wvPopupOverRes
                             && self._wvPopupOverY != null
                             && Math.abs(e.clientY - self._wvPopupOverY) < 30) {
-                        DBG("drop: e.target uninterceptable → using remembered hover target");
                         res = self._wvPopupOverRes;
                     }
-                    DBG("drop res=" + (res && res.target
-                        ? (res.target.groupId || "-") + "|" + (res.target.win === drag.srcWin ? "same" : "other") + "|" + (res.target.isReader ? "R" : "M")
-                        : "null") + " intercept=" + shouldIntercept(res, drag) + " target=" + (e.target && e.target.className));
                     self._wvPopupOverRes = null; self._wvPopupOverY = null;
-                    if (!shouldIntercept(res, drag)) return;   // native handles same-window reorder
+                    self._wvDnDLastSwitchY = null; self._wvDnDLastOverSig = null;
+                    if (!shouldIntercept(res, drag)) return;   // no resolvable target — drop is a no-op
                     e.preventDefault(); e.stopPropagation();
                     lp._wvPopupRowDrag = null;
                     const target: any = res.target;
@@ -1058,6 +1271,9 @@ class _TabsMixin {
                                 || (e.target && e.target.closest && e.target.closest(".wv-winscope"));
                             if (scope) {
                                 const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeTabId: drag.tabId });
+                                // Slot strictly inside a group → the drop is a group
+                                // join at that slot (see the dragover twin of this).
+                                if (!target.groupId && pos.slotGroupId) target.groupId = pos.slotGroupId;
                                 if (target.isReader) {
                                     const st: any = target.win._wvWT;
                                     if (st && st.tabs) {
@@ -1254,6 +1470,20 @@ class _TabsMixin {
             // space at the bottom. Measure + re-set happen in the same frame, so
             // there's no visible flicker.
             list.style.removeProperty("height");
+            // The current-session box scrolls its windows inside `.wv-sess-body`,
+            // whose stylesheet cap is a blind `max-height: 55vh` — the popup
+            // stopped well short of the screen bottom while the session content
+            // scrolled internally. Give the body the exact space the list has
+            // left after the non-session content (headers, Sessions footer), so
+            // the popup grows to the available height before any inner scroll.
+            try {
+                const body = list.querySelector(".wv-sess-body");
+                if (body) {
+                    const otherH = list.scrollHeight - (body as any).clientHeight;
+                    const bodyAvail = Math.max(120, avail - otherH);
+                    (body as any).style.setProperty("max-height", bodyAvail + "px", "important");
+                }
+            } catch (e) {}
             const content = list.scrollHeight;
             const h = Math.min(content, avail);
             // The list is a XUL vbox — CSS max-height is ignored, but an explicit
@@ -1262,6 +1492,31 @@ class _TabsMixin {
             // so a short list doesn't leave empty space below.
             list.style.setProperty("height", h + "px", "important");
             list.style.setProperty("overflow-y", "auto", "important");
+            // Sections are appended ASYNCHRONOUSLY after the first fit (other
+            // windows, groups nesting, sessions), growing the content past the
+            // measured snapshot — the list then scrolled inside a stale short
+            // height, wasting the space below the popup. Re-fit on any child
+            // change (debounced to one per frame). Skipped mid-drag: the ghost
+            // preview inserts/removes rows every dragover and a refit there
+            // would re-introduce the height-jump flicker.
+            if ((list as any)._wvFitObsBy !== this) {
+                (list as any)._wvFitObsBy = this;
+                try { if ((list as any)._wvFitObs) (list as any)._wvFitObs.disconnect(); } catch (e) {}
+                const obs = new win.MutationObserver(() => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp || lp._wvPopupRowDrag || lp._wvPopupGroupDrag) return;
+                        if ((list as any)._wvFitPending) return;
+                        (list as any)._wvFitPending = true;
+                        win.requestAnimationFrame(() => {
+                            (list as any)._wvFitPending = false;
+                            try { lp._wvTabsMenuFitListHeight && lp._wvTabsMenuFitListHeight(panel); } catch (e) {}
+                        });
+                    } catch (e) {}
+                });
+                obs.observe(list, { childList: true, subtree: true });
+                (list as any)._wvFitObs = obs;
+            }
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuFitListHeight err: " + e); }
     }
 
@@ -1908,7 +2163,20 @@ class _TabsMixin {
         if (win._wvTabBarDecoMo) {
             try { win._wvTabBarDecoMo.disconnect(); } catch (e) {}
         }
-        const mo = new win.MutationObserver(() => {
+        const mo = new win.MutationObserver((records) => {
+            // Ignore batches caused entirely by OUR pinned-mirror container —
+            // reacting to our own writes is how the mirror sync once looped
+            // the whole observer→apply→mutate cycle forever.
+            try {
+                if (records && records.length) {
+                    let allOurs = true;
+                    for (const r of records) {
+                        const t: any = r.target;
+                        if (!t || !(t.closest ? t.closest("#wv-pinned-mirrors") : null)) { allOurs = false; break; }
+                    }
+                    if (allOurs) return;
+                }
+            } catch (e) {}
             try { this._decorateTabBar(win); } catch (e) {}
             try { this._applyPinnedTabs(win); } catch (e) {}
             try { this._applyTabGroups(win); } catch (e) {}
@@ -1999,6 +2267,7 @@ class _TabsMixin {
      *  among pins) is done in the menu's onCommand handler instead — see
      *  `_pinTabByCommand`. */
     _applyPinnedTabs(win) {
+        if ((this as any)._wvDestroyed) return;   // plugin torn down — never re-apply
         try {
             if (!win || !win.document) return;
             const doc = win.document;
@@ -2010,6 +2279,10 @@ class _TabsMixin {
                 for (const node of doc.querySelectorAll("#tab-bar-container .tab.wv-pinned-tab")) {
                     node.classList.remove("wv-pinned-tab");
                 }
+                for (const node of doc.querySelectorAll("#tab-bar-container .tab[data-wv-pin-mirrored]")) {
+                    node.removeAttribute("data-wv-pin-mirrored");
+                }
+                try { const mc = doc.getElementById("wv-pinned-mirrors"); if (mc) mc.remove(); } catch (e) {}
                 return;
             }
             const pinKeySet = new Set<string>();
@@ -2020,6 +2293,7 @@ class _TabsMixin {
             // display order — what we want the pref to reflect.
             const pinnedOpenInOrder: Array<{ libraryID: number, itemKey: string, tabID: string }> = [];
             const pinnedTabIDs = new Set<string>();
+            const stickyByTabID = new Map<string, number>();
             for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                 const tab = Z_Tabs._tabs[i];
                 if (!tab) continue;
@@ -2053,6 +2327,13 @@ class _TabsMixin {
                 if (!pinKeySet.has(k.libraryID + ":" + k.itemKey)) continue;
                 pinnedOpenInOrder.push({ libraryID: k.libraryID, itemKey: k.itemKey, tabID: tab.id });
                 pinnedTabIDs.add(tab.id);
+                // LOOSE pinned (no group stamp) → mirrored into the native
+                // .pinned-tabs container (left of the scroll arrows, Firefox
+                // layout) so it never scrolls out; grouped pinned tabs scroll
+                // with their group. Order = tab order.
+                if (!(this as any)._wvTabGroupStamp(tab)) {
+                    stickyByTabID.set(tab.id, stickyByTabID.size);
+                }
             }
 
             // Rebuild the pref array: pinned tabs that are OPEN go first
@@ -2118,7 +2399,19 @@ class _TabsMixin {
                 else if (node.classList.contains("wv-pinned-tab")) {
                     node.classList.remove("wv-pinned-tab");
                 }
+                // Mirror stamp for loose pinned tabs: hides the real tab in
+                // the scroller (the mirror in .pinned-tabs represents it).
+                const si = stickyByTabID.get(id as any);
+                if (si != null) {
+                    if (!node.hasAttribute("data-wv-pin-mirrored")) node.setAttribute("data-wv-pin-mirrored", "1");
+                }
+                else if (node.hasAttribute("data-wv-pin-mirrored")) {
+                    node.removeAttribute("data-wv-pin-mirrored");
+                }
             }
+            // Render/refresh the mirror buttons in the native .pinned-tabs
+            // container (one per loose pinned tab, in tab order).
+            try { (this as any)._wvSyncPinnedMirrors(win, [...stickyByTabID.keys()]); } catch (e) {}
             // Enforce the canonical order (loose-pinned tabs cluster at the far
             // left; group/pin-first handled together). _applyTabGroups also does
             // this, but it returns early when there are no groups — so a pin with
@@ -2134,6 +2427,106 @@ class _TabsMixin {
                 }
             } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _applyPinnedTabs err: " + e); }
+    }
+
+    /** Render one mirror button per LOOSE pinned tab inside Zotero's native
+     *  `.pinned-tabs` container (left of the scroll arrows — Firefox layout),
+     *  while `_applyPinnedTabs` hides the real React tab in the scroller.
+     *  Mirrors forward click (select), middle-click (close) and contextmenu
+     *  (native tab menu) to the real tab. Rebuilt cheaply on every apply (a
+     *  handful of nodes); dragging mirrors is not supported (v1). */
+    _wvSyncPinnedMirrors(win, tabIDs) {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            const pinnedC = doc.querySelector("#tab-bar-container .pinned-tabs");
+            if (!pinnedC) return;
+            let cont = doc.getElementById("wv-pinned-mirrors");
+            if (!tabIDs || !tabIDs.length) { if (cont) cont.remove(); return; }
+            if (!cont) {
+                cont = doc.createElement("div");
+                cont.id = "wv-pinned-mirrors";
+                pinnedC.appendChild(cont);
+            }
+            const Z = win.Zotero_Tabs;
+            const want = new Set(tabIDs.map(String));
+            // Drop mirrors whose tab is gone / no longer loose-pinned.
+            for (const m of [...cont.querySelectorAll(".wv-pinned-mirror")]) {
+                if (!want.has(m.getAttribute("data-tab-id"))) m.remove();
+            }
+            for (const tid of tabIDs) {
+                const tab = Z._tabs.find((t) => t.id === tid);
+                if (!tab) continue;
+                let m = cont.querySelector('.wv-pinned-mirror[data-tab-id="' + tid + '"]');
+                if (!m) {
+                    m = doc.createElement("div");
+                    m.className = "wv-pinned-mirror";
+                    m.setAttribute("data-tab-id", tid);
+                    const icon = doc.createElement("span");
+                    icon.className = "icon icon-css tab-icon icon-item-type";
+                    m.appendChild(icon);
+                    m.addEventListener("click", (e) => {
+                        try {
+                            if (e.button !== 0) return;
+                            const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (!lp) return;
+                            win.Zotero_Tabs.select(m.getAttribute("data-tab-id"));
+                        } catch (er) {}
+                    });
+                    m.addEventListener("auxclick", (e) => {
+                        try {
+                            if (e.button !== 1) return;
+                            const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (!lp) return;
+                            win.Zotero_Tabs.close(m.getAttribute("data-tab-id"));
+                        } catch (er) {}
+                    });
+                    m.addEventListener("contextmenu", (e) => {
+                        try {
+                            e.preventDefault(); e.stopPropagation();
+                            const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (!lp) return;
+                            const ZT = win.Zotero_Tabs;
+                            if (typeof ZT._openMenu === "function") ZT._openMenu(e.screenX, e.screenY, m.getAttribute("data-tab-id"));
+                        } catch (er) {}
+                    });
+                    // Attach ONCE at creation (the order pass below only
+                    // REPOSITIONS attached nodes — losing this append left
+                    // zero mirrors in the DOM). A create-time mutation can't
+                    // loop: steady-state passes create nothing.
+                    cont.appendChild(m);
+                }
+                // Keep icon / tooltip / selection in sync on every pass.
+                try {
+                    const iid = tab.data && tab.data.itemID;
+                    const it: any = iid && Zotero.Items.get(iid);
+                    const icon = m.querySelector(".icon-item-type");
+                    if (icon && it && it.getItemTypeIconName) {
+                        const t = it.getItemTypeIconName(true);
+                        if (icon.getAttribute("data-item-type") !== t) icon.setAttribute("data-item-type", t);
+                    }
+                } catch (e) {}
+                if (m.getAttribute("title") !== (tab.title || "")) m.setAttribute("title", tab.title || "");
+                m.classList.toggle("selected", Z.selectedID === tid);
+            }
+            // Order pass — REPOSITION ONLY WHEN WRONG. An unconditional
+            // appendChild here mutated childList on every call, and the
+            // tab-bar MutationObserver re-runs this method on every childList
+            // mutation → INFINITE LOOP (fresh Zotero unresponsive at 3.8 GB
+            // within a minute, 2026-07-03). Steady state must be zero-mutation.
+            let prev = null;
+            for (const tid of tabIDs) {
+                const m = cont.querySelector('.wv-pinned-mirror[data-tab-id="' + tid + '"]');
+                if (!m) continue;
+                const expectedPrev = prev;
+                const actualPrev = (() => { let p = m.previousElementSibling; return p; })();
+                if (m.parentNode !== cont || actualPrev !== expectedPrev) {
+                    if (expectedPrev) { if (expectedPrev.nextSibling !== m) cont.insertBefore(m, expectedPrev.nextSibling); }
+                    else if (cont.firstChild !== m) cont.insertBefore(m, cont.firstChild);
+                }
+                prev = m;
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvSyncPinnedMirrors err: " + e); }
     }
 
     /** Dispatcher for moving a reader/note tab between main windows. A PDF
@@ -3835,9 +4228,16 @@ class _TabsMixin {
      *  pinned-tab convention (~36 px); tab name + close button hide. */
     _ensurePinnedTabStyles(doc) {
         try {
-            if (!doc || doc.getElementById("wv-pinned-tab-style")) return;
+            if (!doc) return;
+            const PIN_STYLE_VERSION = "3";
+            const prev = doc.getElementById("wv-pinned-tab-style");
+            if (prev) {
+                if (prev.getAttribute("data-wv-ver") === PIN_STYLE_VERSION) return;
+                prev.remove();
+            }
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-pinned-tab-style";
+            style.setAttribute("data-wv-ver", PIN_STYLE_VERSION);
             // Bump specificity above .tab.selected (which Zotero uses to
             // size the active tab) by chaining the pinned class with .tab
             // AND #tab-bar-container — the selected rule then loses on
@@ -3935,6 +4335,37 @@ class _TabsMixin {
                 "  min-width: 100px !important;",
                 "  max-width: 200px !important;",
                 "  flex: 1 1 auto !important;",
+                "}",
+                // LOOSE pinned tabs (not in a group) render as MIRROR buttons
+                // inside Zotero's native `.pinned-tabs` container — LEFT of the
+                // scroll arrows, exactly like Firefox — while the real React
+                // tab stays hidden in the scroller (reparenting a React-managed
+                // node is not survivable; a lightweight mirror is). The mirror
+                // forwards click / middle-click / contextmenu to the real tab.
+                "#tab-bar-container .tabs .tab[data-wv-pin-mirrored] {",
+                "  display: none !important;",
+                "}",
+                "#wv-pinned-mirrors {",
+                "  display: flex;",
+                "  align-items: stretch;",
+                "}",
+                "#tab-bar-container .wv-pinned-mirror {",
+                "  width: 36px;",
+                "  display: flex;",
+                "  align-items: center;",
+                "  justify-content: center;",
+                "  border-radius: 6px;",
+                "  cursor: default;",
+                // The tab bar doubles as the window-drag region — without
+                // no-drag the OS eats real clicks on the mirror.
+                "  -moz-window-dragging: no-drag;",
+                "}",
+                "#tab-bar-container .wv-pinned-mirror:hover {",
+                "  background-color: var(--fill-quinary);",
+                "}",
+                "#tab-bar-container .wv-pinned-mirror.selected {",
+                "  background: var(--material-button);",
+                "  box-shadow: 0px 0px 0px 0.5px rgba(0, 0, 0, 0.05), 0px 0.5px 2.5px 0px rgba(0, 0, 0, 0.30);",
                 "}",
             ].join("\n");
             (doc.head || doc.documentElement).appendChild(style);
@@ -4882,6 +5313,96 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWindowStoreRestoreDevWindows err: " + e); }
     }
 
+    // ---- Disable→enable WINDOW round-trip -----------------------------------
+    // On plugin DISABLE/UNINSTALL, extra windows can't be left open safely:
+    // secondary main windows don't survive a restart-while-disabled (verified
+    // upstream: Session.save captures every pane but the startup restore reads
+    // only the FIRST), and reader windows' content is Weavero-only. So disable
+    // SAVES everything into the frozen window store, CLOSES every window
+    // except the anchor, and writes a marker; the next enable restores them
+    // all from the store through the same machinery the startup restore uses.
+
+    _wvDisableCloseMarkerPath() {
+        return PathUtils.join(PathUtils.join(Zotero.DataDirectory.dir, "weavero"), "disable-closed.json");
+    }
+
+    /** DISABLE path: close every reader window and every managed main window
+     *  (the untagged anchor stays). Runs AFTER destroy's final store capture +
+     *  freeze, so the closes cannot clobber the snapshot. Reader-window closes
+     *  park the groups homed there — recorded in the marker so enable un-parks
+     *  exactly those (they'll be live again once their windows restore). */
+    _wvDisableCloseExtraWindows() {
+        try {
+            // Which groups are LIVE right now (pre-close)?
+            const liveGroups: any[] = [];
+            try { for (const g of this._tabGroupsGet()) { if (!(g as any).saved) liveGroups.push(g.id); } } catch (e) {}
+            // DEFERRED close: `AddonManager.reload()` (every dev install) fires
+            // shutdown with ADDON_DISABLE — indistinguishable from a real user
+            // disable at this point. Closing immediately made every reload
+            // close + slowly re-restore all extra windows (user-visible churn,
+            // windows "appearing very late"). So wait a beat and only close if
+            // the plugin did NOT come back — a reload re-attaches
+            // Zotero.Weavero.plugin within milliseconds.
+            const mainWin: any = Zotero.getMainWindow();
+            const setT = (mainWin && mainWin.setTimeout) ? mainWin.setTimeout.bind(mainWin) : setTimeout;
+            const markerPath = this._wvDisableCloseMarkerPath();
+            setT(() => {
+                try {
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live) return;   // reload, not a disable — keep the windows
+                    let closedReaders = 0, closedMains = 0;
+                    try {
+                        const rws: any[] = [];
+                        const en = Services.wm.getEnumerator("zotero:reader");
+                        while (en.hasMoreElements()) rws.push(en.getNext());
+                        for (const w of rws) { try { w.close(); closedReaders++; } catch (e) {} }
+                    } catch (e) {}
+                    try {
+                        const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [];
+                        for (const w of mains) {
+                            if (w && (w as any)._wvManagedWindow) { try { w.close(); closedMains++; } catch (e) {} }
+                        }
+                    } catch (e) {}
+                    try {
+                        IOUtils.writeUTF8(markerPath, JSON.stringify({ version: 1, closedReaders, closedMains, unpark: liveGroups }), { tmpPath: markerPath + ".tmp" });
+                    } catch (e) {}
+                    Zotero.debug("[Weavero] disable-close: " + closedReaders + " reader + " + closedMains + " managed main window(s) saved+closed");
+                } catch (e) { Zotero.debug("[Weavero] disable-close deferred err: " + e); }
+            }, 1500);
+        } catch (e) { Zotero.debug("[Weavero] _wvDisableCloseExtraWindows err: " + e); }
+    }
+
+    /** ENABLE path: consume the disable-close marker and restore the closed
+     *  windows from the (still-frozen-at-disable) store. The restore entry
+     *  points carry once-guards, so racing the normal startup restore is a
+     *  no-op; a mid-session enable is where this actually fires. */
+    async _wvEnableRestoreClosedWindows() {
+        try {
+            const path = this._wvDisableCloseMarkerPath();
+            let marker: any = null;
+            try { marker = JSON.parse(await IOUtils.readUTF8(path)); } catch (e) { return; }   // no marker → nothing to do
+            try { await IOUtils.remove(path); } catch (e) {}
+            if (!marker) return;
+            // Un-park the groups that the reader-window closes parked at
+            // disable-time — their windows are about to come back.
+            try {
+                const unpark = new Set(marker.unpark || []);
+                if (unpark.size) {
+                    const groups = this._tabGroupsGet();
+                    let dirty = false;
+                    for (const g of groups) { if (unpark.has(g.id) && (g as any).saved) { delete (g as any).saved; dirty = true; } }
+                    if (dirty) this._tabGroupsSet(groups);
+                }
+            } catch (e) {}
+            const self = this;
+            setTimeout(() => {
+                try { (self as any)._wvWindowStoreRestoreDevWindows(); } catch (e) {}
+                try { (self as any)._wvWindowStoreRestoreOrphanReaderWindows(); } catch (e) {}
+            }, 1500);
+            Zotero.debug("[Weavero] enable-restore: marker consumed (" + (marker.closedReaders || 0) + " reader / " + (marker.closedMains || 0) + " main to restore)");
+        } catch (e) { Zotero.debug("[Weavero] _wvEnableRestoreClosedWindows err: " + e); }
+    }
+
     /** Spawn the next queued dev window. Its `onMainWindowLoad` consumes one
      *  queued group and (if more remain) chains the next spawn. */
     _wvSpawnNextDevWindow() {
@@ -5213,13 +5734,33 @@ class _TabsMixin {
     _wvWireRestoreTracing(win: any) {
         try {
             const Z = win && win.Zotero_Tabs;
-            if (!Z || Z._wvRestoreTraceWired) return;
+            if (!Z) return;
+            // REWIRE on every call: a plugin reload must REPLACE the previous
+            // wrappers, not skip ("already wired") — a skipped rewire leaves
+            // wrappers whose closures capture a DEAD instance, and their side
+            // effects (note re-process, watchdog, title heal) kept firing
+            // after plugin disable (observed: note editors re-wired from dead
+            // code when a note tab loaded post-disable, 2026-07-03). Peel the
+            // previous wrappers via their stored originals first. Legacy
+            // wrappers (no stored originals) can't be peeled — we wrap over
+            // them; a restart flushes them.
+            try {
+                if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; }
+                if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; }
+                if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; }
+                if (Z._wvOrigSelect) { Z.select = Z._wvOrigSelect; }
+            } catch (e) {}
             Z._wvRestoreTraceWired = true;
-            const self = this;
-            const name = () => { try { return self._wvWindowName(win); } catch (e) { return "?"; } };
+            // Resolve the LIVE plugin at CALL time — never the wiring-time
+            // `this` (stale after every reload; still runs after disable).
+            const LP = (): any => { try { const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; return (p && !p._wvDestroyed) ? p : null; } catch (e) { return null; } };
+            const name = () => { try { const p = LP(); return p ? p._wvWindowName(win) : "?"; } catch (e) { return "?"; } };
+            const trace = (m: string) => { try { const p = LP(); if (p) p._wvTrace(m); } catch (e) {} };
+            Z._wvOrigRestoreState = Z.restoreState;
             const origRestore = Z.restoreState.bind(Z);
             Z.restoreState = async function (tabs: any) {
-                try { self._wvTrace("restoreState[" + name() + "] IN: " + (tabs || []).map((t: any) => t.type + (t.selected ? "*" : "")).join(",")); } catch (e) {}
+                if (!LP()) return origRestore(tabs);   // plugin gone — pure native
+                try { trace("restoreState[" + name() + "] IN: " + (tabs || []).map((t: any) => t.type + (t.selected ? "*" : "")).join(",")); } catch (e) {}
                 // HARDENED per-tab restore. Upstream's loop awaits each type
                 // hook in sequence and a single throw aborts the WHOLE list —
                 // every later tab is silently dropped (caught live: a managed
@@ -5246,7 +5787,7 @@ class _TabsMixin {
                     };
                     for (let i = 0; i < (tabs || []).length; i++) {
                         try { await runOne(tabs[i], i); }
-                        catch (e) { failed.push(tabs[i]); self._wvTrace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
+                        catch (e) { failed.push(tabs[i]); trace("restoreState[" + name() + "] tab " + i + " (" + (tabs[i] && tabs[i].type) + ") failed: " + e); }
                     }
                     if (failed.length) {
                         await new Promise((res) => { try { win.setTimeout(res, 1500); } catch (e) { res(null); } });
@@ -5256,9 +5797,9 @@ class _TabsMixin {
                                 // failure is a too-early Zotero.Items.exists() miss.
                                 try { if (tab.data && tab.data.itemID) await Zotero.Items.getAsync(tab.data.itemID); } catch (e2) {}
                                 await runOne(tab, Z._tabs.length);
-                                self._wvTrace("restoreState[" + name() + "] retry OK: " + tab.type);
+                                trace("restoreState[" + name() + "] retry OK: " + tab.type);
                             }
-                            catch (e) { self._wvTrace("restoreState[" + name() + "] retry FAILED (" + tab.type + "): " + e); }
+                            catch (e) { trace("restoreState[" + name() + "] retry FAILED (" + tab.type + "): " + e); }
                         }
                     }
                     Z._prevSelectedID = null;
@@ -5266,22 +5807,23 @@ class _TabsMixin {
                         const items = await Zotero.Items.getAsync(itemIDs.filter((x: any) => x));
                         await Zotero.Items.loadDataTypes(items);
                     } catch (e) {}
-                    try { self._wvTrace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
+                    try { trace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
                     return;
                 }
                 let r;
                 try { r = await origRestore(tabs); }
-                catch (e) { self._wvTrace("restoreState[" + name() + "] THREW: " + e); throw e; }
-                try { self._wvTrace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
+                catch (e) { trace("restoreState[" + name() + "] THREW: " + e); throw e; }
+                try { trace("restoreState[" + name() + "] OUT: " + Z._tabs.map((t: any) => t.type).join(",")); } catch (e) {}
                 return r;
             };
             const wiredAt = Date.now();
+            Z._wvOrigClose = Z.close;
             const origClose = Z.close.bind(Z);
             Z.close = function (ids: any) {
                 try {
-                    if (Date.now() - wiredAt < 90000) {
+                    if (LP() && Date.now() - wiredAt < 90000) {
                         const stack = String(new Error().stack || "").split("\n").slice(1, 4).join(" <- ");
-                        self._wvTrace("close[" + name() + "]: " + JSON.stringify(ids) + " via " + stack);
+                        trace("close[" + name() + "]: " + JSON.stringify(ids) + " via " + stack);
                     }
                 } catch (e) {}
                 return origClose(ids);
@@ -5291,12 +5833,14 @@ class _TabsMixin {
             // resolves — trace each so the timeline separates "windows +
             // groups present" from "tab content loaded".
             if (typeof Z.markAsLoaded === "function") {
+                Z._wvOrigMarkAsLoaded = Z.markAsLoaded;
                 const origMark = Z.markAsLoaded.bind(Z);
                 Z.markAsLoaded = function (id: any) {
                     const r = origMark(id);
+                    if (!LP()) return r;   // plugin gone — no side effects
                     try {
                         const t = Z._tabs.find((x: any) => x.id === id);
-                        self._wvTrace("tab-loaded[" + name() + "]: " + (t ? t.type : id));
+                        trace("tab-loaded[" + name() + "]: " + (t ? t.type : id));
                         // Self-heal stale tab titles on load. A tab created with a
                         // wrong explicit title (e.g. an attachment's own "Full Text
                         // PDF") keeps it FOREVER — Zotero's updateTitle only fires
@@ -5306,20 +5850,23 @@ class _TabsMixin {
                         // editor document exists — sweep the note-link wiring
                         // now (the boot sweep runs before restored editors
                         // exist, and BN's editor rebuild can swap the iframe
-                        // at times no MutationObserver batch flags).
+                        // at times no MutationObserver batch flags). LP() is
+                        // re-resolved INSIDE the timers — the plugin can be
+                        // disabled between the load and the sweep.
                         if (t && String(t.type).indexOf("note") === 0) {
-                            win.setTimeout(() => { try { self._processNoteEditors(win.document); } catch (e) {} }, 400);
-                            win.setTimeout(() => { try { self._processNoteEditors(win.document); } catch (e) {} }, 2500);
+                            win.setTimeout(() => { try { const p = LP(); if (p) p._processNoteEditors(win.document); } catch (e) {} }, 400);
+                            win.setTimeout(() => { try { const p = LP(); if (p) p._processNoteEditors(win.document); } catch (e) {} }, 2500);
                         }
                         const iid = t && t.data && t.data.itemID;
                         const it: any = iid && Zotero.Items.get(iid);
                         if (it && typeof it.getTabTitle === "function") {
                             it.getTabTitle().then((title: string) => {
                                 try {
+                                    if (!LP()) return;
                                     const t2 = Z._tabs.find((x: any) => x.id === id);
                                     if (title && t2 && t2.title !== title) {
                                         Z.rename(id, title);
-                                        self._wvTrace("title self-heal[" + name() + "]: " + String(title).slice(0, 50));
+                                        trace("title self-heal[" + name() + "]: " + String(title).slice(0, 50));
                                     }
                                 } catch (e) {}
                             }).catch(() => {});
@@ -5332,12 +5879,16 @@ class _TabsMixin {
             // 6 s after its select, the load hook died silently (e.g. the
             // Notes.open wrong-window bug, patched separately, or any future
             // wedge) — reset to `-unloaded` and re-drive the select once.
+            Z._wvOrigSelect = Z.select;
             const origSelect = Z.select.bind(Z);
             Z.select = function (id: any, reopening?: any, opts?: any) {
                 const r = origSelect(id, reopening, opts);
+                if (!LP()) return r;   // plugin gone — pass through only
                 try {
                     win.setTimeout(() => {
                         try {
+                            const p = LP();
+                            if (!p) return;   // disabled since the select
                             const t = Z._tabs.find((x: any) => x.id === id);
                             if (!t || Z.selectedID !== id) return;
                             if (!String(t.type).endsWith("-loading")) return;
@@ -5350,19 +5901,34 @@ class _TabsMixin {
                             // to the window's next activate.
                             const front = (() => { try { return Services.wm.getMostRecentWindow("navigator:browser") === win; } catch (e) { return true; } })();
                             if (front) {
-                                self._wvTrace("watchdog[" + name() + "]: tab " + id + " stuck — retrying load");
+                                trace("watchdog[" + name() + "]: tab " + id + " stuck — retrying load");
                                 origSelect("zotero-pane");
                                 win.setTimeout(() => { try { origSelect(id); } catch (e) {} }, 80);
                             } else {
-                                self._wvTrace("watchdog[" + name() + "]: tab " + id + " stuck in a background window — re-deferring to activate");
+                                trace("watchdog[" + name() + "]: tab " + id + " stuck in a background window — re-deferring to activate");
                                 origSelect("zotero-pane");
-                                try { self._wvDeferSelect(win, t.data && t.data.itemID); } catch (e) {}
+                                try { p._wvDeferSelect(win, t.data && t.data.itemID); } catch (e) {}
                             }
                         } catch (e) {}
                     }, 6000);
                 } catch (e) {}
                 return r;
             };
+        } catch (e) {}
+    }
+
+    /** Restore the native Zotero_Tabs methods this window's tracing wrappers
+     *  replaced. Called from destroy() for every main window so a plugin
+     *  disable leaves NO Weavero code on the tab-lifecycle hot paths. */
+    _wvUnwireRestoreTracing(win: any) {
+        try {
+            const Z = win && win.Zotero_Tabs;
+            if (!Z) return;
+            if (Z._wvOrigRestoreState) { Z.restoreState = Z._wvOrigRestoreState; delete Z._wvOrigRestoreState; }
+            if (Z._wvOrigClose) { Z.close = Z._wvOrigClose; delete Z._wvOrigClose; }
+            if (Z._wvOrigMarkAsLoaded) { Z.markAsLoaded = Z._wvOrigMarkAsLoaded; delete Z._wvOrigMarkAsLoaded; }
+            if (Z._wvOrigSelect) { Z.select = Z._wvOrigSelect; delete Z._wvOrigSelect; }
+            delete Z._wvRestoreTraceWired;
         } catch (e) {}
     }
 
@@ -6357,7 +6923,14 @@ class _TabsMixin {
                     "#tab-bar-container .tab.wv-pinned-tab")) {
                     node.classList.remove("wv-pinned-tab");
                     try { node.removeAttribute("data-wv-pin-preview"); } catch (e) {}
+                    try { node.removeAttribute("data-wv-pin-mirrored"); } catch (e) {}
                 }
+                // Unhide any mirrored tab that wasn't caught above and drop
+                // the mirror container itself.
+                for (const node of doc.querySelectorAll("#tab-bar-container .tab[data-wv-pin-mirrored]")) {
+                    try { node.removeAttribute("data-wv-pin-mirrored"); } catch (e) {}
+                }
+                try { const mc = doc.getElementById("wv-pinned-mirrors"); if (mc) mc.remove(); } catch (e) {}
                 const pinStyle = doc.getElementById("wv-pinned-tab-style");
                 if (pinStyle) pinStyle.remove();
             }
@@ -6396,6 +6969,7 @@ class _TabsMixin {
      *  library-name suffix to each matching tab's tooltip. Idempotent
      *  — safe to call repeatedly. */
     _decorateTabBar(win) {
+        if ((this as any)._wvDestroyed) return;   // plugin torn down — never re-apply
         if (!win) return;
         const doc = win.document;
         if (!doc) return;

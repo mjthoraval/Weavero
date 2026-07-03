@@ -6427,7 +6427,7 @@ class _TabsMixin {
             };
             let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null,
                 GetWindowLongPtr: any = null, SetWindowLongPtr: any = null,
-                dwmapi: any = null, DwmSetWindowAttribute: any = null;
+                dwmapi: any = null, DwmSetWindowAttribute: any = null, ShowWindowFn: any = null;
             try {
                 const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
                 ctypesRef = ctypes;
@@ -6438,6 +6438,8 @@ class _TabsMixin {
                     ctypes.voidptr_t, ctypes.int);
                 SetWindowLongPtr = user32.declare("SetWindowLongPtrW", ctypes.winapi_abi, ctypes.intptr_t,
                     ctypes.voidptr_t, ctypes.int, ctypes.intptr_t);
+                ShowWindowFn = user32.declare("ShowWindow", ctypes.winapi_abi, ctypes.bool,
+                    ctypes.voidptr_t, ctypes.int);
                 dwmapi = ctypes.open("dwmapi.dll");
                 DwmSetWindowAttribute = dwmapi.declare("DwmSetWindowAttribute", ctypes.winapi_abi, ctypes.long,
                     ctypes.voidptr_t, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t);
@@ -6470,14 +6472,20 @@ class _TabsMixin {
             // shows, loads and paints, but never comes to the front. Cleared
             // at teardown, when a window becomes the refocus target, and
             // instantly on a user mousedown (their click = their intent).
-            const WS_EX_NOACTIVATE = 0x08000000, GWL_EXSTYLE = -20;
+            // WS_EX_APPWINDOW rides along: a window whose FIRST show happens
+            // cloaked + non-activatable never gets a taskbar button, and
+            // clearing the bits later does not re-register it with the shell
+            // ("still only one window", 2026-07-04). APPWINDOW forces the
+            // button; refreshTaskbar() (invisible hide/show while cloaked)
+            // re-registers before every reveal as the belt.
+            const WS_EX_NOACTIVATE = 0x08000000, WS_EX_APPWINDOW = 0x40000, GWL_EXSTYLE = -20;
             const noActivated = new Set();
             const setNoActivate = (w: any) => {
                 try {
                     if (!SetWindowLongPtr || !w || w.closed || noActivated.has(w)) return;
                     const h = hwndOf(w);
                     const cur = Number(GetWindowLongPtr(h, GWL_EXSTYLE));
-                    SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur | WS_EX_NOACTIVATE));
+                    SetWindowLongPtr(h, GWL_EXSTYLE, ctypesRef.intptr_t(cur | WS_EX_NOACTIVATE | WS_EX_APPWINDOW));
                     noActivated.add(w);
                 } catch (e) {}
             };
@@ -6513,7 +6521,19 @@ class _TabsMixin {
                     if (on) cloaked.add(w); else cloaked.delete(w);
                 } catch (e) {}
             };
-            const reveal = (w: any) => { clearNoActivate(w); setCloak(w, false); };
+            const refreshTaskbar = (w: any) => {
+                try {
+                    if (!ShowWindowFn || !w || w.closed) return;
+                    const h = hwndOf(w);
+                    ShowWindowFn(h, 0);   // SW_HIDE
+                    ShowWindowFn(h, 4);   // SW_SHOWNOACTIVATE
+                } catch (e) {}
+            };
+            const reveal = (w: any) => {
+                clearNoActivate(w);
+                if (cloaked.has(w)) { refreshTaskbar(w); }   // invisible while cloaked
+                setCloak(w, false);
+            };
             (this as any)._wvBgClearNoActivate = reveal;
             // "Is this one of ours?" — with a pre-parse grace: at
             // `domwindowopened` (and often at the FIRST activate) the XUL
@@ -6622,7 +6642,7 @@ class _TabsMixin {
                 (this as any)._wvBgRestoreOn = false;
                 (this as any)._wvBgRestoreHoldUntil = 0;
                 (this as any)._wvBgRestoreTargetWin = null;
-                try { for (const w of [...cloaked]) { pushToBottom(w); setCloak(w, false); } } catch (e) {}
+                try { for (const w of [...cloaked]) { pushToBottom(w); reveal(w); } } catch (e) {}
                 try { for (const w of [...noActivated]) clearNoActivate(w); } catch (e) {}
                 (this as any)._wvBgClearNoActivate = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}

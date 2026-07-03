@@ -39,6 +39,7 @@
     "typings",
     "docs",
     // Paste-into-console scripts (top-level await/return) — not modules.
-    "test/restart"
+    "test/restart",
+    "test/disable"
   ]
 }

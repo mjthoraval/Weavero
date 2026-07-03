@@ -3449,6 +3449,9 @@ class _TabGroupsMixin {
                             select: false,
                             preventJumpback: true,
                         });
+                        // Stamp the fresh tab DIRECTLY (claim-pass fallback
+                        // stays as the restart safety net, not the mechanism).
+                        try { const nt = Z._tabs.find((x: any) => x.id === (res && res.id)); if (nt) this._wvTabGroupSetStamp(nt, groupID); } catch (e) {}
                         if (res && res.id && !firstId) firstId = res.id;
                     } catch (e) {}
                 }
@@ -3506,7 +3509,14 @@ class _TabGroupsMixin {
                             try { (t as any)._wvGroupExcluded = true; } catch (e) {}
                         }
                     }
-                    await (this as any)._wvWTMountTab(win, it.id, { allowDuplicate: true, select: false, await: true });
+                    const nid = await (this as any)._wvWTMountTab(win, it.id, { allowDuplicate: true, select: false, await: true });
+                    // Stamp the fresh deck tab DIRECTLY.
+                    try {
+                        const st = win._wvWT;
+                        let nt = st && st.tabs && st.tabs.find((x: any) => String(x.id) === String(nid));
+                        if (!nt && st && st.tabs) { for (let i = st.tabs.length - 1; i >= 0; i--) { if (st.tabs[i].itemID === it.id && !st.tabs[i].wvGroupId) { nt = st.tabs[i]; break; } } }
+                        if (nt) nt.wvGroupId = groupID;
+                    } catch (e) {}
                 } catch (e) {}
             }
             const groups = this._tabGroupsGet();
@@ -3572,15 +3582,19 @@ class _TabGroupsMixin {
             // Entries to open in the new reader window. For an OPEN group, those
             // are the open members; for a SAVED group (none open) reopen all its
             // stored members and clear the saved flag.
-            let entries: Array<{ itemID: any; isNote: boolean }> = [];
+            let entries: Array<{ itemID: any; isNote: boolean; grp?: any }> = [];
             if (open.length) {
-                entries = open.map((o) => ({ itemID: o.itemID, isNote: o.isNote }));
+                // Carry the group id so the new reader window STAMPS each
+                // arrival directly (the grp branches in
+                // _wvOpenItemsInNewReaderWindow) instead of relying on the
+                // claim pass over the shadow.
+                entries = open.map((o) => ({ itemID: o.itemID, isNote: o.isNote, grp: groupID }));
             } else {
                 const groups = this._tabGroupsGet();
                 const g1 = groups.find((x: any) => x.id === groupID);
                 if (g1 && (g1 as any).saved) { delete (g1 as any).saved; this._tabGroupsSet(groups); }
                 for (const m of (g.members || [])) {
-                    try { const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey); if (it && (it.attachmentReaderType || (it.isNote && it.isNote()))) entries.push({ itemID: it.id, isNote: !!(it.isNote && it.isNote()) }); } catch (e) {}
+                    try { const it: any = Zotero.Items.getByLibraryAndKey(m.libraryID, m.itemKey); if (it && (it.attachmentReaderType || (it.isNote && it.isNote()))) entries.push({ itemID: it.id, isNote: !!(it.isNote && it.isNote()), grp: groupID }); } catch (e) {}
                 }
             }
             entries = entries.filter((e) => e.itemID != null);
@@ -4550,6 +4564,11 @@ class _TabGroupsMixin {
             }
             const home = this._wvTabGroupHomeWin(groupID);
             if (home && home !== win) { this._wvTabGroupSendDeckTabToWin(win, tab, home, groupID); return; }
+            // Stamp DIRECTLY (per-tab membership is authoritative) — the old
+            // claim-pass reliance left the tab ungrouped whenever a duplicate
+            // copy of the item existed or the home guard misfired (same family
+            // as the fixed main-window paths).
+            this._wvTabGroupSetStamp(tab, groupID);
             this._tabGroupAddKey(groupID, key);
             this._wvTabGroupDeckPlaceNearGroup(win, tab.itemID, groupID);
             this._wvTabGroupApplyEverywhere();
@@ -4590,6 +4609,16 @@ class _TabGroupsMixin {
                 // Mount in the target FIRST, close here only once it landed
                 // (same never-lose-the-tab order as _wvWTHandleCrossWindowDrop).
                 (this as any)._wvWTMountTab(tgtWin, itemID, { allowDuplicate: false, select: false });
+                // Stamp the arrival DIRECTLY (newest unstamped copy).
+                try {
+                    const st2 = tgtWin._wvWT;
+                    if (st2 && st2.tabs) {
+                        for (let i = st2.tabs.length - 1; i >= 0; i--) {
+                            const t = st2.tabs[i];
+                            if (t.itemID === itemID && !t.wvGroupId) { t.wvGroupId = groupID; break; }
+                        }
+                    }
+                } catch (e) {}
                 const landed = !!(tgtWin._wvWT && tgtWin._wvWT.tabs
                     && tgtWin._wvWT.tabs.some((t: any) => t.itemID === itemID));
                 if (landed) { try { (this as any)._wvWTCloseTab(srcWin, tab.id); } catch (e) {} }
@@ -4610,6 +4639,15 @@ class _TabGroupsMixin {
                             if (Date.now() - startTs < 4000) tgtWin.setTimeout(poll, 150);
                             return;
                         }
+                        // Stamp the arrival DIRECTLY before clustering.
+                        try {
+                            for (const t of TZ._tabs) {
+                                if (t && t.data && t.data.itemID === itemID && !this._wvTabGroupStamp(t)) {
+                                    this._wvTabGroupSetStamp(t, groupID);
+                                    break;
+                                }
+                            }
+                        } catch (e) {}
                         this._wvTabGroupStabilize(tgtWin);
                         this._wvTabGroupApplyEverywhere();
                     } catch (e) {}

@@ -1,6 +1,6 @@
 {
   "name": "weavero",
-  "version": "0.15.3-dev.79",
+  "version": "0.15.3-dev.124",
   "private": true,
   "description": "A Zotero plugin with filters, clickable links, bookmarks, tabs management and other improvements.",
   "homepage": "https://github.com/mjthoraval/Weavero",

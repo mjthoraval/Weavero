@@ -7770,6 +7770,13 @@ class _ReaderMixin {
                     // rewrite windows.json with the LIVE (possibly degraded)
                     // state, so late repairs must diff against this copy.
                     try { this._wvBootFocusedEntry = doc.focused || null; this._wvBootWindowStoreDoc = doc; } catch (e) {}
+                    // Correct the anchor's selection NOW: native restore obeys
+                    // session.json's teardown-poisoned `selected` flags, and
+                    // waiting for the late reconcile showed the wrong tab for
+                    // seconds ("focus jumps to the note before going back to
+                    // the library tab", 2026-07-04).
+                    try { (this as any)._wvEnforceAnchorSelectionFromStore("early"); } catch (e) {}
+                    try { (this as any)._wvBootSelectionGuardStart(); } catch (e) {}
                     const orphanIDs: any[] = [];
                     for (const g of doc.windows) {
                         if (g && g.kind === "reader" && g.nativeItemID != null) {

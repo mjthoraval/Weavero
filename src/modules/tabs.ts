@@ -5618,6 +5618,65 @@ class _TabsMixin {
         return this._wvBootSessionPromise;
     }
 
+    /** Enforce the anchor's selection from the store's quit capture (the
+     *  truth frozen at quit-REQUEST, before teardown churn poisons
+     *  session.json's per-tab flags). Called EARLY — right after the boot
+     *  store loads — to kill the visible flash of the wrong tab Zotero's
+     *  native restore selects, and again from the reconcile as a backstop
+     *  (the captured tab may only exist after the repair re-adds it). */
+    _wvEnforceAnchorSelectionFromStore(tag: string) {
+        try {
+            const doc0: any = (this as any)._wvBootWindowStoreDoc;
+            const entry = doc0 && (doc0.windows || []).find((x: any) => x && x.kind === "main-anchor");
+            const selSt = entry && (entry.tabs || []).find((t: any) => t && t.selected);
+            if (!selSt) return;
+            const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
+            const Z = anchor && anchor.Zotero_Tabs;
+            if (!Z) return;
+            let wantID: any = null;
+            const sBase = String(selSt.type || "").replace(/-(unloaded|loading)$/, "");
+            if (sBase === "library" || selSt.id === "zotero-pane") wantID = "zotero-pane";
+            else {
+                const iid = selSt.data && selSt.data.itemID;
+                const t = iid != null && Z._tabs.find((x: any) => x.data && x.data.itemID === iid);
+                if (t) wantID = t.id;
+            }
+            if (wantID && Z.selectedID !== wantID) {
+                Z.select(wantID);
+                (this as any)._wvTrace("anchor selection enforced from the quit capture ("
+                    + tag + ", " + (wantID === "zotero-pane" ? "library" : wantID) + ")");
+            }
+        } catch (e) {}
+    }
+
+    /** Short boot-time selection GUARD: between the store load and the
+     *  reconcile, other plugins churn the anchor's tabs — Better Notes
+     *  closes every note tab and reopens it through Zotero.Notes.open,
+     *  whose reopen SELECTS, flashing a note tab for 1-2 s before the
+     *  reconcile corrected it (2026-07-04). Re-assert the captured
+     *  selection every 250 ms until the reconcile has run (15 s cap).
+     *  User clicks in this window are overridden — but the window is the
+     *  first ~3 s of boot, where clicks are vanishingly unlikely. */
+    _wvBootSelectionGuardStart() {
+        try {
+            if ((this as any)._wvBootSelGuardOn) return;
+            (this as any)._wvBootSelGuardOn = true;
+            const w0: any = Zotero.getMainWindow();
+            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            let ticks = 0;
+            const tick = () => {
+                ticks++;
+                if ((this as any)._wvAnchorReconciled || ticks > 60 || (this as any)._wvDestroyed) {
+                    (this as any)._wvBootSelGuardOn = false;
+                    return;
+                }
+                try { this._wvEnforceAnchorSelectionFromStore("guard"); } catch (e) {}
+                setT(tick, 250);
+            };
+            setT(tick, 250);
+        } catch (e) {}
+    }
+
     /** VERIFY-AND-REPAIR the anchor window's native session restore. Zotero's
      *  `restoreState` (zoteroPane.js, end of makeVisible) runs on the same
      *  `initializationPromise` turn plugin startup awaits — structurally
@@ -5679,31 +5738,11 @@ class _TabsMixin {
             (this as any)._wvTrace(added
                 ? ("reconcile: restored " + added + " tab(s) the native anchor restore dropped")
                 : "reconcile: anchor matches the saved session");
-            // SELECTION truth: the store's anchor entry, captured at
-            // quit-REQUEST (before teardown churn poisons session.json's
-            // flags). Enforce it whether or not anything was re-added —
-            // Zotero's native restore reads the same poisoned session file
-            // and can land on the wrong tab all by itself.
-            try {
-                const doc0: any = (this as any)._wvBootWindowStoreDoc;
-                const entry = doc0 && (doc0.windows || []).find((x: any) => x && x.kind === "main-anchor");
-                const selSt = entry && (entry.tabs || []).find((t: any) => t && t.selected);
-                if (selSt) {
-                    let wantID: string | null = null;
-                    const sBase = String(selSt.type || "").replace(/-(unloaded|loading)$/, "");
-                    if (sBase === "library" || selSt.id === "zotero-pane") wantID = "zotero-pane";
-                    else {
-                        const iid2 = selSt.data && selSt.data.itemID;
-                        const t2 = iid2 != null && Z._tabs.find((x: any) => x.data && x.data.itemID === iid2);
-                        if (t2) wantID = t2.id;
-                    }
-                    if (wantID && Z.selectedID !== wantID) {
-                        Z.select(wantID);
-                        (this as any)._wvTrace("reconcile: anchor selection enforced from the quit capture ("
-                            + (wantID === "zotero-pane" ? "library" : wantID) + ")");
-                    }
-                }
-            } catch (e) {}
+            // SELECTION truth: the store's quit capture — enforced again here
+            // as backstop (the captured tab may be one this repair just
+            // re-added; the EARLY call at store-load already killed the
+            // visible flash for tabs native restore kept).
+            try { this._wvEnforceAnchorSelectionFromStore("reconcile"); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReconcileAnchorSessionTabs err: " + e); }
     }
 

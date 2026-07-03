@@ -2960,6 +2960,16 @@ class WeaveroPlugin {
                                 } catch (e) {}
                                 // Land the user where they left off (window focus).
                                 try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {}
+                                // The reader-window opens released above finish
+                                // AFTER this focus restore and raise as they
+                                // appear — while the background-restore observer
+                                // dies within a tick of the guard lifting. Extend
+                                // its hold through the late opens, and re-assert
+                                // the focused window once they've settled
+                                // ("landing on the wrong window at the end",
+                                // 2026-07-04).
+                                try { (this as any)._wvBgRestoreStart({ holdMs: 20000 }); } catch (e) {}
+                                try { setT(() => { try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {} }, 10000); } catch (e) {}
                                 // Warm deferred background tabs once the dust has
                                 // settled (one at a time, so nothing competes with
                                 // whatever the user is doing).

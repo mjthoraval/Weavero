@@ -1757,23 +1757,39 @@ export const PLUGIN_CSS = [
     "}",
     // Popup row drag-and-drop: dim the row being dragged, and outline the window
     // scope / group row it would drop into (blue, matching the tab-bar indicator).
+    // NOTE: the dragging row must stay dimmed-but-VISIBLE by default — Zotero's
+    // native tabs-menu reorder (same-window, non-group) computes drop slots from
+    // the row's layout box, so display:none here breaks native reorders.
     ".wv-tabsmenu-row-dragging {",
     "  opacity: 0.45 !important;",
     "}",
+    // Applied ON TOP of the dim, but only while Weavero's ghost preview is
+    // showing (intercepted drags: into groups / cross-window). Hides the
+    // original so the ghost is the single visible copy — the tab appears to
+    // MOVE (Firefox-style) instead of showing twice (dimmed original + ghost).
+    ".wv-tabsmenu-row-drag-hidden {",
+    "  display: none !important;",
+    "}",
+    // Applied to CROSS-window scopes only (which window the tab moves INTO)
+    // and to group rows/headers a drop would join. Same-window reorders show
+    // no scope outline — the ghost alone marks the slot (a full-window frame
+    // there was loud but said nothing).
     ".wv-tabsmenu-drop-into {",
     "  outline: 2px solid var(--accent-blue, #4072e5) !important;",
     "  outline-offset: -2px;",
     "  border-radius: 4px;",
     "  background: rgba(64, 114, 229, 0.10) !important;",
     "}",
-    // Preview of the tab being dragged, shown where it will land in the target.
+    // Preview of the tab being dragged, shown where it will land in the
+    // target — THE primary drop indicator, so it carries the strong accent
+    // (solid 2px + saturated tint), not the container around it.
     ".wv-tabsmenu-ghost {",
-    "  opacity: 0.7;",
+    "  opacity: 0.95;",
     "  pointer-events: none;",
     "  border-radius: 4px;",
-    "  outline: 1px dashed var(--accent-blue, #4072e5);",
-    "  outline-offset: -1px;",
-    "  background: rgba(64, 114, 229, 0.12) !important;",
+    "  outline: 2px solid var(--accent-blue, #4072e5);",
+    "  outline-offset: -2px;",
+    "  background: rgba(64, 114, 229, 0.22) !important;",
     "}",
     // Tabs-menu toolbar button shows a small accent-blue dot at its
     // top-right when at least one library / file-type filter is active,

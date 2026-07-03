@@ -135,6 +135,7 @@ class _NoteEditorMixin {
      *  stylesheet so toggling `enableAppLinks` or a scheme tick
      *  flips colours immediately on the next call. */
     _ensureNoteEditorStyles(idoc) {
+        if ((this as any)._wvDestroyed) return;   // torn down — never re-inject
         if (!idoc) return;
         let s = idoc.getElementById("weavero-note-editor-styles");
         if (!s) {
@@ -183,6 +184,7 @@ class _NoteEditorMixin {
      *  attribute-prefix selectors (`a[href^="..."]`) need no
      *  per-mutation work at all. */
     _setupNoteEditorObserver(noteEditorEl) {
+        if ((this as any)._wvDestroyed) return;   // plugin torn down — never re-wire
         if (!noteEditorEl) return;
         if (!this._noteEditorObservers) {
             this._noteEditorObservers = new WeakMap();
@@ -210,6 +212,11 @@ class _NoteEditorMixin {
         iframe._wvLoadWired = this;
         const wireUp = () => {
             try {
+                // Torn-down instance (plugin disabled/reloaded) — the
+                // persistent load listener below can't be removed (it isn't
+                // recorded anywhere), so it MUST self-disable here or every
+                // editor reload re-wires Weavero rendering from dead code.
+                if ((this as any)._wvDestroyed) return;
                 const idoc = iframe.contentDocument;
                 if (!idoc) return;
                 // Idempotent PER DOCUMENT — the editor iframe RELOADS its
@@ -1202,11 +1209,24 @@ class _NoteEditorMixin {
      *  pop-out `zotero:note` window, and wire it up. Idempotent — the
      *  `_noteEditorObservers` WeakMap dedupes. */
     _processNoteEditors(doc) {
+        if ((this as any)._wvDestroyed) return;   // plugin torn down — never re-wire
         if (!this._getEnableNotes()) return;
-        const main = doc || Zotero.getMainWindow().document;
+        // No explicit doc → sweep EVERY main window, not just the focused one
+        // (`getMainWindow()`): managed windows' note editors were left with
+        // native blue links after a restore because every no-arg sweep only
+        // covered the anchor and the per-window load hook can miss editors
+        // that were already loaded when it wired.
+        const mainDocs: any[] = [];
+        if (doc) mainDocs.push(doc);
+        else {
+            try {
+                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of mains) { if (w && w.document) mainDocs.push(w.document); }
+            } catch (e) { try { mainDocs.push(Zotero.getMainWindow().document); } catch (e2) {} }
+        }
         let mainCount = 0;
-        if (main) {
-            for (const ne of main.querySelectorAll("note-editor")) {
+        for (const md of mainDocs) {
+            for (const ne of md.querySelectorAll("note-editor")) {
                 this._setupNoteEditorObserver(ne);
                 mainCount++;
             }
@@ -1333,15 +1353,25 @@ class _NoteEditorMixin {
      *  unticks Notes, and at destroy(). */
     _stripNotes() {
         try {
-            const main = Zotero.getMainWindow().document;
-            const docs = [main];
+            // EVERY surface the wiring pass reaches must be stripped: ALL
+            // main windows (secondary windows host note tabs too), pop-out
+            // note windows, AND reader windows (`_processNoteEditors`
+            // enumerates zotero:reader — a disable previously left those
+            // editors rendering Weavero links).
+            const docs: any[] = [];
             try {
-                const winEnum = Services.wm.getEnumerator("zotero:note");
-                while (winEnum.hasMoreElements()) {
-                    const w = winEnum.getNext() as any;
-                    if (w && w.document) docs.push(w.document);
-                }
-            } catch (e) {}
+                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of mains) { if (w && w.document) docs.push(w.document); }
+            } catch (e) { try { docs.push(Zotero.getMainWindow().document); } catch (e2) {} }
+            for (const wtype of ["zotero:note", "zotero:reader"]) {
+                try {
+                    const winEnum = Services.wm.getEnumerator(wtype);
+                    while (winEnum.hasMoreElements()) {
+                        const w = winEnum.getNext() as any;
+                        if (w && w.document) docs.push(w.document);
+                    }
+                } catch (e) {}
+            }
             for (const doc of docs) {
                 if (!doc) continue;
                 // Items-tree note rows + right-pane notes-box labels
@@ -1366,6 +1396,13 @@ class _NoteEditorMixin {
                         if (!idoc) continue;
                         const s = idoc.getElementById("weavero-note-editor-styles");
                         if (s) s.remove();
+                        // Clear the claim tokens: the persistent iframe load
+                        // listener survives (it isn't recorded), but with the
+                        // tokens gone + the _wvDestroyed bail in wireUp it can
+                        // no longer re-wire, and a future instance re-claims
+                        // cleanly.
+                        try { (iframe as any)._wvLoadWired = null; } catch (e) {}
+                        try { (idoc as any)._wvNoteLinksWired = null; } catch (e) {}
                         // Detach our listeners if we have them recorded.
                         if (this._noteEditorObservers
                                 && this._noteEditorObservers.has(ne)) {

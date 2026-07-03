@@ -503,6 +503,8 @@ const RP_BM_CSS = [
     ".wv-bm-chip-popup .wv-filter-opt:hover{background:rgba(127,127,127,0.08);}",
     ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]{background:rgba(94,106,210,0.34);border-color:rgba(94,106,210,0.95);box-shadow:inset 0 0 0 1px rgba(94,106,210,0.55);}",
     ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]:hover{background:rgba(94,106,210,0.45);}",
+    ".wv-bm-chip-popup .wv-filter-opt[data-excluded=\"true\"]{background:linear-gradient(to top right,transparent calc(50% - 1px),rgba(220,72,72,0.95) calc(50% - 1px),rgba(220,72,72,0.95) calc(50% + 1px),transparent calc(50% + 1px)),rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);}",
+    ".wv-bm-chip-popup .wv-bm-chip.excluded{background:rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);text-decoration:line-through;}",
     ".wv-bm-chip-popup .wv-filter-opt-icon{padding:4px 6px;min-width:26px;height:28px;box-sizing:border-box;justify-content:center;gap:0;}",
     ".wv-bm-chip-popup .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
     ".wv-bm-chip-popup .wv-swatch-native{display:block;flex:0 0 auto;}",
@@ -861,6 +863,8 @@ class _ReaderPanelsMixin {
             const fresh = () => ({
                 colors: new Set<string>(), tags: new Set<string>(),
                 authors: new Set<string>(), types: new Set<string>(),
+                colorsExcl: new Set<string>(), tagsExcl: new Set<string>(),
+                authorsExcl: new Set<string>(), typesExcl: new Set<string>(),
             });
             bag = { document: fresh(), library: fresh(), global: fresh(), pinned: false };
             this._wvBmChips.set(reader, bag);
@@ -894,12 +898,42 @@ class _ReaderPanelsMixin {
             tags: new Set(src.tags),
             authors: new Set(src.authors),
             types: new Set(src.types),
+            colorsExcl: new Set(this._wvBmChipExcl(src, "colors")),
+            tagsExcl: new Set(this._wvBmChipExcl(src, "tags")),
+            authorsExcl: new Set(this._wvBmChipExcl(src, "authors")),
+            typesExcl: new Set(this._wvBmChipExcl(src, "types")),
         };
+    }
+
+    /** A chip state's EXCLUDE set for `dim` ("colors"/"types"/"tags"/
+     *  "authors"), lazily created — state bags predating the exclude
+     *  feature (or rebuilt from older code paths) get it on first use. */
+    _wvBmChipExcl(st: any, dim: string): Set<string> {
+        if (!(st[dim + "Excl"] instanceof Set)) st[dim + "Excl"] = new Set<string>();
+        return st[dim + "Excl"];
+    }
+
+    /** Include/exclude toggle for a bookmark chip — same semantics as the
+     *  items filter's `_toggleIncludeExclude`: plain click cycles the
+     *  INCLUDE set, Alt+click cycles the EXCLUDE set; a key never sits in
+     *  both at once. */
+    _wvBmChipToggle(st: any, dim: string, key: string, alt: boolean) {
+        const inc: Set<string> = st[dim];
+        const exc = this._wvBmChipExcl(st, dim);
+        if (alt) {
+            if (exc.has(key)) exc.delete(key);
+            else { exc.add(key); inc.delete(key); }
+        } else {
+            if (inc.has(key)) inc.delete(key);
+            else { inc.add(key); exc.delete(key); }
+        }
     }
 
     _wvReaderBmChipsActive(reader: any): boolean {
         const st = this._wvReaderBmChipState(reader);
-        return (st.colors.size + st.tags.size + st.authors.size + st.types.size) > 0;
+        return (st.colors.size + st.tags.size + st.authors.size + st.types.size
+            + this._wvBmChipExcl(st, "colors").size + this._wvBmChipExcl(st, "tags").size
+            + this._wvBmChipExcl(st, "authors").size + this._wvBmChipExcl(st, "types").size) > 0;
     }
 
     /** Walk the bookmarks the chip filter should consider and collect
@@ -989,13 +1023,22 @@ class _ReaderPanelsMixin {
     }
 
     /** True iff this node (a bookmark leaf, never a folder) satisfies every
-     *  active chip dimension. Folders never match themselves. */
+     *  active chip dimension. Folders never match themselves. INCLUDE sets
+     *  are strict (a node that can't express the dimension is hidden);
+     *  EXCLUDE sets (Alt+click) only remove matching nodes — everything
+     *  else stays, including non-annotation bookmarks. */
     _wvBmNodeMatchesChips(node: any, st: any): boolean {
         if (!node || node.type === "folder") return false;
+        const excColors = this._wvBmChipExcl(st, "colors");
+        const excTypes = this._wvBmChipExcl(st, "types");
+        const excAuthors = this._wvBmChipExcl(st, "authors");
+        const excTags = this._wvBmChipExcl(st, "tags");
+        const anyInclude = !!(st.colors.size || st.types.size || st.authors.size || st.tags.size);
         // Only item-bookmarks reference an underlying Zotero item; everything
         // else (positions, text, collection, library, treerow) can't satisfy
-        // any chip dimension. Strict mode → hidden when any chip is active.
-        if (node.type !== "item") return false;
+        // any INCLUDE dimension (strict mode → hidden), but has nothing an
+        // EXCLUDE could match either → kept under exclude-only filtering.
+        if (node.type !== "item") return !anyInclude;
         let it: any = null;
         try { it = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey); } catch (_) {}
         if (!it) return false;
@@ -1003,28 +1046,36 @@ class _ReaderPanelsMixin {
         if (st.colors.size) {
             if (!isAnn || !st.colors.has(String(it.annotationColor || ""))) return false;
         }
+        if (excColors.size && isAnn && excColors.has(String(it.annotationColor || ""))) return false;
         if (st.types.size) {
             if (!isAnn || !st.types.has(String(it.annotationType || ""))) return false;
         }
-        if (st.authors.size) {
-            if (!isAnn) return false;
-            let name = String((it as any).annotationAuthorName || "").trim();
-            if (!name) {
-                try {
-                    const uid = (it as any).createdByUserID;
-                    if (uid && (Zotero as any).Users && (Zotero as any).Users.getName) {
-                        name = String((Zotero as any).Users.getName(uid) || "").trim();
-                    }
-                } catch (_) {}
+        if (excTypes.size && isAnn && excTypes.has(String(it.annotationType || ""))) return false;
+        if (st.authors.size || excAuthors.size) {
+            let name = "";
+            if (isAnn) {
+                name = String((it as any).annotationAuthorName || "").trim();
+                if (!name) {
+                    try {
+                        const uid = (it as any).createdByUserID;
+                        if (uid && (Zotero as any).Users && (Zotero as any).Users.getName) {
+                            name = String((Zotero as any).Users.getName(uid) || "").trim();
+                        }
+                    } catch (_) {}
+                }
             }
-            if (!st.authors.has(name)) return false;
+            if (st.authors.size && (!isAnn || !st.authors.has(name))) return false;
+            if (excAuthors.size && isAnn && excAuthors.has(name)) return false;
         }
-        if (st.tags.size) {
+        if (st.tags.size || excTags.size) {
             let have: Set<string>;
-            try { have = new Set(((it.getTags() || []) as any[]).map((t: any) => t.tag)); } catch (_) { return false; }
-            let ok = false;
-            for (const t of st.tags) { if (have.has(t)) { ok = true; break; } }
-            if (!ok) return false;
+            try { have = new Set(((it.getTags() || []) as any[]).map((t: any) => t.tag)); } catch (_) { have = new Set(); }
+            if (st.tags.size) {
+                let ok = false;
+                for (const t of st.tags) { if (have.has(t)) { ok = true; break; } }
+                if (!ok) return false;
+            }
+            for (const t of excTags) { if (have.has(t)) return false; }
         }
         return true;
     }
@@ -3243,10 +3294,11 @@ class _ReaderPanelsMixin {
                     const btn = idoc.createElementNS(NS, "button");
                     (btn as any).type = "button";
                     btn.className = "wv-filter-opt wv-filter-opt-icon";
-                    btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
+                    btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s) — Alt+click to exclude");
                     if (st.colors.has(c)) (btn as any).dataset.selected = "true";
+                    if (this._wvBmChipExcl(st, "colors").has(c)) (btn as any).dataset.excluded = "true";
                     btn.appendChild((this as any)._wvNativeColorSwatch(idoc, c));
-                    btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
+                    btn.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "colors", c, !!e.altKey); rerender(); });
                     row.appendChild(btn);
                 }
                 bar.appendChild(row);
@@ -3266,10 +3318,11 @@ class _ReaderPanelsMixin {
                     const chip = idoc.createElementNS(NS, "button");
                     (chip as any).type = "button";
                     chip.className = "wv-filter-opt wv-filter-opt-icon";
-                    chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
+                    chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp) + " — Alt+click to exclude");
                     if (st.types.has(tp)) (chip as any).dataset.selected = "true";
+                    if (this._wvBmChipExcl(st, "types").has(tp)) (chip as any).dataset.excluded = "true";
                     chip.innerHTML = RP_ANN_TYPE_SVG[tp] || "";
-                    chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
+                    chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "types", tp, !!e.altKey); rerender(); });
                     row.appendChild(chip);
                 }
                 bar.appendChild(row);
@@ -3294,8 +3347,9 @@ class _ReaderPanelsMixin {
                     for (const t of keys) {
                         const info = facets.tags.get(t)!;
                         const chip = idoc.createElementNS(NS, "span");
-                        chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "");
-                        chip.setAttribute("title", t + " — " + info.count + " bookmark(s)");
+                        chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
+                            + (this._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
+                        chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
                         if (info.color) {
                             const dot = idoc.createElementNS(NS, "span");
                             dot.className = "wv-bm-chip-tag-dot";
@@ -3305,7 +3359,7 @@ class _ReaderPanelsMixin {
                         const lbl = idoc.createElementNS(NS, "span");
                         lbl.textContent = t;
                         chip.appendChild(lbl);
-                        chip.addEventListener("click", () => { toggle(st.tags, t); rerender(); });
+                        chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "tags", t, !!e.altKey); rerender(); });
                         row.appendChild(chip);
                     }
                     bar.appendChild(row);
@@ -3319,10 +3373,11 @@ class _ReaderPanelsMixin {
                 const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
                 for (const a of keys) {
                     const chip = idoc.createElementNS(NS, "span");
-                    chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "");
-                    chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s)");
+                    chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "")
+                        + (this._wvBmChipExcl(st, "authors").has(a) ? " excluded" : "");
+                    chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s) — Alt+click to exclude");
                     chip.textContent = a;
-                    chip.addEventListener("click", () => { toggle(st.authors, a); rerender(); });
+                    chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "authors", a, !!e.altKey); rerender(); });
                     row.appendChild(chip);
                 }
                 bar.appendChild(row);

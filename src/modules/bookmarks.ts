@@ -275,6 +275,7 @@ const BM_POPUP_CSS = [
     "#" + BM_CHIP_INNER_ID + " .wv-bm-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;font-size:11px;line-height:1.4;border:1px solid rgba(127,127,127,.4);border-radius:10px;cursor:pointer;background:rgba(127,127,127,.06);color:inherit;user-select:none;-moz-user-select:none;}",
     "#" + BM_CHIP_INNER_ID + " .wv-bm-chip:hover{background:rgba(127,127,127,.16);}",
     "#" + BM_CHIP_INNER_ID + " .wv-bm-chip.selected{background:var(--color-accent,#5e6ad2);color:#fff;border-color:var(--color-accent,#5e6ad2);}",
+    "#" + BM_CHIP_INNER_ID + " .wv-bm-chip.excluded{background:rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);text-decoration:line-through;}",
     "#" + BM_CHIP_INNER_ID + " .wv-bm-chip-tag-dot{width:7px;height:7px;border-radius:50%;display:inline-block;}",
     // Cap the tag row at ~7 chip rows and let it scroll inside the
     // popup. Same idea as the reader filter popup's `.wv-rf-tags-row`
@@ -1121,6 +1122,10 @@ class _BookmarksMixin {
                 tags: new Set<string>(),
                 authors: new Set<string>(),
                 types: new Set<string>(),
+                colorsExcl: new Set<string>(),
+                tagsExcl: new Set<string>(),
+                authorsExcl: new Set<string>(),
+                typesExcl: new Set<string>(),
             };
         }
         return this._bmLibChipStateBag;
@@ -1133,7 +1138,9 @@ class _BookmarksMixin {
     _bmLibChipsActive(): boolean {
         const s = this._bmLibChipStateBag;
         if (!s) return false;
-        return (s.colors.size + s.tags.size + s.authors.size + s.types.size) > 0;
+        return (s.colors.size + s.tags.size + s.authors.size + s.types.size
+            + (this as any)._wvBmChipExcl(s, "colors").size + (this as any)._wvBmChipExcl(s, "tags").size
+            + (this as any)._wvBmChipExcl(s, "authors").size + (this as any)._wvBmChipExcl(s, "types").size) > 0;
     }
 
     /** Walk the library bookmarks tree and collect facet counts for the
@@ -1285,10 +1292,11 @@ class _BookmarksMixin {
                 const btn: any = doc.createElementNS(NS_HTML, "button");
                 btn.type = "button";
                 btn.className = "wv-filter-opt wv-filter-opt-icon";
-                btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s)");
+                btn.setAttribute("title", c + " — " + facets.colors.get(c) + " annotation(s) — Alt+click to exclude");
                 if (st.colors.has(c)) btn.dataset.selected = "true";
+                if ((this as any)._wvBmChipExcl(st, "colors").has(c)) btn.dataset.excluded = "true";
                 btn.appendChild((this as any)._wvNativeColorSwatch(doc, c));
-                btn.addEventListener("click", () => { toggle(st.colors, c); rerender(); });
+                btn.addEventListener("click", (e: any) => { (this as any)._wvBmChipToggle(st, "colors", c, !!e.altKey); rerender(); });
                 row.appendChild(btn);
             }
             bar.appendChild(row);
@@ -1309,8 +1317,9 @@ class _BookmarksMixin {
                 const chip: any = doc.createElementNS(NS_HTML, "button");
                 chip.type = "button";
                 chip.className = "wv-filter-opt wv-filter-opt-icon";
-                chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp));
+                chip.setAttribute("title", (TYPE_NAME[tp] || tp) + " — " + facets.types.get(tp) + " — Alt+click to exclude");
                 if (st.types.has(tp)) chip.dataset.selected = "true";
+                if ((this as any)._wvBmChipExcl(st, "types").has(tp)) chip.dataset.excluded = "true";
                 const svgStr = BM_ANN_TYPE_SVG[tp];
                 if (svgStr) {
                     try {
@@ -1319,7 +1328,7 @@ class _BookmarksMixin {
                         if (svgEl) chip.appendChild(doc.importNode(svgEl, true));
                     } catch (_) {}
                 }
-                chip.addEventListener("click", () => { toggle(st.types, tp); rerender(); });
+                chip.addEventListener("click", (e: any) => { (this as any)._wvBmChipToggle(st, "types", tp, !!e.altKey); rerender(); });
                 row.appendChild(chip);
             }
             bar.appendChild(row);
@@ -1344,8 +1353,9 @@ class _BookmarksMixin {
             for (const t of keys) {
                 const info = facets.tags.get(t)!;
                 const chip = doc.createElementNS(NS_HTML, "span");
-                chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "");
-                chip.setAttribute("title", t + " — " + info.count + " bookmark(s)");
+                chip.className = "wv-bm-chip" + (st.tags.has(t) ? " selected" : "")
+                    + ((this as any)._wvBmChipExcl(st, "tags").has(t) ? " excluded" : "");
+                chip.setAttribute("title", t + " — " + info.count + " bookmark(s) — Alt+click to exclude");
                 if (info.color) {
                     const dot = doc.createElementNS(NS_HTML, "span");
                     dot.className = "wv-bm-chip-tag-dot";
@@ -1355,7 +1365,7 @@ class _BookmarksMixin {
                 const lbl = doc.createElementNS(NS_HTML, "span");
                 lbl.textContent = t;
                 chip.appendChild(lbl);
-                chip.addEventListener("click", () => { toggle(st.tags, t); rerender(); });
+                chip.addEventListener("click", (e: any) => { (this as any)._wvBmChipToggle(st, "tags", t, !!e.altKey); rerender(); });
                 row.appendChild(chip);
             }
             bar.appendChild(row);
@@ -1366,10 +1376,11 @@ class _BookmarksMixin {
             const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
             for (const a of keys) {
                 const chip = doc.createElementNS(NS_HTML, "span");
-                chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "");
-                chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s)");
+                chip.className = "wv-bm-chip" + (st.authors.has(a) ? " selected" : "")
+                    + ((this as any)._wvBmChipExcl(st, "authors").has(a) ? " excluded" : "");
+                chip.setAttribute("title", a + " — " + facets.authors.get(a) + " annotation(s) — Alt+click to exclude");
                 chip.textContent = a;
-                chip.addEventListener("click", () => { toggle(st.authors, a); rerender(); });
+                chip.addEventListener("click", (e: any) => { (this as any)._wvBmChipToggle(st, "authors", a, !!e.altKey); rerender(); });
                 row.appendChild(chip);
             }
             bar.appendChild(row);

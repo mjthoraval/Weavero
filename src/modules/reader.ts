@@ -1968,10 +1968,20 @@ class _ReaderMixin {
                     // "List all tabs" button, just left of the hamburger.
                     const ham = strip2.querySelector(":scope > .wv-hamburger-btn");
                     this._wvWTEnsureTabListButton(win, strip2, ham || ctlBox);
-                    // Firefox-style "+" (new tab), just right of the tabs region
-                    // (i.e. left of the tab-list button).
+                    // Firefox-style "+" (new tab), flush against the last tab
+                    // (the tabs box hugs its tabs; see .wv-window-tabs CSS).
                     const tl = strip2.querySelector(":scope > .wv-window-tablist-btn");
                     this._wvWTEnsureNewTabButton(win, strip2, tl || ham || ctlBox);
+                    // Draggable filler between the "+" and the right-side
+                    // buttons — the strip's big window-drag slack.
+                    if (!strip2.querySelector(":scope > .wv-window-tabfill")) {
+                        const fill = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                        fill.className = "wv-window-tabfill";
+                        strip2.insertBefore(fill, tl || ham || ctlBox);
+                    }
+                    const nt = strip2.querySelector(":scope > .wv-window-newtab-btn");
+                    const fl = strip2.querySelector(":scope > .wv-window-tabfill");
+                    if (nt && fl && nt.nextElementSibling !== fl) strip2.insertBefore(fl, nt.nextElementSibling);
                 }
             } catch (e) {}
             // Render the tab(s) from the multi-tab model into the strip's
@@ -3666,7 +3676,7 @@ class _ReaderMixin {
             // Version-guarded: bump WV_STRIP_STYLE_VER when the CSS below
             // changes so windows that predate a plugin reload get the new
             // rules re-injected instead of keeping the stale sheet.
-            const WV_STRIP_STYLE_VER = "2";
+            const WV_STRIP_STYLE_VER = "3";
             const prev = doc.getElementById("wv-window-tabstrip-styles");
             if (prev) {
                 if (prev.getAttribute("data-wv-ver") === WV_STRIP_STYLE_VER) return;
@@ -3822,17 +3832,24 @@ class _ReaderMixin {
                    spilling off the edge. */
                 ".wv-window-tabs {",
                 "  display: flex; align-items: stretch;",
-                // GROWS to fill the strip — exactly like the main window's
-                // #tab-bar-container, which flex-grows inside #zotero-title-bar
-                // and pushes the toolbar/hamburger/controls to the far right.
-                // Its empty region (when tabs don't fill it) inherits the strip's
-                // -moz-window-dragging:drag, so it's the big draggable area.
-                // Shrinks to 0 (min-width:0) and scrolls when tabs overflow.
-                "  flex: 1 1 auto; min-width: 0;",
+                // Hugs its tabs (Firefox-style) so the "+" button sits flush
+                // against the last tab; the big draggable slack is the
+                // .wv-window-tabfill that follows the "+". Still shrinks to 0
+                // (min-width:0) and scrolls when the tabs overflow — the "+"
+                // then pins right of the scroll area, like Firefox's overflow
+                // mode.
+                "  flex: 0 1 auto; min-width: 0;",
                 "  overflow-x: auto; overflow-y: hidden;",
                 "  scrollbar-width: thin;",
                 // Like #tab-bar-container: the container is draggable, individual
                 // tabs opt out (no-drag), so the empty slack drags the window.
+                "  -moz-window-dragging: drag;",
+                "}",
+                /* Flexible filler between the "+" button and the right-side
+                   buttons — takes the slack the tabs box no longer grows into,
+                   and is the strip's big window-drag area. */
+                ".wv-window-tabfill {",
+                "  flex: 1 1 0; min-width: 0; align-self: stretch;",
                 "  -moz-window-dragging: drag;",
                 "}",
                 /* Title-bar spacer — the reader-window twin of the main window's

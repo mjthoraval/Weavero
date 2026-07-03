@@ -1014,10 +1014,14 @@ class _TabsMixin {
                     // While the ghost preview is showing, hide the original
                     // dragged row so the tab appears exactly once (it MOVES to
                     // the ghost's slot rather than showing dimmed + previewed).
-                    // Scoped to ghost-visible drags only: native same-window
-                    // reorders never show a ghost and keep their row visible
-                    // (Zotero's native drop-slot math needs its layout box).
-                    try { for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging:not(.wv-tabsmenu-row-drag-hidden)")) r.classList.add("wv-tabsmenu-row-drag-hidden"); } catch (er) {}
+                    // TAB drags only — a GROUP drag keeps its block EXPANDED
+                    // and dimmed (hiding it re-flowed the list under the
+                    // pointer and downward group moves kept missing).
+                    try {
+                        if (!livePlugin()._wvPopupGroupDrag) {
+                            for (const r of list.querySelectorAll(".wv-tabsmenu-row-dragging:not(.wv-tabsmenu-row-drag-hidden)")) r.classList.add("wv-tabsmenu-row-drag-hidden");
+                        }
+                    } catch (er) {}
                 } catch (er) {}
             };
             const clearDragging = () => {
@@ -1116,18 +1120,21 @@ class _TabsMixin {
                             try { e.dataTransfer.dropEffect = "move"; } catch (er) {}
                             const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
                             showGhostAt(scope, pos.beforeRow, { isGroup: true, color: gdrag.color, title: gdrag.name, count: gdrag.count });
-                            // The whole group travels: hide the SOURCE block
-                            // (header + member rows) while the ghost previews
-                            // the drop - otherwise only a thin ghost line
-                            // moved and the group sat immobile at the source.
-                            // clearGhost() unhides on drop/dragend/leave.
+                            // The group stays EXPANDED and visibly dimmed at the
+                            // source while the counted ghost marks the target.
+                            // (Hiding the block was tried first — Firefox-style —
+                            // but the list re-flowed under the pointer on every
+                            // hide/unhide and downward aims kept resolving into
+                            // the group's own vacated span: "can't move down".
+                            // Stable geometry keeps aim == result.)
+                            // clearDragging() removes the dim on drop/dragend.
                             try {
                                 for (const hdr of list.querySelectorAll(".wv-tgrow-header")) {
                                     if ((hdr as any)._wvGroupId !== gdrag.groupId) continue;
-                                    if (!hdr.classList.contains("wv-tabsmenu-row-drag-hidden")) hdr.classList.add("wv-tabsmenu-row-drag-hidden");
+                                    if (!hdr.classList.contains("wv-tabsmenu-row-dragging")) hdr.classList.add("wv-tabsmenu-row-dragging");
                                     let n = hdr.nextElementSibling;
                                     while (n && n.classList && (n.classList.contains("wv-tgrow-member") || n.classList.contains("wv-tabsmenu-ghost"))) {
-                                        if (n.classList.contains("wv-tgrow-member") && !n.classList.contains("wv-tabsmenu-row-drag-hidden")) n.classList.add("wv-tabsmenu-row-drag-hidden");
+                                        if (n.classList.contains("wv-tgrow-member") && !n.classList.contains("wv-tabsmenu-row-dragging")) n.classList.add("wv-tabsmenu-row-dragging");
                                         n = n.nextElementSibling;
                                     }
                                 }

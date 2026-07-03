@@ -6346,7 +6346,18 @@ class _TabsMixin {
             const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
             let i = 0;
             const next = () => {
-                if (i >= targets.length) return;
+                // Each background load can make its reader window steal focus
+                // (its init calls _iframeWindow.focus()) — and the warmer can
+                // outlive the bg-restore hold, so a late raise STUCK ("a
+                // window coming to the front after a long time", 2026-07-04).
+                // Extend the hold per load; the per-window activate hooks
+                // persist and revive with the flag. Assert the focused window
+                // once all warming is done.
+                try { (this as any)._wvBgRestoreStart({ holdMs: 20000 }); } catch (e) {}
+                if (i >= targets.length) {
+                    try { setT(() => { try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {} }, 3000); } catch (e) {}
+                    return;
+                }
                 try { targets[i++](); } catch (e) {}
                 setT(next, 2500);
             };
@@ -6531,8 +6542,7 @@ class _TabsMixin {
             };
             const reveal = (w: any) => {
                 clearNoActivate(w);
-                if (cloaked.has(w)) { refreshTaskbar(w); }   // invisible while cloaked
-                setCloak(w, false);
+                setCloak(w, false);   // no-op unless a legacy cloak is present
             };
             (this as any)._wvBgClearNoActivate = reveal;
             // "Is this one of ours?" — with a pre-parse grace: at
@@ -6563,13 +6573,19 @@ class _TabsMixin {
                     // Arm relentlessly (open / timer x10 / DOMContentLoaded /
                     // load) until the cloak verifiably sticks, and TRACE the
                     // stage so the next run tells us where it landed.
+                    // CLOAKING RETIRED (kept dormant): Gecko pauses the
+                    // compositor for cloaked windows, so reveals could show a
+                    // blank white surface; combined with the taskbar-button
+                    // and z-order fallout it cost more than the blink it hid —
+                    // which the user traced to in-window tab-group churn
+                    // anyway (2026-07-04). NOACTIVATE + APPWINDOW + instant
+                    // refocus + beneath-target stacking remain.
                     const arm = (stage: string) => {
                         try {
                             setNoActivate(w);
-                            setCloak(w, true);
                             pushToBottom(w);
-                            if (cloaked.has(w)) {
-                                (self as any)._wvTrace("bg-restore: window cloaked at " + stage);
+                            if (noActivated.has(w)) {
+                                (self as any)._wvTrace("bg-restore: window armed at " + stage);
                                 return true;
                             }
                         } catch (e2) {}
@@ -6578,7 +6594,7 @@ class _TabsMixin {
                     if (!arm("open")) {
                         let tries = 0;
                         const again = (stage: string) => {
-                            if (cloaked.has(w) || w.closed || !(self as any)._wvBgRestoreOn) return;
+                            if (noActivated.has(w) || w.closed || !(self as any)._wvBgRestoreOn) return;
                             if (!arm(stage) && stage === "timer" && ++tries < 10) setT(() => again("timer"), 30);
                         };
                         setT(() => again("timer"), 15);

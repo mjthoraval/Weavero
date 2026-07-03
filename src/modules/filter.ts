@@ -2106,6 +2106,12 @@ class _FilterMixin {
             // include + exclude arrays of titles.
             publication: [],
             publicationExclude: [],
+            // Read Status multi-select (Zotero Reading List plugin's
+            // `Read_Status:` extra-field property; parent items only).
+            // Same include/exclude shape as `publication`. Rendered only
+            // while that plugin is active; stale saved state is harmless.
+            readStatus: [],
+            readStatusExclude: [],
         };
     }
 
@@ -2140,6 +2146,8 @@ class _FilterMixin {
         if (group.hasAnnotations != null) return true;
         if (group.publication && group.publication.length) return true;
         if (group.publicationExclude && group.publicationExclude.length) return true;
+        if (group.readStatus && group.readStatus.length) return true;
+        if (group.readStatusExclude && group.readStatusExclude.length) return true;
         // Quick-search scope only counts as active when at least
         // one kind is excluded — an all-on scope is the default
         // no-op and wouldn't justify installing our patches by
@@ -2223,7 +2231,8 @@ class _FilterMixin {
                 "annotationAuthor", "annotationAuthorExclude"],
             attachment: ["attachmentFileType", "attachmentFileTypeExclude"],
             parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI", "hasURL",
-                "hasAttachment", "publication", "publicationExclude"],
+                "hasAttachment", "publication", "publicationExclude",
+                "readStatus", "readStatusExclude"],
         };
         const isSet = (g, f) => {
             const v = g[f];
@@ -2882,6 +2891,20 @@ class _FilterMixin {
                     && !wantedPub.includes(pub)) return false;
                 if (wantedPubX && wantedPubX.length
                     && wantedPubX.includes(pub)) return false;
+            }
+        }
+        // Read Status (Zotero Reading List) — regular items only.
+        const wantedRS = group.readStatus;
+        const wantedRSX = group.readStatusExclude;
+        if ((wantedRS && wantedRS.length)
+            || (wantedRSX && wantedRSX.length)) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const rs = this._wvReadStatusOf(item);
+                if (wantedRS && wantedRS.length
+                    && !wantedRS.includes(rs)) return false;
+                if (wantedRSX && wantedRSX.length
+                    && wantedRSX.includes(rs)) return false;
             }
         }
         const wantedTags = group.annotationTag;
@@ -3673,6 +3696,14 @@ class _FilterMixin {
             if (group.publicationExclude && group.publicationExclude.length
                 && group.publicationExclude.includes(pub)) return false;
         }
+        if ((group.readStatus && group.readStatus.length)
+            || (group.readStatusExclude && group.readStatusExclude.length)) {
+            const rs = isReg ? this._wvReadStatusOf(root) : "";
+            if (group.readStatus && group.readStatus.length
+                && !group.readStatus.includes(rs)) return false;
+            if (group.readStatusExclude && group.readStatusExclude.length
+                && group.readStatusExclude.includes(rs)) return false;
+        }
         if (group.itemType && group.itemType.length) {
             if (!isReg) return false;
             if (!group.itemType.includes(root.itemType)) return false;
@@ -3956,6 +3987,14 @@ class _FilterMixin {
                 if (group.publicationExclude && group.publicationExclude.length
                     && !group.publicationExclude.includes(pub)) return true;
             }
+            if ((group.readStatus && group.readStatus.length)
+                || (group.readStatusExclude && group.readStatusExclude.length)) {
+                const rs = this._wvReadStatusOf(item);
+                if (group.readStatus && group.readStatus.length
+                    && group.readStatus.includes(rs)) return true;
+                if (group.readStatusExclude && group.readStatusExclude.length
+                    && !group.readStatusExclude.includes(rs)) return true;
+            }
         }
         // Has Annotations — file attachments only.
         if (group.hasAnnotations != null) {
@@ -4015,7 +4054,10 @@ class _FilterMixin {
                         || group.hasAttachment != null
                         || (group.publication && group.publication.length)
                         || (group.publicationExclude
-                            && group.publicationExclude.length));
+                            && group.publicationExclude.length)
+                        || (group.readStatus && group.readStatus.length)
+                        || (group.readStatusExclude
+                            && group.readStatusExclude.length));
                     const anyKindSpecific = annChipActive
                         || attChipActive || parChipActive;
                     if (!anyKindSpecific) return true;
@@ -4987,6 +5029,12 @@ class _FilterMixin {
             if (group.publicationExclude && group.publicationExclude.length) {
                 bar.appendChild(this._buildPublicationChip(doc, group, gi, true));
             }
+            if (group.readStatus && group.readStatus.length) {
+                bar.appendChild(this._buildReadStatusChip(doc, group, gi));
+            }
+            if (group.readStatusExclude && group.readStatusExclude.length) {
+                bar.appendChild(this._buildReadStatusChip(doc, group, gi, true));
+            }
         }
 
         // Trailing "+ Filter" — adds a chip to the LAST active group.
@@ -5358,6 +5406,125 @@ class _FilterMixin {
     }
 
 
+
+    _buildReadStatusChip(doc, group, gi, exclude?) {
+        const list = exclude ? group.readStatusExclude : group.readStatus;
+        const icons = {};
+        try { for (const st of this._wvReadStatuses()) icons[st.name] = st.icon; } catch (e) {}
+        return this._buildFilterChip(doc, {
+            field: "Read Status",
+            op: exclude ? "excludes any" : "includes any",
+            fillValue: (valSeg) => {
+                valSeg.textContent = list
+                    .map((n) => (icons[n] ? icons[n] + " " : "") + (n || "No Status"))
+                    .join(", ");
+            },
+            onRemove: () => {
+                if (exclude) group.readStatusExclude = [];
+                else group.readStatus = [];
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    // ---- Zotero Reading List integration (Read Status filter) -----------
+    // The plugin (reading-list@hotmail.com) stores a per-item status in the
+    // EXTRA field as `Read_Status: <name>`; names + emoji icons are user-
+    // configurable via its `statuses-and-icons-list` pref ("a;b|i1;i2").
+    // The filter section renders only while the plugin is active.
+
+    /** True while the Zotero Reading List plugin is loaded. */
+    _wvReadingListActive() {
+        try { return !!(Zotero as any).ZoteroReadingList; } catch (e) { return false; }
+    }
+
+    /** Status descriptors `[{name, icon}]` from the plugin's pref, falling
+     *  back to its shipped defaults. */
+    _wvReadStatuses() {
+        try {
+            const raw = Zotero.Prefs.get(
+                "extensions.zotero.zotero-reading-list.statuses-and-icons-list", true);
+            if (typeof raw === "string" && raw.indexOf("|") >= 0) {
+                const parts = raw.split("|");
+                const names = parts[0].split(";");
+                const icons = (parts[1] || "").split(";");
+                const out = names
+                    .map((n, i) => ({ name: n.trim(), icon: (icons[i] || "").trim() }))
+                    .filter((x) => x.name);
+                if (out.length) return out;
+            }
+        } catch (e) {}
+        return [
+            { name: "New", icon: "\u2B50" },
+            { name: "To Read", icon: "\ud83d\udcd9" },
+            { name: "In Progress", icon: "\ud83d\udcd6" },
+            { name: "Read", icon: "\ud83d\udcd7" },
+            { name: "Not Reading", icon: "\ud83d\udcd5" },
+        ];
+    }
+
+    /** An item's read status (the `Read_Status:` line of its extra field),
+     *  "" when unset. */
+    _wvReadStatusOf(item) {
+        try {
+            const extra = String((item.getField && item.getField("extra")) || "");
+            const m = extra.match(/^Read_Status:\s*(.+)$/m);
+            return m ? m[1].trim() : "";
+        } catch (e) { return ""; }
+    }
+
+    /** Read Status toggle row (below Tag, above Item Type). One toggle per
+     *  status (icon + name) plus "No Status"; click includes, Alt+click
+     *  excludes — the standard include/exclude vocabulary. Hidden entirely
+     *  when the Reading List plugin isn't active. */
+    _renderReadStatusSection(doc, section, refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        if (!this._wvReadingListActive()) {
+            section.style.display = "none";
+            section.className = "";
+            return;
+        }
+        section.style.display = "";
+        section.className = "wv-filter-section wv-filter-or-group";
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        const opts = doc.createElementNS(NS_HTML, "div");
+        opts.className = "wv-filter-options";
+        section.appendChild(opts);
+        const g0 = this._activeGroup();
+        const selected = new Set((g0 && g0.readStatus) || []);
+        const excluded = new Set((g0 && g0.readStatusExclude) || []);
+        const entries = [...this._wvReadStatuses(), { name: "", icon: "\u2205" }];
+        for (const st of entries) {
+            const btn = doc.createElementNS(NS_HTML, "button");
+            btn.type = "button";
+            btn.className = "wv-filter-opt";
+            btn.title = (st.name || "No Status") + " \u2014 Alt+click to exclude";
+            if (selected.has(st.name)) btn.dataset.selected = "true";
+            if (excluded.has(st.name)) btn.dataset.excluded = "true";
+            const glyph = doc.createElementNS(NS_HTML, "span");
+            glyph.className = "wv-filter-opt-glyph";
+            glyph.textContent = st.icon || "";
+            btn.appendChild(glyph);
+            const lbl = doc.createElementNS(NS_HTML, "span");
+            lbl.textContent = st.name || "No Status";
+            btn.appendChild(lbl);
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const next = this._toggleIncludeExclude(
+                    st.name, [...selected], [...excluded], e.altKey);
+                const g = this._activeGroup();
+                if (g) {
+                    g.readStatus = next.include;
+                    g.readStatusExclude = next.exclude;
+                }
+                this._renderFilterBar();
+                this._applyItemsListFilter({ cascade: true });
+                refreshAll();
+            });
+            opts.appendChild(btn);
+        }
+    }
 
     _buildTagChip(doc, group, gi, exclude?) {
         const tags = exclude ? group.annotationTagExclude : group.annotationTag;
@@ -5801,6 +5968,10 @@ class _FilterMixin {
         inner.appendChild(searchSection);
 
         addGroupHeader("Parent");
+        // Read Status (Zotero Reading List) — renders only while that
+        // plugin is active; sits below the Tag search, above Item Type.
+        const readStatusSection = doc.createElementNS(NS_HTML, "div");
+        inner.appendChild(readStatusSection);
         inner.appendChild(itemTypeRowSection);
         // Item Type row already hosts the Standalone Note tile at
         // its right end (after a vertical separator), so the only
@@ -5986,6 +6157,7 @@ class _FilterMixin {
             this._renderHasCommentSection(doc, commentSection, refreshAll);
             this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
             this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
+            this._renderReadStatusSection(doc, readStatusSection, refreshAll);
             this._renderItemTypeRow(doc, itemTypeRowSection, refreshAll, searchCtx);
             // Tint the Rule 1 same-level OR groups so "pick any of
             // these" reads at a glance. Item Type, Attachment File Type

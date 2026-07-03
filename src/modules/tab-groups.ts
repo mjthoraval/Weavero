@@ -927,7 +927,28 @@ class _TabGroupsMixin {
                 // pop the whole group into its own new window. Skip on ESC/cancel.
                 const gd = p && (p as any)._wvGroupDrag;
                 const cancelled = !!(e && e.dataTransfer && e.dataTransfer.mozUserCancelled);
-                if (gd && gd.groupID === groupID && !cancelled) {
+                // Released INSIDE any Zotero window → the drop just wasn't
+                // accepted there (a dialog, an unwired area) — treat as
+                // cancel, never as tear-out. A release over the reader
+                // window's content used to fall through here and pop a
+                // surprise new window (whose spawn hiccup + close-parking
+                // once left the group "closed and saved", 2026-07-03). Only
+                // a release over EMPTY DESKTOP tears out (Firefox parity).
+                let overZoteroWin = false;
+                if (gd && !cancelled && e && typeof e.screenX === "number") {
+                    try {
+                        const en2 = Services.wm.getEnumerator(null);
+                        while (en2.hasMoreElements()) {
+                            const w2: any = en2.getNext();
+                            if (!w2 || w2.closed) continue;
+                            if (e.screenX >= w2.screenX && e.screenX <= w2.screenX + w2.outerWidth
+                                    && e.screenY >= w2.screenY && e.screenY <= w2.screenY + w2.outerHeight) {
+                                overZoteroWin = true; break;
+                            }
+                        }
+                    } catch (er2) {}
+                }
+                if (gd && gd.groupID === groupID && !cancelled && !overZoteroWin) {
                     try { p._wvTabGroupMoveToNewWindow(win, groupID); } catch (er2) {}
                 }
                 if (p) { p._wvGroupDrag = null; p._wvTabGroupHideAllDropGhosts(); }
@@ -2727,6 +2748,10 @@ class _TabGroupsMixin {
             const groups = this._tabGroupsGet();
             let dirty = false;
             for (const g of groups) {
+                // Mid-move (reopening set) → the move's own recovery handles a
+                // transient window closing; parking here would mark the group
+                // saved while its reopen is still in flight.
+                if (this._wvReopeningGroups().has(g.id)) continue;
                 if (ids.has(g.id) && !elsewhere.has(g.id) && !(g as any).saved) {
                     // Snapshot members from THIS closing window's stamped tabs so
                     // the parked group keeps its tab count for the menu list.
@@ -2817,6 +2842,7 @@ class _TabGroupsMixin {
             try { this._wvWireTabMultiSelReader(win); } catch (e) {}
             try { this._wvWTMultiSelSync(win); } catch (e) {}
             this._wvWireTabGroupReaderDnD(win);
+            try { this._wvWireTabGroupWindowDnD(win, true); } catch (e) {}
             const groups = this._tabGroupsGet();
             stripClasses();
             if (!groups.length) return;
@@ -2958,6 +2984,65 @@ class _TabGroupsMixin {
             (strip as any)._wvTabGroupDnDOff = () => {
                 try { for (const [t, h] of hs) strip.removeEventListener(t, h, true); } catch (e) {}
                 (strip as any)._wvTabGroupDnDVer = 0;
+            };
+        } catch (e) {}
+    }
+
+    /** Whole-WINDOW group-drop acceptance (main + reader): a chip released
+     *  anywhere over a target window's body still means "move the group to
+     *  this window" — before this, only the tab strip (38px) accepted the
+     *  drop, and a release over the content fell through to the dragend
+     *  TEAR-OUT, popping a surprise new window (and, via a spawn hiccup +
+     *  close-parking, once left the group "closed and saved", 2026-07-03).
+     *  Strip-area events are left to the strip/container handlers (precise
+     *  slot + ghost); everything else lands the group at the pointer's x.
+     *  Gated on a live `_wvGroupDrag`, so normal item/text drags are
+     *  untouched. Delegate pattern (live-resolved), versioned, reload-proof. */
+    _wvWireTabGroupWindowDnD(win: any, isReader: boolean) {
+        try {
+            const WIRE_VERSION = 1;
+            if ((win as any)._wvTabGroupWinDnDVer === WIRE_VERSION) return;
+            try { (win as any)._wvTabGroupWinDnDOff?.(); } catch (e) {}
+            const live = () => {
+                try { return (Zotero as any).Weavero && (Zotero as any).Weavero.plugin; } catch (e) { return null; }
+            };
+            const inStrip = (e: any) => {
+                try {
+                    const t = e.target;
+                    return !!(t && t.closest && t.closest(isReader ? ".wv-window-tabstrip" : "#tab-bar-container"));
+                } catch (er) { return false; }
+            };
+            const onOver = (e: any) => {
+                try {
+                    const p: any = live(); if (!p) return;
+                    const gd = p._wvGroupDrag; if (!gd) return;
+                    if (inStrip(e)) return;              // strip handlers own the precise path
+                    e.preventDefault(); e.stopPropagation();
+                    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                    // Ghost lives in the strip either way — feedback for where
+                    // the group will land.
+                    if (gd.sourceWin !== win) { try { p._wvTabGroupShowDropGhost(win, gd.groupID, e.clientX, isReader); } catch (er) {} }
+                } catch (er) {}
+            };
+            const onDrop = (e: any) => {
+                try {
+                    const p: any = live(); if (!p) return;
+                    const gd = p._wvGroupDrag; if (!gd) return;
+                    if (inStrip(e)) return;
+                    e.preventDefault(); e.stopPropagation();
+                    p._wvGroupDrag = null;
+                    try { p._wvGrpDragSetMembersHidden(gd.sourceWin, gd.groupID, false); } catch (er) {}
+                    try { p._wvTabGroupHideAllDropGhosts(); } catch (er) {}
+                    if (gd.sourceWin === win) return;    // own window body → cancel, not a reorder
+                    p._wvTabGroupMigrateGroup(gd.sourceWin, win, gd.groupID, e.clientX);
+                } catch (er) {}
+            };
+            win.addEventListener("dragover", onOver, true);
+            win.addEventListener("drop", onDrop, true);
+            (win as any)._wvTabGroupWinDnDVer = WIRE_VERSION;
+            (win as any)._wvTabGroupWinDnDOff = () => {
+                try { win.removeEventListener("dragover", onOver, true); win.removeEventListener("drop", onDrop, true); } catch (e) {}
+                (win as any)._wvTabGroupWinDnDVer = 0;
             };
         } catch (e) {}
     }

@@ -2188,6 +2188,9 @@ class _TabsMixin {
         try { this._wvWireItemDropOnTabBar(win); } catch (e) {}
         // Tab-group DnD: pointer tracking + group-chip drops.
         try { this._wvWireTabGroupDnD(win); } catch (e) {}
+        // Whole-window group-drop acceptance (a chip released over the window
+        // BODY still means "move the group here" — see tab-groups.ts).
+        try { (this as any)._wvWireTabGroupWindowDnD(win, false); } catch (e) {}
         // Ctrl/Shift+click multi-selection (for group commands on several tabs).
         try { (this as any)._wvWireTabMultiSel(win); } catch (e) {}
 

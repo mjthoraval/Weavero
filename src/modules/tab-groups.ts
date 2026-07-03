@@ -2509,7 +2509,19 @@ class _TabGroupsMixin {
             const Z_Tabs: any = win.Zotero_Tabs;
             if (!Z_Tabs || !Z_Tabs._tabs || typeof Z_Tabs.move !== "function") return;
             const groupAt = (t: any) => this._wvTabGroupStamp(t) || null;   // per-tab
-            const isPinned = (t: any) => { try { const k = (this as any)._tabPinKey(t); return !!(k && this._pinnedTabsHas(k.libraryID, k.itemKey)); } catch (e) { return false; } };
+            // DESIGNATED pins only (one per pinned item) — item-key matching
+            // counted every duplicate copy as pinned, so a stray copy could
+            // legally sit inside the pinned cluster ("another tab between 2
+            // pinned tabs", 2026-07-04). Fallback to key-matching only before
+            // the first _applyPinnedTabs publish.
+            const desPins = (win as any)._wvPinnedTabIDs;
+            const isPinned = (t: any) => {
+                try {
+                    if (desPins instanceof Set) return desPins.has(t.id);
+                    const k = (this as any)._tabPinKey(t);
+                    return !!(k && this._pinnedTabsHas(k.libraryID, k.itemKey));
+                } catch (e) { return false; }
+            };
             const isLoosePinned = (t: any) => isPinned(t) && !groupAt(t);
             // CANONICAL tab order (this function is the single source of truth,
             // called on the common _applyTabGroups path so no operation can leave

@@ -3523,7 +3523,7 @@ class _TabsMixin {
                         if (!t || t.id === drag.tabID) continue;
                         const k = self._tabPinKey(t);
                         if (!k) continue;
-                        if (self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
+                        if ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
                     }
                     if (!drag.wasPinned && newIndex <= maxOtherPinned) return "pin";
                     if (drag.wasPinned && newIndex > maxOtherPinned) return "unpin";
@@ -3561,7 +3561,7 @@ class _TabsMixin {
                         const t = Z_Tabs._tabs[i];
                         const k = self._tabPinKey(t);
                         if (!k) continue;
-                        if (self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
+                        if ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
                     }
                 } catch (er) {}
                 return maxOtherPinned;
@@ -3684,7 +3684,7 @@ class _TabsMixin {
                                 for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                                     const t = Z_Tabs._tabs[i];
                                     const k = self._tabPinKey(t);
-                                    if (k && self._pinnedTabsHas(k.libraryID, k.itemKey)) maxPinnedIdx = i;
+                                    if (k && ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : self._pinnedTabsHas(k.libraryID, k.itemKey))) maxPinnedIdx = i;
                                 }
                             } catch (er3) {}
                             // Translate the insertBefore DOM node to a Z_Tabs index.
@@ -3807,7 +3807,7 @@ class _TabsMixin {
                             const t = Z_Tabs._tabs[i];
                             const k = self._tabPinKey(t);
                             if (!k) continue;
-                            if (self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
+                            if ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : self._pinnedTabsHas(k.libraryID, k.itemKey)) maxOtherPinned = i;
                         }
                     } catch (er) {}
 
@@ -4320,7 +4320,7 @@ class _TabsMixin {
                 if (!t || t.id === tab.id) continue;
                 const k = this._tabPinKey(t);
                 if (!k) continue;
-                if (this._pinnedTabsHas(k.libraryID, k.itemKey)) lastOtherPinnedIdx = i;
+                if ((win as any)._wvPinnedTabIDs instanceof Set ? (win as any)._wvPinnedTabIDs.has(t.id) : this._pinnedTabsHas(k.libraryID, k.itemKey)) lastOtherPinnedIdx = i;
             }
             const targetSlot = lastOtherPinnedIdx + 1;
             const curIdx = Z_Tabs._tabs.indexOf(tab);

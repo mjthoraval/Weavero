@@ -2534,7 +2534,7 @@ class _TabsMixin {
      *  target window (Firefox-style; see `_wvSwapMoveToMain`). Notes or any
      *  pre-commit failure fall back to the classic close+reopen. */
     _wvMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned) {
-        const isNote = payload && (payload.readerType === "note" || payload.tabType === "note");
+        const isNote = payload && (payload.readerType === "note" || String(payload.tabType || "").indexOf("note") === 0);
         if (!isNote && payload && typeof payload.itemID === "number") {
             const classic = () => {
                 try { this._wvClassicMoveTabBetweenMains(srcWin, targetWin, payload, targetIndex, maxOtherPinned); }
@@ -3048,7 +3048,7 @@ class _TabsMixin {
         try {
             const itemID = payload && typeof payload.itemID === "number" ? payload.itemID : null;
             if (itemID == null || !targetWin) return;
-            const isNote = payload.readerType === "note" || payload.tabType === "note";
+            const isNote = payload.readerType === "note" || String(payload.tabType || "").indexOf("note") === 0;
             // Leaving the window leaves the group (don't carry it to the target).
             try { (this as any)._wvForgetTabGroupForItem(itemID); } catch (e) {}
             // 1) Close the source tab in its own window (flushes its state).
@@ -3140,7 +3140,11 @@ class _TabsMixin {
             for (const id of ids) {
                 const t = ZT._tabs.find((x: any) => x && x.id === id);
                 const iid = t && t.data && t.data.itemID;
-                if (iid != null) payloads.push({ itemID: iid, sourceTabId: id, tabType: t.type || "", readerType: t.type === "note" ? "note" : "" });
+                // Prefix match: main-window note tabs can be note-unloaded /
+                // note-loading — strict === "note" routed unloaded notes down
+                // the READER path (wedged at "Loading…"; same family as the
+                // group-migrate note-type bug).
+                if (iid != null) payloads.push({ itemID: iid, sourceTabId: id, tabType: t.type || "", readerType: String(t.type || "").indexOf("note") === 0 ? "note" : "" });
             }
             if (!payloads.length) return;
             // On a DRAG-DROP, Firefox makes the *dragged* tab the destination's
@@ -3174,7 +3178,7 @@ class _TabsMixin {
             const swapJobs: any[] = [];
             const classicPls: any[] = [];
             for (const pl of payloads) {
-                const isNote = pl.readerType === "note" || pl.tabType === "note";
+                const isNote = pl.readerType === "note" || String(pl.tabType || "").indexOf("note") === 0;
                 const S = !isNote ? resolveSrc(pl.sourceTabId) : null;
                 if (S) swapJobs.push({ pl, S }); else classicPls.push(pl);
             }
@@ -3347,7 +3351,7 @@ class _TabsMixin {
                     // it when source === target, so native reorder/pin is
                     // untouched.
                     try {
-                        const isNote = (zotTab.type === "note");
+                        const isNote = String(zotTab.type || "").indexOf("note") === 0;
                         const mergeRt = isNote ? "note" : (self._wvTabDrag.readerType || "");
                         if (e.dataTransfer) {
                             e.dataTransfer.setData("application/x-weavero-tab-move", JSON.stringify({
@@ -6514,17 +6518,23 @@ class _TabsMixin {
             const suppress = (e: any) => { e.preventDefault(); try { e.stopImmediatePropagation(); } catch (er) { try { e.stopPropagation(); } catch (er2) {} } };
             const handler = (e: any) => {
                 try {
+                    // Resolve the LIVE plugin at keydown time — this listener is
+                    // wired once per window and survives plugin reloads; a
+                    // captured `this` would run the DEAD instance's (empty)
+                    // closed stack forever after a reload.
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;   // plugin off → native behavior
                     const accel = (Zotero as any).isMac ? e.metaKey : e.ctrlKey;
                     if (!accel || !e.shiftKey || e.altKey) return;
                     if (String(e.key || "").toLowerCase() !== "t") return;
                     // 1) Weavero's closed reader-window / group stack (priority).
-                    if (this._wvClosedPeek()) { suppress(e); this._wvClosedReopenLast(win); return; }
+                    if (lp._wvClosedPeek()) { suppress(e); lp._wvClosedReopenLast(win); return; }
                     // 2) Reader window: its own closed-TAB stack (no native undo here).
                     try {
-                        if (this._wvTabGroupIsReaderWin && this._wvTabGroupIsReaderWin(win) && win._wvWTClosed && win._wvWTClosed.length) {
+                        if (lp._wvTabGroupIsReaderWin && lp._wvTabGroupIsReaderWin(win) && win._wvWTClosed && win._wvWTClosed.length) {
                             suppress(e);
                             const last = win._wvWTClosed.pop();
-                            if (last && last.itemID != null) (this as any)._wvWTMountTab(win, last.itemID, { allowDuplicate: true, select: true });
+                            if (last && last.itemID != null) lp._wvWTMountTab(win, last.itemID, { allowDuplicate: true, select: true });
                             return;
                         }
                     } catch (er) {}

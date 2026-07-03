@@ -5158,7 +5158,13 @@ class _ReaderMixin {
     _wvNoteOutlineObserve(win: any, tab: any) {
         try {
             const ne = tab && tab.noteEditor;
-            if (!ne || (ne as any)._wvOutlineObserver) return;
+            if (!ne) return;
+            // Instance-identity guard: a boolean/object guard pinned the OLD
+            // instance's observer after a plugin reload (it kept rendering the
+            // outline from dead code AND blocked the new instance from
+            // re-observing). Reclaim: disconnect the stale one and re-wire.
+            if ((ne as any)._wvOutlineObserverBy === this) return;
+            try { if ((ne as any)._wvOutlineObserver) (ne as any)._wvOutlineObserver.disconnect(); } catch (e) {}
             const ev = ne.querySelector && ne.querySelector("#editor-view");
             const cw = ev && ev.contentWindow;
             const pm = ev && ev.contentDocument && ev.contentDocument.querySelector(".ProseMirror");
@@ -5172,6 +5178,7 @@ class _ReaderMixin {
             });
             obs.observe(pm, { childList: true, subtree: true, characterData: true });
             (ne as any)._wvOutlineObserver = obs;
+            (ne as any)._wvOutlineObserverBy = this;
         } catch (e) { Zotero.debug("[Weavero] _wvNoteOutlineObserve err: " + e); }
     }
 
@@ -6668,7 +6675,7 @@ class _ReaderMixin {
             for (const id of tabIDs) {
                 const t = Z_Tabs._tabs.find((x: any) => x && x.id === id);
                 const iid = t && t.data && t.data.itemID;
-                if (iid != null) entries.push({ id, itemID: iid, isNote: t.type === "note" });
+                if (iid != null) entries.push({ id, itemID: iid, isNote: String(t.type || "").indexOf("note") === 0 });
             }
             if (!entries.length) return;
 
@@ -7049,7 +7056,7 @@ class _ReaderMixin {
             for (const id of ids) {
                 const t = ZT._tabs.find((x: any) => x && x.id === id);
                 const iid = t && t.data && t.data.itemID;
-                if (iid != null) moves.push({ id, itemID: iid, isNote: t.type === "note" });
+                if (iid != null) moves.push({ id, itemID: iid, isNote: String(t.type || "").indexOf("note") === 0 });
             }
             if (!moves.length) return;
             // Leaving the window leaves the group (don't carry it to the target).
@@ -10852,11 +10859,15 @@ class _ReaderMixin {
     _applyUIThemeClass() {
         try {
             const dark = this._detectUIDark();
-            const win = Zotero.getMainWindow();
-            const doc = win && win.document;
-            if (doc && doc.documentElement) {
-                doc.documentElement.classList.toggle("wv-ui-dark", dark);
-            }
+            // EVERY main window — a theme flip while a background window was
+            // open left that window in the old mode.
+            try {
+                const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of mains) {
+                    const d = w && w.document;
+                    if (d && d.documentElement) d.documentElement.classList.toggle("wv-ui-dark", dark);
+                }
+            } catch (e) {}
             for (const reader of (Zotero.Reader && Zotero.Reader._readers) || []) {
                 try {
                     const iwin = reader._iframeWindow

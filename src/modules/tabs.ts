@@ -6240,28 +6240,116 @@ class _TabsMixin {
      *  with openInWindow); this shepherd re-asserts the target whenever focus
      *  lands on a DIFFERENT Zotero window — and never pulls focus back from
      *  another application. Polls until the group guard lifts. */
+    /** The window the user was in at quit (from the store's `focused`
+     *  descriptor) — resolved against the CURRENT window set, so it only
+     *  returns once that window has actually been restored. Shared by the
+     *  focus shepherd (poll backstop) and the background-restore observer. */
+    _wvRestoreFindTargetWin() {
+        const f = (this as any)._wvBootFocusedEntry;
+        if (!f || !f.kind) return null;
+        try {
+            if (f.kind === "anchor") return (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow) || null;
+            if (f.kind === "main-dev") return (Zotero.getMainWindows() || []).find((w: any) => w._wvManagedWindow && (f.wvWinId == null || w._wvWindowId === f.wvWinId)) || null;
+            if (f.kind === "reader") {
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    const st = w._wvWT;
+                    if (st && st.tabs && st.tabs.some((t: any) => t.itemID === f.itemID)) return w;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    /** BACKGROUND RESTORE (Windows-only): while the startup restore is in
+     *  flight, every Zotero window that OPENS is pushed to the BOTTOM of the
+     *  z-order without activation (user32 SetWindowPos, SWP_NOACTIVATE), and
+     *  any focus it stole is handed straight back to the quit-time target
+     *  window from its own `activate` event — event-driven, so the target
+     *  never visibly leaves the front (the 700ms shepherd poll stays only as
+     *  a backstop). The rest of the workspace assembles entirely BEHIND the
+     *  window the user is reading ("windows coming back on top several times
+     *  during restart", 2026-07-04). No-op off Windows: SetWindowPos is the
+     *  mechanism, and the instant-refocus half still comes from the shepherd. */
+    _wvBgRestoreStart() {
+        try {
+            if ((this as any)._wvBgRestoreOn) return;
+            if (Services.appinfo.OS !== "WINNT") return;
+            (this as any)._wvBgRestoreOn = true;
+            const self = this;
+            let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null;
+            try {
+                const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+                ctypesRef = ctypes;
+                user32 = ctypes.open("user32.dll");
+                SetWindowPos = user32.declare("SetWindowPos", ctypes.winapi_abi, ctypes.bool,
+                    ctypes.voidptr_t, ctypes.voidptr_t, ctypes.int, ctypes.int, ctypes.int, ctypes.int, ctypes.uint32_t);
+            } catch (e) {}
+            const pushToBottom = (w: any) => {
+                try {
+                    if (!SetWindowPos || !w || w.closed) return;
+                    const base = w.docShell.treeOwner
+                        .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
+                    const hwnd = ctypesRef.voidptr_t(ctypesRef.UInt64(base.nativeHandle));
+                    // HWND_BOTTOM; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                    SetWindowPos(hwnd, ctypesRef.voidptr_t(1), 0, 0, 0, 0, 0x1 | 0x2 | 0x10);
+                } catch (e) {}
+            };
+            const isZoteroWin = (w: any) => {
+                try {
+                    const t = w.document && w.document.documentElement
+                        && w.document.documentElement.getAttribute("windowtype");
+                    return t === "navigator:browser" || t === "zotero:reader";
+                } catch (e) { return false; }
+            };
+            const settle = (w: any) => {
+                try {
+                    if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
+                    const target = self._wvRestoreFindTargetWin();
+                    if (target === w) return;              // the target itself may restore late
+                    pushToBottom(w);
+                    if (target && Services.focus.activeWindow === w) { try { target.focus(); } catch (e) {} }
+                    w.addEventListener("activate", () => {
+                        try {
+                            if (!(self as any)._wvBgRestoreOn) return;
+                            const t2 = self._wvRestoreFindTargetWin();
+                            if (t2 && t2 !== w) { pushToBottom(w); t2.focus(); }
+                        } catch (e) {}
+                    });
+                } catch (e) {}
+            };
+            const obs: any = {
+                observe(subject: any, topic: string) {
+                    try {
+                        if (topic !== "domwindowopened") return;
+                        const w: any = subject;
+                        w.addEventListener("load", () => settle(w), { once: true });
+                    } catch (e) {}
+                },
+            };
+            try { Services.ww.registerNotification(obs); } catch (e) {}
+            // Lifetime mirrors the shepherd: poll the guard, then tear down.
+            let ticks = 0;
+            const w0: any = Zotero.getMainWindow();
+            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const tick = () => {
+                ticks++;
+                if ((this as any)._wvTabGroupRestoreGuard && ticks <= 45) { setT(tick, 700); return; }
+                (this as any)._wvBgRestoreOn = false;
+                try { Services.ww.unregisterNotification(obs); } catch (e) {}
+                try { if (user32) user32.close(); } catch (e) {}
+            };
+            setT(tick, 700);
+        } catch (e) {}
+    }
+
     _wvFocusShepherdStart() {
         try {
             if (this._wvFocusShepherdOn) return;
             this._wvFocusShepherdOn = true;
             const self = this;
-            const findTarget = () => {
-                const f = (self as any)._wvBootFocusedEntry;
-                if (!f || !f.kind) return null;
-                try {
-                    if (f.kind === "anchor") return (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow) || null;
-                    if (f.kind === "main-dev") return (Zotero.getMainWindows() || []).find((w: any) => w._wvManagedWindow && (f.wvWinId == null || w._wvWindowId === f.wvWinId)) || null;
-                    if (f.kind === "reader") {
-                        const en = Services.wm.getEnumerator("zotero:reader");
-                        while (en.hasMoreElements()) {
-                            const w: any = en.getNext();
-                            const st = w._wvWT;
-                            if (st && st.tabs && st.tabs.some((t: any) => t.itemID === f.itemID)) return w;
-                        }
-                    }
-                } catch (e) {}
-                return null;
-            };
+            const findTarget = () => self._wvRestoreFindTargetWin();
             let ticks = 0;
             const w0: any = Zotero.getMainWindow();
             const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;

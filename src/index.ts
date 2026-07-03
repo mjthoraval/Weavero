@@ -2803,6 +2803,11 @@ class WeaveroPlugin {
                         await (this as any)._wvRestoreAnchorTabs();
                     } catch (e) {}
                 })())
+                // BACKGROUND RESTORE: from here on, windows opening during the
+                // restore are pushed to the BOTTOM of the z-order without
+                // activation and focus snaps straight back to the quit-time
+                // window (Windows-only; the shepherd below stays as backstop).
+                .then(() => { try { (this as any)._wvBgRestoreStart(); } catch (e) {} })
                 .then(() => { try { (this as any)._wvTrace("restore: dev main windows"); this._wvWindowStoreRestoreDevWindows(); } catch (e) {} })
                 // Firefox-style: open EVERY window up-front (all held behind the
                 // focused tab). Post-takeover the store is the source of truth;

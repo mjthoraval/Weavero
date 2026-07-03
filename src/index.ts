@@ -2968,7 +2968,7 @@ class WeaveroPlugin {
                                 // the focused window once they've settled
                                 // ("landing on the wrong window at the end",
                                 // 2026-07-04).
-                                try { (this as any)._wvBgRestoreStart({ holdMs: 20000 }); } catch (e) {}
+                                try { (this as any)._wvBgRestoreStart({ holdMs: 30000 }); } catch (e) {}
                                 try { setT(() => { try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {} }, 10000); } catch (e) {}
                                 // Warm deferred background tabs once the dust has
                                 // settled (one at a time, so nothing competes with

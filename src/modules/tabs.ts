@@ -6461,7 +6461,16 @@ class _TabsMixin {
                         try {
                             if (!(self as any)._wvBgRestoreOn) return;
                             const t2 = resolveTarget();
-                            if (t2 && t2 !== w) { pushToBottom(w); t2.focus(); }
+                            if (t2 && t2 !== w) {
+                                pushToBottom(w);
+                                t2.focus();
+                                try {
+                                    (self as any)._wvTrace("bg-restore: "
+                                        + (w.document.documentElement.getAttribute("windowtype") || "?")
+                                        + " '" + String(w.document.title || "").slice(0, 30)
+                                        + "' stole activation — refocused the target");
+                                } catch (e2) {}
+                            }
                         } catch (e) {}
                     });
                 } catch (e) {}

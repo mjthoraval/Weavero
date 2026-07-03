@@ -7896,6 +7896,25 @@ class _ReaderMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvPreemptReaderWindowReopen err: " + e); }
     }
 
+    /** A standalone reader window for `itemID` is already OPENING — its Reader
+     *  instance exists with a zotero:reader window, but Weavero's multi-tab
+     *  state may not be attached yet (so `_wvReaderWindowHostingItem` is still
+     *  false). Restore steps must treat this as "window on its way" and NOT
+     *  open another one: the focused-first prioritizer used to double-open the
+     *  focused reader window while the preemptive reopen was mid-load — the
+     *  duplicate then won the adopt and the original was culled seconds later
+     *  (user-visible window churn + the final window appearing late). */
+    _wvReaderWindowInFlight(itemID: any) {
+        try {
+            return (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).some((r: any) => {
+                try {
+                    return r.itemID === itemID && r._window && r._window.document
+                        && r._window.document.documentElement.getAttribute("windowtype") === "zotero:reader";
+                } catch (e) { return false; }
+            });
+        } catch (e) { return false; }
+    }
+
     /** FALLBACK for `kind:"reader"` store entries whose native window Zotero
      *  did NOT reopen (observed: only one of two saved reader windows came
      *  back natively — the other's extras sat unclaimed in the restore map
@@ -13246,11 +13265,9 @@ class _ReaderMixin {
                     const ifWin = reader._iframeWindow;
                     const ifDoc = ifWin && ifWin.document;
                     if (!ifDoc) {
-                        Zotero.debug("[Weavero compact-dbg] wireIframe: ifDoc null, retry later");
                         return false;
                     }
                     if ((stash as any).iframeMouseDown) {
-                        Zotero.debug("[Weavero compact-dbg] wireIframe: already wired, skip");
                         return true;
                     }
 
@@ -13276,16 +13293,10 @@ class _ReaderMixin {
                     } catch (e) {}
                     const onEvt = (label: string) => (e: any) => {
                         try {
-                            Zotero.debug("[Weavero compact-dbg] " + label
-                                + " fired; isCollapsed=" + isCollapsed()
-                                + " isDead=" + isDead()
-                                + " target=" + (e.target?.tagName || "?")
-                                + "." + ((e.target?.className || "") + "").slice(0, 30));
                             if (isDead() || isCollapsed()) return;
-                            Zotero.debug("[Weavero compact-dbg] " + label + " -> collapse()");
                             collapse();
                         } catch (er) {
-                            Zotero.debug("[Weavero compact-dbg] " + label + " err: " + er);
+                            Zotero.debug("[Weavero] compact menubar evt err: " + er);
                         }
                     };
                     const mdH = onEvt("ifDoc.mousedown");
@@ -13320,10 +13331,9 @@ class _ReaderMixin {
                     stash.iframeMouseUp = muH;
                     stash.winBlur = blurH;
                     stash.winFocusOut = focusoutH;
-                    Zotero.debug("[Weavero compact-dbg] wireIframe: all listeners attached");
                     return true;
                 } catch (e) {
-                    Zotero.debug("[Weavero compact-dbg] wireIframe err: " + e);
+                    Zotero.debug("[Weavero] compact menubar wireIframe err: " + e);
                     return false;
                 }
             };
@@ -13682,9 +13692,9 @@ class _ReaderMixin {
             //     - Escape keydown anywhere in the chrome window
             //     Both listeners are attached on `popupshown` and detached
             //     on `popuphidden` so they don't leak.
-            const wvLog = (m: string) => {
-                try { Zotero.debug("[Weavero][hamb] " + m); } catch (e) {}
-            };
+            // Debug tap for the dismissal flow — left as a no-op (flip to
+            // Zotero.debug when diagnosing hamburger-popup dismissal).
+            const wvLog = (_m: string) => {};
             const inAnyOpenPopup = (target: any): boolean => {
                 if (!target) return false;
                 if (target.closest && target.closest("#wv-hamburger-popup")) return true;

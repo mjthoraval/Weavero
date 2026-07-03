@@ -1239,15 +1239,21 @@ class _TabsMixin {
                     // Group drag → move/reorder the whole group at the dropped slot.
                     const gdrag = lp._wvPopupGroupDrag;
                     if (gdrag) {
-                        clearHighlight(); clearDragging();
                         lp._wvPopupGroupDrag = null;
                         const scope = e.target && e.target.closest && e.target.closest(".wv-winscope");
-                        if (!scope || !(scope as any)._wvWin) return;
+                        if (!scope || !(scope as any)._wvWin) { clearHighlight(); clearDragging(); return; }
                         e.preventDefault(); e.stopPropagation();
                         const tgtWin = (scope as any)._wvWin;
                         const isReaderTgt = !!(scope as any)._wvIsReader;
+                        // Compute the slot BEFORE clearing the ghost: clearGhost
+                        // also UNHIDES the travelling group's source block, which
+                        // re-expands the list — the drop Y (aimed at the collapsed
+                        // layout the user saw) then lands back inside the group's
+                        // old span and the move resolves to a no-op ("the group
+                        // can't be moved down").
                         const pos = self._wvPopupDropPosition(scope, e.clientY, { excludeGroupId: gdrag.groupId, snapOutOfGroups: true });
                         const clientX = self._wvBarClientXForAnchor(tgtWin, pos.anchorTabId, isReaderTgt);
+                        clearHighlight(); clearDragging();
                         Promise.resolve(lp._wvMoveGroupToWindowAt(gdrag.groupId, tgtWin, isReaderTgt, clientX)).then(() => {
                             try { if (typeof panel.refreshList === "function") panel.refreshList(); else lp._wvRegroupTabsMenu(panel); } catch (er) {}
                         }).catch(() => {});

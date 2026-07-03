@@ -3889,8 +3889,11 @@ class _TabGroupsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvMoveGroupToWindowAt err: " + e); }
     }
 
-    /** Right-click menu on a tabs-menu group row (Firefox: Open Group in
-     *  This Window / Open Group in New Window / Delete Group). */
+    /** Right-click menu on a tabs-menu group row. Verb matches the group's
+     *  state: an OPEN group is *moved* ("Move Group to This/New Window" — it
+     *  already lives somewhere), a SAVED group is *opened* ("Open Group in
+     *  This/New Window"). Same underlying commands either way; only the
+     *  labels differ (Firefox's Delete Group closes the menu list). */
     _wvTabsMenuGroupContext(win: any, panel: any, groupID: any, e: any) {
         try {
             const doc = win.document;
@@ -3914,8 +3917,20 @@ class _TabGroupsMixin {
             };
             mk("Rename Group…", (p: any) => p._wvTabGroupPromptRename(win, groupID));
             pop.appendChild(doc.createXULElement("menuseparator"));
-            mk("Open Group in This Window", (p: any) => p._wvTabGroupOpenInWindow(win, groupID));
-            mk("Open Group in New Window", (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
+            // Verb by state: SAVED → "Open Group …" (it reopens); OPEN →
+            // "Move Group …" (it relocates). "Move to This Window" is skipped
+            // when the group already lives here (it would be a no-op).
+            const gRec: any = this._tabGroupsGet().find((x: any) => x.id === groupID);
+            const isSaved = !!(gRec && gRec.saved) || this._wvTabGroupOpenCount(groupID) === 0;
+            if (isSaved) {
+                mk("Open Group in This Window", (p: any) => p._wvTabGroupOpenInWindow(win, groupID));
+                mk("Open Group in New Window", (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
+            } else {
+                if (this._wvTabGroupHomeWin(groupID) !== win) {
+                    mk("Move Group to This Window", (p: any) => p._wvTabGroupOpenInWindow(win, groupID));
+                }
+                mk("Move Group to New Window", (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
+            }
             pop.appendChild(doc.createXULElement("menuseparator"));
             mk("Delete Group", (p: any) => p._wvTabGroupCloseTabs(win, groupID));
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);

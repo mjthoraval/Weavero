@@ -5502,10 +5502,26 @@ class _TabsMixin {
                 }
             } catch (e) {}
             const self = this;
+            // BACKGROUND assembly, same as the startup restore: re-opened
+            // windows go to the z-order bottom and focus snaps back to the
+            // window the user is in right now (no restore guard mid-session
+            // -> time-based hold). Also: the old fixed 1.5 s pre-restore
+            // dead-wait is down to 400 ms - the once-guards on the restore
+            // entry points are the real safety, not the delay.
+            try {
+                let cur: any = null;
+                try {
+                    const fw: any = Services.focus.activeWindow;
+                    const t = fw && fw.document && fw.document.documentElement
+                        && fw.document.documentElement.getAttribute("windowtype");
+                    if (t === "navigator:browser" || t === "zotero:reader") cur = fw;
+                } catch (e) {}
+                this._wvBgRestoreStart({ targetWin: cur || Zotero.getMainWindow(), holdMs: 25000 });
+            } catch (e) {}
             setTimeout(() => {
                 try { (self as any)._wvWindowStoreRestoreDevWindows(); } catch (e) {}
                 try { (self as any)._wvWindowStoreRestoreOrphanReaderWindows(); } catch (e) {}
-            }, 1500);
+            }, 400);
             Zotero.debug("[Weavero] enable-restore: marker consumed (" + (marker.closedReaders || 0) + " reader / " + (marker.closedMains || 0) + " main to restore)");
         } catch (e) { Zotero.debug("[Weavero] _wvEnableRestoreClosedWindows err: " + e); }
     }
@@ -6272,12 +6288,39 @@ class _TabsMixin {
      *  window the user is reading ("windows coming back on top several times
      *  during restart", 2026-07-04). No-op off Windows: SetWindowPos is the
      *  mechanism, and the instant-refocus half still comes from the shepherd. */
-    _wvBgRestoreStart() {
+    _wvBgRestoreStart(opts?: any) {
         try {
+            // Enable-path reuse: a mid-session plugin enable restores the
+            // disable-closed windows with NO startup restore guard held, so
+            // the lifetime falls back to a fixed hold; the refocus target is
+            // the window the user is in NOW, not the quit-time descriptor.
+            // State lives on the INSTANCE so a second call while the observer
+            // is already running EXTENDS it (the startup chain's no-opts call
+            // races the enable path's opts call — a no-op return left the
+            // enable restore unprotected after the first 700ms tick).
+            if (opts && opts.holdMs) {
+                const until = Date.now() + opts.holdMs;
+                if (!((this as any)._wvBgRestoreHoldUntil > until)) (this as any)._wvBgRestoreHoldUntil = until;
+            }
+            if (opts && opts.targetWin) (this as any)._wvBgRestoreTargetWin = opts.targetWin;
             if ((this as any)._wvBgRestoreOn) return;
             if (Services.appinfo.OS !== "WINNT") return;
+            // No startup restore guard (mid-session enable/reload) and no
+            // explicit hold → default one. Without it the loop's first 700ms
+            // tick tore the observer down before the enable path's window
+            // spawns (~1-2s in), whatever the init ordering happened to be.
+            if (!(this as any)._wvTabGroupRestoreGuard && !((this as any)._wvBgRestoreHoldUntil > Date.now())) {
+                (this as any)._wvBgRestoreHoldUntil = Date.now() + 20000;
+            }
             (this as any)._wvBgRestoreOn = true;
             const self = this;
+            const resolveTarget = () => {
+                try {
+                    const tw = (self as any)._wvBgRestoreTargetWin;
+                    if (tw && !tw.closed) return tw;
+                } catch (e) {}
+                return self._wvRestoreFindTargetWin();
+            };
             let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null;
             try {
                 const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
@@ -6306,14 +6349,14 @@ class _TabsMixin {
             const settle = (w: any) => {
                 try {
                     if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
-                    const target = self._wvRestoreFindTargetWin();
+                    const target = resolveTarget();
                     if (target === w) return;              // the target itself may restore late
                     pushToBottom(w);
                     if (target && Services.focus.activeWindow === w) { try { target.focus(); } catch (e) {} }
                     w.addEventListener("activate", () => {
                         try {
                             if (!(self as any)._wvBgRestoreOn) return;
-                            const t2 = self._wvRestoreFindTargetWin();
+                            const t2 = resolveTarget();
                             if (t2 && t2 !== w) { pushToBottom(w); t2.focus(); }
                         } catch (e) {}
                     });
@@ -6335,8 +6378,12 @@ class _TabsMixin {
             const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
             const tick = () => {
                 ticks++;
-                if ((this as any)._wvTabGroupRestoreGuard && ticks <= 45) { setT(tick, 700); return; }
+                const hu = (this as any)._wvBgRestoreHoldUntil || 0;
+                const held = (this as any)._wvTabGroupRestoreGuard || (hu && Date.now() < hu);
+                if (held && ticks <= 60) { setT(tick, 700); return; }
                 (this as any)._wvBgRestoreOn = false;
+                (this as any)._wvBgRestoreHoldUntil = 0;
+                (this as any)._wvBgRestoreTargetWin = null;
                 try { Services.ww.unregisterNotification(obs); } catch (e) {}
                 try { if (user32) user32.close(); } catch (e) {}
             };

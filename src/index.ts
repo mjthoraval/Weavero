@@ -3754,6 +3754,26 @@ class WeaveroPlugin {
             }
         } catch (e) {}
 
+        // Reader-window active-tab self-heal: re-run the switch for each
+        // deck's active tab shortly after (re)init — the switch chokepoint
+        // detects zombie readers (dead iframe window) and re-realizes them,
+        // so a tab left blank by a reload or context loss heals without the
+        // user having to click away and back.
+        try {
+            const mw0: any = Zotero.getMainWindow();
+            const setT0 = (mw0 && mw0.setTimeout) ? mw0.setTimeout.bind(mw0) : setTimeout;
+            setT0(() => {
+                try {
+                    const ren = Services.wm.getEnumerator("zotero:reader");
+                    while (ren.hasMoreElements()) {
+                        const rw: any = ren.getNext();
+                        const st = rw && rw._wvWT;
+                        if (st && st.activeId) { try { (this as any)._wvWTSwitch(rw, st.activeId); } catch (e) {} }
+                    }
+                } catch (e) {}
+            }, 2000);
+        } catch (e) {}
+
         // DISABLE→ENABLE window round-trip: if the previous disable saved and
         // closed extra windows, restore them from the frozen store now.
         // (Once-guards in the restore entry points make racing the normal
@@ -4321,12 +4341,26 @@ class WeaveroPlugin {
                 // strip (right pane + splitter, tooltips, context menus,
                 // injected styles) — sweep them like the main windows, else a
                 // disable leaves a dead right-pane skeleton in each one.
+                // DEFERRED with a liveness check (same pattern as the window
+                // close): the sweep's wv-id removal rips the deck's realized
+                // reader browsers out of the DOM, and running it on every HOT
+                // RELOAD left the reader window full of blank zombie tabs. On
+                // a reload the plugin is back within milliseconds → skip; on a
+                // real disable it runs 1.5s later (the deferred window-close
+                // usually removes the windows first anyway).
                 try {
-                    const ren = Services.wm.getEnumerator("zotero:reader");
-                    while (ren.hasMoreElements()) {
-                        const rw: any = ren.getNext();
-                        try { this._wvStripWindowChrome(rw); } catch (e) {}
-                    }
+                    const mw: any = Zotero.getMainWindow();
+                    const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
+                    setT(() => {
+                        try {
+                            if ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) return;   // reload — keep the decks
+                            const ren = Services.wm.getEnumerator("zotero:reader");
+                            while (ren.hasMoreElements()) {
+                                const rw: any = ren.getNext();
+                                try { this._wvStripWindowChrome(rw); } catch (e) {}
+                            }
+                        } catch (e) {}
+                    }, 1500);
                 } catch (e) {}
             } else {
                 Zotero.debug("[Weavero] destroy: app shutting down, skipping compact-title-bar revert");

@@ -2364,7 +2364,15 @@ class _TabsMixin {
                     }
                     continue;
                 }
-                if (!pinKeySet.has(k.libraryID + ":" + k.itemKey)) continue;
+                const kk = k.libraryID + ":" + k.itemKey;
+                if (!pinKeySet.has(kk)) continue;
+                // ONE visual pin per pinned ITEM: pins are item-keyed, so with
+                // duplicate tabs of the same item open every copy matched —
+                // one pin became N pref entries + N icon mirrors that wrapped
+                // into a second icon row under the bar (2026-07-04). Only the
+                // FIRST (leftmost) copy renders as the pinned icon tab; the
+                // other duplicates stay normal tabs.
+                if (pinnedOpenInOrder.some(p => p.libraryID + ":" + p.itemKey === kk)) continue;
                 pinnedOpenInOrder.push({ libraryID: k.libraryID, itemKey: k.itemKey, tabID: tab.id });
                 pinnedTabIDs.add(tab.id);
                 // LOOSE pinned (no group stamp) → mirrored into the native
@@ -2407,8 +2415,11 @@ class _TabsMixin {
             const restoring = !!(this as any)._wvTabGroupRestoreGuard;
             const newPref: Array<{ libraryID: number, itemKey: string }> = pinnedOpenInOrder
                 .map(p => ({ libraryID: p.libraryID, itemKey: p.itemKey }));
+            const carried = new Set<string>();   // belt: a stored dupe never survives a rebuild
             for (const p of pinPref) {
                 if (openSet.has(p.libraryID + ":" + p.itemKey)) continue;
+                if (carried.has(p.libraryID + ":" + p.itemKey)) continue;
+                carried.add(p.libraryID + ":" + p.itemKey);
                 // A pin with no MATCHED open tab. DROP it (Zotero-like: a closed
                 // pinned tab is forgotten, no ghost entries) UNLESS a tab for the
                 // item is still open but its item isn't cached yet (restart), or
@@ -2481,12 +2492,21 @@ class _TabsMixin {
             if (!doc) return;
             const pinnedC = doc.querySelector("#tab-bar-container .pinned-tabs");
             if (!pinnedC) return;
+            // The current beta nests the actual flex ROW as `.pinned-tabs >
+            // .tabs` (the library tab lives there); `.pinned-tabs` itself is
+            // display:block, so a sibling div WRAPS under the bar (the "PDF
+            // icons below the tab bar" bug, 2026-07-04). Mount the mirrors
+            // INSIDE the row when it exists; fall back to the container on
+            // older layouts where `.pinned-tabs` was the row itself.
+            const rowC = pinnedC.querySelector(":scope > .tabs") || pinnedC;
             let cont = doc.getElementById("wv-pinned-mirrors");
             if (!tabIDs || !tabIDs.length) { if (cont) cont.remove(); return; }
             if (!cont) {
                 cont = doc.createElement("div");
                 cont.id = "wv-pinned-mirrors";
-                pinnedC.appendChild(cont);
+                rowC.appendChild(cont);
+            } else if (cont.parentElement !== rowC) {
+                rowC.appendChild(cont);   // re-home after a layout change
             }
             const Z = win.Zotero_Tabs;
             const want = new Set(tabIDs.map(String));

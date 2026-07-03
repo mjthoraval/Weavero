@@ -1244,6 +1244,11 @@ class _NoteEditorMixin {
                 this._setupNoteEditorObserver(ne);
                 mainCount++;
             }
+            // The reader CONTEXT PANE builds its <note-editor> elements
+            // lazily on first render — often after every post-restore sweep
+            // has run, so they sat unwired (native blue links; restart-
+            // protocol finding, 2026-07-04). Watch for them.
+            try { this._wvWireContextPaneNoteWatch(md); } catch (e) {}
         }
         let popoutCount = 0;
         try {
@@ -1280,6 +1285,47 @@ class _NoteEditorMixin {
         }
         this._dbg("[Weavero] _processNoteEditors: main=" + mainCount
             + " popout=" + popoutCount + " readerWin=" + readerCount);
+    }
+
+    /** Watch a main window's context pane for LAZILY-CREATED note editors:
+     *  the notes pane beside a reader tab builds its <note-editor> elements
+     *  on first render, after the post-restore sweeps have already run —
+     *  those editors showed native blue links until some unrelated sweep
+     *  happened to fire. Wires each editor the moment it's added. Instance-
+     *  identity guarded with predecessor disconnect (reload-proof); the
+     *  callback only READS the observed subtree (wiring touches the editor's
+     *  iframe document), so it can't feed itself mutations. */
+    _wvWireContextPaneNoteWatch(doc: any) {
+        try {
+            const pane = doc.getElementById("zotero-context-pane");
+            if (!pane) return;
+            if ((pane as any)._wvCtxNoteWatchBy === this) return;
+            try { (pane as any)._wvCtxNoteWatchOff?.(); } catch (e) {}
+            const win = doc.defaultView;
+            if (!win) return;
+            const obs = new (win as any).MutationObserver((muts: any[]) => {
+                try {
+                    if ((this as any)._wvDestroyed) return;
+                    const live = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live !== this) return;   // stale closure after a plugin reload
+                    for (const m of muts) {
+                        for (const n of (m.addedNodes || []) as any) {
+                            if (!n || n.nodeType !== 1) continue;
+                            if (n.localName === "note-editor") { this._setupNoteEditorObserver(n); continue; }
+                            if (n.querySelectorAll) {
+                                for (const ne of n.querySelectorAll("note-editor")) this._setupNoteEditorObserver(ne);
+                            }
+                        }
+                    }
+                } catch (e) {}
+            });
+            obs.observe(pane, { childList: true, subtree: true });
+            (pane as any)._wvCtxNoteWatchBy = this;
+            (pane as any)._wvCtxNoteWatchOff = () => {
+                try { obs.disconnect(); } catch (e) {}
+                (pane as any)._wvCtxNoteWatchBy = null;
+            };
+        } catch (e) {}
     }
 
     /** Pop-out note window listener — onOpenWindow fires when a
@@ -1388,6 +1434,8 @@ class _NoteEditorMixin {
             }
             for (const doc of docs) {
                 if (!doc) continue;
+                // Context-pane lazy-editor watcher (added by _processNoteEditors).
+                try { (doc.getElementById("zotero-context-pane") as any)?._wvCtxNoteWatchOff?.(); } catch (e) {}
                 // Items-tree note rows + right-pane notes-box labels
                 for (const span of doc.querySelectorAll(
                         "note-row .note-content .wv-url-span,"

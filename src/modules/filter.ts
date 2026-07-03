@@ -1941,6 +1941,32 @@ class _FilterMixin {
      *  every access.) */
     get _ANNOTATION_COLORS() { return _ANNOTATION_COLORS_DATA; }
 
+    /** Zotero-native colour swatch: the reader's `IconColor16` rounded
+     *  square, copied verbatim (zotero/reader
+     *  src/common/components/common/icons.js, AGPL-3.0) — a 14×14
+     *  rounded square (r≈2) filled with the colour plus a 10%-black
+     *  inner stroke so near-white swatches stay legible. Matches the
+     *  annotation-popup colour picker exactly. */
+    _wvNativeColorSwatch(doc: any, color: string) {
+        const SVG_NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(SVG_NS, "svg");
+        svg.setAttribute("width", "16");
+        svg.setAttribute("height", "16");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("fill", "none");
+        svg.classList.add("wv-swatch-native");
+        const fill = doc.createElementNS(SVG_NS, "path");
+        fill.setAttribute("d", "M1 3C1 1.89543 1.89543 1 3 1H13C14.1046 1 15 1.89543 15 3V13C15 14.1046 14.1046 15 13 15H3C1.89543 15 1 14.1046 1 13V3Z");
+        fill.setAttribute("fill", color);
+        const ring = doc.createElementNS(SVG_NS, "path");
+        ring.setAttribute("d", "M1.5 3C1.5 2.17157 2.17157 1.5 3 1.5H13C13.8284 1.5 14.5 2.17157 14.5 3V13C14.5 13.8284 13.8284 14.5 13 14.5H3C2.17157 14.5 1.5 13.8284 1.5 13V3Z");
+        ring.setAttribute("stroke", "black");
+        ring.setAttribute("stroke-opacity", "0.1");
+        svg.appendChild(fill);
+        svg.appendChild(ring);
+        return svg;
+    }
+
     // Standard Zotero annotation types (see upstream
     // chrome/content/zotero/xpcom/data/item.js — `_annotationTypes`).
     // Glyph is a small marker shown in the chip / picker; label is what
@@ -7274,10 +7300,9 @@ class _FilterMixin {
             if (selected.has(def.value)) btn.dataset.selected = "true";
             if (inExc) btn.dataset.excluded = "true";
 
-            const sw = doc.createElementNS(NS_HTML, "span");
-            sw.className = "wv-chip-swatch";
-            sw.style.background = def.value;
-            btn.appendChild(sw);
+            // Native rounded-square swatch (the reader colour picker's
+            // IconColor16) instead of the old 12px circle.
+            btn.appendChild(this._wvNativeColorSwatch(doc, def.value));
 
             btn.addEventListener("click", (e) => {
                 e.stopPropagation();

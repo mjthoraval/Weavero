@@ -678,6 +678,13 @@ export const PLUGIN_CSS = [
     "  display: inline-block; box-sizing: border-box;",
     "  border: 1px solid rgba(0,0,0,0.15);",
     "}",
+    // Zotero-native rounded-square swatch (the reader colour picker's
+    // IconColor16 — see filter.ts _wvNativeColorSwatch), used by the
+    // filter popup's Annotation Color options. The SVG carries its own
+    // 10%-black legibility ring, so no CSS border here.
+    ".wv-swatch-native {",
+    "  display: block; width: 16px; height: 16px; flex: 0 0 auto;",
+    "}",
     // Tags-column counts: manual in blue, automatic in default text
     // colour. Tracks Zotero's accent palette via a CSS var fallback
     // so it adapts to dark/light themes.

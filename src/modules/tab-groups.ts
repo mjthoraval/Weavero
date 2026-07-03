@@ -111,11 +111,16 @@ class _TabGroupsMixin {
      *  group's shadow first). The shadow is a saved/restart fallback only —
      *  live membership is the per-tab stamp — so groups are NO LONGER deleted
      *  here when their shadow empties (a live group can have an empty shadow);
-     *  `_applyTabGroups` deletes a group only when no tab is stamped anywhere. */
+     *  `_applyTabGroups` deletes a group only when no tab is stamped anywhere.
+     *  SAVED (parked) groups' snapshots are FROZEN: live-tab churn must never
+     *  bleed a parked group's members away (that emptied two saved groups to
+     *  0 members — nothing left to reopen). Only the target group itself may
+     *  be saved here (filing a tab into a closed group). */
     _tabGroupAddKey(groupID: any, key: any) {
         if (!key || key.libraryID == null || !key.itemKey) return;
         const groups = this._tabGroupsGet();
         for (const g of groups) {
+            if ((g as any).saved && g.id !== groupID) continue;   // parked snapshots are frozen
             g.members = (g.members || []).filter(
                 (m: any) => !(m.libraryID === key.libraryID && m.itemKey === key.itemKey));
         }
@@ -138,6 +143,7 @@ class _TabGroupsMixin {
         } catch (e) {}
         const groups = this._tabGroupsGet();
         for (const g of groups) {
+            if ((g as any).saved) continue;   // parked snapshots are frozen (live-tab lifecycle only)
             g.members = (g.members || []).filter(
                 (m: any) => !(m.libraryID === libraryID && m.itemKey === itemKey));
         }
@@ -192,7 +198,7 @@ class _TabGroupsMixin {
 
     _ensureTabGroupStyles(doc: any) {
         try {
-            const STYLE_VERSION = "22";
+            const STYLE_VERSION = "25";
             const old = doc.getElementById("wv-tab-group-styles");
             if (old) {
                 if (old.getAttribute("data-wv-ver") === STYLE_VERSION) return;
@@ -338,9 +344,19 @@ class _TabGroupsMixin {
                 "}",
                 "#zotero-tabs-menu-list .row.wv-tgrow-member { margin-left: 18px; }",
                 "#zotero-tabs-menu-list .row.wv-tgrow-hidden { display: none !important; }",
+                // The DROP GHOST is a hand-built div lacking the `data-tab-id`
+                // that makes REAL tab rows (loose AND grouped) match the
+                // winscope 18px padding rule, so it fell back to the native
+                // `.row` 6px and sat 12px left of its neighbours everywhere.
+                // Give it the 18px base padding unconditionally; the member
+                // variant adds the group indent via the margin rule above.
+                // `!important` because the competing native rule carries two
+                // IDs of specificity (both are non-important).
+                "#zotero-tabs-menu-list .row.wv-tabsmenu-ghost { padding-inline-start: 18px !important; }",
                 // Reader-window tabs-menu twins (Weavero-built panel).
                 "#wv-wtl-list .row.wv-tgrow-member { margin-left: 18px; }",
                 "#wv-wtl-list .row.wv-tgrow-hidden { display: none !important; }",
+                "#wv-wtl-list .row.wv-tabsmenu-ghost { padding-inline-start: 18px !important; }",
                 "#wv-wtl-list.wv-grouped .wv-tgrow-header { padding-left: 16px; }",
                 // Dragged tab/chip turns translucent so the drop slot shows
                 // through (Firefox behavior). Zotero's React tab bar applies
@@ -469,6 +485,7 @@ class _TabGroupsMixin {
      *  mutation, so every write is guarded by a did-it-change check. Does NOT
      *  force tab positions (ordering is enforced once, at add time). */
     _applyTabGroups(win: any) {
+        if ((this as any)._wvDestroyed) return;   // plugin torn down — never re-apply
         try {
             if (!win || !win.document) return;
             // Self-heal the chip stylesheet: plugin teardown removes it, and the
@@ -569,6 +586,14 @@ class _TabGroupsMixin {
                     if (!g) continue;
                     const home = this._wvTabGroupHomeWin(g.id);
                     if (home && home !== win) continue;                 // group lives elsewhere (single-window)
+                    // A HOME-LESS group is only claimable when nothing that could
+                    // still deliver its real home is in flight — during window
+                    // restore, "no home" usually means "home not restored YET",
+                    // and claiming then splits the group (duplicate member copy
+                    // in this window gets stamped; the real home arrives later).
+                    if (!home && ((this as any)._wvWTRestoreActive
+                            || (this as any)._wvPendingDevWindow
+                            || ((this as any)._wvDevSpawnQueue && (this as any)._wvDevSpawnQueue.length))) continue;
                     let set = claimedByGroup.get(g.id); if (!set) { set = new Set(); claimedByGroup.set(g.id, set); }
                     if (set.has(kk)) continue;                          // duplicate copy stays out
                     this._wvTabGroupSetStamp(t, g.id); set.add(kk);
@@ -970,11 +995,21 @@ class _TabGroupsMixin {
             this._tabGroupAddKey(groupID, key);
             const itemID = tab.data && tab.data.itemID;
             if (itemID == null) return;
-            const isNote = (tab.type === "note");
+            // Prefix match: a main-window note tab can be note-unloaded /
+            // note-loading — the strict === "note" typed an unloaded note as a
+            // READER on arrival, which wedges at "Loading..." forever (the
+            // reader hook can't load a note).
+            const isNote = String(tab.type || "").indexOf("note") === 0;
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (this._wvTabGroupIsReaderWin(tgtWin)) {
-                try { Z.close(tabID); } catch (e) {}
+                // MOUNT FIRST; close the source only after the stamped arrival
+                // exists (Firefox rule: never destroy the original before the
+                // replacement is alive). The old order (close → async mount →
+                // stamp-by-id) could lose the tab on a mount failure, and a
+                // missed id lookup once left a duplicated, UNSTAMPED copy in
+                // the reader window with the source still open (2026-07-03).
                 tgtWin.setTimeout(async () => {
+                    let mounted = false;
                     try {
                         // allowDuplicate: MOVE of an explicit tab; STAMP the arrival
                         // directly so a duplicate of a member's item joins as its own
@@ -982,10 +1017,17 @@ class _TabGroupsMixin {
                         const newId = await (this as any)._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: false, await: true });
                         const st = tgtWin._wvWT;
                         if (st && st.tabs) {
-                            const nt = st.tabs.find((t: any) => t.id === newId);
-                            if (nt) this._wvTabGroupSetStamp(nt, groupID);
+                            // Stamp by id, falling back to the newest tab of this
+                            // item (mount/render can reshuffle ids) — the arrival
+                            // must never sit ungrouped in the target window.
+                            let nt = st.tabs.find((t: any) => t.id === newId);
+                            if (!nt) { for (let i = st.tabs.length - 1; i >= 0; i--) { if (st.tabs[i].itemID === itemID) { nt = st.tabs[i]; break; } } }
+                            if (nt) {
+                                this._wvTabGroupSetStamp(nt, groupID);
+                                mounted = true;
+                            }
                             // Reposition the arrival right after the group's last member.
-                            const idx = st.tabs.findIndex((t: any) => t.id === newId);
+                            const idx = nt ? st.tabs.indexOf(nt) : -1;
                             let lastMember = -1;
                             for (let i = 0; i < st.tabs.length; i++) {
                                 if (i === idx) continue;
@@ -998,8 +1040,11 @@ class _TabGroupsMixin {
                             try { (this as any)._wvWTRenderStrip(tgtWin); } catch (e) {}
                             try { (this as any)._wvWTPersistSaveDebounced(); } catch (e) {}
                         }
-                        this._wvTabGroupApplyEverywhere();
-                    } catch (e) {}
+                    } catch (e) { Zotero.debug("[Weavero] sendTabToWin(reader) mount err: " + e); }
+                    // Close the source ONLY on success; otherwise the user keeps
+                    // the original (no silent loss, no duplicate).
+                    if (mounted) { try { Z.close(tabID); } catch (e) {} }
+                    try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
                 }, 180);
             } else {
                 // Slot: right after the group's last open member in the target.
@@ -1012,10 +1057,34 @@ class _TabGroupsMixin {
                 } catch (e) {}
                 const payload = { itemID, sourceTabId: tabID, readerType: isNote ? "note" : undefined };
                 (this as any)._wvClassicMoveTabBetweenMains(srcWin, tgtWin, payload, targetIndex, 0);
-                tgtWin.setTimeout(() => {
-                    try { this._wvTabGroupStabilize(tgtWin); } catch (e) {}
-                    try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
-                }, 900);
+                // STAMP THE ARRIVAL DIRECTLY (retrying until the moved tab
+                // lands). The old flow relied on the CLAIM PASS finding the
+                // item-key in the members shadow — but the shadow SYNC in
+                // _applyTabGroups prunes members to currently-stamped tabs, so
+                // any apply pass firing during the async move stripped the key
+                // first and the arrival landed UNGROUPED in the target window
+                // (how RT-B ended up split across two windows, 2026-07-03).
+                const stampArrival = (attempt: number) => {
+                    try {
+                        const TZ: any = tgtWin.Zotero_Tabs;
+                        let nt: any = null;
+                        for (let i = ((TZ && TZ._tabs) || []).length - 1; i >= 1; i--) {
+                            const t = TZ._tabs[i];
+                            if (t && t.data && t.data.itemID === itemID && !this._wvTabGroupStamp(t)) { nt = t; break; }
+                        }
+                        if (nt) {
+                            this._wvTabGroupSetStamp(nt, groupID);
+                            this._tabGroupAddKey(groupID, (this as any)._tabPinKey(nt));
+                            try { this._wvTabGroupStabilize(tgtWin); } catch (e) {}
+                            try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
+                        } else if (attempt < 10) {
+                            tgtWin.setTimeout(() => stampArrival(attempt + 1), 300);
+                        } else {
+                            Zotero.debug("[Weavero] sendTabToWin(main): arrival never landed for item " + itemID);
+                        }
+                    } catch (e) {}
+                };
+                tgtWin.setTimeout(() => stampArrival(0), 300);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupSendTabToWin err: " + e); }
     }
@@ -1750,7 +1819,7 @@ class _TabGroupsMixin {
                                 others.push({
                                     itemID: t.data && t.data.itemID,
                                     sourceTabId: t.id,
-                                    readerType: t.type === "note" ? "note" : "",
+                                    readerType: String(t.type || "").indexOf("note") === 0 ? "note" : "",
                                     tabType: t.type || "",
                                 });
                             }
@@ -2567,7 +2636,10 @@ class _TabGroupsMixin {
         });
         if (twin) return;
         const groups = this._tabGroupsGet();
-        for (const g of groups) g.members = (g.members || []).filter((m: any) => !(m.libraryID === k.libraryID && m.itemKey === k.itemKey));
+        for (const g of groups) {
+            if ((g as any).saved) continue;   // parked snapshots are frozen (live-tab lifecycle only)
+            g.members = (g.members || []).filter((m: any) => !(m.libraryID === k.libraryID && m.itemKey === k.itemKey));
+        }
         this._tabGroupsSet(groups);
     }
 
@@ -3009,7 +3081,7 @@ class _TabGroupsMixin {
                 for (let i = 1; i < ((Z && Z._tabs) || []).length; i++) {
                     const t = Z._tabs[i];
                     if (this._wvTabGroupStamp(t) === g.id) {
-                        entries.push({ itemID: t.data && t.data.itemID, isNote: t.type === "note", srcTabID: t.id });
+                        entries.push({ itemID: t.data && t.data.itemID, isNote: String(t.type || "").indexOf("note") === 0, srcTabID: t.id });
                     }
                 }
             }
@@ -3087,6 +3159,15 @@ class _TabGroupsMixin {
                                 this._wvWTMountTab(tgtWin, en2.itemID, { allowDuplicate: false, select: false });
                                 const st2 = tgtWin._wvWT;
                                 if (st2 && st2.tabs) {
+                                    // Stamp the arrival DIRECTLY (newest unstamped
+                                    // copy of the item) — same rationale as the
+                                    // main-window branch below.
+                                    try {
+                                        for (let i = st2.tabs.length - 1; i >= 0; i--) {
+                                            const t = st2.tabs[i];
+                                            if (t.itemID === en2.itemID && !t.wvGroupId) { t.wvGroupId = groupID; break; }
+                                        }
+                                    } catch (e) {}
                                     for (let i = st2.tabs.length - 1; i >= 0; i--) {
                                         const t = st2.tabs[i];
                                         if (t.itemID === en2.itemID && i > insertIdx + placed) {
@@ -3134,6 +3215,19 @@ class _TabGroupsMixin {
                                 } catch (e) {}
                             }
                         }
+                        // STAMP the arrivals DIRECTLY (per-tab membership is
+                        // authoritative). The old flow relied on the CLAIM pass
+                        // matching the member shadow — but if even ONE source
+                        // close silently failed, the straggler kept the group
+                        // HOMED IN THE SOURCE and the claim refused every
+                        // arrival: "most tabs moved, but not the group"
+                        // (2026-07-03).
+                        try {
+                            for (const id of arrivedIDs) {
+                                const t = Z._tabs.find((x: any) => x.id === id);
+                                if (t) this._wvTabGroupSetStamp(t, groupID);
+                            }
+                        } catch (e) {}
                         // Position the arrived (contiguous) block at the drop slot.
                         if (typeof clientX === "number") {
                             try { this._wvTabGroupMoveGroupTo(tgtWin, groupID, clientX); } catch (e) {}
@@ -3148,6 +3242,28 @@ class _TabGroupsMixin {
                         this._wvTabGroupSettleMainArrival(tgtWin, groupID, arrivedIDs, () => {
                             (this as any)._wvSuppressGroupApply = false;
                             reopenSet.delete(groupID);
+                            // STRAGGLER SWEEP: any member whose source close
+                            // failed would keep the group spanning two windows —
+                            // retry the close; if it still won't close, unstamp
+                            // it (the tab survives as a loose duplicate, the
+                            // group stays single-window).
+                            try {
+                                for (const en3 of entries) {
+                                    if (srcIsReader) {
+                                        const st3 = srcWin._wvWT;
+                                        if (st3 && st3.tabs.some((x: any) => x.id === en3.srcTabID)) {
+                                            try { (this as any)._wvWTCloseTab(srcWin, en3.srcTabID); } catch (e) {}
+                                        }
+                                    } else {
+                                        const SZ: any = srcWin.Zotero_Tabs;
+                                        if (SZ && SZ._tabs.some((x: any) => x.id === en3.srcTabID)) {
+                                            try { SZ.close(en3.srcTabID); } catch (e) {}
+                                            const t3 = SZ._tabs.find((x: any) => x.id === en3.srcTabID);
+                                            if (t3 && this._wvTabGroupStamp(t3) === groupID) this._wvTabGroupSetStamp(t3, null);
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
                         });
                         return;   // main-target settles itself via the poll above
                     }

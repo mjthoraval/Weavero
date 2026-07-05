@@ -221,33 +221,48 @@ class WeaveroPlugin {
         }
     }
 
-    /** Resolve an item from a link's library + key, accepting BOTH the
+    /** Resolve an object from a link's library + key, accepting BOTH the
      *  modern bare key ("UE4GSKJF") AND the classic underscore-hash form
-     *  "<libraryID>_<key>" ("1_UE4GSKJF") that Better Notes and older
-     *  Zotero still emit. Zotero's own select handler resolves the
-     *  prefixed form (via `parseLibraryKeyHash`); Weavero passed the whole
-     *  string as the key, so every "1_KEY" link showed "broken link"
-     *  (issue #14). Tries the link's own library first, then the numeric
-     *  prefix as the library id. */
-    _wvResolveItemByKey(lib: number, rawKey: string): any {
+     *  "<libraryID>_<key>" ("1_UE4GSKJF") that legacy Better Notes and old
+     *  Zotero links (stored in existing notes) still carry. Zotero's own
+     *  handler resolves the prefixed form (via `parseLibraryKeyHash`);
+     *  Weavero passed the whole string as the key, so every "1_KEY" link
+     *  showed "broken link" (issue #14). Tries the link's own library
+     *  first, then the numeric prefix as the library id. `accessor` is
+     *  the `getByLibraryAndKey` of the object type (Items / Collections /
+     *  Searches), so items, collections AND saved searches are all
+     *  covered — not every legacy link is an item. */
+    _wvResolveByKey(accessor: (l: number, k: string) => any, lib: number, rawKey: string): any {
         try {
-            let it = Zotero.Items.getByLibraryAndKey(lib, rawKey);
-            if (it) return it;
+            let o = accessor(lib, rawKey);
+            if (o) return o;
             const us = rawKey.indexOf("_");
             if (us > 0) {
                 const prefix = rawKey.slice(0, us);
                 const bareKey = rawKey.slice(us + 1);
                 if (bareKey) {
-                    it = Zotero.Items.getByLibraryAndKey(lib, bareKey);
-                    if (it) return it;
+                    o = accessor(lib, bareKey);
+                    if (o) return o;
                     if (/^\d+$/.test(prefix)) {
-                        it = Zotero.Items.getByLibraryAndKey(parseInt(prefix, 10), bareKey);
-                        if (it) return it;
+                        o = accessor(parseInt(prefix, 10), bareKey);
+                        if (o) return o;
                     }
                 }
             }
         } catch (e) {}
         return null;
+    }
+    _wvResolveItemByKey(lib: number, rawKey: string): any {
+        return this._wvResolveByKey(
+            (l, k) => Zotero.Items.getByLibraryAndKey(l, k), lib, rawKey);
+    }
+    _wvResolveCollectionByKey(lib: number, rawKey: string): any {
+        return this._wvResolveByKey(
+            (l, k) => Zotero.Collections.getByLibraryAndKey(l, k), lib, rawKey);
+    }
+    _wvResolveSearchByKey(lib: number, rawKey: string): any {
+        return this._wvResolveByKey(
+            (l, k) => Zotero.Searches.getByLibraryAndKey(l, k), lib, rawKey);
     }
 
     async handleZoteroURI(url) {
@@ -331,7 +346,7 @@ class WeaveroPlugin {
                 } else if (kind === "items") {
                     pathItemKey = rest[1] || null;
                 } else if (kind === "collections" && rest[1]) {
-                    const col = Zotero.Collections.getByLibraryAndKey(lib, rest[1]);
+                    const col = this._wvResolveCollectionByKey(lib, rest[1]);
                     if (!col) {
                         this._showLinkWarning("The linked collection no longer exists (key " + rest[1] + ").");
                     } else {
@@ -351,7 +366,7 @@ class WeaveroPlugin {
                     }
                     return;
                 } else if (kind === "searches" && rest[1]) {
-                    const search = Zotero.Searches.getByLibraryAndKey(lib, rest[1]);
+                    const search = this._wvResolveSearchByKey(lib, rest[1]);
                     if (search && pane.collectionsView
                         && typeof pane.collectionsView.selectSearch === "function") {
                         switchToLibrary();
@@ -378,7 +393,7 @@ class WeaveroPlugin {
                 switchToLibrary();
                 if (scopeKind === "collections" && scopeKey) {
                     try {
-                        const col = Zotero.Collections.getByLibraryAndKey(lib, scopeKey);
+                        const col = this._wvResolveCollectionByKey(lib, scopeKey);
                         let colTrashed = false;
                         try { colTrashed = !!(col && (col as any).deleted); } catch (e) {}
                         if (col && !colTrashed && pane.collectionsView
@@ -394,7 +409,7 @@ class WeaveroPlugin {
                     } catch (e) { Zotero.debug("[Weavero] select scope-collection err: " + e); }
                 } else if (scopeKind === "searches" && scopeKey) {
                     try {
-                        const search = Zotero.Searches.getByLibraryAndKey(lib, scopeKey);
+                        const search = this._wvResolveSearchByKey(lib, scopeKey);
                         if (search && pane.collectionsView
                             && typeof pane.collectionsView.selectSearch === "function") {
                             await pane.collectionsView.selectSearch(search.id);

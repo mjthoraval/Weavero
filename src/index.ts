@@ -253,8 +253,17 @@ class WeaveroPlugin {
         return null;
     }
     _wvResolveItemByKey(lib: number, rawKey: string): any {
-        return this._wvResolveByKey(
+        const o = this._wvResolveByKey(
             (l, k) => Zotero.Items.getByLibraryAndKey(l, k), lib, rawKey);
+        if (o) return o;
+        // Oldest-style form (Zotero's SelectExtension `items/:id` route): a
+        // PURE-NUMERIC id is a local database itemID, not a key. Deprecated
+        // and "not consistent across synced machines", but handled for full
+        // native parity.
+        if (/^\d+$/.test(rawKey)) {
+            try { const byId = Zotero.Items.get(parseInt(rawKey, 10)); if (byId) return byId; } catch (e) {}
+        }
+        return null;
     }
     _wvResolveCollectionByKey(lib: number, rawKey: string): any {
         return this._wvResolveByKey(
@@ -474,15 +483,30 @@ class WeaveroPlugin {
                 return;
             }
             if (url.startsWith("zotero://open")) {
-                const item = this._wvResolveItemByKey(getLib(), lastKey);
+                // Legacy ZotFile form (per Zotero's OpenExtension):
+                //   zotero://open-pdf/[libraryID]_[key]/[page]
+                // The page is a PATH segment, not ?page=, and the key sits in
+                // parts[0] as the underscore-hash form — so the normal lastKey
+                // grab returns the PAGE, not the key. Detect it: two path
+                // segments, the first an underscore key, the second numeric,
+                // with no library/groups/items structure.
+                let openItem: any = null;
+                let zotfilePage: string | null = null;
+                if (parts.length === 2 && /_/.test(parts[0]) && /^\d+$/.test(parts[1])
+                    && parts[0] !== "library" && parts[0] !== "groups") {
+                    openItem = this._wvResolveItemByKey(getLib(), parts[0]);
+                    if (openItem) zotfilePage = parts[1];
+                }
+                const item = openItem || this._wvResolveItemByKey(getLib(), lastKey);
                 if (!item) {
-                    this._showLinkWarning("The file this link points to no longer exists (key " + lastKey + ").");
+                    this._showLinkWarning("The file this link points to no longer exists (key "
+                        + (openItem === null && zotfilePage === null ? lastKey : parts[0]) + ").");
                     return;
                 }
                 let openTrashed = false;
                 try { openTrashed = !!(item as any).deleted; } catch (e) {}
                 const loc: any = {};
-                const page = u.searchParams.get("page");
+                const page = zotfilePage !== null ? zotfilePage : u.searchParams.get("page");
                 const ann  = u.searchParams.get("annotation");
                 // `cfi` (EPUB) / `sel` (snapshot) → a `position` of the
                 // same shape Zotero's `OpenExtension` builds. `searchParams`

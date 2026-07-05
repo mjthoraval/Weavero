@@ -221,6 +221,35 @@ class WeaveroPlugin {
         }
     }
 
+    /** Resolve an item from a link's library + key, accepting BOTH the
+     *  modern bare key ("UE4GSKJF") AND the classic underscore-hash form
+     *  "<libraryID>_<key>" ("1_UE4GSKJF") that Better Notes and older
+     *  Zotero still emit. Zotero's own select handler resolves the
+     *  prefixed form (via `parseLibraryKeyHash`); Weavero passed the whole
+     *  string as the key, so every "1_KEY" link showed "broken link"
+     *  (issue #14). Tries the link's own library first, then the numeric
+     *  prefix as the library id. */
+    _wvResolveItemByKey(lib: number, rawKey: string): any {
+        try {
+            let it = Zotero.Items.getByLibraryAndKey(lib, rawKey);
+            if (it) return it;
+            const us = rawKey.indexOf("_");
+            if (us > 0) {
+                const prefix = rawKey.slice(0, us);
+                const bareKey = rawKey.slice(us + 1);
+                if (bareKey) {
+                    it = Zotero.Items.getByLibraryAndKey(lib, bareKey);
+                    if (it) return it;
+                    if (/^\d+$/.test(prefix)) {
+                        it = Zotero.Items.getByLibraryAndKey(parseInt(prefix, 10), bareKey);
+                        if (it) return it;
+                    }
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
     async handleZoteroURI(url) {
         try {
             const u = new URL(url);
@@ -379,7 +408,7 @@ class WeaveroPlugin {
                 const missingKeys: string[] = [];
                 const trashedKeys: string[] = [];
                 for (const k of itemKeys) {
-                    const it = Zotero.Items.getByLibraryAndKey(lib, k);
+                    const it = this._wvResolveItemByKey(lib, k);
                     if (!it) { missingKeys.push(k); continue; }
                     let trashed = false;
                     try { trashed = !!(it as any).deleted; } catch (e) {}
@@ -430,7 +459,7 @@ class WeaveroPlugin {
                 return;
             }
             if (url.startsWith("zotero://open")) {
-                const item = Zotero.Items.getByLibraryAndKey(getLib(), lastKey);
+                const item = this._wvResolveItemByKey(getLib(), lastKey);
                 if (!item) {
                     this._showLinkWarning("The file this link points to no longer exists (key " + lastKey + ").");
                     return;
@@ -537,7 +566,7 @@ class WeaveroPlugin {
                     key = lastKey;
                 }
                 if (!key) return;
-                const note = Zotero.Items.getByLibraryAndKey(lib, key);
+                const note = this._wvResolveItemByKey(lib, key);
                 if (!note) {
                     this._showLinkWarning("The note this link points to no longer exists (key " + key + ").");
                     return;

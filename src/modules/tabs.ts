@@ -5759,6 +5759,12 @@ class _TabsMixin {
      *  wiring) still runs later and is idempotent about these. */
     _wvEarlyHideTitleBar(w: any) {
         try {
+            // macOS uses the native global menu bar / traffic-light controls,
+            // so the compact-title-bar feature is Windows/Linux only —
+            // `_applyCompactTitleBar` bails on `isMac`. This early-paint hider
+            // must match, or it injects the title-bar-collapse CSS on macOS
+            // that the (skipped) full setup never reconciles.
+            if ((Zotero as any).isMac) return;
             const doc = w && w.document;
             if (!doc || !doc.documentElement) return;
             const type = doc.documentElement.getAttribute("windowtype");

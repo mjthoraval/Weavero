@@ -5757,6 +5757,68 @@ class _TabsMixin {
      *  bar/menubar until the (late) compact setup collapses it. Injects only
      *  the hiding CSS + attribute; the full setup (button-box moves, Alt
      *  wiring) still runs later and is idempotent about these. */
+    /** DIAGNOSTIC (issue #15 — "tabs disappear" on macOS): one compact line
+     *  per snapshot naming how many tab nodes are visually hidden and WHICH
+     *  Weavero mechanism accounts for each. Emits only when Zotero Debug
+     *  Output is on (Zotero.debug is a no-op otherwise), so it's inert for
+     *  normal users. Scheduled a few times after startup by `_wvTabDiagStart`
+     *  to catch a "present → hidden" transition. */
+    _wvTabVisibilityDiag(win: any, tag: string) {
+        try {
+            const doc = win && win.document;
+            const Z = win && win.Zotero_Tabs;
+            if (!doc || !Z || !Array.isArray(Z._tabs)) return;
+            const nodes = Array.from(doc.querySelectorAll("#tab-bar-container .tab[data-id]")) as any[];
+            let visible = 0; const hiddenBy: any = { filter: 0, pinMirror: 0, group: 0, other: 0 };
+            const hiddenTitles: string[] = [];
+            for (const n of nodes) {
+                const id = n.getAttribute("data-id");
+                if (id === "zotero-pane") continue;   // library tab: always present, lives in .pinned-tabs
+                const cs = win.getComputedStyle(n);
+                const shown = cs && cs.display !== "none" && cs.visibility !== "hidden" && n.offsetParent !== null;
+                if (shown) { visible++; continue; }
+                if (n.hasAttribute("data-wv-pin-mirrored")) hiddenBy.pinMirror++;
+                else if (n.classList.contains("wv-group-hidden")) hiddenBy.group++;
+                else {
+                    // Filter stylesheet hides by data-id via a global sheet.
+                    const fs = doc.getElementById("wv-tab-bar-filter-style");
+                    if (fs && id && fs.textContent && fs.textContent.indexOf('data-id="' + id + '"') >= 0) hiddenBy.filter++;
+                    else { hiddenBy.other++; if (hiddenTitles.length < 4) hiddenTitles.push((n.textContent || "").slice(0, 18)); }
+                }
+            }
+            const fs = doc.getElementById("wv-tab-bar-filter-style");
+            const mir = doc.getElementById("wv-pinned-mirrors");
+            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            Zotero.debug("[Weavero][tabdiag] " + tag
+                + " win=" + (lp && lp._wvWindowName ? lp._wvWindowName(win) : "?")
+                + " model=" + (Z._tabs.length - 1) + " domTabs=" + nodes.length + " visible=" + visible
+                + " hidden={filter:" + hiddenBy.filter + ",pinMirror:" + hiddenBy.pinMirror
+                + ",group:" + hiddenBy.group + ",other:" + hiddenBy.other + "}"
+                + " filterCSS=" + (fs ? "Y(" + ((fs.textContent || "").match(/data-id=/g) || []).length + ")" : "n")
+                + " mirrors=" + (mir ? mir.children.length : 0)
+                + " earlyCSS=" + (doc.getElementById("wv-early-compact-css") ? "Y" : "n")
+                + " compactApplied=" + (win._wvCompactTitleBar ? "Y" : "n")
+                + " isMac=" + !!(Zotero as any).isMac
+                + (hiddenBy.other ? " otherHidden=" + JSON.stringify(hiddenTitles) : ""));
+        } catch (e) { try { Zotero.debug("[Weavero][tabdiag] err " + e); } catch (e2) {} }
+    }
+
+    /** Schedule a handful of tab-visibility snapshots after startup so a
+     *  single reproduction captures when/why tabs vanish (issue #15). */
+    _wvTabDiagStart() {
+        try {
+            const w0: any = Zotero.getMainWindow();
+            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            for (const ms of [500, 2000, 5000, 10000, 20000, 40000]) {
+                setT(() => {
+                    try {
+                        for (const w of (Zotero.getMainWindows() || [])) this._wvTabVisibilityDiag(w, "+" + ms + "ms");
+                    } catch (e) {}
+                }, ms);
+            }
+        } catch (e) {}
+    }
+
     _wvEarlyHideTitleBar(w: any) {
         try {
             // macOS uses the native global menu bar / traffic-light controls,

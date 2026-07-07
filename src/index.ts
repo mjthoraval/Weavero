@@ -3870,6 +3870,11 @@ class WeaveroPlugin {
         // startup restore a harmless no-op.)
         try { (this as any)._wvEnableRestoreClosedWindows(); } catch (e) {}
 
+        // Tab-visibility diagnostic (issue #15) — inert unless Zotero Debug
+        // Output is enabled; a few post-startup snapshots capture if/when tabs
+        // vanish and which mechanism accounts for it.
+        try { (this as any)._wvTabDiagStart(); } catch (e) {}
+
         Zotero.debug("[Weavero] initialized");
     }
 

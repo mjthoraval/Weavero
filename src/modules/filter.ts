@@ -4690,35 +4690,104 @@ class _FilterMixin {
             dbg("[Weavero][filter] changeCollectionTreeRow wrap err: " + e);
         }
 
-        // Diagnostic wrapper around selectItems so we see exactly
-        // what state Zotero has when it tries to select a freshly
-        // created item — what `_rowMap[id]` returns vs the wrapped
-        // `getRowCount`. Idempotent.
+        // Wrapper around selectItems: parity with Zotero's clear-on-miss
+        // behaviour. Upstream ItemTree#selectItems clears the quick
+        // search, tag selection — and, since zotero/zotero@64165ea, the
+        // in-window advanced search — when the target row can't be
+        // found, then retries once. Zotero knows nothing about the
+        // Weavero filter, so a note link / zotero://select targeting an
+        // item OUR filter hides would still miss. Mirror the same
+        // courtesy: when the original call ends with some requested
+        // item unselected while a Weavero filter is active, clear the
+        // filter and retry once. Detection is by selection outcome (not
+        // `_rowMap` internals) so it holds on both v9 and v10 row
+        // plumbing. Idempotent.
         try {
+            const WRAP_VER = 3;
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (itemsView && typeof itemsView.selectItems === "function"
-                && !itemsView._wvSelectItemsWrapped) {
-                const origSelect = itemsView.selectItems.bind(itemsView);
-                itemsView._wvSelectItemsWrapped = true;
+                && (itemsView._wvSelectItemsWrapVer || 0) < WRAP_VER) {
+                // Versioned re-wrap: assigning over any previous wrapper
+                // orphans its (possibly stale-instance) closure instead
+                // of stacking on it. `selectItems` is a prototype
+                // method, so teardown restores by deleting the own
+                // property. Bind the PROTOTYPE method, not
+                // `itemsView.selectItems` — the latter could be a
+                // leftover own-property wrapper from a predecessor
+                // instance, and binding it would stack us on a stale
+                // closure.
+                const proto = Object.getPrototypeOf(itemsView);
+                const origSelect = itemsView._wvOrigSelectItems
+                    || ((proto && typeof proto.selectItems === "function")
+                        ? proto.selectItems.bind(itemsView)
+                        : itemsView.selectItems.bind(itemsView));
+                itemsView._wvOrigSelectItems = origSelect;
+                itemsView._wvSelectItemsWrapVer = WRAP_VER;
                 itemsView.selectItems = async (ids, noRecurse, noScroll) => {
+                    let result = await origSelect(ids, noRecurse, noScroll);
                     try {
-                        const rp = itemsView.rowProvider;
-                        const info = {
-                            ids: ids,
-                            rowsLen: rp && rp._rows ? rp._rows.length : "?",
-                            wrappedCount: itemsView.rowCount,
-                            origCount: rp && rp._wvOrigGetRowCount
-                                ? rp._wvOrigGetRowCount() : "n/a",
-                        };
-                        for (const id of ids || []) {
-                            info["rowMap[" + id + "]"] =
-                                itemsView._rowMap ? itemsView._rowMap[id] : "n/a";
+                        // Resolve the LIVE plugin instance at call time —
+                        // this closure survives plugin reloads, so a
+                        // captured `this` could be a torn-down
+                        // predecessor whose clear would fight the
+                        // current instance's patches.
+                        const live: any = (Zotero as any).Weavero
+                            && (Zotero as any).Weavero.plugin;
+                        // `noRecurse` is Zotero's own retry marker — its
+                        // recursive call must not re-trigger us. The
+                        // getMainWindow guard scopes the clear to the
+                        // window the filter accessors implicitly target
+                        // (state is per-window; clearing another
+                        // window's filter would be a cross-window
+                        // clobber).
+                        if (live && !live._wvDestroyed
+                            && !noRecurse && ids && ids.length
+                            && win === Zotero.getMainWindow()
+                            && live._isFilterActive(live._filterState)) {
+                            // A miss is "not VISIBLE through the
+                            // filtered view", not "not selected":
+                            // Zotero's selection model works on the
+                            // unfiltered `_rows`, so a hidden target
+                            // can be "selected" while the user stares
+                            // at an empty list. Scan the wrapped
+                            // provider (what's actually displayed);
+                            // v9 has no rowProvider — fall back to
+                            // the itemsView accessors its patches
+                            // live on.
+                            const missed = (() => {
+                                try {
+                                    const rp = itemsView.rowProvider;
+                                    const getN = (rp && typeof rp.getRowCount === "function")
+                                        ? () => rp.getRowCount()
+                                        : () => itemsView.rowCount;
+                                    const getR = (rp && typeof rp.getRow === "function")
+                                        ? (i: number) => rp.getRow(i)
+                                        : (i: number) => itemsView.getRow(i);
+                                    const want = new Set(ids);
+                                    const seen = new Set();
+                                    const n = getN();
+                                    for (let i = 0; i < n; i++) {
+                                        const r = getR(i);
+                                        const rid = r && r.ref && r.ref.id;
+                                        if (rid != null && want.has(rid)) {
+                                            seen.add(rid);
+                                            if (seen.size === want.size) break;
+                                        }
+                                    }
+                                    return seen.size < want.size;
+                                } catch (e) { return false; }
+                            })();
+                            if (missed) {
+                                dbg("[Weavero][filter] selectItems missed "
+                                    + "under active filter — clearing the "
+                                    + "Weavero filter and retrying once "
+                                    + "(parity with Zotero's clear-on-miss)");
+                                live._clearAllFilters();
+                                result = await origSelect(ids, true, noScroll);
+                            }
                         }
-                    } catch (e) {}
-                    let result;
-                    try { result = await origSelect(ids, noRecurse, noScroll); }
-                    catch (e) {
-                        throw e;
+                    } catch (e) {
+                        dbg("[Weavero][filter] selectItems filter-parity err: " + e);
                     }
                     return result;
                 };
@@ -4741,6 +4810,13 @@ class _FilterMixin {
         try {
             const win = Zotero.getMainWindow();
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
+            // Restore the selectItems wrap (an own property shadowing
+            // the prototype method — delete lets it show through).
+            if (itemsView && itemsView._wvSelectItemsWrapVer) {
+                delete itemsView.selectItems;
+                delete itemsView._wvOrigSelectItems;
+                delete itemsView._wvSelectItemsWrapVer;
+            }
             const rp = itemsView && itemsView.rowProvider;
             if (rp && rp._wvOrigGetRow) {
                 // Delete the own-property monkey-patches so the

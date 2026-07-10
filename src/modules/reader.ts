@@ -11508,11 +11508,46 @@ class _ReaderMixin {
         });
     }
 
+    /** Resolve the page's PDF view-box origin in user-space units,
+     *  cached on the .page element. Zotero stores annotation rects in
+     *  RAW PDF user space, but a cropped page (CropBox origin ≠ 0,0 —
+     *  e.g. Annual Reviews downloads use view [72,72,504,720]) renders
+     *  with the view box as its visible frame, so badge placement must
+     *  subtract the origin: left = x1 - x0, top = yTop - y2. For the
+     *  common uncropped [0,0,w,h] case this returns {x0:0, yTop:
+     *  pageHeight} and the formula reduces to the historical
+     *  `pageHeight - y2`. The fallback is deliberately NOT cached, so a
+     *  page whose pdf.js pdfPage hasn't loaded yet gets corrected on a
+     *  later overlay scan. */
+    _wvPageViewOrigin(idoc, page, pageIdx, pageHeight) {
+        const cx = parseFloat(page.dataset.wvViewX0 || "");
+        const cy = parseFloat(page.dataset.wvViewYTop || "");
+        if (isFinite(cx) && isFinite(cy)) return { x0: cx, yTop: cy };
+        let v = null;
+        try {
+            const w = idoc.defaultView;
+            const app = w && (w.wrappedJSObject || w).PDFViewerApplication;
+            const pg = app && app.pdfViewer && app.pdfViewer._pages
+                && app.pdfViewer._pages[pageIdx];
+            v = pg && pg.pdfPage && pg.pdfPage.view;   // [x0, y0, x1, y1]
+        } catch (e) {}
+        if (v && v.length === 4) {
+            const x0 = Number(v[0]);
+            const yTop = Number(v[3]);
+            if (isFinite(x0) && isFinite(yTop) && yTop > 0) {
+                page.dataset.wvViewX0 = String(x0);
+                page.dataset.wvViewYTop = String(yTop);
+                return { x0, yTop };
+            }
+        }
+        return { x0: 0, yTop: pageHeight };
+    }
+
     /** Re-place the .wv-marker-badge(s) for a single annotation given
      *  a live `annotation` object (from upstream's
      *  `_primaryView.action.annotation`). Mirrors the placement formula
-     *  in `_processNoteAnnotationOverlays`: leftPdf = rect.x1, topPdf
-     *  = pageHeight - rect.y2, with the comment badge offset by
+     *  in `_processNoteAnnotationOverlays`: leftPdf = rect.x1 - viewX0,
+     *  topPdf = viewYTop - rect.y2, with the comment badge offset by
      *  REL_OFFSET_PDF when a relations badge also exists for the same
      *  annotation. */
     _updateCanvasBadgePositionLive(idoc, ann) {
@@ -11538,7 +11573,8 @@ class _ReaderMixin {
         const REL_OFFSET_PDF      = 8;
         const HANDLE_CLEAR_DX_PDF = 1.25;
         const HANDLE_CLEAR_DY_PDF = 1.25;
-        const topPdf = pageHeight - y2 - HANDLE_CLEAR_DY_PDF;
+        const vo = this._wvPageViewOrigin(idoc, page, pageIdx, pageHeight);
+        const topPdf = vo.yTop - y2 - HANDLE_CLEAR_DY_PDF;
         const cmtBadge = overlay.querySelector(
             ".wv-marker-badge[data-wv-for=\"" + key + "\"]"
             + "[data-wv-purpose=\"comment\"]");
@@ -11554,8 +11590,8 @@ class _ReaderMixin {
             badge.dataset.wvLeftPdf = String(leftPdf);
             badge.dataset.wvTopPdf  = String(topPdf);
         };
-        if (relBadge) place(relBadge, x1 + HANDLE_CLEAR_DX_PDF);
-        if (cmtBadge) place(cmtBadge, x1 + HANDLE_CLEAR_DX_PDF
+        if (relBadge) place(relBadge, x1 - vo.x0 + HANDLE_CLEAR_DX_PDF);
+        if (cmtBadge) place(cmtBadge, x1 - vo.x0 + HANDLE_CLEAR_DX_PDF
             + (hasBoth ? REL_OFFSET_PDF : 0));
     }
 
@@ -11978,12 +12014,13 @@ class _ReaderMixin {
 
             const pageOffTop  = page.offsetTop  + "px";
             const pageOffLeft = page.offsetLeft + "px";
+            const vo = this._wvPageViewOrigin(idoc, page, pageIdx, pageHeight);
             for (const item of wantList) {
                 const purpose = item.kind;  // "comment" | "relations"
                 const r = item.pos.rects[0];
                 const x1 = r[0], y1 = r[1], x2 = r[2], y2 = r[3];
-                const leftPdf = x1 + (item.offsetPdf || 0) + HANDLE_CLEAR_DX_PDF;
-                const topPdf  = pageHeight - y2 - HANDLE_CLEAR_DY_PDF;
+                const leftPdf = x1 - vo.x0 + (item.offsetPdf || 0) + HANDLE_CLEAR_DX_PDF;
+                const topPdf  = vo.yTop - y2 - HANDLE_CLEAR_DY_PDF;
                 let badge = overlay.querySelector(
                     ".wv-marker-badge[data-wv-for=\"" + item.key + "\"]"
                     + "[data-wv-purpose=\"" + purpose + "\"]");

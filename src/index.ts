@@ -3850,8 +3850,10 @@ class WeaveroPlugin {
                 try { (this as any)._wvPatchItemDetailsTabSelect(w); } catch (e) {}
             }
         } catch (e) {}
-        // Window-type title glyphs on every open window (mains + readers).
+        // Window-type title glyphs (opt-in) + per-window taskbar icons on
+        // every open window (mains + readers).
         try { (this as any)._wvRefreshTitleGlyphs(); } catch (e) {}
+        try { (this as any)._wvRefreshWindowIcons(); } catch (e) {}
 
         // Reader-window active-tab self-heal: re-run the switch for each
         // deck's active tab shortly after (re)init — the switch chokepoint
@@ -3898,8 +3900,10 @@ class WeaveroPlugin {
             // Multi-main-window fix: ignore other windows' tab-select notifier
             // events in this window's <item-details> (they froze the pane).
             try { (this as any)._wvPatchItemDetailsTabSelect(_window); } catch (e) {}
-            // Window-type glyph in the OS title (⚓ / 🟦 main, 📕 reader).
+            // Window-type glyph in the OS title (opt-in) + per-window
+            // taskbar icon (Windows; Chrome-profile-style badge).
             try { (this as any)._wvWireTitleGlyph(_window); } catch (e) {}
+            try { (this as any)._wvApplyWindowIcon(_window); } catch (e) {}
             // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
             try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}
             try { (this as any)._wvWireRestoreTracing(_window); } catch (e) {}
@@ -4285,8 +4289,10 @@ class WeaveroPlugin {
                 try { (this as any)._wvUnpatchItemDetailsTabSelect(w); } catch (e) {}
             }
         } catch (e) {}
-        // Strip the window-type title glyphs (removes the setter shadows).
+        // Strip the window-type title glyphs (removes the setter shadows)
+        // and restore the native window icons.
         try { (this as any)._wvRefreshTitleGlyphs(true); } catch (e) {}
+        try { (this as any)._wvRefreshWindowIcons(true); } catch (e) {}
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during
@@ -4906,6 +4912,9 @@ Zotero.Weavero = {
                 // can read the absolute rootURI without needing to
                 // import the index.ts closure.
                 _Weavero._rootURI = rootURI;
+                // Plugin version — used to version extracted assets
+                // (e.g. the per-window .ico cache).
+                _Weavero._version = version;
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;

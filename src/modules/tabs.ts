@@ -31,15 +31,19 @@ const WV_ANCHOR_PATH = "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3
 // Task View (Win+Tab) and Alt-Tab all render `document.title` as the
 // caption, so a 2-char prefix is the one per-window mark that's legible
 // there (an in-window pill scales down to invisible in a ~250px live
-// thumbnail — tested 2026-07-11). Shape = window kind (anchor mark /
-// coloured square = main, coloured book = reader), colour = which
-// window. The informative selected-tab part of the title is kept.
-const WV_TITLE_GLYPH_ANCHOR = "⚓";                        // ⚓
+// thumbnail — tested 2026-07-11). Shape FAMILY = window kind (anchor
+// mark / square = main, circle = reader); the fill variant tells
+// same-kind windows apart. MONOCHROME BMP Geometric Shapes only: the
+// taskbar preview caption is drawn by the legacy GDI text renderer,
+// which has no colour-emoji support — coloured squares (U+1F7E6…) have
+// no monochrome fallback and render as tofu boxes there (tested
+// 2026-07-11). The informative selected-tab part of the title is kept.
+const WV_TITLE_GLYPH_ANCHOR = "⚓";
 const WV_TITLE_GLYPHS_MAIN = [
-    "\u{1F7E6}", "\u{1F7E9}", "\u{1F7E7}", "\u{1F7EA}", "\u{1F7E5}", "\u{1F7EB}",   // 🟦🟩🟧🟪🟥🟫
+    "■", "□", "▣", "▤", "▥", "▦",       // U+25A0/25A1/25A3/25A4/25A5/25A6
 ];
 const WV_TITLE_GLYPHS_READER = [
-    "\u{1F4D5}", "\u{1F4D7}", "\u{1F4D8}", "\u{1F4D9}", "\u{1F4D2}", "\u{1F4D3}",   // 📕📗📘📙📒📓
+    "●", "○", "◉", "◐", "◑", "◒",       // U+25CF/25CB/25C9/25D0/25D1/25D2
 ];
 const WV_TITLE_GLYPH_STRIP_RE = new RegExp("^(?:"
     + [WV_TITLE_GLYPH_ANCHOR, ...WV_TITLE_GLYPHS_MAIN, ...WV_TITLE_GLYPHS_READER].join("|")
@@ -1730,14 +1734,17 @@ class _TabsMixin {
         } catch (er) { Zotero.debug("[Weavero] _wvWindowHeaderContext err: " + er); }
     }
 
-    /** Toggle for the window-type title glyphs (default on, under the
-     *  Tabs and Windows master). */
+    /** Toggle for the window-type title glyphs (default OFF — the user
+     *  found the prefix stole space from the already-short preview
+     *  captions; per-window taskbar ICONS are the default cue instead.
+     *  The glyphs remain as an opt-in, e.g. for non-Windows platforms
+     *  where the icon route doesn't exist). */
     _getEnableWindowTitleGlyphs() {
         try {
             if (!(this as any)._getTabsAndWindowsMaster()) return false;
             const v = Zotero.Prefs.get("weavero.windowTitleGlyphs");
-            return v === undefined ? true : !!v;
-        } catch (e) { return true; }
+            return v === undefined ? false : !!v;
+        } catch (e) { return false; }
     }
 
     /** The window-type glyph for a window ("" when the feature is off or
@@ -1869,6 +1876,154 @@ class _TabsMixin {
             for (const w of (Zotero.getMainWindows() || [])) apply(w);
             const en = Services.wm.getEnumerator("zotero:reader");
             while (en.hasMoreElements()) apply(en.getNext());
+        } catch (e) {}
+    }
+
+    /** Toggle for the per-window taskbar icons (Windows only; default on). */
+    _getEnableWindowIcons() {
+        try {
+            if (!Zotero.isWin) return false;
+            if (!(this as any)._getTabsAndWindowsMaster()) return false;
+            const v = Zotero.Prefs.get("weavero.windowIcons");
+            return v === undefined ? true : !!v;
+        } catch (e) { return false; }
+    }
+
+    /** Extract one of the bundled per-window .ico files (icons/win/ in
+     *  the XPI) to <data dir>/weavero/win-icons/ — LoadImageW needs a
+     *  real file path. Re-extracted per plugin version. */
+    async _wvWinIconFile(name: string): Promise<string | null> {
+        try {
+            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "win-icons");
+            const path = PathUtils.join(dir, name + ".ico");
+            const stampPath = PathUtils.join(dir, "VERSION");
+            const ver = String((this as any)._version || "");
+            let fresh = false;
+            try {
+                fresh = (await IOUtils.exists(path))
+                    && (await IOUtils.readUTF8(stampPath)) === ver;
+            } catch (e) {}
+            if (!fresh) {
+                await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
+                const resp = await fetch((this as any)._rootURI + "icons/win/" + name + ".ico");
+                const buf = new Uint8Array(await resp.arrayBuffer());
+                await IOUtils.write(path, buf);
+                try { await IOUtils.writeUTF8(stampPath, ver); } catch (e) {}
+            }
+            return path;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWinIconFile err: " + e);
+            return null;
+        }
+    }
+
+    /** Chrome-profile-style per-window taskbar icon: composite badges on
+     *  Zotero's real icon artwork (square badge = main window, round
+     *  badge = reader window, colour = which window; the anchor main
+     *  keeps the native unbadged icon). Set via Win32 WM_SETICON — the
+     *  same mechanism Chrome uses for profile windows — so the taskbar
+     *  preview captions, Task View and Alt-Tab distinguish windows
+     *  without touching the title text. Runtime-only state: re-applied
+     *  on every startup / window open by the callers. */
+    async _wvApplyWindowIcon(win: any) {
+        try {
+            if (!win || win.closed || !this._getEnableWindowIcons()) return;
+            const wt = win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            const isReader = wt === "zotero:reader";
+            const mains = Zotero.getMainWindows() || [];
+            if (!isReader && !mains.includes(win)) return;
+            if (!isReader && this._wvIsAnchorWindow(win)) {
+                // Anchor keeps the native icon; undo ours if the window
+                // was promoted (e.g. the old anchor closed).
+                this._wvRestoreWindowIcon(win);
+                return;
+            }
+            const idx = this._wvTitleGlyphIdx(win, isReader);
+            const name = (isReader ? "reader-" : "main-") + ((idx % 6) + 1);
+            if (win._wvWinIconName === name) return;   // already applied
+            const path = await this._wvWinIconFile(name);
+            if (!path || win.closed) return;
+            const set = this._wvSetWindowIconFromFile(win, path);
+            if (set) win._wvWinIconName = name;
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyWindowIcon err: " + e); }
+    }
+
+    /** Low-level Win32: load 16px + 32px frames from the .ico and set
+     *  them as the window's small/big icons. Keeps the previous HICONs
+     *  on the window for restore, and our loaded HICONs for cleanup. */
+    _wvSetWindowIconFromFile(win: any, path: string): boolean {
+        try {
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor)
+                .getInterface(Ci.nsIBaseWindow);
+            const hwndStr = bw.nativeHandle;
+            if (!hwndStr) return false;
+            const user32 = ctypes.open("user32.dll");
+            try {
+                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
+                const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
+                    ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
+                const LoadImageW = user32.declare("LoadImageW", ctypes.winapi_abi,
+                    HICON, ctypes.voidptr_t, ctypes.char16_t.ptr, ctypes.unsigned_int,
+                    ctypes.int, ctypes.int, ctypes.unsigned_int);
+                const IMAGE_ICON = 1, LR_LOADFROMFILE = 0x10;
+                const small = LoadImageW(null, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+                const big = LoadImageW(null, path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+                if (small.isNull() && big.isNull()) return false;
+                const hwnd = HWND(ctypes.UInt64(hwndStr));
+                const WM_SETICON = 0x0080;
+                const prevSmall = SendMessageW(hwnd, WM_SETICON, 0,
+                    ctypes.cast(small, ctypes.intptr_t));
+                const prevBig = SendMessageW(hwnd, WM_SETICON, 1,
+                    ctypes.cast(big, ctypes.intptr_t));
+                // First replacement: remember the ORIGINAL icons for restore.
+                if (!win._wvPrevWinIcons) {
+                    win._wvPrevWinIcons = { small: String(prevSmall), big: String(prevBig) };
+                }
+                return true;
+            } finally { user32.close(); }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSetWindowIconFromFile err: " + e);
+            return false;
+        }
+    }
+
+    /** Put the window's original icons back (teardown / anchor promotion). */
+    _wvRestoreWindowIcon(win: any) {
+        try {
+            const prev = win && win._wvPrevWinIcons;
+            if (!prev || win.closed) return;
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor)
+                .getInterface(Ci.nsIBaseWindow);
+            const user32 = ctypes.open("user32.dll");
+            try {
+                const HWND = ctypes.voidptr_t;
+                const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
+                    ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
+                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
+                SendMessageW(hwnd, 0x0080, 0, ctypes.intptr_t(ctypes.UInt64(prev.small)));
+                SendMessageW(hwnd, 0x0080, 1, ctypes.intptr_t(ctypes.UInt64(prev.big)));
+            } finally { user32.close(); }
+            delete win._wvPrevWinIcons;
+            delete win._wvWinIconName;
+        } catch (e) {}
+    }
+
+    /** Apply or restore per-window icons on every open window. */
+    _wvRefreshWindowIcons(forceOff?: boolean) {
+        try {
+            if (!Zotero.isWin) return;
+            const on = !forceOff && this._getEnableWindowIcons();
+            const each = (w: any) => {
+                try { if (on) this._wvApplyWindowIcon(w); else this._wvRestoreWindowIcon(w); } catch (e) {}
+            };
+            for (const w of (Zotero.getMainWindows() || [])) each(w);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) each(en.getNext());
         } catch (e) {}
     }
 

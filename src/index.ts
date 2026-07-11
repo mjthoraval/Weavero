@@ -3842,6 +3842,13 @@ class WeaveroPlugin {
                 if (w === focused) continue;
                 try { this.onMainWindowLoad(w); } catch (e) { Zotero.debug("[Weavero] init extra-window wiring err: " + e); }
             }
+            // The focused window skips the loop above (its setup ran earlier in
+            // init) — but that earlier setup predates the <item-details>
+            // tab-select filter, so apply it here for EVERY window, focused
+            // included (idempotent).
+            for (const w of all) {
+                try { (this as any)._wvPatchItemDetailsTabSelect(w); } catch (e) {}
+            }
         } catch (e) {}
 
         // Reader-window active-tab self-heal: re-run the switch for each
@@ -3886,6 +3893,9 @@ class WeaveroPlugin {
             try { (this as any)._wvWireReopenClosedShortcut(_window); } catch (e) {}
             // Session-save hardening (see startup pass): base types for -loading tabs.
             try { (this as any)._wvPatchTabsGetState(_window); } catch (e) {}
+            // Multi-main-window fix: ignore other windows' tab-select notifier
+            // events in this window's <item-details> (they froze the pane).
+            try { (this as any)._wvPatchItemDetailsTabSelect(_window); } catch (e) {}
             // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
             try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}
             try { (this as any)._wvWireRestoreTracing(_window); } catch (e) {}
@@ -4265,6 +4275,12 @@ class WeaveroPlugin {
             (this as any)._wvWindowStoreFrozen = true;
         } catch (e) {}
         try { (this as any)._wvUnwireEarlyRestoreTracing(); } catch (e) {}
+        // Restore the per-window <item-details> tab-select filter.
+        try {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { (this as any)._wvUnpatchItemDetailsTabSelect(w); } catch (e) {}
+            }
+        } catch (e) {}
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during

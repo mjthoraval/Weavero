@@ -27,6 +27,24 @@ declare const Zotero_Tabs: any;
 const WV_ANCHOR_VIEWBOX = "0 0 24 24";
 const WV_ANCHOR_PATH = "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3V7.82C14.16 7.4 15 6.3 15 5c0-1.65-1.35-3-3-3S9 3.35 9 5c0 1.3.84 2.4 2 2.82V9H8v2h3v8.92c-2.22-.33-4.59-1.68-5.55-3.37L7 15l-4-3v3c0 3.88 4.92 7 9 7s9-3.12 9-7v-3l-4 3zM12 4c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z";
 
+// Window-type glyphs for the OS window title. Taskbar hover previews,
+// Task View (Win+Tab) and Alt-Tab all render `document.title` as the
+// caption, so a 2-char prefix is the one per-window mark that's legible
+// there (an in-window pill scales down to invisible in a ~250px live
+// thumbnail — tested 2026-07-11). Shape = window kind (anchor mark /
+// coloured square = main, coloured book = reader), colour = which
+// window. The informative selected-tab part of the title is kept.
+const WV_TITLE_GLYPH_ANCHOR = "⚓";                        // ⚓
+const WV_TITLE_GLYPHS_MAIN = [
+    "\u{1F7E6}", "\u{1F7E9}", "\u{1F7E7}", "\u{1F7EA}", "\u{1F7E5}", "\u{1F7EB}",   // 🟦🟩🟧🟪🟥🟫
+];
+const WV_TITLE_GLYPHS_READER = [
+    "\u{1F4D5}", "\u{1F4D7}", "\u{1F4D8}", "\u{1F4D9}", "\u{1F4D2}", "\u{1F4D3}",   // 📕📗📘📙📒📓
+];
+const WV_TITLE_GLYPH_STRIP_RE = new RegExp("^(?:"
+    + [WV_TITLE_GLYPH_ANCHOR, ...WV_TITLE_GLYPHS_MAIN, ...WV_TITLE_GLYPHS_READER].join("|")
+    + ")\\s+");
+
 // Group-library badge glyph — a symmetric, bold 3-column temple centred on x8.
 // Zotero's stock library-group icon has 1px columns that blur when scaled down to
 // badge size, so we draw a chunkier version that stays sharp. #59ADC4 is the same
@@ -1712,6 +1730,148 @@ class _TabsMixin {
         } catch (er) { Zotero.debug("[Weavero] _wvWindowHeaderContext err: " + er); }
     }
 
+    /** Toggle for the window-type title glyphs (default on, under the
+     *  Tabs and Windows master). */
+    _getEnableWindowTitleGlyphs() {
+        try {
+            if (!(this as any)._getTabsAndWindowsMaster()) return false;
+            const v = Zotero.Prefs.get("weavero.windowTitleGlyphs");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    /** The window-type glyph for a window ("" when the feature is off or
+     *  the window kind is unknown). Anchor main → anchor mark; other
+     *  mains → coloured square; reader windows → coloured book. Kind is
+     *  re-derived on every call, so a window that changes role (e.g. the
+     *  anchor closing promotes another main) self-corrects on its next
+     *  title write. */
+    _wvWindowTitleGlyph(win: any): string {
+        try {
+            if (!this._getEnableWindowTitleGlyphs()) return "";
+            const wt = win && win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            if (wt === "zotero:reader") {
+                return WV_TITLE_GLYPHS_READER[
+                    this._wvTitleGlyphIdx(win, true) % WV_TITLE_GLYPHS_READER.length];
+            }
+            const mains = Zotero.getMainWindows() || [];
+            if (win && mains.includes(win)) {
+                if (this._wvIsAnchorWindow(win)) return WV_TITLE_GLYPH_ANCHOR;
+                return WV_TITLE_GLYPHS_MAIN[
+                    this._wvTitleGlyphIdx(win, false) % WV_TITLE_GLYPHS_MAIN.length];
+            }
+        } catch (e) {}
+        return "";
+    }
+
+    /** Session-stable colour index: lowest index unused among live
+     *  windows of the same kind (non-anchor mains vs reader windows). */
+    _wvTitleGlyphIdx(win: any, isReader: boolean): number {
+        if (win._wvTitleGlyphIdx != null) return win._wvTitleGlyphIdx;
+        const used = new Set();
+        try {
+            if (isReader) {
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) {
+                    const w: any = en.getNext();
+                    if (w !== win && w && w._wvTitleGlyphIdx != null) used.add(w._wvTitleGlyphIdx);
+                }
+            } else {
+                for (const w of (Zotero.getMainWindows() || [])) {
+                    if (w !== win && (w as any)._wvTitleGlyphIdx != null) used.add((w as any)._wvTitleGlyphIdx);
+                }
+            }
+        } catch (e) {}
+        let i = 0;
+        while (used.has(i)) i++;
+        win._wvTitleGlyphIdx = i;
+        return i;
+    }
+
+    _wvStripTitleGlyph(s: any): string {
+        let out = String(s == null ? "" : s);
+        while (WV_TITLE_GLYPH_STRIP_RE.test(out)) out = out.replace(WV_TITLE_GLYPH_STRIP_RE, "");
+        return out;
+    }
+
+    /** A display label with the window's glyph prepended — reused by the
+     *  tabs-menu window headers and the move-target menus so the
+     *  colour ↔ window association matches the OS captions. */
+    _wvGlyphLabel(win: any, name: string): string {
+        try {
+            const g = this._wvWindowTitleGlyph(win);
+            return g ? g + " " + name : name;
+        } catch (e) { return name; }
+    }
+
+    _wvGlyphizeTitle(win: any, v: any): string {
+        const base = this._wvStripTitleGlyph(v);
+        try {
+            const g = this._wvWindowTitleGlyph(win);
+            return g ? g + " " + base : base;
+        } catch (e) { return base; }
+    }
+
+    /** Shadow this document's `title` prototype accessor with an own
+     *  property so EVERY title write (tab switch, reader navigation)
+     *  re-applies the glyph — there is no <title> node to observe in
+     *  these windows (verified live 2026-07-11). Reload-safe: the setter
+     *  resolves the live plugin at write time. Teardown deletes the
+     *  shadow so the prototype accessor shows through. */
+    _wvWireTitleGlyph(win: any) {
+        try {
+            if (!win || !win.document || win.closed) return;
+            const doc: any = win.document;
+            if (!doc._wvTitleGlyphWired) {
+                const desc = Object.getOwnPropertyDescriptor(win.Document.prototype, "title");
+                if (!desc || !desc.get || !desc.set) return;
+                Object.defineProperty(doc, "title", {
+                    configurable: true,
+                    get() { return desc.get.call(this); },
+                    set(v: any) {
+                        let out = String(v == null ? "" : v);
+                        try {
+                            const live: any = (Zotero as any).Weavero
+                                && (Zotero as any).Weavero.plugin;
+                            if (live && !live._wvDestroyed) out = live._wvGlyphizeTitle(win, out);
+                        } catch (e) {}
+                        desc.set.call(this, out);
+                    },
+                });
+                doc._wvTitleGlyphWired = true;
+            }
+            // Re-apply on the current title (covers wire-after-open and
+            // kind changes).
+            try { doc.title = doc.title; } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWireTitleGlyph err: " + e); }
+    }
+
+    _wvUnwireTitleGlyph(win: any) {
+        try {
+            const doc: any = win && win.document;
+            if (!doc || !doc._wvTitleGlyphWired) return;
+            const cur = doc.title;
+            delete doc.title;
+            delete doc._wvTitleGlyphWired;
+            try { doc.title = this._wvStripTitleGlyph(cur); } catch (e) {}
+        } catch (e) {}
+    }
+
+    /** Apply or strip the glyph on every open window — init, pref
+     *  toggle, and teardown all funnel through here. */
+    _wvRefreshTitleGlyphs(forceOff?: boolean) {
+        try {
+            const on = !forceOff && this._getEnableWindowTitleGlyphs();
+            const apply = (w: any) => {
+                try { if (on) this._wvWireTitleGlyph(w); else this._wvUnwireTitleGlyph(w); } catch (e) {}
+            };
+            for (const w of (Zotero.getMainWindows() || [])) apply(w);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) apply(en.getNext());
+        } catch (e) {}
+    }
+
     /** A window-section header (label + count), styled like the library headers.
      *  Shared by the all-windows list AND the expanded-session view. */
     _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string, collapseKey?: string, panel?: any, winRef?: any) {
@@ -1734,7 +1894,9 @@ class _TabsMixin {
         }
         const lbl = doc.createElement("span");
         lbl.className = "wv-tabs-menu-library-name";
-        lbl.textContent = label;
+        // Window headers carry the same glyph as the OS caption so the
+        // colour ↔ window association holds across surfaces.
+        lbl.textContent = winRef ? this._wvGlyphLabel(winRef, label) : label;
         header.appendChild(lbl);
         // Anchor (primary) window: mark it on the RIGHT of the name with an anchor
         // glyph.

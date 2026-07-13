@@ -5160,6 +5160,66 @@ class _TabsMixin {
         return null;
     }
 
+    /** Multi-main-window fix: `<item-details>` subscribes to the GLOBAL
+     *  `tab`/`select` notifier, and `_handleTabSelect` sets
+     *  `skipRender = !ids.includes(this.tabID)` — so a tab switch in
+     *  ANOTHER main window (whose tab id this window doesn't have)
+     *  freezes this window's visible item pane: `skipRender` sticks
+     *  true and item clicks stop repainting (observed 2026-07-11:
+     *  selecting a reader tab in window 2 froze window 1's library
+     *  pane on its last item). Upstream never sees this — core Zotero
+     *  has exactly one main window; multiple mains are Weavero's
+     *  feature, so the guard is ours to add. Patch the per-window
+     *  custom-element prototype (covers the library pane AND every
+     *  context-pane instance) to ignore select events that involve
+     *  none of THIS window's tabs. Also heals an already-poisoned
+     *  visible pane at wire time. Idempotent per window. */
+    _wvPatchItemDetailsTabSelect(win: any) {
+        try {
+            const cls = win && win.customElements && win.customElements.get("item-details");
+            const proto = cls && cls.prototype;
+            if (proto && typeof proto._handleTabSelect === "function"
+                && !proto._wvOrigHandleTabSelect) {
+                const orig = proto._handleTabSelect;
+                proto._wvOrigHandleTabSelect = orig;
+                proto._handleTabSelect = function (tabIDs: any) {
+                    try {
+                        const Z = win.Zotero_Tabs;
+                        if (Z && Array.isArray(tabIDs)
+                            && !tabIDs.some((id: any) =>
+                                Z._tabs.some((t: any) => t.id === id))) {
+                            return;   // another window's tab switch — not ours
+                        }
+                    } catch (e) {}
+                    return orig.apply(this, arguments);
+                };
+            }
+            // Heal: if this window's pane was already poisoned by a
+            // foreign select (visible tab selected but skipRender true),
+            // re-enable and repaint now.
+            try {
+                const det = win.ZoteroPane && win.ZoteroPane.itemPane
+                    && win.ZoteroPane.itemPane._itemDetails;
+                if (det && det.skipRender
+                    && win.Zotero_Tabs && win.Zotero_Tabs.selectedID === det.tabID) {
+                    det.skipRender = false;
+                    det.render();
+                }
+            } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvPatchItemDetailsTabSelect err: " + e); }
+    }
+
+    _wvUnpatchItemDetailsTabSelect(win: any) {
+        try {
+            const cls = win && win.customElements && win.customElements.get("item-details");
+            const proto = cls && cls.prototype;
+            if (proto && proto._wvOrigHandleTabSelect) {
+                proto._handleTabSelect = proto._wvOrigHandleTabSelect;
+                delete proto._wvOrigHandleTabSelect;
+            }
+        } catch (e) {}
+    }
+
     /** Wrap this window's `Zotero_Tabs.getState` so transient `-loading` tab
      *  types serialize as their BASE type. Zotero flips a lazy tab to
      *  `note-loading` / `reader-loading` while its load hook runs and only

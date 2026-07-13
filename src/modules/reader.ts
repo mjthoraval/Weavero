@@ -5562,6 +5562,16 @@ class _ReaderMixin {
                 } else {
                     strip.appendChild(sp);
                 }
+                // (Re)apply the badge dot + name tooltip now that the spacer
+                // verifiably exists — at a fresh startup _wvWTState runs
+                // BEFORE the strip is built, so its wiring found no spacer:
+                // the CSS dot showed (style element) but the title/hover
+                // listeners were missing ("No hover popup for Reader
+                // windows", 2026-07-13). Idempotent per element.
+                try {
+                    (this as any)._wvUpdateWindowBadgeDot(win,
+                        !!(this as any)._getTabsAndWindowsMaster(), true);
+                } catch (e2) {}
             } catch (e) {}
             // Drop any legacy tabs left directly under the strip (pre-container).
             for (const el of strip.querySelectorAll(":scope > .wv-window-tab")) {

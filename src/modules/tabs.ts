@@ -2052,23 +2052,6 @@ class _TabsMixin {
             // plain frame (a main window has tabs — same cue as the menu icons).
             ic.className = "wv-winicon" + (iconType === "reader" ? "" : " wv-winicon-main");
             header.appendChild(ic);
-            // The window's badge COLOUR (same shared pool as the taskbar icon
-            // and title-bar dot): square = main, circle = reader. The anchor
-            // keeps its ⚓ mark instead (user request 2026-07-13).
-            if (winRef && iconType !== "anchor") {
-                try {
-                    const isReader = iconType === "reader";
-                    const color = WV_WIN_BADGE_COLORS[
-                        this._wvTitleGlyphIdx(winRef, isReader) % WV_WIN_BADGE_COLORS.length];
-                    const dot = doc.createElement("span");
-                    dot.className = "wv-winhdr-color-dot";
-                    dot.style.cssText = "display:inline-block;width:9px;height:9px;"
-                        + "flex:0 0 auto;margin-inline-end:4px;align-self:center;"
-                        + "background-color:" + color + ";"
-                        + "border-radius:" + (isReader ? "50%" : "2px") + ";";
-                    header.appendChild(dot);
-                } catch (e) {}
-            }
         } else if (iconType) {
             const ic = doc.createElement("span");
             ic.className = "icon icon-css " + iconType;   // Zotero library/group/feed icon
@@ -2080,6 +2063,25 @@ class _TabsMixin {
         // colour ↔ window association holds across surfaces.
         lbl.textContent = winRef ? this._wvGlyphLabel(winRef, label) : label;
         header.appendChild(lbl);
+        // The window's badge COLOUR dot on the RIGHT of the name — the same
+        // position as the anchor's ⚓ mark below (user request 2026-07-13):
+        // square = main, circle = reader, colour from the shared pool that
+        // also drives the taskbar icon and title-bar dot.
+        if (winRef && iconType !== "anchor"
+            && (iconType === "main" || iconType === "reader" || iconType === "window")) {
+            try {
+                const isReader = iconType === "reader";
+                const color = WV_WIN_BADGE_COLORS[
+                    this._wvTitleGlyphIdx(winRef, isReader) % WV_WIN_BADGE_COLORS.length];
+                const dot = doc.createElement("span");
+                dot.className = "wv-winhdr-color-dot";
+                dot.style.cssText = "display:inline-block;width:9px;height:9px;"
+                    + "flex:0 0 auto;margin-inline-start:4px;align-self:center;"
+                    + "background-color:" + color + ";"
+                    + "border-radius:" + (isReader ? "50%" : "2px") + ";";
+                header.appendChild(dot);
+            } catch (e) {}
+        }
         // Anchor (primary) window: mark it on the RIGHT of the name with an anchor
         // glyph.
         if (iconType === "anchor") {
@@ -6753,7 +6755,7 @@ class _TabsMixin {
                 const en = Services.wm.getEnumerator("zotero:reader");
                 while (en.hasMoreElements()) {
                     const w: any = en.getNext();
-                    if (w._wvWTDeferredFire && w._wvWTDeferredActiveId != null) targets.push(w._wvWTDeferredFire);
+                    if (w._wvWTDeferredFire && w._wvWTDeferredActiveId != null) targets.push({ fire: w._wvWTDeferredFire, win: w });
                 }
             } catch (e) {}
             if (!targets.length) return;
@@ -6770,12 +6772,18 @@ class _TabsMixin {
                 // persist and revive with the flag. Assert the focused window
                 // once all warming is done.
                 try { (this as any)._wvBgRestoreStart({ holdMs: 20000 }); } catch (e) {}
-                (this as any)._wvBgExpectSteal = Date.now() + 6000;   // this load may raise its window
                 if (i >= targets.length) {
                     try { setT(() => { try { (this as any)._wvRestoreFocusedWindow(); } catch (e) {} }, 3000); } catch (e) {}
                     return;
                 }
-                try { targets[i++](); } catch (e) {}
+                const t = targets[i++];
+                // PER-WINDOW self-raise mark: this load may raise ITS window
+                // (reader init calls _iframeWindow.focus()). A global mark
+                // covered nearly the whole startup (loads are sequential),
+                // so every unevidenced user switch got fought ("I cannot
+                // switch window anymore during startup", 2026-07-13).
+                try { t.win._wvBgExpectStealUntil = Date.now() + 6000; } catch (e) {}
+                try { t.fire(); } catch (e) {}
                 setT(next, 2500);
             };
             next();
@@ -6792,15 +6800,20 @@ class _TabsMixin {
      *  descriptor) — resolved against the CURRENT window set, so it only
      *  returns once that window has actually been restored. Shared by the
      *  focus shepherd (poll backstop) and the background-restore observer. */
-    /** True when the OS saw real user input (mouse/keyboard, anywhere)
-     *  within the last `ms` — Gecko's user-idle service, cross-platform
-     *  (macOS/Linux too, unlike the Win32 key-state probe). */
-    _wvUserRecentlyActive(ms: number): boolean {
+    /** Milliseconds since the OS last saw real user input (mouse/keyboard,
+     *  anywhere) — Gecko's user-idle service, cross-platform. Infinity on
+     *  failure. */
+    _wvUserIdleMs(): number {
         try {
             const svc = Cc["@mozilla.org/widget/useridleservice;1"]
                 .getService(Ci.nsIUserIdleService);
-            return svc.idleTime < ms;
-        } catch (e) { return false; }
+            return svc.idleTime;
+        } catch (e) { return Infinity; }
+    }
+
+    /** True when the OS saw real user input within the last `ms`. */
+    _wvUserRecentlyActive(ms: number): boolean {
+        return this._wvUserIdleMs() < ms;
     }
 
     _wvRestoreFindTargetWin() {
@@ -6882,7 +6895,8 @@ class _TabsMixin {
             let ctypesRef: any = null, user32: any = null, SetWindowPos: any = null,
                 GetWindowLongPtr: any = null, SetWindowLongPtr: any = null,
                 dwmapi: any = null, DwmSetWindowAttribute: any = null, ShowWindowFn: any = null,
-                GetAsyncKeyState: any = null;
+                GetAsyncKeyState: any = null, GetCursorPos: any = null,
+                GetSystemMetrics: any = null, POINTStruct: any = null;
             try {
                 const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
                 ctypesRef = ctypes;
@@ -6896,6 +6910,9 @@ class _TabsMixin {
                 ShowWindowFn = user32.declare("ShowWindow", ctypes.winapi_abi, ctypes.bool,
                     ctypes.voidptr_t, ctypes.int);
                 GetAsyncKeyState = user32.declare("GetAsyncKeyState", ctypes.winapi_abi, ctypes.short, ctypes.int);
+                POINTStruct = new ctypes.StructType("WVPOINT", [{ x: ctypes.int32_t }, { y: ctypes.int32_t }]);
+                GetCursorPos = user32.declare("GetCursorPos", ctypes.winapi_abi, ctypes.bool, POINTStruct.ptr);
+                GetSystemMetrics = user32.declare("GetSystemMetrics", ctypes.winapi_abi, ctypes.int, ctypes.int);
                 dwmapi = ctypes.open("dwmapi.dll");
                 DwmSetWindowAttribute = dwmapi.declare("DwmSetWindowAttribute", ctypes.winapi_abi, ctypes.long,
                     ctypes.voidptr_t, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t);
@@ -7011,6 +7028,11 @@ class _TabsMixin {
                 try {
                     if (w._wvBgHooked) return;
                     w._wvBgHooked = true;
+                    // Self-raise mark: a window OPENING during the restore
+                    // activates programmatically — its activations within
+                    // this grace are ours to fight, without needing the
+                    // whole-startup guard that blocked user switches.
+                    (w as any)._wvBgOpenGrace = Date.now() + 4000;
                     // OS-level: never activatable AND cloaked (invisible) while
                     // the restore holds. The native handle is often NOT ready
                     // at domwindowopened, and a single silent retry left the
@@ -7051,6 +7073,58 @@ class _TabsMixin {
                         try { w.addEventListener("DOMContentLoaded", () => again("DOMContentLoaded"), { once: true, capture: true }); } catch (e2) {}
                         try { w.addEventListener("load", () => again("load"), { once: true }); } catch (e2) {}
                     }
+                    wireClaim(w);
+                } catch (e) {}
+            };
+            // Positive EVIDENCE that an activation was the user switching
+            // windows — "any recent input" (the old detector) is useless at
+            // boot: the user JUST launched/clicked something, so every
+            // programmatic raise coincides with recent input and got falsely
+            // claimed (trace 2026-07-13: claims at +1223ms and +2483ms, the
+            // second on a still-loading reader window with an empty title;
+            // the re-asserts then dutifully focused the wrong window).
+            // Returns a reason string (for the trace) or null.
+            const userSwitchEvidence = (): string | null => {
+                try {
+                    if (GetAsyncKeyState) {
+                        const down = (k: number) => (Number(GetAsyncKeyState(k)) & 0x8000) !== 0;
+                        if (down(0x01) || down(0x02) || down(0x04)) return "mouse-button-held";
+                        if (down(0x12)) return "alt-held";              // Alt+Tab mid-hold
+                        if (down(0x5B) || down(0x5C)) return "win-held"; // Win+number
+                    }
+                    // Taskbar click: button already released by the time the
+                    // activation lands, but the CURSOR is on the taskbar and
+                    // the input is fresh. Heuristic: cursor within 80px of the
+                    // virtual-screen bottom (the user's taskbar is bottom-
+                    // docked; side-docked taskbars fall back to the held-key
+                    // detectors above).
+                    if (GetCursorPos && GetSystemMetrics && self._wvUserRecentlyActive(700)) {
+                        const pt = new POINTStruct();
+                        if (GetCursorPos(pt.address())) {
+                            const top = Number(GetSystemMetrics(77));    // SM_YVIRTUALSCREEN
+                            const h = Number(GetSystemMetrics(79));      // SM_CYVIRTUALSCREEN
+                            if (Number(pt.y) >= top + h - 80) return "taskbar-cursor";
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            };
+            const claim = (w: any, how: string) => {
+                (w as any)._wvBgUserClaimed = true;
+                (self as any)._wvBgUserChosenWin = w;
+                try {
+                    (self as any)._wvTrace("bg-restore: user claimed '"
+                        + String(w.document.title || "").slice(0, 30) + "' (" + how + ") — redirect target");
+                } catch (e) {}
+            };
+            // Claim listeners — wired on windows opened DURING the restore
+            // (via hook) AND on every pre-existing window (below): the anchor
+            // was never hooked, so switching TO it registered no claim and
+            // the final asserts snapped focus away again (2026-07-13).
+            const wireClaim = (w: any) => {
+                try {
+                    if ((w as any)._wvBgClaimWired) return;
+                    (w as any)._wvBgClaimWired = true;
                     // The user clicking the window overrides everything —
                     // PERMANENTLY for this window (the claim flag disarms the
                     // activate hook below; the old {once} listener revealed the
@@ -7058,14 +7132,13 @@ class _TabsMixin {
                     // so windows were unclickable during the restore, 2026-07-04).
                     w.addEventListener("mousedown", () => {
                         try {
-                            (w as any)._wvBgUserClaimed = true;
-                            // Redirect every later re-assert to the user's pick
-                            // (set on the LIVE instance — this closure survives
-                            // plugin reloads).
-                            try {
-                                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                                if (lp) lp._wvBgUserChosenWin = w;
-                            } catch (e3) {}
+                            // Set on the LIVE instance — closures survive reloads.
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (lp && lp._wvBgRestoreOn) {
+                                (w as any)._wvBgUserClaimed = true;
+                                lp._wvBgUserChosenWin = w;
+                                try { lp._wvTrace("bg-restore: user claimed '" + String(w.document.title || "").slice(0, 30) + "' (mousedown) — redirect target"); } catch (e3) {}
+                            }
                             reveal(w); w.focus();
                         } catch (e2) {}
                     }, { capture: true });
@@ -7080,42 +7153,32 @@ class _TabsMixin {
                             if (liveP !== self) return;
                             if (!(self as any)._wvBgRestoreOn) return;
                             if ((w as any)._wvBgUserClaimed) return;   // the user chose this window
-                            // USER-INITIATED activation → claim + allow, and make
-                            // this window the redirect target for every later
-                            // re-assert. Two detectors, either suffices:
-                            //  1. mouse button or Alt held RIGHT NOW (clicks in
-                            //     PDF content, Alt+Tab mid-hold);
-                            //  2. real user input anywhere within the last 600ms
-                            //     (Gecko user-idle service) — covers taskbar
-                            //     clicks and Alt+Tab where the button/key is
-                            //     already RELEASED by the time the activation
-                            //     lands; those were treated as steals and pushed
-                            //     back down ("I cannot switch to another window
-                            //     during loading", 2026-07-13). A programmatic
-                            //     raise coinciding with the user typing in some
-                            //     other app within 600ms slips through — rare,
-                            //     and losing that race just leaves the window
-                            //     the user was headed to anyway.
-                            try {
-                                let userInput = false;
-                                if (GetAsyncKeyState) {
-                                    const down = (k: number) => (Number(GetAsyncKeyState(k)) & 0x8000) !== 0;
-                                    userInput = down(0x01) || down(0x02) || down(0x04) || down(0x12);
-                                }
-                                if (!userInput) userInput = self._wvUserRecentlyActive(600);
-                                if (userInput) {
-                                    (w as any)._wvBgUserClaimed = true;
-                                    (self as any)._wvBgUserChosenWin = w;
-                                    try { (self as any)._wvTrace("bg-restore: user claimed '" + String(w.document.title || "").slice(0, 30) + "' — redirect target"); } catch (e3) {}
-                                    return;
-                                }
-                            } catch (e2) {}
-                            // Fight only the raises WE cause: the whole guarded
-                            // early-restore phase, plus a short window around
-                            // each background warm-load (which the warmer marks).
-                            // A user's taskbar click outside those wins.
-                            if (!(self as any)._wvTabGroupRestoreGuard
-                                    && !(Date.now() < ((self as any)._wvBgExpectSteal || 0))) return;
+                            const title = String(w.document.title || "").slice(0, 30);
+                            // The intended target activating is neither a claim
+                            // nor a steal — it's the restore working.
+                            if (w === resolveTarget()) {
+                                try { (self as any)._wvTrace("bg-restore: target '" + title + "' activated (ok)"); } catch (e3) {}
+                                return;
+                            }
+                            const evidence = userSwitchEvidence();
+                            const idle = Math.round(self._wvUserIdleMs());
+                            if (evidence) { claim(w, evidence + " idle=" + idle + "ms"); return; }
+                            // Fight ONLY activations we can attribute to our
+                            // own raises — each marked on the specific window:
+                            // open grace (a restoring window's first
+                            // activations) and the warm-load mark. Everything
+                            // else is the user: Alt+Tab commits on RELEASING
+                            // Alt and a taskbar click's button is long up by
+                            // activation time, so requiring positive user
+                            // evidence blocked real switches ("I cannot switch
+                            // window anymore during startup", 2026-07-13).
+                            const now = Date.now();
+                            const openGrace = now < ((w as any)._wvBgOpenGrace || 0);
+                            const loadMark = now < ((w as any)._wvBgExpectStealUntil || 0);
+                            if (!openGrace && !loadMark) {
+                                claim(w, "unmarked activation, idle=" + idle + "ms");
+                                return;
+                            }
                             if (!isZoteroWin(w, true)) return;
                             const t2 = resolveTarget();
                             if (t2 && t2 !== w) {
@@ -7125,8 +7188,9 @@ class _TabsMixin {
                                 try {
                                     (self as any)._wvTrace("bg-restore: "
                                         + (w.document.documentElement.getAttribute("windowtype") || "pre-parse")
-                                        + " '" + String(w.document.title || "").slice(0, 30)
-                                        + "' stole activation — refocused the target");
+                                        + " '" + title + "' stole activation (idle=" + idle
+                                        + "ms openGrace=" + openGrace + " loadMark=" + loadMark
+                                        + ") — refocused the target");
                                 } catch (e2) {}
                             }
                         } catch (e) {}
@@ -7136,6 +7200,9 @@ class _TabsMixin {
             const settle = (w: any) => {
                 try {
                     if (!(self as any)._wvBgRestoreOn || !isZoteroWin(w)) return;
+                    // Post-load init can still raise the window — refresh its
+                    // self-raise grace briefly.
+                    try { (w as any)._wvBgOpenGrace = Math.max((w as any)._wvBgOpenGrace || 0, Date.now() + 2500); } catch (e2) {}
                     const target = resolveTarget();
                     if (target === w) { reveal(w); return; }   // the target itself may restore late
                     pushToBottom(w);
@@ -7154,6 +7221,14 @@ class _TabsMixin {
                 },
             };
             try { Services.ww.registerNotification(obs); } catch (e) {}
+            // Claim coverage for PRE-EXISTING windows (the anchor and anything
+            // already restored before this start): listeners only — no arm/
+            // pushToBottom, they may legitimately be in front.
+            try {
+                for (const w of (Zotero.getMainWindows() || [])) wireClaim(w);
+                const en0 = Services.wm.getEnumerator("zotero:reader");
+                while (en0.hasMoreElements()) wireClaim(en0.getNext());
+            } catch (e) {}
             // Lifetime mirrors the shepherd: poll the guard, then tear down.
             let ticks = 0;
             const w0: any = Zotero.getMainWindow();
@@ -7256,7 +7331,8 @@ class _TabsMixin {
                 if (chosen && !chosen.closed) {
                     try { if ((this as any)._wvBgClearNoActivate) (this as any)._wvBgClearNoActivate(chosen); } catch (e) {}
                     chosen.focus();
-                    (this as any)._wvTrace("restore: focused the user-chosen window");
+                    (this as any)._wvTrace("restore: focused the user-chosen window '"
+                        + String(chosen.document && chosen.document.title || "").slice(0, 30) + "'");
                     return;
                 }
             } catch (e) {}
@@ -8027,10 +8103,13 @@ class _TabsMixin {
                             const label = el.getAttribute("title") || "";
                             if (!label) return;
                             const t = doc.getElementById(TIP_ID);
-                            if (t && typeof t.openPopupAtScreen === "function") {
+                            if (t && typeof t.openPopup === "function") {
                                 t.setAttribute("label", label);
                                 isOpen = true;
-                                t.openPopupAtScreen(sx, sy + 14, false);
+                                // Anchor to the mark element (like native tab
+                                // tooltips anchor to the tab) — the cursor-
+                                // offset variant landed too far down.
+                                t.openPopup(el, "after_start", 0, 2, false, false);
                             }
                         } catch (e2) {}
                     }, 500);

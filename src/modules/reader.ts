@@ -4443,6 +4443,16 @@ class _ReaderMixin {
         if (!win._wvWT) {
             win._wvWT = { tabs: [], activeId: null, seq: 0 };
             try { this._wvWireReaderWindowReadersCleanup(win); } catch (e) {}
+            // Reader windows get their title glyph (opt-in), their
+            // round-badged taskbar icon, and the matching in-strip
+            // colour dot as soon as the multi-tab state exists (main
+            // windows wire in onMainWindowLoad).
+            try { (this as any)._wvWireTitleGlyph(win); } catch (e) {}
+            try { (this as any)._wvApplyWindowIcon(win); } catch (e) {}
+            try {
+                (this as any)._wvUpdateWindowBadgeDot(win,
+                    !!(this as any)._getTabsAndWindowsMaster(), true);
+            } catch (e) {}
         }
         return win._wvWT;
     }

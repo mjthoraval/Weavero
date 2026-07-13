@@ -633,9 +633,12 @@ class _PaneMixin {
      *  windows are labelled "Reader window"(/ N) like the tabs-menu sections. */
     _wvOpenInTargetWindows(): any[] {
         const out: any[] = [];
+        // Names carry the same window-type glyph as the OS caption
+        // (see _wvGlyphLabel) so move-target menus read the same way
+        // as the taskbar previews.
         try {
             for (const w of (Zotero.getMainWindows() || [])) {
-                out.push({ win: w, name: this._wvWindowName(w), isReader: false });
+                out.push({ win: w, name: (this as any)._wvGlyphLabel(w, this._wvWindowName(w)), isReader: false });
             }
         } catch (e) {}
         try {
@@ -645,7 +648,8 @@ class _PaneMixin {
                 const w: any = en.getNext();
                 if (!w || !w._wvWT) continue;
                 n++;
-                out.push({ win: w, name: n > 1 ? "Reader window " + n : "Reader window", isReader: true });
+                const base = n > 1 ? "Reader window " + n : "Reader window";
+                out.push({ win: w, name: (this as any)._wvGlyphLabel(w, base), isReader: true });
             }
         } catch (e) {}
         return out;

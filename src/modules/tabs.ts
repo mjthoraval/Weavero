@@ -27,6 +27,37 @@ declare const Zotero_Tabs: any;
 const WV_ANCHOR_VIEWBOX = "0 0 24 24";
 const WV_ANCHOR_PATH = "M17 15l1.55 1.55c-.96 1.69-3.33 3.04-5.55 3.37V11h3V9h-3V7.82C14.16 7.4 15 6.3 15 5c0-1.65-1.35-3-3-3S9 3.35 9 5c0 1.3.84 2.4 2 2.82V9H8v2h3v8.92c-2.22-.33-4.59-1.68-5.55-3.37L7 15l-4-3v3c0 3.88 4.92 7 9 7s9-3.12 9-7v-3l-4 3zM12 4c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1z";
 
+// Window-type glyphs for the OS window title. Taskbar hover previews,
+// Task View (Win+Tab) and Alt-Tab all render `document.title` as the
+// caption, so a 2-char prefix is the one per-window mark that's legible
+// there (an in-window pill scales down to invisible in a ~250px live
+// thumbnail — tested 2026-07-11). Shape FAMILY = window kind (anchor
+// mark / square = main, circle = reader); the fill variant tells
+// same-kind windows apart. MONOCHROME BMP Geometric Shapes only: the
+// taskbar preview caption is drawn by the legacy GDI text renderer,
+// which has no colour-emoji support — coloured squares (U+1F7E6…) have
+// no monochrome fallback and render as tofu boxes there (tested
+// 2026-07-11). The informative selected-tab part of the title is kept.
+const WV_TITLE_GLYPH_ANCHOR = "⚓";
+const WV_TITLE_GLYPHS_MAIN = [
+    "■", "□", "▣", "▤", "▥", "▦",       // U+25A0/25A1/25A3/25A4/25A5/25A6
+];
+const WV_TITLE_GLYPHS_READER = [
+    "●", "○", "◉", "◐", "◑", "◒",       // U+25CF/25CB/25C9/25D0/25D1/25D2
+];
+const WV_TITLE_GLYPH_STRIP_RE = new RegExp("^(?:"
+    + [WV_TITLE_GLYPH_ANCHOR, ...WV_TITLE_GLYPHS_MAIN, ...WV_TITLE_GLYPHS_READER].join("|")
+    + ")\\s+");
+
+// Per-window badge colours — Zotero's tag-swatch palette, matching the
+// composited taskbar icons in icons/win/ (regenerate those with
+// work/make-win-icons.py when changing this). Indexed by the SHARED
+// colour pool (_wvTitleGlyphIdx), so a window's taskbar badge and its
+// in-window title-bar dot always agree.
+const WV_WIN_BADGE_COLORS = [
+    "#2EA8E5", "#5FB236", "#A28AE5", "#F19837", "#E56EEE", "#FF6666",
+];
+
 // Group-library badge glyph — a symmetric, bold 3-column temple centred on x8.
 // Zotero's stock library-group icon has 1px columns that blur when scaled down to
 // badge size, so we draw a chunkier version that stays sharp. #59ADC4 is the same
@@ -1638,6 +1669,8 @@ class _TabsMixin {
         const map = this._wvWindowTitlesGet();
         if (title) map[String(idx)] = title; else delete map[String(idx)];
         this._wvWindowTitlesSet(map);
+        // Keep the title-bar mark's hover tooltip in sync with the new name.
+        try { this._wvUpdateMainWindowIndicator(win); } catch (e) {}
     }
     /** Display name for a main window: custom title, else stable "Window N". */
     _wvWindowName(win: any) {
@@ -1712,6 +1745,298 @@ class _TabsMixin {
         } catch (er) { Zotero.debug("[Weavero] _wvWindowHeaderContext err: " + er); }
     }
 
+    /** Toggle for the window-type title glyphs (default OFF — the user
+     *  found the prefix stole space from the already-short preview
+     *  captions; per-window taskbar ICONS are the default cue instead.
+     *  The glyphs remain as an opt-in, e.g. for non-Windows platforms
+     *  where the icon route doesn't exist). */
+    _getEnableWindowTitleGlyphs() {
+        try {
+            if (!(this as any)._getTabsAndWindowsMaster()) return false;
+            const v = Zotero.Prefs.get("weavero.windowTitleGlyphs");
+            return v === undefined ? false : !!v;
+        } catch (e) { return false; }
+    }
+
+    /** The window-type glyph for a window ("" when the feature is off or
+     *  the window kind is unknown). Anchor main → anchor mark; other
+     *  mains → coloured square; reader windows → coloured book. Kind is
+     *  re-derived on every call, so a window that changes role (e.g. the
+     *  anchor closing promotes another main) self-corrects on its next
+     *  title write. */
+    _wvWindowTitleGlyph(win: any): string {
+        try {
+            if (!this._getEnableWindowTitleGlyphs()) return "";
+            const wt = win && win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            if (wt === "zotero:reader") {
+                return WV_TITLE_GLYPHS_READER[
+                    this._wvTitleGlyphIdx(win, true) % WV_TITLE_GLYPHS_READER.length];
+            }
+            const mains = Zotero.getMainWindows() || [];
+            if (win && mains.includes(win)) {
+                if (this._wvIsAnchorWindow(win)) return WV_TITLE_GLYPH_ANCHOR;
+                return WV_TITLE_GLYPHS_MAIN[
+                    this._wvTitleGlyphIdx(win, false) % WV_TITLE_GLYPHS_MAIN.length];
+            }
+        } catch (e) {}
+        return "";
+    }
+
+    /** Session-stable colour index from a pool SHARED by all badged
+     *  windows (non-anchor mains AND reader windows): the badge shape
+     *  already encodes the kind, so sharing the pool means no two
+     *  windows carry the same colour — main №2 is blue, reader №1
+     *  green, the next window purple, … (user request 2026-07-13). */
+    _wvTitleGlyphIdx(win: any, _isReader?: boolean): number {
+        if (win._wvTitleGlyphIdx != null) return win._wvTitleGlyphIdx;
+        const used = new Set();
+        try {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                if (w !== win && (w as any)._wvTitleGlyphIdx != null) used.add((w as any)._wvTitleGlyphIdx);
+            }
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (w !== win && w && w._wvTitleGlyphIdx != null) used.add(w._wvTitleGlyphIdx);
+            }
+        } catch (e) {}
+        let i = 0;
+        while (used.has(i)) i++;
+        win._wvTitleGlyphIdx = i;
+        return i;
+    }
+
+    _wvStripTitleGlyph(s: any): string {
+        let out = String(s == null ? "" : s);
+        while (WV_TITLE_GLYPH_STRIP_RE.test(out)) out = out.replace(WV_TITLE_GLYPH_STRIP_RE, "");
+        return out;
+    }
+
+    /** A display label with the window's glyph prepended — reused by the
+     *  tabs-menu window headers and the move-target menus so the
+     *  colour ↔ window association matches the OS captions. */
+    _wvGlyphLabel(win: any, name: string): string {
+        try {
+            const g = this._wvWindowTitleGlyph(win);
+            return g ? g + " " + name : name;
+        } catch (e) { return name; }
+    }
+
+    _wvGlyphizeTitle(win: any, v: any): string {
+        const base = this._wvStripTitleGlyph(v);
+        try {
+            const g = this._wvWindowTitleGlyph(win);
+            return g ? g + " " + base : base;
+        } catch (e) { return base; }
+    }
+
+    /** Shadow this document's `title` prototype accessor with an own
+     *  property so EVERY title write (tab switch, reader navigation)
+     *  re-applies the glyph — there is no <title> node to observe in
+     *  these windows (verified live 2026-07-11). Reload-safe: the setter
+     *  resolves the live plugin at write time. Teardown deletes the
+     *  shadow so the prototype accessor shows through. */
+    _wvWireTitleGlyph(win: any) {
+        try {
+            if (!win || !win.document || win.closed) return;
+            const doc: any = win.document;
+            if (!doc._wvTitleGlyphWired) {
+                const desc = Object.getOwnPropertyDescriptor(win.Document.prototype, "title");
+                if (!desc || !desc.get || !desc.set) return;
+                Object.defineProperty(doc, "title", {
+                    configurable: true,
+                    get() { return desc.get.call(this); },
+                    set(v: any) {
+                        let out = String(v == null ? "" : v);
+                        try {
+                            const live: any = (Zotero as any).Weavero
+                                && (Zotero as any).Weavero.plugin;
+                            if (live && !live._wvDestroyed) out = live._wvGlyphizeTitle(win, out);
+                        } catch (e) {}
+                        desc.set.call(this, out);
+                    },
+                });
+                doc._wvTitleGlyphWired = true;
+            }
+            // Re-apply on the current title (covers wire-after-open and
+            // kind changes).
+            try { doc.title = doc.title; } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvWireTitleGlyph err: " + e); }
+    }
+
+    _wvUnwireTitleGlyph(win: any) {
+        try {
+            const doc: any = win && win.document;
+            if (!doc || !doc._wvTitleGlyphWired) return;
+            const cur = doc.title;
+            delete doc.title;
+            delete doc._wvTitleGlyphWired;
+            try { doc.title = this._wvStripTitleGlyph(cur); } catch (e) {}
+        } catch (e) {}
+    }
+
+    /** Apply or strip the glyph on every open window — init, pref
+     *  toggle, and teardown all funnel through here. */
+    _wvRefreshTitleGlyphs(forceOff?: boolean) {
+        try {
+            const on = !forceOff && this._getEnableWindowTitleGlyphs();
+            const apply = (w: any) => {
+                try { if (on) this._wvWireTitleGlyph(w); else this._wvUnwireTitleGlyph(w); } catch (e) {}
+            };
+            for (const w of (Zotero.getMainWindows() || [])) apply(w);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) apply(en.getNext());
+        } catch (e) {}
+    }
+
+    /** Toggle for the per-window taskbar icons (Windows only; default on). */
+    _getEnableWindowIcons() {
+        try {
+            if (!Zotero.isWin) return false;
+            if (!(this as any)._getTabsAndWindowsMaster()) return false;
+            const v = Zotero.Prefs.get("weavero.windowIcons");
+            return v === undefined ? true : !!v;
+        } catch (e) { return false; }
+    }
+
+    /** Extract one of the bundled per-window .ico files (icons/win/ in
+     *  the XPI) to <data dir>/weavero/win-icons/ — LoadImageW needs a
+     *  real file path. Re-extracted per plugin version. */
+    async _wvWinIconFile(name: string): Promise<string | null> {
+        try {
+            const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "win-icons");
+            const path = PathUtils.join(dir, name + ".ico");
+            const stampPath = PathUtils.join(dir, "VERSION");
+            const ver = String((this as any)._version || "");
+            let fresh = false;
+            try {
+                fresh = (await IOUtils.exists(path))
+                    && (await IOUtils.readUTF8(stampPath)) === ver;
+            } catch (e) {}
+            if (!fresh) {
+                await IOUtils.makeDirectory(dir, { ignoreExisting: true, createAncestors: true });
+                const resp = await fetch((this as any)._rootURI + "icons/win/" + name + ".ico");
+                const buf = new Uint8Array(await resp.arrayBuffer());
+                await IOUtils.write(path, buf);
+                try { await IOUtils.writeUTF8(stampPath, ver); } catch (e) {}
+            }
+            return path;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWinIconFile err: " + e);
+            return null;
+        }
+    }
+
+    /** Chrome-profile-style per-window taskbar icon: composite badges on
+     *  Zotero's real icon artwork (square badge = main window, round
+     *  badge = reader window, colour = which window; the anchor main
+     *  keeps the native unbadged icon). Set via Win32 WM_SETICON — the
+     *  same mechanism Chrome uses for profile windows — so the taskbar
+     *  preview captions, Task View and Alt-Tab distinguish windows
+     *  without touching the title text. Runtime-only state: re-applied
+     *  on every startup / window open by the callers. */
+    async _wvApplyWindowIcon(win: any) {
+        try {
+            if (!win || win.closed || !this._getEnableWindowIcons()) return;
+            const wt = win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            const isReader = wt === "zotero:reader";
+            const mains = Zotero.getMainWindows() || [];
+            if (!isReader && !mains.includes(win)) return;
+            // Anchor main gets the anchor-marked icon (title-bar anchor
+            // glyph + colour, on the native artwork); other mains a
+            // square badge, readers a round badge.
+            const name = (!isReader && this._wvIsAnchorWindow(win))
+                ? "anchor"
+                : (isReader ? "reader-" : "main-")
+                    + ((this._wvTitleGlyphIdx(win, isReader) % 6) + 1);
+            if (win._wvWinIconName === name) return;   // already applied
+            const path = await this._wvWinIconFile(name);
+            if (!path || win.closed) return;
+            const set = this._wvSetWindowIconFromFile(win, path);
+            if (set) win._wvWinIconName = name;
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyWindowIcon err: " + e); }
+    }
+
+    /** Low-level Win32: load 16px + 32px frames from the .ico and set
+     *  them as the window's small/big icons. Keeps the previous HICONs
+     *  on the window for restore, and our loaded HICONs for cleanup. */
+    _wvSetWindowIconFromFile(win: any, path: string): boolean {
+        try {
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor)
+                .getInterface(Ci.nsIBaseWindow);
+            const hwndStr = bw.nativeHandle;
+            if (!hwndStr) return false;
+            const user32 = ctypes.open("user32.dll");
+            try {
+                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
+                const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
+                    ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
+                const LoadImageW = user32.declare("LoadImageW", ctypes.winapi_abi,
+                    HICON, ctypes.voidptr_t, ctypes.char16_t.ptr, ctypes.unsigned_int,
+                    ctypes.int, ctypes.int, ctypes.unsigned_int);
+                const IMAGE_ICON = 1, LR_LOADFROMFILE = 0x10;
+                const small = LoadImageW(null, path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+                const big = LoadImageW(null, path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE);
+                if (small.isNull() && big.isNull()) return false;
+                const hwnd = HWND(ctypes.UInt64(hwndStr));
+                const WM_SETICON = 0x0080;
+                const prevSmall = SendMessageW(hwnd, WM_SETICON, 0,
+                    ctypes.cast(small, ctypes.intptr_t));
+                const prevBig = SendMessageW(hwnd, WM_SETICON, 1,
+                    ctypes.cast(big, ctypes.intptr_t));
+                // First replacement: remember the ORIGINAL icons for restore.
+                if (!win._wvPrevWinIcons) {
+                    win._wvPrevWinIcons = { small: String(prevSmall), big: String(prevBig) };
+                }
+                return true;
+            } finally { user32.close(); }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSetWindowIconFromFile err: " + e);
+            return false;
+        }
+    }
+
+    /** Put the window's original icons back (teardown / anchor promotion). */
+    _wvRestoreWindowIcon(win: any) {
+        try {
+            const prev = win && win._wvPrevWinIcons;
+            if (!prev || win.closed) return;
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor)
+                .getInterface(Ci.nsIBaseWindow);
+            const user32 = ctypes.open("user32.dll");
+            try {
+                const HWND = ctypes.voidptr_t;
+                const SendMessageW = user32.declare("SendMessageW", ctypes.winapi_abi,
+                    ctypes.intptr_t, HWND, ctypes.uint32_t, ctypes.uintptr_t, ctypes.intptr_t);
+                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
+                SendMessageW(hwnd, 0x0080, 0, ctypes.intptr_t(ctypes.UInt64(prev.small)));
+                SendMessageW(hwnd, 0x0080, 1, ctypes.intptr_t(ctypes.UInt64(prev.big)));
+            } finally { user32.close(); }
+            delete win._wvPrevWinIcons;
+            delete win._wvWinIconName;
+        } catch (e) {}
+    }
+
+    /** Apply or restore per-window icons on every open window. */
+    _wvRefreshWindowIcons(forceOff?: boolean) {
+        try {
+            if (!Zotero.isWin) return;
+            const on = !forceOff && this._getEnableWindowIcons();
+            const each = (w: any) => {
+                try { if (on) this._wvApplyWindowIcon(w); else this._wvRestoreWindowIcon(w); } catch (e) {}
+            };
+            for (const w of (Zotero.getMainWindows() || [])) each(w);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) each(en.getNext());
+        } catch (e) {}
+    }
+
     /** A window-section header (label + count), styled like the library headers.
      *  Shared by the all-windows list AND the expanded-session view. */
     _wvTabsMenuWindowHeader(doc: any, label: string, count: number, marker: string, iconType?: string, anchorIconClass?: string, collapseKey?: string, panel?: any, winRef?: any) {
@@ -1727,6 +2052,23 @@ class _TabsMixin {
             // plain frame (a main window has tabs — same cue as the menu icons).
             ic.className = "wv-winicon" + (iconType === "reader" ? "" : " wv-winicon-main");
             header.appendChild(ic);
+            // The window's badge COLOUR (same shared pool as the taskbar icon
+            // and title-bar dot): square = main, circle = reader. The anchor
+            // keeps its ⚓ mark instead (user request 2026-07-13).
+            if (winRef && iconType !== "anchor") {
+                try {
+                    const isReader = iconType === "reader";
+                    const color = WV_WIN_BADGE_COLORS[
+                        this._wvTitleGlyphIdx(winRef, isReader) % WV_WIN_BADGE_COLORS.length];
+                    const dot = doc.createElement("span");
+                    dot.className = "wv-winhdr-color-dot";
+                    dot.style.cssText = "display:inline-block;width:9px;height:9px;"
+                        + "flex:0 0 auto;margin-inline-end:4px;align-self:center;"
+                        + "background-color:" + color + ";"
+                        + "border-radius:" + (isReader ? "50%" : "2px") + ";";
+                    header.appendChild(dot);
+                } catch (e) {}
+            }
         } else if (iconType) {
             const ic = doc.createElement("span");
             ic.className = "icon icon-css " + iconType;   // Zotero library/group/feed icon
@@ -1734,7 +2076,9 @@ class _TabsMixin {
         }
         const lbl = doc.createElement("span");
         lbl.className = "wv-tabs-menu-library-name";
-        lbl.textContent = label;
+        // Window headers carry the same glyph as the OS caption so the
+        // colour ↔ window association holds across surfaces.
+        lbl.textContent = winRef ? this._wvGlyphLabel(winRef, label) : label;
         header.appendChild(lbl);
         // Anchor (primary) window: mark it on the RIGHT of the name with an anchor
         // glyph.
@@ -6448,7 +6792,27 @@ class _TabsMixin {
      *  descriptor) — resolved against the CURRENT window set, so it only
      *  returns once that window has actually been restored. Shared by the
      *  focus shepherd (poll backstop) and the background-restore observer. */
+    /** True when the OS saw real user input (mouse/keyboard, anywhere)
+     *  within the last `ms` — Gecko's user-idle service, cross-platform
+     *  (macOS/Linux too, unlike the Win32 key-state probe). */
+    _wvUserRecentlyActive(ms: number): boolean {
+        try {
+            const svc = Cc["@mozilla.org/widget/useridleservice;1"]
+                .getService(Ci.nsIUserIdleService);
+            return svc.idleTime < ms;
+        } catch (e) { return false; }
+    }
+
     _wvRestoreFindTargetWin() {
+        // A window the USER claimed during the restore (click / Alt-Tab /
+        // taskbar switch) trumps the quit-time descriptor everywhere —
+        // every re-assert funnels through here or checks it explicitly
+        // ("that window should become the one always in focus",
+        // 2026-07-13).
+        try {
+            const chosen = (this as any)._wvBgUserChosenWin;
+            if (chosen && !chosen.closed) return chosen;
+        } catch (e) {}
         const f = (this as any)._wvBootFocusedEntry;
         if (!f || !f.kind) return null;
         try {
@@ -6502,7 +6866,13 @@ class _TabsMixin {
             }
             (this as any)._wvBgRestoreOn = true;
             const self = this;
+            // Fresh restore cycle → no user claim yet.
+            (this as any)._wvBgUserChosenWin = null;
             const resolveTarget = () => {
+                try {
+                    const chosen = (self as any)._wvBgUserChosenWin;
+                    if (chosen && !chosen.closed) return chosen;
+                } catch (e) {}
                 try {
                     const tw = (self as any)._wvBgRestoreTargetWin;
                     if (tw && !tw.closed) return tw;
@@ -6687,7 +7057,17 @@ class _TabsMixin {
                     // window but the hook then fought the very focus it granted,
                     // so windows were unclickable during the restore, 2026-07-04).
                     w.addEventListener("mousedown", () => {
-                        try { (w as any)._wvBgUserClaimed = true; reveal(w); w.focus(); } catch (e2) {}
+                        try {
+                            (w as any)._wvBgUserClaimed = true;
+                            // Redirect every later re-assert to the user's pick
+                            // (set on the LIVE instance — this closure survives
+                            // plugin reloads).
+                            try {
+                                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (lp) lp._wvBgUserChosenWin = w;
+                            } catch (e3) {}
+                            reveal(w); w.focus();
+                        } catch (e2) {}
                     }, { capture: true });
                     w.addEventListener("activate", () => {
                         try {
@@ -6700,17 +7080,34 @@ class _TabsMixin {
                             if (liveP !== self) return;
                             if (!(self as any)._wvBgRestoreOn) return;
                             if ((w as any)._wvBgUserClaimed) return;   // the user chose this window
-                            // USER-INITIATED activation (mouse button or Alt/Tab
-                            // held right now — true for clicks anywhere incl. the
-                            // PDF content and the taskbar, and for Alt+Tab; never
-                            // for Zotero's programmatic raises) → claim + allow.
+                            // USER-INITIATED activation → claim + allow, and make
+                            // this window the redirect target for every later
+                            // re-assert. Two detectors, either suffices:
+                            //  1. mouse button or Alt held RIGHT NOW (clicks in
+                            //     PDF content, Alt+Tab mid-hold);
+                            //  2. real user input anywhere within the last 600ms
+                            //     (Gecko user-idle service) — covers taskbar
+                            //     clicks and Alt+Tab where the button/key is
+                            //     already RELEASED by the time the activation
+                            //     lands; those were treated as steals and pushed
+                            //     back down ("I cannot switch to another window
+                            //     during loading", 2026-07-13). A programmatic
+                            //     raise coinciding with the user typing in some
+                            //     other app within 600ms slips through — rare,
+                            //     and losing that race just leaves the window
+                            //     the user was headed to anyway.
                             try {
+                                let userInput = false;
                                 if (GetAsyncKeyState) {
                                     const down = (k: number) => (Number(GetAsyncKeyState(k)) & 0x8000) !== 0;
-                                    if (down(0x01) || down(0x02) || down(0x04) || down(0x12)) {
-                                        (w as any)._wvBgUserClaimed = true;
-                                        return;
-                                    }
+                                    userInput = down(0x01) || down(0x02) || down(0x04) || down(0x12);
+                                }
+                                if (!userInput) userInput = self._wvUserRecentlyActive(600);
+                                if (userInput) {
+                                    (w as any)._wvBgUserClaimed = true;
+                                    (self as any)._wvBgUserChosenWin = w;
+                                    try { (self as any)._wvTrace("bg-restore: user claimed '" + String(w.document.title || "").slice(0, 30) + "' — redirect target"); } catch (e3) {}
+                                    return;
                                 }
                             } catch (e2) {}
                             // Fight only the raises WE cause: the whole guarded
@@ -6821,9 +7218,22 @@ class _TabsMixin {
                             oursElsewhere = (t === "navigator:browser" || t === "zotero:reader") && fw !== target;
                         } catch (e) {}
                         if (oursElsewhere) {
-                            target.focus();
-                            (this as any)._wvTrace("focus-shepherd: re-asserted the "
-                                + (((self as any)._wvBootFocusedEntry || {}).kind) + " window");
+                            // Recent user input → this is the USER switching
+                            // windows, not a load stealing focus: adopt their
+                            // pick instead of fighting it. This is also the
+                            // macOS path (the Win32 activate hooks never run
+                            // there; the shepherd's re-asserts were what made
+                            // manual switching impossible during loading).
+                            if (self._wvUserRecentlyActive(1500)) {
+                                (self as any)._wvBgUserChosenWin = fw;
+                                (this as any)._wvTrace("focus-shepherd: user switched to '"
+                                    + String(fw.document.title || "").slice(0, 30)
+                                    + "' — adopted as target");
+                            } else {
+                                target.focus();
+                                (this as any)._wvTrace("focus-shepherd: re-asserted the "
+                                    + (((self as any)._wvBootFocusedEntry || {}).kind) + " window");
+                            }
                         }
                     }
                 } catch (e) {}
@@ -6839,6 +7249,17 @@ class _TabsMixin {
      *  restore chain settles so a late-restoring window can't steal it back. */
     _wvRestoreFocusedWindow() {
         try {
+            // A user claim during the restore beats the quit-time descriptor:
+            // the final asserts must land on THEIR window, not snap back.
+            try {
+                const chosen = (this as any)._wvBgUserChosenWin;
+                if (chosen && !chosen.closed) {
+                    try { if ((this as any)._wvBgClearNoActivate) (this as any)._wvBgClearNoActivate(chosen); } catch (e) {}
+                    chosen.focus();
+                    (this as any)._wvTrace("restore: focused the user-chosen window");
+                    return;
+                }
+            } catch (e) {}
             const f = (this as any)._wvBootFocusedEntry;
             if (!f || !f.kind) return;
             let target: any = null;
@@ -7547,8 +7968,165 @@ class _TabsMixin {
             // = the untagged window; managed windows are tagged.
             let multi = false;
             try { multi = (Zotero.getMainWindows ? Zotero.getMainWindows().length : 1) > 1; } catch (e) {}
-            d.documentElement.classList.toggle("wv-anchor-window", multi && this._wvIsAnchorWindow(win));
+            const isAnchor = this._wvIsAnchorWindow(win);
+            d.documentElement.classList.toggle("wv-anchor-window", multi && isAnchor);
+            // NON-anchor mains: the same spacer spot shows the window's badge
+            // COLOUR as a small square — the in-window twin of the taskbar
+            // icon badge (user request 2026-07-13). Must run BEFORE the anchor
+            // tooltip below: its show=false cleanup clears the spacer title.
+            try { this._wvUpdateWindowBadgeDot(win, multi && !isAnchor, false); } catch (e) {}
+            // Hovering the anchor mark names the window (the mark itself is a
+            // ::before, so the tooltip lives on its host spacer).
+            try {
+                const sp = d.querySelector("#zotero-title-bar > .wv-titlebar-spacer");
+                if (sp && multi && isAnchor) {
+                    const nm = this._wvWindowName(win) + " (anchor)";
+                    sp.setAttribute("title", nm);
+                    sp.setAttribute("tooltiptext", nm);
+                    this._wvWireWindowNameTooltip(win, sp);
+                }
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvUpdateMainWindowIndicator err: " + e); }
+    }
+
+    /** Native tooltips never fire for the title-bar marks: the XUL
+     *  tooltip engine only auto-fires on XUL elements, and the spacers
+     *  are HTML divs (verified 2026-07-13 — hover events arrive, the
+     *  engine's popupshowing never does). Same situation and same fix
+     *  as the reader-strip tab tooltips (_ensureReaderWindowTabTooltip):
+     *  a per-document XUL <tooltip> opened manually on a ~500ms hover
+     *  timer. The label reads the element's `title` attribute AT HOVER
+     *  TIME, so window renames stay fresh with no re-wiring. */
+    _wvWireWindowNameTooltip(win: any, el: any) {
+        try {
+            if (!win || !win.document || !el || (el as any)._wvNameTipWired) return;
+            (el as any)._wvNameTipWired = true;
+            const doc = win.document;
+            const TIP_ID = "wv-win-name-tooltip";
+            let tip: any = doc.getElementById(TIP_ID);
+            if (!tip) {
+                tip = doc.createXULElement("tooltip");
+                tip.id = TIP_ID;
+                (doc.querySelector("popupset") || doc.documentElement).appendChild(tip);
+            }
+            let timer: any = null, isOpen = false, sx = 0, sy = 0;
+            const hide = () => {
+                try {
+                    if (timer) { win.clearTimeout(timer); timer = null; }
+                    const t = doc.getElementById(TIP_ID);
+                    if (t && typeof t.hidePopup === "function") t.hidePopup();
+                    isOpen = false;
+                } catch (e) {}
+            };
+            el.addEventListener("mouseenter", (e: any) => {
+                try {
+                    sx = e.screenX; sy = e.screenY;
+                    if (timer) win.clearTimeout(timer);
+                    timer = win.setTimeout(() => {
+                        try {
+                            const label = el.getAttribute("title") || "";
+                            if (!label) return;
+                            const t = doc.getElementById(TIP_ID);
+                            if (t && typeof t.openPopupAtScreen === "function") {
+                                t.setAttribute("label", label);
+                                isOpen = true;
+                                t.openPopupAtScreen(sx, sy + 14, false);
+                            }
+                        } catch (e2) {}
+                    }, 500);
+                } catch (e2) {}
+            });
+            el.addEventListener("mousemove", (e: any) => {
+                if (!isOpen) { sx = e.screenX; sy = e.screenY; }
+            });
+            el.addEventListener("mouseleave", hide);
+            el.addEventListener("mousedown", hide);
+        } catch (e) {}
+    }
+
+    /** In-window badge dot: a square (main) or circle (reader) in the
+     *  window's shared-pool colour, top-right — the spacer of the
+     *  compact title bar for main windows (same spot as the anchor
+     *  mark), the right end of the tab strip for reader windows.
+     *  Mirrors the taskbar icon badge so the association reads the
+     *  same on every surface. Pseudo-element via a per-window <style>,
+     *  so strip/tab re-renders can't wipe it. */
+    _wvUpdateWindowBadgeDot(win: any, show: boolean, isReader: boolean) {
+        try {
+            const d = win && win.document;
+            if (!d) return;
+            let st: any = d.getElementById("wv-window-badge-dot-style");
+            const spacer = d.querySelector(isReader
+                ? ".wv-window-drag-spacer"
+                : "#zotero-title-bar > .wv-titlebar-spacer");
+            if (!show) {
+                if (st) st.textContent = "";
+                try { if (spacer) spacer.removeAttribute("title"); } catch (e) {}
+                return;
+            }
+            const color = WV_WIN_BADGE_COLORS[
+                this._wvTitleGlyphIdx(win, isReader) % WV_WIN_BADGE_COLORS.length];
+            // Hover names the window — same names as the move-target menus.
+            try {
+                if (spacer) {
+                    let name = "";
+                    if (isReader) {
+                        let n = 0;
+                        const en = Services.wm.getEnumerator("zotero:reader");
+                        while (en.hasMoreElements()) {
+                            const w: any = en.getNext();
+                            if (!w || !w._wvWT) continue;
+                            n++;
+                            if (w === win) break;
+                        }
+                        name = n > 1 ? "Reader window " + n : "Reader window";
+                    } else {
+                        name = this._wvWindowName(win);
+                    }
+                    if (name) {
+                        spacer.setAttribute("title", name);
+                        spacer.setAttribute("tooltiptext", name);
+                        this._wvWireWindowNameTooltip(win, spacer);
+                    }
+                }
+            } catch (e) {}
+            let css = "";
+            if (isReader) {
+                // The reader window's `.wv-window-drag-spacer` sits between
+                // the hamburger and the window controls — the exact analog
+                // of the main windows' `.wv-titlebar-spacer` that hosts the
+                // anchor mark. Same spot, same treatment.
+                // NOTE: no `-moz-window-dragging:no-drag` here — the spacers
+                // are the windows' drag handles ("It breaks the drag area to
+                // move the window", 2026-07-13). The name tooltip doesn't need
+                // it: drag regions eat CLICKS, but hover events still flow, and
+                // the tooltip is opened by our own hover listener (the native
+                // engine ignores HTML divs regardless).
+                css = `.wv-window-tabstrip .wv-window-drag-spacer{`
+                    + `display:flex;align-items:center;justify-content:center;}`
+                    + `.wv-window-tabstrip .wv-window-drag-spacer::before{`
+                    + `content:"";display:block;width:11px;height:11px;`
+                    + `border-radius:50%;background-color:${color};}`;
+            } else {
+                const hasSpacer = !!d.querySelector("#zotero-title-bar > .wv-titlebar-spacer");
+                css = hasSpacer
+                    ? (`#zotero-title-bar > .wv-titlebar-spacer{`
+                        + `display:flex;align-items:center;justify-content:center;}`
+                        + `#zotero-title-bar > .wv-titlebar-spacer::before{`
+                        + `content:"";display:block;width:11px;height:11px;`
+                        + `border-radius:2px;background-color:${color};}`)
+                    : (`#tab-bar-container .tab[data-id="zotero-pane"]::after{`
+                        + `content:"";display:inline-block;width:11px;height:11px;`
+                        + `border-radius:2px;margin-inline-start:6px;`
+                        + `background-color:${color};align-self:center;flex:0 0 auto;}`);
+            }
+            if (!st) {
+                st = d.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                st.id = "wv-window-badge-dot-style";
+                (d.head || d.documentElement).appendChild(st);
+            }
+            if (st.textContent !== css) st.textContent = css;
+        } catch (e) { Zotero.debug("[Weavero] _wvUpdateWindowBadgeDot err: " + e); }
     }
 
     /** Re-evaluate the main-window dot on EVERY window. Call whenever the window

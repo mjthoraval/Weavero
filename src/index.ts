@@ -3848,6 +3848,7 @@ class WeaveroPlugin {
             // included (idempotent).
             for (const w of all) {
                 try { (this as any)._wvPatchItemDetailsTabSelect(w); } catch (e) {}
+                try { (this as any)._wvWireMainNewTabShortcut(w); } catch (e) {}
             }
         } catch (e) {}
         // Window-type title glyphs (opt-in) + per-window taskbar icons on
@@ -3916,6 +3917,9 @@ class WeaveroPlugin {
             // taskbar icon (Windows; Chrome-profile-style badge).
             try { (this as any)._wvWireTitleGlyph(_window); } catch (e) {}
             try { (this as any)._wvApplyWindowIcon(_window); } catch (e) {}
+            // Ctrl+T → "open a library item" picker (reader windows wire
+            // theirs at strip build).
+            try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
             // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
             try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}
             try { (this as any)._wvWireRestoreTracing(_window); } catch (e) {}

@@ -1664,6 +1664,13 @@ class _TabsMixin {
     _wvWindowSetCustomTitle(win: any, title: any) {
         if (!win) return;
         win._wvWindowTitle = title || "";
+        // Reader windows persist nothing (no window index) but their mark
+        // tooltip must refresh with the new session-scoped name.
+        try {
+            if ((win as any)._wvWT) {
+                this._wvUpdateWindowBadgeDot(win, !!(this as any)._getTabsAndWindowsMaster(), true);
+            }
+        } catch (e) {}
         const idx = this._wvWindowIndex(win);
         if (idx < 0) return;
         const map = this._wvWindowTitlesGet();
@@ -4891,6 +4898,7 @@ class _TabsMixin {
                                             self._wvMakeMoveTabMenuMulti(win2, popup, tg);
                                             self._wvMakeCloseTabsMenuMulti(win2, popup, tg);
                                             self._wvMakeDuplicateTabMenuMulti(win2, popup, tg);
+                                            self._wvMakeShowInLibraryMenuMulti(win2, popup, tg);
                                         }
                                     }
                                 } catch (e) {}
@@ -5137,6 +5145,43 @@ class _TabsMixin {
     /** Relabel the native "Close" menuitem to "Close N Tabs" and rebind it to
      *  close the whole `targets` selection (Firefox's "Close N Tabs"). Only the
      *  plain Close item — "Close Other Tabs" has a distinct label. */
+    /** Rebind the native "Show in Library" menuitem to select ALL selected
+     *  tabs' items in the items list (parents for child attachments, deduped)
+     *  — the native handler only selects the context tab's item. Mirrors
+     *  _wvMakeCloseTabsMenuMulti (user request 2026-07-13). */
+    _wvMakeShowInLibraryMenuMulti(win: any, popup: any, targets: any[]) {
+        try {
+            const label = Zotero.getString("general.showInLibrary");
+            for (const mi of Array.from(popup.querySelectorAll("menuitem")) as any[]) {
+                if (!mi.getAttribute || mi.getAttribute("label") !== label) continue;
+                const clone = mi.cloneNode(true);   // drops the native single-tab command listener
+                mi.replaceWith(clone);
+                clone.addEventListener("command", () => {
+                    try {
+                        const ZT: any = win && (win as any).Zotero_Tabs;
+                        const ids: any[] = [];
+                        for (const tid of targets) {
+                            try {
+                                const got = ZT && ZT._getTab ? ZT._getTab(tid) : null;
+                                const tab = got && got.tab;
+                                let itemID = tab && tab.data && tab.data.itemID;
+                                if (itemID == null) continue;
+                                const it: any = Zotero.Items.get(itemID);
+                                if (it && it.parentItemID) itemID = it.parentItemID;
+                                if (!ids.includes(itemID)) ids.push(itemID);
+                            } catch (e2) {}
+                        }
+                        if (ids.length && win.ZoteroPane
+                            && typeof win.ZoteroPane.selectItems === "function") {
+                            win.ZoteroPane.selectItems(ids);
+                        }
+                    } catch (e) {}
+                });
+                break;
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMakeShowInLibraryMenuMulti err: " + e); }
+    }
+
     _wvMakeCloseTabsMenuMulti(win: any, popup: any, targets: any[]) {
         try {
             const closeLabel = Zotero.getString("general.close");
@@ -8060,6 +8105,7 @@ class _TabsMixin {
                     sp.setAttribute("title", nm);
                     sp.setAttribute("tooltiptext", nm);
                     this._wvWireWindowNameTooltip(win, sp);
+                    this._wvWireWindowMarkContext(win, sp, false);
                 }
             } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvUpdateMainWindowIndicator err: " + e); }
@@ -8123,6 +8169,84 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    /** Right-click on a title-bar window mark (anchor ⚓ or colour dot):
+     *  context menu with Rename Window… (main windows — reader names are
+     *  positional) and a colour picker that overrides the shared-pool
+     *  index for THIS window (session-scoped, like the automatic
+     *  assignment; user request 2026-07-13). */
+    _wvWireWindowMarkContext(win: any, el: any, isReader: boolean) {
+        try {
+            if (!el || (el as any)._wvMarkCtxWired) return;
+            (el as any)._wvMarkCtxWired = true;
+            el.addEventListener("contextmenu", (e: any) => {
+                try {
+                    e.preventDefault(); e.stopPropagation();
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (p && !p._wvDestroyed) p._wvWindowMarkContext(win, isReader, e);
+                } catch (e2) {}
+            });
+        } catch (e) {}
+    }
+
+    _wvWindowMarkContext(win: any, isReader: boolean, e: any) {
+        try {
+            const doc = win.document;
+            let pop: any = doc.getElementById("wv-winmark-context");
+            if (pop) pop.remove();   // rebuild fresh each time
+            pop = doc.createXULElement("menupopup");
+            pop.id = "wv-winmark-context";
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const isAnchor = !isReader && this._wvIsAnchorWindow(win);
+            // Rename — ALL windows. Main-window names persist (window-titles
+            // map); reader names are session-scoped (`win._wvWindowTitle`),
+            // picked up by the tabs-menu headers, move-target menus and the
+            // mark tooltip.
+            const mi: any = doc.createXULElement("menuitem");
+            mi.setAttribute("label", "Rename Window…");
+            mi.addEventListener("command", () => {
+                try { const p: any = live(); if (p) p._wvWindowRenamePrompt(win, null); } catch (e2) {}
+            });
+            pop.appendChild(mi);
+            // Colour picker — the tab-groups swatch row, no labels (user
+            // request 2026-07-13). Not for the anchor (its mark is the ⚓).
+            if (!isAnchor) {
+                pop.appendChild(doc.createXULElement("menuseparator"));
+                try { this._ensureTabGroupStyles(doc); } catch (e2) {}
+                const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                wrap.className = "wv-tg-swatches";
+                wrap.style.cssText = "padding: 6px 10px;";
+                const curIdx = (win as any)._wvTitleGlyphIdx != null
+                    ? ((win as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
+                for (let i = 0; i < WV_WIN_BADGE_COLORS.length; i++) {
+                    const sw = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                    sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
+                    (sw as any).style.background = WV_WIN_BADGE_COLORS[i];
+                    if (isReader) (sw as any).style.borderRadius = "50%";
+                    const idx = i;
+                    sw.addEventListener("click", (ev: any) => {
+                        try {
+                            ev.stopPropagation();
+                            const p: any = live();
+                            if (!p) return;
+                            (win as any)._wvTitleGlyphIdx = idx;
+                            delete (win as any)._wvWinIconName;   // force icon re-apply
+                            try { p._wvApplyWindowIcon(win); } catch (e2) {}
+                            try {
+                                if (isReader) p._wvUpdateWindowBadgeDot(win, !!p._getTabsAndWindowsMaster(), true);
+                                else p._wvUpdateMainWindowIndicator(win);
+                            } catch (e2) {}
+                            try { pop.hidePopup(); } catch (e2) {}
+                        } catch (e2) {}
+                    });
+                    wrap.appendChild(sw);
+                }
+                pop.appendChild(wrap);
+            }
+            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+            pop.openPopupAtScreen(e.screenX, e.screenY, true);
+        } catch (e2) { Zotero.debug("[Weavero] _wvWindowMarkContext err: " + e2); }
+    }
+
     /** In-window badge dot: a square (main) or circle (reader) in the
      *  window's shared-pool colour, top-right — the spacer of the
      *  compact title bar for main windows (same spot as the anchor
@@ -8158,7 +8282,8 @@ class _TabsMixin {
                             n++;
                             if (w === win) break;
                         }
-                        name = n > 1 ? "Reader window " + n : "Reader window";
+                        name = this._wvWindowCustomTitle(win)
+                            || (n > 1 ? "Reader window " + n : "Reader window");
                     } else {
                         name = this._wvWindowName(win);
                     }
@@ -8166,6 +8291,7 @@ class _TabsMixin {
                         spacer.setAttribute("title", name);
                         spacer.setAttribute("tooltiptext", name);
                         this._wvWireWindowNameTooltip(win, spacer);
+                        this._wvWireWindowMarkContext(win, spacer, isReader);
                     }
                 }
             } catch (e) {}

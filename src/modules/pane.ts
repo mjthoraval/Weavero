@@ -648,7 +648,8 @@ class _PaneMixin {
                 const w: any = en.getNext();
                 if (!w || !w._wvWT) continue;
                 n++;
-                const base = n > 1 ? "Reader window " + n : "Reader window";
+                const base = (this as any)._wvWindowCustomTitle(w)
+                    || (n > 1 ? "Reader window " + n : "Reader window");
                 out.push({ win: w, name: (this as any)._wvGlyphLabel(w, base), isReader: true });
             }
         } catch (e) {}
@@ -799,6 +800,133 @@ class _PaneMixin {
      *  group). Focus the window so Zotero.Reader.open lands there; for a group,
      *  file the freshly-opened tab in via _wvTabGroupAddTab (retried briefly until
      *  the new tab lands in the window's tab list). */
+    /** A clean, empty new main window (library tab only) — the hamburger's
+     *  "New Main Window" (user request 2026-07-13). Same spawn path as the
+     *  tab-context dev command: the pending flag routes onMainWindowLoad
+     *  into managed-window init with an empty spawn queue = clean start. */
+    _wvOpenEmptyMainWindow() {
+        try {
+            (this as any)._wvPendingDevWindow = true;
+            try { (this as any)._wvClearSessionPaneState(); } catch (e) {}
+            try { (Zotero as any).openMainWindow(); }
+            catch (e) { (this as any)._wvPendingDevWindow = false; }
+        } catch (e) {}
+    }
+
+    /** Picker → open the chosen items in a NEW reader window: the first
+     *  reader-able attachment anchors the window, the rest mount as tabs
+     *  (notes included). Notes-only selections no-op (a reader window
+     *  needs a reader native). The hamburger's "New Reader Window". */
+    async _wvNewReaderWindowPicker(win: any) {
+        try {
+            const io: any = {
+                dataIn: null, dataOut: null,
+                deferred: Zotero.Promise.defer(),
+                itemTreeID: "weavero-newreaderwin-select",
+            };
+            win.openDialog("chrome://zotero/content/selectItemsDialog.xhtml", "",
+                "chrome,dialog=no,centerscreen,resizable=yes", io);
+            await io.deferred.promise;
+            if (!io.dataOut || !io.dataOut.length) return;
+            const items: any = await Zotero.Items.getAsync(io.dataOut);
+            const readerables: any[] = [];
+            const notes: any[] = [];
+            for (const it of items) {
+                try {
+                    if (it.isNote && it.isNote()) { notes.push(it.id); continue; }
+                    let att: any = null;
+                    if (it.attachmentReaderType) att = it;
+                    else if (it.isRegularItem && it.isRegularItem()) att = await it.getBestAttachment();
+                    if (att && att.attachmentReaderType) readerables.push(att.id);
+                } catch (e2) {}
+            }
+            if (!readerables.length) {
+                Zotero.debug("[Weavero] new-reader-window: no reader-able item picked");
+                return;
+            }
+            const reader: any = await (Zotero.Reader as any).open(readerables[0], null,
+                { openInWindow: true, allowDuplicate: true });
+            let rw: any = reader && reader._window;
+            const setT = (win.setTimeout || setTimeout).bind(win);
+            for (let i = 0; i < 40 && !(rw && rw._wvWT); i++) {
+                await new Promise(r => setT(r, 100));
+                rw = reader && reader._window;
+            }
+            if (!rw || !rw._wvWT) return;
+            for (const id of readerables.slice(1)) {
+                try { this._wvWTAddLazyReaderTab(rw, id); } catch (e2) {}
+            }
+            for (const id of notes) {
+                try { await this._wvWTMountTab(rw, id, { allowDuplicate: true, select: false, await: true }); } catch (e2) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvNewReaderWindowPicker err: " + e); }
+    }
+
+    /** Ctrl+T / Cmd+T in a MAIN window opens the same "open a library
+     *  item" picker as the reader windows' + button, opening the picked
+     *  items as tabs in THIS window (user request 2026-07-13). Zotero
+     *  binds nothing to accel+T natively (verified live — no <key>).
+     *  Idempotent per window; capture phase so it fires with focus
+     *  anywhere in the window. */
+    _wvWireMainNewTabShortcut(win: any) {
+        try {
+            if (!win || (win as any)._wvMainNewTabKeyWired) return;
+            (win as any)._wvMainNewTabKeyWired = true;
+            win.addEventListener("keydown", (ke: any) => {
+                try {
+                    const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                    if (!accel || ke.shiftKey || ke.altKey
+                        || String(ke.key).toLowerCase() !== "t") return;
+                    ke.preventDefault(); ke.stopPropagation();
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live && !live._wvDestroyed) live._wvMainNewTabPicker(win);
+                } catch (e2) {}
+            }, true);
+        } catch (e) {}
+    }
+
+    async _wvMainNewTabPicker(win: any) {
+        try {
+            const io: any = {
+                dataIn: null, dataOut: null,
+                deferred: Zotero.Promise.defer(),
+                itemTreeID: "weavero-main-newtab-select",
+            };
+            win.openDialog("chrome://zotero/content/selectItemsDialog.xhtml", "",
+                "chrome,dialog=no,centerscreen,resizable=yes", io);
+            await io.deferred.promise;
+            if (!io.dataOut || !io.dataOut.length) return;
+            const items: any = await Zotero.Items.getAsync(io.dataOut);
+            // Reader.open lands in the FOCUSED main window — assert ours
+            // (multi-main-window safety).
+            try { win.focus(); } catch (e) {}
+            for (const it of items) {
+                try {
+                    if (it.isNote && it.isNote()) {
+                        // ZoteroPane.openNote is the REAL note-tab opener (the
+                        // hook Better Notes drives too) — a bare Zotero_Tabs.add
+                        // makes a shell tab whose editor never mounts ("Why is
+                        // the note not loading?", 2026-07-13).
+                        if (typeof win.ZoteroPane.openNote === "function") {
+                            await win.ZoteroPane.openNote(it.id, { openInWindow: false });
+                        } else {
+                            win.Zotero_Tabs.add({ type: "note", data: { itemID: it.id }, select: true });
+                        }
+                        continue;
+                    }
+                    let openID: any = null;
+                    if (it.attachmentReaderType) openID = it.id;
+                    else if (it.isRegularItem && it.isRegularItem()) {
+                        const att: any = await it.getBestAttachment();
+                        if (att && att.attachmentReaderType) openID = att.id;
+                    }
+                    if (openID == null) continue;
+                    await (Zotero.Reader as any).open(openID, null, { openInWindow: false, allowDuplicate: false });
+                } catch (e2) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvMainNewTabPicker err: " + e); }
+    }
+
     async _wvOpenInTarget(srcWin: any, targetWin: any, groupID: any, createNewGroup?: boolean) {
         try {
             const zp = srcWin && srcWin.ZoteroPane;
@@ -831,7 +959,17 @@ class _PaneMixin {
                 // Main window: a note opens as a note tab; an attachment via Reader.open.
                 let tabID: any = null;
                 if (isNote) {
-                    try { const r = targetWin.Zotero_Tabs.add({ type: "note", data: { itemID: it.id }, select: true }); tabID = r && r.id; }
+                    try {
+                        if (typeof targetWin.ZoteroPane.openNote === "function") {
+                            // Real note-tab opener (see _wvMainNewTabPicker) —
+                            // the bare add() left an editor-less shell tab.
+                            const r0 = await targetWin.ZoteroPane.openNote(it.id, { openInWindow: false });
+                            tabID = (r0 && (r0.id || r0)) || targetWin.Zotero_Tabs.selectedID;
+                        } else {
+                            const r = targetWin.Zotero_Tabs.add({ type: "note", data: { itemID: it.id }, select: true });
+                            tabID = r && r.id;
+                        }
+                    }
                     catch (e) { Zotero.debug("[Weavero] open-in note err: " + e); continue; }
                 } else {
                     let reader: any = null;

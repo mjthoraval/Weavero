@@ -5759,7 +5759,7 @@ class _ReaderMixin {
             if (btn) return btn;
             btn = doc.createElementNS(HTML, "button");
             btn.className = "wv-window-newtab-btn";
-            btn.setAttribute("title", "New tab — open a library item");
+            btn.setAttribute("title", "New tab — open a library item (Ctrl+T)");
             btn.setAttribute("tabindex", "-1");
             btn.setAttribute("aria-label", "New tab");
             const svg: any = doc.createElementNS(SVG_NS, "svg");
@@ -5809,6 +5809,25 @@ class _ReaderMixin {
                     } catch (er) { Zotero.debug("[Weavero] reader new-tab err: " + er); }
                 })();
             });
+            // Ctrl+T (Cmd+T on macOS) opens the same picker — reader windows
+            // have no native "new tab" (user request 2026-07-13). Capture
+            // phase on the chrome window so it fires with focus anywhere.
+            try {
+                if (!(win as any)._wvWTNewTabKeyWired) {
+                    (win as any)._wvWTNewTabKeyWired = true;
+                    win.addEventListener("keydown", (ke: any) => {
+                        try {
+                            const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                            if (!accel || ke.shiftKey || ke.altKey
+                                || String(ke.key).toLowerCase() !== "t") return;
+                            const b = win.document.querySelector(".wv-window-newtab-btn");
+                            if (!b) return;
+                            ke.preventDefault(); ke.stopPropagation();
+                            b.click();
+                        } catch (e2) {}
+                    }, true);
+                }
+            } catch (e2) {}
             if (beforeEl && beforeEl.parentNode === stripEl) stripEl.insertBefore(btn, beforeEl);
             else stripEl.appendChild(btn);
             return btn;
@@ -13849,6 +13868,43 @@ class _ReaderMixin {
                 currentSrcDismissListener = null;
             };
 
+            // Firefox-style TOP entries: New Tab / New Reader Window /
+            // New Main Window (user request 2026-07-13). "New Tab" opens
+            // this window's picker (reader: the + button; main: the
+            // Ctrl+T picker).
+            try {
+                const mkTop = (label: string, fn: () => void, accel?: string) => {
+                    const mi: any = doc.createXULElement("menuitem");
+                    mi.setAttribute("label", label);
+                    if (accel) mi.setAttribute("acceltext", accel);
+                    mi.addEventListener("command", () => {
+                        try { popup.hidePopup(); } catch (e2) {}
+                        try { fn(); } catch (e2) {}
+                    });
+                    popup.appendChild(mi);
+                };
+                const ACCEL = Zotero.isMac ? "⌘" : "Ctrl+";
+                const liveP = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                mkTop("New Tab", () => {
+                    const p: any = liveP();
+                    if (!p) return;
+                    if ((win as any)._wvWT) {
+                        const b = doc.querySelector(".wv-window-newtab-btn");
+                        if (b) (b as any).click();
+                    } else {
+                        p._wvMainNewTabPicker(win);
+                    }
+                }, ACCEL + "T");
+                mkTop("New Reader Window", () => {
+                    const p: any = liveP();
+                    if (p) p._wvNewReaderWindowPicker(win);
+                });
+                mkTop("New Main Window", () => {
+                    const p: any = liveP();
+                    if (p) p._wvOpenEmptyMainWindow();
+                });
+                popup.appendChild(doc.createXULElement("menuseparator"));
+            } catch (e2) { Zotero.debug("[Weavero][hamburger] top entries err: " + e2); }
             for (const src of sources) {
                 const submenu: any = doc.createXULElement("menu");
                 submenu.setAttribute("label", src.label);
@@ -13907,6 +13963,57 @@ class _ReaderMixin {
                 submenu.appendChild(innerPlaceholder);
                 popup.appendChild(submenu);
             }
+            // Firefox-style TOP-LEVEL entries (user request 2026-07-13):
+            // Settings and Plugins as first-class items, Exit alone at the
+            // very bottom — Firefox's app menu doesn't mirror the menu bar
+            // either. Each entry triggers the LIVE native menuitem
+            // (doCommand → locale-correct behaviour) and the original is
+            // hidden inside its cascade while the hamburger owns the menus
+            // (unhidden by the compact-title-bar teardown). Reader windows
+            // lack these ids → loop no-ops there.
+            try {
+                const promote = [
+                    { ids: ["menu_EditPreferencesItem"], sepBefore: true },   // Settings
+                    { ids: ["menu_addons"], sepBefore: false },               // Plugins
+                    { ids: ["menu_fileQuitItemWin", "menu_fileQuitItemUnix"], sepBefore: true }, // Exit
+                ];
+                for (const spec of promote) {
+                    const els = spec.ids.map((id: string) => doc.getElementById(id)).filter(Boolean);
+                    const el: any = els.find((x: any) => !x.hidden) || els[0];
+                    if (!el) continue;
+                    if (spec.sepBefore) popup.appendChild(doc.createXULElement("menuseparator"));
+                    const mi: any = doc.createXULElement("menuitem");
+                    mi.setAttribute("label", el.getAttribute("label") || "");
+                    // Shortcut hint, Firefox-style: reuse the native item's
+                    // acceltext, or compose it from its <key> reference.
+                    try {
+                        let accel = el.getAttribute("acceltext") || "";
+                        if (!accel) {
+                            const keyEl = el.getAttribute("key")
+                                ? doc.getElementById(el.getAttribute("key")) : null;
+                            if (keyEl) {
+                                const mods = (keyEl.getAttribute("modifiers") || "")
+                                    .split(/[\s,]+/).filter(Boolean)
+                                    .map((m: string) => m === "accel"
+                                        ? (Zotero.isMac ? "⌘" : "Ctrl")
+                                        : m === "shift" ? "Shift"
+                                        : m === "alt" ? "Alt" : m);
+                                const k = keyEl.getAttribute("key")
+                                    || keyEl.getAttribute("keycode") || "";
+                                if (k) accel = [...mods, k.toUpperCase()].join("+")
+                                    .replace("⌘+", "⌘");
+                            }
+                        }
+                        if (accel) mi.setAttribute("acceltext", accel);
+                    } catch (e3) {}
+                    mi.addEventListener("command", () => {
+                        try { popup.hidePopup(); } catch (e2) {}
+                        try { el.doCommand(); } catch (e2) {}
+                    });
+                    popup.appendChild(mi);
+                    try { el.hidden = true; el.setAttribute("data-wv-hamburger-promoted", "true"); } catch (e2) {}
+                }
+            } catch (e2) { Zotero.debug("[Weavero][hamburger] promote err: " + e2); }
             // Mount the popup. Prefer an existing <popupset>; fall back to
             // documentElement so it's at least in the doc.
             const popupset = doc.querySelector("popupset") || doc.documentElement;
@@ -14088,6 +14195,12 @@ class _ReaderMixin {
             if (btn) btn.remove();
             const popup = doc.getElementById("wv-hamburger-popup");
             if (popup) popup.remove();
+            // Un-hide the native menu items the hamburger had promoted to
+            // its top level (Settings / Plugins / Exit) — the menubar is
+            // visible again and must be complete.
+            for (const el of doc.querySelectorAll("[data-wv-hamburger-promoted]")) {
+                try { (el as any).hidden = false; el.removeAttribute("data-wv-hamburger-promoted"); } catch (e2) {}
+            }
         } catch (e) {
             Zotero.debug("[Weavero] _wvRemoveHamburger err: " + e);
         }

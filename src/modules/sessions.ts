@@ -723,6 +723,19 @@ class _TabSessionsMixin {
         return n + (n === 1 ? " tab" : " tabs");
     }
 
+    /** "N windows · M tabs" (windows part omitted when unknown/1-and-
+     *  legacy) — sessions show their window count alongside the tab count
+     *  (user request 2026-07-13). */
+    _wvTabSessionCountsLabel(nWins: number, nTabs: number) {
+        const tabs = this._wvTabSessionTabCountLabel(nTabs);
+        if (!nWins || nWins < 1) return tabs;
+        return nWins + (nWins === 1 ? " window" : " windows") + " · " + tabs;
+    }
+
+    _wvTabSessionCountWindows(s: any) {
+        try { return Array.isArray(s && s.windows) ? s.windows.length : 0; } catch (e) { return 0; }
+    }
+
     _wvTabSessionPromptSaveAs(win: any) {
         try {
             const valObj = { value: this._wvTabSessionDefaultName() };
@@ -1009,15 +1022,16 @@ class _TabSessionsMixin {
                 }
                 const en = Services.wm.getEnumerator("zotero:reader");
                 while (en.hasMoreElements()) { const w: any = en.getNext(); const st = w._wvWT; if (st && Array.isArray(st.tabs)) n += st.tabs.length; }
+                let nw = Zotero.getMainWindows().length;
+                const enw = Services.wm.getEnumerator("zotero:reader");
+                while (enw.hasMoreElements()) { const w: any = enw.getNext(); if (w._wvWT) nw++; }
                 const cnt = doc.createElementNS(HTML_NS, "span");
                 cnt.className = "wv-sessmenu-count";
-                cnt.textContent = this._wvTabSessionTabCountLabel(n);
+                cnt.textContent = this._wvTabSessionCountsLabel(nw, n);
                 hdr.appendChild(cnt);
             } catch (er) {}
-            const eyebrow = doc.createElementNS(HTML_NS, "span");
-            eyebrow.className = "wv-cursess-eyebrow";
-            eyebrow.textContent = "Current session";
-            hdr.appendChild(eyebrow);
+            // No "Current session" eyebrow tag — the top position already
+            // says it (user request 2026-07-13).
             // Right-click → rename the current session (or save the live tabs as a
             // new one) — same affordance the saved-session rows already have.
             hdr.setAttribute("title", "Right-click to rename or save this session");
@@ -1117,7 +1131,7 @@ class _TabSessionsMixin {
                 const count = doc.createElementNS(HTML_NS, "span");
                 count.className = "wv-sessmenu-count";
                 const suffix = autoSlot ? " · auto" : "";
-                count.textContent = this._wvTabSessionTabCountLabel(n) + suffix;
+                count.textContent = this._wvTabSessionCountsLabel(this._wvTabSessionCountWindows(s), n) + suffix;
                 row.appendChild(count);
                 row.addEventListener("click", (e: any) => {
                     try {

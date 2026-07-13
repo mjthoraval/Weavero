@@ -2030,6 +2030,374 @@ class _TabsMixin {
         } catch (e) {}
     }
 
+    /** Toggle: one taskbar button PER WINDOW (its badge icon, on the
+     *  monitor where the window lives) instead of one grouped button.
+     *  Default OFF — grouping preserved (user request 2026-07-13).
+     *  Split windows leave the group's preview flyout by design. */
+    _getEnableSeparateTaskbarButtons() {
+        try {
+            if (!Zotero.isWin) return false;
+            if (!(this as any)._getTabsAndWindowsMaster()) return false;
+            return !!Zotero.Prefs.get("weavero.separateTaskbarButtons");
+        } catch (e) { return false; }
+    }
+
+    /** Set (aumid string) or clear (null) a window's AppUserModelID via
+     *  the shell property store — COM through js-ctypes (vtable calls;
+     *  IPropertyStore: QI/AddRef/Release/GetCount/GetAt/GetValue/
+     *  SetValue/Commit). Windows regroups/splits taskbar buttons by
+     *  this id. Verified live 2026-07-13 (spike on window 2). */
+    _wvSetWindowAUMID(win: any, aumid: string | null): boolean {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return false;
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
+            const shell32 = ctypes.open("shell32.dll");
+            try {
+                const HWND = ctypes.voidptr_t;
+                const GUID = new ctypes.StructType("WVGUID", [
+                    { a: ctypes.uint32_t }, { b: ctypes.uint16_t }, { c: ctypes.uint16_t },
+                    { d: ctypes.uint8_t.array(8) }]);
+                const PROPERTYKEY = new ctypes.StructType("WVPROPERTYKEY", [{ fmtid: GUID }, { pid: ctypes.uint32_t }]);
+                const PROPVARIANT = new ctypes.StructType("WVPROPVARIANT", [
+                    { vt: ctypes.uint16_t }, { r1: ctypes.uint16_t }, { r2: ctypes.uint16_t }, { r3: ctypes.uint16_t },
+                    { pwszVal: ctypes.char16_t.ptr }]);
+                const SHGetPropertyStoreForWindow = shell32.declare("SHGetPropertyStoreForWindow",
+                    ctypes.winapi_abi, ctypes.long, HWND, GUID.ptr, ctypes.voidptr_t.ptr);
+                const iid = new GUID();   // IID_IPropertyStore
+                iid.a = 0x886d8eeb; iid.b = 0x8cf2; iid.c = 0x4446;
+                const dd = [0x8d, 0x02, 0xcd, 0xba, 0x1d, 0xbd, 0xcf, 0x99];
+                for (let i = 0; i < 8; i++) iid.d[i] = dd[i];
+                const key = new PROPERTYKEY();   // PKEY_AppUserModel_ID
+                key.fmtid.a = 0x9F4C2855; key.fmtid.b = 0x9F79; key.fmtid.c = 0x4B39;
+                const kd = [0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3];
+                for (let i = 0; i < 8; i++) key.fmtid.d[i] = kd[i];
+                key.pid = 5;
+                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
+                const storePtr = new ctypes.voidptr_t();
+                if (Number(SHGetPropertyStoreForWindow(hwnd, iid.address(), storePtr.address())) !== 0) return false;
+                const vt = ctypes.cast(storePtr, ctypes.voidptr_t.array(9).ptr.ptr).contents.contents;
+                const SetValueT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long,
+                    [ctypes.voidptr_t, PROPERTYKEY.ptr, PROPVARIANT.ptr]).ptr;
+                const CommitT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t]).ptr;
+                const ReleaseT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.uint32_t, [ctypes.voidptr_t]).ptr;
+                const pv = new PROPVARIANT();
+                let buf: any = null;
+                if (aumid) {
+                    buf = ctypes.char16_t.array()(aumid + "\0");
+                    pv.vt = 31;   // VT_LPWSTR
+                    pv.pwszVal = ctypes.cast(buf.address(), ctypes.char16_t.ptr);
+                } else {
+                    pv.vt = 0;    // VT_EMPTY → back to the app's shared identity
+                }
+                const hr1 = Number(ctypes.cast(vt[6], SetValueT)(storePtr, key.address(), pv.address()));
+                const hr2 = Number(ctypes.cast(vt[7], CommitT)(storePtr));
+                ctypes.cast(vt[2], ReleaseT)(storePtr);
+                return hr1 === 0 && hr2 === 0;
+            } finally { shell32.close(); }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSetWindowAUMID err: " + e);
+            return false;
+        }
+    }
+
+    /** Taskbar identity: NATIVE for everyone (windows always merge and
+     *  their buttons migrate between monitors natively/instantly) unless
+     *  the separate-buttons pref puts each non-anchor window on its own
+     *  AUMID. The per-monitor AUMID experiment is RETIRED (2026-07-13):
+     *  identical window-level AUMIDs applied at different times are not
+     *  reliably merged by the shell (two buttons persisted even after
+     *  re-registering both members), and the churn broke more than the
+     *  per-monitor badge isolation bought. */
+    _wvApplyWindowTaskbarIdentity(win: any) {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return;
+            const wt = win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            const isReader = wt === "zotero:reader";
+            const isMain = !isReader && (Zotero.getMainWindows() || []).includes(win);
+            if (!isReader && !isMain) return;
+            const isAnchor = isMain && this._wvIsAnchorWindow(win);
+            let aumid: string | null = null;
+            if (this._getEnableSeparateTaskbarButtons() && !isAnchor) {
+                aumid = "Weavero." + (isReader ? "Reader." : "Main.") + this._wvTitleGlyphIdx(win, isReader);
+            }
+            let changed = false;
+            if (aumid) {
+                if ((win as any)._wvAumid !== aumid && this._wvSetWindowAUMID(win, aumid)) {
+                    (win as any)._wvAumid = aumid;
+                    changed = true;
+                }
+            } else if ((win as any)._wvAumid) {
+                if (this._wvSetWindowAUMID(win, null)) { delete (win as any)._wvAumid; changed = true; }
+            }
+            if (changed) {
+                try { this._wvRefreshTaskbarButton(win); } catch (e) {}
+                try { delete (win as any)._wvOverlayName; this._wvApplyTaskbarOverlay(win, true); } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    /** Re-register a window's taskbar BUTTON (ITaskbarList::DeleteTab +
+     *  AddTab): the shell only re-evaluates a live window's group
+     *  (AUMID) when its button is re-added — setting the property alone
+     *  left the old button in the old group ("still switches the
+     *  taskbar icon on monitor 2", 2026-07-13). Doesn't touch window
+     *  visibility. The button comes back fresh, so re-assert the
+     *  overlay afterwards. */
+    _wvRefreshTaskbarButton(win: any): boolean {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return false;
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
+            const ole32 = ctypes.open("ole32.dll");
+            try {
+                const HWND = ctypes.voidptr_t;
+                const GUID = new ctypes.StructType("WVG6", [
+                    { a: ctypes.uint32_t }, { b: ctypes.uint16_t }, { c: ctypes.uint16_t },
+                    { d: ctypes.uint8_t.array(8) }]);
+                const mk = (a: number, b: number, c: number, d: number[]) => {
+                    const g = new GUID(); g.a = a; g.b = b; g.c = c;
+                    for (let i = 0; i < 8; i++) g.d[i] = d[i];
+                    return g;
+                };
+                const CLSID = mk(0x56FDF344, 0xFD6D, 0x11d0, [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90]);
+                const IID = mk(0xEA1AFB91, 0x9E28, 0x4B86, [0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF]);
+                const CoCreateInstance = ole32.declare("CoCreateInstance", ctypes.winapi_abi, ctypes.long,
+                    GUID.ptr, ctypes.voidptr_t, ctypes.uint32_t, GUID.ptr, ctypes.voidptr_t.ptr);
+                const obj = new ctypes.voidptr_t();
+                if (Number(CoCreateInstance(CLSID.address(), null, 1, IID.address(), obj.address())) !== 0) return false;
+                const vt = ctypes.cast(obj, ctypes.voidptr_t.array(21).ptr.ptr).contents.contents;
+                const HrInitT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t]).ptr;
+                const TabT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t, HWND]).ptr;
+                const RelT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.uint32_t, [ctypes.voidptr_t]).ptr;
+                ctypes.cast(vt[3], HrInitT)(obj);
+                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
+                const hr1 = Number(ctypes.cast(vt[5], TabT)(obj, hwnd));   // DeleteTab
+                const hr2 = Number(ctypes.cast(vt[4], TabT)(obj, hwnd));   // AddTab
+                ctypes.cast(vt[2], RelT)(obj);
+                return hr1 === 0 && hr2 === 0;
+            } finally { ole32.close(); }
+        } catch (e) { return false; }
+    }
+
+    /** Give this window its badge overlay (colour square / circle; the
+     *  ⚓ disc for the anchor). `force` re-sets even when unchanged: the
+     *  group button displays the overlay of the last window TO SET one
+     *  (not the last active — corrected 2026-07-13), so focus-following
+     *  works by re-asserting on every activation. */
+    /** Set (icoPath) or clear (null) a window's TASKBAR OVERLAY badge —
+     *  ITaskbarList3::SetOverlayIcon via COM-through-ctypes. Immediate,
+     *  shell-managed; the group button shows the overlay of the last
+     *  window to SET one. */
+    /** Re-apply taskbar identity to every open main + reader window. */
+    _wvRefreshWindowTaskbarIdentities() {
+        try {
+            if (!Zotero.isWin) return;
+            for (const w of (Zotero.getMainWindows() || [])) this._wvApplyWindowTaskbarIdentity(w);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) this._wvApplyWindowTaskbarIdentity(en.getNext());
+        } catch (e) {}
+    }
+
+    /** Badge icon base name for a window: "anchor", "main-N", or "reader-N". */
+    _wvBadgeIconNameFor(win: any): string | null {
+        try {
+            const wt = win && win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            const isReader = wt === "zotero:reader";
+            const isMain = !isReader && (Zotero.getMainWindows() || []).includes(win);
+            if (!isReader && !isMain) return null;
+            if (isMain && this._wvIsAnchorWindow(win)) return "anchor";
+            const idx = this._wvTitleGlyphIdx(win, isReader);
+            return (isReader ? "reader-" : "main-") + ((idx % 6) + 1);
+        } catch (e) { return null; }
+    }
+
+    _wvSetTaskbarOverlay(win: any, icoPath: string | null, desc?: string): boolean {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return false;
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const bw = win.docShell.treeOwner
+                .QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIBaseWindow);
+            const user32 = ctypes.open("user32.dll");
+            const ole32 = ctypes.open("ole32.dll");
+            try {
+                const HWND = ctypes.voidptr_t, HICON = ctypes.voidptr_t;
+                const GUID = new ctypes.StructType("WVG7", [
+                    { a: ctypes.uint32_t }, { b: ctypes.uint16_t }, { c: ctypes.uint16_t },
+                    { d: ctypes.uint8_t.array(8) }]);
+                const mk = (a: number, b: number, c: number, d: number[]) => {
+                    const g = new GUID(); g.a = a; g.b = b; g.c = c;
+                    for (let i = 0; i < 8; i++) g.d[i] = d[i];
+                    return g;
+                };
+                const CLSID = mk(0x56FDF344, 0xFD6D, 0x11d0, [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90]);
+                const IID = mk(0xEA1AFB91, 0x9E28, 0x4B86, [0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF]);
+                const CoCreateInstance = ole32.declare("CoCreateInstance", ctypes.winapi_abi, ctypes.long,
+                    GUID.ptr, ctypes.voidptr_t, ctypes.uint32_t, GUID.ptr, ctypes.voidptr_t.ptr);
+                const obj = new ctypes.voidptr_t();
+                if (Number(CoCreateInstance(CLSID.address(), null, 1, IID.address(), obj.address())) !== 0) return false;
+                const vt = ctypes.cast(obj, ctypes.voidptr_t.array(21).ptr.ptr).contents.contents;
+                const HrInitT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long, [ctypes.voidptr_t]).ptr;
+                const SetOvT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.long,
+                    [ctypes.voidptr_t, HWND, HICON, ctypes.char16_t.ptr]).ptr;
+                const RelT = ctypes.FunctionType(ctypes.winapi_abi, ctypes.uint32_t, [ctypes.voidptr_t]).ptr;
+                ctypes.cast(vt[3], HrInitT)(obj);
+                const hwnd = HWND(ctypes.UInt64(bw.nativeHandle));
+                let icon: any = HICON(0);
+                if (icoPath) {
+                    const LoadImageW = user32.declare("LoadImageW", ctypes.winapi_abi, HICON,
+                        ctypes.voidptr_t, ctypes.char16_t.ptr, ctypes.unsigned_int,
+                        ctypes.int, ctypes.int, ctypes.unsigned_int);
+                    icon = LoadImageW(null, icoPath, 1, 16, 16, 0x10);
+                    if (icon.isNull()) return false;
+                }
+                let descBuf: any = null, descPtr: any = ctypes.char16_t.ptr(0);
+                if (desc) {
+                    descBuf = ctypes.char16_t.array()(desc + "\0");
+                    descPtr = ctypes.cast(descBuf.address(), ctypes.char16_t.ptr);
+                }
+                const hr = Number(ctypes.cast(vt[18], SetOvT)(obj, hwnd, icon, descPtr));
+                ctypes.cast(vt[2], RelT)(obj);
+                if (icoPath && !icon.isNull()) {
+                    const DestroyIcon = user32.declare("DestroyIcon", ctypes.winapi_abi, ctypes.int, HICON);
+                    DestroyIcon(icon);
+                }
+                return hr === 0;
+            } finally { user32.close(); ole32.close(); }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvSetTaskbarOverlay err: " + e);
+            return false;
+        }
+    }
+
+    async _wvApplyTaskbarOverlay(win: any, force?: boolean) {
+        try {
+            if (!Zotero.isWin || !this._getEnableWindowIcons()) return;
+            const base = this._wvBadgeIconNameFor(win);
+            if (!base) return;
+            const name = "ov-" + base;
+            if (!force && (win as any)._wvOverlayName === name) return;
+            const path = await this._wvWinIconFile(name);
+            if (!path || win.closed) return;
+            const desc = base === "anchor" ? this._wvWindowName(win) + " (anchor)"
+                : (base.startsWith("reader") ? "Reader window" : this._wvWindowName(win));
+            if (this._wvSetTaskbarOverlay(win, path, desc)) (win as any)._wvOverlayName = name;
+        } catch (e) {}
+    }
+
+    /** Re-assert EVERY window's overlay badge, oldest-focus first and
+     *  `focused` last. With "show taskbar buttons where windows are
+     *  open", Windows scopes "last setter wins" per BUTTON INSTANCE
+     *  (per monitor) — measured live 2026-07-13 — so this leaves each
+     *  monitor's button showing the most-recently-focused window ON
+     *  that monitor, and repairs badges that a cross-monitor
+     *  drag-through stamped onto a foreign monitor's button.
+     *  Sequential awaits: SetOverlayIcon order is the whole point. */
+    async _wvOvAssertAllBadges(focused: any) {
+        try {
+            if (!Zotero.isWin) return;
+            const wins: any[] = [...(Zotero.getMainWindows() || [])];
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) wins.push(en.getNext());
+            const live = wins.filter(w => w && !w.closed);
+            // Counter lives on the windows, not the plugin instance, so
+            // the ordering survives plugin reloads.
+            const maxSeq = live.reduce((m, w) => Math.max(m, (w as any)._wvOvFocusSeq || 0), 0);
+            if (focused && !focused.closed) (focused as any)._wvOvFocusSeq = maxSeq + 1;
+            live.sort((a, b) => ((a as any)._wvOvFocusSeq || 0) - ((b as any)._wvOvFocusSeq || 0));
+            for (const w of live) await this._wvApplyTaskbarOverlay(w, true);
+        } catch (e) {}
+    }
+
+    /** Focus-following: on activation, re-home this window's taskbar
+     *  identity and re-assert all badges (this window last, so its
+     *  monitor's button shows it — see _wvOvAssertAllBadges). Also on
+     *  CROSS-MONITOR MOVES: a drag-drop never fires activate (the
+     *  window is already focused, and re-clicking it won't fire one
+     *  either), so a moved window's badge would stay stale forever.
+     *  sizemodechange+resize fire during the drag with win.screen
+     *  already reporting the NEW monitor (measured live 2026-07-13);
+     *  a cheap origin-key check gates the COM work to real moves. */
+    _wvWireOverlayFocusFollow(win: any) {
+        try {
+            // v8: v7's ordered activate re-assert + move-triggered
+            // re-assert. Badge work only — the shell migrates the
+            // native buttons between monitors itself.
+            const VER = 8;
+            if (!Zotero.isWin || !win || ((win as any)._wvOvFollowWired || 0) >= VER) return;
+            (win as any)._wvOvFollowWired = VER;
+            try {
+                const prev = (win as any)._wvOvMoveHandler;
+                if (prev) {
+                    win.removeEventListener("sizemodechange", prev);
+                    win.removeEventListener("resize", prev);
+                    delete (win as any)._wvOvMoveHandler;
+                }
+            } catch (e) {}
+            try {
+                const prevAct = (win as any)._wvOvActivateHandler;
+                if (prevAct) {
+                    win.removeEventListener("activate", prevAct);
+                    delete (win as any)._wvOvActivateHandler;
+                }
+            } catch (e) {}
+            const handler = () => {
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    try { lp._wvApplyWindowTaskbarIdentity(win); } catch (e) {}
+                    lp._wvOvAssertAllBadges(win);
+                } catch (e) {}
+            };
+            win.addEventListener("activate", handler);
+            (win as any)._wvOvActivateHandler = handler;
+            const screenKey = () => {
+                try { return win.screen ? (win.screen.left + "," + win.screen.top) : ""; }
+                catch (e) { return ""; }
+            };
+            (win as any)._wvOvScreenKey = screenKey();
+            const moveHandler = () => {
+                try {
+                    if (!win || win.closed) return;
+                    const key = screenKey();
+                    if (key === (win as any)._wvOvScreenKey) return;
+                    (win as any)._wvOvScreenKey = key;
+                    if ((win as any)._wvOvMoveTimer) win.clearTimeout((win as any)._wvOvMoveTimer);
+                    (win as any)._wvOvMoveTimer = win.setTimeout(() => {
+                        try {
+                            delete (win as any)._wvOvMoveTimer;
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || win.closed) return;
+                            lp._wvOvAssertAllBadges(win);
+                        } catch (e) {}
+                    }, 150);
+                } catch (e) {}
+            };
+            win.addEventListener("sizemodechange", moveHandler);
+            win.addEventListener("resize", moveHandler);
+            (win as any)._wvOvMoveHandler = moveHandler;
+        } catch (e) {}
+    }
+
+    _wvRefreshTaskbarOverlays(clear?: boolean) {
+        try {
+            if (!Zotero.isWin) return;
+            const each = (w: any) => {
+                try {
+                    if (clear) { this._wvSetTaskbarOverlay(w, null); delete (w as any)._wvOverlayName; }
+                    else { this._wvApplyTaskbarOverlay(w); this._wvWireOverlayFocusFollow(w); }
+                } catch (e) {}
+            };
+            for (const w of (Zotero.getMainWindows() || [])) each(w);
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) each(en.getNext());
+        } catch (e) {}
+    }
+
     /** Apply or restore per-window icons on every open window. */
     _wvRefreshWindowIcons(forceOff?: boolean) {
         try {
@@ -8221,7 +8589,10 @@ class _TabsMixin {
                     const sw = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
                     sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
                     (sw as any).style.background = WV_WIN_BADGE_COLORS[i];
-                    if (isReader) (sw as any).style.borderRadius = "50%";
+                    // Swatch shape mirrors the window's mark: circle for
+                    // readers, square for mains (the base .wv-tg-swatch is
+                    // circular, so mains must override it too).
+                    (sw as any).style.borderRadius = isReader ? "50%" : "3px";
                     const idx = i;
                     sw.addEventListener("click", (ev: any) => {
                         try {
@@ -8230,7 +8601,9 @@ class _TabsMixin {
                             if (!p) return;
                             (win as any)._wvTitleGlyphIdx = idx;
                             delete (win as any)._wvWinIconName;   // force icon re-apply
+                            delete (win as any)._wvOverlayName;   // force overlay re-apply
                             try { p._wvApplyWindowIcon(win); } catch (e2) {}
+                            try { p._wvApplyTaskbarOverlay(win); } catch (e2) {}
                             try {
                                 if (isReader) p._wvUpdateWindowBadgeDot(win, !!p._getTabsAndWindowsMaster(), true);
                                 else p._wvUpdateMainWindowIndicator(win);

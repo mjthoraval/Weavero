@@ -4449,6 +4449,9 @@ class _ReaderMixin {
             // windows wire in onMainWindowLoad).
             try { (this as any)._wvWireTitleGlyph(win); } catch (e) {}
             try { (this as any)._wvApplyWindowIcon(win); } catch (e) {}
+            try { (this as any)._wvApplyWindowTaskbarIdentity(win); } catch (e) {}
+            try { (this as any)._wvApplyTaskbarOverlay(win); } catch (e) {}
+            try { (this as any)._wvWireOverlayFocusFollow(win); } catch (e) {}
             try {
                 (this as any)._wvUpdateWindowBadgeDot(win,
                     !!(this as any)._getTabsAndWindowsMaster(), true);

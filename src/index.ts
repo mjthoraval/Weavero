@@ -3857,6 +3857,15 @@ class WeaveroPlugin {
         // _wvUpdateMainWindowIndicator).
         try { (this as any)._wvRefreshTitleGlyphs(); } catch (e) {}
         try { (this as any)._wvRefreshWindowIcons(); } catch (e) {}
+        try { (this as any)._wvRefreshWindowTaskbarIdentities(); } catch (e) {}
+        // Permanent taskbar overlay badges on every window.
+        try { (this as any)._wvRefreshTaskbarOverlays(); } catch (e) {}
+        // Live pref toggle → regroup/split immediately.
+        try {
+            (this as any)._wvTaskbarPrefObs = Zotero.Prefs.registerObserver(
+                "weavero.separateTaskbarButtons",
+                () => { try { (this as any)._wvRefreshWindowTaskbarIdentities(); } catch (e) {} });
+        } catch (e) {}
         try {
             const en = Services.wm.getEnumerator("zotero:reader");
             while (en.hasMoreElements()) {
@@ -3920,6 +3929,12 @@ class WeaveroPlugin {
             // Ctrl+T → "open a library item" picker (reader windows wire
             // theirs at strip build).
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
+            // Per-window taskbar identity (pref-gated, default off).
+            try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
+            // Permanent taskbar overlay badge (shell shows the active
+            // window's overlay per monitor group).
+            try { (this as any)._wvApplyTaskbarOverlay(_window); } catch (e) {}
+            try { (this as any)._wvWireOverlayFocusFollow(_window); } catch (e) {}
             // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
             try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}
             try { (this as any)._wvWireRestoreTracing(_window); } catch (e) {}
@@ -4310,6 +4325,20 @@ class WeaveroPlugin {
         // and restore the native window icons.
         try { (this as any)._wvRefreshTitleGlyphs(true); } catch (e) {}
         try { (this as any)._wvRefreshWindowIcons(true); } catch (e) {}
+        // Clear the taskbar overlay badges.
+        try { (this as any)._wvRefreshTaskbarOverlays(true); } catch (e) {}
+        // Fold all windows back into the shared taskbar group.
+        try {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { if ((w as any)._wvAumid) (this as any)._wvSetWindowAUMID(w, null); } catch (e) {}
+            }
+            const enR = Services.wm.getEnumerator("zotero:reader");
+            while (enR.hasMoreElements()) {
+                const w: any = enR.getNext();
+                try { if (w._wvAumid) (this as any)._wvSetWindowAUMID(w, null); } catch (e) {}
+            }
+        } catch (e) {}
+        try { if ((this as any)._wvTaskbarPrefObs) Zotero.Prefs.unregisterObserver((this as any)._wvTaskbarPrefObs); } catch (e) {}
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during

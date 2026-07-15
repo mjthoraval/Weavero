@@ -4481,6 +4481,17 @@ class _ReaderMixin {
                 (this as any)._wvUpdateWindowBadgeDot(win,
                     !!(this as any)._getTabsAndWindowsMaster(), true);
             } catch (e) {}
+            // Going 1 → 2 windows REVEALS the anchor decorations on the
+            // pre-existing lone main window (⚓ title mark, badged
+            // taskbar icon, title-bar dot) — re-assert them now. Main
+            // windows do this in onMainWindowLoad; nothing else runs
+            // when a READER window opens (user report 2026-07-15:
+            // after restoring a saved reader window, the lone main
+            // window never got its anchor icon back).
+            try {
+                const anchor: any = (Zotero.getMainWindows() || [])[0];
+                if (anchor) (this as any)._wvCarryGlyphRefresh(anchor, false);
+            } catch (e) {}
         }
         return win._wvWT;
     }

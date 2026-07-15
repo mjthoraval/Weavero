@@ -1957,6 +1957,8 @@ class _ReaderMixin {
             try { this._applyReaderCompactMenubar(reader); } catch (e) {}
             // Keep the window controls at the top-right when Alt reveals the menu.
             try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
+            // Menubar parity: add the Tools/Help menus readers lack.
+            try { this._wvEnsureReaderMenubarExtras(win); } catch (e) {}
             // Insert the hamburger button just left of the window controls.
             // The menubar is hidden in this mode so the hamburger is the
             // always-available access point to those menus.
@@ -3247,6 +3249,7 @@ class _ReaderMixin {
             try { stash.mergeAbsorberOff?.(); } catch (e) {}
             // Remove the hamburger button + popup.
             try { this._wvRemoveHamburger(win); } catch (e) {}
+            try { this._wvRemoveReaderMenubarExtras(win); } catch (e) {}
             // Remove the "list all tabs" panel (the button goes with the strip).
             try { const tlp = doc.getElementById("wv-window-tablist-panel"); if (tlp) tlp.remove(); } catch (e) {}
             try {
@@ -3481,6 +3484,7 @@ class _ReaderMixin {
             // Alt-key reveal + window-control follow.
             try { this._wvWireNoteMenubarAltReveal(win, menubar); } catch (e) {}
             try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
+            try { this._wvEnsureReaderMenubarExtras(win); } catch (e) {}
 
             // Hamburger.
             try {
@@ -3515,6 +3519,7 @@ class _ReaderMixin {
                 }
             } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
+            try { this._wvRemoveReaderMenubarExtras(win); } catch (e) {}
             try {
                 const winEl = doc.documentElement;
                 if ("customtitlebarOrig" in stash) {
@@ -3554,19 +3559,36 @@ class _ReaderMixin {
             style.textContent = [
                 "menubar[wv-compact-hidden='true'] {",
                 "  height: 0 !important; min-height: 0 !important;",
+                "  padding-top: 0 !important; padding-bottom: 0 !important;",
                 "  overflow: hidden !important;",
                 "}",
-                /* When summoned via Alt, style the menubar bar like the main
-                   window's title region. The menubar is a bare child of
-                   <window>, so by default it shows the lighter window
-                   background (rgb(48,48,48)) with no divider — a mismatched
-                   lighter bar. Dark --material-tabbar fill + a
-                   --material-panedivider bottom line make it uniform with the
-                   main-window menubar (#titlebar) and the tab strip below. */
+                /* When summoned via Alt, replicate the main window's
+                   menubar exactly (same metrics as the reader-window
+                   stylesheet — scss/win/_titleBar.scss — minus the 40px
+                   icon inset; note windows have no injected Z icon).
+                   The menubar is a bare child of <window>, so by default
+                   it shows the lighter window background with no divider
+                   and default (smaller) menu items. */
                 "menubar:not([wv-compact-hidden='true']) {",
+                "  height: var(--tab-min-height, 36px);",
+                "  padding: 5px 1px;",
+                "  gap: 5px;",
+                "  position: relative;",
                 "  background: var(--material-tabbar) !important;",
-                "  border-bottom: var(--material-panedivider) !important;",
-                "  box-sizing: border-box;",
+                "}",
+                "menubar:not([wv-compact-hidden='true'])::after {",
+                "  content: ''; position: absolute; left: 0; right: 0; bottom: 0;",
+                "  border-top: var(--material-panedivider);",
+                "}",
+                "menubar > menu {",
+                "  height: 100%;",
+                "  padding: 0 11px;",
+                "  appearance: none;",
+                "  color: inherit;",
+                "  border-radius: 4px;",
+                "}",
+                "menubar > menu[_moz-menuactive='true'] {",
+                "  background-color: light-dark(hsla(0,0%,0%,.12), hsla(0,0%,100%,.22));",
                 "}",
             ].join("\n");
             (doc.documentElement || doc).appendChild(style);
@@ -13796,6 +13818,188 @@ class _ReaderMixin {
      *
      *  Generic across the main window and standalone reader windows: caller
      *  supplies the strip element and the element to insert before. */
+    /** Reader menubar parity: add the Tools and Help menus that the
+     *  reader menubar lacks (it only ships File/Edit/View/Go — the
+     *  mains' menubar is a superset, audited 2026-07-15). The menus
+     *  are LIVE MIRRORS of the main window's Tools/Help: their popups
+     *  rebuild from the main window's elements on every open, so
+     *  plugin-injected entries (Trigger Action, Better BibTeX, …) and
+     *  stateful submenus (Debug Output Logging's counter/checkbox)
+     *  come along for free and stay fresh. Items delegate by invoking
+     *  the SOURCE element's doCommand (the hamburger's proven pattern
+     *  — main-window globals like ZoteroStandalone are top-level
+     *  lexicals, in scope for oncommand strings but NOT reachable as
+     *  window properties). Context-typed items follow READER rules:
+     *  menu-type-reader shows, menu-type-library/-note hide — exactly
+     *  what the main menubar does when a reader tab is active.
+     *  Advanced Search is deliberately NOT added: it's an items-list
+     *  state now (#5658), meaningless in a reader window. */
+    _wvEnsureReaderMenubarExtras(win) {
+        try {
+            const doc = win.document;
+            if (doc.getElementById("wv-reader-tools-menu")) return;
+            const menubar = doc.querySelector("menubar");
+            if (!menubar) return;
+            const mw = Zotero.getMainWindow && Zotero.getMainWindow();
+            if (!mw || !mw.document || mw.closed) return;
+            const mkMirror = (id, mainMenuId, fallbackLabel) => {
+                const menu = doc.createXULElement("menu");
+                menu.id = id;
+                menu.className = "wv-reader-menu";
+                const srcMenu = mw.document.getElementById(mainMenuId);
+                menu.setAttribute("label",
+                    (srcMenu && srcMenu.getAttribute("label")) || fallbackLabel);
+                const ak = srcMenu && srcMenu.getAttribute("accesskey");
+                if (ak) menu.setAttribute("accesskey", ak);
+                const popup = doc.createXULElement("menupopup");
+                popup.addEventListener("popupshowing", (ev: any) => {
+                    if (ev.target !== popup) return;
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp || lp._wvDestroyed) return;
+                        while (popup.firstChild) popup.firstChild.remove();
+                        const m = Zotero.getMainWindow && Zotero.getMainWindow();
+                        const src = m && !m.closed && m.document.getElementById(mainMenuId);
+                        const srcPopup = src && src.querySelector(":scope > menupopup");
+                        if (srcPopup) lp._wvMirrorMenuPopup(popup, srcPopup);
+                    } catch (e) {}
+                });
+                menu.append(popup);
+                return menu;
+            };
+            const tools = mkMirror("wv-reader-tools-menu", "toolsMenu", "Tools");
+            const help = mkMirror("wv-reader-help-menu", "helpMenu", "Help");
+            // Main-window order is … Tools, Window, Help.
+            const windowMenu = doc.getElementById("windowMenu");
+            if (windowMenu) {
+                menubar.insertBefore(tools, windowMenu);
+                menubar.insertBefore(help, windowMenu.nextSibling);
+            } else {
+                menubar.append(tools, help);
+            }
+        } catch (e) {}
+    }
+
+    /** Rebuild `popup` (in a reader/note window) as a delegating copy
+     *  of `srcPopup` (in the main window). Fires popupshowing on the
+     *  source first so it prepares itself exactly as if it were
+     *  opening there (Debug Output's status line, plugin-populated
+     *  submenus). Submenus mirror lazily on their own popupshowing. */
+    _wvMirrorMenuPopup(popup, srcPopup) {
+        try {
+            const doc = popup.ownerDocument;
+            /* Fire the synthetic popupshowing ONLY on the Debug Output
+               Logging submenu, whose handler just refreshes its own
+               labels/disabled states (idempotent). Dispatching it on
+               arbitrary source popups is NOT safe: third-party handlers
+               may append their entries without an existence check —
+               Actions & Tags duplicated its "Trigger Action" menu in
+               the MAIN window every time the mirror fired the event on
+               the Tools popup (found 2026-07-15). */
+            try {
+                const pid = srcPopup.parentElement && srcPopup.parentElement.id;
+                if (pid === "debug-output-menu") {
+                    srcPopup.dispatchEvent(new (srcPopup.ownerGlobal.Event)("popupshowing", { bubbles: false }));
+                }
+            } catch (e) {}
+            const lastIsSep = () => popup.lastChild
+                && (popup.lastChild as any).localName === "menuseparator";
+            /* Icons ride on two mechanisms: an `image` attribute, or a
+               CSS list-style-image from a class in a stylesheet that
+               only exists in the MAIN document (plugin CSS). Copy the
+               attribute when present; otherwise inline the COMPUTED
+               icon URL (chrome:// / data: URLs resolve anywhere). The
+               menuitem-iconic / menu-iconic class makes the icon box
+               render. */
+            const copyIcon = (srcEl, dstEl) => {
+                try {
+                    const iconicCls = dstEl.localName === "menu" ? "menu-iconic" : "menuitem-iconic";
+                    const img = srcEl.getAttribute("image");
+                    if (img) {
+                        dstEl.classList.add(iconicCls);
+                        dstEl.setAttribute("image", img);
+                        return;
+                    }
+                    if (!/(^|\s)(menuitem-iconic|menu-iconic)(\s|$)/.test(String(srcEl.className || ""))) return;
+                    const lsi = srcEl.ownerGlobal.getComputedStyle(srcEl).listStyleImage;
+                    if (lsi && lsi !== "none") {
+                        dstEl.classList.add(iconicCls);
+                        dstEl.style.listStyleImage = lsi;
+                    }
+                } catch (e) {}
+            };
+            for (const child of srcPopup.children) {
+                const tag = child.localName;
+                const cls = String(child.className || "");
+                // Context-typed items get READER-context visibility;
+                // untyped items keep the main window's current state
+                // (so e.g. the hamburger-promoted items stay hidden
+                // here just like there).
+                let hidden = child.hidden || child.getAttribute("hidden") === "true";
+                if (/menu-type-/.test(cls)) hidden = !/menu-type-reader/.test(cls);
+                if (tag === "menuseparator") {
+                    if (!hidden && popup.children.length && !lastIsSep()) {
+                        popup.append(doc.createXULElement("menuseparator"));
+                    }
+                    continue;
+                }
+                if ((tag !== "menuitem" && tag !== "menu") || hidden) continue;
+                const label = child.getAttribute("label");
+                if (!label) continue;
+                if (tag === "menu") {
+                    const sub = doc.createXULElement("menu");
+                    sub.setAttribute("label", label);
+                    const subAk = child.getAttribute("accesskey");
+                    if (subAk) sub.setAttribute("accesskey", subAk);
+                    copyIcon(child, sub);
+                    const spop = doc.createXULElement("menupopup");
+                    const srcChild = child;
+                    spop.addEventListener("popupshowing", (ev: any) => {
+                        if (ev.target !== spop) return;
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed) return;
+                            while (spop.firstChild) spop.firstChild.remove();
+                            const sp = srcChild.isConnected
+                                && srcChild.querySelector(":scope > menupopup");
+                            if (sp) lp._wvMirrorMenuPopup(spop, sp);
+                        } catch (e) {}
+                    });
+                    sub.append(spop);
+                    popup.append(sub);
+                } else {
+                    const mi = doc.createXULElement("menuitem");
+                    mi.setAttribute("label", label);
+                    for (const attr of ["type", "checked", "disabled", "acceltext", "accesskey"]) {
+                        const v = child.getAttribute(attr);
+                        if (v) mi.setAttribute(attr, v);
+                    }
+                    copyIcon(child, mi);
+                    // The popup rebuilds on every open, so capturing the
+                    // source element here can't go stale in a way that
+                    // matters; isConnected guards window/plugin churn.
+                    const srcItem = child;
+                    mi.addEventListener("command", () => {
+                        try {
+                            if (srcItem.isConnected) (srcItem as any).doCommand();
+                        } catch (e) {}
+                    });
+                    popup.append(mi);
+                }
+            }
+            // No trailing separator.
+            while (popup.lastChild && (popup.lastChild as any).localName === "menuseparator") {
+                popup.lastChild.remove();
+            }
+        } catch (e) {}
+    }
+
+    _wvRemoveReaderMenubarExtras(win) {
+        try {
+            for (const el of win.document.querySelectorAll(".wv-reader-menu")) el.remove();
+        } catch (e) {}
+    }
+
     _wvEnsureHamburger(win, stripEl, beforeEl) {
         try {
             if (!win || !win.document || !stripEl) return null;
@@ -15031,18 +15235,38 @@ class _ReaderMixin {
                    focusable for Alt-activation. */
                 "menubar[wv-compact-hidden='true'] {",
                 "  height: 0 !important; min-height: 0 !important;",
+                /* Zero the vertical padding too — the visible-state
+                   metrics add 5px top/bottom, which would otherwise
+                   survive the height collapse as a 10px sliver of
+                   clipped menu text. */
+                "  padding-top: 0 !important; padding-bottom: 0 !important;",
                 "  overflow: hidden !important;",
                 "}",
-                /* Visible state — match the main window's titlebar row
-                   height (36px) and add a left-pad for our injected Z
-                   icon to occupy. */
+                /* Visible state — replicate the main window's menubar
+                   metrics EXACTLY (scss/win/_titleBar.scss: menubar =
+                   var(--tab-min-height) tall, padding 5px 1px, 5px gap;
+                   items = full height, 0 11px padding, 4px radius,
+                   appearance:none with the light-dark active fill).
+                   Left padding is 40px instead of 1px — same room the
+                   main window's .titlebar-icon occupies (16px + 12px
+                   margins) — for our injected Z icon. */
                 "menubar {",
-                "  min-height: 36px;",
-                "  padding-left: 40px;",
-                "  align-items: center;",
+                "  height: var(--tab-min-height, 36px);",
+                "  padding: 5px 1px 5px 40px;",
+                "  gap: 5px;",
                 "  position: relative;",
                 /* Draggable like a title bar (the controls + menus opt out). */
                 "  -moz-window-dragging: drag;",
+                "}",
+                "menubar > menu {",
+                "  height: 100%;",
+                "  padding: 0 11px;",
+                "  appearance: none;",
+                "  color: inherit;",
+                "  border-radius: 4px;",
+                "}",
+                "menubar > menu[_moz-menuactive='true'] {",
+                "  background-color: light-dark(hsla(0,0%,0%,.12), hsla(0,0%,100%,.22));",
                 "}",
                 /* Visible state, cont. — fill + bottom line matching the main
                    window's #titlebar menubar row and the tab strip below, so the
@@ -15053,7 +15277,13 @@ class _ReaderMixin {
                    collapsed (height:0) bar. */
                 "menubar:not([wv-compact-hidden='true']) {",
                 "  background: var(--material-tabbar) !important;",
-                "  border-bottom: var(--material-panedivider) !important;",
+                "}",
+                /* The 1px divider as an absolute overlay, NOT a border —
+                   a border eats a layout pixel and shrinks the menu
+                   items to 25px vs the main window's 26px. */
+                "menubar:not([wv-compact-hidden='true'])::after {",
+                "  content: ''; position: absolute; left: 0; right: 0; bottom: 0;",
+                "  border-top: var(--material-panedivider);",
                 "}",
                 "menubar menu, menubar menuitem { -moz-window-dragging: no-drag; }",
                 /* The injected Z icon — absolute-positioned so XUL

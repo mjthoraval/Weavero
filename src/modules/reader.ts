@@ -1408,6 +1408,48 @@ class _ReaderMixin {
             // so this covers both reader surfaces, and (like the
             // items-list menu) it operates on every selected annotation.
             const items: any[] = [];
+            // "Copy Highlighted Text" / "Copy Underlined Text" (user
+            // request 2026-07-16) — for annotations that carry text
+            // (highlight / underline). Label follows the selection's
+            // type; a mixed multi-select gets the neutral wording.
+            // Same closure rules as below: primitives only, re-resolve
+            // at click time.
+            try {
+                const withText = [];
+                for (const k of annKeys) {
+                    const a = self._getAnnotationItem(lib, k);
+                    const ty = a && a.annotationType;
+                    if ((ty === "highlight" || ty === "underline")
+                        && String(a.annotationText || "").trim()) {
+                        withText.push({ key: a.key, type: ty });
+                    }
+                }
+                if (withText.length) {
+                    const types = new Set(withText.map(x => x.type));
+                    const base = types.size > 1 ? "Copy Annotation Text"
+                        : (types.has("underline") ? "Copy Underlined Text" : "Copy Highlighted Text");
+                    const label = withText.length > 1
+                        ? base + "  (" + withText.length + " annotations)" : base;
+                    const textKeys = withText.map(x => x.key);
+                    items.push({
+                        label,
+                        onCommand: () => {
+                            try {
+                                const texts = textKeys
+                                    .map(k => self._getAnnotationItem(capturedLib, k))
+                                    .filter(Boolean)
+                                    .map((a: any) => String(a.annotationText || "").trim())
+                                    .filter(Boolean);
+                                if (texts.length) {
+                                    Zotero.Utilities.Internal.copyTextToClipboard(texts.join("\n\n"));
+                                }
+                            } catch (e) {
+                                Zotero.debug("[Weavero] reader copy-annotation-text err: " + e);
+                            }
+                        },
+                    });
+                }
+            } catch (e) {}
             if (self._getEnableCopyItemLink()) {
                 items.push({
                     label: capturedKeys.length > 1

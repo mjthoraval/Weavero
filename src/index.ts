@@ -3937,9 +3937,11 @@ class WeaveroPlugin {
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
             try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
-            // Permanent taskbar overlay badge (shell shows the active
-            // window's overlay per monitor group).
-            try { (this as any)._wvApplyTaskbarOverlay(_window); } catch (e) {}
+            // Taskbar badge via the poison ledger (NEVER the raw apply:
+            // it bypasses the settle gate and the leak bookkeeping —
+            // this call was the unexplained gate-bypassing set in the
+            // 2026-07-14 boot log).
+            try { (this as any)._wvOvSetBadge(_window, "main-window-load"); } catch (e) {}
             try { (this as any)._wvWireOverlayFocusFollow(_window); } catch (e) {}
             // Restore breadcrumbs: log restoreState inputs/outputs + early closes.
             try { (this as any)._wvTrace("onMainWindowLoad: " + ((this as any)._wvWindowName ? (this as any)._wvWindowName(_window) : "?")); } catch (e) {}

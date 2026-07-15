@@ -4450,7 +4450,7 @@ class _ReaderMixin {
             try { (this as any)._wvWireTitleGlyph(win); } catch (e) {}
             try { (this as any)._wvApplyWindowIcon(win); } catch (e) {}
             try { (this as any)._wvApplyWindowTaskbarIdentity(win); } catch (e) {}
-            try { (this as any)._wvApplyTaskbarOverlay(win); } catch (e) {}
+            try { (this as any)._wvOvSetBadge(win, "reader-open"); } catch (e) {}
             try { (this as any)._wvWireOverlayFocusFollow(win); } catch (e) {}
             try {
                 (this as any)._wvUpdateWindowBadgeDot(win,

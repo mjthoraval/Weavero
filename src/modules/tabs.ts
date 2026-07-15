@@ -2134,7 +2134,14 @@ class _TabsMixin {
             }
             if (changed) {
                 try { this._wvRefreshTaskbarButton(win); } catch (e) {}
-                try { delete (win as any)._wvOverlayName; this._wvApplyTaskbarOverlay(win, true); } catch (e) {}
+                try {
+                    // Fresh (re-registered) button — no overlay, and the
+                    // ledger's image for this monitor is void.
+                    delete (win as any)._wvOverlayName;
+                    const mt: any = (this as any)._wvOvMonTop;
+                    if (mt) delete mt[this._wvOvScreenKeyOf(win)];
+                    this._wvOvSetBadge(win, "identity-change");
+                } catch (e) {}
             }
         } catch (e) {}
     }
@@ -2285,51 +2292,415 @@ class _TabsMixin {
             if (!path || win.closed) return;
             const desc = base === "anchor" ? this._wvWindowName(win) + " (anchor)"
                 : (base.startsWith("reader") ? "Reader window" : this._wvWindowName(win));
-            if (this._wvSetTaskbarOverlay(win, path, desc)) (win as any)._wvOverlayName = name;
+            const ok = this._wvSetTaskbarOverlay(win, path, desc);
+            if (ok) (win as any)._wvOverlayName = name;
+            this._wvOvLog("set", { win: base, mon: this._wvOvScreenKeyOf(win), ok });
         } catch (e) {}
     }
 
-    /** Re-assert EVERY window's overlay badge, oldest-focus first and
-     *  `focused` last. With "show taskbar buttons where windows are
-     *  open", Windows scopes "last setter wins" per BUTTON INSTANCE
-     *  (per monitor) — measured live 2026-07-13 — so this leaves each
-     *  monitor's button showing the most-recently-focused window ON
-     *  that monitor, and repairs badges that a cross-monitor
-     *  drag-through stamped onto a foreign monitor's button.
-     *  Sequential awaits: SetOverlayIcon order is the whole point. */
-    async _wvOvAssertAllBadges(focused: any) {
+    /** Is the primary mouse button currently held down? Used to defer
+     *  taskbar-badge repairs until a window drag has actually ended. */
+    _wvMouseButtonDown(): boolean {
         try {
-            if (!Zotero.isWin) return;
-            const wins: any[] = [...(Zotero.getMainWindows() || [])];
-            const en = Services.wm.getEnumerator("zotero:reader");
-            while (en.hasMoreElements()) wins.push(en.getNext());
-            const live = wins.filter(w => w && !w.closed);
-            // Counter lives on the windows, not the plugin instance, so
-            // the ordering survives plugin reloads.
-            const maxSeq = live.reduce((m, w) => Math.max(m, (w as any)._wvOvFocusSeq || 0), 0);
-            if (focused && !focused.closed) (focused as any)._wvOvFocusSeq = maxSeq + 1;
-            live.sort((a, b) => ((a as any)._wvOvFocusSeq || 0) - ((b as any)._wvOvFocusSeq || 0));
-            for (const w of live) await this._wvApplyTaskbarOverlay(w, true);
+            if (!Zotero.isWin) return false;
+            const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+            const u = ctypes.open("user32.dll");
+            try {
+                const GetAsyncKeyState = u.declare("GetAsyncKeyState",
+                    ctypes.winapi_abi, ctypes.short, ctypes.int);
+                return (GetAsyncKeyState(0x01) & 0x8000) !== 0; // VK_LBUTTON
+            } finally { u.close(); }
+        } catch (e) { return false; }
+    }
+
+    // NOTE (v0.15.8-dev.57 post-mortem): do NOT detect drag-end with a
+    // native WinEventHook (SetWinEventHook EVENT_SYSTEM_MOVESIZEEND +
+    // js-ctypes callback). It CRASHED the process on the first real
+    // drag: WINEVENT_OUTOFCONTEXT delivers whenever THIS thread pumps
+    // messages, and this file's badge machinery pumps inside ctypes
+    // FFI calls (COM SetOverlayIcon → SendMessage), so the closure can
+    // re-enter SpiderMonkey mid-FFI. The drag-aware fast poll in
+    // _wvWireOverlayFocusFollow's moveHandler replaces it.
+
+    /** Always-on ring buffer tracing the badge machinery (activations,
+     *  move detection, repair passes, every SetOverlayIcon). Read it
+     *  with `Zotero.Weavero.plugin._wvOvLogBuf`. Bounded at 400. */
+    _wvOvLog(ev: string, data?: any) {
+        try {
+            const buf: any[] = (this as any)._wvOvLogBuf || ((this as any)._wvOvLogBuf = []);
+            buf.push({ t: new Date().toISOString().slice(11, 23), ev, ...(data || {}) });
+            if (buf.length > 400) buf.splice(0, buf.length - 400);
         } catch (e) {}
+    }
+
+    /** Bump `win` to the top of the focus order and route through the
+     *  poison-ledger badge setter. Focus re-asserts FORCE (doctrine:
+     *  re-assert on every activation): the shell can silently repaint a
+     *  button after a cross-monitor button migration, leaving the ledger
+     *  stale — the skip then blocked self-healing forever (left button
+     *  showed the right monitor's square, 2026-07-14). Debounced per
+     *  monitor so boot-burst activations stay cheap. */
+    _wvOvFocusBump(win: any) {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return;
+            (win as any)._wvOvFocusSeq = this._wvOvMaxSeq() + 1;
+            const mon = this._wvOvScreenKeyOf(win) || "";
+            const lf: any = (this as any)._wvOvLastFocusForce
+                || ((this as any)._wvOvLastFocusForce = {});
+            const now = Date.now();
+            const force = !lf[mon] || (now - lf[mon]) > 750;
+            if (force) lf[mon] = now;
+            this._wvOvSetBadge(win, "focus", 0, force);
+        } catch (e) {}
+    }
+
+    /** FIRST-badge settle gate. During session restore a window is
+     *  often CREATED on one monitor (inheriting the opener's) and then
+     *  MOVED to its saved position — badging it before that move is
+     *  residency-with-badge poisoning, self-inflicted at every boot
+     *  (observed 2026-07-14: fresh reboot, two green circles). A
+     *  window's first badge of the session waits until its geometry
+     *  has been stable for two consecutive 1s samples with the mouse
+     *  button up; after that the flag sticks and moves are the move-
+     *  repair path's business. Returns true when settled. */
+    _wvOvEnsureSettled(win: any, reason: string): boolean {
+        try {
+            if ((win as any)._wvOvSettled) return true;
+            if ((win as any)._wvOvSettleTimer) return false; // checker already running
+            const posOf = () => {
+                try {
+                    return win.screenX + "," + win.screenY + ","
+                        + win.outerWidth + "x" + win.outerHeight
+                        + "@" + this._wvOvScreenKeyOf(win);
+                } catch (e) { return ""; }
+            };
+            let last = posOf();
+            let tries = 0;
+            let stable = 0;
+            this._wvOvLog("settle-wait", { win: this._wvBadgeIconNameFor(win), reason });
+            const stop = () => {
+                try { win.clearInterval((win as any)._wvOvSettleTimer); } catch (e) {}
+                delete (win as any)._wvOvSettleTimer;
+            };
+            (win as any)._wvOvSettleTimer = win.setInterval(() => {
+                try {
+                    tries++;
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed || win.closed) { stop(); return; }
+                    let cur = "";
+                    try {
+                        cur = win.screenX + "," + win.screenY + ","
+                            + win.outerWidth + "x" + win.outerHeight
+                            + "@" + lp._wvOvScreenKeyOf(win);
+                    } catch (e) {}
+                    // Two consecutive stable samples (>=3s after the
+                    // first badge attempt): outlasts both session-
+                    // restore repositioning AND the shell's initial
+                    // homing of a fresh button onto its taskbar (an
+                    // early set can register against the wrong
+                    // taskbar's transient button — boot log
+                    // 2026-07-14 13:49).
+                    stable = (cur === last && !lp._wvMouseButtonDown()) ? stable + 1 : 0;
+                    if (stable >= 2 || tries > 20) {
+                        stop();
+                        (win as any)._wvOvSettled = true;
+                        lp._wvOvLog("settled", { win: lp._wvBadgeIconNameFor(win), tries });
+                        lp._wvOvSetBadge(win, reason + ":settled");
+                    } else {
+                        last = cur;
+                    }
+                } catch (e) {}
+            }, 1000);
+            return false;
+        } catch (e) { return true; }
+    }
+
+    /** Most-recently-focused live window on monitor `monKey`. */
+    _wvOvTopWindowOn(monKey: string): any {
+        const cands = this._wvOvLiveWindows()
+            .filter((w: any) => this._wvOvScreenKeyOf(w) === monKey);
+        if (!cands.length) return null;
+        return cands.reduce((a: any, b: any) =>
+            ((b._wvOvFocusSeq || 0) > (a._wvOvFocusSeq || 0) ? b : a));
+    }
+
+    /** Low-level: paint badge image `name` through window `setter`'s
+     *  overlay request. The IMAGE and the SETTER are decoupled —
+     *  SetOverlayIcon takes any icon, so a monitor's badge can be
+     *  issued through whichever resident window won't leak. */
+    async _wvOvApplyImageAs(setter: any, name: string, desc: string): Promise<boolean> {
+        try {
+            if (!Zotero.isWin || !this._getEnableWindowIcons() || !setter || setter.closed) return false;
+            const path = await this._wvWinIconFile(name);
+            if (!path || setter.closed) return false;
+            const ok = this._wvSetTaskbarOverlay(setter, path, desc);
+            if (ok) (setter as any)._wvOverlayName = name;
+            this._wvOvLog("set", {
+                via: this._wvBadgeIconNameFor(setter), img: name,
+                mon: this._wvOvScreenKeyOf(setter), ok,
+            });
+            return ok;
+        } catch (e) { return false; }
+    }
+
+    /** THE badge setter — every overlay change goes through here.
+     *  `win` names the target MONITOR (usually its top window or the
+     *  one that just moved there). The badge IMAGE is always the
+     *  monitor's top window's; the SETTER is the resident window with
+     *  the fewest foreign poisons (a set from window w repaints every
+     *  button in w's poison list — the Win11 sticky-association bug,
+     *  crbug 40816037-alike, measured live 2026-07-14). Decoupling
+     *  image from setter makes even MUTUALLY-poisoned layouts
+     *  convergent whenever any resident of a monitor is clean.
+     *  Ledger: `this._wvOvMonTop` = the image each button shows; a
+     *  matching image SKIPS the set (no set → no leak, no flash).
+     *  Poison list and residency live on the windows (survive plugin
+     *  reloads); real sets predict their leaks and CHASE each leaked
+     *  monitor, depth-capped. */
+    /** Record that `w`'s overlay requests will also repaint monitor
+     *  `btn`'s button. Sources: residency-with-badge departures AND
+     *  BIRTH monitor — a window created on one monitor and moved to
+     *  another (session restore creates windows on the OPENER's
+     *  monitor) keeps a shell association with its birth button even
+     *  if it never held a badge there (boot log 2026-07-14 14:42:
+     *  reader born on M3, badge-less move to M2, its later set still
+     *  painted M3). */
+    _wvOvNotePoison(w: any, btn: string, why: string) {
+        try {
+            if (!w || !btn) return;
+            const po: string[] = (w as any)._wvOvPoison || ((w as any)._wvOvPoison = []);
+            if (!po.includes(btn)) {
+                po.push(btn);
+                this._wvOvLog("poison", { win: this._wvBadgeIconNameFor(w), btn, why });
+            }
+        } catch (e) {}
+    }
+
+    async _wvOvSetBadge(win: any, reason: string, depth?: number, force?: boolean) {
+        try {
+            if (!Zotero.isWin || !win || win.closed) return;
+            if (!this._wvOvEnsureSettled(win, reason)) return; // first badge waits for a stable position
+            const d = depth || 0;
+            const mon = this._wvOvScreenKeyOf(win);
+            if (!mon) return;
+            const tops: any = (this as any)._wvOvMonTop || ((this as any)._wvOvMonTop = {});
+            // Birth-monitor poison for the argument window.
+            const birth = (win as any)._wvOvBirthMon;
+            if (birth && birth !== mon) this._wvOvNotePoison(win, birth, "birth");
+            // Monitor-change bookkeeping for the ARGUMENT window (the
+            // mover): record poison, void both ledger entries, chase
+            // the vacated button (it keeps showing the mover's image).
+            const resid = (win as any)._wvOvResidMon;
+            if (resid && resid !== mon) {
+                this._wvOvNotePoison(win, resid, "residency");
+                delete tops[mon];
+                delete tops[resid];
+                (win as any)._wvOvResidMon = mon;
+                const vt = this._wvOvTopWindowOn(resid);
+                if (vt && vt !== win && d < 3) {
+                    this._wvOvLog("chase-vacated", { mon: resid, win: this._wvBadgeIconNameFor(vt) });
+                    vt.setTimeout(() => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || vt.closed) return;
+                            lp._wvOvSetBadge(vt, "chase-vacated", d + 1);
+                        } catch (e) {}
+                    }, 120);
+                }
+                // ARRIVAL GUARD: the mover's button migrates to the new
+                // taskbar asynchronously and the fresh button can repaint
+                // with the group's latest overlay AFTER our arrival set
+                // (left button showed the right monitor's square,
+                // 2026-07-14). One delayed forced re-assert of the new
+                // monitor cleans it, mirroring first-set-guard.
+                if (d < 3) {
+                    win.setTimeout(() => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || win.closed) return;
+                            const t = lp._wvOvTopWindowOn(mon) || win;
+                            lp._wvOvLog("arrival-guard", { mon, win: lp._wvBadgeIconNameFor(t) });
+                            lp._wvOvSetBadge(t, "arrival-guard", d + 1, true);
+                        } catch (e) {}
+                    }, 1500);
+                }
+            }
+            // IMAGE = the monitor's top window's badge.
+            const top = this._wvOvTopWindowOn(mon) || win;
+            const base = this._wvBadgeIconNameFor(top);
+            if (!base) return;
+            const name = "ov-" + base;
+            if (tops[mon] === name && !force) {
+                this._wvOvLog("skip", { img: name, mon, reason });
+                return;
+            }
+            // SETTER = settled resident with the fewest FOREIGN poisons
+            // (entries for monitors other than this one); prefer the
+            // top window on ties.
+            const residents = this._wvOvLiveWindows()
+                .filter((w: any) => this._wvOvScreenKeyOf(w) === mon && (w._wvOvSettled || w === win));
+            // Birth-monitor poison must be on the books BEFORE setter
+            // selection ranks candidates by foreign poison.
+            for (const w of residents) {
+                const b = (w as any)._wvOvBirthMon;
+                if (b && b !== mon) this._wvOvNotePoison(w, b, "birth");
+            }
+            const foreign = (w: any) =>
+                ((w._wvOvPoison || []) as string[]).filter(M => M !== mon).length;
+            const setter = residents.sort((a: any, b: any) =>
+                (foreign(a) - foreign(b)) || ((a === top ? 0 : 1) - (b === top ? 0 : 1)))[0] || top;
+            // Ledger BEFORE the async set: queued events entering here
+            // during the await must see the claim and skip (boot burst,
+            // 2026-07-14: 4 sets in 6ms slipped through).
+            tops[mon] = name;
+            (setter as any)._wvOvResidMon = mon;
+            const desc = base === "anchor" ? this._wvWindowName(top) + " (anchor)"
+                : (base.startsWith("reader") ? "Reader window" : this._wvWindowName(top));
+            await this._wvOvApplyImageAs(setter, name, desc);
+            // First set of the session from a NON-primary monitor: the
+            // shell may have registered the request against the primary
+            // taskbar's transient button while the fresh button was
+            // still homing (boot artifact, invisible to the ledger).
+            // One forced re-assert of the primary monitor cleans it.
+            if (!(setter as any)._wvOvFirstSetDone) {
+                (setter as any)._wvOvFirstSetDone = true;
+                if (mon !== "0,0" && d < 2) {
+                    const pt = this._wvOvTopWindowOn("0,0");
+                    if (pt && pt !== setter) {
+                        this._wvOvLog("first-set-guard", { via: this._wvBadgeIconNameFor(setter) });
+                        pt.setTimeout(() => {
+                            try {
+                                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (!lp || lp._wvDestroyed || pt.closed) return;
+                                lp._wvOvSetBadge(pt, "first-set-guard", d + 1, true);
+                            } catch (e) {}
+                        }, 1500);
+                    }
+                }
+            }
+            // Predicted leaks: the SETTER's poisons got repainted.
+            const po: string[] = (setter as any)._wvOvPoison || [];
+            for (const M of po) {
+                if (M === mon) continue;
+                tops[M] = name;
+                if (d >= 3) { this._wvOvLog("chase-capped", { mon: M }); continue; }
+                const t = this._wvOvTopWindowOn(M);
+                if (!t) continue;
+                // MUTUAL-POISON degradation: if every settled resident
+                // of the leaked monitor is itself poisoned toward other
+                // monitors, its corrective set would leak right back —
+                // the cascade cannot converge and whoever sets last
+                // wins ALL buttons. Don't chase: accept that both
+                // buttons follow the focused window (coherent global
+                // badge) until a clean setter exists again (typically
+                // after the next reboot, with formation now gated).
+                const mResidents = this._wvOvLiveWindows()
+                    .filter((w: any) => this._wvOvScreenKeyOf(w) === M);
+                const mBestForeign = mResidents.length
+                    ? Math.min(...mResidents.map((w: any) =>
+                        ((w._wvOvPoison || []) as string[]).filter(x => x !== M).length))
+                    : 0;
+                if (mBestForeign > 0) {
+                    this._wvOvLog("mutual-degrade", { mon: M, img: name });
+                    continue;
+                }
+                this._wvOvLog("chase", { mon: M, depth: d + 1 });
+                t.setTimeout(() => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp || lp._wvDestroyed || t.closed) return;
+                        lp._wvOvSetBadge(t, "chase", d + 1);
+                    } catch (e) {}
+                }, 120);
+            }
+        } catch (e) {}
+    }
+
+    _wvOvLiveWindows(): any[] {
+        const wins: any[] = [...(Zotero.getMainWindows() || [])];
+        const en = Services.wm.getEnumerator("zotero:reader");
+        while (en.hasMoreElements()) wins.push(en.getNext());
+        return wins.filter(w => w && !w.closed);
+    }
+
+    _wvOvMaxSeq(): number {
+        // Counter lives on the windows, not the plugin instance, so
+        // the ordering survives plugin reloads.
+        return this._wvOvLiveWindows().reduce(
+            (m: number, w: any) => Math.max(m, w._wvOvFocusSeq || 0), 0);
+    }
+
+    _wvOvScreenKeyOf(win: any): string {
+        try { return win.screen ? (win.screen.left + "," + win.screen.top) : ""; }
+        catch (e) { return ""; }
+    }
+
+    /** Repair pass: re-assert the badge of the GLOBALLY most-recently-
+     *  focused window — one single set. The badge model is deliberately
+     *  GLOBAL (every Zotero button shows the focused window's badge):
+     *  per-monitor badges are unachievable on the Win11 XAML taskbar,
+     *  whose per-button overlay bookkeeping develops STICKY cross-
+     *  button associations after windows migrate between monitors — a
+     *  sticky window's set repaints a foreign monitor's button, and
+     *  neither overlay clearing, ITaskbarList re-registration, nor a
+     *  minimize/restore cycle purges it (all measured live 2026-07-14
+     *  via scripted taskbar screen captures; same disease as the
+     *  Chromium "two profile badges" bug, crbug 40816037). Which
+     *  window is sticky changes over time and is unqueryable, so any
+     *  per-monitor correction scheme ping-pongs. One set per event =
+     *  no bursts, no chase, no flashing, no split-brain. */
+    async _wvOvMaintainBadges(reason: string) {
+        try {
+            if (!Zotero.isWin || (this as any)._wvOvMaintainBusy) return;
+            (this as any)._wvOvMaintainBusy = true;
+            try {
+                const live = this._wvOvLiveWindows();
+                if (!live.length) return;
+                const top = live.reduce((a: any, b: any) =>
+                    ((b._wvOvFocusSeq || 0) > (a._wvOvFocusSeq || 0) ? b : a));
+                if (top.closed) return;
+                this._wvOvLog("maintain", { reason, top: this._wvBadgeIconNameFor(top) });
+                await this._wvOvSetBadge(top, "maintain:" + reason);
+            } finally { (this as any)._wvOvMaintainBusy = false; }
+        } catch (e) {
+            try { (this as any)._wvOvMaintainBusy = false; } catch (e2) {}
+            this._wvOvLog("maintain-err", { err: String(e) });
+        }
     }
 
     /** Focus-following: on activation, re-home this window's taskbar
-     *  identity and re-assert all badges (this window last, so its
-     *  monitor's button shows it — see _wvOvAssertAllBadges). Also on
-     *  CROSS-MONITOR MOVES: a drag-drop never fires activate (the
+     *  identity and focus-bump its badge (single set — see
+     *  _wvOvFocusBump). Moves: a drag-drop never fires activate (the
      *  window is already focused, and re-clicking it won't fire one
-     *  either), so a moved window's badge would stay stale forever.
-     *  sizemodechange+resize fire during the drag with win.screen
-     *  already reporting the NEW monitor (measured live 2026-07-13);
-     *  a cheap origin-key check gates the COM work to real moves. */
+     *  either), and Gecko has NO window-move event — resize/
+     *  sizemodechange fire only on size/state changes, so a drag
+     *  between SAME-RESOLUTION monitors emits nothing. A 1s position
+     *  poll is the detector (pure JS compare per tick); any position
+     *  change marks the window dirty and the per-monitor repair pass
+     *  (_wvOvMaintainBadges) runs once the mouse button is up. */
     _wvWireOverlayFocusFollow(win: any) {
         try {
-            // v8: v7's ordered activate re-assert + move-triggered
-            // re-assert. Badge work only — the shell migrates the
-            // native buttons between monitors itself.
-            const VER = 8;
-            if (!Zotero.isWin || !win || ((win as any)._wvOvFollowWired || 0) >= VER) return;
+            // v14: poison-ledger badge management (_wvOvSetBadge). Move
+            // detector samples FULL geometry; on first detection during
+            // a DRAG the window's overlay request is cleared (carrying
+            // a request across monitors is how sticky associations
+            // form); the ledger-driven repair runs on the first tick
+            // with the mouse button up; window close repairs its
+            // monitor. Everything logs to _wvOvLogBuf.
+            const VER = 15;
+            // Poll presence is part of the wired-ness check: a clear
+            // pass kills the interval, so version alone would wrongly
+            // early-return and leave the window without its move poll.
+            if (!Zotero.isWin || !win) return;
+            if (((win as any)._wvOvFollowWired || 0) >= VER && (win as any)._wvOvPollId) return;
             (win as any)._wvOvFollowWired = VER;
+            // Birth monitor: where the window first appeared. Session
+            // restore creates windows on the OPENER's monitor before
+            // moving them home — the shell keeps a button association
+            // with the birth monitor (see _wvOvNotePoison).
+            if (!(win as any)._wvOvBirthMon) {
+                (win as any)._wvOvBirthMon = this._wvOvScreenKeyOf(win);
+            }
             try {
                 const prev = (win as any)._wvOvMoveHandler;
                 if (prev) {
@@ -2349,37 +2720,120 @@ class _TabsMixin {
                 try {
                     const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (!lp || lp._wvDestroyed) return;
+                    lp._wvOvLog("activate", { win: lp._wvBadgeIconNameFor(win), mon: lp._wvOvScreenKeyOf(win) });
                     try { lp._wvApplyWindowTaskbarIdentity(win); } catch (e) {}
-                    lp._wvOvAssertAllBadges(win);
+                    lp._wvOvFocusBump(win);
                 } catch (e) {}
             };
             win.addEventListener("activate", handler);
             (win as any)._wvOvActivateHandler = handler;
-            const screenKey = () => {
-                try { return win.screen ? (win.screen.left + "," + win.screen.top) : ""; }
-                catch (e) { return ""; }
+            // FULL position key — origin, size, and monitor. Any change
+            // between samples means the window went somewhere, even if
+            // it came back (round-trip drags end key-identical only
+            // when NO sample landed mid-drag AND the drop restored the
+            // exact geometry; the unmaximize/remaximize sizemodechange
+            // events sample mid-drag, closing that hole for snapped/
+            // maximized windows).
+            const posKey = () => {
+                try {
+                    return win.screenX + "," + win.screenY + ","
+                        + win.outerWidth + "x" + win.outerHeight
+                        + "@" + (win.screen ? win.screen.left + "," + win.screen.top : "");
+                } catch (e) { return ""; }
             };
-            (win as any)._wvOvScreenKey = screenKey();
+            (win as any)._wvOvPosKey = posKey();
             const moveHandler = () => {
                 try {
                     if (!win || win.closed) return;
-                    const key = screenKey();
-                    if (key === (win as any)._wvOvScreenKey) return;
-                    (win as any)._wvOvScreenKey = key;
-                    if ((win as any)._wvOvMoveTimer) win.clearTimeout((win as any)._wvOvMoveTimer);
-                    (win as any)._wvOvMoveTimer = win.setTimeout(() => {
-                        try {
-                            delete (win as any)._wvOvMoveTimer;
-                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                            if (!lp || lp._wvDestroyed || win.closed) return;
-                            lp._wvOvAssertAllBadges(win);
-                        } catch (e) {}
-                    }, 150);
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    const key = posKey();
+                    if (key !== (win as any)._wvOvPosKey) {
+                        (win as any)._wvOvPosKey = key;
+                        if (!(win as any)._wvOvMoveDirty) {
+                            (win as any)._wvOvMoveDirty = true;
+                            lp._wvOvLog("move-detected", { win: lp._wvBadgeIconNameFor(win), pos: key });
+                            // A window DRAGGED across monitors while
+                            // holding an overlay request is how the
+                            // shell's sticky cross-button associations
+                            // form (the migrating button stamps foreign
+                            // taskbars). Drop the request for the
+                            // duration of the drag; the mouse-up repair
+                            // re-asserts it. The clear pops that button
+                            // to an unknown previous image — invalidate
+                            // the ledger entry so the repair isn't
+                            // skipped.
+                            if (lp._wvMouseButtonDown() && (win as any)._wvOverlayName) {
+                                try {
+                                    lp._wvSetTaskbarOverlay(win, null);
+                                    delete (win as any)._wvOverlayName;
+                                    const mt = lp._wvOvMonTop;
+                                    if (mt) delete mt[lp._wvOvScreenKeyOf(win)];
+                                    lp._wvOvLog("clear-for-drag", { win: lp._wvBadgeIconNameFor(win) });
+                                } catch (e) {}
+                            }
+                        }
+                    }
+                    if (!(win as any)._wvOvMoveDirty) return;
+                    if (lp._wvMouseButtonDown()) {
+                        if (!(win as any)._wvOvDeferLogged) {
+                            (win as any)._wvOvDeferLogged = true;
+                            lp._wvOvLog("repair-deferred", { win: lp._wvBadgeIconNameFor(win), why: "mouse-down" });
+                        }
+                        // Drag-aware fast poll: while the drag is live,
+                        // re-check every 120ms so the repair lands right
+                        // after the drop instead of up to a full 1s poll
+                        // tick later. Pure JS on purpose — see the
+                        // WinEventHook post-mortem note above.
+                        if (!(win as any)._wvOvFastTick) {
+                            (win as any)._wvOvFastTick = true;
+                            win.setTimeout(() => {
+                                try {
+                                    delete (win as any)._wvOvFastTick;
+                                    moveHandler();
+                                } catch (e) {}
+                            }, 120);
+                        }
+                        return; // still dragging — repair on release
+                    }
+                    (win as any)._wvOvMoveDirty = false;
+                    delete (win as any)._wvOvDeferLogged;
+                    lp._wvOvLog("repair-trigger", { win: lp._wvBadgeIconNameFor(win), pos: key });
+                    lp._wvOvSetBadge(win, "move-repair");
                 } catch (e) {}
             };
             win.addEventListener("sizemodechange", moveHandler);
             win.addEventListener("resize", moveHandler);
             (win as any)._wvOvMoveHandler = moveHandler;
+            try {
+                if ((win as any)._wvOvPollId) win.clearInterval((win as any)._wvOvPollId);
+            } catch (e) {}
+            (win as any)._wvOvPollId = win.setInterval(moveHandler, 1000);
+            // Closing a window whose badge tops its monitor's button
+            // must hand the badge to the next window there.
+            if (!(win as any)._wvOvUnloadWired) {
+                (win as any)._wvOvUnloadWired = true;
+                win.addEventListener("unload", () => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp || lp._wvDestroyed) return;
+                        let mon = "";
+                        try { mon = lp._wvOvScreenKeyOf(win); } catch (e) {}
+                        const mt = lp._wvOvMonTop;
+                        if (mt && mon) delete mt[mon];
+                        lp._wvOvLog("window-closed", { win: lp._wvBadgeIconNameFor(win), mon });
+                        const other = lp._wvOvLiveWindows().find((x: any) => x !== win);
+                        if (other && mon) other.setTimeout(() => {
+                            try {
+                                const lp2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (!lp2 || lp2._wvDestroyed) return;
+                                const t = lp2._wvOvTopWindowOn(mon);
+                                if (t) lp2._wvOvSetBadge(t, "close-repair");
+                            } catch (e) {}
+                        }, 700);
+                    } catch (e) {}
+                });
+            }
         } catch (e) {}
     }
 
@@ -2388,13 +2842,23 @@ class _TabsMixin {
             if (!Zotero.isWin) return;
             const each = (w: any) => {
                 try {
-                    if (clear) { this._wvSetTaskbarOverlay(w, null); delete (w as any)._wvOverlayName; }
-                    else { this._wvApplyTaskbarOverlay(w); this._wvWireOverlayFocusFollow(w); }
+                    if (clear) {
+                        try {
+                            if ((w as any)._wvOvPollId) { w.clearInterval((w as any)._wvOvPollId); delete (w as any)._wvOvPollId; }
+                        } catch (e) {}
+                        delete (w as any)._wvOvFollowWired;
+                        this._wvSetTaskbarOverlay(w, null); delete (w as any)._wvOverlayName;
+                    }
+                    else { this._wvWireOverlayFocusFollow(w); }
                 } catch (e) {}
             };
             for (const w of (Zotero.getMainWindows() || [])) each(w);
             const en = Services.wm.getEnumerator("zotero:reader");
             while (en.hasMoreElements()) each(en.getNext());
+            if (clear) (this as any)._wvOvMonTop = {};
+            // One repair instead of a per-window burst — bursts of
+            // SetOverlayIcon land in random shell order.
+            else this._wvOvMaintainBadges("refresh");
         } catch (e) {}
     }
 
@@ -8603,7 +9067,11 @@ class _TabsMixin {
                             delete (win as any)._wvWinIconName;   // force icon re-apply
                             delete (win as any)._wvOverlayName;   // force overlay re-apply
                             try { p._wvApplyWindowIcon(win); } catch (e2) {}
-                            try { p._wvApplyTaskbarOverlay(win); } catch (e2) {}
+                            try {
+                                const mt: any = p._wvOvMonTop;
+                                if (mt) delete mt[p._wvOvScreenKeyOf(win)];
+                                p._wvOvSetBadge(win, "recolor");
+                            } catch (e2) {}
                             try {
                                 if (isReader) p._wvUpdateWindowBadgeDot(win, !!p._getTabsAndWindowsMaster(), true);
                                 else p._wvUpdateMainWindowIndicator(win);

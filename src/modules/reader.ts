@@ -14109,6 +14109,248 @@ class _ReaderMixin {
         } catch (e) {}
     }
 
+    /** Conversion step trace — ring buffer for diagnosing conversions
+     *  that die midway (the bridge can't always observe them live). */
+    _wvConvTraceLog(m: any) {
+        try {
+            const p: any = this as any;
+            p._wvConvTrace = (p._wvConvTrace || []).concat(String(m)).slice(-40);
+        } catch (e) {}
+    }
+
+    /** Re-assert a carried colour on a converted window across every
+     *  identity surface — mirrors the recolour handler in
+     *  _wvWindowMarkContext (icon, taskbar badge, in-window mark). */
+    _wvCarryGlyphRefresh(win: any, isReader: boolean) {
+        try {
+            delete (win as any)._wvWinIconName;
+            delete (win as any)._wvOverlayName;
+            try { (this as any)._wvApplyWindowIcon(win); } catch (e) {}
+            try {
+                const mt: any = (this as any)._wvOvMonTop;
+                if (mt) delete mt[(this as any)._wvOvScreenKeyOf(win)];
+                (this as any)._wvOvSetBadge(win, "recolor");
+            } catch (e) {}
+            try {
+                if (isReader) (this as any)._wvUpdateWindowBadgeDot(win, !!(this as any)._getTabsAndWindowsMaster(), true);
+                else (this as any)._wvUpdateMainWindowIndicator(win);
+            } catch (e) {}
+        } catch (e) {}
+    }
+
+    /** Convert a reader/note window into a NEW main window (user
+     *  request 2026-07-15, mark-context menu). Every window-tab moves
+     *  over via _wvWTMoveTabToMain's background path (window-explicit
+     *  unloaded adds — scroll/state preserved through the state
+     *  write → lazy-load round trip); the source window closes itself
+     *  with its last tab. The new main inherits the source's
+     *  geometry, colour and (where the id survives) the active tab. */
+    async _wvConvertReaderWindowToMain(win: any) {
+        try {
+            const st = this._wvWTState(win);
+            if (!st || !st.tabs || !st.tabs.length) return;
+            const moved = st.tabs.map((t: any) => ({
+                id: t.id, itemID: t.itemID, isNote: t.type === "note",
+            }));
+            const activeId = st.activeId;
+            const activeItemID = (st.tabs.find((t: any) => t.id === activeId) || {}).itemID;
+            const geom = {
+                x: win.screenX, y: win.screenY,
+                w: win.outerWidth, h: win.outerHeight,
+                max: win.windowState === 1,
+            };
+            const glyph = (win as any)._wvTitleGlyphIdx;
+            const sleep = (ms: number) => (Zotero as any).Promise.delay(ms);
+            const before = new Set(Zotero.getMainWindows() || []);
+            (this as any)._wvOpenEmptyMainWindow();
+            // Wait for the window AND its managed-window init: Zotero_Tabs
+            // exists long before onMainWindowLoad's clean-start init runs,
+            // and tabs added in that gap get WIPED by it (measured
+            // 2026-07-15) — _wvManagedWindow is stamped right as that init
+            // starts, so gate on it plus a settle tick.
+            let newMain: any = null;
+            const t0 = Date.now();
+            while (Date.now() - t0 < 12000) {
+                newMain = (Zotero.getMainWindows() || []).find((w: any) => !before.has(w));
+                if (newMain && newMain.Zotero_Tabs && newMain.ZoteroPane
+                    && (newMain as any)._wvManagedWindow) break;
+                newMain = null;
+                await sleep(120);
+            }
+            if (!newMain) {
+                Zotero.debug("[Weavero] convert reader→main: new main window never settled");
+                return;
+            }
+            // Carry the source window's colour: set the cached index BEFORE
+            // the new window's decorations finish, so every pass (icon,
+            // marks, badges) derives the carried colour instead of pulling
+            // a fresh one from the shared pool (_wvTitleGlyphIdx returns
+            // the cached property first).
+            try {
+                if (glyph != null && !(this as any)._wvIsAnchorWindow(newMain)) {
+                    (newMain as any)._wvTitleGlyphIdx = glyph;
+                }
+            } catch (e) {}
+            await sleep(600);
+            // Geometry (post-init so nothing re-places the window), then
+            // identity. restore() needs a beat before moveTo sticks.
+            try {
+                if (geom.max) {
+                    newMain.moveTo(geom.x + 40, geom.y + 40);
+                    await sleep(150);
+                    newMain.maximize();
+                } else {
+                    if (newMain.windowState === 1 && newMain.restore) { newMain.restore(); await sleep(200); }
+                    newMain.moveTo(geom.x, geom.y);
+                    newMain.resizeTo(geom.w, geom.h);
+                }
+            } catch (e) {}
+            try {
+                if (glyph != null && !(this as any)._wvIsAnchorWindow(newMain)) {
+                    this._wvCarryGlyphRefresh(newMain, false);
+                }
+            } catch (e) {}
+            // One visual event, not a per-tab parade (user feedback
+            // 2026-07-15): close the SOURCE window wholesale — its unload
+            // flushes every reader's state — then batch-create all tabs as
+            // unloaded entries (synchronous, instant) and select the active
+            // one, which is the only document that actually loads.
+            for (const m of moved) {
+                try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {}
+            }
+            try { win.close(); } catch (e) {}
+            await sleep(400);   // let the unload state writes land
+            let selectId: any = null;
+            try {
+                const MZ: any = newMain.Zotero_Tabs;
+                for (const m of moved) {
+                    if (m.itemID == null) continue;
+                    try {
+                        const r = MZ.add({
+                            type: m.isNote ? "note-unloaded" : "reader-unloaded",
+                            data: { itemID: m.itemID },
+                            select: false, preventJumpback: true,
+                        });
+                        if (r && selectId == null && m.itemID === activeItemID) selectId = r.id;
+                    } catch (e) {}
+                }
+            } catch (e) {}
+            try {
+                newMain.focus();
+                if (selectId) newMain.Zotero_Tabs.select(selectId);
+            } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvConvertReaderWindowToMain err: " + e); }
+    }
+
+    /** Convert a main window into a NEW reader window. The selected
+     *  (else first live) reader tab seeds the window via the no-reload
+     *  tear-off; the remaining reader/note tabs follow through the
+     *  main→reader multi-mount (which swaps live readers and closes
+     *  the sources); the emptied main window — library tab and all —
+     *  then closes. Refuses on the LAST main window (Zotero needs
+     *  one) and when no reader-able tab is open (a reader window
+     *  needs a reader native). */
+    async _wvConvertMainWindowToReader(win: any) {
+        try {
+            const mains = Zotero.getMainWindows() || [];
+            if (mains.length < 2) {
+                Services.prompt.alert(win, "Weavero",
+                    "This is the last main window. Open another main window first, then convert this one.");
+                return;
+            }
+            const ZT: any = win.Zotero_Tabs;
+            const all = (ZT && ZT._tabs || []).filter((t: any) => t && t.data && t.data.itemID != null
+                && (String(t.type || "").indexOf("reader") === 0 || String(t.type || "").indexOf("note") === 0));
+            const readers = all.filter((t: any) => String(t.type || "").indexOf("reader") === 0);
+            if (!readers.length) {
+                Services.prompt.alert(win, "Weavero",
+                    "No document tabs to move — a reader window needs at least one open PDF, EPUB or snapshot tab.");
+                return;
+            }
+            const selectedID = ZT.selectedID;
+            const geom = {
+                x: win.screenX, y: win.screenY,
+                w: win.outerWidth, h: win.outerHeight,
+                max: win.windowState === 1,
+            };
+            const glyph = (win as any)._wvTitleGlyphIdx;
+            const sleep = (ms: number) => (Zotero as any).Promise.delay(ms);
+            const Reader: any = Zotero.Reader;
+            const liveS = (id: any) => {
+                let S: any = null;
+                try { if (typeof Reader.getByTabID === "function") S = Reader.getByTabID(id); } catch (e) {}
+                if (!S) S = (Reader._readers || []).find((r: any) => r && r.tabID === id);
+                return (S && S._iframe && typeof S._iframe.swapDocShells === "function" && S._internalReader) ? S : null;
+            };
+            // Seed preference: the selected tab when live, else any live
+            // reader, else the first reader tab (classic reload).
+            const seed = (readers.find((t: any) => t.id === selectedID && liveS(t.id))
+                || readers.find((t: any) => liveS(t.id))
+                || readers[0]);
+            this._wvConvTraceLog("m2r: seed=" + seed.id + " item=" + seed.data.itemID);
+            const seedS = liveS(seed.id);
+            const seedItemID = seed.data.itemID;
+            let newWin: any = null;
+            if (seedS && (this as any)._wvSwapTearOffToWindow) {
+                try { newWin = await (this as any)._wvSwapTearOffToWindow(win, seedS, seedItemID); } catch (e) {}
+            }
+            if (!newWin) {
+                // Classic seed: fresh window, then close the source tab.
+                const rd: any = await Reader.open(seedItemID, null, { openInWindow: true, allowDuplicate: true });
+                const t0 = Date.now();
+                while (rd && Date.now() - t0 < 8000
+                    && !(rd._window && rd._iframe && rd._iframe.contentWindow)) { await sleep(120); }
+                newWin = rd && rd._window;
+                if (!newWin) return;
+                try { await (this as any)._wvCloseMainTabAndAwait(win, seed.id); } catch (e) {}
+            }
+            // Carry the source window's colour before the strip decorations
+            // derive theirs (see the reader→main twin of this comment).
+            this._wvConvTraceLog("m2r: newWin ok; carrying glyph=" + glyph);
+            try { if (glyph != null) (newWin as any)._wvTitleGlyphIdx = glyph; } catch (e) {}
+            // Wait for the strip model before adding the rest.
+            const t1 = Date.now();
+            while (!(newWin as any)._wvWT && Date.now() - t1 < 4000) { await sleep(80); }
+            // One visual event, not a per-tab parade (user feedback
+            // 2026-07-15): the seed already moved LIVE (no reload); close
+            // the source main wholesale — its unload flushes every
+            // remaining reader's state — then batch the rest as LAZY strip
+            // tabs (readers realize on first select; notes mount eagerly,
+            // their editor is cheap).
+            const rest = all.filter((t: any) => t.id !== seed.id)
+                .map((t: any) => ({ itemID: t.data.itemID, isNote: String(t.type || "").indexOf("note") === 0, title: t.title }));
+            for (const m of rest) {
+                try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {}
+            }
+            this._wvConvTraceLog("m2r: strip ready=" + !!(newWin as any)._wvWT + " rest=" + rest.length + "; closing source");
+            try { win.close(); } catch (e) {}
+            await sleep(400);   // let the unload state writes land
+            this._wvConvTraceLog("m2r: adding rest");
+            for (const m of rest) {
+                try {
+                    if (m.isNote) { this._wvWTMountTab(newWin, m.itemID, { allowDuplicate: true, select: false }); }
+                    else { this._wvWTAddLazyReaderTab(newWin, m.itemID, m.title); }
+                } catch (e) {}
+            }
+            this._wvConvTraceLog("m2r: rest added; applying geometry");
+            // Geometry + identity (the source is already gone).
+            try {
+                if (geom.max) { newWin.moveTo(geom.x + 40, geom.y + 40); newWin.maximize(); }
+                else {
+                    if (newWin.windowState === 1 && newWin.restore) newWin.restore();
+                    newWin.moveTo(geom.x, geom.y);
+                    newWin.resizeTo(geom.w, geom.h);
+                }
+            } catch (e) {}
+            this._wvConvTraceLog("m2r: glyph refresh, idx now=" + (newWin as any)._wvTitleGlyphIdx);
+            try {
+                if (glyph != null) this._wvCarryGlyphRefresh(newWin, true);
+            } catch (e) {}
+            this._wvConvTraceLog("m2r: DONE");
+            try { newWin.focus(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvConvertMainWindowToReader err: " + e); }
+    }
+
     /** The top-level REGULAR item behind this reader/note window's
      *  active window-tab (attachment → its parent), or null. Drives
      *  the Copy Citation / Copy Bibliography menu items. */

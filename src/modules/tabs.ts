@@ -1433,10 +1433,9 @@ class _TabsMixin {
                         };
                     }
                 } catch (e) {}
-                // Show the anchor mark only when it's ALSO shown in the window's
-                // Library tab — i.e. only with >1 main window (matches the
-                // `.wv-anchor-window` library-tab gate).
-                const wIsAnchor = this._wvIsAnchorWindow(w) && Zotero.getMainWindows().length > 1;
+                // Show the anchor mark only when it's ALSO shown in the window
+                // itself — >1 window of any kind (matches _wvAnchorDecorVisible).
+                const wIsAnchor = this._wvIsAnchorWindow(w) && this._wvAnchorDecorVisible();
                 if (tabs.length) sections.push({ label: this._wvWindowName(w), win: w, libraryTab, tabs, kind: "main", iconType: wIsAnchor ? "anchor" : "main", anchorIconClass: wIsAnchor ? this._wvAnchorLibIconClass(w) : "" });
             }
             // Reader windows.
@@ -1698,6 +1697,19 @@ class _TabsMixin {
             return !!(win && mains.length && mains[0] === win);
         } catch (e) { return false; }
     }
+    /** Anchor decorations (⚓ icon/overlay/title glyph/mark) show only
+     *  when MORE THAN ONE window exists — mains AND reader windows
+     *  counted (user rule 2026-07-15): a lone window has no "which one
+     *  is the main one?" ambiguity to resolve. */
+    _wvAnchorDecorVisible(): boolean {
+        try {
+            let n = (Zotero.getMainWindows() || []).length;
+            if (n > 1) return true;
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) { en.getNext(); if (++n > 1) return true; }
+            return false;
+        } catch (e) { return true; }
+    }
     /** Prompt to rename a window; blank restores the default. */
     _wvWindowRenamePrompt(targetWin: any, panel: any) {
         try {
@@ -1782,7 +1794,9 @@ class _TabsMixin {
             }
             const mains = Zotero.getMainWindows() || [];
             if (win && mains.includes(win)) {
-                if (this._wvIsAnchorWindow(win)) return WV_TITLE_GLYPH_ANCHOR;
+                if (this._wvIsAnchorWindow(win)) {
+                    return this._wvAnchorDecorVisible() ? WV_TITLE_GLYPH_ANCHOR : "";
+                }
                 return WV_TITLE_GLYPHS_MAIN[
                     this._wvTitleGlyphIdx(win, false) % WV_TITLE_GLYPHS_MAIN.length];
             }
@@ -1953,8 +1967,17 @@ class _TabsMixin {
             if (!isReader && !mains.includes(win)) return;
             // Anchor main gets the anchor-marked icon (title-bar anchor
             // glyph + colour, on the native artwork); other mains a
-            // square badge, readers a round badge.
-            const name = (!isReader && this._wvIsAnchorWindow(win))
+            // square badge, readers a round badge. A LONE window shows
+            // no anchor decoration at all (native icon restored).
+            const isAnchor = !isReader && this._wvIsAnchorWindow(win);
+            if (isAnchor && !this._wvAnchorDecorVisible()) {
+                if (win._wvWinIconName) {
+                    try { this._wvRestoreWindowIcon(win); } catch (e) {}
+                    win._wvWinIconName = null;
+                }
+                return;
+            }
+            const name = isAnchor
                 ? "anchor"
                 : (isReader ? "reader-" : "main-")
                     + ((this._wvTitleGlyphIdx(win, isReader) % 6) + 1);
@@ -2217,7 +2240,10 @@ class _TabsMixin {
             const isReader = wt === "zotero:reader";
             const isMain = !isReader && (Zotero.getMainWindows() || []).includes(win);
             if (!isReader && !isMain) return null;
-            if (isMain && this._wvIsAnchorWindow(win)) return "anchor";
+            if (isMain && this._wvIsAnchorWindow(win)) {
+                // Lone window → no anchor badge (matches the icon/mark rule).
+                return this._wvAnchorDecorVisible() ? "anchor" : null;
+            }
             const idx = this._wvTitleGlyphIdx(win, isReader);
             return (isReader ? "reader-" : "main-") + ((idx % 6) + 1);
         } catch (e) { return null; }
@@ -2285,7 +2311,16 @@ class _TabsMixin {
         try {
             if (!Zotero.isWin || !this._getEnableWindowIcons()) return;
             const base = this._wvBadgeIconNameFor(win);
-            if (!base) return;
+            if (!base) {
+                // A window that HAD a badge but no longer names one (e.g.
+                // the anchor once it's the lone window) gets its overlay
+                // cleared rather than left stale.
+                if ((win as any)._wvOverlayName) {
+                    try { this._wvSetTaskbarOverlay(win, null); } catch (e) {}
+                    delete (win as any)._wvOverlayName;
+                }
+                return;
+            }
             const name = "ov-" + base;
             if (!force && (win as any)._wvOverlayName === name) return;
             const path = await this._wvWinIconFile(name);
@@ -6530,10 +6565,14 @@ class _TabsMixin {
     _wvWindowStoreCaptureDevWindows() {
         const groups: any[] = [];
         try {
+            // The positional anchor is captured by _wvWindowStoreCaptureAnchor
+            // even when it carries _wvManagedWindow (a promoted eldest main)
+            // — skip it here so it isn't double-captured as main-dev.
+            const anchor: any = (Zotero.getMainWindows() || [])[0] || null;
             const en = Services.wm.getEnumerator("navigator:browser");
             while (en.hasMoreElements()) {
                 const w: any = en.getNext();
-                if (!w || !w._wvManagedWindow) continue;
+                if (!w || !w._wvManagedWindow || w === anchor) continue;
                 let tabs = null;
                 try {
                     const Z = w.Zotero_Tabs;
@@ -6592,9 +6631,12 @@ class _TabsMixin {
                 return (iid != null) ? { kind: "reader", itemID: iid } : null;
             }
             if (type === "navigator:browser") {
-                return fw._wvManagedWindow
-                    ? { kind: "main-dev", wvWinId: (fw._wvWindowId != null ? fw._wvWindowId : null) }
-                    : { kind: "anchor" };
+                // Positional anchor definition (see _wvWindowStoreCaptureAnchor).
+                return (this as any)._wvIsAnchorWindow(fw)
+                    ? { kind: "anchor" }
+                    : (fw._wvManagedWindow
+                        ? { kind: "main-dev", wvWinId: (fw._wvWindowId != null ? fw._wvWindowId : null) }
+                        : { kind: "anchor" });
             }
             return null;
         } catch (e) { return null; }
@@ -6605,7 +6647,13 @@ class _TabsMixin {
      *  the real list (captured on every save, crash-fresh like the rest). */
     _wvWindowStoreCaptureAnchor() {
         try {
-            const w: any = (Zotero.getMainWindows() || []).find((x: any) => !x._wvManagedWindow);
+            // POSITIONAL, matching _wvIsAnchorWindow: the anchor is
+            // getMainWindows()[0], NOT "the untagged window" — after the
+            // original startup window converts/closes, the promoted
+            // eldest main still carries _wvManagedWindow, and the old
+            // untagged-based capture would write NO anchor entry at all
+            // (aligned 2026-07-15).
+            const w: any = (Zotero.getMainWindows() || [])[0];
             if (!w || !w.Zotero_Tabs) return null;
             const Z = w.Zotero_Tabs;
             const tabs = Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState();
@@ -7090,7 +7138,7 @@ class _TabsMixin {
                 g && (g.kind === "main-dev" || g.kind === "main-anchor") && Array.isArray(g.tabs));
             for (const entry of entries) {
                 const win: any = (Zotero.getMainWindows() || []).find((w: any) => (entry.kind === "main-anchor")
-                    ? !w._wvManagedWindow
+                    ? (this as any)._wvIsAnchorWindow(w)
                     : (w._wvManagedWindow && (entry.wvWinId == null || w._wvWindowId === entry.wvWinId)));
                 if (!win || !win.Zotero_Tabs) continue;
                 const Z = win.Zotero_Tabs;
@@ -8916,11 +8964,11 @@ class _TabsMixin {
                 (d.head || d.documentElement).appendChild(st);
             }
             if (st.textContent !== css) st.textContent = css;   // refresh if rule changed
-            // Show the dot only when there's MORE THAN ONE main window — with a
-            // single window there's no "which is the main one?" ambiguity. Anchor
-            // = the untagged window; managed windows are tagged.
+            // Show the mark only when MORE THAN ONE window exists (mains and
+            // reader windows both counted — user rule 2026-07-15): a lone
+            // window has no "which is the main one?" ambiguity.
             let multi = false;
-            try { multi = (Zotero.getMainWindows ? Zotero.getMainWindows().length : 1) > 1; } catch (e) {}
+            try { multi = this._wvAnchorDecorVisible(); } catch (e) {}
             const isAnchor = this._wvIsAnchorWindow(win);
             d.documentElement.classList.toggle("wv-anchor-window", multi && isAnchor);
             // NON-anchor mains: the same spacer spot shows the window's badge
@@ -9039,6 +9087,21 @@ class _TabsMixin {
                 try { const p: any = live(); if (p) p._wvWindowRenamePrompt(win, null); } catch (e2) {}
             });
             pop.appendChild(mi);
+            // Convert — a reader/note window becomes a new main window
+            // carrying all its tabs, and vice versa (user request
+            // 2026-07-15). The guards (last main window, no reader-able
+            // tab) live in the convert functions and explain themselves.
+            const conv: any = doc.createXULElement("menuitem");
+            conv.setAttribute("label", isReader ? "Convert to Main Window" : "Convert to Reader Window");
+            conv.addEventListener("command", () => {
+                try {
+                    const p: any = live();
+                    if (!p) return;
+                    if (isReader) p._wvConvertReaderWindowToMain(win);
+                    else p._wvConvertMainWindowToReader(win);
+                } catch (e2) {}
+            });
+            pop.appendChild(conv);
             // Colour picker — the tab-groups swatch row, no labels (user
             // request 2026-07-13). Not for the anchor (its mark is the ⚓).
             if (!isAnchor) {

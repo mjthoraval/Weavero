@@ -13877,6 +13877,112 @@ class _ReaderMixin {
             } else {
                 menubar.append(tools, help);
             }
+            // Edit → Copy Citation / Copy Bibliography: the main window
+            // shows these on reader tabs (they act on the reader's item
+            // through the synced library selection). Here they act on
+            // THIS window's active tab's top-level item. Visibility
+            // follows the main window's rule (standalone.js
+            // updateQuickCopyOptions): only in bibliography quick-copy
+            // mode with a resolvable regular item — recomputed on every
+            // Edit open.
+            try {
+                const edit0 = doc.getElementById("edit-menu");
+                const epop0 = edit0 && edit0.querySelector(":scope > menupopup");
+                if (epop0 && !doc.getElementById("wv-reader-copy-citation")) {
+                    const mkCopy = (id, srcId, fallback, asCitations) => {
+                        const it = doc.createXULElement("menuitem");
+                        it.id = id;
+                        it.className = "wv-reader-menu";
+                        const src = mw.document.getElementById(srcId);
+                        it.setAttribute("label", (src && src.getAttribute("label")) || fallback);
+                        const cak = src && src.getAttribute("accesskey");
+                        if (cak) it.setAttribute("accesskey", cak);
+                        it.addEventListener("command", async () => {
+                            try {
+                                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (!lp || lp._wvDestroyed || win.closed) return;
+                                const target = lp._wvReaderMenubarActiveItem(win);
+                                if (!target) return;
+                                // Item objects lazy-load their field data; the
+                                // main window's path goes through the items
+                                // tree, which has already loaded it. Citing an
+                                // under-loaded item yields a citation missing
+                                // journal/year/etc.
+                                await target.loadAllData();
+                                const format = (Zotero as any).QuickCopy.unserializeSetting(
+                                    (Zotero as any).QuickCopy.getFormatFromURL((Zotero as any).QuickCopy.lastActiveURL));
+                                if (format.mode !== "bibliography") return;
+                                const locale = format.locale || Zotero.Prefs.get("export.quickCopy.locale");
+                                const m2 = Zotero.getMainWindow && Zotero.getMainWindow();
+                                if (m2 && !m2.closed && (m2 as any).Zotero_File_Interface) {
+                                    (m2 as any).Zotero_File_Interface.copyItemsToClipboard(
+                                        [target], format.id, locale, format.contentType === "html", asCitations);
+                                }
+                            } catch (e) {}
+                        });
+                        return it;
+                    };
+                    const cc = mkCopy("wv-reader-copy-citation", "menu_copyCitation", "Copy Citation", true);
+                    const cb = mkCopy("wv-reader-copy-bibliography", "menu_copyBibliography", "Copy Bibliography", false);
+                    // Main order: Copy, Copy Citation, Copy Bibliography, Paste.
+                    const copyItem = epop0.querySelector("[command='cmd_copy']");
+                    if (copyItem) { copyItem.after(cc, cb); } else { epop0.append(cc, cb); }
+                    // Visibility recompute on every open of Edit.
+                    epop0.addEventListener("popupshowing", (ev: any) => {
+                        if (ev.target !== epop0) return;
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed) return;
+                            let show = false;
+                            try {
+                                const format = (Zotero as any).QuickCopy.unserializeSetting(
+                                    (Zotero as any).QuickCopy.getFormatFromURL((Zotero as any).QuickCopy.lastActiveURL));
+                                show = format.mode === "bibliography" && !!lp._wvReaderMenubarActiveItem(win);
+                            } catch (e) {}
+                            cc.hidden = !show;
+                            cb.hidden = !show;
+                        } catch (e) {}
+                    });
+                }
+            } catch (e) {}
+            // Edit → Find: stock reader windows ship NO Find item (the
+            // main window's Edit→Find {R} drives the current tab's
+            // reader). Add one targeting THIS window's active tab's
+            // reader instance; Ctrl+F itself already works natively, so
+            // the acceltext is display-only. No-op on note tabs (their
+            // editor owns find).
+            try {
+                const edit = doc.getElementById("edit-menu");
+                const epop = edit && edit.querySelector(":scope > menupopup");
+                if (epop && !doc.getElementById("wv-reader-find-item")) {
+                    const srcFind = mw.document.getElementById("menu_find_reader");
+                    const sep = doc.createXULElement("menuseparator");
+                    sep.className = "wv-reader-menu";
+                    const fi = doc.createXULElement("menuitem");
+                    fi.id = "wv-reader-find-item";
+                    fi.className = "wv-reader-menu";
+                    fi.setAttribute("label", (srcFind && srcFind.getAttribute("label")) || "Find");
+                    const fak = srcFind && srcFind.getAttribute("accesskey");
+                    if (fak) fi.setAttribute("accesskey", fak);
+                    fi.setAttribute("acceltext", "Ctrl+F");
+                    fi.addEventListener("command", () => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || win.closed) return;
+                            const rs = (Zotero.Reader as any)._readers || [];
+                            let reader = null;
+                            const st = lp._wvWTState && lp._wvWTState(win);
+                            const tab = st && (st.tabs || []).find((t: any) => t && t.id === st.activeId);
+                            if (tab && tab.type !== "note" && tab.browser) {
+                                reader = rs.find((r: any) => r && r._window === win && r._iframe === tab.browser);
+                            }
+                            if (!reader) reader = rs.find((r: any) => r && r._window === win);
+                            if (reader && reader.toggleFindPopup) reader.toggleFindPopup({ open: true });
+                        } catch (e) {}
+                    });
+                    epop.append(sep, fi);
+                }
+            } catch (e) {}
         } catch (e) {}
     }
 
@@ -13998,6 +14104,27 @@ class _ReaderMixin {
         try {
             for (const el of win.document.querySelectorAll(".wv-reader-menu")) el.remove();
         } catch (e) {}
+    }
+
+    /** The top-level REGULAR item behind this reader/note window's
+     *  active window-tab (attachment → its parent), or null. Drives
+     *  the Copy Citation / Copy Bibliography menu items. */
+    _wvReaderMenubarActiveItem(win) {
+        try {
+            const rs = (Zotero.Reader as any)._readers || [];
+            let reader = null;
+            const st = (this as any)._wvWTState && (this as any)._wvWTState(win);
+            const tab = st && (st.tabs || []).find((t: any) => t && t.id === st.activeId);
+            if (tab && tab.type !== "note" && tab.browser) {
+                reader = rs.find((r: any) => r && r._window === win && r._iframe === tab.browser);
+            }
+            if (!reader) reader = rs.find((r: any) => r && r._window === win);
+            if (!reader || !reader.itemID) return null;
+            const item = Zotero.Items.get(reader.itemID);
+            if (!item) return null;
+            const top = (item as any).topLevelItem || item;
+            return top && top.isRegularItem() ? top : null;
+        } catch (e) { return null; }
     }
 
     _wvEnsureHamburger(win, stripEl, beforeEl) {

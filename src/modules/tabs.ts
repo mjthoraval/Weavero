@@ -1774,6 +1774,38 @@ class _TabsMixin {
                     } catch (e2) {}
                 });
                 pop.appendChild(sac);
+                // Move Window to ▸ — file this window as a saved window
+                // under ANOTHER session (user request 2026-07-15). Only
+                // shown when other sessions exist; same last-main gate
+                // as Save & Close (the move closes the window). The
+                // active session is excluded — moving there is just
+                // Save and Close.
+                try {
+                    const activeId = (this as any)._wvTabSessionGetActiveId
+                        ? (this as any)._wvTabSessionGetActiveId() : null;
+                    const others = ((this as any)._wvTabSessionNamedList
+                        ? (this as any)._wvTabSessionNamedList() : [])
+                        .filter((s: any) => s && s.id !== activeId);
+                    if (others.length) {
+                        const mv: any = doc.createXULElement("menu");
+                        mv.setAttribute("label", "Move Window to");
+                        const mvPop: any = doc.createXULElement("menupopup");
+                        for (const s of others) {
+                            const mi: any = doc.createXULElement("menuitem");
+                            mi.setAttribute("label", s.name || "Session");
+                            const sid = s.id;
+                            mi.addEventListener("command", () => {
+                                try {
+                                    const p: any = live();
+                                    if (p) p._wvSaveAndCloseWindow(win, isReader, sid);
+                                } catch (e2) {}
+                            });
+                            mvPop.appendChild(mi);
+                        }
+                        mv.appendChild(mvPop);
+                        pop.appendChild(mv);
+                    }
+                } catch (e2) {}
             }
             // Colour picker — the tab-groups swatch row, no labels.
             // Not for the anchor (its mark is the ⚓).
@@ -2418,31 +2450,10 @@ class _TabsMixin {
         }
     }
 
-    async _wvApplyTaskbarOverlay(win: any, force?: boolean) {
-        try {
-            if (!Zotero.isWin || !this._getEnableWindowIcons()) return;
-            const base = this._wvBadgeIconNameFor(win);
-            if (!base) {
-                // A window that HAD a badge but no longer names one (e.g.
-                // the anchor once it's the lone window) gets its overlay
-                // cleared rather than left stale.
-                if ((win as any)._wvOverlayName) {
-                    try { this._wvSetTaskbarOverlay(win, null); } catch (e) {}
-                    delete (win as any)._wvOverlayName;
-                }
-                return;
-            }
-            const name = "ov-" + base;
-            if (!force && (win as any)._wvOverlayName === name) return;
-            const path = await this._wvWinIconFile(name);
-            if (!path || win.closed) return;
-            const desc = base === "anchor" ? this._wvWindowName(win) + " (anchor)"
-                : (base.startsWith("reader") ? "Reader window" : this._wvWindowName(win));
-            const ok = this._wvSetTaskbarOverlay(win, path, desc);
-            if (ok) (win as any)._wvOverlayName = name;
-            this._wvOvLog("set", { win: base, mon: this._wvOvScreenKeyOf(win), ok });
-        } catch (e) {}
-    }
+    // (_wvApplyTaskbarOverlay was removed 2026-07-15: zero callers left, and
+    //  keeping a badge writer that bypasses the _wvOvSetBadge poison-ledger
+    //  gate invites regressions — see "Subsystem invariants" in
+    //  ../.claude/project.md. ALL badge writes go through _wvOvSetBadge.)
 
     /** Is the primary mouse button currently held down? Used to defer
      *  taskbar-badge repairs until a window drag has actually ended. */
@@ -6887,8 +6898,11 @@ class _TabsMixin {
 
     /** Capture + park + close. Guards: the last main window can't close
      *  (Zotero needs one), and a window with nothing but the library tab
-     *  has nothing to save. */
-    async _wvSaveAndCloseWindow(win: any, isReader: boolean) {
+     *  has nothing to save. With `toSessionId` (the "Move Window to ▸"
+     *  session entries, user request 2026-07-15) the entry is filed
+     *  under THAT session instead of the active one, and the rename
+     *  prompt is skipped — it's a move, not a save-as. */
+    async _wvSaveAndCloseWindow(win: any, isReader: boolean, toSessionId?: any) {
         try {
             await this._wvSavedWindowsInit();
             let tabs: any[]; let count = 0;
@@ -6914,9 +6928,11 @@ class _TabsMixin {
                 ? ((win as any)._wvWindowTitle || "Reader Window")
                 : this._wvWindowName(win);
             const obj = { value: defName };
-            const ok = Services.prompt.prompt(win, "Save and Close Window",
-                "Name for the saved window:", obj, null, { value: false });
-            if (!ok) return;
+            if (toSessionId === undefined) {
+                const ok = Services.prompt.prompt(win, "Save and Close Window",
+                    "Name for the saved window:", obj, null, { value: false });
+                if (!ok) return;
+            }
             let wvMainState: any;
             if (!isReader) {
                 try {
@@ -6935,9 +6951,12 @@ class _TabsMixin {
                 wvMainState,
                 // A saved window belongs to the session it was saved from
                 // (null = the unnamed/current scope) and renders inside
-                // that session's block in the tabs menu.
-                sessionId: (this as any)._wvTabSessionGetActiveId
-                    ? (this as any)._wvTabSessionGetActiveId() : null,
+                // that session's block in the tabs menu — unless a "Move
+                // Window to ▸" pick filed it under another session.
+                sessionId: toSessionId !== undefined
+                    ? toSessionId
+                    : ((this as any)._wvTabSessionGetActiveId
+                        ? (this as any)._wvTabSessionGetActiveId() : null),
                 savedAt: Date.now(),
             };
             const p: any = this as any;

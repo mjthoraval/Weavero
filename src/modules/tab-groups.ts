@@ -1488,35 +1488,56 @@ class _TabGroupsMixin {
                     place(ng);
                 }
             }
-            // Bottom — move the tab(s) into a BRAND-NEW window, reader or main, each
-            // with an indented "+ New Group" variant. Identical in every window's
-            // Move Tab menu (replaces the old per-menu "Move to New Window"). The
-            // reader-window icon for the reader option, the main "+window" icon for
-            // the main option (same icons as the items "Open in" menu).
+            // Bottom — move the tab(s) into a BRAND-NEW window, reader or main,
+            // each with a "+ New Group" variant. ONE icon-only row (user request
+            // 2026-07-15: four full-text lines were too much) — four buttons,
+            // text lives in the tooltip: [new reader window] [… + new group]
+            // [new main window] [… + new group]. Same HTML-free XUL-in-popup
+            // pattern as the window colour-swatch row; a click closes the whole
+            // menu chain manually since only real menuitems auto-close.
             const nwSep = doc.createXULElement("menuseparator");
             place(nwSep);
-            const mkBottom = (label: string, icon: string, pick: () => void) => {
-                const mi = doc.createXULElement("menuitem");
-                mi.classList.add("menuitem-iconic");
-                mi.setAttribute("label", label);
-                try { if (icon) mi.setAttribute("image", icon); } catch (e) {}
-                mi.addEventListener("command", () => { try { pick(); } catch (e) {} });
-                place(mi); added++;
+            const row = doc.createXULElement("hbox");
+            row.setAttribute("align", "center");
+            row.setAttribute("style", "padding: 3px 10px;");
+            const closeAll = () => {
+                try {
+                    let p: any = row.parentNode, root: any = null;
+                    while (p) { if (p.localName === "menupopup") root = p; p = p.parentNode; }
+                    if (root) root.hidePopup();
+                } catch (e) {}
             };
-            const mkBottomGroup = (pick: () => void) => {
-                if (!groupsEnabled) return;
-                const ng = doc.createXULElement("menuitem");
-                ng.classList.add("menuitem-iconic");
-                ng.setAttribute("label", "New Group");
-                ng.setAttribute("style", INDENT);
-                try { if (plusIcon) ng.setAttribute("image", plusIcon); } catch (e) {}
-                ng.addEventListener("command", () => { try { pick(); } catch (e) {} });
-                place(ng);
+            const mkBtn = (icon: string, withPlus: boolean, tip: string, pick: () => void, gapBefore?: boolean) => {
+                const b = doc.createXULElement("hbox");
+                b.setAttribute("align", "center");
+                b.setAttribute("tooltiptext", tip);
+                b.setAttribute("style", "padding: 3px 5px; border-radius: 4px; cursor: pointer;"
+                    + (gapBefore ? " margin-inline-start: 10px;" : ""));
+                const im = doc.createXULElement("image");
+                im.setAttribute("src", icon);
+                im.setAttribute("width", "16");
+                im.setAttribute("height", "16");
+                b.appendChild(im);
+                if (withPlus && plusIcon) {
+                    const pl = doc.createXULElement("image");
+                    pl.setAttribute("src", plusIcon);
+                    pl.setAttribute("width", "10");
+                    pl.setAttribute("height", "10");
+                    pl.setAttribute("style", "margin-inline-start: 1px; align-self: flex-end;");
+                    b.appendChild(pl);
+                }
+                b.addEventListener("mouseenter", () => { try { (b as any).style.background = "var(--fill-quinary, rgba(128,128,128,.2))"; } catch (e) {} });
+                b.addEventListener("mouseleave", () => { try { (b as any).style.background = ""; } catch (e) {} });
+                b.addEventListener("click", (ev: any) => {
+                    try { ev.stopPropagation(); ev.preventDefault(); closeAll(); pick(); } catch (e) {}
+                });
+                row.appendChild(b);
             };
-            mkBottom("Move to New Reader Window", newReaderWinIcon, () => onPick({ newReaderWindow: true }));
-            mkBottomGroup(() => onPick({ newReaderWindow: true, newGroup: true }));
-            mkBottom("Move to New Main Window", newWinIcon, () => onPick({ newMainWindow: true }));
-            mkBottomGroup(() => onPick({ newMainWindow: true, newGroup: true }));
+            mkBtn(newReaderWinIcon, false, "Move to New Reader Window", () => onPick({ newReaderWindow: true }));
+            if (groupsEnabled) mkBtn(newReaderWinIcon, true, "Move to New Reader Window, into a new group", () => onPick({ newReaderWindow: true, newGroup: true }));
+            mkBtn(newWinIcon, false, "Move to New Main Window", () => onPick({ newMainWindow: true }), true);
+            if (groupsEnabled) mkBtn(newWinIcon, true, "Move to New Main Window, into a new group", () => onPick({ newMainWindow: true, newGroup: true }));
+            place(row); added++;
         } catch (e) { Zotero.debug("[Weavero] _wvBuildMoveTargetsInto err: " + e); }
         return added;
     }

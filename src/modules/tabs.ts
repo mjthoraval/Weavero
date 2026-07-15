@@ -1774,12 +1774,14 @@ class _TabsMixin {
                     } catch (e2) {}
                 });
                 pop.appendChild(sac);
-                // Move Window to ▸ — file this window as a saved window
-                // under ANOTHER session (user request 2026-07-15). Only
-                // shown when other sessions exist; same last-main gate
-                // as Save & Close (the move closes the window). The
-                // active session is excluded — moving there is just
-                // Save and Close.
+                // Move Window to ▸ — this LIVE window becomes a live
+                // window of ANOTHER session: it opens with that session
+                // on the next switch (state-preserving move, user
+                // semantics 2026-07-15; parked windows move via their
+                // own context menu). Only shown when other sessions
+                // exist; same last-main gate as Save & Close (the move
+                // closes the window here). The active session is
+                // excluded — the window is already live in it.
                 try {
                     const activeId = (this as any)._wvTabSessionGetActiveId
                         ? (this as any)._wvTabSessionGetActiveId() : null;
@@ -1797,7 +1799,7 @@ class _TabsMixin {
                             mi.addEventListener("command", () => {
                                 try {
                                     const p: any = live();
-                                    if (p) p._wvSaveAndCloseWindow(win, isReader, sid);
+                                    if (p) p._wvMoveWindowToSession(win, isReader, sid);
                                 } catch (e2) {}
                             });
                             mvPop.appendChild(mi);
@@ -6898,11 +6900,11 @@ class _TabsMixin {
 
     /** Capture + park + close. Guards: the last main window can't close
      *  (Zotero needs one), and a window with nothing but the library tab
-     *  has nothing to save. With `toSessionId` (the "Move Window to ▸"
-     *  session entries, user request 2026-07-15) the entry is filed
-     *  under THAT session instead of the active one, and the rename
-     *  prompt is skipped — it's a move, not a save-as. */
-    async _wvSaveAndCloseWindow(win: any, isReader: boolean, toSessionId?: any) {
+     *  has nothing to save. (Moving a window to ANOTHER session is a
+     *  different verb: _wvMoveWindowToSession keeps a live window live
+     *  in the target; _wvSavedWindowMoveToSession re-files a parked
+     *  one — user semantics 2026-07-15.) */
+    async _wvSaveAndCloseWindow(win: any, isReader: boolean) {
         try {
             await this._wvSavedWindowsInit();
             let tabs: any[]; let count = 0;
@@ -6928,11 +6930,9 @@ class _TabsMixin {
                 ? ((win as any)._wvWindowTitle || "Reader Window")
                 : this._wvWindowName(win);
             const obj = { value: defName };
-            if (toSessionId === undefined) {
-                const ok = Services.prompt.prompt(win, "Save and Close Window",
-                    "Name for the saved window:", obj, null, { value: false });
-                if (!ok) return;
-            }
+            const ok = Services.prompt.prompt(win, "Save and Close Window",
+                "Name for the saved window:", obj, null, { value: false });
+            if (!ok) return;
             let wvMainState: any;
             if (!isReader) {
                 try {
@@ -6951,12 +6951,9 @@ class _TabsMixin {
                 wvMainState,
                 // A saved window belongs to the session it was saved from
                 // (null = the unnamed/current scope) and renders inside
-                // that session's block in the tabs menu — unless a "Move
-                // Window to ▸" pick filed it under another session.
-                sessionId: toSessionId !== undefined
-                    ? toSessionId
-                    : ((this as any)._wvTabSessionGetActiveId
-                        ? (this as any)._wvTabSessionGetActiveId() : null),
+                // that session's block in the tabs menu.
+                sessionId: (this as any)._wvTabSessionGetActiveId
+                    ? (this as any)._wvTabSessionGetActiveId() : null,
                 savedAt: Date.now(),
             };
             const p: any = this as any;
@@ -7048,6 +7045,86 @@ class _TabsMixin {
             const p: any = this as any;
             p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
             this._wvSavedWindowsPersist();
+        } catch (e) {}
+    }
+
+    /** Move a LIVE window into another session AS A LIVE WINDOW (user
+     *  semantics 2026-07-15: a moved window keeps its state — an active
+     *  window stays active in the target, so it opens with the session
+     *  on the next switch). Captures the window in session-topology
+     *  shape (sessions.ts doc comment), appends it to the target
+     *  session's `windows`, then closes the window. Parked windows
+     *  move via _wvSavedWindowMoveToSession instead. */
+    async _wvMoveWindowToSession(win: any, isReader: boolean, sessionId: any) {
+        try {
+            await (this as any)._wvTabSessionInit();
+            const sess = ((this as any)._wvTabSessionList() || [])
+                .find((s: any) => s && s.id === sessionId);
+            if (!sess) return;
+            let entry: any = null;
+            if (isReader) {
+                entry = (this as any)._wvTabSessionCaptureReaderWindow(win);
+                if (!entry || !entry.tabs.length) {
+                    Services.prompt.alert(win, "Weavero", "This window has no tabs to move.");
+                    return;
+                }
+            } else {
+                if ((Zotero.getMainWindows() || []).length < 2) {
+                    Services.prompt.alert(win, "Weavero",
+                        "This is the last main window — it can't be moved to another session.");
+                    return;
+                }
+                const Z: any = win.Zotero_Tabs;
+                let selID: any = null;
+                try { selID = Z.selectedID; } catch (e) {}
+                const tabs: any[] = [];
+                for (const t of ((Z && Z._tabs) || [])) {
+                    const rec = (this as any)._wvTabSessionRecordFromMainTab(t, selID);
+                    if (rec) tabs.push(rec);
+                }
+                if (!tabs.length) {
+                    Services.prompt.alert(win, "Weavero", "This window has no document tabs to move.");
+                    return;
+                }
+                entry = { kind: "main", tabs, ...((this as any)._wvTabSessionCaptureMainState(win) || {}) };
+            }
+            sess.windows = Array.isArray(sess.windows) ? sess.windows : [];
+            sess.windows.push(entry);
+            sess.modified = Date.now();
+            await (this as any)._wvTabSessionPersist();
+            try { win.close(); } catch (e) {}
+            this._wvTabsMenuRefreshOpenPanel();
+        } catch (e) { Zotero.debug("[Weavero] _wvMoveWindowToSession err: " + e); }
+    }
+
+    /** Re-file a PARKED (saved) window under another session — it stays
+     *  parked there (state-preserving move, user semantics 2026-07-15).
+     *  Works in any direction, including into the active session. */
+    async _wvSavedWindowMoveToSession(savedId: any, sessionId: any) {
+        try {
+            await this._wvSavedWindowsInit();
+            const e = this._wvSavedWindowsList().find((x: any) => x && x.id === savedId);
+            if (!e) return;
+            e.sessionId = sessionId;
+            this._wvSavedWindowsPersist();
+            this._wvTabsMenuRefreshOpenPanel();
+        } catch (e2) {}
+    }
+
+    /** Re-render the List-all-tabs panel wherever it's open — actions
+     *  that change the session/saved-window stores (moves between
+     *  sessions, etc.) would otherwise leave an open panel stale (user
+     *  report 2026-07-15: a moved window seemed to vanish). */
+    _wvTabsMenuRefreshOpenPanel() {
+        try {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try {
+                    const panel: any = w.document && w.document.getElementById("zotero-tabs-menu-panel");
+                    if (!panel || (panel.state !== "open" && panel.state !== "showing")) continue;
+                    if (typeof panel.refreshList === "function") panel.refreshList();
+                    else this._wvRegroupTabsMenu(panel);
+                } catch (e) {}
+            }
         } catch (e) {}
     }
 
@@ -7222,6 +7299,32 @@ class _TabsMixin {
                             try { (panel as any).hidePopup && (panel as any).hidePopup(); } catch (er2) {}
                             lp._wvSavedWindowReopen(sec.savedId);
                         });
+                        // Move Window to ▸ — re-file this PARKED window
+                        // under another session; it stays parked there
+                        // (state-preserving move, user semantics
+                        // 2026-07-15). Any direction: other sessions AND
+                        // the active one.
+                        try {
+                            const ownerId = sessionId || null;
+                            const named = (lp._wvTabSessionNamedList ? lp._wvTabSessionNamedList() : [])
+                                .filter((s: any) => s && (s.id || null) !== ownerId);
+                            if (named.length) {
+                                const mv = doc.createXULElement("menu");
+                                mv.setAttribute("label", "Move Window to");
+                                const mvPop = doc.createXULElement("menupopup");
+                                for (const s of named) {
+                                    const mi = doc.createXULElement("menuitem");
+                                    mi.setAttribute("label", s.name || "Session");
+                                    const sid = s.id;
+                                    mi.addEventListener("command", () => {
+                                        try { lp._wvSavedWindowMoveToSession(sec.savedId, sid); } catch (er2) {}
+                                    });
+                                    mvPop.appendChild(mi);
+                                }
+                                mv.appendChild(mvPop);
+                                pop.appendChild(mv);
+                            }
+                        } catch (er2) {}
                         mk("Delete Saved Window", async () => {
                             await lp._wvSavedWindowDelete(sec.savedId);
                             refresh();

@@ -2856,10 +2856,10 @@ class WeaveroPlugin {
         // (Named tab sessions live in the "List all tabs" dropdown panel — see
         // _wvTabSessionsMenuSection, hooked into the tabs-menu refresh in
         // modules/tabs.ts — so there's no context-menu registration here.)
-        // "New Main Window" entry — gated on the `weavero.devNewMainWindow`
-        // pref (exposed in prefs.html under "Multiple main windows"; default
-        // off — experimental).
-        this._registerDevNewWindowMenu();
+        // ("New Main Window" no longer registers on the library-tab context
+        // menu — superseded by Ctrl+N and the hamburger entry, user request
+        // 2026-07-15. _registerDevNewWindowMenu is kept for reference but
+        // unused.)
         // "Reopen Closed Window / Group" tab-menu entry (Weavero's closed stack).
         try { (this as any)._registerReopenClosedMenu(); } catch (e) {}
         // Plugins Manager search box (Ctrl+F filter over installed plugins).

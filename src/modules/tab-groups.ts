@@ -313,7 +313,12 @@ class _TabGroupsMixin {
                 "  font-size: 0.85em; font-weight: 600; opacity: 0.65;",
                 "  text-align: start;",
                 "}",
-                ".wv-tgmenu-scope { margin: 0 4px 4px 16px; }",
+                /* Double class beats the sessions stylesheet's later
+                   `.wv-winscope { margin: 0 0 6px }` shorthand, which
+                   zeroed the inset (measured live). 35px aligns the box
+                   header's dot with the active group rows inside the
+                   window boxes (1217 − 1182 measured 2026-07-15). */
+                ".wv-winscope.wv-tgmenu-scope { margin: 0 4px 4px 35px; }",
                 /* Hover-preview title: the group's FULL name (wraps). */
                 ".wv-tg-preview-title {",
                 "  display: flex; align-items: center; gap: 7px;",
@@ -323,6 +328,10 @@ class _TabGroupsMixin {
                 "  white-space: normal; overflow-wrap: anywhere;",
                 "}",
                 ".wv-tg-preview-title > .wv-tgmenu-dot { flex: 0 0 auto; }",
+                ".wv-tg-preview-count {",
+                "  margin-inline-start: auto; padding-inline-start: 10px;",
+                "  font-weight: 400; opacity: 0.6;",
+                "}",
                 ".wv-tgmenu-row {",
                 "  display: flex; align-items: center; gap: 7px;",
                 "  padding: 4px 8px; margin: 0 4px; border-radius: 5px;",
@@ -4450,6 +4459,11 @@ class _TabGroupsMixin {
                 const tname = doc.createElementNS(HTML_NS, "span");
                 tname.textContent = g.name || "Unnamed group";
                 titleRow.appendChild(tname);
+                // Tab count, right-aligned — same figure as the chip badge.
+                const tcount = doc.createElementNS(HTML_NS, "span");
+                tcount.className = "wv-tg-preview-count";
+                tcount.textContent = String(entries.length);
+                titleRow.appendChild(tcount);
                 body.appendChild(titleRow);
             }
             for (const en of entries) {

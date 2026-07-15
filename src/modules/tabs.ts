@@ -6926,13 +6926,11 @@ class _TabsMixin {
                 count = tabs.filter((t: any) => t && t.type !== "library").length;
                 if (!count) { Services.prompt.alert(win, "Weavero", "This window has no document tabs to save."); return; }
             }
+            // No name prompt (user request 2026-07-15) — the window's
+            // existing name carries over; rename beforehand if needed.
             const defName = isReader
                 ? ((win as any)._wvWindowTitle || "Reader Window")
                 : this._wvWindowName(win);
-            const obj = { value: defName };
-            const ok = Services.prompt.prompt(win, "Save and Close Window",
-                "Name for the saved window:", obj, null, { value: false });
-            if (!ok) return;
             let wvMainState: any;
             if (!isReader) {
                 try {
@@ -6943,7 +6941,7 @@ class _TabsMixin {
             }
             const entry = {
                 id: "swin-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36),
-                name: (obj.value || "").trim() || defName,
+                name: defName,
                 kind: isReader ? "reader" : "main",
                 tabs, count,
                 geom: (this as any)._wvWindowGeom(win),
@@ -7086,7 +7084,9 @@ class _TabsMixin {
                     Services.prompt.alert(win, "Weavero", "This window has no document tabs to move.");
                     return;
                 }
-                entry = { kind: "main", tabs, ...((this as any)._wvTabSessionCaptureMainState(win) || {}) };
+                let geom: any = null;
+                try { geom = (this as any)._wvWindowGeom(win); } catch (e) {}
+                entry = { kind: "main", tabs, geom, ...((this as any)._wvTabSessionCaptureMainState(win) || {}) };
             }
             sess.windows = Array.isArray(sess.windows) ? sess.windows : [];
             sess.windows.push(entry);

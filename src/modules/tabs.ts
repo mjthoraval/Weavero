@@ -168,6 +168,7 @@ class _TabsMixin {
                 if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
                 if (lp && lp._wvTabsMenuWrapCurrentSession) lp._wvTabsMenuWrapCurrentSession(panel);
                 if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
+                if (lp && lp._wvSavedWindowsMenuSection) lp._wvSavedWindowsMenuSection(panel);
                 // Filter EVERY window's rows now that all sections exist (the
                 // per-branch filter only saw the current window's native rows).
                 if (lp && lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
@@ -6698,6 +6699,270 @@ class _TabsMixin {
         } catch (e) { try { this._wvWindowStoreSaveSync(); } catch (e2) {} }
     }
 
+    // ---- Saved windows -----------------------------------------------------
+    // "Save and Close Window" — the whole-window analog of the tab groups'
+    // Save and Close (user request 2026-07-15). A saved window parks its
+    // tab set (+ geometry, colour, name) in weavero/saved-windows.json and
+    // closes; the Saved Windows section of the tabs menu reopens it.
+
+    _wvSavedWindowsPath() {
+        return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "saved-windows.json");
+    }
+
+    /** Load saved-windows.json once (cached promise); unreadable → backed
+     *  up and started clean — same contract as tab-sessions.json. */
+    _wvSavedWindowsInit() {
+        const p: any = this as any;
+        if (p._wvSavedWinInitPromise) return p._wvSavedWinInitPromise;
+        p._wvSavedWinInitPromise = (async () => {
+            const path = this._wvSavedWindowsPath();
+            try {
+                const text: any = await Zotero.File.getContentsAsync(path);
+                const doc = JSON.parse(text);
+                p._wvSavedWinDoc = (doc && Array.isArray(doc.windows))
+                    ? { version: 1, windows: doc.windows } : { version: 1, windows: [] };
+            } catch (e) {
+                let exists = false;
+                try { exists = await IOUtils.exists(path); } catch (_) {}
+                if (exists) {
+                    try { await IOUtils.move(path, path + ".corrupt-" + Date.now()); } catch (_) {}
+                }
+                p._wvSavedWinDoc = { version: 1, windows: [] };
+            }
+            return p._wvSavedWinDoc;
+        })();
+        return p._wvSavedWinInitPromise;
+    }
+
+    _wvSavedWindowsList() {
+        const p: any = this as any;
+        return (p._wvSavedWinDoc && p._wvSavedWinDoc.windows) || [];
+    }
+
+    _wvSavedWindowsPersist() {
+        const p: any = this as any;
+        if (!p._wvSavedWinDoc) return Promise.resolve();
+        const snapshot = JSON.stringify(p._wvSavedWinDoc, null, 2);
+        const path = this._wvSavedWindowsPath();
+        p._wvSavedWinWriteChain = (p._wvSavedWinWriteChain || Promise.resolve())
+            .then(async () => {
+                await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true });
+                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
+            })
+            .catch((e: any) => Zotero.debug("[Weavero] saved-windows persist failed: " + e));
+        return p._wvSavedWinWriteChain;
+    }
+
+    /** Capture + park + close. Guards: the last main window can't close
+     *  (Zotero needs one), and a window with nothing but the library tab
+     *  has nothing to save. */
+    async _wvSaveAndCloseWindow(win: any, isReader: boolean) {
+        try {
+            await this._wvSavedWindowsInit();
+            let tabs: any[]; let count = 0;
+            if (isReader) {
+                const st: any = (this as any)._wvWTState(win);
+                tabs = ((st && st.tabs) || [])
+                    .filter((t: any) => t && t.itemID != null)
+                    .map((t: any) => ({ itemID: t.itemID, isNote: t.type === "note", title: t.title || "" }));
+                count = tabs.length;
+                if (!count) { Services.prompt.alert(win, "Weavero", "This window has no tabs to save."); return; }
+            } else {
+                if ((Zotero.getMainWindows() || []).length < 2) {
+                    Services.prompt.alert(win, "Weavero",
+                        "This is the last main window — open another main window first, then save this one.");
+                    return;
+                }
+                const Z: any = win.Zotero_Tabs;
+                tabs = (Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState())) || [];
+                count = tabs.filter((t: any) => t && t.type !== "library").length;
+                if (!count) { Services.prompt.alert(win, "Weavero", "This window has no document tabs to save."); return; }
+            }
+            const defName = isReader
+                ? ((win as any)._wvWindowTitle || "Reader Window")
+                : this._wvWindowName(win);
+            const obj = { value: defName };
+            const ok = Services.prompt.prompt(win, "Save and Close Window",
+                "Name for the saved window:", obj, null, { value: false });
+            if (!ok) return;
+            let wvMainState: any;
+            if (!isReader) {
+                try {
+                    const ms = (this as any)._wvTabSessionCaptureMainState
+                        ? (this as any)._wvTabSessionCaptureMainState(win) : null;
+                    if (ms && (ms.collection || ms.columnPrefs)) wvMainState = ms;
+                } catch (e) {}
+            }
+            const entry = {
+                id: "swin-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36),
+                name: (obj.value || "").trim() || defName,
+                kind: isReader ? "reader" : "main",
+                tabs, count,
+                geom: (this as any)._wvWindowGeom(win),
+                glyph: (win as any)._wvTitleGlyphIdx != null ? (win as any)._wvTitleGlyphIdx : null,
+                wvMainState,
+                savedAt: Date.now(),
+            };
+            const p: any = this as any;
+            p._wvSavedWinDoc.windows.push(entry);
+            this._wvSavedWindowsPersist();
+            try { win.close(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvSaveAndCloseWindow err: " + e); }
+    }
+
+    /** Reopen a saved window (and unpark it). Mains ride the managed
+     *  spawn queue — the same path that restores dev windows at startup;
+     *  readers seed from the first reader tab and lazy-add the rest,
+     *  like the fast window conversion. */
+    async _wvSavedWindowReopen(id: any) {
+        try {
+            await this._wvSavedWindowsInit();
+            const p: any = this as any;
+            const entry = this._wvSavedWindowsList().find((x: any) => x && x.id === id);
+            if (!entry) return;
+            p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
+            this._wvSavedWindowsPersist();
+            const sleep = (ms: number) => (Zotero as any).Promise.delay(ms);
+            if (entry.kind === "main") {
+                const before = new Set(Zotero.getMainWindows() || []);
+                p._wvDevSpawnQueue = p._wvDevSpawnQueue || [];
+                p._wvDevSpawnQueue.push({ kind: "main-dev", tabs: entry.tabs,
+                    geom: entry.geom, wvMainState: entry.wvMainState, wvWinId: null });
+                p._wvPendingDevWindow = true;
+                try { (Zotero as any).openMainWindow(); }
+                catch (e) { p._wvPendingDevWindow = false; return; }
+                if (entry.glyph == null) return;
+                const t0 = Date.now();
+                let newMain: any = null;
+                while (Date.now() - t0 < 12000) {
+                    newMain = (Zotero.getMainWindows() || []).find((w: any) => !before.has(w));
+                    if (newMain && (newMain as any)._wvManagedWindow) break;
+                    newMain = null;
+                    await sleep(150);
+                }
+                if (newMain && !this._wvIsAnchorWindow(newMain)) {
+                    (newMain as any)._wvTitleGlyphIdx = entry.glyph;
+                    await sleep(600);
+                    try { (this as any)._wvCarryGlyphRefresh(newMain, false); } catch (e) {}
+                }
+                return;
+            }
+            // Reader window: seed with the first reader tab.
+            const seed = (entry.tabs || []).find((t: any) => !t.isNote && t.itemID != null);
+            if (!seed) {
+                const mw: any = Zotero.getMainWindow();
+                Services.prompt.alert(mw as any, "Weavero",
+                    "This saved window holds only notes — a reader window needs at least one document tab.");
+                return;
+            }
+            const rd: any = await (Zotero.Reader as any).open(seed.itemID, null,
+                { openInWindow: true, allowDuplicate: true });
+            const t1 = Date.now();
+            while (rd && Date.now() - t1 < 8000
+                && !(rd._window && rd._iframe && rd._iframe.contentWindow)) { await sleep(120); }
+            const newWin: any = rd && rd._window;
+            if (!newWin) return;
+            if (entry.glyph != null) { try { (newWin as any)._wvTitleGlyphIdx = entry.glyph; } catch (e) {} }
+            const t2 = Date.now();
+            while (!(newWin as any)._wvWT && Date.now() - t2 < 4000) { await sleep(80); }
+            for (const m of (entry.tabs || [])) {
+                if (m === seed || m.itemID == null) continue;
+                try {
+                    if (m.isNote) { (this as any)._wvWTMountTab(newWin, m.itemID, { allowDuplicate: true, select: false }); }
+                    else { (this as any)._wvWTAddLazyReaderTab(newWin, m.itemID, m.title); }
+                } catch (e) {}
+            }
+            try {
+                const g = entry.geom;
+                if (g && g.st === 1) { newWin.moveTo(g.x + 40, g.y + 40); await sleep(150); newWin.maximize(); }
+                else if (g) {
+                    if (newWin.windowState === 1 && newWin.restore) { newWin.restore(); await sleep(200); }
+                    newWin.moveTo(g.x, g.y);
+                    newWin.resizeTo(g.w, g.h);
+                }
+            } catch (e) {}
+            if (entry.glyph != null) { try { (this as any)._wvCarryGlyphRefresh(newWin, true); } catch (e) {} }
+            try { newWin.focus(); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvSavedWindowReopen err: " + e); }
+    }
+
+    async _wvSavedWindowDelete(id: any) {
+        try {
+            await this._wvSavedWindowsInit();
+            const p: any = this as any;
+            p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
+            this._wvSavedWindowsPersist();
+        } catch (e) {}
+    }
+
+    /** "Saved Windows" section of the tabs menu — rendered after the
+     *  saved-sessions section, styled with the same row classes. */
+    _wvSavedWindowsMenuSection(panel: any) {
+        try {
+            this._wvSavedWindowsInit();   // fire-and-forget; empty until loaded
+            const doc = panel.ownerDocument;
+            const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
+            if (!list) return;
+            for (const el of list.querySelectorAll(".wv-savedwin-header, .wv-savedwin-row")) el.remove();
+            const saved = this._wvSavedWindowsList();
+            if (!saved.length) return;
+            try { (this as any)._wvEnsureTabSessionStyles(doc); } catch (e) {}
+            const HTML_NS = "http://www.w3.org/1999/xhtml";
+            const hdr = doc.createElementNS(HTML_NS, "div");
+            hdr.className = "wv-sessmenu-header wv-savedwin-header";
+            hdr.textContent = "Saved Windows";
+            list.appendChild(hdr);
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            for (const e of saved) {
+                const row = doc.createElementNS(HTML_NS, "div");
+                row.className = "wv-sessmenu-row wv-savedwin-row";
+                const mark = doc.createElementNS(HTML_NS, "span");
+                const color = WV_WIN_BADGE_COLORS[(e.glyph || 0) % WV_WIN_BADGE_COLORS.length];
+                mark.style.cssText = "display:inline-block;width:10px;height:10px;margin-inline-end:6px;"
+                    + "background:" + color + ";"
+                    + "border-radius:" + (e.kind === "reader" ? "50%" : "2px") + ";";
+                const label = doc.createElementNS(HTML_NS, "span");
+                label.textContent = e.name + "  (" + (e.count != null ? e.count : (e.tabs || []).length) + ")";
+                row.append(mark, label);
+                row.addEventListener("click", (ev: any) => {
+                    try {
+                        ev.stopPropagation();
+                        const lp: any = live();
+                        if (!lp) return;
+                        try { panel.hidePopup && panel.hidePopup(); } catch (er) {}
+                        lp._wvSavedWindowReopen(e.id);
+                    } catch (er) {}
+                });
+                row.addEventListener("contextmenu", (ev: any) => {
+                    try {
+                        ev.preventDefault(); ev.stopPropagation();
+                        const lp: any = live();
+                        if (!lp) return;
+                        const d = row.ownerDocument;
+                        let pop: any = d.getElementById("wv-savedwin-context");
+                        if (pop) pop.remove();
+                        pop = d.createXULElement("menupopup");
+                        pop.id = "wv-savedwin-context";
+                        const mk = (lbl: string, fn: any) => {
+                            const mi = d.createXULElement("menuitem");
+                            mi.setAttribute("label", lbl);
+                            mi.addEventListener("command", () => { try { fn(); } catch (er2) {} });
+                            pop.appendChild(mi);
+                        };
+                        mk("Reopen Window", () => { try { panel.hidePopup && panel.hidePopup(); } catch (er2) {} lp._wvSavedWindowReopen(e.id); });
+                        mk("Delete Saved Window", async () => {
+                            await lp._wvSavedWindowDelete(e.id);
+                            try { lp._wvSavedWindowsMenuSection(panel); } catch (er2) {}
+                        });
+                        (d.querySelector("popupset") || d.documentElement).appendChild(pop);
+                        pop.openPopupAtScreen(ev.screenX, ev.screenY, true);
+                    } catch (er) {}
+                });
+                list.appendChild(row);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvSavedWindowsMenuSection err: " + e); }
+    }
+
     /** Read + parse the store; returns the windows array (empty on missing). */
     async _wvWindowStoreLoad() {
         try {
@@ -9102,6 +9367,18 @@ class _TabsMixin {
                 } catch (e2) {}
             });
             pop.appendChild(conv);
+            // Save & Close — the whole-window analog of the tab groups'
+            // Save and Close Group; reopen from the tabs menu's Saved
+            // Windows section.
+            const sac: any = doc.createXULElement("menuitem");
+            sac.setAttribute("label", "Save and Close Window…");
+            sac.addEventListener("command", () => {
+                try {
+                    const p: any = live();
+                    if (p) p._wvSaveAndCloseWindow(win, isReader);
+                } catch (e2) {}
+            });
+            pop.appendChild(sac);
             // Colour picker — the tab-groups swatch row, no labels (user
             // request 2026-07-13). Not for the anchor (its mark is the ⚓).
             if (!isAnchor) {

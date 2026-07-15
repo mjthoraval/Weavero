@@ -14586,7 +14586,10 @@ class _ReaderMixin {
                 }, ACCEL + "N");
                 popup.appendChild(doc.createXULElement("menuseparator"));
             } catch (e2) { Zotero.debug("[Weavero][hamburger] top entries err: " + e2); }
-            for (const src of sources) {
+            // Build one menubar-mirror submenu entry — used for both the
+            // document-menu cluster (File/Edit/View/Go) and the app-level
+            // cluster (Tools/Help), which land in different groups below.
+            const appendMirrorSubmenu = (src: any) => {
                 const submenu: any = doc.createXULElement("menu");
                 submenu.setAttribute("label", src.label);
                 if (src.accesskey) submenu.setAttribute("accesskey", src.accesskey);
@@ -14650,11 +14653,26 @@ class _ReaderMixin {
                 }, true);
                 submenu.appendChild(innerPlaceholder);
                 popup.appendChild(submenu);
-            }
-            // Firefox-style TOP-LEVEL entries (user request 2026-07-13):
-            // Settings and Plugins as first-class items, Exit alone at the
-            // very bottom — Firefox's app menu doesn't mirror the menu bar
-            // either. Each entry triggers the LIVE native menuitem
+            };
+            // FIREFOX-STYLE GROUPING (user request 2026-07-15, order
+            // verified against mozilla-central appmenu-viewcache.inc.xhtml):
+            //   [new containers]  New Tab / New Reader Window / New Main
+            //                     Window (reader FIRST — it's native
+            //                     Zotero's standard extra window; multiple
+            //                     main windows are Weavero's addition)
+            //   [document menus]  File / Edit / View / Go — the classic
+            //                     menubar cluster
+            //   [add-ons]         Plugins (FF: Extensions and themes at
+            //                     the end of the middle zone, above the
+            //                     Settings group)
+            //   [app-level]       Settings / Tools / Help — one group,
+            //                     like FF's Settings / More tools / Help
+            //   [exit]            alone at the bottom
+            // Deliberately NO FF-style "destinations" group (Bookmarks /
+            // List All Tabs / Sessions): those surfaces already exist
+            // elsewhere in the UI (user decision 2026-07-15) — don't
+            // re-propose it.
+            // Each promoted entry triggers the LIVE native menuitem
             // (doCommand → locale-correct behaviour). In MAIN windows the
             // item is local and gets hidden inside its cascade while the
             // hamburger owns the menus (unhidden by the compact-title-bar
@@ -14662,24 +14680,23 @@ class _ReaderMixin {
             // the MAIN window's items, resolved at CLICK time (the wiring
             // main may be gone by then), and never hide the main window's
             // originals from here (menubar-parity work, 2026-07-15).
+            const isAppMenu = (s: any) => /tools|help/i.test(String(s.popupId || ""));
+            for (const src of sources.filter((s: any) => !isAppMenu(s))) {
+                appendMirrorSubmenu(src);
+            }
             try {
-                const promote = [
-                    { ids: ["menu_EditPreferencesItem"], sepBefore: true },   // Settings
-                    { ids: ["menu_addons"], sepBefore: false },               // Plugins
-                    { ids: ["menu_fileQuitItemWin", "menu_fileQuitItemUnix"], sepBefore: true }, // Exit
-                ];
                 const resolveIn = (d: any, ids: string[]) => {
                     const els = ids.map((id: string) => d && d.getElementById(id)).filter(Boolean);
                     return (els.find((x: any) => !x.hidden) || els[0]) || null;
                 };
-                for (const spec of promote) {
+                const appendPromoted = (spec: any) => {
                     let el: any = resolveIn(doc, spec.ids);
                     const local = !!el;
                     if (!el) {
                         const m = Zotero.getMainWindow && Zotero.getMainWindow();
                         if (m && !m.closed) el = resolveIn(m.document, spec.ids);
                     }
-                    if (!el) continue;
+                    if (!el) return;
                     if (spec.sepBefore) popup.appendChild(doc.createXULElement("menuseparator"));
                     const mi: any = doc.createXULElement("menuitem");
                     mi.setAttribute("label", el.getAttribute("label") || "");
@@ -14725,7 +14742,11 @@ class _ReaderMixin {
                     if (local) {
                         try { el.hidden = true; el.setAttribute("data-wv-hamburger-promoted", "true"); } catch (e2) {}
                     }
-                }
+                };
+                appendPromoted({ ids: ["menu_addons"], sepBefore: true });                 // Plugins
+                appendPromoted({ ids: ["menu_EditPreferencesItem"], sepBefore: true });    // Settings
+                for (const src of sources.filter(isAppMenu)) appendMirrorSubmenu(src);     // Tools ▸ Help ▸
+                appendPromoted({ ids: ["menu_fileQuitItemWin", "menu_fileQuitItemUnix"], sepBefore: true }); // Exit
             } catch (e2) { Zotero.debug("[Weavero][hamburger] promote err: " + e2); }
             // Mount the popup. Prefer an existing <popupset>; fall back to
             // documentElement so it's at least in the doc.

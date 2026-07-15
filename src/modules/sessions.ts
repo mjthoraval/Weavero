@@ -1257,12 +1257,16 @@ class _TabSessionsMixin {
                 }
                 if (tabs.length) sections.push({ label, libraryTab, tabs, kind: w.kind === "reader" ? "reader" : "main" });
             }
-            if (!sections.length) return;
             // Render the windows (each a left-line scope) straight into `container`
             // — the caller's session box body. The box itself is the session scope.
-            (this as any)._wvTabsMenuRenderSections(doc, container, panel, sections,
-                { header: "wv-sessmenu-winhdr", row: "wv-sessmenu-tabrow", lib: "wv-sessmenu-liblbl", scope: "wv-sessmenu-winscope" },
-                "sess|" + (sess.id || ""));
+            if (sections.length) {
+                (this as any)._wvTabsMenuRenderSections(doc, container, panel, sections,
+                    { header: "wv-sessmenu-winhdr", row: "wv-sessmenu-tabrow", lib: "wv-sessmenu-liblbl", scope: "wv-sessmenu-winscope" },
+                    "sess|" + (sess.id || ""));
+            }
+            // Saved windows belonging to this session render as parked window
+            // boxes below the session's own windows.
+            try { (this as any)._wvSavedWindowsRenderInto(doc, container, panel, sess.id, "sess"); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionRenderTabRows err: " + e); }
     }
 

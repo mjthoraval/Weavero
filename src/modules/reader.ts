@@ -1959,6 +1959,7 @@ class _ReaderMixin {
             try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
             // Menubar parity: add the Tools/Help menus readers lack.
             try { this._wvEnsureReaderMenubarExtras(win); } catch (e) {}
+            try { (this as any)._wvWireNewWindowShortcut(win); } catch (e) {}
             // Insert the hamburger button just left of the window controls.
             // The menubar is hidden in this mode so the hamburger is the
             // always-available access point to those menus.
@@ -3485,6 +3486,7 @@ class _ReaderMixin {
             try { this._wvWireNoteMenubarAltReveal(win, menubar); } catch (e) {}
             try { this._wvEnsureReaderControlsFollowMenu(win); } catch (e) {}
             try { this._wvEnsureReaderMenubarExtras(win); } catch (e) {}
+            try { (this as any)._wvWireNewWindowShortcut(win); } catch (e) {}
 
             // Hamburger.
             try {
@@ -14481,7 +14483,7 @@ class _ReaderMixin {
                 mkTop("New Main Window", () => {
                     const p: any = liveP();
                     if (p) p._wvOpenEmptyMainWindow();
-                });
+                }, ACCEL + "N");
                 popup.appendChild(doc.createXULElement("menuseparator"));
             } catch (e2) { Zotero.debug("[Weavero][hamburger] top entries err: " + e2); }
             for (const src of sources) {

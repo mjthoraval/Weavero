@@ -3855,6 +3855,7 @@ class WeaveroPlugin {
             for (const w of all) {
                 try { (this as any)._wvPatchItemDetailsTabSelect(w); } catch (e) {}
                 try { (this as any)._wvWireMainNewTabShortcut(w); } catch (e) {}
+                try { (this as any)._wvWireNewWindowShortcut(w); } catch (e) {}
             }
         } catch (e) {}
         // Window-type title glyphs (opt-in) + per-window taskbar icons on
@@ -3935,6 +3936,7 @@ class WeaveroPlugin {
             // Ctrl+T → "open a library item" picker (reader windows wire
             // theirs at strip build).
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
+            try { (this as any)._wvWireNewWindowShortcut(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
             try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
             // Taskbar badge via the poison ledger (NEVER the raw apply:

@@ -6801,6 +6801,11 @@ class _TabsMixin {
                 geom: (this as any)._wvWindowGeom(win),
                 glyph: (win as any)._wvTitleGlyphIdx != null ? (win as any)._wvTitleGlyphIdx : null,
                 wvMainState,
+                // A saved window belongs to the session it was saved from
+                // (null = the unnamed/current scope) and renders inside
+                // that session's block in the tabs menu.
+                sessionId: (this as any)._wvTabSessionGetActiveId
+                    ? (this as any)._wvTabSessionGetActiveId() : null,
                 savedAt: Date.now(),
             };
             const p: any = this as any;
@@ -6895,71 +6900,219 @@ class _TabsMixin {
         } catch (e) {}
     }
 
-    /** "Saved Windows" section of the tabs menu — rendered after the
-     *  saved-sessions section, styled with the same row classes. */
+    /** Section descriptors for the saved windows belonging to `sessionId`
+     *  (null = the unnamed/current scope; pre-tagging entries count as
+     *  current). Same tab shape the saved-session renderer synthesizes,
+     *  so the shared window-box renderer draws saved windows exactly
+     *  like the active ones. */
+    _wvSavedWindowsSections(sessionId: any) {
+        const sections: any[] = [];
+        try {
+            const entries = this._wvSavedWindowsList()
+                .filter((e: any) => (e.sessionId || null) === (sessionId || null));
+            for (const e of entries) {
+                const tabs: any[] = [];
+                for (const r of (e.tabs || [])) {
+                    const isMainRec = e.kind === "main";
+                    if (isMainRec && r.type === "library") continue;
+                    const iid = isMainRec ? (r && r.data && r.data.itemID) : r.itemID;
+                    if (iid == null) continue;
+                    const item = Zotero.Items.get(iid);
+                    if (!item) continue;
+                    const isNote = isMainRec ? String(r.type || "").indexOf("note") === 0 : !!r.isNote;
+                    tabs.push({
+                        item,
+                        title: r.title || (item as any).getDisplayTitle(),
+                        // Additive single-document open, like the session tab
+                        // rows — the saved window itself stays parked.
+                        onClick: () => {
+                            try {
+                                if (isNote) {
+                                    const mw: any = Zotero.getMainWindow();
+                                    if (mw && mw.ZoteroPane) mw.ZoteroPane.openNote(iid, { openInWindow: false });
+                                } else {
+                                    (Zotero.Reader as any).open(iid, null, { openInWindow: false, allowDuplicate: true });
+                                }
+                            } catch (er) {}
+                        },
+                    });
+                }
+                if (!tabs.length) continue;
+                let libraryTab: any = null;
+                if (e.kind === "main") {
+                    libraryTab = {
+                        title: "My Library",
+                        iconFullClass: "icon icon-css icon-library tab-icon",
+                        onClick: () => {
+                            try {
+                                const mw: any = Zotero.getMainWindows()[0];
+                                if (mw) { mw.focus(); mw.Zotero_Tabs.select("zotero-pane"); }
+                            } catch (er) {}
+                        },
+                    };
+                }
+                sections.push({
+                    label: e.name, libraryTab, tabs,
+                    kind: e.kind === "reader" ? "reader" : "main",
+                    savedId: e.id,
+                });
+            }
+        } catch (er) {}
+        return sections;
+    }
+
+    _wvEnsureSavedWindowStyles(doc: any) {
+        try {
+            if (doc.getElementById("wv-savedwin-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-savedwin-styles";
+            style.textContent = [
+                /* Parked look — present but visibly not live. */
+                ".wv-savedwin-scope { opacity: 0.72; }",
+                ".wv-savedwin-scope:hover { opacity: 1; }",
+                /* Section header separating parked windows from the live ones. */
+                ".wv-savedwin-sechdr {",
+                "  margin: 6px 4px 2px; padding-top: 4px;",
+                "  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);",
+                "  font-size: 0.85em; font-weight: 600; opacity: 0.65;",
+                "}",
+                /* The header's reopen affordance. */
+                ".wv-savedwin-reopen {",
+                "  margin-inline-start: 6px; cursor: pointer; opacity: 0.7;",
+                "  padding: 0 4px; user-select: none;",
+                "}",
+                ".wv-savedwin-reopen:hover { opacity: 1; }",
+            ].join("\n");
+            (doc.head || doc.documentElement).appendChild(style);
+        } catch (e) {}
+    }
+
+    /** Render the saved-window boxes for `sessionId` into `container` —
+     *  the shared renderer the live windows use, plus the parked look,
+     *  a ↗ reopen button and a Reopen / Delete context menu. */
+    _wvSavedWindowsRenderInto(doc: any, container: any, panel: any, sessionId: any, keyPrefix: string) {
+        try {
+            const sections = this._wvSavedWindowsSections(sessionId);
+            if (!sections.length) return;
+            this._wvEnsureSavedWindowStyles(doc);
+            // A separate, labelled section — parked windows must not read
+            // as part of the active-windows list (user request 2026-07-15).
+            const sechdr = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            sechdr.className = "wv-savedwin-sechdr";
+            sechdr.textContent = "Saved Windows";
+            container.appendChild(sechdr);
+            const already = container.querySelectorAll(".wv-savedwin-scope").length;
+            // Collapsed by default (user request 2026-07-15): seed each
+            // box's collapse key ONCE per session, so the twisty still
+            // expands it and that choice sticks across panel opens.
+            const kp = "savedwin|" + keyPrefix + "|" + (sessionId || "cur");
+            {
+                const p: any = this as any;
+                p._wvSavedWinSeeded = p._wvSavedWinSeeded || new Set();
+                p._wvTabsMenuCollapsedWindows = p._wvTabsMenuCollapsedWindows || new Set();
+                for (const sec of sections) {
+                    const key = kp + "|" + sec.label;
+                    if (!p._wvSavedWinSeeded.has(key)) {
+                        p._wvSavedWinSeeded.add(key);
+                        p._wvTabsMenuCollapsedWindows.add(key);
+                    }
+                }
+            }
+            this._wvTabsMenuRenderSections(doc, container, panel, sections,
+                { header: "wv-savedwin-winhdr", row: "wv-savedwin-tabrow", lib: "wv-savedwin-liblbl", scope: "wv-savedwin-scope" },
+                kp);
+            const scopes = [...container.querySelectorAll(".wv-savedwin-scope")].slice(already);
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const refresh = () => {
+                try {
+                    if (typeof (panel as any).refreshList === "function") (panel as any).refreshList();
+                    else { const lp: any = live(); if (lp) lp._wvRegroupTabsMenu(panel); }
+                } catch (er) {}
+            };
+            scopes.forEach((scope: any, i: number) => {
+                const sec: any = sections[i];
+                if (!sec) return;
+                const hdr = scope.querySelector(".wv-savedwin-winhdr");
+                if (!hdr) return;
+                const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+                btn.className = "wv-savedwin-reopen";
+                btn.textContent = "↗";
+                btn.setAttribute("title", "Reopen this saved window");
+                btn.addEventListener("click", (ev: any) => {
+                    try {
+                        ev.stopPropagation(); ev.preventDefault();
+                        const lp: any = live();
+                        if (!lp) return;
+                        try { (panel as any).hidePopup && (panel as any).hidePopup(); } catch (er) {}
+                        lp._wvSavedWindowReopen(sec.savedId);
+                    } catch (er) {}
+                });
+                hdr.appendChild(btn);
+                hdr.addEventListener("contextmenu", (ev: any) => {
+                    try {
+                        ev.preventDefault(); ev.stopPropagation();
+                        const lp: any = live();
+                        if (!lp) return;
+                        let pop: any = doc.getElementById("wv-savedwin-context");
+                        if (pop) pop.remove();
+                        pop = doc.createXULElement("menupopup");
+                        pop.id = "wv-savedwin-context";
+                        const mk = (lbl: string, fn: any) => {
+                            const mi = doc.createXULElement("menuitem");
+                            mi.setAttribute("label", lbl);
+                            mi.addEventListener("command", () => { try { fn(); } catch (er2) {} });
+                            pop.appendChild(mi);
+                        };
+                        mk("Reopen Window", () => {
+                            try { (panel as any).hidePopup && (panel as any).hidePopup(); } catch (er2) {}
+                            lp._wvSavedWindowReopen(sec.savedId);
+                        });
+                        mk("Delete Saved Window", async () => {
+                            await lp._wvSavedWindowDelete(sec.savedId);
+                            refresh();
+                        });
+                        (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+                        pop.openPopupAtScreen(ev.screenX, ev.screenY, true);
+                    } catch (er) {}
+                });
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvSavedWindowsRenderInto err: " + e); }
+    }
+
+    /** Current-session saved windows — rendered INSIDE the current-session
+     *  scope, right after the live window boxes, so parked windows read as
+     *  part of the session they belong to. Saved windows of OTHER sessions
+     *  render inside their session's box (hook in
+     *  _wvTabSessionRenderTabRows). */
     _wvSavedWindowsMenuSection(panel: any) {
         try {
             this._wvSavedWindowsInit();   // fire-and-forget; empty until loaded
             const doc = panel.ownerDocument;
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;
-            for (const el of list.querySelectorAll(".wv-savedwin-header, .wv-savedwin-row")) el.remove();
-            const saved = this._wvSavedWindowsList();
-            if (!saved.length) return;
-            try { (this as any)._wvEnsureTabSessionStyles(doc); } catch (e) {}
-            const HTML_NS = "http://www.w3.org/1999/xhtml";
-            const hdr = doc.createElementNS(HTML_NS, "div");
-            hdr.className = "wv-sessmenu-header wv-savedwin-header";
-            hdr.textContent = "Saved Windows";
-            list.appendChild(hdr);
-            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            for (const e of saved) {
-                const row = doc.createElementNS(HTML_NS, "div");
-                row.className = "wv-sessmenu-row wv-savedwin-row";
-                const mark = doc.createElementNS(HTML_NS, "span");
-                const color = WV_WIN_BADGE_COLORS[(e.glyph || 0) % WV_WIN_BADGE_COLORS.length];
-                mark.style.cssText = "display:inline-block;width:10px;height:10px;margin-inline-end:6px;"
-                    + "background:" + color + ";"
-                    + "border-radius:" + (e.kind === "reader" ? "50%" : "2px") + ";";
-                const label = doc.createElementNS(HTML_NS, "span");
-                label.textContent = e.name + "  (" + (e.count != null ? e.count : (e.tabs || []).length) + ")";
-                row.append(mark, label);
-                row.addEventListener("click", (ev: any) => {
-                    try {
-                        ev.stopPropagation();
-                        const lp: any = live();
-                        if (!lp) return;
-                        try { panel.hidePopup && panel.hidePopup(); } catch (er) {}
-                        lp._wvSavedWindowReopen(e.id);
-                    } catch (er) {}
-                });
-                row.addEventListener("contextmenu", (ev: any) => {
-                    try {
-                        ev.preventDefault(); ev.stopPropagation();
-                        const lp: any = live();
-                        if (!lp) return;
-                        const d = row.ownerDocument;
-                        let pop: any = d.getElementById("wv-savedwin-context");
-                        if (pop) pop.remove();
-                        pop = d.createXULElement("menupopup");
-                        pop.id = "wv-savedwin-context";
-                        const mk = (lbl: string, fn: any) => {
-                            const mi = d.createXULElement("menuitem");
-                            mi.setAttribute("label", lbl);
-                            mi.addEventListener("command", () => { try { fn(); } catch (er2) {} });
-                            pop.appendChild(mi);
-                        };
-                        mk("Reopen Window", () => { try { panel.hidePopup && panel.hidePopup(); } catch (er2) {} lp._wvSavedWindowReopen(e.id); });
-                        mk("Delete Saved Window", async () => {
-                            await lp._wvSavedWindowDelete(e.id);
-                            try { lp._wvSavedWindowsMenuSection(panel); } catch (er2) {}
-                        });
-                        (d.querySelector("popupset") || d.documentElement).appendChild(pop);
-                        pop.openPopupAtScreen(ev.screenX, ev.screenY, true);
-                    } catch (er) {}
-                });
-                list.appendChild(row);
-            }
+            for (const el of list.querySelectorAll(".wv-savedwin-holder, .wv-savedwin-header, .wv-savedwin-row")) el.remove();
+            const activeId = (this as any)._wvTabSessionGetActiveId
+                ? (this as any)._wvTabSessionGetActiveId() : null;
+            // One-time adoption: entries saved before session tagging (no
+            // sessionId KEY, as opposed to an explicit null) join the
+            // session that's active when they're first rendered — else a
+            // pre-tagging save would silently vanish while a session is on.
+            try {
+                let migrated = false;
+                for (const e of this._wvSavedWindowsList()) {
+                    if (!("sessionId" in e)) { (e as any).sessionId = activeId; migrated = true; }
+                }
+                if (migrated) this._wvSavedWindowsPersist();
+            } catch (e) {}
+            const body = list.querySelector(".wv-cursess-scope > .wv-sess-body");
+            const container = body || list;
+            const holder = doc.createElement("div");
+            holder.className = "wv-savedwin-holder";
+            // A separate section at the END of the session block — after the
+            // active windows and the tab-groups section, never among them.
+            container.appendChild(holder);
+            this._wvSavedWindowsRenderInto(doc, holder, panel, activeId, "cur");
+            if (!holder.children.length) holder.remove();
         } catch (e) { Zotero.debug("[Weavero] _wvSavedWindowsMenuSection err: " + e); }
     }
 

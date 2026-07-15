@@ -868,6 +868,27 @@ class _PaneMixin {
      *  binds nothing to accel+T natively (verified live — no <key>).
      *  Idempotent per window; capture phase so it fires with focus
      *  anywhere in the window. */
+    /** Ctrl+N (⌘N on macOS) → open a new main window, Firefox-style
+     *  (user request 2026-07-15). Wired on mains AND reader/note
+     *  windows; Zotero binds nothing to accel+N natively (verified
+     *  live — no <key> carries it). */
+    _wvWireNewWindowShortcut(win: any) {
+        try {
+            if (!win || (win as any)._wvNewWindowKeyWired) return;
+            (win as any)._wvNewWindowKeyWired = true;
+            win.addEventListener("keydown", (ke: any) => {
+                try {
+                    const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                    if (!accel || ke.shiftKey || ke.altKey
+                        || String(ke.key).toLowerCase() !== "n") return;
+                    ke.preventDefault(); ke.stopPropagation();
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live && !live._wvDestroyed) live._wvOpenEmptyMainWindow();
+                } catch (e2) {}
+            }, true);
+        } catch (e) {}
+    }
+
     _wvWireMainNewTabShortcut(win: any) {
         try {
             if (!win || (win as any)._wvMainNewTabKeyWired) return;

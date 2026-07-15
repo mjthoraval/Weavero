@@ -13852,6 +13852,9 @@ class _ReaderMixin {
                 const ak = srcMenu && srcMenu.getAttribute("accesskey");
                 if (ak) menu.setAttribute("accesskey", ak);
                 const popup = doc.createXULElement("menupopup");
+                // The hamburger's menubar scan keys on popup ids (it
+                // cascades the live popups by id) — no id, no entry.
+                popup.id = id + "-popup";
                 popup.addEventListener("popupshowing", (ev: any) => {
                     if (ev.target !== popup) return;
                     try {
@@ -14301,30 +14304,42 @@ class _ReaderMixin {
             // Settings and Plugins as first-class items, Exit alone at the
             // very bottom — Firefox's app menu doesn't mirror the menu bar
             // either. Each entry triggers the LIVE native menuitem
-            // (doCommand → locale-correct behaviour) and the original is
-            // hidden inside its cascade while the hamburger owns the menus
-            // (unhidden by the compact-title-bar teardown). Reader windows
-            // lack these ids → loop no-ops there.
+            // (doCommand → locale-correct behaviour). In MAIN windows the
+            // item is local and gets hidden inside its cascade while the
+            // hamburger owns the menus (unhidden by the compact-title-bar
+            // teardown). Reader/note windows lack these ids → fall back to
+            // the MAIN window's items, resolved at CLICK time (the wiring
+            // main may be gone by then), and never hide the main window's
+            // originals from here (menubar-parity work, 2026-07-15).
             try {
                 const promote = [
                     { ids: ["menu_EditPreferencesItem"], sepBefore: true },   // Settings
                     { ids: ["menu_addons"], sepBefore: false },               // Plugins
                     { ids: ["menu_fileQuitItemWin", "menu_fileQuitItemUnix"], sepBefore: true }, // Exit
                 ];
+                const resolveIn = (d: any, ids: string[]) => {
+                    const els = ids.map((id: string) => d && d.getElementById(id)).filter(Boolean);
+                    return (els.find((x: any) => !x.hidden) || els[0]) || null;
+                };
                 for (const spec of promote) {
-                    const els = spec.ids.map((id: string) => doc.getElementById(id)).filter(Boolean);
-                    const el: any = els.find((x: any) => !x.hidden) || els[0];
+                    let el: any = resolveIn(doc, spec.ids);
+                    const local = !!el;
+                    if (!el) {
+                        const m = Zotero.getMainWindow && Zotero.getMainWindow();
+                        if (m && !m.closed) el = resolveIn(m.document, spec.ids);
+                    }
                     if (!el) continue;
                     if (spec.sepBefore) popup.appendChild(doc.createXULElement("menuseparator"));
                     const mi: any = doc.createXULElement("menuitem");
                     mi.setAttribute("label", el.getAttribute("label") || "");
                     // Shortcut hint, Firefox-style: reuse the native item's
-                    // acceltext, or compose it from its <key> reference.
+                    // acceltext, or compose it from its <key> reference
+                    // (looked up in the item's OWN document).
                     try {
                         let accel = el.getAttribute("acceltext") || "";
                         if (!accel) {
                             const keyEl = el.getAttribute("key")
-                                ? doc.getElementById(el.getAttribute("key")) : null;
+                                ? el.ownerDocument.getElementById(el.getAttribute("key")) : null;
                             if (keyEl) {
                                 const mods = (keyEl.getAttribute("modifiers") || "")
                                     .split(/[\s,]+/).filter(Boolean)
@@ -14340,12 +14355,25 @@ class _ReaderMixin {
                         }
                         if (accel) mi.setAttribute("acceltext", accel);
                     } catch (e3) {}
+                    const specIds = spec.ids;
                     mi.addEventListener("command", () => {
                         try { popup.hidePopup(); } catch (e2) {}
-                        try { el.doCommand(); } catch (e2) {}
+                        try {
+                            let t: any = resolveIn(doc, specIds);
+                            if (!t) {
+                                const m = Zotero.getMainWindow && Zotero.getMainWindow();
+                                if (m && !m.closed) t = resolveIn(m.document, specIds);
+                            }
+                            if (t) t.doCommand();
+                        } catch (e2) {}
                     });
                     popup.appendChild(mi);
-                    try { el.hidden = true; el.setAttribute("data-wv-hamburger-promoted", "true"); } catch (e2) {}
+                    // Hide the original ONLY when it lives in this window —
+                    // a reader hamburger must not hide the main window's
+                    // menu items.
+                    if (local) {
+                        try { el.hidden = true; el.setAttribute("data-wv-hamburger-promoted", "true"); } catch (e2) {}
+                    }
                 }
             } catch (e2) { Zotero.debug("[Weavero][hamburger] promote err: " + e2); }
             // Mount the popup. Prefer an existing <popupset>; fall back to

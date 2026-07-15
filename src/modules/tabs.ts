@@ -7205,7 +7205,18 @@ class _TabsMixin {
      *  _wvTabSessionRenderTabRows). */
     _wvSavedWindowsMenuSection(panel: any) {
         try {
-            this._wvSavedWindowsInit();   // fire-and-forget; empty until loaded
+            // Normally loaded eagerly at startup; when the FIRST open
+            // still catches the store mid-load, re-render this section
+            // once the entries land (the panel refresh path is
+            // idempotent, and the user sees the section pop in).
+            const p0: any = this as any;
+            if (!p0._wvSavedWinDoc) {
+                this._wvSavedWindowsInit().then(() => {
+                    try {
+                        if (this._wvSavedWindowsList().length) this._wvSavedWindowsMenuSection(panel);
+                    } catch (e) {}
+                });
+            }
             const doc = panel.ownerDocument;
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!list) return;

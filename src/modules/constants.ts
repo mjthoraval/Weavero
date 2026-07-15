@@ -1154,6 +1154,14 @@ export const PLUGIN_CSS = [
     "  padding: 4px 6px; min-width: 26px;",
     "  justify-content: center; gap: 0;",
     "}",
+    /* Text-labelled has-field chips (PMID / PMCID): two identical
+       icons were indistinguishable (user report 2026-07-15), so these
+       render their NAME instead — same treatment as the Selection
+       Target chips. */
+    ".wv-filter-opt-text {",
+    "  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;",
+    "  padding: 4px 7px;",
+    "}",
     // The link SVG (built by `_makeLinkSvg`) is sized `1em × 1em` by
     // default so it scales with surrounding text in reader/annotation
     // overlays. Inside a filter popup tile the surrounding text is 12px

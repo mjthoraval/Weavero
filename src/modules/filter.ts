@@ -71,6 +71,28 @@ function dbg(...args: any[]) {
     try { if (Zotero.Prefs.get("weavero.debug")) (Zotero.debug as any)(...args); } catch (_) {}
 }
 
+// PubMed identifiers live in the Extra field by Zotero convention
+// ("PMID: 123456" / "PMCID: PMC123456" — the PubMed translator's
+// format). Shared by the Has PMID / Has PMCID filters.
+const WV_PMID_RE = /^\s*PMID:\s*\d+/mi;
+const WV_PMCID_RE = /^\s*PMCID:\s*PMC\d+/mi;
+function wvExtraHasId(item: any, re: RegExp): boolean {
+    try {
+        const extra = item && item.getField ? String(item.getField("extra") || "") : "";
+        return re.test(extra);
+    } catch (e) { return false; }
+}
+// PMID/PMCID are dedicated fields since Zotero 9 (see the acknowledgment
+// in pane.ts's identifier columns; forum 132715 + zotero/zotero#5831):
+// check the field first, then the legacy Extra line.
+function wvItemHasPubmedId(item: any, field: string, re: RegExp): boolean {
+    try {
+        let v = "";
+        try { v = String(item.getField(field) || ""); } catch (e) {}
+        return !!v.trim().length || wvExtraHasId(item, re);
+    } catch (e) { return false; }
+}
+
 const _ANNOTATION_COLORS_DATA = [
     { value: "#ffd400", label: "Yellow" },
     { value: "#ff6666", label: "Red" },
@@ -2111,6 +2133,8 @@ class _FilterMixin {
             // true / false` for off / include / exclude.
             hasAbstract: null,
             hasDOI: null,
+            hasPMID: null,
+            hasPMCID: null,
             hasURL: null,
             hasAttachment: null,
             // Attachment-targeting tri-state — file attachments only.
@@ -2155,6 +2179,8 @@ class _FilterMixin {
         if (group.standaloneNote != null) return true;
         if (group.hasAbstract != null) return true;
         if (group.hasDOI != null) return true;
+        if (group.hasPMID != null) return true;
+        if (group.hasPMCID != null) return true;
         if (group.hasURL != null) return true;
         if (group.hasAttachment != null) return true;
         if (group.hasAnnotations != null) return true;
@@ -2244,7 +2270,8 @@ class _FilterMixin {
                 "annotationTypeExclude", "annotationHasComment",
                 "annotationAuthor", "annotationAuthorExclude"],
             attachment: ["attachmentFileType", "attachmentFileTypeExclude"],
-            parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI", "hasURL",
+            parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
+                "hasPMID", "hasPMCID", "hasURL",
                 "hasAttachment", "publication", "publicationExclude",
                 "readStatus", "readStatusExclude"],
         };
@@ -2867,6 +2894,14 @@ class _FilterMixin {
                     && String(item.getField("DOI") || "").trim().length);
                 if (v !== group.hasDOI) return false;
             }
+        }
+        if (group.hasPMID != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg && wvItemHasPubmedId(item, "PMID", WV_PMID_RE) !== group.hasPMID) return false;
+        }
+        if (group.hasPMCID != null) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg && wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) !== group.hasPMCID) return false;
         }
         if (group.hasURL != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
@@ -3690,6 +3725,12 @@ class _FilterMixin {
                 && String(root.getField("DOI") || "").trim().length);
             if (v !== group.hasDOI) return false;
         }
+        if (group.hasPMID != null) {
+            if ((isReg && wvItemHasPubmedId(root, "PMID", WV_PMID_RE)) !== group.hasPMID) return false;
+        }
+        if (group.hasPMCID != null) {
+            if ((isReg && wvItemHasPubmedId(root, "PMCID", WV_PMCID_RE)) !== group.hasPMCID) return false;
+        }
         if (group.hasURL != null) {
             const v = isReg && !!(root.getField
                 && String(root.getField("url") || "").trim().length);
@@ -3982,6 +4023,12 @@ class _FilterMixin {
                     && String(item.getField("DOI") || "").trim().length);
                 if (v === group.hasDOI) return true;
             }
+            if (group.hasPMID != null) {
+                if (wvItemHasPubmedId(item, "PMID", WV_PMID_RE) === group.hasPMID) return true;
+            }
+            if (group.hasPMCID != null) {
+                if (wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) === group.hasPMCID) return true;
+            }
             if (group.hasURL != null) {
                 const v = !!(item.getField
                     && String(item.getField("url") || "").trim().length);
@@ -4194,7 +4241,7 @@ class _FilterMixin {
         stem.style.marginInlineStart = "-16px";
         // 44% ≈ just below the cone/stem junction (y 6.7 of 16).
         stem.style.clipPath = "inset(44% 0 0 0)";
-        stem.style.fill = "light-dark(#0d8a80, #38c7b4)";
+        stem.style.fill = "light-dark(#c22f3e, #e0606e)";   // trial: Zotero-brand red (was teal #0d8a80/#38c7b4)
         stem.style.pointerEvents = "none";
         tbBtn.appendChild(stem);
         const dropmarker = doc.createXULElement("image");
@@ -5153,6 +5200,14 @@ class _FilterMixin {
             if (group.hasDOI != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
                     "hasDOI", "Has DOI"));
+            }
+            if (group.hasPMID != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasPMID", "Has PMID"));
+            }
+            if (group.hasPMCID != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasPMCID", "Has PMCID"));
             }
             if (group.hasURL != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
@@ -8267,12 +8322,18 @@ class _FilterMixin {
             btn.title = tip;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
-            const icon = doc.createElementNS(NS_HTML, "img");
-            icon.className = "wv-filter-svg";
-            icon.src = iconSrc;
-            icon.alt = label;
-            if (color) icon.style.color = color;
-            btn.appendChild(icon);
+            if (iconSrc) {
+                const icon = doc.createElementNS(NS_HTML, "img");
+                icon.className = "wv-filter-svg";
+                icon.src = iconSrc;
+                icon.alt = label;
+                if (color) icon.style.color = color;
+                btn.appendChild(icon);
+            } else {
+                // No distinct icon exists (PMID/PMCID) — the NAME is the chip.
+                btn.classList.add("wv-filter-opt-text");
+                btn.textContent = label;
+            }
             btn.addEventListener("click", (e) => {
                 e.stopPropagation();
                 const g = this._activeGroup();
@@ -8300,6 +8361,12 @@ class _FilterMixin {
         buildBtn("hasDOI", "Has DOI",
             "chrome://zotero/skin/16/universal/crossref.svg",
             "Has DOI — regular items with a DOI. Alt+click to exclude.");
+        buildBtn("hasPMID", "PMID", null,
+            "Has PMID — regular items with a PMID (field or Extra). "
+            + "Alt+click to exclude.");
+        buildBtn("hasPMCID", "PMCID", null,
+            "Has PMCID — regular items with a PMCID (field or Extra). "
+            + "Alt+click to exclude.");
         buildBtn("hasURL", "Has URL",
             "chrome://zotero/skin/16/universal/globe.svg",
             "Has URL — regular items with a URL field. "

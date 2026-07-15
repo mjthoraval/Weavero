@@ -44,9 +44,17 @@ const RP_TAG_ICON = "chrome://zotero/skin/16/universal/tag.svg";
 // filter funnels (which load the chrome SVG directly) without waiting
 // for `_wvReaderPrefetchIcons` to land. `context-fill` cooperates with
 // the parent IMG's `-moz-context-properties: fill` to inherit color.
+// Weavero identity: the funnel STEM is tinted teal (same treatment as
+// the library filter button in filter.ts — a mid-teal that reads in
+// both themes, since a data: URI can't consult light-dark()). The
+// second path repeats Zotero's artwork clipped below the cone/stem
+// junction (y=7 of 16).
+const RP_FUNNEL_PATH = "M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z";
 const RP_FUNNEL_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    + '<path fill-rule="evenodd" clip-rule="evenodd" d="M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z" fill="context-fill"/>'
+    + '<clipPath id="wvstem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + RP_FUNNEL_PATH + '" fill="context-fill"/>'
+    + '<path clip-path="url(#wvstem)" fill-rule="evenodd" clip-rule="evenodd" d="' + RP_FUNNEL_PATH + '" fill="#d04050"/>'
     + '</svg>');
 
 // Person glyph for Added By / Modified By chips — the same Font Awesome
@@ -744,9 +752,9 @@ class _ReaderPanelsMixin {
                     const iw = r._iframeWindow || (r._iframe && r._iframe.contentWindow);
                     const d = iw && iw.document;
                     if (!d) continue;
-                    const f = d.querySelector("." + RP_FILTER_BTN_CLASS + " img");
-                    const furi = this._wvReaderIconCache[RP_FUNNEL_ICON];
-                    if (f && furi) f.setAttribute("src", furi);
+                    // (The funnel BUTTON keeps its two-tone data URI —
+                    // the prefetched plain chrome funnel would erase the
+                    // teal stem identity, so no src swap here any more.)
                     const pop = d.getElementById(RP_FILTER_POPUP_ID);
                     if (pop) this._wvRenderReaderFilterPopup(r, d, pop);
                 }

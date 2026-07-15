@@ -1225,6 +1225,27 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    _getEnableDOIColumn() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableDOIColumn");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnablePMIDColumn() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enablePMIDColumn");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+    _getEnablePMCIDColumn() {
+        if (!this._getEnableVisualExtras()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enablePMCIDColumn");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
     _getEnableGroupLibraryGlyph() {
         if (!this._getEnableVisualExtras()) return false;
         try {
@@ -1924,7 +1945,9 @@ class WeaveroPlugin {
                 "enableTabsLibraryFilter", "enableTabsFileTypeFilter",
                 // Visual extras
                 "enableAnnotationsCountColumn", "enableTagsCountAuto",
-                "enableRelatedColumn", "enableGroupLibraryGlyph",
+                "enableRelatedColumn", "enableDOIColumn",
+                "enablePMIDColumn", "enablePMCIDColumn",
+                "enableGroupLibraryGlyph",
                 "enableAnnotationAddedBy", "enableAddedByColors",
                 // "Tabs and Windows" — the WHOLE section defaults ON (user choice,
                 // v0.14.1): tab groups, the title-bar replacement + its surfaces,
@@ -2011,6 +2034,11 @@ class WeaveroPlugin {
         // Warm the named-tab-sessions store too, so the "Sessions" tab menu is
         // populated by the time it's opened. Fire-and-forget; cached promise.
         try { this._wvTabSessionInit(); } catch (e) { Zotero.debug("[Weavero] _wvTabSessionInit err: " + e); }
+        // Saved-windows store: load EAGERLY so the first List-all-tabs
+        // open after a restart/reload already has the entries (lazy-only
+        // loading made the Saved Windows section miss its first render —
+        // user report 2026-07-15).
+        try { (this as any)._wvSavedWindowsInit(); } catch (e) {}
         // 0a. Patch Zotero.Utilities.Internal.openPreferences so EVERY
         //     Settings-window open (Edit -> Settings, Ctrl+,, plugin-
         //     triggered) uses a features string that gives the user
@@ -2321,8 +2349,11 @@ class WeaveroPlugin {
             "enableSelectionTarget",
             "enableTabsLibraryFilter",
             "enableTabsFileTypeFilter",
-            // Visual extras (no master, 2 flat children)
+            // Visual extras (no master, flat children)
             "enableAnnotationsCountColumn",
+            "enableDOIColumn",
+            "enablePMIDColumn",
+            "enablePMCIDColumn",
             "enableGroupLibraryGlyph",
         ]) {
             try {
@@ -3677,6 +3708,9 @@ class WeaveroPlugin {
                     // unregister all and re-register with the new gates.
                     if (data === "extensions.zotero.weavero.enableAnnotationsCountColumn"
                         || data === "extensions.zotero.weavero.enableRelatedColumn"
+                        || data === "extensions.zotero.weavero.enableDOIColumn"
+                        || data === "extensions.zotero.weavero.enablePMIDColumn"
+                        || data === "extensions.zotero.weavero.enablePMCIDColumn"
                         || data === "extensions.zotero.weavero.enableRelations") {
                         try {
                             this._unregisterItemTreeColumns();
@@ -3856,6 +3890,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvPatchItemDetailsTabSelect(w); } catch (e) {}
                 try { (this as any)._wvWireMainNewTabShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireNewWindowShortcut(w); } catch (e) {}
+                try { (this as any)._wvWireColumnPickerMark(w); } catch (e) {}
             }
         } catch (e) {}
         // Window-type title glyphs (opt-in) + per-window taskbar icons on
@@ -3937,6 +3972,7 @@ class WeaveroPlugin {
             // theirs at strip build).
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireNewWindowShortcut(_window); } catch (e) {}
+            try { (this as any)._wvWireColumnPickerMark(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
             try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
             // Taskbar badge via the poison ledger (NEVER the raw apply:

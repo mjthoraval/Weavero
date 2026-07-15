@@ -315,10 +315,10 @@ class _TabGroupsMixin {
                 "}",
                 /* Double class beats the sessions stylesheet's later
                    `.wv-winscope { margin: 0 0 6px }` shorthand, which
-                   zeroed the inset (measured live). 35px aligns the box
-                   header's dot with the active group rows inside the
-                   window boxes (1217 − 1182 measured 2026-07-15). */
-                ".wv-winscope.wv-tgmenu-scope { margin: 0 4px 4px 35px; }",
+                   zeroed the inset (measured live). 16px aligns the box header's dot with the active group
+                   rows' dots inside the window boxes (dot-to-dot 137 vs
+                   156 measured live 2026-07-15). */
+                ".wv-winscope.wv-tgmenu-scope { margin: 0 4px 4px 16px; }",
                 /* Hover-preview title: the group's FULL name (wraps). */
                 ".wv-tg-preview-title {",
                 "  display: flex; align-items: center; gap: 7px;",

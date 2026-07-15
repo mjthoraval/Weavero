@@ -2617,6 +2617,64 @@ class _PaneMixin {
      *  Auto-removed when the plugin is uninstalled via `pluginID`,
      *  but we also call `unregisterColumn` in `destroy()` so a hot
      *  plugin reload during dev cleanly recycles the column. */
+    /** Column-picker provenance mark (user request 2026-07-15): a small
+     *  Weavero logo at the END of the picker lines for Weavero-registered
+     *  columns, so their origin is visible at a glance. The picker popup
+     *  (#zotero-column-picker) is created fresh on every open — a
+     *  capture-phase popupshowing listener decorates its entries by
+     *  resolving each menuitem's colindex against the live tree columns. */
+    _wvWireColumnPickerMark(win: any) {
+        try {
+            if (!win || (win as any)._wvColPickWired) return;
+            (win as any)._wvColPickWired = true;
+            win.document.addEventListener("popupshowing", (ev: any) => {
+                try {
+                    const pop = ev.target;
+                    if (!pop || pop.id !== "zotero-column-picker") return;
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+                    lp._wvDecorateColumnPicker(win, pop);
+                } catch (e) {}
+            }, true);
+        } catch (e) {}
+    }
+
+    _wvDecorateColumnPicker(win: any, pop: any) {
+        try {
+            const doc = win.document;
+            this._wvEnsureColPickStyles(doc);
+            const iv: any = win.ZoteroPane && win.ZoteroPane.itemsView;
+            const cols = iv && iv.tree && iv.tree._getColumns ? iv.tree._getColumns() : null;
+            if (!cols) return;
+            // querySelectorAll descends into the "More Columns" submenu too.
+            for (const mi of pop.querySelectorAll("menuitem[colindex]")) {
+                const idx = parseInt(mi.getAttribute("colindex"), 10);
+                const col = cols[idx];
+                if (col && String(col.dataKey || "").indexOf("weavero") === 0) {
+                    mi.classList.add("wv-colpick-ours");
+                }
+            }
+        } catch (e) {}
+    }
+
+    _wvEnsureColPickStyles(doc: any) {
+        try {
+            if (doc.getElementById("wv-colpick-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-colpick-styles";
+            const logo = String((this as any)._rootURI || "") + "icons/icon.svg";
+            style.textContent = [
+                "menuitem.wv-colpick-ours::after {",
+                "  content: ''; display: inline-block;",
+                "  width: 11px; height: 11px;",
+                "  margin-inline-start: 7px; vertical-align: -1px;",
+                "  background: url('" + logo + "') center/contain no-repeat;",
+                "}",
+            ].join("\n");
+            (doc.head || doc.documentElement).appendChild(style);
+        } catch (e) {}
+    }
+
     _registerItemTreeColumns() {
         try {
             if (!Zotero.ItemTreeManager
@@ -2957,6 +3015,91 @@ class _PaneMixin {
             // per-column cells, so a column wouldn't help anyway.
             // We surface the annotation's "added by" by patching the
             // annotation row renderer (see `_ensureAnnotationRowPatched`).
+
+            // Identifier columns — DOI / PMID / PMCID (user request
+            // 2026-07-15). Prior art, acknowledged: the feature request
+            // and discussion at
+            // https://forums.zotero.org/discussion/132715/pmid-pmcid-in-extra-column
+            // and iagogv3's core PR adding native PMID/PMCID columns,
+            // https://github.com/zotero/zotero/pull/5831 (unmerged; it
+            // confirmed PMID/PMCID are DEDICATED item fields since
+            // Zotero 9 — field IDs 86/87). This implementation uses the
+            // plugin column API instead: each column reads the dedicated
+            // field first and falls back to the legacy "<ID>: …" line in
+            // Extra (pre-migration items and item types without the
+            // field). retorquere's zotero-pmcid-fetcher offers similar
+            // columns — see the foreign-column skip below.
+            const extraId = (item: any, re: RegExp) => {
+                try {
+                    const extra = item.getField ? String(item.getField("extra") || "") : "";
+                    const m = extra.match(re);
+                    return m ? m[1] : "";
+                } catch (e) { return ""; }
+            };
+            const idCols: any[] = [
+                { key: "weaveroDOI", label: "DOI", on: this._getEnableDOIColumn(),
+                    provider: (item: any) => {
+                        try {
+                            if (!item || !item.isRegularItem || !item.isRegularItem()) return "";
+                            let doi = "";
+                            try { doi = String(item.getField("DOI") || ""); } catch (e) {}
+                            return doi || extraId(item, /^\s*DOI:\s*(\S+)/mi);
+                        } catch (e) { return ""; }
+                    } },
+                { key: "weaveroPMID", label: "PMID", on: this._getEnablePMIDColumn(),
+                    provider: (item: any) => {
+                        try {
+                            if (!item || !item.isRegularItem || !item.isRegularItem()) return "";
+                            let v = "";
+                            try { v = String(item.getField("PMID") || ""); } catch (e) {}
+                            return v || extraId(item, /^\s*PMID:\s*(\d+)/mi);
+                        } catch (e) { return ""; }
+                    } },
+                { key: "weaveroPMCID", label: "PMCID", on: this._getEnablePMCIDColumn(),
+                    provider: (item: any) => {
+                        try {
+                            if (!item || !item.isRegularItem || !item.isRegularItem()) return "";
+                            let v = "";
+                            try { v = String(item.getField("PMCID") || ""); } catch (e) {}
+                            return v || extraId(item, /^\s*PMCID:\s*(PMC\d+)/mi);
+                        } catch (e) { return ""; }
+                    } },
+            ];
+            // Polite coexistence (user report 2026-07-15): another plugin
+            // may already provide the same identifier column — e.g.
+            // zotero-pmcid-fetcher registers PMID and PMCID. Skip ours
+            // when a foreign custom column ends in the same identifier,
+            // so the picker never lists duplicates; disable that plugin
+            // (or its columns) and Weavero's take over on the next
+            // register pass.
+            let foreignKeys: string[] = [];
+            try {
+                foreignKeys = ((Zotero.ItemTreeManager as any).getCustomColumns() || [])
+                    .map((c: any) => String(c.dataKey || ""))
+                    .filter((k: string) => k.indexOf("weavero") === -1);
+            } catch (e) {}
+            const foreignHas = (ident: string) =>
+                foreignKeys.some((k: string) => k.toUpperCase().endsWith("-" + ident.toUpperCase()));
+            for (const c of idCols) {
+                if (!c.on) continue;
+                if (foreignHas(c.label)) {
+                    this._dbg("[Weavero] skip " + c.label + " column — another plugin provides one");
+                    continue;
+                }
+                try {
+                    const k = (Zotero.ItemTreeManager as any).registerColumn({
+                        dataKey: c.key,
+                        label: c.label,
+                        pluginID: "weavero@mjthoraval",
+                        width: "90",
+                        minWidth: 40,
+                        showInColumnPicker: true,
+                        zoteroPersist: ["width", "hidden", "sortDirection"],
+                        dataProvider: c.provider,
+                    });
+                    if (k) this._weaveroColumnKeys.push(k);
+                } catch (e) {}
+            }
 
             this._dbg("[Weavero] columns registered: "
                 + this._weaveroColumnKeys.join(", "));

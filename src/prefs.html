@@ -607,7 +607,7 @@
     </html:div>
     <vbox class="wv-children" data-master="enableVisualExtras">
       <label><html:h3>Items-tree columns</html:h3></label>
-      <html:p class="wv-desc" style="margin-inline-start:0">Icon-only columns, hidden until you enable them from the column picker (right-click the items-tree header).</html:p>
+      <html:p class="wv-desc" style="margin-inline-start:0">Extra columns, hidden until you enable them from the column picker (right-click the items-tree header).</html:p>
       <checkbox label="“Annotations” column" native="true"
         preference="extensions.zotero.weavero.enableAnnotationsCountColumn"/>
       <html:p class="wv-desc">Count of annotations on attachments (summed across attachments on regular items).</html:p>
@@ -617,6 +617,15 @@
       <checkbox label="“Related” column" native="true"
         preference="extensions.zotero.weavero.enableRelatedColumn"/>
       <html:p class="wv-desc">Count of related items per row.</html:p>
+      <checkbox label="“DOI” column" native="true"
+        preference="extensions.zotero.weavero.enableDOIColumn"/>
+      <html:p class="wv-desc">DOI from the DOI field, falling back to a “DOI:” line in Extra.</html:p>
+      <checkbox label="“PMID” column" native="true"
+        preference="extensions.zotero.weavero.enablePMIDColumn"/>
+      <html:p class="wv-desc">PubMed ID from a “PMID:” line in Extra.</html:p>
+      <checkbox label="“PMCID” column" native="true"
+        preference="extensions.zotero.weavero.enablePMCIDColumn"/>
+      <html:p class="wv-desc">PubMed Central ID from a “PMCID:” line in Extra.</html:p>
 
       <separator class="thin"/>
       <label><html:h3>Items list &amp; tabs</html:h3></label>

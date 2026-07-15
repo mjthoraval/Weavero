@@ -4621,6 +4621,12 @@ class _PaneMixin {
                 zoteroTitleBar.insertBefore(postSpacer, buttonbox);
             }
             stash.postSpacer = postSpacer;
+            // The anchor/colour window indicator renders at its library-tab
+            // FALLBACK spot when it runs before this spacer exists (its CSS
+            // is derived from a hasSpacer probe at update time). Re-derive
+            // it now that the preferred top-right slot is available (user
+            // report 2026-07-15: mark stuck beside the library tab).
+            try { (this as any)._wvUpdateMainWindowIndicator(win); } catch (e) {}
 
             // 2) Leave the icon container alone — it lives inside `#titlebar`,
             //    so it collapses naturally when our :has() CSS rule hides

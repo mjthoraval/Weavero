@@ -1780,156 +1780,165 @@ class _TabsMixin {
         } catch (e) { return "Window ?"; }
     }
 
-    /** Rename-window UI — a small anchored panel, not a modal prompt:
-     *  the input pre-fills with the CURRENT effective name (custom or
-     *  default — never empty), and an ↺ button applies the default
-     *  name in a single click (user requests 2026-07-15; the earlier
-     *  prompt needed a sentence of instructions to explain reverting).
-     *  A typed value equal to the default is stored as "no custom
-     *  title", so the number keeps tracking window order. */
-    _wvWindowRenamePrompt(targetWin: any, panel: any) {
-        try {
-            const parentWin = (panel && panel.ownerGlobal) || targetWin;
-            const doc = parentWin.document;
-            const HTML = "http://www.w3.org/1999/xhtml";
-            const defName = this._wvWindowDefaultName(targetWin);
-            const current = this._wvWindowCustomTitle(targetWin) || defName;
-            let pop: any = doc.getElementById("wv-rename-window-panel");
-            if (pop) pop.remove();                      // rebuild fresh each time
-            pop = doc.createXULElement("panel");
-            pop.id = "wv-rename-window-panel";
-            const wrap = doc.createElementNS(HTML, "div");
-            wrap.setAttribute("style", "display: flex; flex-direction: column; gap: 8px;"
-                + " padding: 10px 12px; min-width: 280px; font: menu;");
-            const title = doc.createElementNS(HTML, "div");
-            title.setAttribute("style", "font-weight: 600;");
-            title.textContent = "Rename Window";
-            wrap.appendChild(title);
-            const row = doc.createElementNS(HTML, "div");
-            row.setAttribute("style", "display: flex; align-items: center; gap: 6px;");
-            const input: any = doc.createElementNS(HTML, "input");
-            input.setAttribute("type", "text");
-            input.value = current;
-            input.setAttribute("style", "flex: 1 1 auto; min-width: 180px; padding: 4px 6px;"
-                + " border: 1px solid rgba(127,127,127,0.45); border-radius: 4px;"
-                + " background: transparent; color: inherit; font: inherit;");
-            row.appendChild(input);
-            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const apply = (customOrNull: any) => {
-                try {
-                    const p: any = live();
-                    if (p) {
-                        p._wvWindowSetCustomTitle(targetWin, customOrNull);
-                        try {
-                            if (panel && typeof panel.refreshList === "function") panel.refreshList();
-                            else p._wvRegroupTabsMenu(panel);
-                        } catch (e) { try { p._wvRegroupTabsMenu(panel); } catch (e2) {} }
-                    }
-                } catch (e) {}
-                try { pop.hidePopup(); } catch (e) {}
-            };
-            // ↺ — one click applies the default name and closes.
-            const reset: any = doc.createElementNS(HTML, "button");
-            reset.textContent = "↺";
-            reset.setAttribute("title", "Use the default name (" + defName + ")");
-            reset.setAttribute("style", "flex: 0 0 auto; padding: 3px 8px; border-radius: 4px;"
-                + " border: 1px solid rgba(127,127,127,0.45); background: transparent;"
-                + " color: inherit; font: inherit; cursor: pointer;");
-            reset.addEventListener("click", () => apply(null));
-            row.appendChild(reset);
-            wrap.appendChild(row);
-            const btnRow = doc.createElementNS(HTML, "div");
-            btnRow.setAttribute("style", "display: flex; justify-content: flex-end; gap: 6px;");
-            const mkBtn = (label: string, fn: () => void, primary?: boolean) => {
-                const b: any = doc.createElementNS(HTML, "button");
-                b.textContent = label;
-                b.setAttribute("style", "padding: 3px 12px; border-radius: 4px; cursor: pointer;"
-                    + " border: 1px solid rgba(127,127,127,0.45); font: inherit;"
-                    + (primary ? " background: #3d6fe0; color: #fff;"
-                        : " background: transparent; color: inherit;"));
-                b.addEventListener("click", fn);
-                btnRow.appendChild(b);
-            };
-            const submit = () => {
-                const v = String(input.value || "").trim();
-                apply((!v || v === defName) ? null : v);
-            };
-            mkBtn("OK", submit, true);
-            mkBtn("Cancel", () => { try { pop.hidePopup(); } catch (e) {} });
-            wrap.appendChild(btnRow);
-            input.addEventListener("keydown", (ev: any) => {
-                if (ev.key === "Enter") { ev.preventDefault(); submit(); }
-                else if (ev.key === "Escape") { ev.preventDefault(); try { pop.hidePopup(); } catch (e) {} }
-            });
-            pop.appendChild(wrap);
-            pop.addEventListener("popuphidden", () => { try { pop.remove(); } catch (e) {} }, { once: true });
-            pop.addEventListener("popupshown", () => {
-                try { input.focus(); input.select(); } catch (e) {}
-            }, { once: true });
-            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
-            // Centered-ish on the parent window (the caller is a context
-            // menu item, so there's no anchor element to point an arrow at).
-            const px = parentWin.screenX + Math.max(60, (parentWin.outerWidth - 320) / 2);
-            const py = parentWin.screenY + Math.max(60, parentWin.outerHeight / 3);
-            pop.openPopupAtScreen(px, py, false);
-        } catch (e) { Zotero.debug("[Weavero] _wvWindowRenamePrompt err: " + e); }
-    }
+    // (_wvWindowRenamePrompt was removed 2026-07-16: the "Manage
+    //  Window" editor panel (_wvShowWindowEditor) replaced it as the
+    //  single rename surface — name field + one-click default reset.)
 
     /** The shared window actions — Convert, Save and Close, and the
      *  colour swatch row — appended to both the title-bar mark menu
      *  and the tabs-menu window-header menu (user request 2026-07-15:
      *  same options in both places). `panel` non-null refreshes the
      *  tabs menu after a recolour. */
-    _wvAppendWindowActionItems(pop: any, doc: any, win: any, isReader: boolean, panel: any) {
+    /** Window right-click editor — the window twin of the tab-group
+     *  chip editor's "Manage Tab Group" panel (user request
+     *  2026-07-15): title, labelled name field pre-filled with the
+     *  CURRENT effective name (Enter/change applies; the ↺ button
+     *  resets to the default in one click), the colour swatches, then
+     *  menu-style action rows (Convert / Save and Close / Move Window
+     *  to ▸). Serves BOTH entry points: the title-bar identity mark
+     *  and the tabs-menu window header. Gates: the last main window
+     *  offers neither Convert nor Save and Close nor Move (Zotero
+     *  must keep one main window); the anchor gets no swatches (its
+     *  mark is the ⚓). */
+    _wvShowWindowEditor(targetWin: any, isReader: boolean, menuWin: any, panel: any, e: any) {
         try {
+            const doc = menuWin.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const edPanel = (this as any)._wvTabGroupEnsurePanel(menuWin, "wv-window-editor");
+            const body = edPanel.querySelector(".wv-tg-panel-body");
+            while (body.firstChild) body.removeChild(body.firstChild);
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const isAnchor = !isReader && this._wvIsAnchorWindow(win);
-            // Convert — a reader/note window becomes a new main window
-            // carrying all its tabs, and vice versa. Zotero must always
-            // keep at least one main window, so the main→reader entry
-            // is omitted entirely for the last main window (user
-            // request 2026-07-15) — no other main window could take
-            // over as anchor. The convert functions keep their own
-            // guards (last main, no reader-able tab) for stale menus
-            // and other callers.
+            const isAnchor = !isReader && this._wvIsAnchorWindow(targetWin);
             const lastMain = !isReader && (Zotero.getMainWindows() || []).length < 2;
-            if (!lastMain) {
-                const conv: any = doc.createXULElement("menuitem");
-                conv.setAttribute("label", isReader ? "Convert to Main Window" : "Convert to Reader Window");
-                conv.addEventListener("command", () => {
-                    try {
-                        const p: any = live();
-                        if (!p) return;
-                        if (isReader) p._wvConvertReaderWindowToMain(win);
-                        else p._wvConvertMainWindowToReader(win);
-                    } catch (e2) {}
-                });
-                pop.appendChild(conv);
+            const refreshPanel = () => {
+                try {
+                    const p: any = live();
+                    if (!p) return;
+                    if (panel && typeof panel.refreshList === "function") panel.refreshList();
+                    else if (panel) p._wvRegroupTabsMenu(panel);
+                    p._wvTabsMenuRefreshOpenPanel();
+                } catch (er) {}
+            };
+
+            const title = doc.createElementNS(HTML, "div");
+            title.className = "wv-tg-title";
+            title.textContent = "Manage Window";
+            body.appendChild(title);
+
+            // Name — current effective name, never empty; ↺ = default.
+            const defName = this._wvWindowDefaultName(targetWin);
+            const nameLabel = doc.createElementNS(HTML, "div");
+            nameLabel.className = "wv-tg-label";
+            nameLabel.textContent = "Name";
+            body.appendChild(nameLabel);
+            const nameRow = doc.createElementNS(HTML, "div");
+            nameRow.className = "wv-tg-row";
+            const input: any = doc.createElementNS(HTML, "input");
+            input.className = "wv-tg-name-input";
+            input.value = this._wvWindowCustomTitle(targetWin) || defName;
+            input.setAttribute("placeholder", defName);
+            const applyName = () => {
+                try {
+                    const p: any = live();
+                    if (!p) return;
+                    const v = String(input.value || "").trim();
+                    p._wvWindowSetCustomTitle(targetWin, (!v || v === defName) ? null : v);
+                    refreshPanel();
+                } catch (er) {}
+            };
+            input.addEventListener("change", applyName);
+            input.addEventListener("keydown", (ev: any) => {
+                if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    applyName();
+                    try { edPanel.hidePopup(); } catch (er) {}
+                }
+            });
+            nameRow.appendChild(input);
+            const reset: any = doc.createElementNS(HTML, "button");
+            reset.className = "wv-tg-btn";
+            reset.textContent = "↺";
+            reset.setAttribute("title", "Use the default name (" + defName + ")");
+            reset.addEventListener("click", () => {
+                try {
+                    const p: any = live();
+                    if (p) p._wvWindowSetCustomTitle(targetWin, null);
+                    input.value = defName;
+                    refreshPanel();
+                } catch (er) {}
+            });
+            nameRow.appendChild(reset);
+            body.appendChild(nameRow);
+
+            // Colour swatches — swatch shape mirrors the window's mark
+            // (circle = reader, square = main). Not for the anchor.
+            if (!isAnchor) {
+                const wrap = doc.createElementNS(HTML, "div");
+                wrap.className = "wv-tg-swatches";
+                const curIdx = (targetWin as any)._wvTitleGlyphIdx != null
+                    ? ((targetWin as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
+                for (let i = 0; i < WV_WIN_BADGE_COLORS.length; i++) {
+                    const sw: any = doc.createElementNS(HTML, "div");
+                    sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
+                    sw.style.background = WV_WIN_BADGE_COLORS[i];
+                    sw.style.borderRadius = isReader ? "50%" : "3px";
+                    const idx = i;
+                    sw.addEventListener("click", (ev: any) => {
+                        try {
+                            ev.stopPropagation();
+                            const p: any = live();
+                            if (!p) return;
+                            // Manual pick — verbatim on purpose (duplicating
+                            // a colour deliberately is the user's call).
+                            (targetWin as any)._wvTitleGlyphIdx = idx;
+                            delete (targetWin as any)._wvWinIconName;
+                            delete (targetWin as any)._wvOverlayName;
+                            try { p._wvApplyWindowIcon(targetWin); } catch (e2) {}
+                            try {
+                                const mt: any = p._wvOvMonTop;
+                                if (mt) delete mt[p._wvOvScreenKeyOf(targetWin)];
+                                p._wvOvSetBadge(targetWin, "recolor");
+                            } catch (e2) {}
+                            try {
+                                if (isReader) p._wvUpdateWindowBadgeDot(targetWin, !!p._getTabsAndWindowsMaster(), true);
+                                else p._wvUpdateMainWindowIndicator(targetWin);
+                            } catch (e2) {}
+                            for (const x of wrap.querySelectorAll(".wv-tg-swatch")) x.classList.remove("wv-selected");
+                            sw.classList.add("wv-selected");
+                            refreshPanel();
+                        } catch (e2) {}
+                    });
+                    wrap.appendChild(sw);
+                }
+                body.appendChild(wrap);
             }
-            // Save & Close — the whole-window analog of the tab groups'
-            // Save and Close Group; reopen from the tabs menu's Saved
-            // Windows section. Same last-main gate as Convert (user
-            // request 2026-07-15): closing the only main window would
-            // leave Zotero without one, so don't offer it either —
-            // _wvSaveAndCloseWindow keeps its own guard as backstop.
-            if (!lastMain) {
-                const sac: any = doc.createXULElement("menuitem");
-                sac.setAttribute("label", "Save and Close Window…");
-                sac.addEventListener("command", () => {
-                    try {
-                        const p: any = live();
-                        if (p) p._wvSaveAndCloseWindow(win, isReader);
-                    } catch (e2) {}
+
+            const mkSep = () => {
+                const s = doc.createElementNS(HTML, "div");
+                s.className = "wv-tg-sep";
+                body.appendChild(s);
+            };
+            const mkItem = (label: string, fn: (p: any) => void) => {
+                const row = doc.createElementNS(HTML, "div");
+                row.className = "wv-tg-menuitem";
+                row.textContent = label;
+                row.addEventListener("click", () => {
+                    try { edPanel.hidePopup(); } catch (er) {}
+                    try { const p: any = live(); if (p) fn(p); } catch (er) {}
                 });
-                pop.appendChild(sac);
-                // Move Window to ▸ — this LIVE window becomes a live
-                // window of ANOTHER session: it opens with that session
-                // on the next switch (state-preserving move, user
-                // semantics 2026-07-15; parked windows move via their
-                // own context menu). Only shown when other sessions
-                // exist; same last-main gate as Save & Close (the move
-                // closes the window here). The active session is
-                // excluded — the window is already live in it.
+                body.appendChild(row);
+            };
+
+            if (!lastMain) {
+                mkSep();
+                mkItem(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
+                    if (isReader) p._wvConvertReaderWindowToMain(targetWin);
+                    else p._wvConvertMainWindowToReader(targetWin);
+                });
+                mkItem("Save and Close Window", (p: any) => p._wvSaveAndCloseWindow(targetWin, isReader));
+                // Move Window to ▸ — flyout with the OTHER sessions, the
+                // same pattern (and native hover timing) as the group
+                // editor's "Move group to ▸".
                 try {
                     const activeId = (this as any)._wvTabSessionGetActiveId
                         ? (this as any)._wvTabSessionGetActiveId() : null;
@@ -1937,77 +1946,65 @@ class _TabsMixin {
                         ? (this as any)._wvTabSessionNamedList() : [])
                         .filter((s: any) => s && s.id !== activeId);
                     if (others.length) {
-                        const mv: any = doc.createXULElement("menu");
-                        mv.setAttribute("label", "Move Window to");
-                        const mvPop: any = doc.createXULElement("menupopup");
+                        const mvRow = doc.createElementNS(HTML, "div");
+                        mvRow.className = "wv-tg-menuitem";
+                        (mvRow as any).style.display = "flex";
+                        (mvRow as any).style.justifyContent = "space-between";
+                        (mvRow as any).style.alignItems = "center";
+                        const mvLabel = doc.createElementNS(HTML, "span");
+                        mvLabel.textContent = "Move Window to";
+                        const mvArrow = doc.createElementNS(HTML, "span");
+                        mvArrow.textContent = "▸";
+                        (mvArrow as any).style.opacity = "0.6";
+                        mvRow.appendChild(mvLabel);
+                        mvRow.appendChild(mvArrow);
+                        let mvPop: any = doc.getElementById("wv-winedit-move-targets");
+                        if (mvPop) mvPop.remove();
+                        mvPop = doc.createXULElement("menupopup");
+                        mvPop.id = "wv-winedit-move-targets";
                         for (const s of others) {
                             const mi: any = doc.createXULElement("menuitem");
                             mi.setAttribute("label", s.name || "Session");
                             const sid = s.id;
                             mi.addEventListener("command", () => {
-                                try {
-                                    const p: any = live();
-                                    if (p) p._wvMoveWindowToSession(win, isReader, sid);
-                                } catch (e2) {}
+                                try { edPanel.hidePopup(); } catch (er) {}
+                                try { const p: any = live(); if (p) p._wvMoveWindowToSession(targetWin, isReader, sid); } catch (er) {}
                             });
                             mvPop.appendChild(mi);
                         }
-                        mv.appendChild(mvPop);
-                        pop.appendChild(mv);
-                    }
-                } catch (e2) {}
-            }
-            // Colour picker — the tab-groups swatch row, no labels.
-            // Not for the anchor (its mark is the ⚓).
-            if (!isAnchor) {
-                pop.appendChild(doc.createXULElement("menuseparator"));
-                try { this._ensureTabGroupStyles(doc); } catch (e2) {}
-                const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                wrap.className = "wv-tg-swatches";
-                wrap.style.cssText = "padding: 6px 10px;";
-                const curIdx = (win as any)._wvTitleGlyphIdx != null
-                    ? ((win as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
-                for (let i = 0; i < WV_WIN_BADGE_COLORS.length; i++) {
-                    const sw = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                    sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
-                    (sw as any).style.background = WV_WIN_BADGE_COLORS[i];
-                    // Swatch shape mirrors the window's mark: circle for
-                    // readers, square for mains (the base .wv-tg-swatch is
-                    // circular, so mains must override it too).
-                    (sw as any).style.borderRadius = isReader ? "50%" : "3px";
-                    const idx = i;
-                    sw.addEventListener("click", (ev: any) => {
-                        try {
-                            ev.stopPropagation();
-                            const p: any = live();
-                            if (!p) return;
-                            (win as any)._wvTitleGlyphIdx = idx;
-                            delete (win as any)._wvWinIconName;   // force icon re-apply
-                            delete (win as any)._wvOverlayName;   // force overlay re-apply
-                            try { p._wvApplyWindowIcon(win); } catch (e2) {}
+                        (doc.querySelector("popupset") || doc.documentElement).appendChild(mvPop);
+                        const openFlyout = () => { try { mvPop.openPopup(mvRow, "end_before", 0, 0, false, false); } catch (er) {} };
+                        mvRow.addEventListener("click", openFlyout);
+                        mvRow.addEventListener("mouseenter", openFlyout);
+                        let flyTimer: any = null;
+                        const cancelFly = () => { if (flyTimer) { try { menuWin.clearTimeout(flyTimer); } catch (er) {} flyTimer = null; } };
+                        body.addEventListener("mouseover", (ev: any) => {
                             try {
-                                const mt: any = p._wvOvMonTop;
-                                if (mt) delete mt[p._wvOvScreenKeyOf(win)];
-                                p._wvOvSetBadge(win, "recolor");
-                            } catch (e2) {}
-                            try {
-                                if (isReader) p._wvUpdateWindowBadgeDot(win, !!p._getTabsAndWindowsMaster(), true);
-                                else p._wvUpdateMainWindowIndicator(win);
-                            } catch (e2) {}
-                            try {
-                                if (panel) {
-                                    if (typeof panel.refreshList === "function") panel.refreshList();
-                                    else p._wvRegroupTabsMenu(panel);
+                                const row = ev.target && ev.target.closest && ev.target.closest(".wv-tg-menuitem");
+                                if (!row) return;
+                                if (row === mvRow) { cancelFly(); return; }
+                                if ((mvPop.state === "open" || mvPop.state === "showing") && !flyTimer) {
+                                    const p: any = live();
+                                    const delayMs = (p && p._wvSubmenuDelay) ? p._wvSubmenuDelay() : 300;
+                                    flyTimer = menuWin.setTimeout(() => {
+                                        flyTimer = null;
+                                        try { if (mvPop.state === "open" || mvPop.state === "showing") mvPop.hidePopup(); } catch (er) {}
+                                    }, delayMs);
                                 }
-                            } catch (e2) {}
-                            try { pop.hidePopup(); } catch (e2) {}
-                        } catch (e2) {}
-                    });
-                    wrap.appendChild(sw);
-                }
-                pop.appendChild(wrap);
+                            } catch (er) {}
+                        });
+                        mvPop.addEventListener("mouseover", () => { try { cancelFly(); } catch (er) {} }, true);
+                        edPanel.addEventListener("popuphidden", () => { try { cancelFly(); mvPop.hidePopup(); } catch (er) {} }, { once: true });
+                        body.appendChild(mvRow);
+                    }
+                } catch (er) {}
             }
-        } catch (e) { Zotero.debug("[Weavero] _wvAppendWindowActionItems err: " + e); }
+
+            edPanel.openPopupAtScreen(e.screenX, e.screenY, false);
+            edPanel.addEventListener("popupshown", () => {
+                try { input.focus(); input.select(); } catch (er) {}
+            }, { once: true });
+        } catch (e2) { Zotero.debug("[Weavero] _wvShowWindowEditor err: " + e2); }
     }
 
     /** Right-click context menu for a window header in the tabs dropdown:
@@ -2016,44 +2013,13 @@ class _TabsMixin {
      *  tab-group context menu (`_wvTabsMenuGroupContext`) so the two feel the same. */
     _wvWindowHeaderContext(targetWin: any, panel: any, e: any) {
         try {
+            // "Manage Window" editor panel — the window twin of the group
+            // chip editor (user request 2026-07-15): name field with a
+            // one-click default reset, swatches, action rows.
             const menuWin = (panel && panel.ownerGlobal) || targetWin;
-            const doc = menuWin.document;
-            let pop: any = doc.getElementById("wv-winhdr-context");
-            if (pop) pop.remove();                       // rebuild fresh each time
-            pop = doc.createXULElement("menupopup");
-            pop.id = "wv-winhdr-context";
-            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const mk = (label: string, fn: (p: any) => void) => {
-                const mi = doc.createXULElement("menuitem");
-                mi.setAttribute("label", label);
-                mi.addEventListener("command", (ev: any) => {
-                    try {
-                        ev.stopPropagation();
-                        const p: any = live();
-                        if (p) fn(p);
-                    } catch (er) {}
-                });
-                pop.appendChild(mi);
-            };
-            mk("Rename Window…", (p: any) => p._wvWindowRenamePrompt(targetWin, panel));
-            if (this._wvWindowCustomTitle(targetWin)) {
-                mk("Reset to Default Name", (p: any) => {
-                    try {
-                        p._wvWindowSetCustomTitle(targetWin, null);
-                        if (panel && typeof panel.refreshList === "function") panel.refreshList();
-                        else p._wvRegroupTabsMenu(panel);
-                    } catch (er) {}
-                });
-            }
-            // Same window actions as the title-bar mark's menu (user
-            // request 2026-07-15): Convert, Save and Close, colours.
-            try {
-                const wt = targetWin.document && targetWin.document.documentElement
-                    && targetWin.document.documentElement.getAttribute("windowtype");
-                this._wvAppendWindowActionItems(pop, doc, targetWin, wt === "zotero:reader", panel);
-            } catch (er) {}
-            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
-            pop.openPopupAtScreen(e.screenX, e.screenY, true);
+            const wt = targetWin.document && targetWin.document.documentElement
+                && targetWin.document.documentElement.getAttribute("windowtype");
+            this._wvShowWindowEditor(targetWin, wt === "zotero:reader", menuWin, panel, e);
         } catch (er) { Zotero.debug("[Weavero] _wvWindowHeaderContext err: " + er); }
     }
 
@@ -2102,6 +2068,36 @@ class _TabsMixin {
      *  already encodes the kind, so sharing the pool means no two
      *  windows carry the same colour — main №2 is blue, reader №1
      *  green, the next window purple, … (user request 2026-07-13). */
+    /** Stamp a STORED window-colour index onto a (re)opened window —
+     *  UNLESS another open window already uses it. Restoring a saved
+     *  glyph verbatim created duplicate colours (two blue windows,
+     *  user report 2026-07-15); on collision the stamp is skipped and
+     *  the lazy allocator (_wvTitleGlyphIdx) hands the window the
+     *  first FREE colour instead. `ignoreWin` = a window about to
+     *  close (conversion source) whose colour is legitimately being
+     *  carried over. Manual swatch picks stay verbatim — duplicating
+     *  a colour on purpose is the user's call. */
+    _wvStampGlyphIdx(win: any, idx: any, ignoreWin?: any) {
+        try {
+            if (win == null || idx == null) return;
+            const used = new Set();
+            for (const w of (Zotero.getMainWindows() || [])) {
+                if (w !== win && w !== ignoreWin && (w as any)._wvTitleGlyphIdx != null) {
+                    used.add((w as any)._wvTitleGlyphIdx);
+                }
+            }
+            const en = Services.wm.getEnumerator("zotero:reader");
+            while (en.hasMoreElements()) {
+                const w: any = en.getNext();
+                if (w !== win && w !== ignoreWin && w && w._wvTitleGlyphIdx != null) {
+                    used.add(w._wvTitleGlyphIdx);
+                }
+            }
+            if (!used.has(idx)) (win as any)._wvTitleGlyphIdx = idx;
+            // else: leave unstamped — the allocator assigns a free colour.
+        } catch (e) {}
+    }
+
     _wvTitleGlyphIdx(win: any, _isReader?: boolean): number {
         if (win._wvTitleGlyphIdx != null) return win._wvTitleGlyphIdx;
         const used = new Set();
@@ -7140,7 +7136,7 @@ class _TabsMixin {
                     await sleep(150);
                 }
                 if (newMain && !this._wvIsAnchorWindow(newMain)) {
-                    (newMain as any)._wvTitleGlyphIdx = entry.glyph;
+                    this._wvStampGlyphIdx(newMain, entry.glyph);   // skip on colour collision
                     await sleep(600);
                     try { (this as any)._wvCarryGlyphRefresh(newMain, false); } catch (e) {}
                 }
@@ -7161,7 +7157,7 @@ class _TabsMixin {
                 && !(rd._window && rd._iframe && rd._iframe.contentWindow)) { await sleep(120); }
             const newWin: any = rd && rd._window;
             if (!newWin) return;
-            if (entry.glyph != null) { try { (newWin as any)._wvTitleGlyphIdx = entry.glyph; } catch (e) {} }
+            if (entry.glyph != null) { try { this._wvStampGlyphIdx(newWin, entry.glyph); } catch (e) {} }   // skip on colour collision
             const t2 = Date.now();
             while (!(newWin as any)._wvWT && Date.now() - t2 < 4000) { await sleep(80); }
             for (const m of (entry.tabs || [])) {
@@ -9905,26 +9901,11 @@ class _TabsMixin {
 
     _wvWindowMarkContext(win: any, isReader: boolean, e: any) {
         try {
-            const doc = win.document;
-            let pop: any = doc.getElementById("wv-winmark-context");
-            if (pop) pop.remove();   // rebuild fresh each time
-            pop = doc.createXULElement("menupopup");
-            pop.id = "wv-winmark-context";
-            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-            const isAnchor = !isReader && this._wvIsAnchorWindow(win);
-            // Rename — ALL windows. Main-window names persist (window-titles
-            // map); reader names are session-scoped (`win._wvWindowTitle`),
-            // picked up by the tabs-menu headers, move-target menus and the
-            // mark tooltip.
-            const mi: any = doc.createXULElement("menuitem");
-            mi.setAttribute("label", "Rename Window…");
-            mi.addEventListener("command", () => {
-                try { const p: any = live(); if (p) p._wvWindowRenamePrompt(win, null); } catch (e2) {}
-            });
-            pop.appendChild(mi);
-            this._wvAppendWindowActionItems(pop, doc, win, isReader, null);
-            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
-            pop.openPopupAtScreen(e.screenX, e.screenY, true);
+            // "Manage Window" editor panel — the window twin of the group
+            // chip editor (user request 2026-07-15). Name persistence:
+            // main-window names persist (window-titles map); reader names
+            // are session-scoped (`win._wvWindowTitle`).
+            this._wvShowWindowEditor(win, isReader, win, null, e);
         } catch (e2) { Zotero.debug("[Weavero] _wvWindowMarkContext err: " + e2); }
     }
 

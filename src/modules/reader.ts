@@ -14240,7 +14240,11 @@ class _ReaderMixin {
             // the cached property first).
             try {
                 if (glyph != null && !(this as any)._wvIsAnchorWindow(newMain)) {
-                    (newMain as any)._wvTitleGlyphIdx = glyph;
+                    // Guarded stamp: the SOURCE window (still open, closes
+                    // below) legitimately holds this colour — ignore it;
+                    // any OTHER window holding it means a duplicate, so
+                    // the allocator hands out a free colour instead.
+                    (this as any)._wvStampGlyphIdx(newMain, glyph, win);
                 }
             } catch (e) {}
             await sleep(600);
@@ -14359,7 +14363,9 @@ class _ReaderMixin {
             // Carry the source window's colour before the strip decorations
             // derive theirs (see the reader→main twin of this comment).
             this._wvConvTraceLog("m2r: newWin ok; carrying glyph=" + glyph);
-            try { if (glyph != null) (newWin as any)._wvTitleGlyphIdx = glyph; } catch (e) {}
+            // Guarded stamp — ignore the source (it closes with its last
+            // tab); a collision with any OTHER window skips the carry.
+            try { if (glyph != null) (this as any)._wvStampGlyphIdx(newWin, glyph, win); } catch (e) {}
             // Wait for the strip model before adding the rest.
             const t1 = Date.now();
             while (!(newWin as any)._wvWT && Date.now() - t1 < 4000) { await sleep(80); }

@@ -2330,6 +2330,13 @@ class WeaveroPlugin {
             // Visual extras (no master, flat children)
             "enableAnnotationsCountColumn",
             "enableGroupLibraryGlyph",
+            // Per-window taskbar icons: the GETTER always defaulted to
+            // true, but without a default-branch value the Settings
+            // checkbox showed unchecked while the feature ran (user
+            // report 2026-07-16). windowTitleGlyphs and
+            // separateTaskbarButtons default FALSE and read false when
+            // unset, so their checkboxes were already truthful.
+            "windowIcons",
         ]) {
             try {
                 Services.prefs.getDefaultBranch("extensions.zotero.")

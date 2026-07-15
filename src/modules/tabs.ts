@@ -1725,6 +1725,95 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvWindowRenamePrompt err: " + e); }
     }
 
+    /** The shared window actions — Convert, Save and Close, and the
+     *  colour swatch row — appended to both the title-bar mark menu
+     *  and the tabs-menu window-header menu (user request 2026-07-15:
+     *  same options in both places). `panel` non-null refreshes the
+     *  tabs menu after a recolour. */
+    _wvAppendWindowActionItems(pop: any, doc: any, win: any, isReader: boolean, panel: any) {
+        try {
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const isAnchor = !isReader && this._wvIsAnchorWindow(win);
+            // Convert — a reader/note window becomes a new main window
+            // carrying all its tabs, and vice versa. The guards (last
+            // main window, no reader-able tab) live in the convert
+            // functions and explain themselves.
+            const conv: any = doc.createXULElement("menuitem");
+            conv.setAttribute("label", isReader ? "Convert to Main Window" : "Convert to Reader Window");
+            conv.addEventListener("command", () => {
+                try {
+                    const p: any = live();
+                    if (!p) return;
+                    if (isReader) p._wvConvertReaderWindowToMain(win);
+                    else p._wvConvertMainWindowToReader(win);
+                } catch (e2) {}
+            });
+            pop.appendChild(conv);
+            // Save & Close — the whole-window analog of the tab groups'
+            // Save and Close Group; reopen from the tabs menu's Saved
+            // Windows section.
+            const sac: any = doc.createXULElement("menuitem");
+            sac.setAttribute("label", "Save and Close Window…");
+            sac.addEventListener("command", () => {
+                try {
+                    const p: any = live();
+                    if (p) p._wvSaveAndCloseWindow(win, isReader);
+                } catch (e2) {}
+            });
+            pop.appendChild(sac);
+            // Colour picker — the tab-groups swatch row, no labels.
+            // Not for the anchor (its mark is the ⚓).
+            if (!isAnchor) {
+                pop.appendChild(doc.createXULElement("menuseparator"));
+                try { this._ensureTabGroupStyles(doc); } catch (e2) {}
+                const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                wrap.className = "wv-tg-swatches";
+                wrap.style.cssText = "padding: 6px 10px;";
+                const curIdx = (win as any)._wvTitleGlyphIdx != null
+                    ? ((win as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
+                for (let i = 0; i < WV_WIN_BADGE_COLORS.length; i++) {
+                    const sw = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                    sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
+                    (sw as any).style.background = WV_WIN_BADGE_COLORS[i];
+                    // Swatch shape mirrors the window's mark: circle for
+                    // readers, square for mains (the base .wv-tg-swatch is
+                    // circular, so mains must override it too).
+                    (sw as any).style.borderRadius = isReader ? "50%" : "3px";
+                    const idx = i;
+                    sw.addEventListener("click", (ev: any) => {
+                        try {
+                            ev.stopPropagation();
+                            const p: any = live();
+                            if (!p) return;
+                            (win as any)._wvTitleGlyphIdx = idx;
+                            delete (win as any)._wvWinIconName;   // force icon re-apply
+                            delete (win as any)._wvOverlayName;   // force overlay re-apply
+                            try { p._wvApplyWindowIcon(win); } catch (e2) {}
+                            try {
+                                const mt: any = p._wvOvMonTop;
+                                if (mt) delete mt[p._wvOvScreenKeyOf(win)];
+                                p._wvOvSetBadge(win, "recolor");
+                            } catch (e2) {}
+                            try {
+                                if (isReader) p._wvUpdateWindowBadgeDot(win, !!p._getTabsAndWindowsMaster(), true);
+                                else p._wvUpdateMainWindowIndicator(win);
+                            } catch (e2) {}
+                            try {
+                                if (panel) {
+                                    if (typeof panel.refreshList === "function") panel.refreshList();
+                                    else p._wvRegroupTabsMenu(panel);
+                                }
+                            } catch (e2) {}
+                            try { pop.hidePopup(); } catch (e2) {}
+                        } catch (e2) {}
+                    });
+                    wrap.appendChild(sw);
+                }
+                pop.appendChild(wrap);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvAppendWindowActionItems err: " + e); }
+    }
+
     /** Right-click context menu for a window header in the tabs dropdown:
      *  a "Rename Window…" item (and "Reset to Default Name" when a custom title
      *  is set), so the rename isn't a surprise direct prompt. Mirrors the
@@ -1760,6 +1849,13 @@ class _TabsMixin {
                     } catch (er) {}
                 });
             }
+            // Same window actions as the title-bar mark's menu (user
+            // request 2026-07-15): Convert, Save and Close, colours.
+            try {
+                const wt = targetWin.document && targetWin.document.documentElement
+                    && targetWin.document.documentElement.getAttribute("windowtype");
+                this._wvAppendWindowActionItems(pop, doc, targetWin, wt === "zotero:reader", panel);
+            } catch (er) {}
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (er) { Zotero.debug("[Weavero] _wvWindowHeaderContext err: " + er); }
@@ -2564,7 +2660,26 @@ class _TabsMixin {
             // IMAGE = the monitor's top window's badge.
             const top = this._wvOvTopWindowOn(mon) || win;
             const base = this._wvBadgeIconNameFor(top);
-            if (!base) return;
+            if (!base) {
+                // The monitor's top window names NO badge — e.g. the anchor
+                // once it's the LONE window (anchor decor hidden with ≤1
+                // window). Clear its stale overlay and re-derive the icon
+                // and in-window mark; without this the ⚓ lingered on the
+                // taskbar after the last other window closed (user report
+                // 2026-07-15). Runs on the survivor's close-repair pass
+                // and on its next focus bump.
+                try {
+                    if ((top as any)._wvOverlayName) {
+                        this._wvSetTaskbarOverlay(top, null);
+                        delete (top as any)._wvOverlayName;
+                        delete tops[mon];
+                        this._wvOvLog("clear-no-badge", { reason });
+                    }
+                } catch (e) {}
+                try { this._wvApplyWindowIcon(top); } catch (e) {}
+                try { this._wvUpdateMainWindowIndicator(top); } catch (e) {}
+                return;
+            }
             const name = "ov-" + base;
             if (tops[mon] === name && !force) {
                 this._wvOvLog("skip", { img: name, mon, reason });
@@ -6970,11 +7085,15 @@ class _TabsMixin {
                 /* Parked look — present but visibly not live. */
                 ".wv-savedwin-scope { opacity: 0.72; }",
                 ".wv-savedwin-scope:hover { opacity: 1; }",
-                /* Section header separating parked windows from the live ones. */
+                /* Section header separating parked windows from the live
+                   ones — IDENTICAL to the Tab Groups header
+                   (.wv-tgmenu-header in tab-groups.ts). Change BOTH
+                   together. */
                 ".wv-savedwin-sechdr {",
-                "  margin: 6px 4px 2px; padding-top: 4px;",
+                "  margin: 6px 4px 2px; padding: 4px 0 0;",
                 "  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);",
                 "  font-size: 0.85em; font-weight: 600; opacity: 0.65;",
+                "  text-align: start;",
                 "}",
                 /* The header's reopen affordance. */
                 ".wv-savedwin-reopen {",
@@ -9505,77 +9624,7 @@ class _TabsMixin {
                 try { const p: any = live(); if (p) p._wvWindowRenamePrompt(win, null); } catch (e2) {}
             });
             pop.appendChild(mi);
-            // Convert — a reader/note window becomes a new main window
-            // carrying all its tabs, and vice versa (user request
-            // 2026-07-15). The guards (last main window, no reader-able
-            // tab) live in the convert functions and explain themselves.
-            const conv: any = doc.createXULElement("menuitem");
-            conv.setAttribute("label", isReader ? "Convert to Main Window" : "Convert to Reader Window");
-            conv.addEventListener("command", () => {
-                try {
-                    const p: any = live();
-                    if (!p) return;
-                    if (isReader) p._wvConvertReaderWindowToMain(win);
-                    else p._wvConvertMainWindowToReader(win);
-                } catch (e2) {}
-            });
-            pop.appendChild(conv);
-            // Save & Close — the whole-window analog of the tab groups'
-            // Save and Close Group; reopen from the tabs menu's Saved
-            // Windows section.
-            const sac: any = doc.createXULElement("menuitem");
-            sac.setAttribute("label", "Save and Close Window…");
-            sac.addEventListener("command", () => {
-                try {
-                    const p: any = live();
-                    if (p) p._wvSaveAndCloseWindow(win, isReader);
-                } catch (e2) {}
-            });
-            pop.appendChild(sac);
-            // Colour picker — the tab-groups swatch row, no labels (user
-            // request 2026-07-13). Not for the anchor (its mark is the ⚓).
-            if (!isAnchor) {
-                pop.appendChild(doc.createXULElement("menuseparator"));
-                try { this._ensureTabGroupStyles(doc); } catch (e2) {}
-                const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                wrap.className = "wv-tg-swatches";
-                wrap.style.cssText = "padding: 6px 10px;";
-                const curIdx = (win as any)._wvTitleGlyphIdx != null
-                    ? ((win as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
-                for (let i = 0; i < WV_WIN_BADGE_COLORS.length; i++) {
-                    const sw = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-                    sw.className = "wv-tg-swatch" + (i === curIdx ? " wv-selected" : "");
-                    (sw as any).style.background = WV_WIN_BADGE_COLORS[i];
-                    // Swatch shape mirrors the window's mark: circle for
-                    // readers, square for mains (the base .wv-tg-swatch is
-                    // circular, so mains must override it too).
-                    (sw as any).style.borderRadius = isReader ? "50%" : "3px";
-                    const idx = i;
-                    sw.addEventListener("click", (ev: any) => {
-                        try {
-                            ev.stopPropagation();
-                            const p: any = live();
-                            if (!p) return;
-                            (win as any)._wvTitleGlyphIdx = idx;
-                            delete (win as any)._wvWinIconName;   // force icon re-apply
-                            delete (win as any)._wvOverlayName;   // force overlay re-apply
-                            try { p._wvApplyWindowIcon(win); } catch (e2) {}
-                            try {
-                                const mt: any = p._wvOvMonTop;
-                                if (mt) delete mt[p._wvOvScreenKeyOf(win)];
-                                p._wvOvSetBadge(win, "recolor");
-                            } catch (e2) {}
-                            try {
-                                if (isReader) p._wvUpdateWindowBadgeDot(win, !!p._getTabsAndWindowsMaster(), true);
-                                else p._wvUpdateMainWindowIndicator(win);
-                            } catch (e2) {}
-                            try { pop.hidePopup(); } catch (e2) {}
-                        } catch (e2) {}
-                    });
-                    wrap.appendChild(sw);
-                }
-                pop.appendChild(wrap);
-            }
+            this._wvAppendWindowActionItems(pop, doc, win, isReader, null);
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (e2) { Zotero.debug("[Weavero] _wvWindowMarkContext err: " + e2); }

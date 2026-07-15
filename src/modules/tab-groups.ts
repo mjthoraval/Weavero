@@ -299,11 +299,30 @@ class _TabGroupsMixin {
                 ".wv-tg-menuitem:hover { background: rgba(127,127,127,0.18); }",
                 ".wv-tg-menuitem.wv-danger { color: #e2484d; }",
                 // "Tab Groups" section in the tabs-menu panel.
+                /* Section header — IDENTICAL to the Saved Windows header
+                   (.wv-savedwin-sechdr in tabs.ts): same font, size,
+                   weight, alignment and divider (user request 2026-07-15).
+                   Change BOTH together. */
                 ".wv-tgmenu-header {",
-                "  margin: 8px 4px 2px; padding: 4px 6px 2px;",
-                "  border-top: 1px solid rgba(127,127,127,0.3);",
-                "  font-size: 11px; font-weight: 600; opacity: 0.7;",
+                /* Flush left like the Saved Windows header; the GROUP
+                   boxes below get the deeper indent instead, matching the
+                   active group rows nested inside the window boxes
+                   (user request 2026-07-15). */
+                "  margin: 6px 4px 2px; padding: 4px 0 0;",
+                "  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);",
+                "  font-size: 0.85em; font-weight: 600; opacity: 0.65;",
+                "  text-align: start;",
                 "}",
+                ".wv-tgmenu-scope { margin: 0 4px 4px 16px; }",
+                /* Hover-preview title: the group's FULL name (wraps). */
+                ".wv-tg-preview-title {",
+                "  display: flex; align-items: center; gap: 7px;",
+                "  padding: 4px 8px 5px; margin-bottom: 3px;",
+                "  font-weight: 600;",
+                "  border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);",
+                "  white-space: normal; overflow-wrap: anywhere;",
+                "}",
+                ".wv-tg-preview-title > .wv-tgmenu-dot { flex: 0 0 auto; }",
                 ".wv-tgmenu-row {",
                 "  display: flex; align-items: center; gap: 7px;",
                 "  padding: 4px 8px; margin: 0 4px; border-radius: 5px;",
@@ -4220,73 +4239,117 @@ class _TabGroupsMixin {
                 ? panel.querySelector("#wv-wtl-list")
                 : (panel._tabsList || panel.querySelector("#zotero-tabs-menu-list"));
             if (!list) return;
-            for (const el of list.querySelectorAll(".wv-tgmenu-header, .wv-tgmenu-row")) el.remove();
+            for (const el of list.querySelectorAll(".wv-tgmenu-header, .wv-tgmenu-row, .wv-tgmenu-scope")) el.remove();
             if (!this._getEnableTabGroups()) return;
-            const groups = this._tabGroupsGet();
+            // SAVED groups only (user request 2026-07-15): the live groups
+            // already show as chips and inside the window lists — the
+            // bottom section is for parked groups, and its point is seeing
+            // a group's CONTENT before reopening it. Same anatomy as the
+            // saved-windows boxes: a collapsed-by-default box per group,
+            // member tab rows inside, ↗ to reopen.
+            const groups = this._tabGroupsGet().filter((g: any) => (g as any).saved);
             if (!groups.length) return;
             this._ensureTabGroupStyles(doc);
+            try { (this as any)._wvEnsureSavedWindowStyles(doc); } catch (e) {}
             const header = doc.createElementNS(HTML_NS, "div");
             header.className = "wv-tgmenu-header";
-            header.textContent = "Tab Groups";
+            header.textContent = "Saved Tab Groups";
             list.appendChild(header);
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const sections: any[] = [];
             for (const g of groups) {
-                const open = this._wvTabGroupOpenCount(g.id);
-                const row = doc.createElementNS(HTML_NS, "div");
-                row.className = "wv-tgmenu-row";
-                // open===0 now only happens for an explicitly SAVED group.
-                row.setAttribute("title", open ? "Go to this group" : "Reopen this saved group");
-                const hex = this._tabGroupColorHex(g.color);
+                const tabs: any[] = [];
+                for (const m of (g.members || [])) {
+                    try {
+                        const id = Zotero.Items.getIDFromLibraryAndKey(m.libraryID, m.itemKey);
+                        const item: any = id && Zotero.Items.get(id);
+                        if (!item) continue;
+                        tabs.push({
+                            item,
+                            title: item.getDisplayTitle(),
+                            // Additive single-document open — the group stays parked.
+                            onClick: () => {
+                                (async () => {
+                                    try {
+                                        let it: any = item;
+                                        if (it.isNote && it.isNote()) {
+                                            const mw: any = Zotero.getMainWindow();
+                                            if (mw && mw.ZoteroPane) mw.ZoteroPane.openNote(it.id, { openInWindow: false });
+                                            return;
+                                        }
+                                        if (it.isRegularItem && it.isRegularItem()) it = await it.getBestAttachment();
+                                        if (it && it.attachmentReaderType) {
+                                            (Zotero.Reader as any).open(it.id, null, { openInWindow: false, allowDuplicate: true });
+                                        }
+                                    } catch (er) {}
+                                })();
+                            },
+                        });
+                    } catch (er) {}
+                }
+                sections.push({
+                    label: g.name || "Unnamed group", tabs, kind: "main",
+                    gid: g.id, hex: this._tabGroupColorHex(g.color),
+                });
+            }
+            // Collapsed by default, expandable — seeded once per session so
+            // the user's expansion sticks (same pattern as saved windows).
+            const p0: any = this as any;
+            p0._wvSavedGrpSeeded = p0._wvSavedGrpSeeded || new Set();
+            p0._wvTabsMenuCollapsedWindows = p0._wvTabsMenuCollapsedWindows || new Set();
+            for (const sec of sections) {
+                const key = "savedgrp|" + sec.label;
+                if (!p0._wvSavedGrpSeeded.has(key)) {
+                    p0._wvSavedGrpSeeded.add(key);
+                    p0._wvTabsMenuCollapsedWindows.add(key);
+                }
+            }
+            const already = list.querySelectorAll(".wv-tgmenu-scope").length;
+            (this as any)._wvTabsMenuRenderSections(doc, list, panel, sections,
+                { header: "wv-tgmenu-winhdr", row: "wv-tgmenu-tabrow", lib: "wv-tgmenu-liblbl", scope: "wv-tgmenu-scope" },
+                "savedgrp");
+            const scopes = [...list.querySelectorAll(".wv-tgmenu-scope")].slice(already);
+            scopes.forEach((scope: any, i: number) => {
+                const sec: any = sections[i];
+                if (!sec) return;
+                scope.classList.add("wv-savedwin-scope");   // parked look (dim, brighten on hover)
+                const hdr = scope.querySelector(".wv-tgmenu-winhdr");
+                if (!hdr) return;
+                // Group colour dot (outline = saved), before the label.
                 const dot = doc.createElementNS(HTML_NS, "span");
                 dot.className = "wv-tgmenu-dot";
-                if (open) {
-                    dot.style.background = hex;             // live: filled square
-                } else {
-                    dot.style.background = "transparent";   // saved: outline only
-                    dot.style.border = "2px solid " + hex;
-                }
-                row.appendChild(dot);
-                const name = doc.createElementNS(HTML_NS, "span");
-                name.className = "wv-tgmenu-name";
-                name.textContent = g.name || "Unnamed group";
-                row.appendChild(name);
-                const count = doc.createElementNS(HTML_NS, "span");
-                count.className = "wv-tgmenu-count";
-                if (open) {
-                    count.textContent = open + (open === 1 ? " tab" : " tabs");
-                } else {
-                    // SAVED group: show its parked tab count (members snapshot) too,
-                    // not just "saved".
-                    const n = (g.members || []).length;
-                    count.textContent = n ? (n + (n === 1 ? " tab" : " tabs") + " · saved") : "saved";
-                }
-                row.appendChild(count);
-                const gid = g.id;
-                // Drop-target identity: dragging a popup tab row onto this group row
-                // joins the tab to the group (see _wvResolvePopupDropTarget). Also a
-                // DRAG SOURCE: drag the group row onto another window to move it there.
-                (row as any)._wvGroupId = gid;
-                row.setAttribute("draggable", "true");
-                row.addEventListener("click", (e: any) => {
+                dot.style.background = "transparent";
+                dot.style.border = "2px solid " + sec.hex;
+                hdr.insertBefore(dot, hdr.firstChild);
+                // Drag identities: drop a tab row here to join the group;
+                // drag the box header to move the group to another window.
+                (hdr as any)._wvGroupId = sec.gid;
+                hdr.setAttribute("draggable", "true");
+                // ↗ reopens the whole group.
+                const btn = doc.createElementNS(HTML_NS, "span");
+                btn.className = "wv-savedwin-reopen";
+                btn.textContent = "↗";
+                btn.setAttribute("title", "Reopen this saved group");
+                btn.addEventListener("click", (e: any) => {
                     try {
-                        e.stopPropagation();
+                        e.stopPropagation(); e.preventDefault();
                         try { panel.hidePopup(); } catch (er) {}
-                        const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const p: any = live();
                         if (!p) return;
-                        if (p._wvTabGroupOpenCount(gid) > 0) p._wvTabGroupFocus(gid);
-                        else if (p._wvTabGroupIsReaderWin(win)) p._wvTabGroupReopenInReader(win, gid);
-                        else p._wvTabGroupReopen(win, gid);
+                        if (p._wvTabGroupIsReaderWin(win)) p._wvTabGroupReopenInReader(win, sec.gid);
+                        else p._wvTabGroupReopen(win, sec.gid);
                     } catch (er) {}
                 });
-                // Firefox-style right-click on a group row.
-                row.addEventListener("contextmenu", (e: any) => {
+                hdr.appendChild(btn);
+                // Firefox-style right-click, unchanged.
+                hdr.addEventListener("contextmenu", (e: any) => {
                     try {
                         e.preventDefault(); e.stopPropagation();
-                        const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                        if (p) p._wvTabsMenuGroupContext(win, panel, gid, e);
+                        const p: any = live();
+                        if (p) p._wvTabsMenuGroupContext(win, panel, sec.gid, e);
                     } catch (er) {}
                 });
-                list.appendChild(row);
-            }
+            });
         } catch (e) { Zotero.debug("[Weavero] _wvTabsMenuGroupsSection err: " + e); }
     }
 
@@ -4374,6 +4437,21 @@ class _TabGroupsMixin {
             const body = panel.querySelector(".wv-tg-panel-body");
             while (body.firstChild) body.removeChild(body.firstChild);
             const hex = this._tabGroupColorHex(g.color);
+            // Full group NAME at the top — the strip chip truncates long
+            // names; the preview is where it can be read in full (user
+            // request 2026-07-15). Wraps rather than truncating.
+            {
+                const titleRow = doc.createElementNS(HTML_NS, "div");
+                titleRow.className = "wv-tg-preview-title";
+                const tdot = doc.createElementNS(HTML_NS, "span");
+                tdot.className = "wv-tgmenu-dot";
+                tdot.style.background = hex;
+                titleRow.appendChild(tdot);
+                const tname = doc.createElementNS(HTML_NS, "span");
+                tname.textContent = g.name || "Unnamed group";
+                titleRow.appendChild(tname);
+                body.appendChild(titleRow);
+            }
             for (const en of entries) {
                 const row = doc.createElementNS(HTML_NS, "div");
                 row.className = "wv-tg-preview-row";

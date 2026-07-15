@@ -4734,6 +4734,37 @@ class _TabGroupsMixin {
                 mvRow.addEventListener("click", openFlyout);
                 mvRow.addEventListener("mouseenter", openFlyout);
                 body.appendChild(mvRow);
+                // Hover-away must close the flyout like a native submenu
+                // (user report 2026-07-15) — at NATIVE timing: Gecko
+                // schedules the close after the SubmenuDelay (see
+                // _wvSubmenuDelay) and cancels it when the cursor reaches
+                // the popup or returns to its row, so a diagonal move into
+                // the flyout can cross other editor rows. Immediate close
+                // felt too fast (user follow-up). The editor panel closing
+                // still takes the flyout down at once.
+                let flyCloseTimer: any = null;
+                const cancelFlyClose = () => {
+                    if (flyCloseTimer) { try { win.clearTimeout(flyCloseTimer); } catch (er) {} flyCloseTimer = null; }
+                };
+                body.addEventListener("mouseover", (ev: any) => {
+                    try {
+                        const row = ev.target && ev.target.closest && ev.target.closest(".wv-tg-menuitem");
+                        if (!row) return;
+                        if (row === mvRow) { cancelFlyClose(); return; }
+                        if ((mvPop.state === "open" || mvPop.state === "showing") && !flyCloseTimer) {
+                            const lp2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            const delayMs = (lp2 && lp2._wvSubmenuDelay) ? lp2._wvSubmenuDelay() : 300;
+                            flyCloseTimer = win.setTimeout(() => {
+                                flyCloseTimer = null;
+                                try {
+                                    if (mvPop.state === "open" || mvPop.state === "showing") mvPop.hidePopup();
+                                } catch (er) {}
+                            }, delayMs);
+                        }
+                    } catch (er) {}
+                });
+                mvPop.addEventListener("mouseover", () => { try { cancelFlyClose(); } catch (er) {} }, true);
+                panel.addEventListener("popuphidden", () => { try { cancelFlyClose(); mvPop.hidePopup(); } catch (er) {} }, { once: true });
             } catch (e) {}
             // "Copy N links in group" — zotero://open links for every member
             // (Weavero's copy-link feature), like Firefox's copy-links entry.

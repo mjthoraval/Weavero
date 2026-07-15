@@ -14009,6 +14009,43 @@ class _ReaderMixin {
      *  source first so it prepares itself exactly as if it were
      *  opening there (Debug Output's status line, plugin-populated
      *  submenus). Submenus mirror lazily on their own popupshowing. */
+    /** Gecko's native submenu open/close delay in ms — what
+     *  XULButtonElement::MenuOpenCloseDelay() returns:
+     *  LookAndFeel::GetInt(SubmenuDelay, 300), and native deselect
+     *  closes an open submenu via HidePopupAfterDelay(popup, that)
+     *  (verified in mozilla-central XULButtonElement.cpp /
+     *  XULMenuParentElement.cpp, 2026-07-15). LookAndFeel isn't
+     *  scriptable, so resolve it the same way its Windows backend
+     *  does: the `ui.submenuDelay` pref override first, then the OS
+     *  menu delay (HKCU\Control Panel\Desktop\MenuShowDelay,
+     *  SPI_GETMENUSHOWDELAY — 400 by default), then Gecko's 300ms
+     *  fallback. Cached for the session. */
+    _wvSubmenuDelay(): number {
+        try {
+            const self: any = this as any;
+            if (self._wvSubmenuDelayMs != null) return self._wvSubmenuDelayMs;
+            let ms: number | null = null;
+            try {
+                if (Services.prefs.prefHasUserValue("ui.submenuDelay")) {
+                    ms = Services.prefs.getIntPref("ui.submenuDelay");
+                }
+            } catch (e) {}
+            if (ms == null && (Zotero as any).isWin) {
+                try {
+                    const k: any = Components.classes["@mozilla.org/windows-registry-key;1"]
+                        .createInstance(Components.interfaces.nsIWindowsRegKey);
+                    k.open(k.ROOT_KEY_CURRENT_USER, "Control Panel\\Desktop", k.ACCESS_READ);
+                    const v = parseInt(k.readStringValue("MenuShowDelay"), 10);
+                    k.close();
+                    if (!isNaN(v) && v >= 0) ms = v;
+                } catch (e) {}
+            }
+            if (ms == null) ms = 300;
+            self._wvSubmenuDelayMs = ms;
+            return ms;
+        } catch (e) { return 300; }
+    }
+
     _wvMirrorMenuPopup(popup, srcPopup) {
         try {
             const doc = popup.ownerDocument;
@@ -14451,6 +14488,7 @@ class _ReaderMixin {
             // hamburger), close it, then open the new one.
             let currentSrcPopup: any = null;
             let currentSrcDismissListener: any = null;
+            let currentSrcHoverCancel: any = null;
             const detachSrcDismiss = () => {
                 if (currentSrcPopup && currentSrcDismissListener) {
                     try {
@@ -14458,9 +14496,58 @@ class _ReaderMixin {
                             currentSrcDismissListener, true);
                     } catch (e) {}
                 }
+                if (currentSrcPopup && currentSrcHoverCancel) {
+                    try {
+                        currentSrcPopup.removeEventListener("mouseover",
+                            currentSrcHoverCancel, true);
+                    } catch (e) {}
+                }
                 currentSrcPopup = null;
                 currentSrcDismissListener = null;
+                currentSrcHoverCancel = null;
             };
+            // Hovering a PLAIN hamburger item (Settings, New Tab, …) must
+            // close an open source cascade — the hover-switch logic below
+            // only runs when ANOTHER submenu opens, so File stayed open
+            // while the cursor sat on Settings (user report 2026-07-15).
+            // Matching NATIVE timing (user follow-up, verified in
+            // mozilla-central: XULMenuParentElement deselect →
+            // HidePopupAfterDelay(popup, MenuOpenCloseDelay()), where
+            // MenuOpenCloseDelay = LookAndFeel SubmenuDelay, i.e. the OS
+            // menu delay on Windows — see _wvSubmenuDelay): the close is
+            // SCHEDULED after that delay and cancelled if the cursor
+            // reaches the cascade or comes back to its <menu> item, so a
+            // diagonal move into the popup can cross other rows safely.
+            let pendingCloseTimer: any = null;
+            const cancelPendingClose = () => {
+                if (pendingCloseTimer) {
+                    try { win.clearTimeout(pendingCloseTimer); } catch (er) {}
+                    pendingCloseTimer = null;
+                }
+            };
+            popup.addEventListener("DOMMenuItemActive", (ev: any) => {
+                try {
+                    const t: any = ev.target;
+                    if (!t || t.parentNode !== popup) return;
+                    if (t.localName === "menu") { cancelPendingClose(); return; }   // switch logic owns submenu→submenu
+                    if (!currentSrcPopup || (currentSrcPopup.state !== "open"
+                            && currentSrcPopup.state !== "showing")) return;
+                    cancelPendingClose();
+                    const victim = currentSrcPopup;
+                    const lp2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const delayMs = (lp2 && lp2._wvSubmenuDelay) ? lp2._wvSubmenuDelay() : 300;
+                    pendingCloseTimer = win.setTimeout(() => {
+                        pendingCloseTimer = null;
+                        try {
+                            if (currentSrcPopup === victim && (victim.state === "open"
+                                    || victim.state === "showing")) {
+                                detachSrcDismiss();
+                                victim.hidePopup();
+                            }
+                        } catch (er) {}
+                    }, delayMs);
+                } catch (er) {}
+            });
 
             // Firefox-style TOP entries: New Tab / New Reader Window /
             // New Main Window (user request 2026-07-13). "New Tab" opens
@@ -14546,6 +14633,13 @@ class _ReaderMixin {
                                 };
                                 srcPopup.addEventListener("popuphidden",
                                     currentSrcDismissListener, true);
+                                // Reaching the cascade cancels a pending
+                                // hover-away close (native KillMenuTimer
+                                // semantics — the delay exists exactly so
+                                // this diagonal move can complete).
+                                currentSrcHoverCancel = () => { try { cancelPendingClose(); } catch (er2) {} };
+                                srcPopup.addEventListener("mouseover",
+                                    currentSrcHoverCancel, true);
                             } catch (er) {
                                 Zotero.debug("[Weavero][hamburger] open-cascade err: " + er);
                             }

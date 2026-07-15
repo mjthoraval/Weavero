@@ -1760,16 +1760,21 @@ class _TabsMixin {
             }
             // Save & Close — the whole-window analog of the tab groups'
             // Save and Close Group; reopen from the tabs menu's Saved
-            // Windows section.
-            const sac: any = doc.createXULElement("menuitem");
-            sac.setAttribute("label", "Save and Close Window…");
-            sac.addEventListener("command", () => {
-                try {
-                    const p: any = live();
-                    if (p) p._wvSaveAndCloseWindow(win, isReader);
-                } catch (e2) {}
-            });
-            pop.appendChild(sac);
+            // Windows section. Same last-main gate as Convert (user
+            // request 2026-07-15): closing the only main window would
+            // leave Zotero without one, so don't offer it either —
+            // _wvSaveAndCloseWindow keeps its own guard as backstop.
+            if (!lastMain) {
+                const sac: any = doc.createXULElement("menuitem");
+                sac.setAttribute("label", "Save and Close Window…");
+                sac.addEventListener("command", () => {
+                    try {
+                        const p: any = live();
+                        if (p) p._wvSaveAndCloseWindow(win, isReader);
+                    } catch (e2) {}
+                });
+                pop.appendChild(sac);
+            }
             // Colour picker — the tab-groups swatch row, no labels.
             // Not for the anchor (its mark is the ⚓).
             if (!isAnchor) {

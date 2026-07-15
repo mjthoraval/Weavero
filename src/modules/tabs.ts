@@ -1713,17 +1713,116 @@ class _TabsMixin {
             return false;
         } catch (e) { return true; }
     }
-    /** Prompt to rename a window; blank restores the default. */
+    /** The window's DEFAULT (un-renamed) display name — "Window N" for
+     *  mains, "Reader window" / "Reader window N" for readers (the same
+     *  numbering the tabs-menu window sections use). */
+    _wvWindowDefaultName(win: any): string {
+        try {
+            const t = win && win.document && win.document.documentElement
+                && win.document.documentElement.getAttribute("windowtype");
+            if (t === "zotero:reader") {
+                let rn = 0, i = 0;
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) { i++; if (en.getNext() === win) rn = i; }
+                return rn > 1 ? "Reader window " + rn : "Reader window";
+            }
+            const idx = this._wvWindowIndex(win);
+            return "Window " + (idx >= 0 ? idx + 1 : "?");
+        } catch (e) { return "Window ?"; }
+    }
+
+    /** Rename-window UI — a small anchored panel, not a modal prompt:
+     *  the input pre-fills with the CURRENT effective name (custom or
+     *  default — never empty), and an ↺ button applies the default
+     *  name in a single click (user requests 2026-07-15; the earlier
+     *  prompt needed a sentence of instructions to explain reverting).
+     *  A typed value equal to the default is stored as "no custom
+     *  title", so the number keeps tracking window order. */
     _wvWindowRenamePrompt(targetWin: any, panel: any) {
         try {
             const parentWin = (panel && panel.ownerGlobal) || targetWin;
-            const obj = { value: this._wvWindowCustomTitle(targetWin) || "" };
-            const ok = Services.prompt.prompt(parentWin, "Rename Window",
-                "Window title (leave blank for the default):", obj, null, { value: false });
-            if (!ok) return;
-            this._wvWindowSetCustomTitle(targetWin, (obj.value || "").trim() || null);
-            try { if (panel && typeof panel.refreshList === "function") panel.refreshList(); else this._wvRegroupTabsMenu(panel); }
-            catch (e) { try { this._wvRegroupTabsMenu(panel); } catch (e2) {} }
+            const doc = parentWin.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const defName = this._wvWindowDefaultName(targetWin);
+            const current = this._wvWindowCustomTitle(targetWin) || defName;
+            let pop: any = doc.getElementById("wv-rename-window-panel");
+            if (pop) pop.remove();                      // rebuild fresh each time
+            pop = doc.createXULElement("panel");
+            pop.id = "wv-rename-window-panel";
+            const wrap = doc.createElementNS(HTML, "div");
+            wrap.setAttribute("style", "display: flex; flex-direction: column; gap: 8px;"
+                + " padding: 10px 12px; min-width: 280px; font: menu;");
+            const title = doc.createElementNS(HTML, "div");
+            title.setAttribute("style", "font-weight: 600;");
+            title.textContent = "Rename Window";
+            wrap.appendChild(title);
+            const row = doc.createElementNS(HTML, "div");
+            row.setAttribute("style", "display: flex; align-items: center; gap: 6px;");
+            const input: any = doc.createElementNS(HTML, "input");
+            input.setAttribute("type", "text");
+            input.value = current;
+            input.setAttribute("style", "flex: 1 1 auto; min-width: 180px; padding: 4px 6px;"
+                + " border: 1px solid rgba(127,127,127,0.45); border-radius: 4px;"
+                + " background: transparent; color: inherit; font: inherit;");
+            row.appendChild(input);
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const apply = (customOrNull: any) => {
+                try {
+                    const p: any = live();
+                    if (p) {
+                        p._wvWindowSetCustomTitle(targetWin, customOrNull);
+                        try {
+                            if (panel && typeof panel.refreshList === "function") panel.refreshList();
+                            else p._wvRegroupTabsMenu(panel);
+                        } catch (e) { try { p._wvRegroupTabsMenu(panel); } catch (e2) {} }
+                    }
+                } catch (e) {}
+                try { pop.hidePopup(); } catch (e) {}
+            };
+            // ↺ — one click applies the default name and closes.
+            const reset: any = doc.createElementNS(HTML, "button");
+            reset.textContent = "↺";
+            reset.setAttribute("title", "Use the default name (" + defName + ")");
+            reset.setAttribute("style", "flex: 0 0 auto; padding: 3px 8px; border-radius: 4px;"
+                + " border: 1px solid rgba(127,127,127,0.45); background: transparent;"
+                + " color: inherit; font: inherit; cursor: pointer;");
+            reset.addEventListener("click", () => apply(null));
+            row.appendChild(reset);
+            wrap.appendChild(row);
+            const btnRow = doc.createElementNS(HTML, "div");
+            btnRow.setAttribute("style", "display: flex; justify-content: flex-end; gap: 6px;");
+            const mkBtn = (label: string, fn: () => void, primary?: boolean) => {
+                const b: any = doc.createElementNS(HTML, "button");
+                b.textContent = label;
+                b.setAttribute("style", "padding: 3px 12px; border-radius: 4px; cursor: pointer;"
+                    + " border: 1px solid rgba(127,127,127,0.45); font: inherit;"
+                    + (primary ? " background: #3d6fe0; color: #fff;"
+                        : " background: transparent; color: inherit;"));
+                b.addEventListener("click", fn);
+                btnRow.appendChild(b);
+            };
+            const submit = () => {
+                const v = String(input.value || "").trim();
+                apply((!v || v === defName) ? null : v);
+            };
+            mkBtn("OK", submit, true);
+            mkBtn("Cancel", () => { try { pop.hidePopup(); } catch (e) {} });
+            wrap.appendChild(btnRow);
+            input.addEventListener("keydown", (ev: any) => {
+                if (ev.key === "Enter") { ev.preventDefault(); submit(); }
+                else if (ev.key === "Escape") { ev.preventDefault(); try { pop.hidePopup(); } catch (e) {} }
+            });
+            pop.appendChild(wrap);
+            pop.addEventListener("popuphidden", () => { try { pop.remove(); } catch (e) {} }, { once: true });
+            pop.addEventListener("popupshown", () => {
+                try { input.focus(); input.select(); } catch (e) {}
+            }, { once: true });
+            (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+            // Centered-ish on the parent window (the caller is a context
+            // menu item, so there's no anchor element to point an arrow at).
+            const px = parentWin.screenX + Math.max(60, (parentWin.outerWidth - 320) / 2);
+            const py = parentWin.screenY + Math.max(60, parentWin.outerHeight / 3);
+            pop.openPopupAtScreen(px, py, false);
         } catch (e) { Zotero.debug("[Weavero] _wvWindowRenamePrompt err: " + e); }
     }
 

@@ -1437,8 +1437,6 @@ class _TabGroupsMixin {
             const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
             const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
             const plusIcon = this._wvPlusIconURI ? this._wvPlusIconURI(dark) : "";
-            const newWinIcon = this._wvNewWindowIconURI ? this._wvNewWindowIconURI(dark) : "";
-            const newReaderWinIcon = this._wvNewReaderWindowIconURI ? this._wvNewReaderWindowIconURI(dark) : readerIcon;
             const INDENT = "padding-inline-start: 1.7em;";
             const place = (el: any) => {
                 el.classList.add("wv-mv-target");
@@ -1490,56 +1488,93 @@ class _TabGroupsMixin {
             }
             // Bottom — move the tab(s) into a BRAND-NEW window, reader or main,
             // each with a "+ New Group" variant. ONE icon-only row (user request
-            // 2026-07-15: four full-text lines were too much) — four buttons,
-            // text lives in the tooltip: [new reader window] [… + new group]
-            // [new main window] [… + new group]. Same HTML-free XUL-in-popup
-            // pattern as the window colour-swatch row; a click closes the whole
-            // menu chain manually since only real menuitems auto-close.
+            // 2026-07-15: four full-text lines were too much) — text lives in
+            // the tooltips. Shared builder, same row in the Open-in and
+            // Move-Group menus.
             const nwSep = doc.createXULElement("menuseparator");
             place(nwSep);
-            const row = doc.createXULElement("hbox");
-            row.setAttribute("align", "center");
-            row.setAttribute("style", "padding: 3px 10px;");
-            const closeAll = () => {
-                try {
-                    let p: any = row.parentNode, root: any = null;
-                    while (p) { if (p.localName === "menupopup") root = p; p = p.parentNode; }
-                    if (root) root.hidePopup();
-                } catch (e) {}
-            };
-            const mkBtn = (icon: string, withPlus: boolean, tip: string, pick: () => void, gapBefore?: boolean) => {
-                const b = doc.createXULElement("hbox");
-                b.setAttribute("align", "center");
-                b.setAttribute("tooltiptext", tip);
-                b.setAttribute("style", "padding: 3px 5px; border-radius: 4px; cursor: pointer;"
-                    + (gapBefore ? " margin-inline-start: 10px;" : ""));
-                const im = doc.createXULElement("image");
-                im.setAttribute("src", icon);
-                im.setAttribute("width", "16");
-                im.setAttribute("height", "16");
-                b.appendChild(im);
-                if (withPlus && plusIcon) {
-                    const pl = doc.createXULElement("image");
-                    pl.setAttribute("src", plusIcon);
-                    pl.setAttribute("width", "10");
-                    pl.setAttribute("height", "10");
-                    pl.setAttribute("style", "margin-inline-start: 1px; align-self: flex-end;");
-                    b.appendChild(pl);
-                }
-                b.addEventListener("mouseenter", () => { try { (b as any).style.background = "var(--fill-quinary, rgba(128,128,128,.2))"; } catch (e) {} });
-                b.addEventListener("mouseleave", () => { try { (b as any).style.background = ""; } catch (e) {} });
-                b.addEventListener("click", (ev: any) => {
-                    try { ev.stopPropagation(); ev.preventDefault(); closeAll(); pick(); } catch (e) {}
-                });
-                row.appendChild(b);
-            };
-            mkBtn(newReaderWinIcon, false, "Move to New Reader Window", () => onPick({ newReaderWindow: true }));
-            if (groupsEnabled) mkBtn(newReaderWinIcon, true, "Move to New Reader Window, into a new group", () => onPick({ newReaderWindow: true, newGroup: true }));
-            mkBtn(newWinIcon, false, "Move to New Main Window", () => onPick({ newMainWindow: true }), true);
-            if (groupsEnabled) mkBtn(newWinIcon, true, "Move to New Main Window, into a new group", () => onPick({ newMainWindow: true, newGroup: true }));
+            const row = this._wvNewWindowIconRow(doc, dark, [
+                { main: false, grp: false, tip: "Move to New Reader Window", fn: () => onPick({ newReaderWindow: true }) },
+                ...(groupsEnabled ? [{ main: false, grp: true, tip: "Move to a New Group in a New Reader Window", fn: () => onPick({ newReaderWindow: true, newGroup: true }) }] : []),
+                { main: true, grp: false, tip: "Move to New Main Window", fn: () => onPick({ newMainWindow: true }), gapBefore: true },
+                ...(groupsEnabled ? [{ main: true, grp: true, tip: "Move to a New Group in a New Main Window", fn: () => onPick({ newMainWindow: true, newGroup: true }) }] : []),
+            ]);
             place(row); added++;
         } catch (e) { Zotero.debug("[Weavero] _wvBuildMoveTargetsInto err: " + e); }
         return added;
+    }
+
+    /** ONE icon-only row of "into a brand-new window" buttons for a XUL
+     *  menupopup — the compact replacement for the old full-text "Move
+     *  to New Reader Window / + New Group / …" lines (user request
+     *  2026-07-15). Each button: a CSS-DRAWN window glyph matching the
+     *  tabs-menu `.wv-winicon` at its EFFECTIVE rendered weight (16×13
+     *  box, 1px border — the stylesheet's 1.3px computes to 1px — 2px
+     *  full-width title bar, blue top-left tab for mains; see
+     *  _wvWinIconFOUri for the menuitem-image twin), a "new" + riding
+     *  the bottom-right corner in currentColor, and for group variants
+     *  a BLUE + overlaid top-right. Full text goes in the tooltip.
+     *  Buttons: [{ main, grp, tip, fn, gapBefore? }]. A click closes
+     *  the whole menu chain manually (only real menuitems auto-close)
+     *  before running `fn`. */
+    _wvNewWindowIconRow(doc: any, dark: boolean, buttons: any[]): any {
+        const row = doc.createXULElement("hbox");
+        row.setAttribute("align", "center");
+        row.setAttribute("style", "padding: 3px 10px;");
+        const closeAll = () => {
+            try {
+                let p: any = row.parentNode, root: any = null;
+                while (p) { if (p.localName === "menupopup") root = p; p = p.parentNode; }
+                if (root) root.hidePopup();
+            } catch (e) {}
+        };
+        const mvBlue = dark ? "#5b9bf8" : "#4072e5";
+        const HTML_NS_MV = "http://www.w3.org/1999/xhtml";
+        const mvCross = (color: string, size: number, arm: number, pos: string) => {
+            const w: any = doc.createElementNS(HTML_NS_MV, "div");
+            w.setAttribute("style", "position: absolute; " + pos
+                + " width: " + size + "px; height: " + size + "px; pointer-events: none;");
+            const v: any = doc.createElementNS(HTML_NS_MV, "div");
+            v.setAttribute("style", "position: absolute; left: " + ((size - arm) / 2)
+                + "px; top: 0; width: " + arm + "px; height: " + size + "px; background: " + color + ";");
+            const h: any = doc.createElementNS(HTML_NS_MV, "div");
+            h.setAttribute("style", "position: absolute; top: " + ((size - arm) / 2)
+                + "px; left: 0; width: " + size + "px; height: " + arm + "px; background: " + color + ";");
+            w.appendChild(v);
+            w.appendChild(h);
+            return w;
+        };
+        for (const btn of buttons) {
+            const b = doc.createXULElement("hbox");
+            b.setAttribute("align", "center");
+            b.setAttribute("tooltiptext", btn.tip);
+            b.setAttribute("style", "position: relative; padding: 4px 6px; border-radius: 4px; cursor: pointer;"
+                + (btn.gapBefore ? " margin-inline-start: 10px;" : ""));
+            const g: any = doc.createElementNS(HTML_NS_MV, "div");
+            g.setAttribute("style", "position: relative; width: 16px; height: 13px;"
+                + " box-sizing: border-box; border: 1px solid currentColor;"
+                + " border-radius: 2px; opacity: 0.8;");
+            const bar: any = doc.createElementNS(HTML_NS_MV, "div");
+            bar.setAttribute("style", btn.main
+                ? ("position: absolute; left: 2px; top: 1px; width: 6px; height: 2px;"
+                    + " border-radius: 1px; background: " + mvBlue + ";")
+                : ("position: absolute; left: 0; right: 0;"
+                    + " top: 0; height: 2px; background: currentColor; opacity: 0.5;"));
+            g.appendChild(bar);
+            b.appendChild(g);
+            // "new window" + — bottom-right corner badge, menu text colour.
+            b.appendChild(mvCross("currentColor", 8, 2, "inset-inline-end: 2px; bottom: 1px;"));
+            // Group variant: blue + over the title-bar end (top-right).
+            if (btn.grp) b.appendChild(mvCross(mvBlue, 8, 2, "inset-inline-end: 2px; top: 1px;"));
+            b.addEventListener("mouseenter", () => { try { (b as any).style.background = "var(--fill-quinary, rgba(128,128,128,.2))"; } catch (e) {} });
+            b.addEventListener("mouseleave", () => { try { (b as any).style.background = ""; } catch (e) {} });
+            const pick = btn.fn;
+            b.addEventListener("click", (ev: any) => {
+                try { ev.stopPropagation(); ev.preventDefault(); closeAll(); pick(); } catch (e) {}
+            });
+            row.appendChild(b);
+        }
+        return row;
     }
 
     _wvTabGroupCloseTabs(win: any, groupID: any) {
@@ -4013,8 +4048,6 @@ class _TabGroupsMixin {
             const dark = !!(this._detectUIDark && this._detectUIDark());
             const mainIcon = this._wvMainWindowIconURI ? this._wvMainWindowIconURI(dark) : "";
             const readerIcon = this._wvWindowIconURI ? this._wvWindowIconURI(dark) : "";
-            const newReaderWinIcon = this._wvNewReaderWindowIconURI ? this._wvNewReaderWindowIconURI(dark) : readerIcon;
-            const newMainWinIcon = this._wvNewWindowIconURI ? this._wvNewWindowIconURI(dark) : mainIcon;
             const mkTarget = (label: string, icon: string, disabled: boolean, fn: (p: any) => void) => {
                 const mi = doc.createXULElement("menuitem");
                 mi.classList.add("menuitem-iconic");
@@ -4041,10 +4074,18 @@ class _TabGroupsMixin {
                     (p: any) => p._wvMoveGroupToWindowAt(groupID, t.win, t.isReader, null));
             }
             subPop.appendChild(doc.createXULElement("menuseparator"));
-            mkTarget("New Reader Window", newReaderWinIcon, false,
-                (p: any) => p._wvTabGroupMoveToNewWindow(win, groupID));
-            mkTarget("New Main Window", newMainWinIcon, false,
-                (p: any) => p._wvTabGroupMoveToNewMainWindow(win, groupID));
+            // Brand-new-window targets as the shared icon-only row (a group
+            // moves as itself, so no "+ New Group" variants here).
+            subPop.appendChild(this._wvNewWindowIconRow(doc, dark, [
+                { main: false, grp: false, tip: "New Reader Window", fn: () => {
+                    try { closeFn(); } catch (er) {}
+                    const p: any = live(); if (p) p._wvTabGroupMoveToNewWindow(win, groupID);
+                } },
+                { main: true, grp: false, tip: "New Main Window", gapBefore: true, fn: () => {
+                    try { closeFn(); } catch (er) {}
+                    const p: any = live(); if (p) p._wvTabGroupMoveToNewMainWindow(win, groupID);
+                } },
+            ]));
         } catch (e) { Zotero.debug("[Weavero] _wvFillGroupMoveTargetPopup err: " + e); }
     }
 

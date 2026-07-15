@@ -554,25 +554,55 @@ class _PaneMixin {
         } catch (e) { return "File"; }
     }
 
-    /** A small colour-dot data URI for a group's palette colour (group menu icon). */
+    /** A group's palette-colour chip for menu rows — a filled ROUNDED
+     *  SQUARE matching the tabs-menu `.wv-tgmenu-dot` exactly (12px,
+     *  radius 3, Firefox-style; user request 2026-07-15 — was a circle,
+     *  which didn't match the List-all-tabs group chip). Drawn centered
+     *  on a 16×16 canvas at whole-pixel coords, so it renders at the
+     *  same 12px visual size as the chip whether the menu shows the
+     *  image at its natural size or stretches it to the 16px icon slot. */
     _wvGroupColorDotURI(hex: string): string {
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12">'
-            + '<circle cx="6" cy="6" r="5" fill="' + hex + '"/></svg>';
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
+            + '<rect x="2" y="2" width="12" height="12" rx="3" ry="3" fill="' + hex + '"/></svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
     /** A window-frame icon (data URI) for the "Open … in" window rows — mirrors the
      *  tabs-menu `.wv-winicon` glyph (rounded rect + title bar). Colour follows the
      *  menu theme (light / dark). */
-    _wvWindowIconURI(dark: boolean): string {
-        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
-        // Match the tabs-menu .wv-winicon: a 16×13 rounded window frame with a
-        // title bar across the top (sessions.ts).
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-            + '<rect x="1" y="2.5" width="14" height="11" rx="2" ry="2" fill="none" stroke="' + c + '" stroke-width="1.3"/>'
-            + '<rect x="1.9" y="3.4" width="12.2" height="2" fill="' + c + '" fill-opacity="0.5"/>'
-            + '</svg>';
+    /** The tabs-menu `.wv-winicon` CSS box itself, wrapped in an SVG
+     *  <foreignObject> so it can serve as a menuitem `image` URL. The
+     *  List-all-tabs glyphs are CSS-drawn divs, NOT artwork files —
+     *  every SVG re-draw of them rasterized differently (Gecko snaps
+     *  CSS border-widths to device pixels; SVG strokes anti-alias), so
+     *  after two mismatched approximations (user feedback 2026-07-15)
+     *  the menu icon now embeds the very same CSS: same renderer,
+     *  same pixels. `variant`: extra inline style for the bar div. */
+    _wvWinIconFOUri(dark: boolean, tabStyle: string | null): string {
+        const text = dark ? "#fbfbfe" : "#0f1420";   // menu text colours (light/dark theme)
+        const bar = tabStyle
+            || "position:absolute;left:0;right:0;top:0;height:2px;background:currentColor;opacity:0.5;";
+        // EFFECTIVE values, not the stylesheet's literals (user report
+        // 2026-07-15, measured live): the panel glyph's `1.3px` border
+        // COMPUTES to 1px in the document, and its fractional layout
+        // position softens the 2.5px bar to a ~2px band — inside this
+        // image the same literals rasterized at full width and read
+        // thicker. So: 1px border, 2px bar, whole-pixel placement
+        // (padding-top 2, not flex centering — y=1.5 blurred the border
+        // and bar into one band).
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">'
+            + '<foreignObject width="16" height="16">'
+            + '<div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;padding-top:2px;box-sizing:border-box;color:' + text + '">'
+            + '<div style="position:relative;width:16px;height:13px;box-sizing:border-box;'
+            + 'border:1px solid currentColor;border-radius:2px;opacity:0.8">'
+            + '<div style="' + bar + '"></div>'
+            + '</div></div>'
+            + '</foreignObject></svg>';
         return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    _wvWindowIconURI(dark: boolean): string {
+        return this._wvWinIconFOUri(dark, null);
     }
 
     /** A small plus icon (data URI) for the "New Group" rows. Drawn as whole-pixel
@@ -591,42 +621,17 @@ class _PaneMixin {
      *  left (a main window has tabs) — distinguishes it from reader windows, which
      *  keep the plain frame. */
     _wvMainWindowIconURI(dark: boolean): string {
-        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
+        // `.wv-winicon-main`'s blue tab at its effective weight (see
+        // _wvWinIconFOUri — 2px, whole-pixel inset).
         const blue = dark ? "#5b9bf8" : "#4072e5";
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-            + '<rect x="1" y="2.5" width="14" height="11" rx="2" ry="2" fill="none" stroke="' + c + '" stroke-width="1.3"/>'
-            + '<rect x="2.3" y="3.4" width="5.6" height="2.6" rx="0.9" ry="0.9" fill="' + blue + '"/>'
-            + '</svg>';
-        return "data:image/svg+xml," + encodeURIComponent(svg);
+        return this._wvWinIconFOUri(dark,
+            "position:absolute;left:2px;top:1px;width:6px;height:2px;border-radius:1px;background:" + blue + ";");
     }
 
-    /** A "new MAIN window" icon (data URI): the main-window frame (blue tab at the
-     *  top left) with a sharp "+" badge over its bottom-right corner. */
-    _wvNewWindowIconURI(dark: boolean): string {
-        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
-        const blue = dark ? "#5b9bf8" : "#4072e5";
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-            + '<rect x="1" y="2.5" width="12" height="9.5" rx="1.6" ry="1.6" fill="none" stroke="' + c + '" stroke-width="1.2"/>'
-            + '<rect x="2.2" y="3.3" width="4.9" height="2.3" rx="0.8" ry="0.8" fill="' + blue + '"/>'
-            + '<rect x="11" y="9" width="2" height="6" fill="' + c + '"/>'
-            + '<rect x="9" y="11" width="6" height="2" fill="' + c + '"/>'
-            + '</svg>';
-        return "data:image/svg+xml," + encodeURIComponent(svg);
-    }
-
-    /** A "new READER window" icon (data URI): the plain reader-window frame (grey
-     *  title bar, NO blue tab) with the same sharp "+" badge as the new-main-window
-     *  icon — distinguishes "Move to New Reader Window" from "…New Main Window". */
-    _wvNewReaderWindowIconURI(dark: boolean): string {
-        const c = dark ? "rgba(255,255,255,0.80)" : "rgba(0,0,0,0.62)";
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-            + '<rect x="1" y="2.5" width="12" height="9.5" rx="1.6" ry="1.6" fill="none" stroke="' + c + '" stroke-width="1.2"/>'
-            + '<rect x="1.9" y="3.3" width="10.2" height="1.8" fill="' + c + '" fill-opacity="0.5"/>'
-            + '<rect x="11" y="9" width="2" height="6" fill="' + c + '"/>'
-            + '<rect x="9" y="11" width="6" height="2" fill="' + c + '"/>'
-            + '</svg>';
-        return "data:image/svg+xml," + encodeURIComponent(svg);
-    }
+    // (The old `_wvNewWindowIconURI` / `_wvNewReaderWindowIconURI`
+    // shrunken-frame data URIs are gone — every "into a brand-new
+    // window" option now renders through the shared icon-only row,
+    // `_wvNewWindowIconRow` in tab-groups.ts.)
 
     /** Ordered list of windows that can host a new tab — every main window, then
      *  every Weavero multi-tab reader window — as `{win, name, isReader}`. Reader
@@ -715,7 +720,6 @@ class _PaneMixin {
             const dark = !!(this._detectUIDark && this._detectUIDark());
             const mainIcon = this._wvMainWindowIconURI(dark);   // blue-tab frame (main windows)
             const readerIcon = this._wvWindowIconURI(dark);     // plain frame (reader windows)
-            const newWinIcon = this._wvNewWindowIconURI(dark);  // frame + "+" badge
             const plusIcon = this._wvPlusIconURI(dark);
             const INDENT = "padding-inline-start: 1.7em;";
             for (const t of targets) {
@@ -752,22 +756,17 @@ class _PaneMixin {
                 pop.appendChild(ng);
             }
 
-            // "New Window" — open in a brand-new main window; its indented
-            // "New Group" opens into a fresh group created in that new window.
+            // "New Window" — open in a brand-new main window, plus its
+            // "into a fresh group there" variant, as the shared icon-only
+            // row (same compact treatment as the Move Tab / Move Group
+            // menus — user request 2026-07-15); full text in the tooltips.
             pop.appendChild(doc.createXULElement("menuseparator"));
-            const nwItem = doc.createXULElement("menuitem");
-            nwItem.setAttribute("label", "New Main Window");
-            nwItem.classList.add("menuitem-iconic");
-            nwItem.setAttribute("image", newWinIcon);
-            nwItem.addEventListener("command", () => { this._wvOpenInNewMainWindow(win, false); });
-            pop.appendChild(nwItem);
-            const nwGroup = doc.createXULElement("menuitem");
-            nwGroup.setAttribute("label", "New Group");
-            nwGroup.classList.add("menuitem-iconic");
-            nwGroup.setAttribute("style", INDENT);
-            nwGroup.setAttribute("image", plusIcon);
-            nwGroup.addEventListener("command", () => { this._wvOpenInNewMainWindow(win, true); });
-            pop.appendChild(nwGroup);
+            pop.appendChild((this as any)._wvNewWindowIconRow(doc, dark, [
+                { main: true, grp: false, tip: "New Main Window",
+                    fn: () => this._wvOpenInNewMainWindow(win, false) },
+                { main: true, grp: true, tip: "A New Group in a New Main Window",
+                    fn: () => this._wvOpenInNewMainWindow(win, true) },
+            ]));
 
             // Placement: an all-notes selection sits right BELOW the native "Open
             // Note in New Tab / New Window" entries; otherwise directly above the

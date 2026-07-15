@@ -14,6 +14,7 @@
 //       windows: [ { kind: "main"|"reader",
 //           tabs: [ { type:"reader"|"note", title, libraryID, itemKey,
 //                     location, selected, pinned? } ],
+//           geom?,                                // _wvWindowGeom shape (2026-07-15)
 //           collection?, columnPrefs? } ] } ] }   // main windows only
 // Every main window and every reader window is one `windows` entry, in order.
 // A main window also carries `collection` (the selected library/collection
@@ -243,7 +244,11 @@ class _TabSessionsMixin {
                 }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionCaptureReaderWindow err: " + e); }
-        return { kind: "reader", tabs };
+        // Geometry rides along (2026-07-15): without it every window
+        // reconstructed on a session switch opened at the tiny default size.
+        let geom: any = null;
+        try { geom = this._wvWindowGeom(w); } catch (e) {}
+        return { kind: "reader", tabs, geom };
     }
 
     /** Capture a main window's library-view state: the selected collection/
@@ -290,7 +295,9 @@ class _TabSessionsMixin {
                 // state even with no reader tabs); extra windows only if they
                 // hold tabs (don't recreate empty windows).
                 if (tabs.length || wi === 0) {
-                    windows.push({ kind: "main", tabs, ...this._wvTabSessionCaptureMainState(w) });
+                    let geom: any = null;
+                    try { geom = this._wvWindowGeom(w); } catch (e) {}
+                    windows.push({ kind: "main", tabs, geom, ...this._wvTabSessionCaptureMainState(w) });
                 }
             }
             const en = Services.wm.getEnumerator("zotero:reader");
@@ -552,7 +559,28 @@ class _TabSessionsMixin {
             }
             const loc = (first.rec.location && Number.isInteger(first.rec.location.pageIndex))
                 ? { pageIndex: first.rec.location.pageIndex } : null;
+            const before = new Set();
+            try {
+                const en = Services.wm.getEnumerator("zotero:reader");
+                while (en.hasMoreElements()) before.add(en.getNext());
+            } catch (e) {}
             await Zotero.Reader.open(first.id, loc, { openInWindow: true });
+            // Placement (2026-07-15): find the window this open created and
+            // restore its saved geometry — without this every reader window
+            // reconstructed on a session switch opened at the default size.
+            // No saved geometry (legacy session) → maximize instead.
+            try {
+                let newWin: any = null;
+                for (let tries = 0; tries < 20 && !newWin; tries++) {
+                    const en = Services.wm.getEnumerator("zotero:reader");
+                    while (en.hasMoreElements()) { const w = en.getNext(); if (!before.has(w)) newWin = w; }
+                    if (!newWin) await (Zotero as any).Promise.delay(150);
+                }
+                if (newWin) {
+                    if (rw.geom && rw.geom.x != null) (this as any)._wvApplyWindowGeom(newWin, rw.geom);
+                    else { try { newWin.maximize(); } catch (e) {} }
+                }
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionReconstructReaderWindow err: " + e); }
     }
 
@@ -632,6 +660,10 @@ class _TabSessionsMixin {
                     // Carried into the spawned window so it restores its OWN
                     // collection + items-tree columns/sort, not the anchor's.
                     wvMainState: { collection: m.collection, columnPrefs: m.columnPrefs },
+                    // Placement (2026-07-15) — the spawn path applies it;
+                    // entries without one (legacy sessions) get maximized
+                    // there instead of the tiny default window.
+                    geom: m.geom || null,
                 }));
             if (extraGroups.length) {
                 try {

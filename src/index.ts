@@ -3985,8 +3985,14 @@ class WeaveroPlugin {
                             ? group.wvWinId : this._wvNextWindowId();
                     } catch (e) {}
                     this._wvInitDevMainWindow(_window, group);
-                    // Multi-monitor placement saved at quit.
-                    try { if (group && group.geom) (this as any)._wvApplyWindowGeom(_window, group.geom); } catch (e) {}
+                    // Multi-monitor placement saved at quit. No geometry at
+                    // all (legacy session entries from before sessions
+                    // captured it) → maximize rather than leave the tiny
+                    // default window (user report 2026-07-15).
+                    try {
+                        if (group && group.geom) (this as any)._wvApplyWindowGeom(_window, group.geom);
+                        else if (_window.maximize) _window.maximize();
+                    } catch (e) {}
                     // Closed-in-series capture (Firefox `_shouldRestore`): a managed
                     // window closing may be quit-teardown running before the quit
                     // notification — snapshot its store entry while Zotero_Tabs is

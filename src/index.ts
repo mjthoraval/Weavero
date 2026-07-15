@@ -2745,8 +2745,12 @@ class WeaveroPlugin {
         this._setupTreeClickDelegate();
 
         // 6a1. Items-list filter bar (chips + popover above the items
-        // tree). Self-retries until the items pane is mounted.
-        this._setupItemsListFilter();
+        // tree) — one per main window. Self-retries until the items
+        // pane is mounted. Explicit targets: at (re)init time only the
+        // focused main would get it otherwise.
+        for (const w of (Zotero.getMainWindows() || [])) {
+            try { this._setupItemsListFilter(w); } catch (e) {}
+        }
 
         // 6a2. Patch the "List all tabs" panel to group rows by
         // library when 2+ libraries are open in tabs. Self-retries
@@ -3699,7 +3703,9 @@ class WeaveroPlugin {
                         || data === "extensions.zotero.weavero.enableFilters") {
                         try {
                             if (this._getEnableItemsTreeFilter()) {
-                                this._setupItemsListFilter();
+                                for (const w of (Zotero.getMainWindows() || [])) {
+                                    try { this._setupItemsListFilter(w); } catch (e) {}
+                                }
                             } else {
                                 this._teardownItemsListFilter();
                             }
@@ -4072,7 +4078,7 @@ class WeaveroPlugin {
                 this._setupBookmarksToolbarButton(_window);
             }
             this._setupPaneObserver();
-            this._setupItemsListFilter();
+            this._setupItemsListFilter(_window);
             this._setupTabsMenuLibrarySort(_window);
             this._setupLibrariesBoxHighlight(_window);
             // Re-apply CSS-class state (these set classes on root.documentElement).

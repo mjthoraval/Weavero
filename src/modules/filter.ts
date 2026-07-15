@@ -155,14 +155,28 @@ class _FilterMixin {
     // several main windows each gets its own slot, so they no longer collide.
     // Mixed onto WeaveroPlugin.prototype as accessors by the index.ts mixin
     // (defineProperties preserves get/set; see the comment there).
-    get _filterState() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterState : this._wvFilterStateNoWin; }
-    set _filterState(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterState = v; else this._wvFilterStateNoWin = v; }
-    get _filterBar() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterBar : this._wvFilterBarNoWin; }
-    set _filterBar(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterBar = v; else this._wvFilterBarNoWin = v; }
-    get _filterTbBtn() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterTbBtn : this._wvFilterTbBtnNoWin; }
-    set _filterTbBtn(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterTbBtn = v; else this._wvFilterTbBtnNoWin = v; }
-    get _filterTreeObserver() { const w: any = Zotero.getMainWindow(); return w ? w._wvFilterTreeObserver : this._wvFilterTreeObserverNoWin; }
-    set _filterTreeObserver(v) { const w: any = Zotero.getMainWindow(); if (w) w._wvFilterTreeObserver = v; else this._wvFilterTreeObserverNoWin = v; }
+    /** The window the `_filter*` accessors bind to: the explicit
+     *  override while a targeted setup/teardown pass is running,
+     *  otherwise the focused main window. The override exists so
+     *  set-up of a BACKGROUND main window (init loops over all mains;
+     *  hot-reloads happen with arbitrary focus) writes that window's
+     *  slots instead of whichever main happens to be focused. */
+    _wvFilterTargetWin(): any {
+        const o: any = (this as any)._wvFilterWinOverride;
+        if (o && !o.closed) return o;
+        return Zotero.getMainWindow();
+    }
+
+    get _filterState() { const w: any = this._wvFilterTargetWin(); return w ? w._wvFilterState : this._wvFilterStateNoWin; }
+    set _filterState(v) { const w: any = this._wvFilterTargetWin(); if (w) w._wvFilterState = v; else this._wvFilterStateNoWin = v; }
+    get _filterBar() { const w: any = this._wvFilterTargetWin(); return w ? w._wvFilterBar : this._wvFilterBarNoWin; }
+    set _filterBar(v) { const w: any = this._wvFilterTargetWin(); if (w) w._wvFilterBar = v; else this._wvFilterBarNoWin = v; }
+    get _filterTbBtn() { const w: any = this._wvFilterTargetWin(); return w ? w._wvFilterTbBtn : this._wvFilterTbBtnNoWin; }
+    set _filterTbBtn(v) { const w: any = this._wvFilterTargetWin(); if (w) w._wvFilterTbBtn = v; else this._wvFilterTbBtnNoWin = v; }
+    get _filterTreeObserver() { const w: any = this._wvFilterTargetWin(); return w ? w._wvFilterTreeObserver : this._wvFilterTreeObserverNoWin; }
+    set _filterTreeObserver(v) { const w: any = this._wvFilterTargetWin(); if (w) w._wvFilterTreeObserver = v; else this._wvFilterTreeObserverNoWin = v; }
+    get _filterSpaceFix() { const w: any = this._wvFilterTargetWin(); return w ? w._wvFilterSpaceFix : this._wvFilterSpaceFixNoWin; }
+    set _filterSpaceFix(v) { const w: any = this._wvFilterTargetWin(); if (w) w._wvFilterSpaceFix = v; else this._wvFilterSpaceFixNoWin = v; }
 
     /** Does `item` (assumed to be an attachment) match the given
      *  attachment-file-type list?
@@ -4087,21 +4101,35 @@ class _FilterMixin {
     //  lived between this and the next filter block — see modules/pane.ts.)
     // =====================================================================
 
-    _setupItemsListFilter() {
+    /** Install the filter pane into `targetWin` (default: the focused
+     *  main window). EVERY main window gets its own filter — state is
+     *  per-window via the `_filter*` accessors above; callers loop
+     *  over Zotero.getMainWindows() at init and pass each window in.
+     *  The override makes the accessors bind to `targetWin` for the
+     *  duration of the synchronous setup pass, so installing into a
+     *  background window doesn't write the focused window's slots. */
+    _setupItemsListFilter(targetWin?: any) {
         // Pref gate (Filters group → Items-tree filter pane).
         if (!this._getEnableItemsTreeFilter()) {
             try { this._teardownItemsListFilter(); } catch (e) {}
             return;
         }
-        const win = Zotero.getMainWindow();
-        const doc = win && win.document;
-        if (!doc) return;
+        const win = (targetWin && !targetWin.closed) ? targetWin : Zotero.getMainWindow();
+        if (!win || !win.document) return;
+        const prev = (this as any)._wvFilterWinOverride;
+        (this as any)._wvFilterWinOverride = win;
+        try { this._setupItemsListFilterIn(win); }
+        finally { (this as any)._wvFilterWinOverride = prev || null; }
+    }
+
+    _setupItemsListFilterIn(win: any) {
+        const doc = win.document;
         const container = doc.getElementById("zotero-items-pane-container");
         const itemsPane = doc.getElementById("zotero-items-pane");
         const searchBox = doc.getElementById("zotero-tb-search");
         if (!container || !itemsPane || !searchBox) {
             // Items pane mounts asynchronously on first window open; retry.
-            win.setTimeout(() => this._setupItemsListFilter(), 1000);
+            win.setTimeout(() => this._setupItemsListFilter(win), 1000);
             return;
         }
         if (doc.getElementById("wv-filter-bar")) return;
@@ -4797,7 +4825,23 @@ class _FilterMixin {
         }
     }
 
-    _teardownItemsListFilter() {
+    /** Tear the filter pane out of `targetWin`; with no argument,
+     *  out of EVERY main window (plugin disable / pref off). */
+    _teardownItemsListFilter(targetWin?: any) {
+        if (!targetWin) {
+            for (const w of (Zotero.getMainWindows() || [])) {
+                try { this._teardownItemsListFilter(w); } catch (e) {}
+            }
+            return;
+        }
+        if (targetWin.closed) return;
+        const prev = (this as any)._wvFilterWinOverride;
+        (this as any)._wvFilterWinOverride = targetWin;
+        try { this._teardownItemsListFilterIn(targetWin); }
+        finally { (this as any)._wvFilterWinOverride = prev || null; }
+    }
+
+    _teardownItemsListFilterIn(targetWin: any) {
         try {
             if (this._filterTreeObserver) {
                 this._filterTreeObserver.disconnect();
@@ -4808,7 +4852,7 @@ class _FilterMixin {
         // this, plugin disable would leave the items list still
         // filtering through our state.
         try {
-            const win = Zotero.getMainWindow();
+            const win = targetWin;
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             // Restore the selectItems wrap (an own property shadowing
             // the prototype method — delete lets it show through).
@@ -4870,8 +4914,7 @@ class _FilterMixin {
             }
         } catch (e) {}
         try {
-            const win = Zotero.getMainWindow();
-            const doc = win && win.document;
+            const doc = targetWin && targetWin.document;
             if (doc) {
                 const bar = doc.getElementById("wv-filter-bar");
                 if (bar) bar.remove();

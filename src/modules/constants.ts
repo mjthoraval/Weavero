@@ -63,6 +63,31 @@ export const URL_EXTERNAL_SVG =
     + '<line x1="7" y1="9" x2="13.5" y2="2.5"/>'
     + '</svg>';
 
+// Weavero funnel identity (user pick 2026-07-15, after teal / red /
+// violet trials): Zotero's own filter.svg funnel artwork with the
+// STEM — below the cone junction, y=7 of the 16-unit viewBox —
+// tinted amber. This is what tells a Weavero filter funnel apart
+// from the native Advanced Search funnel. Single source of truth:
+// every Weavero funnel renders from these constants (or, for the
+// library toolbar button in filter.ts, overlays a second
+// context-fill image so the stem can use light-dark() amber).
+// A data: URI can't consult light-dark(), so the baked stem colour
+// is a mid amber that reads in both themes.
+export const WV_FUNNEL_STEM_COLOR = "#f0a824";
+// The hollow funnel outline from chrome://zotero/skin/16/universal/
+// filter.svg, byte-identical (pixel-sharp rule: keep Zotero's artwork
+// verbatim).
+export const WV_FUNNEL_PATH = "M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z";
+// Ready-made two-tone funnel for <img src=…>: outline follows
+// context-fill (cooperates with `-moz-context-properties: fill` on
+// the img), stem amber.
+export const WV_FUNNEL_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
+    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    + '<clipPath id="wvstem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="context-fill"/>'
+    + '<path clip-path="url(#wvstem)" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="' + WV_FUNNEL_STEM_COLOR + '"/>'
+    + '</svg>');
+
 // Chain (relations) icon SVG markup with a `__FILL__` placeholder
 // for the path's fill color. Used at init() to bake light + dark
 // theme variants into data: URLs that the chrome XUL items-tree menu

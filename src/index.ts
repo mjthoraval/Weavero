@@ -1225,27 +1225,6 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
-    _getEnableDOIColumn() {
-        if (!this._getEnableVisualExtras()) return false;
-        try {
-            const v = Zotero.Prefs.get("weavero.enableDOIColumn");
-            return v === undefined ? true : !!v;
-        } catch (e) { return true; }
-    }
-    _getEnablePMIDColumn() {
-        if (!this._getEnableVisualExtras()) return false;
-        try {
-            const v = Zotero.Prefs.get("weavero.enablePMIDColumn");
-            return v === undefined ? true : !!v;
-        } catch (e) { return true; }
-    }
-    _getEnablePMCIDColumn() {
-        if (!this._getEnableVisualExtras()) return false;
-        try {
-            const v = Zotero.Prefs.get("weavero.enablePMCIDColumn");
-            return v === undefined ? true : !!v;
-        } catch (e) { return true; }
-    }
     _getEnableGroupLibraryGlyph() {
         if (!this._getEnableVisualExtras()) return false;
         try {
@@ -1945,8 +1924,7 @@ class WeaveroPlugin {
                 "enableTabsLibraryFilter", "enableTabsFileTypeFilter",
                 // Visual extras
                 "enableAnnotationsCountColumn", "enableTagsCountAuto",
-                "enableRelatedColumn", "enableDOIColumn",
-                "enablePMIDColumn", "enablePMCIDColumn",
+                "enableRelatedColumn",
                 "enableGroupLibraryGlyph",
                 "enableAnnotationAddedBy", "enableAddedByColors",
                 // "Tabs and Windows" — the WHOLE section defaults ON (user choice,
@@ -2351,9 +2329,6 @@ class WeaveroPlugin {
             "enableTabsFileTypeFilter",
             // Visual extras (no master, flat children)
             "enableAnnotationsCountColumn",
-            "enableDOIColumn",
-            "enablePMIDColumn",
-            "enablePMCIDColumn",
             "enableGroupLibraryGlyph",
         ]) {
             try {
@@ -3708,9 +3683,6 @@ class WeaveroPlugin {
                     // unregister all and re-register with the new gates.
                     if (data === "extensions.zotero.weavero.enableAnnotationsCountColumn"
                         || data === "extensions.zotero.weavero.enableRelatedColumn"
-                        || data === "extensions.zotero.weavero.enableDOIColumn"
-                        || data === "extensions.zotero.weavero.enablePMIDColumn"
-                        || data === "extensions.zotero.weavero.enablePMCIDColumn"
                         || data === "extensions.zotero.weavero.enableRelations") {
                         try {
                             this._unregisterItemTreeColumns();

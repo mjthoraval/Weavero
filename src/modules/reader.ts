@@ -25,6 +25,7 @@
 
 import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
+    WV_FUNNEL_DATA_URI,
 } from "./constants";
 
 class _ReaderMixin {
@@ -6002,8 +6003,9 @@ class _ReaderMixin {
             });
             wrapper.appendChild(input);
 
-            // File-type funnel — same artwork + dropmarker chevron as the
-            // main window's #wv-tabs-menu-filetype-btn. Far RIGHT.
+            // File-type funnel — same artwork (Weavero-identity funnel,
+            // amber stem) + dropmarker chevron as the main window's
+            // #wv-tabs-menu-filetype-btn. Far RIGHT.
             const funnel: any = doc.createElementNS(HTML, "button");
             funnel.id = "wv-wtl-filetype-btn";
             funnel.type = "button";
@@ -6014,7 +6016,7 @@ class _ReaderMixin {
             funnel.style.fill = "currentColor";
             const ftIcon: any = doc.createElementNS(HTML, "img");
             ftIcon.className = "wv-wtl-filetype-icon";
-            ftIcon.src = "chrome://zotero/skin/16/universal/filter.svg";
+            ftIcon.src = WV_FUNNEL_DATA_URI;
             funnel.appendChild(ftIcon);
             const dot: any = doc.createElementNS(HTML, "span");
             dot.className = "wv-wtl-filetype-dot";

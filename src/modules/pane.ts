@@ -2659,16 +2659,32 @@ class _PaneMixin {
 
     _wvEnsureColPickStyles(doc: any) {
         try {
-            if (doc.getElementById("wv-colpick-styles")) return;
+            // Re-create rather than keep an existing element: a stale
+            // copy from a previous plugin load would pin old URLs.
+            doc.getElementById("wv-colpick-styles")?.remove();
             const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
             style.id = "wv-colpick-styles";
-            const logo = String((this as any)._rootURI || "") + "icons/icon.svg";
+            // Theme-matched PNG logo variants, NOT icon.svg: the SVG
+            // logo is dark blue + black strokes, which at menu-mark
+            // size on the dark theme reads as an unidentifiable grey
+            // chain (user report 2026-07-15). icon-light-16.png is the
+            // dark artwork (for light theme), icon-dark-16.png the
+            // light artwork (for dark theme) — verified by pixel
+            // brightness. prefers-color-scheme works in the chrome
+            // XUL menu context (same technique as the items-tree menu
+            // icons, see index.ts).
+            const root = String((this as any)._rootURI || "");
             style.textContent = [
                 "menuitem.wv-colpick-ours::after {",
                 "  content: ''; display: inline-block;",
-                "  width: 11px; height: 11px;",
-                "  margin-inline-start: 7px; vertical-align: -1px;",
-                "  background: url('" + logo + "') center/contain no-repeat;",
+                "  width: 12px; height: 12px;",
+                "  margin-inline-start: 7px; vertical-align: -2px;",
+                "  background: url('" + root + "icons/icon-light-16.png') center/contain no-repeat;",
+                "}",
+                "@media (prefers-color-scheme: dark) {",
+                "  menuitem.wv-colpick-ours::after {",
+                "    background-image: url('" + root + "icons/icon-dark-16.png');",
+                "  }",
                 "}",
             ].join("\n");
             (doc.head || doc.documentElement).appendChild(style);
@@ -3016,90 +3032,15 @@ class _PaneMixin {
             // We surface the annotation's "added by" by patching the
             // annotation row renderer (see `_ensureAnnotationRowPatched`).
 
-            // Identifier columns — DOI / PMID / PMCID (user request
-            // 2026-07-15). Prior art, acknowledged: the feature request
-            // and discussion at
-            // https://forums.zotero.org/discussion/132715/pmid-pmcid-in-extra-column
-            // and iagogv3's core PR adding native PMID/PMCID columns,
-            // https://github.com/zotero/zotero/pull/5831 (unmerged; it
-            // confirmed PMID/PMCID are DEDICATED item fields since
-            // Zotero 9 — field IDs 86/87). This implementation uses the
-            // plugin column API instead: each column reads the dedicated
-            // field first and falls back to the legacy "<ID>: …" line in
-            // Extra (pre-migration items and item types without the
-            // field). retorquere's zotero-pmcid-fetcher offers similar
-            // columns — see the foreign-column skip below.
-            const extraId = (item: any, re: RegExp) => {
-                try {
-                    const extra = item.getField ? String(item.getField("extra") || "") : "";
-                    const m = extra.match(re);
-                    return m ? m[1] : "";
-                } catch (e) { return ""; }
-            };
-            const idCols: any[] = [
-                { key: "weaveroDOI", label: "DOI", on: this._getEnableDOIColumn(),
-                    provider: (item: any) => {
-                        try {
-                            if (!item || !item.isRegularItem || !item.isRegularItem()) return "";
-                            let doi = "";
-                            try { doi = String(item.getField("DOI") || ""); } catch (e) {}
-                            return doi || extraId(item, /^\s*DOI:\s*(\S+)/mi);
-                        } catch (e) { return ""; }
-                    } },
-                { key: "weaveroPMID", label: "PMID", on: this._getEnablePMIDColumn(),
-                    provider: (item: any) => {
-                        try {
-                            if (!item || !item.isRegularItem || !item.isRegularItem()) return "";
-                            let v = "";
-                            try { v = String(item.getField("PMID") || ""); } catch (e) {}
-                            return v || extraId(item, /^\s*PMID:\s*(\d+)/mi);
-                        } catch (e) { return ""; }
-                    } },
-                { key: "weaveroPMCID", label: "PMCID", on: this._getEnablePMCIDColumn(),
-                    provider: (item: any) => {
-                        try {
-                            if (!item || !item.isRegularItem || !item.isRegularItem()) return "";
-                            let v = "";
-                            try { v = String(item.getField("PMCID") || ""); } catch (e) {}
-                            return v || extraId(item, /^\s*PMCID:\s*(PMC\d+)/mi);
-                        } catch (e) { return ""; }
-                    } },
-            ];
-            // Polite coexistence (user report 2026-07-15): another plugin
-            // may already provide the same identifier column — e.g.
-            // zotero-pmcid-fetcher registers PMID and PMCID. Skip ours
-            // when a foreign custom column ends in the same identifier,
-            // so the picker never lists duplicates; disable that plugin
-            // (or its columns) and Weavero's take over on the next
-            // register pass.
-            let foreignKeys: string[] = [];
-            try {
-                foreignKeys = ((Zotero.ItemTreeManager as any).getCustomColumns() || [])
-                    .map((c: any) => String(c.dataKey || ""))
-                    .filter((k: string) => k.indexOf("weavero") === -1);
-            } catch (e) {}
-            const foreignHas = (ident: string) =>
-                foreignKeys.some((k: string) => k.toUpperCase().endsWith("-" + ident.toUpperCase()));
-            for (const c of idCols) {
-                if (!c.on) continue;
-                if (foreignHas(c.label)) {
-                    this._dbg("[Weavero] skip " + c.label + " column — another plugin provides one");
-                    continue;
-                }
-                try {
-                    const k = (Zotero.ItemTreeManager as any).registerColumn({
-                        dataKey: c.key,
-                        label: c.label,
-                        pluginID: "weavero@mjthoraval",
-                        width: "90",
-                        minWidth: 40,
-                        showInColumnPicker: true,
-                        zoteroPersist: ["width", "hidden", "sortDirection"],
-                        dataProvider: c.provider,
-                    });
-                    if (k) this._weaveroColumnKeys.push(k);
-                } catch (e) {}
-            }
+            // No identifier columns (DOI / PMID / PMCID) — Weavero
+            // shipped them briefly (v0.15.8-dev.9x, after the forum ask
+            // https://forums.zotero.org/discussion/132715/pmid-pmcid-in-extra-column),
+            // then removed them 2026-07-15: retorquere's
+            // zotero-pmcid-fetcher already provides PMID/PMCID columns
+            // with the same field-first + Extra-fallback strategy, and
+            // duplicating them here wasn't worth the overlap. The
+            // "Has PMID" / "Has PMCID" filter-pane filters remain
+            // Weavero's (see filter.ts).
 
             this._dbg("[Weavero] columns registered: "
                 + this._weaveroColumnKeys.join(", "));

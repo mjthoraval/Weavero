@@ -16,6 +16,8 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties (see modules/annotation.ts for the pattern).
 
+import { WV_FUNNEL_DATA_URI } from "./constants";
+
 // Zotero_Tabs is the per-window globals — it's declared as `any`
 // rather than imported from zotero-types because zotero-types
 // doesn't ship a typing for the runtime per-window global yet.
@@ -10293,16 +10295,16 @@ class _TabsMixin {
         btn.type = "button";
         btn.title = "Filter tabs by attachment file type. "
             + "Click in the popup to filter, Alt+click to exclude.";
-        // Use the same `filter.svg` Zotero ships for the items-list
-        // filter button (themed via -moz-context-properties), plus a
-        // small dropmarker chevron so the visual matches the items
-        // toolbar button shape (icon + ▾).
+        // Weavero-identity funnel (Zotero's filter.svg artwork + amber
+        // stem, themed via -moz-context-properties — see constants.ts),
+        // plus a small dropmarker chevron so the visual matches the
+        // items toolbar button shape (icon + ▾).
         btn.style.setProperty("-moz-context-properties",
             "fill, fill-opacity, stroke, stroke-opacity");
         btn.style.fill = "currentColor";
         const ic = doc.createElementNS(NS_HTML, "img");
         ic.className = "wv-tabs-menu-filetype-icon";
-        ic.src = "chrome://zotero/skin/16/universal/filter.svg";
+        ic.src = WV_FUNNEL_DATA_URI;
         btn.appendChild(ic);
         // Blue active-filter dot on the funnel — same convention as the library
         // and reader filter buttons (shown via .wv-active, set by

@@ -22,7 +22,7 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
-import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG } from "./constants";
+import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 
 declare const Components: any;
 declare const Services: any;
@@ -38,24 +38,14 @@ const RP_FUNNEL_ICON = "chrome://zotero/skin/16/universal/filter.svg";
 const RP_RELATED_ICON = "chrome://zotero/skin/16/universal/related.svg";
 const RP_TAG_ICON = "chrome://zotero/skin/16/universal/tag.svg";
 
-// Baked-in data: URI of Zotero's `filter.svg` (chrome://zotero/skin/16/
-// universal/filter.svg, byte-identical content). Used as the funnel-
-// button icon at reader startup — gives the SAME visual as the library
-// filter funnels (which load the chrome SVG directly) without waiting
-// for `_wvReaderPrefetchIcons` to land. `context-fill` cooperates with
-// the parent IMG's `-moz-context-properties: fill` to inherit color.
-// Weavero identity: the funnel STEM is tinted teal (same treatment as
-// the library filter button in filter.ts — a mid-teal that reads in
-// both themes, since a data: URI can't consult light-dark()). The
-// second path repeats Zotero's artwork clipped below the cone/stem
-// junction (y=7 of 16).
-const RP_FUNNEL_PATH = "M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z";
-const RP_FUNNEL_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
-    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    + '<clipPath id="wvstem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
-    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + RP_FUNNEL_PATH + '" fill="context-fill"/>'
-    + '<path clip-path="url(#wvstem)" fill-rule="evenodd" clip-rule="evenodd" d="' + RP_FUNNEL_PATH + '" fill="#d04050"/>'
-    + '</svg>');
+// Weavero identity funnel (amber stem) — the canonical data: URI lives
+// in constants.ts (WV_FUNNEL_DATA_URI) so every Weavero funnel shares
+// the same artwork and stem colour. Used as the funnel-button icon at
+// reader startup — gives the SAME visual as the library filter funnel
+// without waiting for `_wvReaderPrefetchIcons` to land. `context-fill`
+// cooperates with the parent IMG's `-moz-context-properties: fill` to
+// inherit the outline colour.
+const RP_FUNNEL_DATA_URI = WV_FUNNEL_DATA_URI;
 
 // Person glyph for Added By / Modified By chips — the same Font Awesome
 // "user" icon the reader uses for annotation authors (IconUser). Inline so
@@ -754,7 +744,7 @@ class _ReaderPanelsMixin {
                     if (!d) continue;
                     // (The funnel BUTTON keeps its two-tone data URI —
                     // the prefetched plain chrome funnel would erase the
-                    // teal stem identity, so no src swap here any more.)
+                    // amber stem identity, so no src swap here any more.)
                     const pop = d.getElementById(RP_FILTER_POPUP_ID);
                     if (pop) this._wvRenderReaderFilterPopup(r, d, pop);
                 }
@@ -2527,9 +2517,14 @@ class _ReaderPanelsMixin {
                 filterBtn.setAttribute("title", "Filter bookmarks");
                 // Use the same funnel path Weavero's reader-filter
                 // button uses (the funnel above the reader in the
-                // annotations toolbar). 16 viewBox, `currentColor`
-                // fill, rendered at 20×20 to match the toolbar.
-                filterBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z"/></svg>';
+                // annotations toolbar), amber stem included. 16
+                // viewBox, `currentColor` outline, rendered at 20×20
+                // to match the toolbar.
+                filterBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none">'
+                    + '<clipPath id="wv-bm-stem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
+                    + '<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
+                    + '<path clip-path="url(#wv-bm-stem)" fill="' + WV_FUNNEL_STEM_COLOR + '" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
+                    + '</svg>';
                 // Tiny ▾ chevron — same affordance as the reader
                 // toolbar funnel (popup 2) signalling "opens a popup".
                 const chev = idoc.createElementNS(NS_HTML_RP, "span");

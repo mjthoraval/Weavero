@@ -25,7 +25,7 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
-import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG } from "./constants";
+import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS } from "./reader-panels";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
@@ -2938,7 +2938,8 @@ class _BookmarksMixin {
         // the filter is text-only (label substring match), so the input is
         // the whole UI. Push the funnel to the right so it doesn't crowd
         // the +/folder add buttons. Uses the SAME hollow funnel SVG as
-        // the reader sidebar so the affordance reads identically.
+        // the reader sidebar so the affordance reads identically —
+        // including the amber Weavero-identity stem.
         const filterBtn = doc.createElementNS(NS_HTML, "button");
         filterBtn.className = "wv-bm-iconbtn";
         filterBtn.setAttribute("title", "Filter bookmarks");
@@ -2951,7 +2952,9 @@ class _BookmarksMixin {
         // rule (with `-moz-context-properties: fill, stroke` + the
         // var(--fill-secondary) tint) handle sizing and color.
         const funnelSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">'
-            + '<path fill="context-fill" fill-rule="evenodd" clip-rule="evenodd" d="M1.99998 1.70711C1.37001 1.07714 1.81618 0 2.70708 0H14.2929C15.1838 0 15.6299 1.07714 15 1.70711L9.99998 6.70711V12.7071L6.99998 15.7071V6.70711L1.99998 1.70711ZM14.2929 1L2.70708 1L7.99998 6.29289V13.2929L8.99998 12.2929V6.29289L14.2929 1Z"/>'
+            + '<clipPath id="wvstem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
+            + '<path fill="context-fill" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
+            + '<path clip-path="url(#wvstem)" fill="' + WV_FUNNEL_STEM_COLOR + '" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
             + '</svg>';
         const funnelImg = doc.createElementNS(NS_HTML, "img");
         funnelImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(funnelSvg));

@@ -4220,28 +4220,30 @@ class _FilterMixin {
         icon.setAttribute("width", "20");
         icon.setAttribute("height", "20");
         tbBtn.appendChild(icon);
-        // Weavero identity (user pick 2026-07-15): a SECOND copy of the
-        // same chrome funnel, pulled exactly over the base icon by a
+        // Weavero identity (user pick 2026-07-15, amber after teal /
+        // red / violet trials — canonical colour notes in constants.ts
+        // next to WV_FUNNEL_STEM_COLOR): a SECOND copy of the same
+        // chrome funnel, pulled exactly over the base icon by a
         // negative start margin (net 0 width → the dropmarker is
-        // unaffected), clipped to the STEM and tinted teal. The artwork
-        // stays Zotero's own (pixel-sharp rule) with a two-tone finish
-        // that tells Weavero's filter apart from the native Advanced
-        // Search funnel. Teal, NOT accent blue: accent means
-        // active/selected, and the active-filter dot already uses it.
+        // unaffected), clipped to the STEM and tinted amber via
+        // context-fill — the one funnel site that can consult
+        // light-dark(), so it gets per-theme ambers instead of the
+        // baked mid amber. The artwork stays Zotero's own (pixel-sharp
+        // rule) with a two-tone finish that tells Weavero's filter
+        // apart from the native Advanced Search funnel. Amber, NOT
+        // accent blue: accent means active/selected, and the
+        // active-filter dot already uses it. Both images render at
+        // 16px regardless of the width attrs (measured), hence -16px.
         const stem = doc.createXULElement("image");
         stem.className = "wv-filter-stem";
         stem.setAttribute("src", "chrome://zotero/skin/16/universal/filter.svg");
-        // Both images RENDER at 16px regardless of the width/height
-        // attrs (measured live: toolbar CSS constrains the icon), so
-        // the pull-back margin must be -16px — -20px left the teal
-        // stem 4px off the funnel.
         stem.setAttribute("width", "16");
         stem.setAttribute("height", "16");
         stem.style.setProperty("-moz-context-properties", "fill");
         stem.style.marginInlineStart = "-16px";
         // 44% ≈ just below the cone/stem junction (y 6.7 of 16).
         stem.style.clipPath = "inset(44% 0 0 0)";
-        stem.style.fill = "light-dark(#c22f3e, #e0606e)";   // trial: Zotero-brand red (was teal #0d8a80/#38c7b4)
+        stem.style.fill = "light-dark(#b45309, #fbbf24)";   // per-theme ambers (user-approved)
         stem.style.pointerEvents = "none";
         tbBtn.appendChild(stem);
         const dropmarker = doc.createXULElement("image");

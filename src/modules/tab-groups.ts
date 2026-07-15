@@ -4297,7 +4297,11 @@ class _TabGroupsMixin {
                     } catch (er) {}
                 }
                 sections.push({
+                    // kind:"main" only satisfies the shared renderer;
+                    // iconType:"none" suppresses its window glyph — a
+                    // group isn't a window, the colour dot is its mark.
                     label: g.name || "Unnamed group", tabs, kind: "main",
+                    iconType: "none",
                     gid: g.id, hex: this._tabGroupColorHex(g.color),
                 });
             }

@@ -1737,20 +1737,27 @@ class _TabsMixin {
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
             const isAnchor = !isReader && this._wvIsAnchorWindow(win);
             // Convert — a reader/note window becomes a new main window
-            // carrying all its tabs, and vice versa. The guards (last
-            // main window, no reader-able tab) live in the convert
-            // functions and explain themselves.
-            const conv: any = doc.createXULElement("menuitem");
-            conv.setAttribute("label", isReader ? "Convert to Main Window" : "Convert to Reader Window");
-            conv.addEventListener("command", () => {
-                try {
-                    const p: any = live();
-                    if (!p) return;
-                    if (isReader) p._wvConvertReaderWindowToMain(win);
-                    else p._wvConvertMainWindowToReader(win);
-                } catch (e2) {}
-            });
-            pop.appendChild(conv);
+            // carrying all its tabs, and vice versa. Zotero must always
+            // keep at least one main window, so the main→reader entry
+            // is omitted entirely for the last main window (user
+            // request 2026-07-15) — no other main window could take
+            // over as anchor. The convert functions keep their own
+            // guards (last main, no reader-able tab) for stale menus
+            // and other callers.
+            const lastMain = !isReader && (Zotero.getMainWindows() || []).length < 2;
+            if (!lastMain) {
+                const conv: any = doc.createXULElement("menuitem");
+                conv.setAttribute("label", isReader ? "Convert to Main Window" : "Convert to Reader Window");
+                conv.addEventListener("command", () => {
+                    try {
+                        const p: any = live();
+                        if (!p) return;
+                        if (isReader) p._wvConvertReaderWindowToMain(win);
+                        else p._wvConvertMainWindowToReader(win);
+                    } catch (e2) {}
+                });
+                pop.appendChild(conv);
+            }
             // Save & Close — the whole-window analog of the tab groups'
             // Save and Close Group; reopen from the tabs menu's Saved
             // Windows section.
@@ -3037,8 +3044,11 @@ class _TabsMixin {
         header.setAttribute("role", "presentation");
         // Left glyph: a plain window frame for any window (main, reader, anchor —
         // the first tab makes the kind obvious); a Zotero icon class for library
-        // sub-headers.
-        if (iconType === "anchor" || iconType === "main" || iconType === "reader" || iconType === "window") {
+        // sub-headers; "none" for sections that aren't windows at all
+        // (saved tab groups — their colour dot is the whole identity).
+        if (iconType === "none") {
+            // no glyph
+        } else if (iconType === "anchor" || iconType === "main" || iconType === "reader" || iconType === "window") {
             const ic = doc.createElement("span");
             // Main / anchor windows get the blue-tab variant; reader windows keep the
             // plain frame (a main window has tabs — same cue as the menu icons).

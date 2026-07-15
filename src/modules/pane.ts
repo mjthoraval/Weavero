@@ -728,6 +728,9 @@ class _PaneMixin {
                 wi.setAttribute("label", t.name);
                 wi.classList.add("menuitem-iconic");
                 wi.setAttribute("image", t.isReader ? readerIcon : mainIcon);
+                // Window-identity colour glyph on the RIGHT, like the
+                // list-all-tabs headers (user request 2026-07-15).
+                try { (this as any)._wvDecorateWindowTargetMenuitem(doc, wi, w, !!t.isReader); } catch (e) {}
                 wi.addEventListener("command", () => { this._wvOpenInTarget(win, w, null); });
                 pop.appendChild(wi);
                 // This window's groups + "New Group", indented under it. Main windows

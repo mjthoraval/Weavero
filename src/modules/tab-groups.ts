@@ -492,8 +492,13 @@ class _TabGroupsMixin {
                 "  background: transparent; color: inherit; font: inherit;",
                 "}",
                 ".wv-tg-swatches { display: flex; gap: 6px; flex-wrap: wrap; }",
+                // Rounded SQUARE, not a circle — tab groups' glyph is the
+                // rounded square chip (12px, radius 3), so the colour
+                // picker uses the same shape at swatch size (user request
+                // 2026-07-15). The WINDOW swatch rows override this
+                // per-kind inline (circle = reader, square = main).
                 ".wv-tg-swatch {",
-                "  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;",
+                "  width: 16px; height: 16px; border-radius: 4px; cursor: pointer;",
                 "  border: 2px solid transparent; box-sizing: border-box;",
                 "}",
                 ".wv-tg-swatch.wv-selected { border-color: currentColor; }",
@@ -1453,6 +1458,9 @@ class _TabGroupsMixin {
                 wi.classList.add("menuitem-iconic");
                 wi.setAttribute("label", t.name + (isSrc ? "  (here)" : ""));
                 try { if (t.isReader ? readerIcon : mainIcon) wi.setAttribute("image", t.isReader ? readerIcon : mainIcon); } catch (e) {}
+                // Window-identity colour glyph on the RIGHT, like the
+                // list-all-tabs headers (user request 2026-07-15).
+                try { (this as any)._wvDecorateWindowTargetMenuitem(doc, wi, w, !!t.isReader); } catch (e) {}
                 if (isSrc) wi.setAttribute("disabled", "true");
                 else wi.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
                 place(wi);
@@ -4063,6 +4071,7 @@ class _TabGroupsMixin {
                     } catch (er) {}
                 });
                 subPop.appendChild(mi);
+                return mi;
             };
             for (const t of this._wvGroupMoveTargets(groupID)) {
                 // Notices: the group's home is disabled "(group is here)"; the
@@ -4070,8 +4079,11 @@ class _TabGroupsMixin {
                 // so "Open Group in" makes clear which target is the current
                 // window (2026-07-04).
                 const suffix = t.isHome ? "  (group is here)" : (t.win === win ? "  (this window)" : "");
-                mkTarget(t.name + suffix, t.isReader ? readerIcon : mainIcon, t.isHome,
+                const mi = mkTarget(t.name + suffix, t.isReader ? readerIcon : mainIcon, t.isHome,
                     (p: any) => p._wvMoveGroupToWindowAt(groupID, t.win, t.isReader, null));
+                // Window-identity colour glyph on the RIGHT, like the
+                // list-all-tabs headers (user request 2026-07-15).
+                try { (this as any)._wvDecorateWindowTargetMenuitem(doc, mi, t.win, !!t.isReader); } catch (er) {}
             }
             subPop.appendChild(doc.createXULElement("menuseparator"));
             // Brand-new-window targets as the shared icon-only row (a group

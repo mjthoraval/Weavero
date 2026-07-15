@@ -1713,6 +1713,55 @@ class _TabsMixin {
             return false;
         } catch (e) { return true; }
     }
+    /** Right-side window-identity glyph for a XUL menuitem window row
+     *  (the Move Tab / Move Group / Open-in target lists — user request
+     *  2026-07-15): the same colour dot the List-all-tabs window
+     *  headers carry (square = main, circle = reader, shared colour
+     *  pool), and the ⚓ for the anchor window. Menuitems can't host
+     *  child elements, so the glyph is a ::after driven by classes +
+     *  a per-item CSS variable (same technique as the column-picker
+     *  logo mark). */
+    _wvDecorateWindowTargetMenuitem(doc: any, mi: any, targetWin: any, isReader: boolean) {
+        try {
+            this._wvEnsureMvWinGlyphStyles(doc);
+            const anchor = !isReader && this._wvIsAnchorWindow(targetWin)
+                && this._wvAnchorDecorVisible();
+            if (anchor) { mi.classList.add("wv-mvwin-anchor"); return; }
+            const color = WV_WIN_BADGE_COLORS[
+                this._wvTitleGlyphIdx(targetWin, isReader) % WV_WIN_BADGE_COLORS.length];
+            mi.classList.add(isReader ? "wv-mvwin-reader" : "wv-mvwin-main");
+            mi.style.setProperty("--wv-win-color", color);
+        } catch (e) {}
+    }
+
+    _wvEnsureMvWinGlyphStyles(doc: any) {
+        try {
+            if (doc.getElementById("wv-mvwin-glyph-styles")) return;
+            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+            style.id = "wv-mvwin-glyph-styles";
+            const anchorSvg = encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' + WV_ANCHOR_VIEWBOX + '">'
+                + '<path fill="black" d="' + WV_ANCHOR_PATH + '"/></svg>');
+            style.textContent = [
+                // Same 9px dot as .wv-winhdr-color-dot in the tabs menu.
+                "menuitem.wv-mvwin-main::after, menuitem.wv-mvwin-reader::after {",
+                "  content: ''; display: inline-block;",
+                "  width: 9px; height: 9px; margin-inline-start: 7px;",
+                "  background-color: var(--wv-win-color);",
+                "}",
+                "menuitem.wv-mvwin-main::after { border-radius: 2px; }",
+                "menuitem.wv-mvwin-reader::after { border-radius: 50%; }",
+                "menuitem.wv-mvwin-anchor::after {",
+                "  content: ''; display: inline-block;",
+                "  width: 11px; height: 11px; margin-inline-start: 7px;",
+                "  background-color: currentColor;",
+                "  mask: url(\"data:image/svg+xml," + anchorSvg + "\") center/contain no-repeat;",
+                "}",
+            ].join("\n");
+            (doc.head || doc.documentElement).appendChild(style);
+        } catch (e) {}
+    }
+
     /** The window's DEFAULT (un-renamed) display name — "Window N" for
      *  mains, "Reader window" / "Reader window N" for readers (the same
      *  numbering the tabs-menu window sections use). */

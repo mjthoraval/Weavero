@@ -2484,7 +2484,16 @@ class WeaveroPlugin {
                         }, 500);
                     } catch (e) { Zotero.debug("[Weavero] re-homed reader close cleanup err: " + e); }
                 }
-                if (event !== "add") return;
+                // "load" too: after a cold start with a restored session, the
+                // first reader loads into an EXISTING unloaded tab — that path
+                // fires no "add", only "load" (markAsLoaded), so with only the
+                // add trigger the prototype safety wraps stayed uninstalled
+                // until the first genuinely new tab (observed live on the
+                // beta.11 update restart, 2026-07-17).
+                // ("load" is real — tabs.js markAsLoaded triggers it — but
+                // zotero-types' tab-event union doesn't list it yet, hence
+                // the cast.)
+                if (event !== "add" && (event as string) !== "load") return;
                 try { (Zotero.Weavero && Zotero.Weavero.plugin || this)._wvEnsureReaderTabWindowSafety(); } catch (e) {}
                 for (let i = 0; i < 20; i++) {
                     await new Promise(r => setTimeout(r, 250));

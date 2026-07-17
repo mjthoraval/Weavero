@@ -124,10 +124,28 @@ highest-value things you can do:
 Documentation to point the agent (and yourself) at:
 
 - **[Zotero Plugin Development docs](https://windingwind.github.io/doc-for-zotero-plugin-dev/)**
-  — the community handbook (windingwind).
-- **[Zotero 7 for developers](https://www.zotero.org/support/dev/zotero_7_for_developers)**
-  — the official notes: plugin architecture, main-window hooks,
-  bootstrap lifecycle.
+  — the community handbook (windingwind): environment setup, plugin
+  anatomy, lifecycle, data model, privileged vs. unprivileged
+  operations, real-world how-tos, and an API reference.
+- **The official per-version developer notes** —
+  [Zotero 7 for developers](https://www.zotero.org/support/dev/zotero_7_for_developers)
+  (plugin architecture, main-window hooks, bootstrap lifecycle) and
+  [Zotero 8 for developers](https://www.zotero.org/support/dev/zotero_8_for_developers)
+  (JSM → ESM modules, Bluebird removed in favor of standard promises,
+  preference panes in isolated scopes, the `MenuManager` API). Read the
+  page for **every major version you target**: the breaking-changes
+  lists are precisely what AI agents misremember — an agent's training
+  data predates these changes, so left unguided it will write
+  Zotero-7-era code (`.jsm` imports, Bluebird promise methods) that no
+  longer exists.
+- **[Zotero 8 Plugin Development Guide](https://gist.github.com/EwoutH/04c8df5a97963b5b46cec9f392ceb103)**
+  (community, EwoutH) — a deep single-page reference: lifecycle-hook
+  tables, the 7 → 8 migration (including the `migrate-fx140` scripts),
+  Fluent localization, custom menus/columns/item-pane APIs, reader
+  event handlers, packaging.
+- **[The Zotero developer hub](https://www.zotero.org/support/dev/)**
+  — the umbrella index: client coding, the web API, translators (a
+  beginner-friendly side entry into the ecosystem), citation styles.
 - **[Zotero source-code search](https://github.com/search?q=repo%3Azotero%2Fzotero&type=code)**
   — when the docs run out, the source is the documentation.
 
@@ -358,6 +376,8 @@ The compressed list — each of these cost real time once:
 | `data-item-type` CSS | camelCase (`attachmentPDF`); kebab-case fails silently |
 | Bridge eval timeout | keep scripts < ~20 s, loop from outside |
 | Closures go stale across plugin reloads | resolve the live plugin object at event time |
+| `localStorage`/`sessionStorage` | unreliable in Zotero — use `Zotero.Prefs` or your own files |
+| Agents write Zotero-7-era code | ground them in the [per-version developer notes](https://www.zotero.org/support/dev/zotero_8_for_developers) (ESM, standard promises) |
 
 ### What this buys you — honestly
 
@@ -382,8 +402,8 @@ human reviews diffs, tests the gestures, and decides.
 | Helper APIs | [zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit) |
 | TypeScript types | [zotero-types](https://github.com/windingwind/zotero-types) |
 | Minimal sample | [make-it-red](https://github.com/zotero/make-it-red) |
-| Community handbook | [doc-for-zotero-plugin-dev](https://windingwind.github.io/doc-for-zotero-plugin-dev/) |
-| Official dev notes | [Zotero 7 for developers](https://www.zotero.org/support/dev/zotero_7_for_developers) |
+| Community handbook | [doc-for-zotero-plugin-dev](https://windingwind.github.io/doc-for-zotero-plugin-dev/) · [Zotero 8 Plugin Development Guide](https://gist.github.com/EwoutH/04c8df5a97963b5b46cec9f392ceb103) |
+| Official dev notes | [dev hub](https://www.zotero.org/support/dev/) · [Zotero 7](https://www.zotero.org/support/dev/zotero_7_for_developers) · [Zotero 8](https://www.zotero.org/support/dev/zotero_8_for_developers) for developers |
 | Ground truth | [zotero/zotero](https://github.com/zotero/zotero) · [reader](https://github.com/zotero/reader) · [note-editor](https://github.com/zotero/note-editor) |
 | AI ↔ live Zotero | [MCP bridge + server](https://github.com/introfini/mcp-server-zotero-dev) |
 | Community | [zotero-dev list](https://groups.google.com/g/zotero-dev) · [forums](https://forums.zotero.org) |

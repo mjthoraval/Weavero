@@ -1766,10 +1766,14 @@ class _TabsMixin {
                 LBL.split(", ").concat(LBLR.split(", ")).map(s => s + "::after").join(", ") + " {",
                 "  content: ''; display: inline-block;",
                 "  width: 9px; height: 9px; margin-inline-start: 7px;",
-                // Sit ON the text's optical centre — inline-block default
-                // (baseline) floated the dot too high (user report
-                // 2026-07-16).
-                "  vertical-align: -1px;",
+                // vertical-align is INERT here — Zotero's menu labels lay
+                // their children out by flex, so the earlier -1px tweak never
+                // moved anything and the dot rode 3.5px high (probe-measured,
+                // user report 2026-07-17). position/top does apply: 4.5px
+                // puts the dot centre exactly +1px below the label centre,
+                // the same offset the List-all-tabs .wv-winhdr-color-dot
+                // reference sits at (probed side by side).
+                "  position: relative; top: 4.5px;",
                 "  background-color: var(--wv-win-color);",
                 "}",
                 withAfter(LBL) + " { border-radius: 2px; }",
@@ -1777,7 +1781,7 @@ class _TabsMixin {
                 withAfter(LBLA) + " {",
                 "  content: ''; display: inline-block;",
                 "  width: 11px; height: 11px; margin-inline-start: 7px;",
-                "  vertical-align: -2px;",
+                "  position: relative; top: 4.5px;",   // same flex-label geometry as the dots above
                 "  background-color: currentColor;",
                 "  mask: url(\"data:image/svg+xml," + anchorSvg + "\") center/contain no-repeat;",
                 "}",

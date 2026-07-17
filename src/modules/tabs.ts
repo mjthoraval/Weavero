@@ -4512,19 +4512,32 @@ class _TabsMixin {
     }
 
     /** Before closing a source tab during a cross-window move: if it's the source
-     *  window's SELECTED tab, move selection to the always-loaded library tab
-     *  first. Otherwise Zotero auto-selects a neighbour on close, and if that
-     *  neighbour is an UNLOADED reader it loads — but with the TARGET window
-     *  focused, the new ReaderInstance reads getMostRecentWindow() = target and
-     *  binds _tabContainer against the wrong window (reader.js:1808/1815), so it
-     *  hangs at "Loading…". Selecting a loaded tab first means the close never
-     *  triggers that stray load. */
+     *  window's SELECTED tab, move selection off it first. Otherwise Zotero
+     *  auto-selects a neighbour on close, and if that neighbour is an UNLOADED
+     *  reader it loads — but with the TARGET window focused, the new
+     *  ReaderInstance reads getMostRecentWindow() = target and binds
+     *  _tabContainer against the wrong window (reader.js:1808/1815), so it
+     *  hangs at "Loading…". Firefox's rule is to reveal an ADJACENT tab when
+     *  the dragged tab leaves (tabbrowser on_drop/adoptTab), so pick the
+     *  nearest LOADED neighbour (next, then previous — loaded tabs can't
+     *  trigger the stray cross-window load); the always-loaded library tab is
+     *  the fallback, not the default. */
     _wvSafeguardSourceSelectionBeforeClose(srcWin, sourceTabId) {
         try {
             const SZT: any = srcWin && srcWin.Zotero_Tabs;
-            if (SZT && SZT.selectedID === sourceTabId && typeof SZT.select === "function") {
-                SZT.select("zotero-pane");
-            }
+            if (!SZT || SZT.selectedID !== sourceTabId || typeof SZT.select !== "function") return;
+            let pick = "zotero-pane";
+            try {
+                const tabs: any[] = SZT._tabs || [];
+                const idx = tabs.findIndex((t: any) => t && t.id === sourceTabId);
+                const loaded = (t: any) => t && t.id !== sourceTabId && typeof t.type === "string"
+                    && t.type.indexOf("-unloaded") < 0 && t.type.indexOf("-loading") < 0;
+                let cand: any = null;
+                for (let i = idx + 1; i < tabs.length && !cand; i++) if (loaded(tabs[i])) cand = tabs[i];
+                for (let i = idx - 1; i >= 1 && !cand; i--) if (loaded(tabs[i])) cand = tabs[i];
+                if (cand) pick = cand.id;
+            } catch (e) {}
+            SZT.select(pick);
         } catch (e) {}
     }
 
@@ -4723,6 +4736,26 @@ class _TabsMixin {
             // tab), restore its tab-aware prototype methods.
             try { this._wvUngraftWindowGlue(S); } catch (e) {}
 
+            // CLASS ADOPTION (2026-07-17): a re-homed ReaderWindow living in a
+            // main tab is invisible to every `instanceof ReaderTab` filter in
+            // reader.js — getByTabID, the beta.10 select-notify activity loop,
+            // and Reader.open's UNCONDITIONAL openInWindow reuse branch. That
+            // mismatch closed a merged-back tab on drag-out: the tear-off
+            // wrapper couldn't resolve S, fell back to the native hook's
+            // close-then-Reader.open(openInWindow), and open() reused the
+            // just-orphaned instance instead of opening a window (item 146
+            // incident). The donor IS a real ReaderTab, so adopt its prototype:
+            // instance fields carry all live state; content-side callbacks hold
+            // function values bound at init, so they keep working. ReaderTab
+            // constructor props S never got (_handlePointerDown etc.) stay
+            // absent — their addEventListener sites no-op on undefined.
+            try {
+                if (S.constructor && S.constructor.name !== "ReaderTab"
+                        && targetWin.Zotero_Tabs && donor.constructor && donor.constructor.name === "ReaderTab") {
+                    Object.setPrototypeOf(S, Object.getPrototypeOf(donor));
+                }
+            } catch (e) { Zotero.debug("[Weavero] class adoption err: " + e); }
+
             // FULLY dispose the donor INSTANCE while keeping its shell (now S's).
             // The critical part is unregistering the donor's pref observers +
             // listeners so they never fire again on the shell S now owns —
@@ -4743,6 +4776,26 @@ class _TabsMixin {
             // this it works visually but getByTabID can't find it, so closing it
             // leaks and a later move reloads instead of swapping.
             try { if (!Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}
+            // beta.10 deactivates the docShells of unselected reader tabs, and
+            // its select-notify loop only recomputes `instanceof ReaderTab`
+            // readers. The donor was opened in the BACKGROUND, so its shell
+            // starts INACTIVE — and a re-homed ReaderWindow instance is
+            // invisible to the loop, so nothing would ever activate it: the
+            // merged tab rendered frozen/blank (2026-07-16 incident, item 146).
+            // Assert active now; a ReaderTab S is re-computed natively on the
+            // next select, a ReaderWindow S stays always-active (pre-beta.10
+            // semantics for every tab, so no regression). For a non-ReaderTab S
+            // nothing native ever re-computes activity, and a one-shot late
+            // writer was observed flipping it back off ~1.5-2s after the move —
+            // re-assert on a deferred schedule too.
+            try { if (S._iframe) S._iframe.docShellIsActive = true; } catch (e) {}
+            try {
+                if (S.constructor && S.constructor.name !== "ReaderTab") {
+                    const keepActive = () => { try { if (S._iframe) S._iframe.docShellIsActive = true; } catch (e) {} };
+                    (targetWin.setTimeout || setTimeout)(keepActive, 800);
+                    (targetWin.setTimeout || setTimeout)(keepActive, 2500);
+                }
+            } catch (e) {}
 
             // Re-bind S's element-level contextmenu listener onto the new shell.
             // It lives on the <browser> element, so it did NOT ride the docshell
@@ -4837,6 +4890,9 @@ class _TabsMixin {
         const Reader: any = Zotero.Reader;
         if (!S || !S._iframe || typeof S._iframe.swapDocShells !== "function" || !S._internalReader) return false;
         if (itemID == null) return false;
+        // The re-homed ReaderTab is about to live in a Zotero_Tabs-less window;
+        // make sure the prototype safety wrappers are in place first.
+        try { (this as any)._wvEnsureReaderTabWindowSafety(); } catch (e) {}
         const sleep = (ms: number) => new Promise<void>((res) => {
             try { if (srcWin && srcWin.setTimeout) srcWin.setTimeout(res, ms); else setTimeout(res, ms); }
             catch (e) { setTimeout(res, ms); }
@@ -4969,6 +5025,19 @@ class _TabsMixin {
             }
             try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
             try { donorWin.focus(); } catch (e) {}
+            // A tab-select notify that fired mid-move already recomputed S's
+            // docShell activity against the new (non-main) window and turned it
+            // OFF (beta.10 throttles inactive shells -- frozen reader). Re-assert;
+            // the _wvEnsureReaderTabWindowSafety wrapper keeps it on from here.
+            // The deferred re-assert covers late notifies still in flight from
+            // the source-tab close (observed live: active flipped back to false
+            // within 800ms of the sync assert).
+            try { if (S._iframe) S._iframe.docShellIsActive = true; } catch (e) {}
+            try {
+                (donorWin.setTimeout || setTimeout)(() => {
+                    try { if (S._iframe) S._iframe.docShellIsActive = true; } catch (e) {}
+                }, 700);
+            } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvSwapTearOffToWindow commit err: " + e);
         }
@@ -5746,7 +5815,7 @@ class _TabsMixin {
                             const ids = (live._wvWTMultiSelTargets)
                                 ? live._wvWTMultiSelTargets(srcWin, data.sourceTabId) : [data.sourceTabId];
                             if (ids && ids.length > 1 && typeof live._wvWTMoveSelectionToMain === "function") {
-                                try { live._wvWTMoveSelectionToMain(srcWin, ids, win); } catch (er) {}
+                                try { live._wvWTMoveSelectionToMain(srcWin, ids, win, data.sourceTabId); } catch (er) {}
                                 return;
                             }
                             // Pass THIS window: the movers default to the anchor

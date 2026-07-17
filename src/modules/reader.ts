@@ -2100,6 +2100,11 @@ class _ReaderMixin {
                     getSidebarState: () => ({}),
                     hasContextPane: () => true,
                     hasNoteContext: () => false,
+                    // No-op: ReaderTab._setReadAloudStatus (10.0-beta.10) calls
+                    // this unconditionally; readers whose Read Aloud callback
+                    // was bound before the _wvEnsureReaderTabWindowSafety
+                    // prototype patch reach it raw and would throw here.
+                    setAudioStatus: () => {},
                     updateSidebarLayout: () => {},
                     moveFocus: () => {},
                     select: () => {},
@@ -4670,6 +4675,115 @@ class _ReaderMixin {
         } catch (e) { return null; }
     }
 
+    /** Zotero 10.0-beta.10 (2287997, "Reliably deactivate the docShells of
+     *  hidden reader tabs") made `ReaderTab._updateDocShellActivity` read
+     *  `this._window.Zotero_Tabs.selectedID` and run it for EVERY ReaderTab
+     *  from `Zotero.Reader.notify` on each tab select. A Weavero torn-off
+     *  reader is a ReaderTab re-homed into a standalone reader window (no
+     *  `Zotero_Tabs`), so the native code throws there -- and the throw aborts
+     *  notify's un-guarded loop, leaving readers later in `_readers` with
+     *  stale docShell activity (a selected tab can stay throttled/blank).
+     *  Same hazard in `_setReadAloudStatus` (`Zotero_Tabs.setAudioStatus`),
+     *  which the content reader captures via `.bind()` at init -- so the fix
+     *  must live on the PROTOTYPE, installed before a reader inits for the
+     *  Read Aloud path to pick it up (readers inited earlier keep the raw
+     *  bind; for them only the pause-others step is lost, inside a throw the
+     *  content dispatch swallows).
+     *
+     *  IMPORTANT: the discriminator is "is `_window` a real MAIN window", NOT
+     *  `!this._window.Zotero_Tabs` -- Weavero's reader-window item pane installs
+     *  a minimal Zotero_Tabs SHIM on reader windows (see `win.Zotero_Tabs = {`
+     *  in this file), whose constant `selectedID` makes the native computation
+     *  silently DEACTIVATE the torn-off reader (observed live on beta.10:
+     *  throttled/frozen window, no throw). In a non-main window the wrappers
+     *  keep the shell always-active (native ReaderWindow semantics -- it never
+     *  deactivates its shell) and do the window-appropriate subset of the Read
+     *  Aloud handling; in a real main-window tab they defer to the native
+     *  code. The wrappers reference no plugin state, so they stay valid across
+     *  plugin reloads; the version stamp lives on the prototype and gates
+     *  reinstall (peel-before-rewrap on a version bump). No-ops safely on
+     *  builds without these methods (Zotero 9 / older betas). */
+    _wvEnsureReaderTabWindowSafety() {
+        try {
+            // Reader-singleton lookup fallback, installable even with no
+            // ReaderTab open: getByTabID matches `instanceof ReaderTab` only,
+            // so any Weavero-re-homed instance carrying an own tabID (a merged
+            // ReaderWindow before class adoption, or historic states) is
+            // invisible to the native tab machinery (close hooks, audio, the
+            // tear-off wrapper's source resolution). Fall back to an own-prop
+            // tabID scan. Belt-and-braces next to the class adoption in
+            // _wvSwapCommitDonor.
+            try {
+                const R: any = Zotero.Reader;
+                const LOOKUP_VER = 1;
+                if (R && typeof R.getByTabID === "function" && R._wvLookupVer !== LOOKUP_VER) {
+                    if (R._wvOrigGetByTabID) R.getByTabID = R._wvOrigGetByTabID;
+                    const origLookup = R.getByTabID;
+                    R._wvOrigGetByTabID = origLookup;
+                    R.getByTabID = function (tabID: any) {
+                        const hit = origLookup.apply(this, arguments as any);
+                        if (hit) return hit;
+                        try {
+                            return (this._readers || []).find((x: any) => {
+                                try { return Object.getOwnPropertyDescriptor(x, "tabID") && x.tabID === tabID; }
+                                catch (e) { return false; }
+                            });
+                        } catch (e) {}
+                        return hit;
+                    };
+                    R._wvLookupVer = LOOKUP_VER;
+                }
+            } catch (e) { Zotero.debug("[Weavero] getByTabID wrap err: " + e); }
+            const rs: any[] = ((Zotero.Reader as any)._readers || []);
+            const anyTab = rs.find((r: any) => r && r.constructor && r.constructor.name === "ReaderTab");
+            if (!anyTab) return false;
+            const proto: any = Object.getPrototypeOf(anyTab);
+            const VER = 2;
+            if (proto._wvWinSafetyVer === VER) return true;
+            if (proto._wvOrigUpdateDocShellActivity) proto._updateDocShellActivity = proto._wvOrigUpdateDocShellActivity;
+            if (proto._wvOrigSetReadAloudStatus) proto._setReadAloudStatus = proto._wvOrigSetReadAloudStatus;
+            const inMainWindow = (r: any) => {
+                try { return !!(r._window && r._window.Zotero_Tabs) && Zotero.getMainWindows().indexOf(r._window) !== -1; }
+                catch (e) { return false; }
+            };
+            if (typeof proto._updateDocShellActivity === "function") {
+                const orig = proto._updateDocShellActivity;
+                proto._wvOrigUpdateDocShellActivity = orig;
+                proto._updateDocShellActivity = function (this: any) {
+                    if (!inMainWindow(this)) {
+                        try { if (this._iframe) this._iframe.docShellIsActive = true; } catch (e) {}
+                        return;
+                    }
+                    return orig.apply(this, arguments as any);
+                };
+            }
+            if (typeof proto._setReadAloudStatus === "function") {
+                const orig = proto._setReadAloudStatus;
+                proto._wvOrigSetReadAloudStatus = orig;
+                proto._setReadAloudStatus = function (this: any, status: any) {
+                    if (!inMainWindow(this)) {
+                        try {
+                            this._readAloudPlaying = !!(status && status.active && !status.paused);
+                            try { this._updateDocShellActivity(); } catch (e) {}
+                            try { if (status && status.active && this._hideReadAloudGuidance) this._hideReadAloudGuidance(); } catch (e) {}
+                            if (this._readAloudPlaying) {
+                                for (const r of ((Zotero.Reader as any)._readers || [])) {
+                                    if (r === this) continue;
+                                    try { if (typeof r.toggleReadAloudPaused === "function") r.toggleReadAloudPaused(true); } catch (e) {}
+                                }
+                            }
+                        } catch (e) { Zotero.debug("[Weavero] window _setReadAloudStatus err: " + e); }
+                        return;
+                    }
+                    return orig.apply(this, arguments as any);
+                };
+            }
+            proto._wvWinSafetyVer = VER;
+            Zotero.debug("[Weavero] ReaderTab window-safety patch installed (v" + VER + ")");
+            return true;
+        } catch (e) { Zotero.debug("[Weavero] _wvEnsureReaderTabWindowSafety err: " + e); return false; }
+    }
+
     /** Wire a one-shot window-unload teardown that removes this window's
      *  mounted (non-native) reader instances from `Zotero.Reader._readers`
      *  and uninits them, so closing the window can't leave dangling readers
@@ -4929,6 +5043,12 @@ class _ReaderMixin {
             this._wvWTDbg("tab registered id=" + id + " tabsNow=" + st.tabs.length + "; switching=" + (opts.select !== false));
             if (opts.select !== false) this._wvWTSwitch(win, id);
             else if (priorActive && priorActive !== id) this._wvWTSwitch(win, priorActive);
+            // beta.10 deactivates docShells of readers whose window/tab isn't
+            // "selected"; a mid-move notify computes that against this non-main
+            // window and freezes the shell. Re-assert (see
+            // _wvEnsureReaderTabWindowSafety, which keeps it on afterwards).
+            try { (this as any)._wvEnsureReaderTabWindowSafety(); } catch (e) {}
+            try { S._iframe.docShellIsActive = true; } catch (e) {}
             this._wvWTDbg("swap-in DONE id=" + id);
             return id;
         } catch (e) {
@@ -7369,7 +7489,7 @@ class _ReaderMixin {
      *  closes all source tabs and reopens them in the main window (deferred so the
      *  closing readers flush state), preserving strip order. Mirrors looping
      *  _wvWTMoveTabToMain but batches the close/open for a clean group move. */
-    _wvWTMoveSelectionToMain(srcWin: any, ids: any[], targetMainWin: any) {
+    _wvWTMoveSelectionToMain(srcWin: any, ids: any[], targetMainWin: any, draggedId?: any) {
         try {
             const st = this._wvWTState(srcWin);
             if (!st || !st.tabs || !ids || !ids.length) return;
@@ -7379,6 +7499,9 @@ class _ReaderMixin {
                 if (t && t.itemID != null) moves.push({ id, itemID: t.itemID, isNote: t.type === "note" });
             }
             if (!moves.length) return;
+            // Firefox rule: the DRAGGED tab becomes the destination's active tab
+            // (adoptTab selectTab: tab == draggedTab); first moved tab otherwise.
+            const activeIdx = Math.max(0, moves.findIndex((m: any) => m.id === draggedId));
             const mainWin = targetMainWin || Zotero.getMainWindow();
             // Leaving the window leaves the group (don't carry it to the main bar).
             for (const m of moves) { try { (this as any)._wvForgetTabGroupForItem(m.itemID); } catch (e) {} }
@@ -7399,7 +7522,7 @@ class _ReaderMixin {
                         Z.add({
                             type: m.isNote ? "note-unloaded" : "reader-unloaded",
                             data: { itemID: m.itemID },
-                            select: idx === 0,          // load + show the first so the move is visible
+                            select: idx === activeIdx,  // load + show the dragged tab (Firefox rule)
                             preventJumpback: true,
                         });
                     } catch (e) { Zotero.debug("[Weavero] _wvWTMoveSelectionToMain open err: " + e); }
@@ -7610,7 +7733,20 @@ class _ReaderMixin {
                             const R: any = Zotero.Reader;
                             try { if (S && !R._readers.includes(S)) R._readers.push(S); } catch (e) {}
                             try { (mainWin.setTimeout || setTimeout)(() => { try { if (S && !R._readers.includes(S)) R._readers.push(S); } catch (e) {} }, 500); } catch (e) {}
-                            try { if (mainWin.focus) mainWin.focus(); if (mainWin.Zotero_Tabs && donorTabId) mainWin.Zotero_Tabs.select(donorTabId); } catch (e) {}
+                            // Firefox rule: the dragged tab becomes the target's
+                            // ACTIVE tab (adoptTab selectTab). The commit renames
+                            // the donor back to the source's real `tab-…` id, so
+                            // select whichever id actually exists now — selecting
+                            // the stale donor id was a silent no-op and the moved
+                            // tab landed unselected (user report 2026-07-17).
+                            try {
+                                if (mainWin.focus) mainWin.focus();
+                                const MZ: any = mainWin.Zotero_Tabs;
+                                if (MZ && donorTabId) {
+                                    const finalId = MZ._tabs.some((t: any) => t && t.id === tabId) ? tabId : donorTabId;
+                                    MZ.select(finalId);
+                                }
+                            } catch (e) {}
                             ok = true;
                             this._wvWTDbg("reader→main: swap done item=" + itemID + " ctor=" + (S && S.constructor && S.constructor.name) + " includesS=" + (R._readers || []).includes(S) + " count=" + (R._readers || []).length);
                         }

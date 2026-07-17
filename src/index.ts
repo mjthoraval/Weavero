@@ -2422,10 +2422,45 @@ class WeaveroPlugin {
             Zotero.debug("[Weavero] _setupNoteWindowWatcher init err: " + e);
         }
 
+        // 2c. ReaderTab prototype safety for torn-off readers (see
+        // _wvEnsureReaderTabWindowSafety). Try now (covers a plugin reload
+        // while readers -- possibly a torn-off one -- are open); if no
+        // ReaderTab exists yet, the tab-add notifier below retries and the
+        // tear-off path itself ensures it before any hazard.
+        try { this._wvEnsureReaderTabWindowSafety(); } catch (e) {}
+
         // 3. Notifier: new reader tabs
         this._notifierIDs.push(Zotero.Notifier.registerObserver({
-            notify: async (event, type) => {
-                if (type !== "tab" || event !== "add") return;
+            notify: async (event, type, ids) => {
+                if (type !== "tab") return;
+                // Dispose re-homed NON-ReaderTab readers whose main tab closed.
+                // Zotero's own tab-close handler resolves readers via getByTabID,
+                // which matches `instanceof ReaderTab` only — a ReaderWindow
+                // instance Weavero re-homed into a main tab (window→main merge of
+                // a RESTORED torn-off window) is invisible to it, so its tab
+                // closing left a zombie in Zotero.Reader._readers: dead-object
+                // getters, repeated "Waiting for reader failed" from session
+                // saves, and Reader.open reusing the corpse so the item could
+                // never be reopened (2026-07-16 incident, item 146).
+                if (event === "close") {
+                    try {
+                        const rs: any[] = (Zotero.Reader as any)._readers || [];
+                        for (const id of (ids as any[]) || []) {
+                            const r = rs.find((x: any) => {
+                                try {
+                                    return Object.getOwnPropertyDescriptor(x, "tabID") && x.tabID === id
+                                        && x.constructor && x.constructor.name !== "ReaderTab";
+                                } catch (e) { return false; }
+                            });
+                            if (!r) continue;
+                            try { if (typeof r.uninit === "function") r.uninit(); } catch (e) {}
+                            try { const i = rs.indexOf(r); if (i >= 0) rs.splice(i, 1); } catch (e) {}
+                            Zotero.debug("[Weavero] disposed re-homed non-ReaderTab reader for closed tab " + id);
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] re-homed reader close cleanup err: " + e); }
+                }
+                if (event !== "add") return;
+                try { (Zotero.Weavero && Zotero.Weavero.plugin || this)._wvEnsureReaderTabWindowSafety(); } catch (e) {}
                 for (let i = 0; i < 20; i++) {
                     await new Promise(r => setTimeout(r, 250));
                     for (const reader of Zotero.Reader._readers || [])

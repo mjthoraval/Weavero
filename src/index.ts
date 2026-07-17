@@ -2457,6 +2457,25 @@ class WeaveroPlugin {
                             try { const i = rs.indexOf(r); if (i >= 0) rs.splice(i, 1); } catch (e) {}
                             Zotero.debug("[Weavero] disposed re-homed non-ReaderTab reader for closed tab " + id);
                         }
+                        // Sweep aborted disposals: if a reader's uninit() threw
+                        // mid-way (e.g. a Proxy-forwarded read hitting a dead
+                        // _internalReader), Reader.notify set _isUninitialized
+                        // but never reached its splice — the corpse then poisons
+                        // getByTabID and Reader.open reuse. An uninitialized
+                        // reader must never stay registered. Deferred so the
+                        // sweep runs AFTER Zotero's own close handler.
+                        (Zotero.getMainWindow() || { setTimeout }).setTimeout(() => {
+                            try {
+                                for (let i = rs.length - 1; i >= 0; i--) {
+                                    let dead = false;
+                                    try { dead = rs[i]._isUninitialized === true; } catch (e) { dead = true; }
+                                    if (dead) {
+                                        rs.splice(i, 1);
+                                        Zotero.debug("[Weavero] swept uninitialized reader corpse from _readers");
+                                    }
+                                }
+                            } catch (e) {}
+                        }, 500);
                     } catch (e) { Zotero.debug("[Weavero] re-homed reader close cleanup err: " + e); }
                 }
                 if (event !== "add") return;

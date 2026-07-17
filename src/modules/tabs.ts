@@ -4729,6 +4729,18 @@ class _TabsMixin {
             S._window = targetWin;
             S.tabID = donorTabId;
             S._internalReader = liveInner;
+            // A Read Aloud guidance panel is a XUL element in the SOURCE
+            // window's popupset — it can't survive the re-home, and a stale
+            // reference is fatal: uninit() -> _hideReadAloudGuidance() ->
+            // guidancePanel.hide() throws ("this.panel is null") AFTER the
+            // _isUninitialized flag but BEFORE Reader.notify's splice, leaking
+            // the reader (caught by tearoff.spec.js, 2026-07-17).
+            try {
+                if (S._readAloudGuidancePanel) {
+                    try { S._readAloudGuidancePanel.hide(); } catch (e2) {}
+                    S._readAloudGuidancePanel = null;
+                }
+            } catch (e) {}
             try { targetWin.addEventListener("pointerdown", S._handlePointerDown); } catch (e) {}
             try { targetWin.addEventListener("pointerup", S._handlePointerUp); } catch (e) {}
             try { targetWin.addEventListener("DOMContentLoaded", S._handleLoad); } catch (e) {}
@@ -4753,6 +4765,28 @@ class _TabsMixin {
                 if (S.constructor && S.constructor.name !== "ReaderTab"
                         && targetWin.Zotero_Tabs && donor.constructor && donor.constructor.name === "ReaderTab") {
                     Object.setPrototypeOf(S, Object.getPrototypeOf(donor));
+                    // Backfill the ReaderTab-only INSTANCE fields the adopted
+                    // (ReaderWindow-born) target never got. ReaderInstance wraps
+                    // itself in a Proxy whose get/set traps forward MISSING
+                    // properties to `_internalReader` — and once the tab's
+                    // browser is destroyed that's a dead wrapper, so any such
+                    // read/write throws "can't access dead object". Concretely:
+                    // ReaderTab.uninit reads `_handleLoad` and writes
+                    // `_pointerDownWindow` — the throw aborted uninit AFTER the
+                    // _isUninitialized flag, before Reader.notify's splice, and
+                    // the reader leaked (caught by tearoff.spec.js, 2026-07-17).
+                    // defineProperty bypasses both traps and writes the target.
+                    for (const k of ["_handleLoad", "_handlePointerDown", "_handlePointerUp"]) {
+                        if (!Object.getOwnPropertyDescriptor(S, k)) {
+                            Object.defineProperty(S, k, { value: null, writable: true, configurable: true });
+                        }
+                    }
+                    const defaults: Array<[string, any]> = [["_readAloudPlaying", false], ["_pointerDownWindow", null]];
+                    for (const [k, v] of defaults) {
+                        if (!Object.getOwnPropertyDescriptor(S, k)) {
+                            Object.defineProperty(S, k, { value: v, writable: true, configurable: true });
+                        }
+                    }
                 }
             } catch (e) { Zotero.debug("[Weavero] class adoption err: " + e); }
 
@@ -4775,7 +4809,7 @@ class _TabsMixin {
             // (e.g. a restored ReaderWindow moved to main) may not be — without
             // this it works visually but getByTabID can't find it, so closing it
             // leaks and a later move reloads instead of swapping.
-            try { if (!Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}
+            try { if (!(S as any)._isUninitialized && !Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}   // corpse guard: never re-add a disposed reader
             // beta.10 deactivates the docShells of unselected reader tabs, and
             // its select-notify loop only recomputes `instanceof ReaderTab`
             // readers. The donor was opened in the BACKGROUND, so its shell
@@ -4974,7 +5008,7 @@ class _TabsMixin {
             try { donor._isUninitialized = true; } catch (e) {}
             try { if (donor._prefObserverIDs) donor._prefObserverIDs.forEach((id: any) => Zotero.Prefs.unregisterObserver(id)); } catch (e) {}
             try { const i = Reader._readers.indexOf(donor); if (i >= 0) Reader._readers.splice(i, 1); } catch (e) {}
-            try { if (!Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}
+            try { if (!(S as any)._isUninitialized && !Reader._readers.includes(S)) Reader._readers.push(S); } catch (e) {}   // corpse guard: never re-add a disposed reader
 
             // If Weavero already wired the donor window's multi-tab strip, point
             // its native-tab entry at S (it was captured as the donor). If not yet

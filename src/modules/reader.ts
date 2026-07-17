@@ -4738,6 +4738,62 @@ class _ReaderMixin {
             const anyTab = rs.find((r: any) => r && r.constructor && r.constructor.name === "ReaderTab");
             if (!anyTab) return false;
             const proto: any = Object.getPrototypeOf(anyTab);
+            // Base-class guard — MUST live above the _wvWinSafetyVer early
+            // return (its own GVER gate makes it idempotent; a plugin reload
+            // hits the early return with the persisted stamp and would
+            // otherwise never install this). ReaderInstance.uninit() calls
+            // _hideReadAloudGuidance() UNGUARDED, and the guidance
+            // <guidance-panel> element's hide() throws when its inner panel is
+            // null (mid-show race on a fresh profile's first-run guidance, or
+            // a stale reference after a window re-home). The throw lands AFTER
+            // uninit sets _isUninitialized but BEFORE Reader.notify's splice —
+            // the reader leaks in _readers and poisons getByTabID /
+            // Reader.open reuse (flaky repro caught by tearoff.spec.js;
+            // upstream hazard, not Weavero-specific). Make the hide
+            // un-abortable.
+            try {
+                const base: any = Object.getPrototypeOf(proto);   // ReaderInstance.prototype
+                const GVER = 1;
+                if (base && typeof base._hideReadAloudGuidance === "function" && base._wvGuidanceSafetyVer !== GVER) {
+                    if (base._wvOrigHideReadAloudGuidance) base._hideReadAloudGuidance = base._wvOrigHideReadAloudGuidance;
+                    const origHide = base._hideReadAloudGuidance;
+                    base._wvOrigHideReadAloudGuidance = origHide;
+                    base._hideReadAloudGuidance = function (this: any) {
+                        try { return origHide.apply(this, arguments as any); }
+                        catch (e) {
+                            try { this._readAloudGuidancePanel = null; } catch (e2) {}
+                            Zotero.debug("[Weavero] guidance hide threw (defused): " + e);
+                        }
+                    };
+                    base._wvGuidanceSafetyVer = GVER;
+                }
+            } catch (e) { Zotero.debug("[Weavero] guidance safety wrap err: " + e); }
+            // Choke-point guard — also above the early return. uninit() can
+            // throw on MULTIPLE per-window resources that don't survive a
+            // re-home or a close race (observed: the guidance panel above, and
+            // BlockingObserver.unregister on a browser whose browserId is
+            // already 0 because the deck element removal raced the close
+            // notify — reader.js:710). ANY such throw lands after the
+            // _isUninitialized flag but before Reader.notify's splice, leaking
+            // the reader. Wrap uninit on BOTH prototypes (ReaderTab's override
+            // AND the base, for ReaderWindow instances) so disposal can never
+            // abort; the flag-first semantics make a caught throw equivalent
+            // to a completed uninit for every caller.
+            try {
+                const UVER = 1;
+                for (const P of [proto, Object.getPrototypeOf(proto)]) {
+                    if (!P || typeof P.uninit !== "function" || P._wvUninitSafetyVer === UVER) continue;
+                    if (!Object.getOwnPropertyDescriptor(P, "uninit")) { P._wvUninitSafetyVer = UVER; continue; }
+                    if (P._wvOrigUninit) P.uninit = P._wvOrigUninit;
+                    const origUninit = P.uninit;
+                    P._wvOrigUninit = origUninit;
+                    P.uninit = function (this: any) {
+                        try { return origUninit.apply(this, arguments as any); }
+                        catch (e) { Zotero.debug("[Weavero] reader uninit threw (defused): " + e); }
+                    };
+                    P._wvUninitSafetyVer = UVER;
+                }
+            } catch (e) { Zotero.debug("[Weavero] uninit safety wrap err: " + e); }
             const VER = 2;
             if (proto._wvWinSafetyVer === VER) return true;
             if (proto._wvOrigUpdateDocShellActivity) proto._updateDocShellActivity = proto._wvOrigUpdateDocShellActivity;
@@ -4779,6 +4835,32 @@ class _ReaderMixin {
                 };
             }
             proto._wvWinSafetyVer = VER;
+            // Base-class guard: ReaderInstance.uninit() calls
+            // _hideReadAloudGuidance() UNGUARDED, and the guidance <guidance-panel>
+            // element's hide() throws when its inner panel is null (mid-show race
+            // on a fresh profile's first-run guidance, or a stale reference after
+            // a window re-home). The throw lands AFTER uninit sets
+            // _isUninitialized but BEFORE Reader.notify's splice — the reader
+            // leaks in _readers and poisons getByTabID / Reader.open reuse
+            // (flaky repro caught by tearoff.spec.js; upstream hazard, not
+            // Weavero-specific). Make the hide un-abortable.
+            try {
+                const base: any = Object.getPrototypeOf(proto);   // ReaderInstance.prototype
+                const GVER = 1;
+                if (base && typeof base._hideReadAloudGuidance === "function" && base._wvGuidanceSafetyVer !== GVER) {
+                    if (base._wvOrigHideReadAloudGuidance) base._hideReadAloudGuidance = base._wvOrigHideReadAloudGuidance;
+                    const origHide = base._hideReadAloudGuidance;
+                    base._wvOrigHideReadAloudGuidance = origHide;
+                    base._hideReadAloudGuidance = function (this: any) {
+                        try { return origHide.apply(this, arguments as any); }
+                        catch (e) {
+                            try { this._readAloudGuidancePanel = null; } catch (e2) {}
+                            Zotero.debug("[Weavero] guidance hide threw (defused): " + e);
+                        }
+                    };
+                    base._wvGuidanceSafetyVer = GVER;
+                }
+            } catch (e) { Zotero.debug("[Weavero] guidance safety wrap err: " + e); }
             Zotero.debug("[Weavero] ReaderTab window-safety patch installed (v" + VER + ")");
             return true;
         } catch (e) { Zotero.debug("[Weavero] _wvEnsureReaderTabWindowSafety err: " + e); return false; }
@@ -7731,8 +7813,14 @@ class _ReaderMixin {
                             // leaks on close and a future move reloads). Sync re-add
                             // + a deferred one in case the window close is async.
                             const R: any = Zotero.Reader;
-                            try { if (S && !R._readers.includes(S)) R._readers.push(S); } catch (e) {}
-                            try { (mainWin.setTimeout || setTimeout)(() => { try { if (S && !R._readers.includes(S)) R._readers.push(S); } catch (e) {} }, 500); } catch (e) {}
+                            // Corpse guard on BOTH re-adds: if the user (or a
+                            // test) closes the merged tab within the deferred
+                            // window, native disposal has already uninit'd and
+                            // spliced S — an unguarded re-add RESURRECTS the
+                            // corpse into _readers (flaky zombie caught by
+                            // tearoff.spec.js: close <500ms after merge).
+                            try { if (S && !S._isUninitialized && !R._readers.includes(S)) R._readers.push(S); } catch (e) {}
+                            try { (mainWin.setTimeout || setTimeout)(() => { try { if (S && !S._isUninitialized && !R._readers.includes(S)) R._readers.push(S); } catch (e) {} }, 500); } catch (e) {}
                             // Firefox rule: the dragged tab becomes the target's
                             // ACTIVE tab (adoptTab selectTab). The commit renames
                             // the donor back to the source's real `tab-…` id, so

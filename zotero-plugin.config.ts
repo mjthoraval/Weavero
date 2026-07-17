@@ -70,6 +70,13 @@ export default defineConfig({
     // sensible wall-clock timeout = stalled (kill the temp-profile
     // Zotero — the one launched with `-profile .scaffold/test/profile`
     // — and retry). CI already runs with watch off.
+    // ⚠ This config value ALONE is not enough: scaffold's CLI (0.8.7,
+    // cli.js `watch: !options.exitOnFinish && options.watch`) always
+    // overrides it with the commander default (true) — the npm script
+    // must pass `--exit-on-finish`. Without it the runner stays alive,
+    // and editing any test file mid-run triggers a plugin reload + full
+    // re-run INSIDE the same Zotero: dead readers from the previous
+    // pass then poison reader-lifecycle tests with cross-run state.
     watch: false,
   },
 

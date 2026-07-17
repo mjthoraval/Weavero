@@ -1,6 +1,6 @@
 {
   "name": "weavero",
-  "version": "0.16.1-dev.36",
+  "version": "0.16.1-dev.40",
   "private": true,
   "description": "A Zotero plugin with filters, clickable links, bookmarks, tabs management and other improvements.",
   "homepage": "https://github.com/mjthoraval/Weavero",
@@ -12,7 +12,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "zotero-plugin test",
+    "test": "zotero-plugin test --exit-on-finish",
     "test:local": "node scripts/test-local.mjs",
     "build": "zotero-plugin build",
     "start": "zotero-plugin serve",

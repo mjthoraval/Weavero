@@ -905,8 +905,18 @@ class _FilterMixin {
             // virtualized-table cell-content swaps, so without this
             // hook a fresh quick search lands a populated `_rows` but
             // empty chevron maps — no chevrons appear at all.
-            if (rp && typeof rp._refresh === "function"
-                && !rp._wvRefreshChevronComputePatched) {
+            if (rp && typeof rp._refresh === "function") {
+                // Peel a prior wrap before re-installing (same pattern as
+                // the getItems / renderPrimaryCell patches above) — the
+                // old boolean-only guard survived plugin reloads and kept
+                // a STALE wrap running, which is how the library-header
+                // dedupe fix below failed to take effect on first install
+                // (2026-07-16).
+                if (rp._wvOrigRefreshForChevronCompute) {
+                    rp._refresh = rp._wvOrigRefreshForChevronCompute;
+                    delete rp._wvOrigRefreshForChevronCompute;
+                    delete rp._wvRefreshChevronComputePatched;
+                }
                 const origRefresh = rp._refresh;
                 rp._wvOrigRefreshForChevronCompute = origRefresh;
                 rp._refresh = async function (...args) {
@@ -980,6 +990,22 @@ class _FilterMixin {
                                 rowIdx++) {
                                 const row = this._rows[rowIdx];
                                 if (!row || !row.ref) {
+                                    kept.push(row);
+                                    continue;
+                                }
+                                // Structural rows (Zotero's grouped multi-
+                                // library view): a SPACER and its LIBRARY-
+                                // HEADER share the same Library ref, so the
+                                // id-dedupe below ate every header that
+                                // followed its spacer — i.e. every library
+                                // section except the first (user report
+                                // 2026-07-16). They're not items; keep them
+                                // verbatim and out of seenIds (whose ids are
+                                // itemIDs — a Library id could also collide
+                                // with a real item's id).
+                                if (row.type === "library-header"
+                                    || row.type === "spacer"
+                                    || typeof row.ref.isRegularItem !== "function") {
                                     kept.push(row);
                                     continue;
                                 }

@@ -3870,6 +3870,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvWireMainNewTabShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireNewWindowShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireColumnPickerMark(w); } catch (e) {}
+                try { (this as any)._wvWireItemsCrossWindowDrop(w); } catch (e) {}
             }
         } catch (e) {}
         // Window-type title glyphs (opt-in) + per-window taskbar icons on
@@ -3952,6 +3953,7 @@ class WeaveroPlugin {
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireNewWindowShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireColumnPickerMark(_window); } catch (e) {}
+            try { (this as any)._wvWireItemsCrossWindowDrop(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
             try { (this as any)._wvApplyWindowTaskbarIdentity(_window); } catch (e) {}
             // Taskbar badge via the poison ledger (NEVER the raw apply:

@@ -2625,6 +2625,232 @@ class _PaneMixin {
      *  (#zotero-column-picker) is created fresh on every open — a
      *  capture-phase popupshowing listener decorates its entries by
      *  resolving each menuitem's colindex against the live tree columns. */
+    /** CROSS-WINDOW items-list drop (user request 2026-07-16): drag
+     *  items from another main window's items list and drop them
+     *  anywhere on THIS window's items list to add them to the
+     *  collection this window is showing — natively only the
+     *  collections-pane rows accept the drop. The drop is DELEGATED
+     *  to the native collectionTree.onDrop at the selected row's
+     *  index, so every native rule applies (canDropCheck, the
+     *  cross-library copy options, "already in collection"
+     *  rejection). Same-window drags are left entirely to native
+     *  handling, gated by a per-window dragstart stamp. */
+    _wvWireItemsCrossWindowDrop(win: any) {
+        try {
+            // VERSIONED re-wiring (project convention — a plain boolean
+            // guard survives plugin reloads and left dev.13's listeners
+            // running while dev.14's never attached, 2026-07-16): bump
+            // WV_XWINDROP_VER on behaviour changes; old refs are removed
+            // before the new ones attach.
+            const WV_XWINDROP_VER = 5;
+            if (!win || (win as any)._wvXWinDropVer === WV_XWINDROP_VER) return;
+            const doc = win.document;
+            try {
+                const prev: any = (win as any)._wvXWinDropHandlers;
+                if (prev) {
+                    try { doc.removeEventListener("dragstart", prev.start, true); } catch (e) {}
+                    for (const t of ["dragover", "drop"]) {
+                        try { win.removeEventListener(t, prev[t], true); } catch (e) {}
+                        try { doc.removeEventListener(t, prev[t], true); } catch (e) {}
+                    }
+                }
+            } catch (e) {}
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            const onDragStart = () => {
+                try {
+                    const p: any = live();
+                    if (p) { p._wvDragSourceWin = win; p._wvXDropOverSeen = false; }
+                } catch (e) {}
+            };
+            doc.addEventListener("dragstart", onDragStart, true);
+            // Returns the collections-view drop index, or false when this
+            // drag isn't ours to handle. NOTE: index 0 is valid — callers
+            // must compare against false, not truthiness.
+            const eligible = (e: any, why?: boolean) => {
+                try {
+                    const types = (e.dataTransfer && e.dataTransfer.types) || [];
+                    if (![...types].includes("zotero/item")) return false;
+                    const p: any = live();
+                    if (!p) return false;
+                    if (p._wvDragSourceWin === win) { if (why) trace("reject: same-window drag"); return false; }
+                    const el = doc.getElementById("zotero-items-tree");
+                    if (!el || !el.contains(e.target)) { if (why) trace("reject: outside items tree (target=" + (e.target && e.target.id || e.target && e.target.className || "?") + ")"); return false; }
+                    const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+                    if (!cv || !cv.selection) { if (why) trace("reject: no collectionsView"); return false; }
+                    const idx = cv.selection.focused;
+                    (Zotero as any).DragDrop.currentOrientation = 0;
+                    const ok = cv.canDropCheck(idx, 0, e.dataTransfer);
+                    if (!ok) { if (why) trace("reject: canDropCheck false @row " + idx); return false; }
+                    return idx;
+                } catch (er) { if (why) trace("reject: eligible err " + er); return false; }
+            };
+            // WINDOW-level capture, not document: the native items-tree
+            // drag handlers are registered on the document long before
+            // Weavero's, so a same-node capture listener runs AFTER them
+            // and can't stop them vetoing the dropEffect — with a real
+            // drag the drop event then never fires (the synthetic tests
+            // pass because they dispatch the drop directly; user report
+            // 2026-07-16). The window is ABOVE the document in the event
+            // path, so these run first unconditionally. A trace ring
+            // (`_wvXDropTrace`) records each stage for field debugging.
+            const trace = (m: string) => {
+                try {
+                    const p: any = live();
+                    if (!p) return;
+                    p._wvXDropTrace = p._wvXDropTrace || [];
+                    p._wvXDropTrace.push(Date.now() + " " + m);
+                    if (p._wvXDropTrace.length > 40) p._wvXDropTrace.shift();
+                    // Mirror to the debug log: the ring lives on the plugin
+                    // instance and a reload wipes it — one field report's
+                    // evidence was lost exactly that way (2026-07-16).
+                    Zotero.debug("[Weavero][xdrop] " + m);
+                } catch (er) {}
+            };
+            const onDragOver = (e: any) => {
+                try {
+                    const p: any = live();
+                    const first = p && !p._wvXDropOverSeen;
+                    if (eligible(e, first) === false) return;
+                    if (first) { p._wvXDropOverSeen = true; trace("dragover: accepted over items tree"); }
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = "copy";
+                } catch (er) {}
+            };
+            win.addEventListener("dragover", onDragOver, true);
+            const onDrop = (e: any) => {
+                try {
+                    const idx = eligible(e, true);
+                    if (idx === false) return;
+                    trace("drop: fired @row " + idx);
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const cv = win.ZoteroPane.collectionsView;
+                    (Zotero as any).DragDrop.currentOrientation = 0;
+                    // GENERAL cross-window / multi-collection drop (user
+                    // request 2026-07-16). The merged items view is the
+                    // UNION of every selected collection, so a drop adds
+                    // the items to EVERY selected collection — across any
+                    // mix of libraries. Algorithm (see _wvDropItemsIntoCollections):
+                    //   • same-library collection → addItems directly.
+                    //   • other-library collection → ensure ONE copy of
+                    //     each item exists in that library (reuse a linked
+                    //     copy if present, else the collections-view's own
+                    //     _copyItem — same machinery, same copy options as
+                    //     the native pane drop), then add those copies.
+                    // Covers all four cases the user listed: cross-library
+                    // → 1 coll, → N colls same lib, → N colls across libs.
+                    // Read the item ids NOW (dataTransfer dies after the
+                    // handler returns); resolve everything else in the
+                    // async worker.
+                    const collRows = ((win.ZoteroPane.getCollectionTreeRows
+                        ? (win.ZoteroPane.getCollectionTreeRows() || []) : []) as any[])
+                        .filter((r: any) => r && r.isCollection && r.isCollection());
+                    if (!collRows.length) {
+                        // Library root / saved search / etc. — let native handle it.
+                        trace("drop: no collection selected → native delegate");
+                        Promise.resolve(cv.onDrop(e, idx)).catch((er: any) =>
+                            Zotero.debug("[Weavero] cross-window drop err: " + er));
+                        return;
+                    }
+                    const dd = (Zotero as any).DragDrop.getDataFromDataTransfer(e.dataTransfer);
+                    const ids = ((dd && dd.data) || []).map((x: any) => parseInt(x, 10)).filter((n: any) => !isNaN(n));
+                    const collIDs = collRows.map((r: any) => r.ref.id);
+                    trace("drop: " + collRows.length + " collection(s), " + ids.length + " item id(s)");
+                    // LIVE plugin resolution, NOT the wire-time `this` (the
+                    // project convention for persistent listeners): a
+                    // captured `this` pinned the dev.19 instance's OLD
+                    // worker through two reloads while its fixed twin sat
+                    // unused on the new prototype — the third stale-code
+                    // bite of 2026-07-16. With live() the worker can be
+                    // fixed without re-wiring at all.
+                    const lp: any = live();
+                    if (!lp || !lp._wvDropItemsIntoCollections) { trace("drop: no live plugin"); return; }
+                    Promise.resolve(lp._wvDropItemsIntoCollections(cv, ids, collIDs, trace))
+                        .catch((er: any) => { trace("drop: worker err " + er); Zotero.debug("[Weavero] cross-window drop err: " + er); });
+                } catch (er) {}
+            };
+            win.addEventListener("drop", onDrop, true);
+            (win as any)._wvXWinDropHandlers = { start: onDragStart, dragover: onDragOver, drop: onDrop };
+            (win as any)._wvXWinDropVer = WV_XWINDROP_VER;
+        } catch (e) {}
+    }
+
+    /** Add the given items to EVERY target collection, copying across
+     *  libraries as needed (user request 2026-07-16). `cv` = a
+     *  collections view exposing `_copyItem` (Zotero's own cross-
+     *  library item copy — reuses a linked copy when one exists, and
+     *  applies the group-copy prefs). Per target LIBRARY: resolve the
+     *  in-library id of each dragged item (itself if same-library, an
+     *  existing linked copy, else a fresh _copyItem), then add those
+     *  ids to each of that library's target collections in one
+     *  transaction. Items and collections are re-resolved here (the
+     *  handler passed plain ids), so nothing stale crosses the async
+     *  boundary. */
+    async _wvDropItemsIntoCollections(cv: any, itemIDs: number[], collIDs: number[], trace?: (m: string) => void) {
+        const tr = trace || (() => {});
+        const items: any[] = (await Zotero.Items.getAsync(itemIDs) || [])
+            .filter((it: any) => it && it.isTopLevelItem && it.isTopLevelItem());
+        if (!items.length) { tr("worker: no top-level items"); return; }
+        const cols: any[] = (await Promise.all(collIDs.map((id: number) => Zotero.Collections.getAsync(id))))
+            .filter(Boolean);
+        if (!cols.length) { tr("worker: no collections"); return; }
+        // Group target collections by their library.
+        const byLib = new Map<number, any[]>();
+        for (const c of cols) {
+            if (!byLib.has(c.libraryID)) byLib.set(c.libraryID, []);
+            byLib.get(c.libraryID)!.push(c);
+        }
+        // _copyItem's stub target row — the INSTALLED build's _copyItem
+        // reads exactly `targetTreeRow.isPublications()` and
+        // `targetTreeRow.filesEditable` (enumerated live 2026-07-16
+        // after a bare `{ref:{}}` stub broke the group→user direction
+        // with "isPublications is not a function"; filesEditable is
+        // resolved per target library below).
+        const mkTargetRow = (libraryID: number): any => ({
+            ref: {},
+            isPublications: () => false,
+            get filesEditable() {
+                try { return !!(Zotero.Libraries.get(libraryID) as any).filesEditable; } catch (e) { return true; }
+            },
+        });
+        const copyOptions = {
+            tags: Zotero.Prefs.get("groups.copyTags"),
+            childNotes: Zotero.Prefs.get("groups.copyChildNotes"),
+            childLinks: Zotero.Prefs.get("groups.copyChildLinks"),
+            childFileAttachments: Zotero.Prefs.get("groups.copyChildFileAttachments"),
+            annotations: Zotero.Prefs.get("groups.copyAnnotations"),
+        };
+        for (const [libraryID, libCols] of byLib) {
+            // Resolve each item's id IN this library.
+            const idsInLib: number[] = [];
+            for (const it of items) {
+                try {
+                    if (it.libraryID === libraryID) { idsInLib.push(it.id); continue; }
+                    // Existing linked copy? Reuse it — no duplicate.
+                    let linked: any = null;
+                    try { linked = await it.getLinkedItem(libraryID, true); } catch (e) {}
+                    if (linked) { idsInLib.push(linked.id); continue; }
+                    // Else copy across libraries via the native machinery.
+                    if (typeof cv._copyItem === "function") {
+                        let newID: any = null;
+                        await Zotero.DB.executeTransaction(async () => {
+                            newID = await cv._copyItem({ item: it, targetLibraryID: libraryID, targetTreeRow: mkTargetRow(libraryID), options: copyOptions });
+                        });
+                        if (newID != null) { idsInLib.push(newID); tr("worker: copied item " + it.id + " → " + newID + " in lib " + libraryID); }
+                    }
+                } catch (e) { tr("worker: resolve err item " + (it && it.id) + " lib " + libraryID + ": " + e); }
+            }
+            if (!idsInLib.length) continue;
+            await Zotero.DB.executeTransaction(async () => {
+                for (const col of libCols) {
+                    try { await col.addItems(idsInLib); tr("worker: added " + idsInLib.length + " to C" + col.id + " (lib " + libraryID + ")"); }
+                    catch (e) { tr("worker: addItems err C" + col.id + ": " + e); }
+                }
+            });
+        }
+    }
+
     _wvWireColumnPickerMark(win: any) {
         try {
             if (!win || (win as any)._wvColPickWired) return;

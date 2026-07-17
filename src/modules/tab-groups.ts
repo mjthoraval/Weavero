@@ -372,8 +372,11 @@ class _TabGroupsMixin {
                 ".wv-tgrow-count { margin-left: 2px; font-size: 11px; font-weight: 400; opacity: 0.6; flex: 0 0 auto; }",
                 ".wv-tgrow-twisty {",
                 "  margin-left: auto; flex: 0 0 auto;",
-                "  font-size: 9px; opacity: 0.6; width: 12px; text-align: center;",
+                // Same size as the window twisties (user request
+                // 2026-07-16 — 9px was hard to spot and hit).
+                "  font-size: 13px; opacity: 0.65; width: 18px; text-align: center;",
                 "}",
+                ".wv-tgrow-twisty:hover { opacity: 1; }",
                 "#zotero-tabs-menu-list .row.wv-tgrow-member { margin-left: 18px; }",
                 // Group-chip drag: the whole group travels - member tabs
                 // hide while their chip is dragged (the drop ghost is the

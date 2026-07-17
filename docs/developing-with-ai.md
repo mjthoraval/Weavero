@@ -35,7 +35,7 @@ of it. This page serves two purposes:
 > read what it writes, test what it ships.
 
 The experience behind this page is with
-[Claude Code](https://claude.com/claude-code); the pieces are
+[Claude Code](https://claude.com/claude-code) in VS Code; the pieces are
 [MCP](https://modelcontextprotocol.io)-standard, so any MCP-capable
 agent should work.
 

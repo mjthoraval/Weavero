@@ -42,7 +42,25 @@ agent should work.
 - The willingness to *read* what the agent writes and to test
   everything yourself.
 
-### Step 1 — Start from the template, not from a blank folder
+### Step 1 — Isolate: a dedicated profile and data directory
+
+Before anything else — and this applies to **any** Zotero development,
+with or without an AI agent — separate your development environment
+from your real library. Create a dedicated Zotero profile with its own
+data directory, following the official guide:
+**[Multiple Zotero profiles](https://www.zotero.org/support/kb/multiple_profiles)**
+(`zotero.exe -P` opens the profile manager; give the dev profile its
+own data directory in Settings → Advanced → Files and Folders). Sync it
+to a throwaway account or not at all.
+
+Everything development does — installing work-in-progress builds,
+executing scripts, generating test data, letting newer builds upgrade
+the database schema (a **one-way** operation) — happens in *that*
+profile. An agent that can execute code in Zotero can also corrupt a
+database; the sandbox makes that a non-event. The agent gets access to
+the dev profile only, never the one holding your real library.
+
+### Step 2 — Start from the template, not from a blank folder
 
 The community maintains a modern plugin stack; starting there saves the
 agent from reinventing (badly) what already exists:
@@ -65,7 +83,7 @@ agent from reinventing (badly) what already exists:
   own minimal sample plugin, useful as a reference for the bare
   lifecycle.
 
-### Step 2 — Give the agent ground truth
+### Step 3 — Give the agent ground truth
 
 AI agents confidently misremember Zotero internals. The two
 highest-value things you can do:
@@ -92,7 +110,7 @@ Documentation to point the agent (and yourself) at:
 - **[Zotero source-code search](https://github.com/search?q=repo%3Azotero%2Fzotero&type=code)**
   — when the docs run out, the source is the documentation.
 
-### Step 3 — Give the agent eyes and hands (and a sandbox first)
+### Step 4 — Give the agent eyes and hands
 
 The single biggest upgrade to AI-assisted plugin work is letting the
 agent interact with a **live Zotero**: execute JavaScript, install and
@@ -100,15 +118,11 @@ reload builds, read the error console, query the database, take
 screenshots. That is what the
 **[MCP bridge for Zotero](https://github.com/introfini/mcp-server-zotero-dev)**
 provides; the full setup (including running two Zotero instances) is in
-[Part 2](#the-bridge-let-the-agent-drive-a-live-zotero).
+[Part 2](#the-bridge-let-the-agent-drive-a-live-zotero). Install the
+bridge in the **dev profile from Step 1 only** — the whole point of the
+sandbox is that the agent's hands never reach your real library.
 
-**Before you connect it: isolate.** Create a dedicated Zotero profile
-with its own data directory (`zotero.exe -P` opens the profile manager)
-and give the agent access to *that* profile only — never the one
-holding your real library. An agent that can execute code in Zotero can
-also corrupt a database; the sandbox makes that a non-event.
-
-### Step 4 — Iterate in small, verified steps
+### Step 5 — Iterate in small, verified steps
 
 The loop that works: describe one small behavior → the agent implements
 it → typecheck gate → build → install into the sandbox → **verify in
@@ -176,7 +190,7 @@ Two components connect the agent to Zotero:
    Download `zotero-mcp-bridge.xpi` from the
    [mcp-server-zotero-dev releases](https://github.com/introfini/mcp-server-zotero-dev/releases/latest)
    and install it via Tools → Plugins → ⚙️ → Install Plugin From File
-   (in the *test* profile — see Step 3 above).
+   (in the *dev* profile — see Step 1 of Part 1).
 2. **[`@introfini/mcp-server-zotero-dev`](https://github.com/introfini/mcp-server-zotero-dev)**
    — an MCP server (run via `npx` from the
    [npm package](https://www.npmjs.com/package/@introfini/mcp-server-zotero-dev))
@@ -208,7 +222,7 @@ agent restart to appear — a mid-session reconnect is not enough.
 
 ### Isolation, level two: a source-built Zotero
 
-Beyond the test profile from Step 3, a
+Beyond the dev profile from Step 1, a
 **source-built Zotero** (see the
 [official build docs](https://www.zotero.org/support/dev/client_coding/building_the_desktop_app))
 on a third profile lets you test your plugin against upstream HEAD —

@@ -1255,8 +1255,8 @@ class _TabSessionsMixin {
                 const recs = w.tabs || [];
                 if (!recs.length) continue;
                 let label: string;
-                if (w.kind === "reader") { readerN++; label = readerN > 1 ? "Reader window " + readerN : "Reader window"; }
-                else { mainN++; label = "Window " + mainN; }
+                if (w.kind === "reader") { readerN++; label = w.name || (readerN > 1 ? "Reader window " + readerN : "Reader window"); }
+                else { mainN++; label = w.name || ("Window " + mainN); }
                 const tabs: any[] = [];
                 for (const rec of recs) {
                     const id = Zotero.Items.getIDFromLibraryAndKey(rec.libraryID, rec.itemKey);
@@ -1291,14 +1291,109 @@ class _TabSessionsMixin {
                         },
                     };
                 }
-                if (tabs.length) sections.push({ label, libraryTab, tabs, kind: w.kind === "reader" ? "reader" : "main" });
+                if (tabs.length) sections.push({ label, libraryTab, tabs, kind: w.kind === "reader" ? "reader" : "main", wvRec: w });
             }
             // Render the windows (each a left-line scope) straight into `container`
             // — the caller's session box body. The box itself is the session scope.
             if (sections.length) {
+                const already = container.querySelectorAll(".wv-sessmenu-winscope").length;
                 (this as any)._wvTabsMenuRenderSections(doc, container, panel, sections,
                     { header: "wv-sessmenu-winhdr", row: "wv-sessmenu-tabrow", lib: "wv-sessmenu-liblbl", scope: "wv-sessmenu-winscope" },
                     "sess|" + (sess.id || ""));
+                // Right-click menu on each window header (user report
+                // 2026-07-17: session windows had NO context menu, unlike
+                // active and parked windows): Rename (stored on the session's
+                // window record), Move to another session (record-level,
+                // stays inactive — parked semantics), Delete from session.
+                try {
+                    const scopes = [...container.querySelectorAll(".wv-sessmenu-winscope")].slice(already);
+                    const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const refresh = () => {
+                        try {
+                            if (typeof (panel as any).refreshList === "function") (panel as any).refreshList();
+                            else { const lp: any = live(); if (lp) lp._wvRegroupTabsMenu(panel); }
+                        } catch (er) {}
+                    };
+                    scopes.forEach((scope: any, i: number) => {
+                        const sec: any = sections[i];
+                        if (!sec || !sec.wvRec) return;
+                        const hdr = scope.querySelector(".wv-sessmenu-winhdr");
+                        if (!hdr) return;
+                        hdr.addEventListener("contextmenu", (ev: any) => {
+                            try {
+                                ev.preventDefault(); ev.stopPropagation();
+                                const lp: any = live();
+                                if (!lp) return;
+                                let pop: any = doc.getElementById("wv-sesswin-context");
+                                if (pop) pop.remove();
+                                pop = doc.createXULElement("menupopup");
+                                pop.id = "wv-sesswin-context";
+                                const mk = (lbl: string, fn: any) => {
+                                    const mi = doc.createXULElement("menuitem");
+                                    mi.setAttribute("label", lbl);
+                                    mi.addEventListener("command", () => { try { fn(); } catch (er2) {} });
+                                    pop.appendChild(mi);
+                                };
+                                const rec: any = sec.wvRec;
+                                mk("Rename Window…", () => {
+                                    lp._wvShowRenameDialog(doc.defaultView, {
+                                        title: "Rename Window",
+                                        name: rec.name || "",
+                                        placeholder: sec.label,
+                                        swatches: [],
+                                        onAccept: ({ name }: any) => {
+                                            try {
+                                                if (name && name !== sec.label) rec.name = name;
+                                                else delete rec.name;   // empty/default → back to numbering
+                                                const p2: any = live();
+                                                if (p2) { p2._wvTabSessionPersist(); refresh(); }
+                                            } catch (er2) {}
+                                        },
+                                    });
+                                });
+                                try {
+                                    const others = (lp._wvTabSessionNamedList ? lp._wvTabSessionNamedList() : [])
+                                        .filter((s: any) => s && s.id !== sess.id);
+                                    if (others.length) {
+                                        const mv = doc.createXULElement("menu");
+                                        mv.setAttribute("label", "Move Window to");
+                                        const mvPop = doc.createXULElement("menupopup");
+                                        for (const s of others) {
+                                            const mi = doc.createXULElement("menuitem");
+                                            mi.setAttribute("label", s.name || "Session");
+                                            const target = s;
+                                            mi.addEventListener("command", () => {
+                                                try {
+                                                    sess.windows = (sess.windows || []).filter((x: any) => x !== rec);
+                                                    target.windows = target.windows || [];
+                                                    target.windows.push(rec);
+                                                    const p2: any = live();
+                                                    if (p2) { p2._wvTabSessionPersist(); refresh(); }
+                                                } catch (er2) {}
+                                            });
+                                            mvPop.appendChild(mi);
+                                        }
+                                        mv.appendChild(mvPop);
+                                        pop.appendChild(mv);
+                                    }
+                                } catch (er2) {}
+                                mk("Delete Window from Session", () => {
+                                    try {
+                                        const n = (rec.tabs || []).length;
+                                        const ok = Services.prompt.confirm(doc.defaultView, "Weavero",
+                                            "Remove this window (" + n + " tab" + (n === 1 ? "" : "s") + ") from “" + (sess.name || "Session") + "”?");
+                                        if (!ok) return;
+                                        sess.windows = (sess.windows || []).filter((x: any) => x !== rec);
+                                        const p2: any = live();
+                                        if (p2) { p2._wvTabSessionPersist(); refresh(); }
+                                    } catch (er2) {}
+                                });
+                                (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
+                                pop.openPopupAtScreen(ev.screenX, ev.screenY, true);
+                            } catch (er) {}
+                        });
+                    });
+                } catch (e) {}
             }
             // Saved windows belonging to this session render as parked window
             // boxes below the session's own windows.

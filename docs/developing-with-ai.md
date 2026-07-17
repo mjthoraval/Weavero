@@ -287,9 +287,8 @@ likely place it will appear, so it is the one to watch. Meanwhile the
 [NGI0-funded plugin-ecosystem project](https://nlnet.nl/project/Zotero-plugin-ecosystem/)
 — a **community effort, not affiliated with Zotero** — is consolidating
 the community tooling above at
-[zotero-plugin.dev](https://zotero-plugin.dev/), including a
-work-in-progress community
-[plugin registry](https://github.com/zotero-plugin-dev/zotero-plugin-registry).)
+[zotero-plugin.dev](https://zotero-plugin.dev/), where a community
+plugin registry is under development.)
 
 ## Part 2: The Weavero workflow in depth
 
@@ -398,7 +397,11 @@ Revisit the lists as habits form: promote commands that always get
 approved, demote anything that ever surprised you. For the Claude Code
 specifics (permission modes, allowlists, sandboxing, hooks), see the
 official
-[best-practices guide](https://code.claude.com/docs/en/best-practices).
+[best-practices guide](https://code.claude.com/docs/en/best-practices);
+the examples throughout this page use Claude Code's configuration, but
+every capable agent has equivalents (permission rules, project
+instruction files, tool allow/deny lists) — translate the idea, not the
+exact syntax.
 
 ### The edit–install–verify loop
 
@@ -505,7 +508,7 @@ human reviews diffs, tests the gestures, and decides.
 | Agent-side tutorial | [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices) (CLAUDE.md, permissions, verification, context) |
 | Community | [zotero-dev list](https://groups.google.com/g/zotero-dev) · [forums](https://forums.zotero.org) |
 | Distribution | [addons-scraper registry](https://github.com/syt2/zotero-addons-scraper) · [Add-on Market](https://github.com/syt2/zotero-addons) |
-| Community ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) · [plugin registry (WIP)](https://github.com/zotero-plugin-dev/zotero-plugin-registry) |
+| Community ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) |
 | Worked example | [Weavero source](https://github.com/mjthoraval/Weavero) |
 
 *This page reflects the Weavero workflow as of July 2026 (Zotero 10

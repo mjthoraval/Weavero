@@ -1141,7 +1141,22 @@ class _ReaderMixin {
             ".wv-md-preview {"
             + "  font: inherit; color: inherit; line-height: inherit;"
             + "  white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word;"
+            // Skip layout/paint for previews far off-screen; the 3em
+            // estimate matches the clamped height so scrollbar geometry
+            // stays stable. Same combo AM ships (-webkit-box + auto
+            // content-visibility), proven to behave in Gecko.
+            + "  content-visibility: auto;"
+            + "  contain-intrinsic-size: auto none auto 3em;"
             + "}"
+            // "Add comment…" affordance re-inserted when Annotation
+            // Markdown hides an empty comment editor (see
+            // _wvAmEnsureAddCommentAffordance). Mimics the native
+            // placeholder's quiet look; cursor:text signals editability.
+            + ".wv-am-add-comment {"
+            + "  color: var(--fill-secondary, #7f7f7f); font: inherit;"
+            + "  font-style: italic; cursor: text; padding: 2px 0;"
+            + "}"
+            + ".wv-am-add-comment:hover { color: var(--fill-primary, inherit); }"
             + ".comment.wv-comment-preview .content { display: none; }"
             + ".comment.wv-comment-preview .wv-md-preview {"
             + "  display: -webkit-box;"
@@ -13319,6 +13334,58 @@ class _ReaderMixin {
         const contentEl = commentEl.querySelector(".content");
         if (!contentEl) return false;
 
+        // --- Annotation Markdown (zotero-annotation-markdown) interop ------
+        // AM owns the comment display when installed: it hides the native
+        // editor (inline display:none + data-annotation-markdown-source-
+        // hidden) and shows its own .annotation-markdown-rendered preview.
+        // Racing it with our .wv-md-preview double-renders the comment, so
+        // yield the pane — but AM renders bare URLs as dead text (its
+        // markdown-it pipeline has linkify off), so colourise links INSIDE
+        // its preview instead. AM's empty-comment state hides the editor
+        // while rendering nothing clickable (its only "Add comment"
+        // affordance is the placeholder inside the editor it just hid) —
+        // without a restored entry point, a first comment can never be
+        // typed while AM is enabled.
+        // Yield whenever AM is ACTIVE IN THE DOCUMENT, not merely when this
+        // card already carries AM output. Per-card detection loses a bulk-
+        // render race: on a sidebar with many comments (measured: 150 LaTeX
+        // annotations, 2026-07-17) Weavero's pass reaches most cards before
+        // AM does, plants .wv-md-preview first, and AM then skips them — so
+        // the math the user installed AM for renders as raw $…$ on ~3/4 of
+        // the cards, plus scroll jank from the two passes fighting (p95
+        // frame 50 ms vs 17 ms with a single renderer).
+        if (this._wvAmActiveInDoc(doc)) {
+            for (const p of commentEl.querySelectorAll(".wv-md-preview")) p.remove();
+            commentEl.classList.remove("wv-comment-preview");
+            const amPreview = commentEl.querySelector(".annotation-markdown-rendered");
+            const amHidden = commentEl.querySelector(
+                "[data-annotation-markdown-source-hidden=\"true\"]");
+            const amHasContent = !!(amPreview && amPreview.textContent
+                && amPreview.textContent.trim());
+            if (amHasContent) {
+                for (const ph of commentEl.querySelectorAll(".wv-am-add-comment")) {
+                    ph.remove();
+                }
+                if (this._getInlineLinks()) {
+                    try { this._wvAmLinkifyPreview(amPreview); } catch (e) {}
+                }
+            } else if (amHidden) {
+                try {
+                    this._wvAmEnsureAddCommentAffordance(
+                        commentEl, amHidden, amPreview);
+                } catch (e) {}
+            }
+            // Cards AM hasn't reached yet are left untouched — its own
+            // pass will render them; planting ours first just re-creates
+            // the race this branch exists to avoid.
+            return false;
+        }
+        // AM uninstalled/disabled since the last pass: drop our leftover
+        // affordance so it can't shadow the (now visible) native editor.
+        for (const ph of commentEl.querySelectorAll(".wv-am-add-comment")) {
+            ph.remove();
+        }
+
 
 
         // Icons-only mode (Mode 2): the user's pref says "comments stay
@@ -13425,6 +13492,325 @@ class _ReaderMixin {
         commentEl.setAttribute("data-wv-last-rebuild", String(Date.now()));
         commentEl.classList.add("wv-comment-preview");
         return true;
+    }
+
+    /** Drain deferred sidebar preview renders during idle time, with a
+     *  scroll-priority pump so cards entering the viewport render at
+     *  once instead of waiting for their turn in the queue. Queue state
+     *  lives on the reader document (per-window; dies with the doc).
+     *  Elements are marked with data-wv-idle-queued while queued — the
+     *  attribute (not a WeakSet) is the dedupe, so a comment that
+     *  mutates AFTER rendering can be re-queued by a later pass. The
+     *  pump resolves the LIVE plugin at run time (never a closed-over
+     *  `this`) so a plugin reload can't leave a stale instance rendering
+     *  into the queue. */
+    _wvQueueIdleSidebarRenders(idoc, elements) {
+        const win = idoc.defaultView;
+        if (!win) return;
+        let q = (idoc as any).__wvIdleRenderQueue;
+        if (!q) {
+            q = { items: [], scheduled: false, watcherWired: false, io: null };
+            (idoc as any).__wvIdleRenderQueue = q;
+        }
+        const renderOne = (el) => {
+            el.removeAttribute("data-wv-idle-queued");
+            if (q.io) { try { q.io.unobserve(el); } catch (e) {} }
+            if (!el.isConnected) return;
+            const lp = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            if (!lp) return;
+            try { lp._renderPreviewPanel(el); } catch (e) {}
+        };
+        const pump = (deadline) => {
+            q.scheduled = false;
+            const hasBudget = deadline && typeof deadline.timeRemaining === "function"
+                ? () => deadline.timeRemaining() > 4
+                : (() => { const end = Date.now() + 12; return () => Date.now() < end; })();
+            // Guarantee a minimum drain per pump: rIC deadlines can arrive
+            // nearly exhausted, and a budget-only loop was measured draining
+            // ~7 previews/s (11 s for 200 cards). 10 cheap renders ≈ 20 ms,
+            // only ever spent while genuinely idle.
+            let n = 0;
+            while (q.items.length && (n < 10 || hasBudget())) {
+                renderOne(q.items.shift());
+                n++;
+            }
+            if (q.items.length) schedule();
+            const lpE = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            if (lpE) { try { lpE._wvEvictFarPreviews(idoc, q); } catch (e) {} }
+        };
+        const schedule = () => {
+            if (q.scheduled) return;
+            q.scheduled = true;
+            if (typeof (win as any).requestIdleCallback === "function") {
+                (win as any).requestIdleCallback(pump, { timeout: 100 });
+            } else {
+                win.setTimeout(() => pump(null), 50);
+            }
+        };
+        if (!q.watcherWired) {
+            q.watcherWired = true;
+            const sc = idoc.querySelector("#annotations, .annotations");
+            const IO = (win as any).IntersectionObserver;
+            if (typeof IO === "function") {
+                // Viewport promotion via IntersectionObserver (AM's
+                // approach): zero scroll-path work, no throttle tuning.
+                // Cards render ONE PER FRAME as they approach the
+                // viewport — a batch inside a scroll handler was measured
+                // tripling the median frame time to 50 ms.
+                let promoting = false;
+                const promote = [];
+                const step = () => {
+                    if (!promote.length) {
+                        promoting = false;
+                        const lpP = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lpP) { try { lpP._wvEvictFarPreviews(idoc, q); } catch (e) {} }
+                        return;
+                    }
+                    renderOne(promote.shift());
+                    win.requestAnimationFrame(step);
+                };
+                q.io = new IO((entries) => {
+                    for (const entry of entries) {
+                        if (!entry.isIntersecting) continue;
+                        const el = entry.target;
+                        try { q.io.unobserve(el); } catch (e) {}
+                        const i = q.items.indexOf(el);
+                        if (i >= 0) q.items.splice(i, 1);
+                        promote.push(el);
+                    }
+                    if (promote.length && !promoting) {
+                        promoting = true;
+                        win.requestAnimationFrame(step);
+                    }
+                }, sc ? { root: sc, rootMargin: "150% 0px 150% 0px" }
+                      : { rootMargin: "150% 0px 150% 0px" });
+            } else if (sc) {
+                // Fallback: rAF-throttled scroll scan (pre-IO Gecko only).
+                sc.addEventListener("scroll", () => {
+                    const now = Date.now();
+                    if (q.lastScan && now - q.lastScan < 150) return;
+                    q.lastScan = now;
+                    win.requestAnimationFrame(() => {
+                        if (!q.items.length) return;
+                        const vh = win.innerHeight || 800;
+                        const found = [];
+                        q.items = q.items.filter((el) => {
+                            if (!el.isConnected) { el.removeAttribute("data-wv-idle-queued"); return false; }
+                            let near = false;
+                            try {
+                                const r = el.getBoundingClientRect();
+                                near = r.bottom > -vh * 0.5 && r.top < vh * 1.5;
+                            } catch (e) {}
+                            if (near) { found.push(el); return false; }
+                            return true;
+                        });
+                        const step = () => {
+                            if (!found.length) return;
+                            renderOne(found.shift());
+                            if (found.length) win.requestAnimationFrame(step);
+                        };
+                        step();
+                    });
+                }, { passive: true });
+            }
+        }
+        for (const el of elements) {
+            if (el.getAttribute("data-wv-idle-queued") === "1") continue;
+            el.setAttribute("data-wv-idle-queued", "1");
+            q.items.push(el);
+            if (q.io) { try { q.io.observe(el); } catch (e) {} }
+        }
+        if (q.items.length) schedule();
+        // Bound live preview DOM on huge sidebars (AM-inspired): evict
+        // previews far off-screen back into this queue (internally
+        // throttled; a no-op below the cap). Also triggered from the
+        // pump and the IO promotion drain, so sustained scrolling can't
+        // inflate the live count between passes.
+        try { this._wvEvictFarPreviews(idoc, q); } catch (e) {}
+    }
+
+    /** Evict rendered sidebar previews whose card sits far outside the
+     *  viewport, recycling the card into the idle-render queue so the
+     *  IntersectionObserver re-renders it on approach. Caps live preview
+     *  DOM on very large sidebars (content-visibility already skips
+     *  their layout/paint; this reclaims the memory too). Never touches
+     *  the card being edited or the selected annotation. Cap via hidden
+     *  pref weavero.previewEvictionMax (default 400; 200-comment
+     *  documents never hit it). */
+    _wvEvictFarPreviews(idoc, q) {
+        const nowT = Date.now();
+        if (q.lastEvict && nowT - q.lastEvict < 2000) {
+            // Arm ONE trailing retry: render storms call this densely and
+            // the throttle would otherwise swallow the FINAL call — after
+            // which nothing re-triggers, leaving the count uncapped until
+            // the next render activity (observed: 200 live previews with
+            // a cap of 60 after a fast crawl).
+            if (!q.evictRetry) {
+                q.evictRetry = true;
+                const winR = idoc.defaultView;
+                if (winR) {
+                    winR.setTimeout(() => {
+                        q.evictRetry = false;
+                        const lp = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp) { try { lp._wvEvictFarPreviews(idoc, q); } catch (e) {} }
+                    }, 2100);
+                }
+            }
+            return;
+        }
+        q.lastEvict = nowT;
+        let max = 400;
+        try {
+            const p = Zotero.Prefs.get("weavero.previewEvictionMax");
+            if (typeof p === "number" && p > 0) max = p;
+        } catch (e) {}
+        const previews = idoc.querySelectorAll(".comment.wv-comment-preview .wv-md-preview");
+        if (previews.length <= max) return;
+        const win = idoc.defaultView;
+        const vh = (win && win.innerHeight) || 800;
+        const active = idoc.activeElement;
+        const victims = [];
+        for (const pv of previews) {
+            const commentEl = pv.closest(".comment");
+            if (!commentEl) continue;
+            const card = pv.closest(".annotation, .annotation-row");
+            if (card && card.classList.contains("selected")) continue;
+            if (commentEl.classList.contains("wv-editing")) continue;
+            if (active && commentEl.contains(active)) continue;
+            let far = false;
+            try {
+                const r = commentEl.getBoundingClientRect();
+                far = r.bottom < -vh * 3 || r.top > vh * 4;
+            } catch (e) {}
+            if (far) victims.push({ pv, commentEl });
+        }
+        // Evict down to ~80% of the cap so the pass doesn't re-trigger
+        // on every call while hovering at the threshold.
+        const target = Math.floor(max * 0.8);
+        let toEvict = previews.length - target;
+        let evicted = 0;
+        for (const { pv, commentEl } of victims) {
+            if (toEvict <= 0) break;
+            try {
+                pv.remove();
+                commentEl.classList.remove("wv-comment-preview");
+                commentEl.removeAttribute("data-wv-last-rebuild");
+                if (commentEl.getAttribute("data-wv-idle-queued") !== "1") {
+                    commentEl.setAttribute("data-wv-idle-queued", "1");
+                    q.items.push(commentEl);
+                    if (q.io) { try { q.io.observe(commentEl); } catch (e) {} }
+                }
+                toEvict--;
+                evicted++;
+            } catch (e) {}
+        }
+        if (evicted) {
+            this._dbg("[Weavero] sidebar: evicted " + evicted
+                + " far-offscreen previews (live cap " + max + ")");
+        }
+    }
+
+    /** True when the Zotero Annotation Markdown plugin is active in this
+     *  reader document. Detection is DOM-based (works per-window without
+     *  AddonManager round-trips): AM's rendered previews / source-node
+     *  attributes once it has processed anything, else its injected
+     *  stylesheet (an anonymous <style> carrying its class rules — the
+     *  only doc-level footprint before the first render). Positive
+     *  results are cached on the document; a negative is re-checked every
+     *  pass so enabling AM mid-session flips us without a reload. */
+    _wvAmActiveInDoc(doc) {
+        if (!doc) return false;
+        if ((doc as any).__wvAmActive) return true;
+        let active = !!doc.querySelector(
+            "[data-annotation-markdown-preview],"
+            + " [data-annotation-markdown-source-node]");
+        if (!active) {
+            for (const s of doc.querySelectorAll("style")) {
+                if (s.textContent
+                        && s.textContent.indexOf(".annotation-markdown-rendered") !== -1) {
+                    active = true;
+                    break;
+                }
+            }
+        }
+        if (active) (doc as any).__wvAmActive = true;
+        return active;
+    }
+
+    /** Colourise URLs inside an Annotation Markdown rendered preview.
+     *  AM's markdown-it pipeline has linkify off, so bare http(s):// and
+     *  zotero:// URLs come out as plain text nodes there. Walk the
+     *  preview's text nodes and replace URL-bearing ones with the same
+     *  link spans the native preview path builds (markdown off — AM
+     *  already applied its own). Idempotent via data-wv-am-linked keyed
+     *  on the enabled-scheme set + text, so AM re-rendering the preview
+     *  (attribute wiped) triggers exactly one re-linkify. */
+    _wvAmLinkifyPreview(amPreview) {
+        if (!amPreview) return;
+        const doc = amPreview.ownerDocument;
+        const cacheKey = this.URL_SCHEME_ALT + ":"
+            + this.normalize(amPreview.textContent || "");
+        if (amPreview.getAttribute("data-wv-am-linked") === cacheKey) return;
+        const walker = doc.createTreeWalker(amPreview, 4 /* SHOW_TEXT */);
+        const targets = [];
+        let n;
+        while ((n = walker.nextNode())) {
+            const t = n.nodeValue;
+            if (!t || !this.hasURI(t)) continue;
+            // Never rewrite inside an existing link, KaTeX output, or a
+            // code block — replacing math-internal text corrupts the
+            // layout KaTeX has already measured.
+            if (n.parentElement
+                && n.parentElement.closest("a, .katex, code, pre")) continue;
+            targets.push(n);
+        }
+        for (const node of targets) {
+            const frag = this._buildCommentFragment(node.nodeValue, {
+                doc, useMd: false, isTreeMode: false,
+                stripMarkers: false, lineBreaks: false,
+            });
+            node.parentNode.replaceChild(frag, node);
+        }
+        amPreview.setAttribute("data-wv-am-linked", cacheKey);
+    }
+
+    /** Restore a way to create a comment when Annotation Markdown has
+     *  hidden the (empty) native editor. AM's only "Add comment" entry
+     *  point is the placeholder inside the editor it hides, and its
+     *  empty preview has no size — so with AM enabled a first comment
+     *  can never be typed (AM 0.4.0, reproduced with Weavero disabled).
+     *  Insert a placeholder row; clicking it undoes AM's hide using
+     *  AM's own attribute vocabulary (so its showSourceNode/
+     *  hidePreviewNode bookkeeping stays consistent) and focuses the
+     *  editor. AM won't re-hide while focus is inside (its isEditing
+     *  guard); once text exists the normal AM flow resumes on blur. */
+    _wvAmEnsureAddCommentAffordance(commentEl, hiddenContainer, amPreview) {
+        if (commentEl.querySelector(".wv-am-add-comment")) return;
+        const doc = commentEl.ownerDocument;
+        const ph = doc.createElement("div");
+        ph.className = "wv-am-add-comment";
+        ph.textContent = "Add comment…";
+        ph.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try {
+                hiddenContainer.hidden = false;
+                hiddenContainer.style.display = "";
+                hiddenContainer.removeAttribute(
+                    "data-annotation-markdown-source-hidden");
+                if (amPreview) {
+                    amPreview.hidden = true;
+                    amPreview.style.display = "none";
+                    amPreview.setAttribute(
+                        "data-annotation-markdown-preview-hidden", "true");
+                }
+                ph.remove();
+                const editable = commentEl.querySelector(
+                    ".content[contenteditable=\"true\"], [contenteditable=\"true\"]");
+                if (editable) editable.focus();
+            } catch (err) {}
+        });
+        commentEl.appendChild(ph);
     }
 
     /** Find the open Zotero.Reader instance whose iframe document matches
@@ -13576,16 +13962,46 @@ class _ReaderMixin {
         // .comment so URLs and markdown render in a non-editable preview
         // shown when not editing. CSS swaps preview <-> raw .content based
         // on the wv-editing class set by the focusin/focusout handlers.
+        // Hybrid eager/lazy schedule (2026-07-17): rendering every comment
+        // synchronously froze one frame per pass on comment-heavy documents
+        // (measured: 333 ms worst frame on 200 rendered previews). Render
+        // the cards near the viewport now; everything else drains through
+        // idle callbacks (plus a scroll-priority pump), so the pass itself
+        // stays under a frame. _renderPreviewPanel's data-source cache
+        // makes repeat visits no-ops, so re-scheduling is always safe.
         const seen = new Set();
-        let count = 0;
+        const toRender = [];
         for (const sel of [".annotation-row .comment", ".annotation .comment"]) {
             for (const cmt of idoc.querySelectorAll(sel)) {
                 if (seen.has(cmt)) continue;
                 seen.add(cmt);
-                if (this._renderPreviewPanel(cmt)) count++;
+                toRender.push(cmt);
             }
         }
-        if (count) this._dbg("[Weavero] sidebar: rendered " + count + " previews");
+        const viewH = (idoc.defaultView && idoc.defaultView.innerHeight) || 800;
+        const deferred = [];
+        let count = 0;
+        for (const cmt of toRender) {
+            let near = true;
+            try {
+                const r = cmt.getBoundingClientRect();
+                // Current viewport plus a half-screen behind and one and a
+                // half ahead — the next scroll step is already rendered.
+                near = r.bottom > -viewH * 0.5 && r.top < viewH * 1.5;
+            } catch (e) {}
+            if (near) {
+                if (this._renderPreviewPanel(cmt)) count++;
+            } else {
+                deferred.push(cmt);
+            }
+        }
+        if (deferred.length) {
+            try { this._wvQueueIdleSidebarRenders(idoc, deferred); } catch (e) {}
+        }
+        if (count) {
+            this._dbg("[Weavero] sidebar: rendered " + count + " previews ("
+                + deferred.length + " deferred to idle)");
+        }
 
         // Mirror right-pane behaviour: hide the popup-icon button injected by
         // _sidebarHandler when (a) we're in Mode 1 and (b) the comment isn't

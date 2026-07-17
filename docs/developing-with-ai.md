@@ -223,11 +223,11 @@ users browse. (An **official Zotero plugin directory** is
 replace the third-party lists — that official plugins page is the
 likely place it will appear, so it is the one to watch. Meanwhile the
 [NGI0-funded plugin-ecosystem project](https://nlnet.nl/project/Zotero-plugin-ecosystem/)
-is consolidating the community tooling above at its public hub,
-**[zotero-plugin.dev](https://zotero-plugin.dev/)** — including a
-work-in-progress
-[plugin registry](https://github.com/zotero-plugin-dev/zotero-plugin-registry)
-meant to power the future store.)
+— a **community effort, not affiliated with Zotero** — is consolidating
+the community tooling above at
+[zotero-plugin.dev](https://zotero-plugin.dev/), including a
+work-in-progress community
+[plugin registry](https://github.com/zotero-plugin-dev/zotero-plugin-registry).)
 
 ## Part 2: The Weavero workflow in depth
 
@@ -412,7 +412,7 @@ human reviews diffs, tests the gestures, and decides.
 | AI ↔ live Zotero | [MCP bridge + server](https://github.com/introfini/mcp-server-zotero-dev) |
 | Community | [zotero-dev list](https://groups.google.com/g/zotero-dev) · [forums](https://forums.zotero.org) |
 | Distribution | [addons-scraper registry](https://github.com/syt2/zotero-addons-scraper) · [Add-on Market](https://github.com/syt2/zotero-addons) |
-| Ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) · [plugin registry (WIP)](https://github.com/zotero-plugin-dev/zotero-plugin-registry) |
+| Community ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) · [plugin registry (WIP)](https://github.com/zotero-plugin-dev/zotero-plugin-registry) |
 | Worked example | [Weavero source](https://github.com/mjthoraval/Weavero) |
 
 *This page reflects the Weavero workflow as of July 2026 (Zotero 10

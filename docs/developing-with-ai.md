@@ -205,7 +205,10 @@ screenshots. That is what the
 provides; the full setup (including running two Zotero instances) is in
 [Part 2](#the-bridge-let-the-agent-drive-a-live-zotero). Install the
 bridge in the **dev profile from Step 1 only** — the whole point of the
-sandbox is that the agent's hands never reach your real library.
+sandbox is that the agent's hands never reach your real library. And
+capable hands deserve configured limits: see
+[parametrise the agent](#parametrise-the-agent-permissions-and-guardrails)
+in Part 2.
 
 ### Step 5 — Iterate in small, verified steps
 
@@ -341,6 +344,33 @@ performance protocol, and the manual test protocols for what automation
 can't reach ([restart/session](restart-testing),
 [gestures](gesture-testing), [plugin-disable](disable-testing),
 [taskbar overlays](taskbar-overlay-testing)).
+
+### Parametrise the agent: permissions and guardrails
+
+Instruction files teach the agent *what is true*; the agent's own
+configuration decides *what it may do* — and tuning it is as important
+as the prompts. Every serious agent has a permission system (in Claude
+Code: `settings.json` with allow/deny rules per tool and command
+pattern). Three settings carry most of the value:
+
+- **Deny the destructive commands outright.** Weavero's deny list
+  blocks force-pushes, `git reset --hard`, `git clean -f`, forced
+  branch deletion, process kills (`Stop-Process` — see the
+  never-force-kill rule below), and the release command. A guardrail
+  like this is not distrust of the agent — it converts "the agent made
+  a destructive slip" into "the agent had to stop and ask", which is
+  exactly the failure mode you want. These rules have blocked real
+  mistakes on this project, and a deliberate, human-confirmed exception
+  remains possible.
+- **Allowlist the routine loop.** The build/typecheck/test commands and
+  the bridge's read-mostly tools should run without prompting — an
+  iteration loop that asks permission forty times a session trains the
+  human to click yes blindly, which is worse than either extreme.
+- **Scope the reachable directories.** The agent gets the plugin repo,
+  its working folders, and the sandbox — not your home directory.
+
+Revisit the lists as habits form: promote commands that always get
+approved, demote anything that ever surprised you.
 
 ### The edit–install–verify loop
 

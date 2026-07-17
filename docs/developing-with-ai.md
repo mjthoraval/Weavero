@@ -60,6 +60,18 @@ profile. An agent that can execute code in Zotero can also corrupt a
 database; the sandbox makes that a non-event. The agent gets access to
 the dev profile only, never the one holding your real library.
 
+**Isolation, level two — a source-built Zotero.** Once you are past
+the basics, a **source-built Zotero** (see the
+[official build docs](https://www.zotero.org/support/dev/client_coding/building_the_desktop_app))
+on a *third* profile lets you test your plugin against upstream HEAD —
+weeks before changes reach a beta. It is a different binary, so it runs
+alongside your daily Zotero; give each instance its own bridge port
+([Part 2](#the-bridge-let-the-agent-drive-a-live-zotero) shows how).
+Weavero catches upstream collisions (row-model changes, search reworks,
+docShell behavior changes) this way, on the day they land — and the
+one-way schema rule above is exactly why this sandbox, too, gets its
+own data directory.
+
 **Two low-friction on-ramps before you build anything.** You can learn
 most of what matters about Zotero's API without a plugin skeleton:
 
@@ -258,20 +270,6 @@ own bridge port and register one MCP server per instance. The port pref
 the bridge plugin reads is `extensions.zotero.extensions.mcp-rdp.port`
 (per **profile**, not per binary). A brand-new MCP server needs a full
 agent restart to appear — a mid-session reconnect is not enough.
-
-### Isolation, level two: a source-built Zotero
-
-Beyond the dev profile from Step 1, a
-**source-built Zotero** (see the
-[official build docs](https://www.zotero.org/support/dev/client_coding/building_the_desktop_app))
-on a third profile lets you test your plugin against upstream HEAD —
-weeks before changes reach a beta. It is a *different binary*, so it
-runs alongside your daily Zotero; that is exactly the two-ports
-scenario above. We catch upstream collisions (row-model changes, search
-reworks, docShell behavior changes) this way, on the day they land.
-Remember that **DB schema upgrades are one-way**: a newer build opens
-your data directory once and a release build can never open it again —
-another reason every sandbox gets its own data dir.
 
 ### Teach the project to the agent: instruction files
 

@@ -220,7 +220,8 @@ registry, which feeds the in-Zotero
 **[Add-on Market plugin](https://github.com/syt2/zotero-addons)** most
 users browse. (An **official Zotero plugin directory** is
 [planned](https://www.zotero.org/support/plugins) and expected to
-replace the third-party lists. Meanwhile the
+replace the third-party lists — that official plugins page is the
+likely place it will appear, so it is the one to watch. Meanwhile the
 [NGI0-funded plugin-ecosystem project](https://nlnet.nl/project/Zotero-plugin-ecosystem/)
 is consolidating the community tooling above at its public hub,
 **[zotero-plugin.dev](https://zotero-plugin.dev/)** — including a

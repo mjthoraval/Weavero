@@ -126,22 +126,40 @@ agent from reinventing (badly) what already exists:
   own minimal sample plugin, useful as a reference for the bare
   lifecycle.
 
-### Step 3 — Give the agent ground truth
+### Step 3 — Frame the agent: ground truth and standing rules
 
-AI agents confidently misremember Zotero internals. The two
-highest-value things you can do:
+This step matters more than any amount of prompting skill. An AI agent
+without framing **goes in blind**: it answers from training data that
+predates current Zotero, searches the open web where plugin information
+is sparse, outdated, or plain wrong, and — when it finds nothing — it
+can *hallucinate* an API that sounds plausible and does not exist.
+Framing the agent fixes this at the root, three pieces:
 
-1. **Clone the [Zotero source](https://github.com/zotero/zotero)**
+1. **Give it access to the real documentation and tools** — locally or
+   through links. Clone the [Zotero source](https://github.com/zotero/zotero)
    (plus [reader](https://github.com/zotero/reader) and
    [note-editor](https://github.com/zotero/note-editor) if you touch
-   those areas) somewhere the agent can search, and make verification
-   against it a standing rule — Part 2 describes
-   [how that rule is enforced](#teach-the-project-to-the-agent-instruction-files)
-   in practice.
-2. **Write instruction files** (Claude Code reads `CLAUDE.md` from the
-   repo root; other agents have equivalents): how to build, how to
-   test, and every invariant you learn the hard way, so no lesson has
-   to be learned twice.
+   those areas) somewhere the agent can search, and point it at the
+   documentation list below. A local clone beats a web search every
+   time: the agent greps the exact version you run.
+2. **Dictate standing rules it always remembers** — instruction files
+   (Claude Code reads `CLAUDE.md` from the repo root; other agents have
+   equivalents). Record how to build, how to test, the project's
+   conventions, and every invariant you learn the hard way — this is
+   the *context in which the agent takes decisions*, and it is reloaded
+   every session, so no lesson has to be learned twice.
+3. **Make evidence-before-answers a standing rule.** Require the agent
+   to base every claim on real data — read the source code or the
+   documentation (or probe the live app, Step 4) *before* replying, and
+   **state which sources it used**. An answer that cites
+   `chrome/content/zotero/tabs.js` or a documentation page is
+   checkable; an answer from memory is a guess wearing a confident
+   tone. On Weavero this rule is written down as "verify, don't guess"
+   — Part 2 shows
+   [how it is enforced](#teach-the-project-to-the-agent-instruction-files)
+   in practice, and the
+   [permissions side of the framing](#parametrise-the-agent-permissions-and-guardrails)
+   completes it.
 
 Documentation to point the agent (and yourself) at:
 

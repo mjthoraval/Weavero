@@ -1,3 +1,9 @@
+// DEPRECATED FALLBACK (2026-07-17): `npm test` now passes
+// --exit-on-finish, which fixed the local hang this wrapper existed
+// for (the hang was the scaffold CLI's silent watch-mode override, not
+// the in-Zotero quit). Kept temporarily as a fallback; delete after a
+// few weeks of clean `npm test` exits. See TESTING.md.
+//
 // Local one-shot test runner that GUARANTEES termination.
 //
 // Background: `zotero-plugin test` (= `npm test`) relies on the

@@ -4653,18 +4653,17 @@ class _TabGroupsMixin {
             doc.documentElement.appendChild(popupset);
         }
         popupset.appendChild(panel);
-        // Manage cards are DRAGGABLE by their title/info lines (user
-        // request 2026-07-16 — the card can cover what you want to see).
-        // Modern Gecko panels have no `backdrag` (checked toolkit's
-        // panel.js), so this is manual: mousedown on a non-interactive
-        // header line tracks the pointer and panel.moveTo()s the popup.
-        try { this._wvMakePanelDraggable(win, panel); } catch (e) {}
         return panel;
     }
 
     /** Drag-to-move for a XUL panel: grab `.wv-tg-title` / `.wv-tg-info`
-     *  (they're inert text — inputs/buttons/rows stay clickable). */
+     *  (they're inert text — inputs/buttons/rows stay clickable).
+     *  Wired ONLY for the Manage Window card (user decision 2026-07-16:
+     *  the group chip editor opened from the tab strip doesn't need it;
+     *  the window card can cover what you're renaming it after). */
     _wvMakePanelDraggable(win: any, panel: any) {
+        if ((panel as any)._wvDragWired) return;
+        (panel as any)._wvDragWired = true;
         panel.addEventListener("mousedown", (e: any) => {
             try {
                 if (e.button !== 0) return;
@@ -4699,7 +4698,7 @@ class _TabGroupsMixin {
             if (!style) {
                 const st = panel.ownerDocument.createElementNS(HTML_NS, "style");
                 st.id = "wv-tg-drag-style";
-                st.textContent = ".wv-tg-panel-body .wv-tg-title, .wv-tg-panel-body .wv-tg-info { cursor: move; }";
+                st.textContent = "#wv-window-editor .wv-tg-title, #wv-window-editor .wv-tg-info { cursor: move; }";
                 (panel.ownerDocument.head || panel.ownerDocument.documentElement).appendChild(st);
             }
         } catch (e) {}

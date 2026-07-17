@@ -3991,6 +3991,11 @@ class WeaveroPlugin {
                         _window._wvWindowId = (group && group.wvWinId != null)
                             ? group.wvWinId : this._wvNextWindowId();
                     } catch (e) {}
+                    // ROOT FIX for fused windows (2026-07-16): swallow the
+                    // native session mirror before ZoteroPane.init reaches
+                    // it — this window gets ONLY its own tabs. finish() in
+                    // _wvInitDevMainWindow unwraps for Weavero's restore.
+                    try { (this as any)._wvSuppressNativePaneRestore(_window); } catch (e) {}
                     this._wvInitDevMainWindow(_window, group);
                     // Multi-monitor placement saved at quit. No geometry at
                     // all (legacy session entries from before sessions

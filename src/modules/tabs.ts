@@ -1820,6 +1820,10 @@ class _TabsMixin {
             const doc = menuWin.document;
             const HTML = "http://www.w3.org/1999/xhtml";
             const edPanel = (this as any)._wvTabGroupEnsurePanel(menuWin, "wv-window-editor");
+            // Draggable by its title/info lines — the WINDOW card only
+            // (user decision 2026-07-16; the strip-opened group editor
+            // stays put). Idempotent across opens.
+            try { (this as any)._wvMakePanelDraggable(menuWin, edPanel); } catch (er) {}
             const body = edPanel.querySelector(".wv-tg-panel-body");
             while (body.firstChild) body.removeChild(body.firstChild);
             const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -6764,12 +6768,55 @@ class _TabsMixin {
      *  restore and double-applying our own restore. NOTE: only the TABS are
      *  isolated; Weavero's per-feature state (filters, tabs-menu sort, …) is a
      *  plugin-instance singleton still shared across windows. */
+    /** PREVENT the native session mirror in a window Weavero spawns —
+     *  the root fix (user question 2026-07-16, after the clear-state
+     *  race fused two windows' tabs): every new main window's
+     *  ZoteroPane.init unconditionally runs
+     *  `Zotero_Tabs.restoreState(state.tabs)` (zoteroPane.js
+     *  "Restore pane state"), and `Zotero.openMainWindow()` has no
+     *  clean-window option. So the spawned window's `restoreState`
+     *  is wrapped to SWALLOW calls until `_wvInitDevMainWindow`'s
+     *  finish() unwraps it for Weavero's own restore. Call this the
+     *  moment the spawned window is claimed (onMainWindowLoad) —
+     *  init's mirror runs later, after Zotero's init promise. The
+     *  session-state clear, the settle-wipe and the 1.6s purge stay
+     *  as backstops. */
+    _wvSuppressNativePaneRestore(win: any) {
+        try {
+            const Z = win && win.Zotero_Tabs;
+            if (!Z || (win as any)._wvOrigRestoreState) return;
+            const orig = Z.restoreState;
+            if (typeof orig !== "function") return;
+            (win as any)._wvOrigRestoreState = orig;
+            Z.restoreState = function () {
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp && lp._wvTrace) lp._wvTrace("spawn: swallowed native pane mirror");
+                } catch (e) {}
+                return undefined;
+            };
+        } catch (e) {}
+    }
+
+    _wvUnsuppressNativePaneRestore(win: any) {
+        try {
+            if (win && (win as any)._wvOrigRestoreState && win.Zotero_Tabs) {
+                win.Zotero_Tabs.restoreState = (win as any)._wvOrigRestoreState;
+                delete (win as any)._wvOrigRestoreState;
+            }
+        } catch (e) {}
+    }
+
     _wvInitDevMainWindow(win, group) {
         if (!win) return;
         let lastCount = -1, stableTicks = 0, ticks = 0, done = false;
         const finish = () => {
             if (done) return; done = true;
             try {
+                // Hand the real restoreState back before using it — the
+                // spawn wrapper (see _wvSuppressNativePaneRestore) has
+                // been swallowing the native mirror until now.
+                try { (this as any)._wvUnsuppressNativePaneRestore(win); } catch (e) {}
                 const tabs = win.Zotero_Tabs;
                 if (tabs && typeof tabs.closeAll === "function") {
                     try { tabs.closeAll(); } catch (e) {}     // clears native-restored tabs (keeps library)
@@ -6807,14 +6854,70 @@ class _TabsMixin {
                         } catch (e) { Zotero.debug("[Weavero] dev wvMainState err: " + e); }
                     }
                 } else {
-                    try {
-                        const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
-                        if (cv && typeof cv.selectLibrary === "function") {
-                            cv.selectLibrary(Zotero.Libraries.userLibraryID);
-                        }
-                    } catch (e) {}
+                    // CLEAN window (Ctrl+N / hamburger): land on My Library.
+                    // One selectLibrary call is not enough — Zotero's
+                    // collections-view init asynchronously restores the
+                    // GLOBAL lastViewedFolder pref (the collection some
+                    // other window last viewed) and can override us after
+                    // the fact (user report 2026-07-16). Re-assert until
+                    // the selection verifiably IS the user library.
+                    const wanted = "L" + Zotero.Libraries.userLibraryID;
+                    const enforceLib = (tries: number) => {
+                        try {
+                            const zp = win.ZoteroPane;
+                            const cv = zp && zp.collectionsView;
+                            if (cv && typeof cv.selectLibrary === "function") {
+                                const row = zp.getCollectionTreeRow && zp.getCollectionTreeRow();
+                                if (row && row.id === wanted) return;   // settled
+                                cv.selectLibrary(Zotero.Libraries.userLibraryID);
+                            }
+                        } catch (e) {}
+                        if (tries < 10) { try { win.setTimeout(() => enforceLib(tries + 1), 250); } catch (e) {} }
+                    };
+                    enforceLib(0);
                 }
             } catch (e) { Zotero.debug("[Weavero] _wvInitDevMainWindow err: " + e); }
+            // VERIFY-AND-PURGE (2026-07-16): the settle heuristic (count
+            // stable for 2 ticks) can declare the native session mirror
+            // finished while a late batch is still coming — those tabs
+            // land AFTER closeAll and fuse the anchor's tab set with this
+            // window's own. Seen live: a spawned window with 15 mirrored
+            // + 8 own + library = 24 tabs, and the next session
+            // auto-snapshot froze the fusion into the store. One pass
+            // ~1.6s later closes every UNSELECTED tab whose itemID isn't
+            // in this window's own list (per-ID counted, so intentional
+            // duplicates survive; the selected tab is never touched so a
+            // user's quick manual open can't be eaten).
+            try {
+                const expected = new Map();
+                for (const t of ((group && group.tabs) || [])) {
+                    const iid = t && t.data && t.data.itemID;
+                    if (iid != null) expected.set(iid, (expected.get(iid) || 0) + 1);
+                }
+                if (expected.size) {
+                    const lp: any = this;
+                    win.setTimeout(() => {
+                        try {
+                            const Z = win.Zotero_Tabs;
+                            if (!Z || !Z._tabs) return;
+                            const seen = new Map();
+                            const toClose: any[] = [];
+                            for (const t of Z._tabs.slice()) {
+                                if (!t || t.type === "library" || t.selected) continue;
+                                const iid = t.data && t.data.itemID;
+                                if (iid == null) continue;
+                                const c = (seen.get(iid) || 0) + 1;
+                                seen.set(iid, c);
+                                if (c > (expected.get(iid) || 0)) toClose.push(t.id);
+                            }
+                            if (toClose.length) {
+                                try { lp._wvTrace && lp._wvTrace("dev-init purge: closing " + toClose.length + " late-mirrored tab(s)"); } catch (e) {}
+                                for (const id of toClose) { try { Z.close(id); } catch (e) {} }
+                            }
+                        } catch (e) {}
+                    }, 1600);
+                }
+            } catch (e) {}
             // Signal that the clean start (closeAll + restore/selectLibrary) is done,
             // so a caller opening a tab into this window can wait it out.
             try { win._wvDevInitDone = true; } catch (e) {}
@@ -7273,6 +7376,19 @@ class _TabsMixin {
             p._wvSavedWinDoc.windows.push(entry);
             this._wvSavedWindowsPersist();
             try { win.close(); } catch (e) {}
+            // Show the result immediately — an open List-all-tabs panel
+            // otherwise sits stale and the save looks like a no-op (user
+            // report 2026-07-16). Deferred a beat so the closed window
+            // has left the enumerators first.
+            try {
+                const mw: any = Zotero.getMainWindows()[0];
+                if (mw) mw.setTimeout(() => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (lp) lp._wvTabsMenuRefreshOpenPanel();
+                    } catch (e2) {}
+                }, 300);
+            } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvSaveAndCloseWindow err: " + e); }
     }
 

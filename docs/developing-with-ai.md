@@ -27,11 +27,12 @@ of it. This page serves two purposes:
 > **The shortcut: give this page to your AI.** This page is written to
 > be read by AI agents as much as by humans. Paste its URL (or its
 > content) into your AI coding agent together with your plugin idea,
-> and the agent can take it from there — set up the project, follow the
-> rules and gotchas below, write and verify the code, and tell you when
-> a step needs *your* hands (installing Zotero, creating the sandbox
-> profile, installing the bridge, testing real gestures). You stay the
-> judgment: read what it writes, test what it ships.
+> and the agent will **guide you through the steps below** to build the
+> plugin — explaining each one, doing the coding and in-app
+> verification it can do itself, and walking you through the parts that
+> need your hands (installing Zotero, creating the sandbox profile,
+> installing the bridge, testing real gestures). You stay the judgment:
+> read what it writes, test what it ships.
 
 The experience behind this page is with
 [Claude Code](https://claude.com/claude-code); the pieces are

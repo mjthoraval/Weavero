@@ -322,7 +322,10 @@ class _TabGroupsMixin {
                    zeroed the inset (measured live). 16px aligns the box header's dot with the active group
                    rows' dots inside the window boxes (dot-to-dot 137 vs
                    156 measured live 2026-07-15). */
-                ".wv-winscope.wv-tgmenu-scope { margin: 0 4px 4px 16px; }",
+                // 18px, not 16 — must equal .wv-tgrow-member's margin-left so
+                // a saved group's tab rows align pixel-exact with an ACTIVE
+                // group's member rows (measured 2px off, user report 2026-07-17).
+                ".wv-winscope.wv-tgmenu-scope { margin: 0 4px 4px 18px; }",
                 /* Hover-preview title: the group's FULL name (wraps). */
                 ".wv-tg-preview-title {",
                 "  display: flex; align-items: center; gap: 7px;",

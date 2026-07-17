@@ -10,7 +10,7 @@
       "id": "weavero@mjthoraval",
       "update_url": "https://github.com/mjthoraval/Weavero/releases/download/release/update.json",
       "strict_min_version": "7.0",
-      "strict_max_version": "10.*"
+      "strict_max_version": "9.0.*"
     }
   },
   "icons": {

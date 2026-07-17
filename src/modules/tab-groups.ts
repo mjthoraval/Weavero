@@ -4182,20 +4182,37 @@ class _TabGroupsMixin {
         } catch (er) { Zotero.debug("[Weavero] _wvTabsMenuGroupContext err: " + er); }
     }
 
-    /** Prompt for a new name and rename a tab group. Used by the list-all-tabs
-     *  popup group context menu — a modal prompt works for open, saved, and
-     *  other-window groups alike (no live anchor node needed, unlike the chip
-     *  editor _wvShowTabGroupEditor). */
+    /** Rename a tab group from the list-all-tabs group context menu —
+     *  the shared prompt-style dialog WITH colour swatches (user
+     *  request 2026-07-16; was a bare Services.prompt). Works for
+     *  open, saved, and other-window groups alike (no live anchor
+     *  node needed, unlike the chip editor _wvShowTabGroupEditor).
+     *  Colour applies only on OK. */
     _wvTabGroupPromptRename(win: any, groupID: any) {
         try {
             const g = this._tabGroupsGet().find((x: any) => x.id === groupID);
             if (!g) return;
-            const out = { value: g.name || "" };
-            const ok = Services.prompt.prompt(
-                win, "Rename Tab Group", "Group name:", out, null, { value: false });
-            if (!ok) return;
-            this._tabGroupUpdate(groupID, { name: (out.value || "").trim() });
-            this._wvTabGroupApplyEverywhere();
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            (this as any)._wvShowRenameDialog(win, {
+                title: "Rename Tab Group",
+                name: g.name || "",
+                placeholder: "Group name",
+                swatches: WV_GROUP_COLORS.map((c: any) => ({
+                    hex: c.hex, selected: c.id === g.color, radius: "4px",
+                })),
+                onAccept: ({ name, swatchIndex }: any) => {
+                    try {
+                        const p: any = live();
+                        if (!p) return;
+                        const upd: any = { name: (name || "").trim() };
+                        if (swatchIndex != null && WV_GROUP_COLORS[swatchIndex]) {
+                            upd.color = WV_GROUP_COLORS[swatchIndex].id;
+                        }
+                        p._tabGroupUpdate(groupID, upd);
+                        p._wvTabGroupApplyEverywhere();
+                    } catch (e) {}
+                },
+            });
         } catch (e) { Zotero.debug("[Weavero] _wvTabGroupPromptRename err: " + e); }
     }
 

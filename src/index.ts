@@ -1966,6 +1966,9 @@ class WeaveroPlugin {
             // Ctrl/Cmd+click split orientation when no split is open yet:
             // "horizontal" (default) or "vertical".
             try { branch.setCharPref(P + "ctrlClickSplit", "horizontal"); } catch (e) {}
+            // Window-name-in-title mode: "off" (default — current design,
+            // user decision 2026-07-16) | "prefix" | "replace".
+            try { branch.setCharPref(P + "windowTitleNameMode", "off"); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvRegisterDefaultPrefs err: " + e);
         }
@@ -2430,6 +2433,43 @@ class WeaveroPlugin {
                 }
             }
         }, ["tab"], "weavero-tab"));
+
+        // 3a-pre. Notifier: close tabs whose item was DELETED in another
+        // window. Zotero only closes such tabs in the window handling
+        // the delete (single-window assumption) — a dead tab left in a
+        // SECONDARY main/reader window makes the native tabsMenuPanel
+        // refreshList throw (`item.getItemTypeIconName` on a false
+        // item), which aborts the whole List-all-tabs render before
+        // Weavero's decoration runs (seen live 2026-07-16: the anchor's
+        // panel degraded to a bare list over one dead tab).
+        this._notifierIDs.push(Zotero.Notifier.registerObserver({
+            notify: (event: any, type: any, ids: any) => {
+                if (type !== "item" || event !== "delete") return;
+                try {
+                    const gone = new Set((ids || []).map((x: any) => parseInt(x, 10)));
+                    for (const w of (Zotero.getMainWindows() || [])) {
+                        const Z: any = (w as any).Zotero_Tabs;
+                        for (const t of ((Z && Z._tabs) || []).slice()) {
+                            const iid = t && t.data && t.data.itemID;
+                            if (iid != null && (gone.has(iid) || !Zotero.Items.get(iid))) {
+                                try { Z.close(t.id); } catch (e) {}
+                            }
+                        }
+                    }
+                    const en = (Services as any).wm.getEnumerator("zotero:reader");
+                    while (en.hasMoreElements()) {
+                        const w: any = en.getNext();
+                        const st = w._wvWT;
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        for (const t of ((st && st.tabs) || []).slice()) {
+                            if (t.itemID != null && (gone.has(t.itemID) || !Zotero.Items.get(t.itemID))) {
+                                try { if (lp && lp._wvWTCloseTab) lp._wvWTCloseTab(w, t.id); } catch (e) {}
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+        }, ["item"], "weavero-dead-tab-close"));
 
         // 3a. Notifier: keep the ACTIVE (tracked) tab-session in sync as
         //     main-window tabs open/close/change. (Reader-window tabs flow
@@ -3747,6 +3787,13 @@ class WeaveroPlugin {
                         }
                     }
 
+                    // OS window titles: glyph toggle + name-in-title mode
+                    // both re-compose every open window's title live.
+                    if (data === "extensions.zotero.weavero.windowTitleGlyphs"
+                        || data === "extensions.zotero.weavero.windowTitleNameMode") {
+                        try { (this as any)._wvRefreshTitleGlyphs(); } catch (e) {}
+                    }
+
                     // Visual extras — group-library glyph (re-setup the
                     // tab-bar decoration which the gate inside
                     // _setupTabsMenuLibrarySort short-circuits when off).
@@ -4045,6 +4092,9 @@ class WeaveroPlugin {
             // select in another window can't show its item pane here (applies to
             // every main window — the anchor leaks too; no-op single-window).
             try { this._wvGuardContextPaneCrossWindow(_window); } catch (e) {}
+            // Stop a new collection from stealing the selection in every
+            // window (only the acting window should follow it).
+            try { this._wvGuardCollectionSelectCrossWindow(_window); } catch (e) {}
             // Re-evaluate the anchor dot on every window (count changed → a
             // newly-opened 2nd window reveals the dot on the anchor).
             try { this._wvUpdateAllMainWindowIndicators(); } catch (e) {}

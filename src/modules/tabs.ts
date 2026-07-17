@@ -1666,6 +1666,15 @@ class _TabsMixin {
     _wvWindowSetCustomTitle(win: any, title: any) {
         if (!win) return;
         win._wvWindowTitle = title || "";
+        // Window-name-in-title modes: re-compose the OS title with the
+        // new name immediately (wires the shadow if the mode just made
+        // it necessary; re-applies via doc.title = doc.title otherwise).
+        try {
+            if (this._getWindowTitleNameMode() !== "off"
+                || this._getEnableWindowTitleGlyphs()) {
+                this._wvWireTitleGlyph(win);
+            }
+        } catch (e) {}
         // Reader windows persist nothing (no window index) but their mark
         // tooltip must refresh with the new session-scoped name.
         try {
@@ -2052,7 +2061,27 @@ class _TabsMixin {
             // 2026-07-16 — synthetic test events carry no mouseup, so
             // the regression was invisible to the automated checks;
             // the old context menupopups passed true here too).
-            edPanel.openPopupAtScreen(e.screenX, e.screenY, true);
+            // SAME vertical landing as the Manage Tab Group card (user
+            // report 2026-07-16, second round): that card anchors to a
+            // chip INSIDE the tab strip, so "after_start" clears the
+            // strip — but the window mark lives in the TITLE BAR, so a
+            // plain below-the-anchor drop still covered the strip's
+            // buttons. Compute the extra offset down to the strip's
+            // bottom edge so both cards open at the same height.
+            const anchorEl = (e && e.target && e.target.ownerDocument === doc) ? e.target : null;
+            if (anchorEl) {
+                let dy = 6;
+                try {
+                    const strip = doc.getElementById("tab-bar-container");
+                    if (strip) {
+                        const ar = anchorEl.getBoundingClientRect();
+                        const sr = strip.getBoundingClientRect();
+                        if (sr.bottom > ar.bottom) dy = Math.round(sr.bottom - ar.bottom) + 4;
+                    }
+                } catch (er) {}
+                edPanel.openPopup(anchorEl, "after_start", 0, dy, true, false);
+            }
+            else edPanel.openPopupAtScreen(e.screenX, e.screenY + 24, true);
             edPanel.addEventListener("popupshown", () => {
                 try { input.focus(); input.select(); } catch (er) {}
             }, { once: true });
@@ -2063,15 +2092,143 @@ class _TabsMixin {
      *  a "Rename Window…" item (and "Reset to Default Name" when a custom title
      *  is set), so the rename isn't a surprise direct prompt. Mirrors the
      *  tab-group context menu (`_wvTabsMenuGroupContext`) so the two feel the same. */
+    /** Prompt-style rename dialog WITH colour swatches (user request
+     *  2026-07-16) — the List-all-tabs rename surface for groups and
+     *  windows. Services.prompt can't host swatches, so this is a
+     *  small CENTERED panel styled like the native prompt: title, name
+     *  field, swatch row, OK/Cancel. Callers must close the tabs-menu
+     *  panel first (panel-over-panel rollup kills XUL panels under
+     *  real clicks). Colour is applied only on OK.
+     *  opts: { title, name, placeholder?, swatches: [{hex, selected,
+     *  radius}], onAccept({ name, swatchIndex|null }) }. */
+    _wvShowRenameDialog(win: any, opts: any) {
+        try {
+            const doc = win.document;
+            const HTML = "http://www.w3.org/1999/xhtml";
+            const panel = (this as any)._wvTabGroupEnsurePanel(win, "wv-rename-dialog");
+            const body = panel.querySelector(".wv-tg-panel-body");
+            while (body.firstChild) body.removeChild(body.firstChild);
+            const title = doc.createElementNS(HTML, "div");
+            title.className = "wv-tg-title";
+            title.textContent = opts.title || "Rename";
+            body.appendChild(title);
+            const input: any = doc.createElementNS(HTML, "input");
+            input.className = "wv-tg-name-input";
+            input.value = opts.name || "";
+            if (opts.placeholder) input.setAttribute("placeholder", opts.placeholder);
+            (input as any).style.margin = "6px 0";
+            body.appendChild(input);
+            let chosen: any = null;
+            if (opts.swatches && opts.swatches.length) {
+                const row = doc.createElementNS(HTML, "div");
+                row.className = "wv-tg-swatches";
+                (row as any).style.margin = "2px 0 6px";
+                opts.swatches.forEach((s: any, i: number) => {
+                    const sw: any = doc.createElementNS(HTML, "div");
+                    sw.className = "wv-tg-swatch" + (s.selected ? " wv-selected" : "");
+                    sw.style.background = s.hex;
+                    if (s.radius) sw.style.borderRadius = s.radius;
+                    sw.addEventListener("click", () => {
+                        try {
+                            for (const x of row.querySelectorAll(".wv-tg-swatch")) x.classList.remove("wv-selected");
+                            sw.classList.add("wv-selected");
+                            chosen = i;
+                        } catch (e) {}
+                    });
+                    row.appendChild(sw);
+                });
+                body.appendChild(row);
+            }
+            const btnRow = doc.createElementNS(HTML, "div");
+            btnRow.className = "wv-tg-btnrow";
+            const mkBtn = (label: string, fn: () => void) => {
+                const b: any = doc.createElementNS(HTML, "button");
+                b.className = "wv-tg-btn";
+                b.textContent = label;
+                b.addEventListener("click", fn);
+                btnRow.appendChild(b);
+            };
+            const submit = () => {
+                try { panel.hidePopup(); } catch (e) {}
+                try { opts.onAccept && opts.onAccept({ name: String(input.value || "").trim(), swatchIndex: chosen }); } catch (e) {}
+            };
+            mkBtn("OK", submit);
+            mkBtn("Cancel", () => { try { panel.hidePopup(); } catch (e) {} });
+            body.appendChild(btnRow);
+            input.addEventListener("keydown", (ev: any) => {
+                if (ev.key === "Enter") { ev.preventDefault(); submit(); }
+                else if (ev.key === "Escape") { ev.preventDefault(); try { panel.hidePopup(); } catch (e) {} }
+            });
+            panel.addEventListener("popupshown", () => {
+                try { input.focus(); input.select(); } catch (e) {}
+            }, { once: true });
+            // Centered like a prompt window.
+            const px = win.screenX + Math.max(60, (win.outerWidth - 340) / 2);
+            const py = win.screenY + Math.max(80, win.outerHeight / 4);
+            panel.openPopupAtScreen(px, py, false);
+        } catch (e) { Zotero.debug("[Weavero] _wvShowRenameDialog err: " + e); }
+    }
+
+    /** Simple rename for a window from the List-all-tabs context menu —
+     *  prompt-style with colour swatches (user requests 2026-07-16).
+     *  The Manage Window card stays exclusive to the title-bar glyph
+     *  right-click. Submitting the default name (or blank) clears the
+     *  custom title so the default numbering keeps tracking. */
+    _wvWindowPromptRename(parentWin: any, targetWin: any, panel: any) {
+        try {
+            try { if (panel && panel.hidePopup) panel.hidePopup(); } catch (e) {}
+            const defName = this._wvWindowDefaultName(targetWin);
+            const wt = targetWin.document && targetWin.document.documentElement
+                && targetWin.document.documentElement.getAttribute("windowtype");
+            const isReader = wt === "zotero:reader";
+            const isAnchor = !isReader && this._wvIsAnchorWindow(targetWin);
+            const curIdx = (targetWin as any)._wvTitleGlyphIdx != null
+                ? ((targetWin as any)._wvTitleGlyphIdx % WV_WIN_BADGE_COLORS.length) : -1;
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            this._wvShowRenameDialog(parentWin, {
+                title: "Rename Window",
+                name: this._wvWindowCustomTitle(targetWin) || defName,
+                placeholder: defName,
+                // No swatches for the anchor — its mark is the ⚓.
+                swatches: isAnchor ? [] : WV_WIN_BADGE_COLORS.map((hex: string, i: number) => ({
+                    hex, selected: i === curIdx, radius: isReader ? "50%" : "3px",
+                })),
+                onAccept: ({ name, swatchIndex }: any) => {
+                    try {
+                        const p: any = live();
+                        if (!p) return;
+                        p._wvWindowSetCustomTitle(targetWin, (!name || name === defName) ? null : name);
+                        if (swatchIndex != null && swatchIndex !== curIdx) {
+                            (targetWin as any)._wvTitleGlyphIdx = swatchIndex;   // manual pick — verbatim
+                            delete (targetWin as any)._wvWinIconName;
+                            delete (targetWin as any)._wvOverlayName;
+                            try { p._wvApplyWindowIcon(targetWin); } catch (e) {}
+                            try {
+                                const mt: any = p._wvOvMonTop;
+                                if (mt) delete mt[p._wvOvScreenKeyOf(targetWin)];
+                                p._wvOvSetBadge(targetWin, "recolor");
+                            } catch (e) {}
+                            try {
+                                if (isReader) p._wvUpdateWindowBadgeDot(targetWin, !!p._getTabsAndWindowsMaster(), true);
+                                else p._wvUpdateMainWindowIndicator(targetWin);
+                            } catch (e) {}
+                        }
+                        p._wvTabsMenuRefreshOpenPanel();
+                    } catch (e) {}
+                },
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvWindowPromptRename err: " + e); }
+    }
+
     /** Window right-click INSIDE List all tabs — a plain MENUPOPUP, the
      *  tab-group convention (user decision 2026-07-16): menupopups are
      *  native context menus with rollup exemptions, so they open fine
      *  over the tabs panel, where the Manage Window CARD (a XUL panel)
      *  could not — real right-clicks killed it via mouseup dismissal
      *  and then chain rollup, both invisible to synthetic tests.
-     *  "Rename Window…" closes the tabs panel and opens the card (it
-     *  carries the name field, the one-click default reset AND the
-     *  colour swatches); the other actions live directly in the menu. */
+     *  "Rename Window…" opens the same simple modal prompt as the
+     *  tab-group / session renames here; the Manage Window card stays
+     *  on the title-bar glyph right-click. */
     _wvWindowHeaderContext(targetWin: any, panel: any, e: any) {
         try {
             const menuWin = (panel && panel.ownerGlobal) || targetWin;
@@ -2099,10 +2256,11 @@ class _TabsMixin {
                 });
                 pop.appendChild(mi);
             };
-            mk("Rename Window…", (p: any) => {
-                try { if (panel && panel.hidePopup) panel.hidePopup(); } catch (er) {}
-                p._wvShowWindowEditor(targetWin, isReader, menuWin, null, { screenX: sx, screenY: sy });
-            });
+            // Simple modal prompt, NOT the Manage Window card — matching
+            // the tab-group and session rename prompts in this menu (user
+            // decision 2026-07-16; the card stays on the title-bar glyph
+            // right-click only).
+            mk("Rename Window…", (p: any) => p._wvWindowPromptRename(menuWin, targetWin, panel));
             if (!lastMain) {
                 pop.appendChild(doc.createXULElement("menuseparator"));
                 mk(isReader ? "Convert to Main Window" : "Convert to Reader Window", (p: any) => {
@@ -2294,11 +2452,45 @@ class _TabsMixin {
         } catch (e) { return name; }
     }
 
-    _wvGlyphizeTitle(win: any, v: any): string {
-        const base = this._wvStripTitleGlyph(v);
+    /** Window-name-in-title mode (user request 2026-07-16, Chrome's
+     *  "Name window…" parallel): "off" (default — current design),
+     *  "prefix" ("Name — <native title>", Firefox-extension style),
+     *  "replace" ("Name" only, Chrome style). Only windows with a
+     *  CUSTOM name are affected in any mode. */
+    _getWindowTitleNameMode(): string {
         try {
+            if (!(this as any)._getTabsAndWindowsMaster()) return "off";
+            const v = String(Zotero.Prefs.get("weavero.windowTitleNameMode") || "off");
+            return (v === "prefix" || v === "replace") ? v : "off";
+        } catch (e) { return "off"; }
+    }
+
+    _wvGlyphizeTitle(win: any, v: any): string {
+        let base = this._wvStripTitleGlyph(v);
+        try {
+            // Undo a previous NAME decoration: our own re-apply
+            // (`doc.title = doc.title`) feeds the composed title back in.
+            // The composed string is remembered per window, and the
+            // native base alongside it — so "replace" mode can recover a
+            // base the visible title no longer contains, and "prefix"
+            // never stacks.
+            if ((win as any)._wvComposedTitle != null && base === (win as any)._wvComposedTitle
+                && (win as any)._wvNativeTitleBase != null) {
+                base = (win as any)._wvNativeTitleBase;
+            }
+            (win as any)._wvNativeTitleBase = base;
+            let out = base;
+            const mode = this._getWindowTitleNameMode();
+            if (mode !== "off") {
+                const name = this._wvWindowCustomTitle(win);
+                if (name) out = mode === "replace" ? name : (name + " — " + base);
+            }
             const g = this._wvWindowTitleGlyph(win);
-            return g ? g + " " + base : base;
+            const composed = g ? g + " " + out : out;
+            // Remember WITHOUT the glyph — the feed-back value has the
+            // glyph stripped by _wvStripTitleGlyph before we compare.
+            (win as any)._wvComposedTitle = out;
+            return composed;
         } catch (e) { return base; }
     }
 
@@ -2343,15 +2535,30 @@ class _TabsMixin {
             const cur = doc.title;
             delete doc.title;
             delete doc._wvTitleGlyphWired;
-            try { doc.title = this._wvStripTitleGlyph(cur); } catch (e) {}
+            // Restore the NATIVE title: strip the glyph, and if the rest
+            // is our name decoration, fall back to the cached base (in
+            // "replace" mode the visible title has no base left at all).
+            let restored = this._wvStripTitleGlyph(cur);
+            try {
+                if ((win as any)._wvComposedTitle != null
+                    && restored === (win as any)._wvComposedTitle
+                    && (win as any)._wvNativeTitleBase != null) {
+                    restored = (win as any)._wvNativeTitleBase;
+                }
+                delete (win as any)._wvComposedTitle;
+            } catch (e) {}
+            try { doc.title = restored; } catch (e) {}
         } catch (e) {}
     }
 
     /** Apply or strip the glyph on every open window — init, pref
-     *  toggle, and teardown all funnel through here. */
+     *  toggle, and teardown all funnel through here. The title shadow
+     *  also serves the window-NAME-in-title modes, so it stays wired
+     *  when either feature is active. */
     _wvRefreshTitleGlyphs(forceOff?: boolean) {
         try {
-            const on = !forceOff && this._getEnableWindowTitleGlyphs();
+            const on = !forceOff && (this._getEnableWindowTitleGlyphs()
+                || this._getWindowTitleNameMode() !== "off");
             const apply = (w: any) => {
                 try { if (on) this._wvWireTitleGlyph(w); else this._wvUnwireTitleGlyph(w); } catch (e) {}
             };
@@ -10041,6 +10248,61 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvGuardContextPaneCrossWindow err: " + e); }
     }
 
+    /** Stop a new collection from stealing the SELECTION in every window
+     *  (user report 2026-07-16). Zotero's collectionTree.notify runs in
+     *  EVERY window and, on a single-collection `add`, each one calls
+     *  `selectByID("C"+id)` (collectionTree.jsx) — native Zotero only
+     *  ever had one window, so this was always correct. With Weavero's
+     *  multiple main windows, creating a collection in one jumped the
+     *  ANCHOR (and every other) window to it too. Wrap each window's
+     *  collectionsView.notify: for a collection `add`, snapshot the
+     *  focused row first, and in the window that DIDN'T initiate the
+     *  add (i.e. lacks OS focus) restore that row afterwards, so only
+     *  the acting window follows the new collection. Idempotent per
+     *  window; installs when the view exists. */
+    _wvGuardCollectionSelectCrossWindow(win: any) {
+        try {
+            if (!win || !win.ZoteroPane) return;
+            const cv: any = win.ZoteroPane.collectionsView;
+            if (!cv || typeof cv.notify !== "function") return;
+            // Peel-before-reinstall (the reload-proof wiring rule — the
+            // collectionsView outlives plugin reloads, so a boolean
+            // guard would pin a stale wrap).
+            if (cv._wvOrigNotifyForSelectGuard) {
+                cv.notify = cv._wvOrigNotifyForSelectGuard;
+                delete cv._wvOrigNotifyForSelectGuard;
+            }
+            cv._wvOrigNotifyForSelectGuard = cv.notify;
+            const orig = cv.notify.bind(cv);
+            cv.notify = async function (action: any, type: any, ids: any, extraData: any) {
+                try {
+                    if (action === "add" && type === "collection"
+                        && Array.isArray(ids) && ids.length === 1
+                        // Only guard when THIS window isn't the one that
+                        // triggered the add — the initiating window has OS
+                        // focus (its New Collection dialog just closed onto
+                        // it). document.hasFocus() is per-window and true
+                        // only there.
+                        && !win.document.hasFocus()) {
+                        // Suppress the auto-select via the notifier's OWN
+                        // mechanism (skipSelect — what native code passes
+                        // when it doesn't want the jump) instead of
+                        // selecting and restoring: the round-trip reloaded
+                        // the items list and flickered (user report
+                        // 2026-07-16). CLONE extraData — the object is
+                        // shared by every window's observer, so mutating
+                        // it would leak the suppression into the acting
+                        // window too.
+                        const ed: any = Object.assign({}, extraData);
+                        ed[ids[0]] = Object.assign({}, ed[ids[0]], { skipSelect: true });
+                        return await orig(action, type, ids, ed);
+                    }
+                } catch (e) {}
+                return orig(action, type, ids, extraData);
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvGuardCollectionSelectCrossWindow err: " + e); }
+    }
+
     /** Guard + re-assert the context pane on EVERY open main window. Needed
      *  because the PRIMARY window's `onMainWindowLoad` doesn't fire at startup
      *  (it loads before the plugin), so it would otherwise never get guarded.
@@ -10050,6 +10312,7 @@ class _TabsMixin {
             const wins = (Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()]).filter(Boolean);
             for (const w of wins) {
                 try { this._wvGuardContextPaneCrossWindow(w); } catch (e) {}
+                try { this._wvGuardCollectionSelectCrossWindow(w); } catch (e) {}
                 try { this._wvUpdateMainWindowIndicator(w); } catch (e) {}
                 try { this._wvApplyPerWindowSidebar(w); } catch (e) {}       // managed windows only (gated inside)
                 try { this._wvApplyPerWindowPanePersist(w); } catch (e) {}   // managed windows only (gated inside)

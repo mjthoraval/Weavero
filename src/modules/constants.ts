@@ -339,7 +339,7 @@ export const PLUGIN_CSS = [
     ".wv-url-span.wv-link-zotero { color: var(--wv-link-zotero) !important; }",
     ".wv-url-span.wv-link-app    { color: var(--wv-link-app)    !important; }",
     ".wv-link { cursor: pointer !important; }",
-    // Experimental inline-markdown rendering (off by default).
+    // Inline-markdown rendering (on by default via enableCommentMarkdown).
     ".wv-md-bold { font-weight: 700; }",
     ".wv-md-italic { font-style: italic; }",
     ".wv-md-strike { text-decoration: line-through; opacity: 0.85; }",

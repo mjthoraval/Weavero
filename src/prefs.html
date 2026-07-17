@@ -547,6 +547,13 @@
       <checkbox label="Window-type glyph in window titles" native="true"
         preference="extensions.zotero.weavero.windowTitleGlyphs"/>
       <html:p class="wv-desc">Alternative for non-Windows platforms (off by default): prefix each window&#8217;s title with a small type mark &#8212; &#9875; for the primary window, squares (&#9632; &#9633; &#9635;) for other main windows, circles (&#9679; &#9675; &#9673;) for reader windows. Takes effect as titles refresh, e.g. on the next tab switch.</html:p>
+      <label><html:h3>Window name in the window title</html:h3></label>
+      <html:p class="wv-desc" style="margin-inline-start:0">Show a renamed window&#8217;s name in its OS title &#8212; taskbar previews, Alt+Tab and Task View &#8212; like Chrome&#8217;s &#8220;Name window&#8221;. <html:strong>Before the title</html:strong> keeps the page context (&#8220;Main &#8212; Azam et al.&#8221;); <html:strong>Replace the title</html:strong> shows the name alone. Windows without a custom name always keep the normal title.</html:p>
+      <radiogroup id="wv-wintitle-name" orient="horizontal" class="wv-mode-row">
+        <radio value="off" label="Off"/>
+        <radio value="prefix" label="Before the title"/>
+        <radio value="replace" label="Replace the title"/>
+      </radiogroup>
     </vbox>
   </groupbox>
 

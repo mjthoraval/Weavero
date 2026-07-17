@@ -46,24 +46,29 @@
         rg.addEventListener("command", write);
     }
 
-    /** Ctrl+click split-orientation radiogroup <-> char pref
-     *  `weavero.ctrlClickSplit` ("horizontal" default | "vertical"). Native
-     *  `preference=` binding can't be used: the values are strings, not bools. */
-    function bindSplit(rg) {
+    /** Radiogroup <-> char pref binding. Native `preference=` binding
+     *  can't be used for these: the values are strings, not bools. */
+    function bindCharRadio(rg, key, allowed, dflt) {
         if (!rg || rg._wvBound) return;
         rg._wvBound = true;
-        let v = "horizontal";
+        let v = dflt;
         try {
-            const p = Zotero.Prefs.get("weavero.ctrlClickSplit");
-            v = p === "vertical" ? "vertical" : "horizontal";
+            const p = Zotero.Prefs.get(key);
+            if (allowed.includes(p)) v = p;
         } catch (e) {}
         rg.value = v;
         const write = () => {
-            try { Zotero.Prefs.set("weavero.ctrlClickSplit", rg.value === "vertical" ? "vertical" : "horizontal"); }
-            catch (e) { dbg("split write err: " + e); }
+            try { Zotero.Prefs.set(key, allowed.includes(rg.value) ? rg.value : dflt); }
+            catch (e) { dbg(key + " write err: " + e); }
         };
         rg.addEventListener("select", write);
         rg.addEventListener("command", write);
+    }
+
+    /** Ctrl+click split-orientation radiogroup <-> char pref
+     *  `weavero.ctrlClickSplit` ("horizontal" default | "vertical"). */
+    function bindSplit(rg) {
+        bindCharRadio(rg, "weavero.ctrlClickSplit", ["horizontal", "vertical"], "horizontal");
     }
 
     /** Dual-write: a `.wv-mirror` checkbox is natively bound to its primary
@@ -408,6 +413,7 @@
     function bindAll(doc) {
         try { bindMode(doc.getElementById("wv-mode")); } catch (e) { dbg("bindMode err: " + e); }
         try { bindSplit(doc.getElementById("wv-ctrlsplit")); } catch (e) { dbg("bindSplit err: " + e); }
+        try { bindCharRadio(doc.getElementById("wv-wintitle-name"), "weavero.windowTitleNameMode", ["off", "prefix", "replace"], "off"); } catch (e) { dbg("bindWinTitleName err: " + e); }
         try { bindMirrors(doc); } catch (e) { dbg("bindMirrors err: " + e); }
         try { bindMasterDisable(doc); } catch (e) { dbg("bindMasterDisable err: " + e); }
         try { bindSectionNav(doc); } catch (e) { dbg("bindSectionNav err: " + e); }

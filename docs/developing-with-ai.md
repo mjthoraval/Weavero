@@ -60,6 +60,27 @@ profile. An agent that can execute code in Zotero can also corrupt a
 database; the sandbox makes that a non-event. The agent gets access to
 the dev profile only, never the one holding your real library.
 
+**Two low-friction on-ramps before you build anything.** You can learn
+most of what matters about Zotero's API without a plugin skeleton:
+
+- **Tools → Developer → Run JavaScript** — a built-in console with full
+  privileged access to the running Zotero (tick *Run as async function*
+  for `await`). Probe what the API really returns
+  (`Zotero.Items.get(…)`, `Zotero.getMainWindow()`…), paste snippets the
+  agent proposes and read the result, and run maintenance or test
+  scripts — Weavero's manual test protocols are plain scripts pasted
+  here. The official
+  [JavaScript API guide](https://www.zotero.org/support/dev/client_coding/javascript_api)
+  documents this console and the core API patterns.
+- **[Actions & Tags](https://github.com/windingwind/zotero-actions-tags)**
+  — a plugin that runs small user scripts on events (item added, tab
+  opened…) or from menus/shortcuts. It is the gentlest way to automate
+  basic operations and grow real API experience with zero build
+  tooling — and a legitimate destination in itself if all you need is
+  an automation. Weavero itself **began life as an Actions & Tags
+  action script** and only later became a standalone plugin; when a
+  script outgrows the harness, Step 2 is waiting.
+
 ### Step 2 — Start from the template, not from a blank folder
 
 The community maintains a modern plugin stack; starting there saves the
@@ -354,6 +375,8 @@ human reviews diffs, tests the gestures, and decides.
 
 | Category | Resource |
 |---|---|
+| Interactive console | Tools → Developer → Run JavaScript · [JavaScript API guide](https://www.zotero.org/support/dev/client_coding/javascript_api) |
+| Script harness / automation | [Actions & Tags](https://github.com/windingwind/zotero-actions-tags) |
 | Template | [zotero-plugin-template](https://github.com/windingwind/zotero-plugin-template) |
 | Build/release tool | [zotero-plugin-scaffold](https://github.com/zotero-plugin-dev/zotero-plugin-scaffold) |
 | Helper APIs | [zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit) |

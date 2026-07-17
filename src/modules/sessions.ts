@@ -918,8 +918,9 @@ class _TabSessionsMixin {
                 ".wv-sessmenu-active .wv-sessmenu-count { opacity: 0.85; }",
                 // Disclosure twisty + expanded per-tab rows.
                 ".wv-sessmenu-twisty {",
-                "  width: 18px; flex: 0 0 auto; display: flex; align-items: center;",
-                "  justify-content: center; font-size: 14px; opacity: 0.7; cursor: pointer;",
+                "  width: 20px; flex: 0 0 auto; display: flex; align-items: center;",
+                // Bigger, like the window twisties (user request 2026-07-16).
+                "  justify-content: center; font-size: 16px; opacity: 0.7; cursor: pointer;",
                 "}",
                 ".wv-sessmenu-twisty:hover { opacity: 1; }",
                 // The expanded session renders IDENTICALLY to the all-windows list
@@ -953,10 +954,13 @@ class _TabSessionsMixin {
                 // Window collapse: a twisty before the window glyph; collapsing hides
                 // everything in the window wrapper except its header (the first child).
                 ".wv-win-twisty {",
-                "  margin-inline-start: auto; width: 12px; flex: 0 0 auto;",
+                "  margin-inline-start: auto; width: 18px; flex: 0 0 auto;",
                 "  display: inline-flex; align-items: center; justify-content: center;",
-                "  font-size: 9px; opacity: 0.55;",
+                // Bigger, easier click target (user request 2026-07-16 —
+                // the 9px glyph was hard to spot and hit).
+                "  font-size: 13px; opacity: 0.65;",
                 "}",
+                ".wv-win-twisty:hover { opacity: 1; }",
                 ".wv-winscope.wv-win-collapsed > :not(:first-child) { display: none !important; }",
                 // Anchor-window marker: solid Material anchor in the library-tab
                 // anchor shade (#3d6fe0 light, lighter #9dbcff dark).

@@ -292,6 +292,10 @@ class _TabGroupsMixin {
                 "}",
                 // Editor panel, Firefox "Manage tab group" layout.
                 ".wv-tg-title { text-align: center; font-weight: 600; font-size: inherit; padding: 2px 0 4px; }",
+                // Context line under a Manage-card title: status (active/
+                // saved), tab count, owning window/session (user request
+                // 2026-07-16).
+                ".wv-tg-info { text-align: center; font-size: 11px; opacity: 0.65; padding: 0 0 6px; }",
                 ".wv-tg-label { font-size: 11px; opacity: 0.7; margin: 2px 2px -2px; }",
                 ".wv-tg-menuitem {",
                 "  padding: 4px 8px; border-radius: 5px; font-size: inherit;",
@@ -4148,6 +4152,28 @@ class _TabGroupsMixin {
                 mk("Save and Close Group", (p: any) => p._wvTabGroupSaveAndClose(win, groupID));
             }
             mk("Delete Group", (p: any) => p._wvTabGroupCloseTabs(win, groupID));
+            // Colour swatches inline (user request 2026-07-16) — the same
+            // recolour the chip editor offers, without leaving the menu.
+            // The shared row helper marks the current colour selected.
+            try {
+                pop.appendChild(doc.createXULElement("menuseparator"));
+                try { (this as any)._ensureTabGroupStyles(doc); } catch (er) {}
+                const row = this._wvTabGroupSwatchRow(doc.defaultView || win, (gRec && gRec.color) || "", (c: string) => {
+                    try {
+                        const p: any = live();
+                        if (!p) return;
+                        p._tabGroupUpdate(groupID, { color: c });
+                        p._wvTabGroupApplyEverywhere();
+                        try {
+                            if (panel && typeof panel.refreshList === "function") panel.refreshList();
+                            else if (panel) p._wvRegroupTabsMenu(panel);
+                        } catch (er) {}
+                        try { pop.hidePopup(); } catch (er) {}
+                    } catch (er) {}
+                });
+                (row as any).style.padding = "6px 10px";
+                pop.appendChild(row);
+            } catch (er) {}
             (doc.querySelector("popupset") || doc.documentElement).appendChild(pop);
             pop.openPopupAtScreen(e.screenX, e.screenY, true);
         } catch (er) { Zotero.debug("[Weavero] _wvTabsMenuGroupContext err: " + er); }
@@ -4627,7 +4653,56 @@ class _TabGroupsMixin {
             doc.documentElement.appendChild(popupset);
         }
         popupset.appendChild(panel);
+        // Manage cards are DRAGGABLE by their title/info lines (user
+        // request 2026-07-16 — the card can cover what you want to see).
+        // Modern Gecko panels have no `backdrag` (checked toolkit's
+        // panel.js), so this is manual: mousedown on a non-interactive
+        // header line tracks the pointer and panel.moveTo()s the popup.
+        try { this._wvMakePanelDraggable(win, panel); } catch (e) {}
         return panel;
+    }
+
+    /** Drag-to-move for a XUL panel: grab `.wv-tg-title` / `.wv-tg-info`
+     *  (they're inert text — inputs/buttons/rows stay clickable). */
+    _wvMakePanelDraggable(win: any, panel: any) {
+        panel.addEventListener("mousedown", (e: any) => {
+            try {
+                if (e.button !== 0) return;
+                const handle = e.target && e.target.closest
+                    && e.target.closest(".wv-tg-title, .wv-tg-info");
+                if (!handle) return;
+                e.preventDefault();
+                // moveTo takes CSS SCREEN coordinates and its margin
+                // handling cancels out (verified in nsMenuPopupFrame::
+                // MoveTo — margin subtracted, re-added at SetPopupPosition),
+                // so target = start rect + pointer delta. NOTE the
+                // reposition is SCHEDULED (reflow), so never re-measure
+                // the rect synchronously to "calibrate" — that read stale
+                // values and sent the panel flying (2026-07-16).
+                const rect = panel.getOuterScreenRect();
+                const offX = e.screenX - rect.left;
+                const offY = e.screenY - rect.top;
+                const onMove = (mv: any) => {
+                    try { panel.moveTo(mv.screenX - offX, mv.screenY - offY); } catch (er) {}
+                };
+                const onUp = () => {
+                    try { win.removeEventListener("mousemove", onMove, true); } catch (er) {}
+                    try { win.removeEventListener("mouseup", onUp, true); } catch (er) {}
+                };
+                win.addEventListener("mousemove", onMove, true);
+                win.addEventListener("mouseup", onUp, true);
+            } catch (er) {}
+        });
+        // The grabbable lines advertise it.
+        try {
+            const style = panel.ownerDocument.getElementById("wv-tg-drag-style");
+            if (!style) {
+                const st = panel.ownerDocument.createElementNS(HTML_NS, "style");
+                st.id = "wv-tg-drag-style";
+                st.textContent = ".wv-tg-panel-body .wv-tg-title, .wv-tg-panel-body .wv-tg-info { cursor: move; }";
+                (panel.ownerDocument.head || panel.ownerDocument.documentElement).appendChild(st);
+            }
+        } catch (e) {}
     }
 
     _wvTabGroupSwatchRow(win: any, selected: string, onPick: (c: string) => void) {
@@ -4672,6 +4747,25 @@ class _TabGroupsMixin {
             title.className = "wv-tg-title";
             title.textContent = "Manage Tab Group";
             body.appendChild(title);
+
+            // Context line: status, tab count, owning window (user
+            // request 2026-07-16).
+            try {
+                const openCount = this._wvTabGroupOpenCount(groupID);
+                const isActive = openCount > 0 && !g.saved;
+                const count = isActive ? openCount : ((g.members || []).length);
+                const homeWin = isActive ? this._wvTabGroupHomeWin(groupID) : null;
+                const winName = homeWin
+                    ? ((this as any)._wvWindowCustomTitle(homeWin)
+                        || (this as any)._wvWindowDefaultName(homeWin))
+                    : null;
+                const info = doc.createElementNS(HTML_NS, "div");
+                info.className = "wv-tg-info";
+                info.textContent = (isActive ? "Active" : "Saved")
+                    + " · " + count + " tab" + (count === 1 ? "" : "s")
+                    + (winName ? " · in " + winName : "");
+                body.appendChild(info);
+            } catch (e) {}
 
             const nameLabel = doc.createElementNS(HTML_NS, "div");
             nameLabel.className = "wv-tg-label";

@@ -2144,7 +2144,12 @@ export const PLUGIN_CSS = [
     // (`[data-tab-id]`) AND Weavero's all-windows / expanded-session rows match.
     "#zotero-tabs-menu-panel .wv-winscope .row[data-tab-id],",
     "#zotero-tabs-menu-panel .wv-winscope .wv-otherwin-row,",
-    "#zotero-tabs-menu-panel .wv-winscope .wv-sessmenu-tabrow {",
+    "#zotero-tabs-menu-panel .wv-winscope .wv-sessmenu-tabrow,",
+    // Saved-window and saved-group boxes indent like the active ones
+    // (user report 2026-07-16 — these two markers were missing here
+    // and their rows sat at 6px).
+    "#zotero-tabs-menu-panel .wv-winscope .wv-savedwin-tabrow,",
+    "#zotero-tabs-menu-panel .wv-winscope .wv-tgmenu-tabrow {",
     "  padding-inline-start: 18px !important;",   // one icon-width in from the window header
     "}",
     // Library sub-headers are a secondary GROUPING, not a hierarchy level — so

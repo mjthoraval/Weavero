@@ -218,10 +218,15 @@ auto-updates). To be discoverable, get listed in the
 **[zotero-addons-scraper](https://github.com/syt2/zotero-addons-scraper)**
 registry, which feeds the in-Zotero
 **[Add-on Market plugin](https://github.com/syt2/zotero-addons)** most
-users browse. (An **official Zotero plugin directory** is in the works
-and is expected to replace the third-party lists; the
+users browse. (An **official Zotero plugin directory** is
+[planned](https://www.zotero.org/support/plugins) and expected to
+replace the third-party lists. Meanwhile the
 [NGI0-funded plugin-ecosystem project](https://nlnet.nl/project/Zotero-plugin-ecosystem/)
-is meanwhile consolidating the community tooling above.)
+is consolidating the community tooling above at its public hub,
+**[zotero-plugin.dev](https://zotero-plugin.dev/)** — including a
+work-in-progress
+[plugin registry](https://github.com/zotero-plugin-dev/zotero-plugin-registry)
+meant to power the future store.)
 
 ## Part 2: The Weavero workflow in depth
 
@@ -406,7 +411,7 @@ human reviews diffs, tests the gestures, and decides.
 | AI ↔ live Zotero | [MCP bridge + server](https://github.com/introfini/mcp-server-zotero-dev) |
 | Community | [zotero-dev list](https://groups.google.com/g/zotero-dev) · [forums](https://forums.zotero.org) |
 | Distribution | [addons-scraper registry](https://github.com/syt2/zotero-addons-scraper) · [Add-on Market](https://github.com/syt2/zotero-addons) |
-| Ecosystem project | [NGI0 Zotero plugin ecosystem](https://nlnet.nl/project/Zotero-plugin-ecosystem/) |
+| Ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) · [plugin registry (WIP)](https://github.com/zotero-plugin-dev/zotero-plugin-registry) |
 | Worked example | [Weavero source](https://github.com/mjthoraval/Weavero) |
 
 *This page reflects the Weavero workflow as of July 2026 (Zotero 10

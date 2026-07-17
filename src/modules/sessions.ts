@@ -1362,13 +1362,47 @@ class _TabSessionsMixin {
                                             const mi = doc.createXULElement("menuitem");
                                             mi.setAttribute("label", s.name || "Session");
                                             const target = s;
-                                            mi.addEventListener("command", () => {
+                                            mi.addEventListener("command", async () => {
                                                 try {
-                                                    sess.windows = (sess.windows || []).filter((x: any) => x !== rec);
-                                                    target.windows = target.windows || [];
-                                                    target.windows.push(rec);
                                                     const p2: any = live();
-                                                    if (p2) { p2._wvTabSessionPersist(); refresh(); }
+                                                    if (!p2) return;
+                                                    const activeId = p2._wvTabSessionGetActiveId ? p2._wvTabSessionGetActiveId() : null;
+                                                    if ((target.id || null) === activeId) {
+                                                        // The ACTIVE session's stored windows are an
+                                                        // auto-snapshot MIRROR of the live windows — a
+                                                        // record pushed there is invisible in the panel
+                                                        // and destroyed by the next snapshot (data loss,
+                                                        // user report 2026-07-17). Convert the record
+                                                        // into a PARKED saved window under the active
+                                                        // session instead: it shows in "Saved Windows",
+                                                        // stays inactive (parked semantics), reopenable.
+                                                        await p2._wvSavedWindowsInit();
+                                                        const isReader = rec.kind === "reader";
+                                                        const tabs: any[] = [];
+                                                        for (const t of (rec.tabs || [])) {
+                                                            try {
+                                                                const id = Zotero.Items.getIDFromLibraryAndKey(t.libraryID, t.itemKey);
+                                                                if (!id) continue;
+                                                                if (isReader) tabs.push({ itemID: id, isNote: t.type === "note", title: t.title || "" });
+                                                                else tabs.push({ type: t.type === "note" ? "note-unloaded" : "reader-unloaded", title: t.title || "", data: { itemID: id } });
+                                                            } catch (er3) {}
+                                                        }
+                                                        if (!tabs.length) return;   // nothing resolvable — keep the record where it is
+                                                        p2._wvSavedWinDoc.windows.push({
+                                                            id: "swin-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36),
+                                                            name: rec.name || sec.label, named: !!rec.name,
+                                                            kind: isReader ? "reader" : "main",
+                                                            tabs, count: tabs.length,
+                                                            geom: rec.geom || null, glyph: null, wvMainState: null,
+                                                            sessionId: activeId, savedAt: Date.now(),
+                                                        });
+                                                        p2._wvSavedWindowsPersist();
+                                                    } else {
+                                                        target.windows = target.windows || [];
+                                                        target.windows.push(rec);
+                                                    }
+                                                    sess.windows = (sess.windows || []).filter((x: any) => x !== rec);
+                                                    p2._wvTabSessionPersist(); refresh();
                                                 } catch (er2) {}
                                             });
                                             mvPop.appendChild(mi);

@@ -171,6 +171,30 @@ Documentation to point the agent (and yourself) at:
 - **[Zotero source-code search](https://github.com/search?q=repo%3Azotero%2Fzotero&type=code)**
   — when the docs run out, the source is the documentation.
 
+**Ask for prior art.** The best way to solve a problem is very often to
+look at what others have done in similar situations — and an AI agent
+is exceptionally good at that research *if you ask for it explicitly*:
+
+- **Other Zotero plugins** — someone has probably faced your problem;
+  open-source plugins are searchable answers. Have the agent study how
+  they solved it before inventing an approach.
+- **Zotero itself** — the cleanest pattern for almost anything is how
+  Zotero's own code does it (that is what the source mirror is for).
+- **The software that pioneered the behavior you want** — when Weavero
+  needed tab tear-off, drag-and-drop, and window-focus semantics, the
+  answers came from reading **Firefox's own tabbrowser source**, not
+  from guessing; its test methodology borrows from Better BibTeX and
+  Zotero's suite. Whatever UX you are copying, its origin has already
+  solved the edge cases.
+- **The sources on this page** — tell the agent to search the docs,
+  source mirrors, and guides listed here when it is stuck. Agents don't
+  reliably reach for references unprompted; "check how X does it" and
+  "look through the linked docs first" are among the highest-value
+  instructions you can give.
+
+When code patterns are adapted from what you find, remember the
+licensing rule below: license compatibly and credit the origin.
+
 ### Step 4 — Give the agent eyes and hands
 
 The single biggest upgrade to AI-assisted plugin work is letting the

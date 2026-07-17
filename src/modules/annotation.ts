@@ -1,3 +1,6 @@
+import { MD_REGEX } from "../lib/links";
+import { normalize as wvNormalize } from "../lib/text";
+
 // Module: annotation comment text + URL detection + icon
 // rendering + annotation model access + related-item nav
 // + the right-click "Open Related Item" sub-menu wiring.
@@ -10,8 +13,8 @@
 // Module-level constants exposed to the host class via getters
 // on the mixin prototype (class field initializers don't survive
 // the prototype-mixin lift — see filter.ts for the same pattern).
-const _MD_REGEX_DATA =
-    /(\*\*[\s\S]+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|~~[\s\S]+?~~|`[^`\n]+?`|\[[^\]\n]+?\]\([^)\s]+\))/;
+// Canonical definition: src/lib/links.ts (pure, Node-testable).
+const _MD_REGEX_DATA = MD_REGEX;
 
 // Methods reach across mixin boundaries via `this.foo()` (e.g.
 // annotation methods call `this._getInlineLinks()` from prefs
@@ -22,7 +25,8 @@ const _MD_REGEX_DATA =
 // mixed prototype is the union of all module declarations).
 class _AnnotationMixin {
     [k: string]: any;
-    normalize(t) { return t ? String(t).replace(this.INVISIBLE_RE, "") : ""; }
+    // Thin adapter over src/lib/text.ts normalize() (pure, Node-testable).
+    normalize(t) { return wvNormalize(t); }
     hasURI(t)    { return !!t && this.URL_REGEX.test(this.normalize(t)); }
 
     /** Detect Mozilla "dead wrappers" — JS handles to XPCOM objects whose

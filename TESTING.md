@@ -25,19 +25,27 @@ against. Levels are ordered from fastest/most-frequent to deepest/rarest.
 **When:** after every edit to a tracked file; the full battery before any
 rebuild.
 
-## Level 1 — Automated suite (`npm test`, ~2–3 min)
+## Level 1 — Automated suite (two tiers)
 
+**Tier 1a — Node unit tests (`npm run test:unit`, seconds).** Pure logic
+extracted into `src/lib/*` (no Zotero imports, dependencies injected)
+runs under plain Node via mocha + tsx: text normalization, URL/markdown
+regex assembly and classification (`test/unit/*.unit.ts` — the `.unit.ts`
+suffix keeps them out of the scaffold's in-Zotero glob). Run these after
+every edit; more of the pure core migrates here over time (see Roadmap).
+
+**Tier 1b — in-Zotero suite (`npm test`, ~2–3 min).**
 `zotero-plugin-scaffold` builds the plugin, launches a **real Zotero in a
 throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current coverage (90 tests, 6 spec files):
+Current in-Zotero coverage (90 tests, 6 spec files):
 
-- **Unit specs** (pure logic, milliseconds each): `filter.spec.js`
-  (row-kind classification, path-aware matching, Zotero 9 fallbacks,
-  dimming CSS, selection reconcile), `links.spec.js` (URL classification
-  and regexes), `normalize.spec.js` (invisible-character stripping),
+- **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
+  path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
+  reconcile), `links.spec.js` and `normalize.spec.js` (verify the plugin
+  methods correctly delegate to `src/lib/*` in the real runtime),
   `popups.spec.js` (the four popup-panel contracts).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `tearoff.spec.js` (reader tear-off ↔ merge-back lifecycle:
@@ -214,11 +222,11 @@ learning come from Zotero itself, its submodules, and Better BibTeX.
 
 In rough priority order:
 
-1. **Node-speed unit tier** — extract pure logic (filter keep-loop,
-   URL/normalize, idle-queue scheduling) into dependency-injected
-   modules tested in plain Node in seconds; the in-Zotero tier keeps the
-   integration surface. (Pattern: `utilities`/`document-worker`;
-   also unlocks running unit tests on every edit.)
+1. **Node-speed unit tier** — STARTED: `src/lib/text.ts` + `links.ts`
+   extracted and tested under plain Node (`npm run test:unit`, both CI
+   gates run it). Next extractions: the filter keep-loop / row-kind
+   logic and the idle-queue scheduler. (Pattern:
+   `utilities`/`document-worker`.)
 2. **Persistence round-trip tests** — save → restore → save must be
    idempotent for every Weavero store (`windows.json`, tab sessions,
    bookmarks, pinned tabs); diff the JSON. (Pattern: Better BibTeX's

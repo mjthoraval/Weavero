@@ -15,6 +15,7 @@ import {
     BTN_POPUP_CLASS, BTN_SIDEBAR_CLASS,
     SCHEME_SVG_TEMPLATE, MENU_LABEL_PREFIXES, PLUGIN_CSS,
 } from "./modules/constants";
+import { makeInvisibleRe, TRAILING_RE as TRAILING_RE_LIB } from "./lib/text";
 import { URL_SCHEMES, urlMethods } from "./modules/url";
 import { annotationMethods } from "./modules/annotation";
 import { tabsMethods } from "./modules/tabs";
@@ -45,8 +46,13 @@ class WeaveroPlugin {
     // shape of the assembled plugin.
     [k: string]: any;
 
-    INVISIBLE_RE = /[\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\uFEFF]/g;
-    TRAILING_RE  = /[.,;:!?)\]\}>'"`]+$/;
+    // Canonical definitions live in src/lib/text.ts (pure, Node-testable);
+    // these instance fields are thin adapters so every existing
+    // `this.INVISIBLE_RE` / `this.TRAILING_RE` site keeps working.
+    // INVISIBLE_RE stays per-instance because it carries the `g` flag
+    // (lastIndex state under `.test()`).
+    INVISIBLE_RE = makeInvisibleRe();
+    TRAILING_RE  = TRAILING_RE_LIB;
 
 
     constructor() {

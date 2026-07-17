@@ -17,6 +17,8 @@
  *  Ordering: alphabetical within tier (bare-colon `name:` first,
  *  then slash `name://`). Keep in sync with the SCHEMES list in
  *  prefs.js and the grid in prefs.html. */
+import { schemeAltPart, joinSchemeAlt, buildUrlRegex, urlLinkClass } from "../lib/links";
+
 export const URL_SCHEMES = [
     // ---- Tier 1: bare-colon schemes (name:) -------------------------------
     { name: "magnet",   pref: "enableMagnetScheme",   sep: ":",
@@ -104,20 +106,14 @@ export const urlMethods = {
             for (const def of URL_SCHEMES) {
                 try {
                     if (Zotero.Prefs.get("weavero." + def.pref)) {
-                        // Scheme names are alphanumeric only — no regex
-                        // metachars to escape. Convert `/` in `sep` to
-                        // `\/` for embedding in a regex source string.
-                        parts.push(def.name + def.sep.replace(/\//g, "\\/"));
+                        // Assembly rules live in src/lib/links.ts.
+                        parts.push(schemeAltPart(def.name, def.sep));
                     }
                 } catch (e) {}
             }
         }
-        // Sentinel for "all link types disabled" — `\b\B` always fails
-        // (word boundary + non-word-boundary at the same position is
-        // a contradiction), so URL_REGEX won't match anything. Without
-        // this guard, parts.join("|") = "" produces `()[^...]*` which
-        // matches every non-empty string.
-        this._urlSchemeAltCache = parts.length ? parts.join("|") : "\\b\\B";
+        // Empty-parts sentinel and join rules live in src/lib/links.ts.
+        this._urlSchemeAltCache = joinSchemeAlt(parts);
         return this._urlSchemeAltCache;
     },
 
@@ -127,8 +123,7 @@ export const urlMethods = {
      *  with `URL_SCHEME_ALT`. */
     get URL_REGEX() {
         if (this._urlRegexCache) return this._urlRegexCache;
-        this._urlRegexCache = new RegExp(
-            "(" + this.URL_SCHEME_ALT + ")[^\\s<>\"')\\]]*");
+        this._urlRegexCache = buildUrlRegex(this.URL_SCHEME_ALT);
         return this._urlRegexCache;
     },
 
@@ -140,10 +135,7 @@ export const urlMethods = {
      *                       slack://, …) — the user-enabled
      *                       App-link schemes, purple. */
     _urlLinkClass(url) {
-        if (!url) return "wv-link-http";
-        if (url.startsWith("zotero://")) return "wv-link-zotero";
-        if (/^https?:\/\//i.test(url))   return "wv-link-http";
-        return "wv-link-app";
+        return urlLinkClass(url);   // thin adapter — src/lib/links.ts
     },
 
     // ---- zotero:// item-link builders -------------------------------------

@@ -58,6 +58,11 @@ jobs:
         # checked normally.
         run: npm run typecheck
 
+      - name: Run unit tests (Node tier)
+        # Pure-logic tests of src/lib/* under plain Node — seconds,
+        # no Zotero. Fails fast before the expensive integration tier.
+        run: npm run test:unit
+
       - name: Run tests
         # Scaffold auto-detects CI → headless mode + no-watch +
         # exit-on-finish. Also auto-installs xvfb + Zotero via

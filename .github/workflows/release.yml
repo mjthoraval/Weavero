@@ -57,6 +57,9 @@ jobs:
       - name: Type-check (regression gate)
         run: npm run typecheck
 
+      - name: Run unit tests (Node tier)
+        run: npm run test:unit
+
       - name: Run tests (regression gate)
         run: npm test
 

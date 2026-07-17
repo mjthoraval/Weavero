@@ -7723,7 +7723,7 @@ class _TabsMixin {
                 p._wvPendingDevWindow = true;
                 try { (Zotero as any).openMainWindow(); }
                 catch (e) { p._wvPendingDevWindow = false; return; }
-                if (entry.glyph == null) return;
+                if (entry.glyph == null && !entry.named) return;
                 const t0 = Date.now();
                 let newMain: any = null;
                 while (Date.now() - t0 < 12000) {
@@ -7732,10 +7732,15 @@ class _TabsMixin {
                     newMain = null;
                     await sleep(150);
                 }
-                if (newMain && !this._wvIsAnchorWindow(newMain)) {
+                if (newMain && entry.glyph != null && !this._wvIsAnchorWindow(newMain)) {
                     this._wvStampGlyphIdx(newMain, entry.glyph);   // skip on colour collision
                     await sleep(600);
                     try { (this as any)._wvCarryGlyphRefresh(newMain, false); } catch (e) {}
+                }
+                // A user-chosen name (Rename Saved Window…) carries onto the
+                // reopened window as its custom title.
+                if (newMain && entry.named && entry.name) {
+                    try { (this as any)._wvWindowSetCustomTitle(newMain, entry.name); } catch (e) {}
                 }
                 return;
             }
@@ -7774,6 +7779,10 @@ class _TabsMixin {
                 }
             } catch (e) {}
             if (entry.glyph != null) { try { (this as any)._wvCarryGlyphRefresh(newWin, true); } catch (e) {} }
+            // Carry a user-chosen name (Rename Saved Window…) onto the window.
+            if (entry.named && entry.name) {
+                try { (this as any)._wvWindowSetCustomTitle(newWin, entry.name); } catch (e) {}
+            }
             try { newWin.focus(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvSavedWindowReopen err: " + e); }
     }
@@ -7785,6 +7794,40 @@ class _TabsMixin {
             p._wvSavedWinDoc.windows = this._wvSavedWindowsList().filter((x: any) => x.id !== id);
             this._wvSavedWindowsPersist();
         } catch (e) {}
+    }
+
+    /** Rename a PARKED saved window (List-all-tabs right-click). Same
+     *  prompt-style dialog as live windows, colour swatches included (they
+     *  edit the stored glyph). `named: true` marks a user-chosen name so
+     *  reopen knows to carry it onto the new window as a custom title —
+     *  a name merely inherited at save time stays subject to renumbering. */
+    async _wvSavedWindowPromptRename(parentWin: any, id: any) {
+        try {
+            await this._wvSavedWindowsInit();
+            const entry: any = this._wvSavedWindowsList().find((x: any) => x && x.id === id);
+            if (!entry || !parentWin) return;
+            const isReader = entry.kind === "reader";
+            const curIdx = entry.glyph != null ? entry.glyph % WV_WIN_BADGE_COLORS.length : -1;
+            const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+            this._wvShowRenameDialog(parentWin, {
+                title: "Rename Saved Window",
+                name: entry.name || "",
+                placeholder: isReader ? "Reader Window" : "Window",
+                swatches: WV_WIN_BADGE_COLORS.map((hex: string, i: number) => ({
+                    hex, selected: i === curIdx, radius: isReader ? "50%" : "3px",
+                })),
+                onAccept: ({ name, swatchIndex }: any) => {
+                    try {
+                        const p: any = live();
+                        if (!p) return;
+                        if (name && name !== entry.name) { entry.name = name; entry.named = true; }
+                        if (swatchIndex != null && swatchIndex !== curIdx) entry.glyph = swatchIndex;   // manual pick — verbatim
+                        p._wvSavedWindowsPersist();
+                        p._wvTabsMenuRefreshOpenPanel();
+                    } catch (e) {}
+                },
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvSavedWindowPromptRename err: " + e); }
     }
 
     /** Move a LIVE window into another session AS A LIVE WINDOW (user
@@ -8066,6 +8109,9 @@ class _TabsMixin {
                             mi.addEventListener("command", () => { try { fn(); } catch (er2) {} });
                             pop.appendChild(mi);
                         };
+                        mk("Rename Window…", () => {
+                            try { lp._wvSavedWindowPromptRename(doc.defaultView, sec.savedId); } catch (er2) {}
+                        });
                         mk("Reopen Window", () => {
                             try { (panel as any).hidePopup && (panel as any).hidePopup(); } catch (er2) {}
                             lp._wvSavedWindowReopen(sec.savedId);

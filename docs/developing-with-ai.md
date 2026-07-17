@@ -161,6 +161,13 @@ Framing the agent fixes this at the root, three pieces:
    [permissions side of the framing](#parametrise-the-agent-permissions-and-guardrails)
    completes it.
 
+The agent-side fundamentals have an excellent official tutorial:
+**[Best practices for Claude Code](https://code.claude.com/docs/en/best-practices)**
+covers writing an effective `CLAUDE.md` (what to include, what to
+prune), configuring permissions, giving the agent checks it can run,
+and managing context — the principles transfer to any coding agent.
+This page stays focused on the Zotero-specific side.
+
 Documentation to point the agent (and yourself) at:
 
 - **[Zotero Plugin Development docs](https://windingwind.github.io/doc-for-zotero-plugin-dev/)**
@@ -388,7 +395,10 @@ pattern). Three settings carry most of the value:
   its working folders, and the sandbox — not your home directory.
 
 Revisit the lists as habits form: promote commands that always get
-approved, demote anything that ever surprised you.
+approved, demote anything that ever surprised you. For the Claude Code
+specifics (permission modes, allowlists, sandboxing, hooks), see the
+official
+[best-practices guide](https://code.claude.com/docs/en/best-practices).
 
 ### The edit–install–verify loop
 
@@ -492,6 +502,7 @@ human reviews diffs, tests the gestures, and decides.
 | Official dev notes | [dev hub](https://www.zotero.org/support/dev/) · [Zotero 7](https://www.zotero.org/support/dev/zotero_7_for_developers) · [Zotero 8](https://www.zotero.org/support/dev/zotero_8_for_developers) for developers |
 | Ground truth | [zotero/zotero](https://github.com/zotero/zotero) · [reader](https://github.com/zotero/reader) · [note-editor](https://github.com/zotero/note-editor) |
 | AI ↔ live Zotero | [MCP bridge + server](https://github.com/introfini/mcp-server-zotero-dev) |
+| Agent-side tutorial | [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices) (CLAUDE.md, permissions, verification, context) |
 | Community | [zotero-dev list](https://groups.google.com/g/zotero-dev) · [forums](https://forums.zotero.org) |
 | Distribution | [addons-scraper registry](https://github.com/syt2/zotero-addons-scraper) · [Add-on Market](https://github.com/syt2/zotero-addons) |
 | Community ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) · [plugin registry (WIP)](https://github.com/zotero-plugin-dev/zotero-plugin-registry) |

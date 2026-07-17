@@ -1372,10 +1372,13 @@ class _TabSessionsMixin {
                                                         // auto-snapshot MIRROR of the live windows — a
                                                         // record pushed there is invisible in the panel
                                                         // and destroyed by the next snapshot (data loss,
-                                                        // user report 2026-07-17). Convert the record
-                                                        // into a PARKED saved window under the active
-                                                        // session instead: it shows in "Saved Windows",
-                                                        // stays inactive (parked semantics), reopenable.
+                                                        // user report 2026-07-17). And per the move
+                                                        // semantics (2026-07-15/17): a session-snapshot
+                                                        // window is an ACTIVE window of its session, so
+                                                        // arriving in the active session it becomes a
+                                                        // LIVE window now (live→live). Convert the
+                                                        // record and spawn it through the saved-window
+                                                        // reopen path.
                                                         await p2._wvSavedWindowsInit();
                                                         const isReader = rec.kind === "reader";
                                                         const tabs: any[] = [];
@@ -1388,8 +1391,9 @@ class _TabSessionsMixin {
                                                             } catch (er3) {}
                                                         }
                                                         if (!tabs.length) return;   // nothing resolvable — keep the record where it is
+                                                        const entryId = "swin-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36);
                                                         p2._wvSavedWinDoc.windows.push({
-                                                            id: "swin-" + Date.now().toString(36) + "-" + Math.floor(Math.random() * 1e6).toString(36),
+                                                            id: entryId,
                                                             name: rec.name || sec.label, named: !!rec.name,
                                                             kind: isReader ? "reader" : "main",
                                                             tabs, count: tabs.length,
@@ -1397,6 +1401,9 @@ class _TabSessionsMixin {
                                                             sessionId: activeId, savedAt: Date.now(),
                                                         });
                                                         p2._wvSavedWindowsPersist();
+                                                        // Live→live: spawn it now (reopen unparks the
+                                                        // entry and opens the window with geometry).
+                                                        try { await p2._wvSavedWindowReopen(entryId); } catch (er3) {}
                                                     } else {
                                                         target.windows = target.windows || [];
                                                         target.windows.push(rec);

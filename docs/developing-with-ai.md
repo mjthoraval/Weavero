@@ -213,8 +213,8 @@ is meanwhile consolidating the community tooling above.)
 
 ## Part 2: The Weavero workflow in depth
 
-What makes AI-assisted development work well on Weavero is not the code
-generation — it is that the agent acts on what it **observed in the
+What makes AI-assisted development work well on Weavero is not only the
+code generation — it is that the agent acts on what it **observed in the
 running app** instead of what it guessed. Everything below was learned
 building Weavero against Zotero 7–10.
 

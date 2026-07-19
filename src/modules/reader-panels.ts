@@ -187,6 +187,14 @@ const RP_POPUP_CSS = [
 const RP_BM_TAB_CLASS = "wv-bm-reader-tab";
 const RP_BM_VIEW_CLASS = "wv-bm-reader-view";
 const RP_BM_TAB_ON = "wv-bm-tab-on";
+// ---- Feature C: Outline takeover (Phase 2) -----------------------------
+// Weavero's own outline panel replaces the NATIVE outline view when the
+// Outline tab is active: same tab slot, but Weavero owns the DOM (robust --
+// it hides the native React outline wrapper via CSS, never edits inside it).
+const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
+const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
+// Down-chevron twisty (rotated -90deg when collapsed via CSS).
+const RP_OUTLINE_CHEVRON = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M1 3.5L5 7.5L9 3.5Z"/></svg>';
 // Sentinel reader sidebarView value used while our Bookmarks tab is active.
 // It's intentionally NOT "annotations": the reader only renders the in-document
 // annotation popup when `sidebarView !== 'annotations'` (else it assumes you'll
@@ -702,6 +710,44 @@ const RP_BM_CSS = [
     ".wv-bm-url-dialog-btn-primary:hover{filter:brightness(1.08);}",
 ].join("");
 
+// ---- Outline takeover styles (Feature C) ----
+// When RP_OUTLINE_TAB_ON is set on the sidebar container: hide the NATIVE
+// outline viewWrapper (the one whose child is `.outline-view`) and show
+// Weavero's own outline panel in its place. Weavero never touches the native
+// outline's internals -- it just hides the whole wrapper.
+const RP_OUTLINE_CSS = [
+    "#sidebarContainer." + RP_OUTLINE_TAB_ON + " #sidebarContent > .viewWrapper:has(> .outline-view){display:none!important;}",
+    "." + RP_OUTLINE_VIEW_CLASS + "{display:none;flex-direction:column;height:100%;min-height:0;overflow:hidden;}",
+    "#sidebarContainer." + RP_OUTLINE_TAB_ON + " ." + RP_OUTLINE_VIEW_CLASS + "{display:flex!important;}",
+    // Scroll region + rows.
+    ".wv-outline-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 0 8px;}",
+    ".wv-outline-row{display:flex;align-items:flex-start;gap:4px;padding:3px 8px 3px 0;cursor:pointer;user-select:none;-moz-user-select:none;font-size:13px;line-height:1.35;border-radius:4px;}",
+    ".wv-outline-row:hover{background:rgba(127,127,127,.14);}",
+    ".wv-outline-row.wv-outline-active{background:color-mix(in srgb,var(--color-accent,#5e6ad2) 20%,transparent);}",
+    // Twisty (expand/collapse) -- a rotating chevron; leaf rows get a spacer.
+    ".wv-outline-twisty{flex:0 0 auto;width:16px;height:18px;display:flex;align-items:center;justify-content:center;opacity:.6;transition:transform .12s;}",
+    ".wv-outline-twisty.wv-outline-collapsed{transform:rotate(-90deg);}",
+    ".wv-outline-twisty.wv-outline-leaf{visibility:hidden;}",
+    ".wv-outline-twisty svg{width:10px;height:10px;}",
+    ".wv-outline-label{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}",
+    // Header strip: title on the left, source chip on the right.
+    ".wv-outline-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 8px 5px;border-bottom:1px solid rgba(127,127,127,.18);}",
+    ".wv-outline-head-title{flex:1 1 auto;font-size:11px;text-transform:uppercase;letter-spacing:.04em;opacity:.55;font-weight:600;}",
+    // Source chip: a coloured dot + label. Embedded=green (from the file),
+    // Extracted=amber (heuristic), Weavero=accent (curated). Non-switchable
+    // chips are inert; switchable ones (>1 source) get hover + a caret.
+    ".wv-outline-src-chip{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border:1px solid rgba(127,127,127,.3);border-radius:10px;background:transparent;color:inherit;font-size:10.5px;font-weight:500;cursor:default;}",
+    ".wv-outline-src-chip.wv-outline-src-switchable{cursor:pointer;}",
+    ".wv-outline-src-chip.wv-outline-src-switchable:hover{background:rgba(127,127,127,.14);}",
+    ".wv-outline-src-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#888;}",
+    ".wv-outline-src-embedded .wv-outline-src-dot{background:#3ca03c;}",
+    ".wv-outline-src-extracted .wv-outline-src-dot{background:#d99a2b;}",
+    ".wv-outline-src-weavero .wv-outline-src-dot{background:var(--color-accent,#5e6ad2);}",
+    ".wv-outline-src-caret{display:inline-flex;opacity:.6;}",
+    ".wv-outline-src-caret svg{width:8px;height:8px;}",
+    ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:12px;text-align:center;}",
+].join("");
+
 /** Rich bookmark hover card styles. Extracted from RP_BM_CSS so the library-
  *  pane bookmark popup (in the main window) can inject the same look without
  *  pulling in reader-iframe-specific rules. */
@@ -770,10 +816,362 @@ class _ReaderPanelsMixin {
             this._wvReaderPrefetchIcons();
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvReaderEnsureBookmarksTab(reader, idoc);
+            this._wvReaderEnsureOutlinePanel(reader, idoc);
             this._wvEnsureSpringDragEnd(reader, idoc);
         } catch (e) {
             Zotero.debug("[Weavero] _wvProcessReaderPanels err: " + e);
         }
+    }
+
+    // ---- Feature C: Outline takeover (Phase 2, read-only) -------------------
+
+    _getEnableOutlineTakeover(): boolean {
+        try { const v = Zotero.Prefs.get("weavero.readerOutlineTakeover"); return v === undefined ? true : !!v; }
+        catch (_) { return true; }
+    }
+
+    /** Inject Weavero's outline panel and wire the Outline-tab takeover.
+     *  Idempotent per idoc; self-heals against React re-renders. When the
+     *  Outline tab is active, Weavero's own panel replaces the native outline
+     *  (via the RP_OUTLINE_TAB_ON container class + CSS -- the native React
+     *  outline wrapper is hidden wholesale, never edited). */
+    _wvReaderEnsureOutlinePanel(reader: any, idoc: any) {
+        try {
+            if (!this._getEnableOutlineTakeover()) {
+                try { this._wvReaderActivateOutlineTakeover(reader, idoc, false); } catch (_) {}
+                const old = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+                if (old) old.remove();
+                return;
+            }
+            const content = idoc.getElementById("sidebarContent");
+            if (!content) return;
+            // Ensure our outline view wrapper exists (built-DOM, Weavero-owned).
+            let view = content.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+            if (!view) {
+                view = idoc.createElementNS(NS_HTML_RP, "div");
+                view.className = "viewWrapper " + RP_OUTLINE_VIEW_CLASS;
+                const head = idoc.createElementNS(NS_HTML_RP, "div");
+                head.className = "wv-outline-head";
+                head.textContent = "Outline";
+                const list = idoc.createElementNS(NS_HTML_RP, "div");
+                list.className = "wv-outline-list";
+                view.appendChild(head);
+                view.appendChild(list);
+                content.appendChild(view);
+            }
+            // One capture-phase click listener per idoc: take over on the
+            // Outline tab, release on any other native tab or our Bookmarks tab.
+            if (!(idoc as any)._wvOutlineTabWired) {
+                (idoc as any)._wvOutlineTabWired = true;
+                idoc.addEventListener("click", (e: any) => {
+                    try {
+                        const t = e.target;
+                        if (!t || !t.closest) return;
+                        if (t.closest("#viewOutline")) {
+                            this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                        } else if (t.closest("#viewThumbnail,#viewAnnotations")
+                                || t.closest("." + RP_BM_TAB_CLASS)) {
+                            this._wvReaderActivateOutlineTakeover(reader, idoc, false);
+                        }
+                    } catch (_) {}
+                }, true);
+            }
+            // If the native outline is ALREADY the active view (restored on open,
+            // or the user was on it before our panel injected), take over now.
+            try {
+                const container = idoc.getElementById("sidebarContainer");
+                const nativeOutline = content.querySelector(".viewWrapper > .outline-view");
+                const wrapper = nativeOutline && nativeOutline.parentElement;
+                if (container && wrapper
+                        && !wrapper.classList.contains("hidden")
+                        && !container.classList.contains(RP_BM_TAB_ON)
+                        && !container.classList.contains(RP_OUTLINE_TAB_ON)) {
+                    this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderEnsureOutlinePanel err: " + e); }
+    }
+
+    _wvReaderActivateOutlineTakeover(reader: any, idoc: any, on: boolean) {
+        try {
+            const container = idoc.getElementById("sidebarContainer");
+            if (!container) return;
+            if (on) {
+                try { this._wvReaderSetBmActive(reader, idoc, false); } catch (_) {}
+                container.classList.add(RP_OUTLINE_TAB_ON);
+                this._wvReaderRenderOutline(reader, idoc);
+            } else {
+                container.classList.remove(RP_OUTLINE_TAB_ON);
+            }
+        } catch (_) {}
+    }
+
+    /** Fetch the document outline and identify its SOURCE. Returns
+     *  `{ source, tree }` (tree deep-copied to plain JS -- no Xray refs). PDF
+     *  only. Source detection: `getOutline2` returns the embedded outline when
+     *  the PDF has one, else Zotero's heuristic extraction -- and `getOutline()`
+     *  is the raw embedded outline, so a non-empty `getOutline()` means the
+     *  getOutline2 result IS the embedded one; empty means it was extracted.
+     *  (There is no API to force extraction when an embedded outline exists --
+     *  verified in pdf.js: getOutline2's arg is ignored, module.getOutline is
+     *  embedded-else-extract.) A Weavero-curated outline (Phase 3) overrides. */
+    async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[] } | null> {
+        try {
+            if (reader._type && reader._type !== "pdf") return null;
+            const iw = reader._iframeWindow;
+            const app = iw && (iw.PDFViewerApplication
+                || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication));
+            if (!app) return null;
+            if (app.initializedPromise) { try { await app.initializedPromise; } catch (_) {} }
+            const pdfDoc = app.pdfDocument;
+            if (!pdfDoc || typeof pdfDoc.getOutline2 !== "function") return null;
+            const raw = await pdfDoc.getOutline2();
+            let source = "extracted";
+            try {
+                const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
+                if (emb && emb.length) source = "embedded";
+            } catch (_) {}
+            const copy = (nodes: any): any[] => {
+                const out: any[] = [];
+                const arr = nodes || [];
+                for (let i = 0; i < arr.length; i++) {
+                    const n = arr[i];
+                    let position: any = null;
+                    try { if (n.location && n.location.position) position = JSON.parse(JSON.stringify(n.location.position)); } catch (_) {}
+                    out.push({
+                        title: String(n.title == null ? "" : n.title),
+                        url: n.url ? String(n.url) : null,
+                        position,
+                        items: copy(n.items),
+                    });
+                }
+                return out;
+            };
+            return { source, tree: copy(raw) };
+        } catch (_) { return null; }
+    }
+
+    /** Human label + tooltip for an outline source. */
+    _wvOutlineSourceLabel(source: string): string {
+        if (source === "embedded") return "Embedded";
+        if (source === "weavero") return "Weavero";
+        return "Extracted";
+    }
+    _wvOutlineSourceTip(source: string): string {
+        if (source === "embedded") return "Outline embedded in the PDF file";
+        if (source === "weavero") return "Outline curated in Weavero";
+        return "Outline extracted automatically by Zotero";
+    }
+
+    async _wvReaderRenderOutline(reader: any, idoc: any) {
+        try {
+            const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+            const list = view && view.querySelector(".wv-outline-list");
+            if (!list) return;
+            let cache = reader._wvOutlineCache;
+            // `!cache.tree` also re-fetches a stale, pre-{source,tree} cache
+            // left by a reader open across a plugin upgrade.
+            if (!cache || !cache.tree) {
+                cache = await this._wvReaderFetchOutline(reader);
+                if (cache) reader._wvOutlineCache = cache;
+                // The panel may have been re-rendered/removed during the await.
+                if (!idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) return;
+            }
+            const source = (cache && cache.source) || "extracted";
+            const tree = (cache && cache.tree) || [];
+            this._wvOutlineRenderHeader(reader, idoc, view, source);
+            while (list.firstChild) list.firstChild.remove();
+            if (!tree.length) {
+                const empty = idoc.createElementNS(NS_HTML_RP, "div");
+                empty.className = "wv-outline-empty";
+                empty.textContent = "No outline for this document.";
+                list.appendChild(empty);
+                return;
+            }
+            this._wvRenderOutlineNodes(reader, idoc, list, tree, 0);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderOutline err: " + e); }
+    }
+
+    /** Header strip: "Outline" + a source chip (Embedded / Extracted / Weavero).
+     *  The chip is a source SWITCHER -- clicking it opens a menu of the sources
+     *  available for this document. In Phase 2 a document exposes exactly one
+     *  original source (embedded XOR extracted -- Zotero can't be forced to
+     *  extract when an embedded outline exists), so the menu has a single,
+     *  current entry; Phase 3 adds the Weavero-curated source alongside the
+     *  original, at which point switching becomes meaningful. */
+    _wvOutlineRenderHeader(reader: any, idoc: any, view: any, source: string) {
+        try {
+            const NS = NS_HTML_RP;
+            const head = view.querySelector(".wv-outline-head");
+            if (!head) return;
+            while (head.firstChild) head.firstChild.remove();
+            const title = idoc.createElementNS(NS, "span");
+            title.className = "wv-outline-head-title";
+            title.textContent = "Outline";
+            head.appendChild(title);
+            const chip = idoc.createElementNS(NS, "button");
+            chip.className = "wv-outline-src-chip wv-outline-src-" + source;
+            chip.setAttribute("title", this._wvOutlineSourceTip(source));
+            const dot = idoc.createElementNS(NS, "span");
+            dot.className = "wv-outline-src-dot";
+            const lab = idoc.createElementNS(NS, "span");
+            lab.textContent = this._wvOutlineSourceLabel(source);
+            chip.appendChild(dot);
+            chip.appendChild(lab);
+            const sources = this._wvOutlineAvailableSources(reader, source);
+            if (sources.length > 1) {
+                chip.classList.add("wv-outline-src-switchable");
+                const caret = idoc.createElementNS(NS, "span");
+                caret.className = "wv-outline-src-caret";
+                caret.innerHTML = RP_OUTLINE_CHEVRON;
+                chip.appendChild(caret);
+                chip.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    this._wvOutlineShowSourceMenu(reader, idoc, chip, sources, source);
+                });
+            }
+            head.appendChild(chip);
+        } catch (_) {}
+    }
+
+    /** Outline sources available for this document, current first. Phase 2:
+     *  just the current original source. Phase 3 will add "weavero" (a curated
+     *  outline) plus the original it was imported from. */
+    _wvOutlineAvailableSources(reader: any, current: string): string[] {
+        return [current];
+    }
+
+    /** Source-switch menu (used when >1 source exists -- Phase 3). Mirrors the
+     *  bookmark sort menu's build + dismiss. */
+    _wvOutlineShowSourceMenu(reader: any, idoc: any, anchor: any, sources: string[], current: string) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            for (const src of sources) {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.innerHTML = (src === current) ? RP_CHECK_SVG : "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = this._wvOutlineSourceLabel(src);
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { close(); this._wvOutlineSwitchSource(reader, idoc, src); });
+                menu.appendChild(it);
+            }
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor) return; close(); } catch (_) {} };
+            const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
+            const docs: any[] = [idoc]; const wins: any[] = [];
+            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+        } catch (_) {}
+    }
+
+    /** Switch the displayed outline source (Phase 3). Phase 2 exposes one
+     *  source, so this just records the choice and re-renders. */
+    _wvOutlineSwitchSource(reader: any, idoc: any, source: string) {
+        try {
+            reader._wvOutlineActiveSource = source;
+            this._wvReaderRenderOutline(reader, idoc);
+        } catch (_) {}
+    }
+
+    _wvRenderOutlineNodes(reader: any, idoc: any, container: any, nodes: any[], depth: number) {
+        const NS = NS_HTML_RP;
+        for (const node of nodes) {
+            const row = idoc.createElementNS(NS, "div");
+            row.className = "wv-outline-row";
+            row.style.paddingLeft = (8 + depth * 14) + "px";
+            const hasKids = !!(node.items && node.items.length);
+            const tw = idoc.createElementNS(NS, "span");
+            tw.className = "wv-outline-twisty" + (hasKids ? "" : " wv-outline-leaf")
+                + (node._collapsed ? " wv-outline-collapsed" : "");
+            tw.innerHTML = RP_OUTLINE_CHEVRON;
+            const label = idoc.createElementNS(NS, "span");
+            label.className = "wv-outline-label";
+            label.textContent = node.title || "(untitled)";
+            row.appendChild(tw);
+            row.appendChild(label);
+            tw.addEventListener("click", (e: any) => {
+                e.stopPropagation();
+                if (!hasKids) { this._wvOutlineNavigate(reader, idoc, node, row); return; }
+                node._collapsed = !node._collapsed;
+                this._wvReaderRenderOutline(reader, idoc);   // cache preserved
+            });
+            row.addEventListener("click", () => this._wvOutlineNavigate(reader, idoc, node, row));
+            container.appendChild(row);
+            if (hasKids && !node._collapsed) {
+                this._wvRenderOutlineNodes(reader, idoc, container, node.items, depth + 1);
+            }
+        }
+    }
+
+    _wvOutlineNavigate(reader: any, idoc: any, node: any, row: any) {
+        try {
+            try { const prev = idoc.querySelector(".wv-outline-row.wv-outline-active"); if (prev) prev.classList.remove("wv-outline-active"); } catch (_) {}
+            if (row) row.classList.add("wv-outline-active");
+            if (node.url) { try { Zotero.launchURL(node.url); } catch (_) {} return; }
+            if (!node.position) return;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const pos = node.position;
+            const rects = (pos.rects && pos.rects.length) ? pos.rects : null;
+
+            // PRECISE navigation by TITLE-TEXT recovery. An embedded outline's
+            // destination is often a bare page-top point, and SEVERAL entries can
+            // share it (e.g. "5.2 Numerical studies" and "6 Particulate
+            // suspensions" both resolving to page 11 top) -- so navigating to the
+            // raw position mislands on whatever heading sits there. Reuse the same
+            // recovery the native-outline highlight uses, but with the title we
+            // ALREADY have (no ambiguous position->title lookup): it finds THIS
+            // heading's real box by matching its text, then scrolls + highlights.
+            if (pv && rects && node.title && this._wvOutlineIsPointRect(pos)) {
+                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                const r0 = rects[0];
+                Promise.resolve(this._wvOutlineRecoverRect(pv, pos.pageIndex, r0[0], r0[1], node.title))
+                    .then((res: any) => {
+                        if (pv._wvHlSeq !== gen) return;   // superseded by a newer click
+                        if (!res) { this._wvOutlineNavRaw(reader, pv, pos); return; }
+                        try { this._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
+                        this._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
+                    })
+                    .catch(() => { try { this._wvOutlineNavRaw(reader, pv, pos); } catch (_) {} });
+                return;
+            }
+            // Extracted entries already carry a real heading rect -- scroll +
+            // highlight it directly (same one-move behaviour, no recovery needed).
+            if (pv && rects && !this._wvOutlineIsPointRect(pos)) {
+                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                const rr = rects[0];
+                if (!this._wvOutlineScrollToRect(pv, pos.pageIndex, rr)) this._wvOutlineNavRaw(reader, pv, pos);
+                this._wvOutlineHighlightInPlace(pv, pos.pageIndex, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
+                return;
+            }
+            this._wvOutlineNavRaw(reader, pv, pos);
+        } catch (_) {}
+    }
+
+    /** Fallback navigation to a raw position via the reader's own navigate
+     *  (`internalReader.navigate`, which loads the page). The location must be
+     *  cloned into the iframe compartment. */
+    _wvOutlineNavRaw(reader: any, pv: any, pos: any) {
+        try {
+            const ir = reader._internalReader;
+            const iw = reader._iframeWindow;
+            const Cu = (Components as any).utils;
+            if (ir && typeof ir.navigate === "function") {
+                try { ir.navigate((iw && Cu) ? Cu.cloneInto({ position: pos }, iw) : { position: pos }); return; } catch (_) {}
+            }
+            if (pv && typeof pv.navigateToPosition === "function") { try { pv.navigateToPosition(pos); } catch (_) {} }
+        } catch (_) {}
     }
 
     /** Wire a `dragend` on the PDF view's iframe document (once). An annotation
@@ -833,7 +1231,7 @@ class _ReaderPanelsMixin {
     }
 
     _wvEnsureReaderPanelStyles(idoc: any) {
-        const css = RP_POPUP_CSS + RP_BM_CSS + BM_HOVERCARD_CSS;
+        const css = RP_POPUP_CSS + RP_BM_CSS + BM_HOVERCARD_CSS + RP_OUTLINE_CSS;
         const existing = idoc.getElementById(RP_STYLE_ID);
         if (existing) {
             // A reader left open across a plugin update keeps its stale

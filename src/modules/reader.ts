@@ -1227,6 +1227,13 @@ class _ReaderMixin {
             + ".wv-url-span.wv-link-http   { color: var(--wv-link-http); }"
             + ".wv-url-span.wv-link-zotero { color: var(--wv-link-zotero); }"
             + ".wv-url-span.wv-link-app    { color: var(--wv-link-app); }"
+            // Links inside an Annotation Markdown preview: our rescued
+            // links (dead-anchor fix) and AM's own recoloured anchors both
+            // carry a wv-link-* class here. `!important` overrides AM's
+            // default anchor colour so a web URL matches the item pane.
+            + ".annotation-markdown-rendered a.wv-link-http   { color: var(--wv-link-http) !important; }"
+            + ".annotation-markdown-rendered a.wv-link-zotero { color: var(--wv-link-zotero) !important; }"
+            + ".annotation-markdown-rendered a.wv-link-app    { color: var(--wv-link-app) !important; }"
             + ".wv-link { cursor: pointer !important; }"
             + ".wv-link-svg {"
             + "  width: 1em; height: 1em; display: block; flex-shrink: 0;"
@@ -13354,7 +13361,18 @@ class _ReaderMixin {
         // the math the user installed AM for renders as raw $…$ on ~3/4 of
         // the cards, plus scroll jank from the two passes fighting (p95
         // frame 50 ms vs 17 ms with a single renderer).
-        if (this._wvAmActiveInDoc(doc)) {
+        //
+        // ...but only yield for comments AM will ACTUALLY render. AM's
+        // findCommentNodes keeps only comments under an annotation-row
+        // ancestor ([data-annotation-id]/.annotation/.annotation-row);
+        // the in-PDF annotation popup's .comment has none, so AM never
+        // renders it. Without this guard Weavero would yield the popup to
+        // AM, AM would skip it, and the popup would show RAW comment
+        // whenever both plugins are on (caught 2026-07-19). Mirror AM's
+        // own filter: if AM won't claim this comment, Weavero renders it.
+        const amWillRender = !!commentEl.closest(
+            "[data-annotation-id], .annotation, .annotation-row");
+        if (this._wvAmActiveInDoc(doc) && amWillRender) {
             for (const p of commentEl.querySelectorAll(".wv-md-preview")) p.remove();
             commentEl.classList.remove("wv-comment-preview");
             const amPreview = commentEl.querySelector(".annotation-markdown-rendered");
@@ -13367,7 +13385,20 @@ class _ReaderMixin {
                     ph.remove();
                 }
                 if (this._getInlineLinks()) {
-                    try { this._wvAmLinkifyPreview(amPreview); } catch (e) {}
+                    // Recover the raw source comment so the linkify pass can
+                    // rescue markdown links whose non-web href AM stripped
+                    // (the URL is gone from the rendered DOM; only the label
+                    // remains). Best-effort — an empty source just skips the
+                    // rescue, leaving the (unchanged) bare-URL linkify.
+                    let srcComment = "";
+                    try {
+                        const card = commentEl.closest("[data-sidebar-annotation-id]");
+                        const key = card && card.getAttribute("data-sidebar-annotation-id");
+                        const reader = this._findReaderForDoc(doc);
+                        const lib = reader ? this.libraryIDFromReader(reader) : null;
+                        if (key && lib != null) srcComment = this.getModelComment(lib, key) || "";
+                    } catch (e) {}
+                    try { this._wvAmLinkifyPreview(amPreview, srcComment); } catch (e) {}
                 }
             } else if (amHidden) {
                 try {
@@ -13726,6 +13757,15 @@ class _ReaderMixin {
             + " [data-annotation-markdown-source-node]");
         if (!active) {
             for (const s of doc.querySelectorAll("style")) {
+                // Skip Weavero's OWN stylesheets. Our recolour CSS (fix #2)
+                // references `.annotation-markdown-rendered`, so scanning our
+                // own <style> would self-trigger this detection and make us
+                // think AM is active when it isn't — Weavero would then yield
+                // comment rendering to a non-existent AM and render nothing.
+                // (Caught 2026-07-19: comments stopped rendering with AM
+                // disabled.) AM's real previews are caught by the attribute
+                // check above regardless.
+                if (s.id && s.id.indexOf("weavero") === 0) continue;
                 if (s.textContent
                         && s.textContent.indexOf(".annotation-markdown-rendered") !== -1) {
                     active = true;
@@ -13745,12 +13785,19 @@ class _ReaderMixin {
      *  already applied its own). Idempotent via data-wv-am-linked keyed
      *  on the enabled-scheme set + text, so AM re-rendering the preview
      *  (attribute wiped) triggers exactly one re-linkify. */
-    _wvAmLinkifyPreview(amPreview) {
+    _wvAmLinkifyPreview(amPreview, srcComment?) {
         if (!amPreview) return;
         const doc = amPreview.ownerDocument;
-        const cacheKey = this.URL_SCHEME_ALT + ":"
+        const recolor = this._getRecolorAmLinks();
+        // Cache key includes the recolour flag so toggling the pref (after
+        // a reader reload) invalidates and re-runs.
+        const cacheKey = this.URL_SCHEME_ALT + ":" + (recolor ? "c" : "") + ":"
             + this.normalize(amPreview.textContent || "");
         if (amPreview.getAttribute("data-wv-am-linked") === cacheKey) return;
+
+        // 1. Linkify bare-text URLs AM left as plain text (its markdown-it
+        //    linkify only covers web URLs; zotero:// and app schemes, plus
+        //    older AM without linkify, come through as text).
         const walker = doc.createTreeWalker(amPreview, 4 /* SHOW_TEXT */);
         const targets = [];
         let n;
@@ -13771,7 +13818,63 @@ class _ReaderMixin {
             });
             node.parentNode.replaceChild(frag, node);
         }
+
+        // 2. Rescue AM's href-less anchors. For a markdown link whose scheme
+        //    AM won't emit (`[label](zotero://…)`, `[label](obsidian://…)`),
+        //    AM renders `<a>label</a>` with NO href — a dead link. The URL
+        //    is gone from the DOM, so recover it from the SOURCE comment by
+        //    matching the label, and rebuild a working Weavero link (only
+        //    for schemes currently enabled — hasURI gates that). Without
+        //    this, such links (which work in Weavero-alone) are dead
+        //    whenever AM is active.
+        const dead = [];
+        for (const a of amPreview.querySelectorAll("a")) {
+            if (a.closest(".katex")) continue;
+            if (!a.getAttribute("href")) dead.push(a);
+        }
+        if (dead.length && srcComment) {
+            const map = new Map();
+            const re = /\[([^\]\n]+?)\]\(([^)\s]+)\)/g;
+            let m;
+            while ((m = re.exec(srcComment)) !== null) {
+                if (!map.has(m[1])) map.set(m[1], m[2]);
+            }
+            for (const a of dead) {
+                const label = (a.textContent || "").trim();
+                const url = map.get(label);
+                if (url && this.hasURI(url)) {
+                    const link = this._makeLink(doc, url, { hidePopup() {} }, a.textContent);
+                    if (a.parentNode) a.parentNode.replaceChild(link, a);
+                }
+            }
+        }
+
+        // 3. Recolour AM's own live links to Weavero's per-scheme colour so
+        //    a web URL matches the item pane / items tree (AM owns the <a>
+        //    in the sidebar, otherwise it would show AM's default colour
+        //    there but Weavero's colour everywhere else). Skips our own
+        //    rescued links (already wv-link classed) and KaTeX internals.
+        if (recolor) {
+            for (const a of amPreview.querySelectorAll("a[href]")) {
+                if (a.closest(".katex")) continue;
+                if (a.classList.contains("wv-link")) continue;
+                const cls = this._urlLinkClass(a.getAttribute("href") || "");
+                if (cls) { a.classList.add("wv-am-recolored"); a.classList.add(cls); }
+            }
+        }
+
         amPreview.setAttribute("data-wv-am-linked", cacheKey);
+    }
+
+    /** Whether to recolour Annotation Markdown's own links to Weavero's
+     *  per-scheme palette (hidden pref `weavero.recolorAmLinks`, default
+     *  true) so link colours are consistent across the reader sidebar and
+     *  the item pane. Off = leave AM's anchors in AM's own colour. */
+    _getRecolorAmLinks() {
+        try {
+            const v = Zotero.Prefs.get("weavero.recolorAmLinks");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
     }
 
     /** Restore a way to create a comment when Annotation Markdown has

@@ -258,6 +258,14 @@ const RP_FOLDER_PLUS_SVG =
     + 'M1 1H3.586L5.293 2.707C5.505 2.919 5.7 3 6 3H13V7.26A4.5 4.5 0 0 0 7.03 11H1Z"/>'
     + '<circle cx="11.5" cy="11.5" r="4" fill="none" stroke="currentColor" stroke-width="1"/>'
     + '<path d="M11 9H12V11H14V12H12V14H11V12H9V11H11Z"/></svg>';
+// Sort glyph -- three descending bars (classic "sort" icon), themed via
+// currentColor. Opens the per-section bookmark sort menu. Bars on integer
+// pixel rows (2 tall) so each renders sharp at the 16px header size.
+const RP_SORT_SVG =
+    '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 3H14V5H2ZM2 7H10V9H2ZM2 11H6V13H2Z"/></svg>';
+// Check glyph marking the active mode in the sort menu.
+const RP_CHECK_SVG =
+    '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.4 11.6 2.8 8l1.4-1.4 2.2 2.2 5-5L12.8 5.2z"/></svg>';
 // Reader bookmark context menu glyphs. Inlined paths from Zotero's
 // native 16/universal/rename.svg + reset.svg (the reader iframe can't
 // load chrome:// images), themed via `currentColor` to match the menu
@@ -314,6 +322,74 @@ const RP_ANN_TYPE_SVG: { [k: string]: string } = {
         + '<path fill-rule="evenodd" clip-rule="evenodd" d="M12.2379 1.96038C7.35382 -0.685304 3.87074 -0.185451 2.14056 1.6023C1.09277 2.68497 0.770104 4.18435 1.20189 5.49993C0.859503 5.9151 0.586015 6.39922 0.406392 6.94321C-0.251619 8.93602 0.392748 11.5506 3.14369 14.3518L3.55138 13.3325C1.22808 10.8298 0.880354 8.69716 1.35597 7.25675C1.44524 6.98637 1.56492 6.73451 1.70984 6.50322C2.01734 6.9348 2.42776 7.31991 2.94254 7.62876C5.08604 8.91477 7.00043 8.47453 7.78686 7.27398C8.17397 6.68302 8.24618 5.93402 7.87663 5.2695C7.51213 4.61407 6.76938 4.12858 5.69987 3.91011C4.4187 3.64842 3.08109 3.95856 2.04205 4.71173C1.9233 3.869 2.19892 2.97994 2.85915 2.29774C4.12914 0.98549 7.04616 0.285329 11.7616 2.83966L12.2379 1.96038ZM3.45701 6.77126C2.98486 6.48799 2.62971 6.12157 2.39003 5.71152C3.22891 4.98627 4.3888 4.66296 5.49973 4.88988C6.38853 5.07143 6.82496 5.43594 7.00268 5.75551C7.17534 6.06599 7.1528 6.41698 6.95036 6.72602C6.55769 7.32546 5.31375 7.88522 3.45701 6.77126ZM13.2929 4C13.6834 3.60948 14.3166 3.60948 14.7071 4L15.5 4.79289C15.8905 5.18342 15.8905 5.81658 15.5 6.20711L7.42612 14.281C7.33036 14.3767 7.21615 14.4521 7.09041 14.5024L4.6857 15.4642L3.60247 15.8975L4.03576 14.8143L4.99765 12.4096C5.04794 12.2839 5.12325 12.1696 5.21902 12.0739L13.2929 4ZM12.5 6.20715L5.92612 12.781L5.39753 14.1025L6.71902 13.5739L13.2929 7.00004L12.5 6.20715ZM13.2071 5.50004L14 6.29293L14.7929 5.5L14 4.70711L13.2071 5.50004Z" fill="currentColor"/>'
         + '</svg>',
 };
+
+// ---- Reading-order sort index (faithful port of the reader's pdf/selection.js) ----
+// Zotero computes an `annotationSortIndex` for every annotation at creation --
+// the `page|charOffset|top` string the reader sidebar sorts by (a lexical
+// compare). Weavero's own bookmarks (position/text) never got one. These
+// functions reproduce the reader's exact math so a Weavero bookmark's stored
+// sortIndex is byte-identical to what Zotero would compute for the same
+// position -- which lets both sort by ONE mechanism. Ported verbatim
+// (including getTopMostRectFromPosition's index-2 sort) so the keys interleave
+// correctly with real annotationSortIndex values. rect = [x1,y1,x2,y2].
+function wvRectsDist(a: number[], b: number[]): number {
+    const ax1 = a[0], ay1 = a[1], ax2 = a[2], ay2 = a[3];
+    const bx1 = b[0], by1 = b[1], bx2 = b[2], by2 = b[3];
+    const left = bx2 < ax1, right = ax2 < bx1, bottom = by2 < ay1, top = ay2 < by1;
+    if (top && left) return Math.hypot(ax1 - bx2, ay2 - by1);
+    if (left && bottom) return Math.hypot(ax1 - bx2, ay1 - by2);
+    if (bottom && right) return Math.hypot(ax2 - bx1, ay1 - by2);
+    if (right && top) return Math.hypot(ax2 - bx1, ay2 - by1);
+    if (left) return ax1 - bx2;
+    if (right) return bx1 - ax2;
+    if (bottom) return ay1 - by2;
+    if (top) return by1 - ay2;
+    return 0;
+}
+function wvGetClosestOffset(chars: any[], rect: number[]): number {
+    let dist = Infinity, idx = 0;
+    for (let i = 0; i < chars.length; i++) {
+        const d = wvRectsDist(chars[i].rect, rect);
+        if (d < dist) { dist = d; idx = i; }
+    }
+    return idx;
+}
+// Verbatim from the reader: sorts rects by index [2] descending (the source
+// comment says "y2" but the code uses [2]; matched exactly for identical output).
+function wvTopMostRect(position: any): number[] | null {
+    const rects = position && position.rects;
+    if (!rects || !rects.length) return null;
+    return rects.slice().sort((a: number[], b: number[]) => b[2] - a[2])[0];
+}
+function wvBoundingRect(position: any): number[] | null {
+    const rects = position && position.rects;
+    if (!rects || !rects.length) return null;
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    for (const r of rects) { x1 = Math.min(x1, r[0]); y1 = Math.min(y1, r[1]); x2 = Math.max(x2, r[2]); y2 = Math.max(y2, r[3]); }
+    return [x1, y1, x2, y2];
+}
+function wvSortIndexStr(pageIndex: number, offset: number, top: number): string {
+    return [
+        pageIndex.toString().slice(0, 5).padStart(5, "0"),
+        offset.toString().slice(0, 6).padStart(6, "0"),
+        Math.max(Math.floor(top), 0).toString().slice(0, 5).padStart(5, "0"),
+    ].join("|");
+}
+// Compute the sortIndex string for a position given a page's {chars, viewBox}
+// (as returned by pdf.js getPageData). Returns null if the data is unusable.
+function wvComputeSortIndex(pageData: any, position: any): string | null {
+    try {
+        if (position == null || !Number.isInteger(position.pageIndex)) return null;
+        const chars = pageData && pageData.chars;
+        const viewBox = pageData && pageData.viewBox;
+        if (!Array.isArray(chars) || !viewBox) return null;
+        const rect = wvTopMostRect(position) || wvBoundingRect(position);
+        if (!rect) return null;
+        const offset = chars.length ? wvGetClosestOffset(chars, rect) : 0;
+        const top = (viewBox[3] - viewBox[1]) - rect[3];
+        return wvSortIndexStr(position.pageIndex, offset, top);
+    } catch (_) { return null; }
+}
 
 const RP_BM_CSS = [
     // When our tab is active, hide the React view wrappers and show ours.
@@ -569,6 +645,10 @@ const RP_BM_CSS = [
     ".wv-bm-reader-newfolder{display:flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;cursor:pointer;border-radius:3px;color:inherit;opacity:.5;padding:0;flex:0 0 auto;}",
     ".wv-bm-reader-newfolder:hover{opacity:.95;background:rgba(127,127,127,.2);}",
     ".wv-bm-reader-newfolder svg{width:16px;height:16px;}",
+    // Active (non-manual) sort: full-opacity accent tint so the header shows
+    // at a glance that the list is sorted, not in manual order.
+    ".wv-bm-reader-sortbtn.wv-bm-sort-active{opacity:1;color:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-reader-sortbtn.wv-bm-sort-active:hover{background:rgba(94,102,210,.18);}",
     "." + RP_BM_TAB_CLASS + ".wv-bm-dropok{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;}",
     ".wv-bm-reader-row.wv-bm-dragging{opacity:.4;}",
     // Before/after indicators are INDENTED lines (a pseudo-element from
@@ -2783,6 +2863,23 @@ class _ReaderPanelsMixin {
                         .then(() => this._wvReaderRenderBmList(reader, idoc));
                 });
                 h.appendChild(nf);
+                // Sort control (issue #18). Active (non-manual) state gets a
+                // highlight class + a descriptive tooltip so the current sort is
+                // discoverable without opening the menu.
+                const sortMode = this._wvReaderBmSortMode(section);
+                const sortBtn = idoc.createElementNS(NS, "button");
+                sortBtn.className = "wv-bm-reader-newfolder wv-bm-reader-sortbtn"
+                    + (sortMode !== "manual" ? " wv-bm-sort-active" : "");
+                sortBtn.setAttribute("title", sortMode === "manual"
+                    ? "Sort bookmarks"
+                    : ("Sorted by " + (sortMode === "location" ? "location" : "title")
+                        + " — click to change (manual order is preserved)"));
+                sortBtn.innerHTML = RP_SORT_SVG;
+                sortBtn.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    this._wvShowReaderBmSortMenu(reader, idoc, sortBtn, section);
+                });
+                h.appendChild(sortBtn);
                 gc.appendChild(h);
                 if (!nodes.length) {
                     // Empty section (only reached with no active search — the
@@ -2797,7 +2894,12 @@ class _ReaderPanelsMixin {
                 } else {
                     const treeWrap = idoc.createElementNS(NS, "div");
                     treeWrap.className = "wv-bm-reader-tree";
-                    this._wvReaderRenderTree(reader, idoc, att, treeWrap, nodes, section, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
+                    // Non-destructive display sort: render a sorted COPY, leaving
+                    // the stored manual order intact. Filter sets (visible/dimmed)
+                    // key off ids, so they still apply to the sorted copy.
+                    const renderNodes = sortMode === "manual"
+                        ? nodes : this._wvBmSortNodesForDisplay(att, nodes, sortMode);
+                    this._wvReaderRenderTree(reader, idoc, att, treeWrap, renderNodes, section, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
                     gc.appendChild(treeWrap);
                 }
                 this._wvReaderWireGroupDrop(reader, idoc, gc, section === "local");
@@ -2863,6 +2965,11 @@ class _ReaderPanelsMixin {
                 list.appendChild(empty);
             }
             try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
+            // Lazy sortIndex backfill for this document's Weavero bookmarks.
+            // Fire-and-forget and self-gating: it returns after a cheap scan if
+            // nothing needs migrating, so this is essentially free on an
+            // already-migrated document. Runs in the background off the render.
+            try { Promise.resolve().then(() => this._wvBackfillReaderSortIndices(reader)); } catch (_) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderRenderBmList err: " + e);
         }
@@ -2908,6 +3015,266 @@ class _ReaderPanelsMixin {
             const norm = (scope === "library" || scope === "both") ? scope : "document";
             Zotero.Prefs.set("weavero.readerBmScope", norm);
         } catch (_) {}
+    }
+
+    // ---- Bookmark sort mode (issue #18) ----------------------------------
+    // Non-destructive DISPLAY sort. The stored per-section arrays keep their
+    // manual (drag) order -- the canonical, default view; "location"/"alpha"
+    // only reorder a COPY at render time, so switching back to "manual"
+    // restores the arrangement exactly. Persisted per-section pref (global
+    // across documents, like the scope toggle). "location" is offered for
+    // "This Document" only -- the "Elsewhere" section has no in-document
+    // positions to sort by.
+
+    /** Sort mode for a section: "manual" (default) | "location" | "alpha". */
+    _wvReaderBmSortMode(section: "local" | "global"): string {
+        try {
+            const v = Zotero.Prefs.get("weavero.readerBmSort." + section);
+            if (v === "alpha") return "alpha";
+            if (v === "location" && section === "local") return "location";
+        } catch (_) {}
+        return "manual";
+    }
+    _wvReaderSetBmSortMode(section: "local" | "global", mode: string) {
+        try {
+            let norm = "manual";
+            if (mode === "alpha") norm = "alpha";
+            else if (mode === "location" && section === "local") norm = "location";
+            Zotero.Prefs.set("weavero.readerBmSort." + section, norm);
+        } catch (_) {}
+    }
+
+    /** Document geometry of a bookmark: { page, x (left edge), top (upper edge) }
+     *  or null when it has no in-document position (URL / cross-doc / elsewhere
+     *  item). PDF y-axis is bottom-up, so the upper edge is the LARGER y. `x`
+     *  drives column detection; `top` orders within a column. */
+    _wvBmNodeGeo(att: any, bm: any): { page: number, x: number, top: number } | null {
+        try {
+            if (!bm) return null;
+            // Whole-page bookmark -> top-left of its page (before positioned rows).
+            if (bm.type === "page") {
+                const pi = (bm.position && Number.isInteger(bm.position.pageIndex)) ? bm.position.pageIndex
+                    : (bm.location && Number.isInteger(bm.location.pageIndex)) ? bm.location.pageIndex : null;
+                return pi == null ? null : { page: pi, x: 0, top: Infinity };
+            }
+            let pos: any = (bm.type === "position" || bm.type === "text") ? bm.position : null;
+            // Local annotation reference -> the annotation's own position.
+            // `att` is the _wvReaderAtt wrapper {libraryID, itemKey, att}: the
+            // Zotero attachment item is `att.att`, so its id is att.att.id (the
+            // wrapper's own `.id` is undefined -- comparing to that silently
+            // failed for every annotation bookmark, sending them to the tail).
+            if (!pos && bm.type === "item") {
+                const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                const attId = att && att.att && att.att.id;
+                if (it && it.isAnnotation && it.isAnnotation() && it.parentID === attId) {
+                    try { pos = JSON.parse(it.annotationPosition); } catch (_) {}
+                }
+            }
+            if (pos && Number.isInteger(pos.pageIndex)) {
+                const rects = (pos.rects && pos.rects.length) ? pos.rects : null;
+                if (rects) {
+                    let top = -Infinity, x = Infinity;
+                    for (const r of rects) { top = Math.max(top, r[1], r[3]); x = Math.min(x, r[0], r[2]); }
+                    return { page: pos.pageIndex, x, top };
+                }
+                return { page: pos.pageIndex, x: 0, top: Infinity };
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    _wvBmNodeSortLabel(node: any): string {
+        return String((node && node.label) || "").toLowerCase();
+    }
+
+    /** The reading-order key for a bookmark -- the same `page|charOffset|top`
+     *  string the reader sidebar sorts by (lexical compare; see reader
+     *  `annotation-manager.js`, format in pdf.js `getSortIndex`), or null if
+     *  none is available. Sources, in order:
+     *   - annotation bookmark  -> Zotero's live `annotationSortIndex`;
+     *   - Weavero position/text bookmark -> its stored `sortIndex` (captured at
+     *     creation or backfilled by `_wvBackfillReaderSortIndices` using the
+     *     identical math). So annotations and Weavero's own bookmarks sort by
+     *     ONE mechanism. Bookmarks with no key fall back to geometry. */
+    _wvBmNodeSortKey(att: any, bm: any): string | null {
+        try {
+            if (bm && bm.type === "item") {
+                const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                const attId = att && att.att && att.att.id;
+                if (it && it.isAnnotation && it.isAnnotation() && it.parentID === attId) {
+                    return it.annotationSortIndex || null;
+                }
+            }
+        } catch (_) {}
+        if (bm && typeof bm.sortIndex === "string" && bm.sortIndex) return bm.sortIndex;
+        return null;
+    }
+
+    /** Fetch a page's structured data ({chars, viewBox}) from the reader's
+     *  pdf.js document -- the same source Zotero uses to compute sort indices.
+     *  The arg must be cloned into the iframe compartment (structured-clone
+     *  boundary). PDF only; null for other view types or on error. */
+    async _wvReaderGetPageData(reader: any, pageIndex: number): Promise<any> {
+        try {
+            if (!reader || (reader._type && reader._type !== "pdf")) return null;
+            const iw = reader._iframeWindow;
+            const app = iw && (iw.PDFViewerApplication
+                || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication));
+            if (!app) return null;
+            if (app.initializedPromise) { try { await app.initializedPromise; } catch (_) {} }
+            const pdfDoc = app.pdfDocument;
+            if (!pdfDoc || typeof pdfDoc.getPageData !== "function") return null;
+            const Cu = (Components as any).utils;
+            const arg = Cu.cloneInto({ pageIndex }, iw);
+            return await pdfDoc.getPageData(arg);
+        } catch (_) { return null; }
+    }
+
+    /** Lazy, gated background backfill: compute + store the Zotero sortIndex for
+     *  this document's Weavero position/text bookmarks that lack one, so they
+     *  sort by the identical mechanism as annotations. GATED -- if every
+     *  bookmark already has a key (or was already attempted) it returns after a
+     *  cheap in-memory scan, doing NO extraction. Runs effectively once per
+     *  document; `_sortIndexTried` stops a text-less page being retried every
+     *  open. Fire-and-forget from the render path. */
+    async _wvBackfillReaderSortIndices(reader: any): Promise<void> {
+        try {
+            if (!reader || (reader._type && reader._type !== "pdf")) return;
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            await this._bmInit();
+            const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+            const cands: any[] = [];
+            const walk = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (n.type === "folder") { walk(n.children); continue; }
+                    if ((n.type === "position" || n.type === "text")
+                            && n.position && Number.isInteger(n.position.pageIndex)
+                            && n.position.rects && n.position.rects.length
+                            && !n.sortIndex && !n._sortIndexTried) {
+                        cands.push(n);
+                    }
+                }
+            };
+            walk(doc.local); walk(doc.global);
+            if (!cands.length) return;   // GATE: nothing to migrate -> no extraction
+
+            const guardKey = att.libraryID + ":" + att.itemKey;
+            if (!this._wvSortBackfillRunning) this._wvSortBackfillRunning = new Set();
+            if (this._wvSortBackfillRunning.has(guardKey)) return;
+            this._wvSortBackfillRunning.add(guardKey);
+            try {
+                await Zotero.Promise.delay(500);   // let the reader settle after open
+                const byPage = new Map<number, any[]>();
+                for (const n of cands) {
+                    const pi = n.position.pageIndex;
+                    if (!byPage.has(pi)) byPage.set(pi, []);
+                    byPage.get(pi)!.push(n);
+                }
+                let changed = false;
+                for (const [pi, list] of byPage) {
+                    const pd = await this._wvReaderGetPageData(reader, pi);
+                    for (const n of list) {
+                        const si = pd ? wvComputeSortIndex(pd, n.position) : null;
+                        if (si) { n.sortIndex = si; changed = true; }
+                        n._sortIndexTried = true;
+                    }
+                }
+                await this._bmPersist();   // records both new keys and the attempt marks
+                if (changed) {
+                    try {
+                        const idoc = reader._iframeWindow && reader._iframeWindow.document;
+                        if (idoc && this._wvReaderBmSortMode("local") === "location") {
+                            this._wvReaderRenderBmList(reader, idoc);
+                        }
+                    } catch (_) {}
+                }
+            } finally {
+                this._wvSortBackfillRunning.delete(guardKey);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvBackfillReaderSortIndices err: " + e); }
+    }
+
+    /** A FLAT, sorted COPY of `nodes` for display (never mutates the stored
+     *  arrays). Folders are a manual-organization construct only -- a sorted
+     *  view flattens them away, collecting their leaf bookmarks (depth-first)
+     *  inline and sorting the whole set. Stable: nodes with no position keep
+     *  their manual order at the tail.
+     *
+     *  Location order is driven by Zotero's reading-order `sortIndex`: any
+     *  bookmark with a key (`_wvBmNodeSortKey` -- an annotation's live
+     *  `annotationSortIndex`, or a Weavero bookmark's stored/backfilled one)
+     *  sorts by that key exactly as the reader sidebar does (lexical compare).
+     *  This is column-aware and text-flow-correct for free. Bookmarks with no
+     *  key (not yet backfilled) are slotted AMONG the keyed ones by vertical
+     *  position (page bookmarks pin to the page top); positionless entries keep
+     *  their manual order at the tail. */
+    _wvBmSortNodesForDisplay(att: any, nodes: any[], mode: string): any[] {
+        if (!Array.isArray(nodes) || mode === "manual") return nodes;
+        const flat: any[] = [];
+        const collect = (ns: any[]) => {
+            for (const n of ns) {
+                if (n && n.type === "folder") collect(n.children || []);
+                else if (n) flat.push(n);
+            }
+        };
+        collect(nodes);
+        if (flat.length < 2) return flat;
+
+        if (mode === "alpha") {
+            return flat
+                .map((n, i) => ({ n, i, lab: this._wvBmNodeSortLabel(n) }))
+                .sort((a, b) => a.lab.localeCompare(b.lab) || a.i - b.i)
+                .map(d => d.n);
+        }
+
+        // --- location ---
+        // Keyed bookmarks (annotation `annotationSortIndex` OR a Weavero
+        // bookmark's stored/backfilled sortIndex) are ordered by that key, the
+        // exact, column-aware, text-flow-correct order the reader sidebar uses
+        // (a lexical string compare; see reader `annotation-manager.js`). Pure
+        // page geometry is NOT reliable enough (a complex first page can put a
+        // left-x element mid-reading), so it is never the authority. Un-keyed
+        // bookmarks (not yet backfilled) are placed AMONG the keyed ones by
+        // vertical position (page bookmarks pin to the page top); positionless
+        // entries keep their manual order at the tail.
+        const geos = flat.map(n => this._wvBmNodeGeo(att, n));
+        const sortKeys = flat.map(n => this._wvBmNodeSortKey(att, n));
+        const positioned: number[] = [], tail: number[] = [];
+        flat.forEach((_n, i) => { (geos[i] ? positioned : tail).push(i); });
+
+        const byPage = new Map<number, number[]>();
+        for (const i of positioned) {
+            const pg = geos[i]!.page;
+            if (!byPage.has(pg)) byPage.set(pg, []);
+            byPage.get(pg)!.push(i);
+        }
+        const out: any[] = [];
+        for (const pg of [...byPage.keys()].sort((a, b) => a - b)) {
+            const idxs = byPage.get(pg)!;
+            // Keyed entries first, ordered by Zotero's reading-order key.
+            const keyed = idxs.filter(i => sortKeys[i] != null)
+                .sort((i, j) => { const a = sortKeys[i]!, b = sortKeys[j]!; return a < b ? -1 : a > b ? 1 : i - j; });
+            const rank = new Map<number, number>();
+            keyed.forEach((i, r) => rank.set(i, r));
+            // Read-position of each entry on the page:
+            //   keyed     -> its integer sortIndex rank
+            //   un-keyed  -> (#keyed entries physically above it) - 0.5, so it
+            //                slots between the keyed one above and the one below
+            //                (a page bookmark, top=Inf, has 0 above -> -0.5 ->
+            //                pins to the page top).
+            const dec = idxs.map(i => {
+                if (rank.has(i)) return { i, pos: rank.get(i)!, top: geos[i]!.top, x: geos[i]!.x };
+                const top = geos[i]!.top;
+                let above = 0;
+                for (const ai of keyed) if (geos[ai]!.top > top) above++;
+                return { i, pos: above - 0.5, top, x: geos[i]!.x };
+            });
+            dec.sort((a, b) => (a.pos - b.pos) || (b.top - a.top) || (a.x - b.x) || (a.i - b.i));
+            for (const d of dec) out.push(flat[d.i]);
+        }
+        for (const i of tail) out.push(flat[i]);   // positionless -> stable tail
+        return out;
     }
     /** Reflect the current scope on the header toggle buttons. "both"
      *  highlights BOTH buttons so the merged state is visually obvious. */
@@ -4778,8 +5145,14 @@ class _ReaderPanelsMixin {
                 if (rowSec !== section) return;
                 const dr = this._wvBmRowDrag;
                 if (dr && dr.id === node.id) return;
+                // Suppress the reorder drop-target while this section is sorted:
+                // a same-doc reorder is blocked at drop time (manual order is
+                // hidden), so don't show a misleading drop bar for it. Cross-doc
+                // copies (different att) remain valid targets.
+                const sameDocDrag = !!(dr && dr.libraryID === att.libraryID && dr.itemKey === att.itemKey);
+                if (sameDocDrag && this._wvReaderBmSortMode(section) !== "manual") return;
                 e.preventDefault();
-                try { e.dataTransfer.dropEffect = (dr && dr.libraryID === att.libraryID && dr.itemKey === att.itemKey) ? "move" : "copy"; } catch (_) {}
+                try { e.dataTransfer.dropEffect = sameDocDrag ? "move" : "copy"; } catch (_) {}
             } else {
                 if (section === "global") return;
                 if (!this._wvReaderDragHasBookmarkable(e.dataTransfer)) return;
@@ -4911,6 +5284,14 @@ class _ReaderPanelsMixin {
             const att = this._wvReaderAtt(reader); if (!att) return;
             const sameDoc = src.libraryID === att.libraryID && src.itemKey === att.itemKey;
             if (sameDoc) {
+                // Non-manual display sort hides the manual order, so a reorder
+                // drag would scramble it invisibly. Block it (re-render snaps the
+                // dragged row back). Cross-doc COPIES below still proceed -- they
+                // add, not reorder, and the sort simply re-places the new row.
+                if (this._wvReaderBmSortMode(src.section) !== "manual") {
+                    this._wvReaderRenderBmList(reader, idoc);
+                    return;
+                }
                 await this._bmReaderMove(att.libraryID, att.itemKey, src.id,
                     (target && target.id) || null, (target && target.mode) || "after");
                 this._wvReaderRenderBmList(reader, idoc);
@@ -5385,13 +5766,96 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
             };
             const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
+            // Dismiss across all reachable docs, incl. the nested PDF view iframe
+            // (a page-region click otherwise wouldn't close the menu).
             const docs: any[] = [idoc]; const wins: any[] = [];
             try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
+            try {
+                const ir = reader._internalReader;
+                for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
+                    const vd = v && v._iframeWindow && v._iframeWindow.document;
+                    if (vd && docs.indexOf(vd) < 0) docs.push(vd);
+                }
+            } catch (_) {}
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
         } catch (e) {
             Zotero.debug("[Weavero] _wvShowReaderBmAddMenu err: " + e);
+        }
+    }
+
+    /** Per-section sort menu (issue #18): Manual / By location / By title.
+     *  Picking a mode sets the pref and re-renders -- non-destructive, the
+     *  stored manual order is untouched. Mirrors the add-menu's positioning
+     *  and dismiss handling. */
+    _wvShowReaderBmSortMenu(reader: any, idoc: any, anchor: any, section: "local" | "global") {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const cur = this._wvReaderBmSortMode(section);
+            const mkItem = (label: string, mode: string) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.innerHTML = (cur === mode) ? RP_CHECK_SVG : "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => {
+                    close();
+                    this._wvReaderSetBmSortMode(section, mode);
+                    try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+                });
+                menu.appendChild(it);
+            };
+            mkItem("Manual order", "manual");
+            if (section === "local") mkItem("Sort by location", "location");
+            mkItem("Sort by title (A–Z)", "alpha");
+            (idoc.body || idoc.documentElement).appendChild(menu);
+
+            const r = anchor.getBoundingClientRect();
+            const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
+            const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+            const mw = menu.offsetWidth || 200, mh = menu.offsetHeight || 90;
+            let x = r.left;
+            let y = r.bottom + 2;
+            if (x + mw > vw - 6) x = Math.max(6, vw - mw - 6);
+            if (y + mh > vh - 6) y = Math.max(6, r.top - mh - 2);
+            menu.style.left = x + "px";
+            menu.style.top = y + "px";
+
+            const onDown = (ev: any) => {
+                try {
+                    if (ev.target && menu.contains && menu.contains(ev.target)) return;
+                    if (ev.target === anchor) return;
+                    close();
+                } catch (_) {}
+            };
+            const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
+            // Dismiss across ALL reachable docs -- including the nested PDF view
+            // iframe, whose pointerdown never reaches `idoc` across the frame
+            // boundary. Without it a click in the page region wouldn't close the
+            // menu. (Mirrors the row context menu's dismiss collection.)
+            const docs: any[] = [idoc]; const wins: any[] = [];
+            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
+            try {
+                const ir = reader._internalReader;
+                for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
+                    const vd = v && v._iframeWindow && v._iframeWindow.document;
+                    if (vd && docs.indexOf(vd) < 0) docs.push(vd);
+                }
+            } catch (_) {}
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvShowReaderBmSortMenu err: " + e);
         }
     }
 

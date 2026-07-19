@@ -454,6 +454,157 @@ class _BookmarksMixin {
         return this._bmDoc.readerBookmarks;
     }
 
+    // ---- Curated outline store (Phase 3) --------------------------------
+    // Per-attachment curated outline, created lazily on the FIRST edit
+    // (copy-on-first-edit). Stored in its OWN file, `<data dir>/weavero/
+    // outlines.json`, NOT in bookmarks.json -- the outline is a distinct
+    // concept and the file self-identifies as Weavero's. File shape:
+    //   { producer: "weavero", schemaVersion: 1, outlines: {
+    //       "<libraryID:itemKey>": { importedFrom, importedAt, entries: [
+    //           { id, title, indentLevel, position?, url?, source:{…frozen} } ]
+    //   } } }
+    // (Local, not synced -- same as bookmarks/sessions. `_wvOutlineRoot` is the
+    //  in-memory copy; missing/unreadable -> fresh.)
+
+    _wvOutlineFilePath() {
+        return PathUtils.join(this._bmDir(), "outlines.json");
+    }
+
+    /** Load `outlines.json` into `_wvOutlineRoot` once (cached promise), then
+     *  migrate any legacy `readerOutlines` that a dev.13 build wrote into
+     *  bookmarks.json. */
+    _wvOutlineInit() {
+        if (this._wvOutlineInitPromise) return this._wvOutlineInitPromise;
+        this._wvOutlineInitPromise = (async () => {
+            let root: any = null;
+            try {
+                const text: any = await Zotero.File.getContentsAsync(this._wvOutlineFilePath());
+                const j = JSON.parse(text);
+                if (j && typeof j === "object" && j.outlines && typeof j.outlines === "object") {
+                    root = { producer: "weavero", schemaVersion: j.schemaVersion || 1, outlines: j.outlines };
+                }
+            } catch (_) {}
+            if (!root) root = { producer: "weavero", schemaVersion: 1, outlines: {} };
+            this._wvOutlineRoot = root;
+            try { await this._wvOutlineMigrateFromBookmarks(); } catch (_) {}
+            return this._wvOutlineRoot;
+        })();
+        return this._wvOutlineInitPromise;
+    }
+
+    /** One-time migration: an early Phase-3 build (dev.13) stored curated
+     *  outlines under `readerOutlines` in bookmarks.json. Read that raw (the
+     *  bookmarks normalizer drops the key on load), move it into outlines.json,
+     *  and rewrite bookmarks.json without it. Idempotent. */
+    async _wvOutlineMigrateFromBookmarks() {
+        let raw: any = null;
+        try { const t: any = await Zotero.File.getContentsAsync(this._bmFilePath()); raw = JSON.parse(t); } catch (_) { return; }
+        const ro = raw && raw.readerOutlines;
+        if (!ro || typeof ro !== "object" || !Object.keys(ro).length) return;
+        let migrated = false;
+        for (const key of Object.keys(ro)) {
+            if (!this._wvOutlineRoot.outlines[key]) { this._wvOutlineRoot.outlines[key] = ro[key]; migrated = true; }
+        }
+        if (migrated) await this._wvOutlinePersist();
+        // Drop readerOutlines from bookmarks.json (the normalizer already omits
+        // it in memory; force a rewrite so the on-disk file is clean).
+        try {
+            await this._bmInit();
+            if (this._bmDoc && (this._bmDoc as any).readerOutlines) delete (this._bmDoc as any).readerOutlines;
+            await this._bmPersist();
+        } catch (_) {}
+    }
+
+    /** Atomic, serialized write of the outline root to outlines.json. */
+    _wvOutlinePersist() {
+        if (!this._wvOutlineRoot) return Promise.resolve();
+        const snapshot = JSON.stringify(this._wvOutlineRoot, null, 2);
+        const dir = this._bmDir();
+        const path = this._wvOutlineFilePath();
+        this._wvOutlineWriteChain = (this._wvOutlineWriteChain || Promise.resolve())
+            .then(async () => {
+                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                await IOUtils.writeUTF8(path, snapshot, { tmpPath: path + ".tmp" });
+            })
+            .catch((e: any) => Zotero.debug("[Weavero] outlines persist failed: " + e));
+        return this._wvOutlineWriteChain;
+    }
+
+    /** The per-attachment map (sync; {} until `_wvOutlineInit` has loaded). */
+    _wvOutlineStore() {
+        if (!this._wvOutlineRoot) { try { this._wvOutlineInit(); } catch (_) {} return {}; }
+        if (!this._wvOutlineRoot.outlines || typeof this._wvOutlineRoot.outlines !== "object") {
+            this._wvOutlineRoot.outlines = {};
+        }
+        return this._wvOutlineRoot.outlines;
+    }
+
+    /** The curated outline doc for an attachment, or null if none yet. */
+    _wvOutlineDoc(libraryID: number, itemKey: string): any {
+        return this._wvOutlineStore()[this._bmReaderKey(libraryID, itemKey)] || null;
+    }
+
+    /** True if the attachment has a curated (Weavero-edited) outline. */
+    _wvOutlineHasCurated(libraryID: number, itemKey: string): boolean {
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        return !!(d && Array.isArray(d.entries));
+    }
+
+    /** Snapshot a plain getOutline2 tree into a curated outline
+     *  (copy-on-first-edit). Idempotent: returns the existing curated outline
+     *  unchanged if one already exists. The tree ({title,url,position,items})
+     *  is flattened depth-first into entries carrying `indentLevel`; each keeps
+     *  a frozen `source` snapshot for later re-enrichment / re-import. */
+    async _wvOutlineEnsureCurated(libraryID: number, itemKey: string, importedFrom: string, tree: any[]): Promise<any> {
+        await this._wvOutlineInit();
+        const store = this._wvOutlineStore();
+        const key = this._bmReaderKey(libraryID, itemKey);
+        if (store[key] && Array.isArray(store[key].entries)) return store[key];
+        const entries: any[] = [];
+        const walk = (nodes: any[], depth: number) => {
+            for (const n of (nodes || [])) {
+                const title = String(n.title == null ? "" : n.title);
+                entries.push({
+                    id: "wvo-" + Zotero.Utilities.randomString(8),
+                    title, indentLevel: depth,
+                    position: n.position || null,
+                    url: n.url || null,
+                    source: { title, position: n.position || null, url: n.url || null, origin: importedFrom },
+                });
+                walk(n.items, depth + 1);
+            }
+        };
+        walk(tree, 0);
+        store[key] = { importedFrom, importedAt: new Date().toISOString(), entries };
+        await this._wvOutlinePersist();
+        return store[key];
+    }
+
+    /** Delete a curated outline entry by id. */
+    async _wvOutlineDeleteEntry(libraryID: number, itemKey: string, id: string) {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return;
+        const i = d.entries.findIndex((e: any) => e.id === id);
+        if (i >= 0) { d.entries.splice(i, 1); await this._wvOutlinePersist(); }
+    }
+
+    /** Rename a curated outline entry. */
+    async _wvOutlineRenameEntry(libraryID: number, itemKey: string, id: string, title: string) {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return;
+        const e = d.entries.find((x: any) => x.id === id);
+        if (e) { e.title = String(title == null ? "" : title); await this._wvOutlinePersist(); }
+    }
+
+    /** Discard the curated outline -- revert to embedded/extracted. */
+    async _wvOutlineRevert(libraryID: number, itemKey: string) {
+        await this._wvOutlineInit();
+        delete this._wvOutlineStore()[this._bmReaderKey(libraryID, itemKey)];
+        await this._wvOutlinePersist();
+    }
+
     /** Which section a record belongs to, by type/identity (no reader needed —
      *  mirrors _wvReaderBookmarkIsLocal but keyed off the attachment). */
     _bmReaderEntrySection(attLibraryID: number, attItemKey: string, rec: any): "local" | "global" {

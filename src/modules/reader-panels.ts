@@ -195,6 +195,10 @@ const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
 const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
 // Down-chevron twisty (rotated -90deg when collapsed via CSS).
 const RP_OUTLINE_CHEVRON = '<svg viewBox="0 0 10 10" fill="currentColor"><path d="M1 3.5L5 7.5L9 3.5Z"/></svg>';
+// Pencil (edit) + revert (curved arrow) + small ✕ (delete a row).
+const RP_OUTLINE_PENCIL = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 1.5l3 3-8 8-3.5.5.5-3.5zM10.8 2.2l-6.9 6.9-.3 2 2-.3 6.9-6.9z"/></svg>';
+const RP_OUTLINE_REVERT = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 8a5 5 0 1 1 1.6 3.7"/><path d="M3 4.5V8h3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const RP_OUTLINE_X = '<svg viewBox="0 0 12 12" fill="currentColor"><path d="M2.4 1.4L6 5l3.6-3.6 1 1L7 6l3.6 3.6-1 1L6 7l-3.6 3.6-1-1L5 6 1.4 2.4z"/></svg>';
 // Sentinel reader sidebarView value used while our Bookmarks tab is active.
 // It's intentionally NOT "annotations": the reader only renders the in-document
 // annotation popup when `sidebarView !== 'annotations'` (else it assumes you'll
@@ -746,6 +750,17 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-src-caret{display:inline-flex;opacity:.6;}",
     ".wv-outline-src-caret svg{width:8px;height:8px;}",
     ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:12px;text-align:center;}",
+    // Header action buttons (edit / revert).
+    ".wv-outline-head-btn{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;color:inherit;opacity:.55;cursor:pointer;border-radius:3px;padding:0;}",
+    ".wv-outline-head-btn:hover{opacity:.95;background:rgba(127,127,127,.2);}",
+    ".wv-outline-head-btn.wv-outline-edit-on{opacity:1;color:var(--color-accent,#5e6ad2);}",
+    ".wv-outline-head-btn svg{width:15px;height:15px;}",
+    // Edit-mode rows: reveal a delete affordance; dim the twisty column.
+    ".wv-outline-row.wv-outline-editing{padding-right:2px;}",
+    ".wv-outline-del{flex:0 0 auto;display:none;align-items:center;justify-content:center;width:18px;height:18px;border:none;background:none;color:rgb(210,72,72);opacity:.7;cursor:pointer;border-radius:3px;padding:0;margin-left:auto;}",
+    ".wv-outline-row.wv-outline-editing .wv-outline-del{display:inline-flex;}",
+    ".wv-outline-del:hover{opacity:1;background:rgba(210,72,72,.14);}",
+    ".wv-outline-del svg{width:12px;height:12px;}",
 ].join("");
 
 /** Rich bookmark hover card styles. Extracted from RP_BM_CSS so the library-
@@ -875,6 +890,20 @@ class _ReaderPanelsMixin {
                         }
                     } catch (_) {}
                 }, true);
+                // Double-click the Outline tab = expand-all / collapse-all, the
+                // native behaviour. When Weavero has taken over, drive OUR
+                // outline (the native handler still runs on its hidden view --
+                // harmless). Gate on the takeover being active.
+                idoc.addEventListener("dblclick", (e: any) => {
+                    try {
+                        const t = e.target;
+                        if (!t || !t.closest || !t.closest("#viewOutline")) return;
+                        const container = idoc.getElementById("sidebarContainer");
+                        if (container && container.classList.contains(RP_OUTLINE_TAB_ON)) {
+                            this._wvOutlineToggleAll(reader, idoc);
+                        }
+                    } catch (_) {}
+                }, true);
             }
             // If the native outline is ALREADY the active view (restored on open,
             // or the user was on it before our panel injected), take over now.
@@ -968,6 +997,32 @@ class _ReaderPanelsMixin {
             const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
             const list = view && view.querySelector(".wv-outline-list");
             if (!list) return;
+            // Load the curated-outline store first so the check below is accurate.
+            try { await this._wvOutlineInit(); } catch (_) {}
+            if (!idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) return;   // panel gone during await
+            const att = this._wvReaderAtt(reader);
+            const curated = !!(att && this._wvOutlineHasCurated(att.libraryID, att.itemKey));
+            const viewOriginal = reader._wvOutlineViewSource === "original";
+
+            // Curated (Weavero-edited) outline -- unless the user chose to view
+            // the original via the source chip.
+            if (curated && !viewOriginal) {
+                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                this._wvOutlineRenderHeader(reader, idoc, view, "weavero");
+                while (list.firstChild) list.firstChild.remove();
+                const entries = (d && d.entries) || [];
+                if (!entries.length) {
+                    const empty = idoc.createElementNS(NS_HTML_RP, "div");
+                    empty.className = "wv-outline-empty";
+                    empty.textContent = "Outline is empty — revert to restore the original.";
+                    list.appendChild(empty);
+                    return;
+                }
+                this._wvRenderCuratedOutline(reader, idoc, list, att, entries, !!reader._wvOutlineEditMode);
+                return;
+            }
+
+            // Original outline (getOutline2), read-only.
             let cache = reader._wvOutlineCache;
             // `!cache.tree` also re-fetches a stale, pre-{source,tree} cache
             // left by a reader open across a plugin upgrade.
@@ -990,6 +1045,147 @@ class _ReaderPanelsMixin {
             }
             this._wvRenderOutlineNodes(reader, idoc, list, tree, 0);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderOutline err: " + e); }
+    }
+
+    /** Render the flat curated outline (entries with `indentLevel`). Nesting is
+     *  shown by indentation AND an expand/collapse twisty on any entry that has
+     *  deeper entries below it -- a flat-indent collapse (hiding descendants
+     *  until the indent returns to the parent's level or shallower). Expanded by
+     *  default, matching the native outline. Collapse state is in-memory
+     *  (`reader._wvOutlineCollapsed`), not persisted (it's view state, not
+     *  outline data). In edit mode each row reveals a delete affordance; clicks
+     *  navigate like the read-only tree. */
+    _wvRenderCuratedOutline(reader: any, idoc: any, container: any, att: any, entries: any[], editMode: boolean) {
+        const NS = NS_HTML_RP;
+        // Expanded-parent ids (in-memory). Empty by DEFAULT -> all collapsed,
+        // matching the native outline.
+        const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+        let hideBelow = Infinity;   // skip entries deeper than a collapsed ancestor
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            const depth = Math.max(0, entry.indentLevel || 0);
+            if (depth > hideBelow) continue;   // hidden descendant of a collapsed entry
+            hideBelow = Infinity;               // back at a visible level
+            const hasKids = (i + 1 < entries.length)
+                && (Math.max(0, entries[i + 1].indentLevel || 0) > depth);
+            const isExpanded = expandedSet.has(entry.id);
+            const row = idoc.createElementNS(NS, "div");
+            row.className = "wv-outline-row" + (editMode ? " wv-outline-editing" : "");
+            row.style.paddingLeft = (8 + depth * 14) + "px";
+            const tw = idoc.createElementNS(NS, "span");
+            tw.className = "wv-outline-twisty" + (hasKids ? "" : " wv-outline-leaf")
+                + ((hasKids && !isExpanded) ? " wv-outline-collapsed" : "");
+            tw.innerHTML = RP_OUTLINE_CHEVRON;
+            const label = idoc.createElementNS(NS, "span");
+            label.className = "wv-outline-label";
+            label.textContent = entry.title || "(untitled)";
+            row.appendChild(tw);
+            row.appendChild(label);
+            if (hasKids) {
+                tw.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    if (expandedSet.has(entry.id)) expandedSet.delete(entry.id); else expandedSet.add(entry.id);
+                    this._wvReaderRenderOutline(reader, idoc);
+                });
+            }
+            if (editMode) {
+                const del = idoc.createElementNS(NS, "button");
+                del.className = "wv-outline-del";
+                del.setAttribute("title", "Delete this entry");
+                del.innerHTML = RP_OUTLINE_X;
+                del.addEventListener("click", (e: any) => { e.stopPropagation(); this._wvOutlineDoDelete(reader, idoc, entry.id); });
+                row.appendChild(del);
+            }
+            row.addEventListener("click", () => this._wvOutlineNavigate(reader, idoc, entry, row));
+            container.appendChild(row);
+            if (hasKids && !isExpanded) hideBelow = depth;   // collapsed -> hide descendants
+        }
+    }
+
+    /** Expand-all / collapse-all, matching the native outline's double-click:
+     *  if ANY expandable entry is collapsed -> expand all, else collapse all.
+     *  Works on both the curated flat list and the read-only tree. */
+    _wvOutlineToggleAll(reader: any, idoc: any) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            const viewOriginal = reader._wvOutlineViewSource === "original";
+            if (att && this._wvOutlineHasCurated(att.libraryID, att.itemKey) && !viewOriginal) {
+                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const entries = (d && d.entries) || [];
+                const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+                // Parents = entries with a deeper entry immediately below.
+                const parents: any[] = [];
+                for (let i = 0; i < entries.length; i++) {
+                    const depth = Math.max(0, entries[i].indentLevel || 0);
+                    if (i + 1 < entries.length && Math.max(0, entries[i + 1].indentLevel || 0) > depth) parents.push(entries[i]);
+                }
+                // Native rule: if ANY expandable is collapsed -> expand all, else collapse all.
+                const anyCollapsed = parents.some(p => !expandedSet.has(p.id));
+                if (anyCollapsed) for (const p of parents) expandedSet.add(p.id);
+                else expandedSet.clear();
+            } else {
+                // Read-only tree: node._expanded on the cached tree.
+                const tree = (reader._wvOutlineCache && reader._wvOutlineCache.tree) || [];
+                let anyCollapsed = false;
+                const scan = (nodes: any[]) => { for (const n of nodes) { if (n.items && n.items.length) { if (!n._expanded) anyCollapsed = true; scan(n.items); } } };
+                scan(tree);
+                const set = (nodes: any[], v: boolean) => { for (const n of nodes) { if (n.items && n.items.length) { n._expanded = v; set(n.items, v); } } };
+                set(tree, anyCollapsed);   // any collapsed -> expand all; else collapse all
+            }
+            this._wvReaderRenderOutline(reader, idoc);
+        } catch (_) {}
+    }
+
+    /** Enter/leave edit mode. On a not-yet-curated outline, entering edit mode
+     *  performs the copy-on-first-edit snapshot (getOutline2 -> curated store)
+     *  before switching in. */
+    _wvOutlineToggleEdit(reader: any, idoc: any) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
+                const cache = reader._wvOutlineCache;
+                const source = (cache && cache.source) || "extracted";
+                const tree = (cache && cache.tree) || [];
+                Promise.resolve(this._wvOutlineEnsureCurated(att.libraryID, att.itemKey, source, tree))
+                    .then(() => {
+                        reader._wvOutlineEditMode = true;
+                        reader._wvOutlineViewSource = null;
+                        this._wvReaderRenderOutline(reader, idoc);
+                    }).catch(() => {});
+                return;
+            }
+            reader._wvOutlineEditMode = !reader._wvOutlineEditMode;
+            if (reader._wvOutlineEditMode) reader._wvOutlineViewSource = null;   // edit the curated one
+            this._wvReaderRenderOutline(reader, idoc);
+        } catch (_) {}
+    }
+
+    _wvOutlineDoDelete(reader: any, idoc: any, id: string) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            Promise.resolve(this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id))
+                .then(() => this._wvReaderRenderOutline(reader, idoc)).catch(() => {});
+        } catch (_) {}
+    }
+
+    _wvOutlineDoRevert(reader: any, idoc: any) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            try {
+                const ok = Services.prompt.confirm(null, "Weavero",
+                    "Discard your edited outline and restore the original for this document?");
+                if (!ok) return;
+            } catch (_) {}
+            Promise.resolve(this._wvOutlineRevert(att.libraryID, att.itemKey))
+                .then(() => {
+                    reader._wvOutlineEditMode = false;
+                    reader._wvOutlineViewSource = null;
+                    this._wvReaderRenderOutline(reader, idoc);
+                }).catch(() => {});
+        } catch (_) {}
     }
 
     /** Header strip: "Outline" + a source chip (Embedded / Extracted / Weavero).
@@ -1031,13 +1227,47 @@ class _ReaderPanelsMixin {
                 });
             }
             head.appendChild(chip);
+
+            // Edit + revert actions.
+            const att = this._wvReaderAtt(reader);
+            const curated = !!(att && this._wvOutlineHasCurated(att.libraryID, att.itemKey));
+            const editMode = !!reader._wvOutlineEditMode;
+            const viewOriginal = reader._wvOutlineViewSource === "original";
+            // Edit pencil -- hidden while viewing the ORIGINAL of a curated
+            // outline (you edit the curated copy, not the original). On a
+            // not-yet-curated outline it triggers copy-on-first-edit.
+            if (!viewOriginal) {
+                const edit = idoc.createElementNS(NS, "button");
+                edit.className = "wv-outline-head-btn" + (editMode ? " wv-outline-edit-on" : "");
+                edit.setAttribute("title", editMode ? "Done editing" : "Edit outline");
+                edit.innerHTML = RP_OUTLINE_PENCIL;
+                edit.addEventListener("click", (e: any) => { e.stopPropagation(); this._wvOutlineToggleEdit(reader, idoc); });
+                head.appendChild(edit);
+            }
+            // Revert -- only when a curated outline exists.
+            if (curated) {
+                const rev = idoc.createElementNS(NS, "button");
+                rev.className = "wv-outline-head-btn";
+                rev.setAttribute("title", "Revert to the original outline");
+                rev.innerHTML = RP_OUTLINE_REVERT;
+                rev.addEventListener("click", (e: any) => { e.stopPropagation(); this._wvOutlineDoRevert(reader, idoc); });
+                head.appendChild(rev);
+            }
         } catch (_) {}
     }
 
-    /** Outline sources available for this document, current first. Phase 2:
-     *  just the current original source. Phase 3 will add "weavero" (a curated
-     *  outline) plus the original it was imported from. */
+    /** Outline sources available for this document, current first. When a
+     *  curated outline exists you can switch between it ("weavero") and the
+     *  original it was imported from; otherwise the single original source. */
     _wvOutlineAvailableSources(reader: any, current: string): string[] {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (att && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
+                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const orig = (d && d.importedFrom) || "extracted";
+                return current === "weavero" ? ["weavero", orig] : [current, "weavero"];
+            }
+        } catch (_) {}
         return [current];
     }
 
@@ -1075,11 +1305,13 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
-    /** Switch the displayed outline source (Phase 3). Phase 2 exposes one
-     *  source, so this just records the choice and re-renders. */
+    /** Switch the displayed outline source: "weavero" shows the curated
+     *  outline; any original source ("embedded"/"extracted") shows the
+     *  read-only getOutline2. Viewing the original leaves edit mode. */
     _wvOutlineSwitchSource(reader: any, idoc: any, source: string) {
         try {
-            reader._wvOutlineActiveSource = source;
+            reader._wvOutlineViewSource = (source === "weavero") ? null : "original";
+            if (reader._wvOutlineViewSource === "original") reader._wvOutlineEditMode = false;
             this._wvReaderRenderOutline(reader, idoc);
         } catch (_) {}
     }
@@ -1091,9 +1323,12 @@ class _ReaderPanelsMixin {
             row.className = "wv-outline-row";
             row.style.paddingLeft = (8 + depth * 14) + "px";
             const hasKids = !!(node.items && node.items.length);
+            // Collapsed by DEFAULT (matches the native outline: getOutline2 nodes
+            // carry no `expanded`, so children stay hidden until expanded).
+            const expanded = !!node._expanded;
             const tw = idoc.createElementNS(NS, "span");
             tw.className = "wv-outline-twisty" + (hasKids ? "" : " wv-outline-leaf")
-                + (node._collapsed ? " wv-outline-collapsed" : "");
+                + ((hasKids && !expanded) ? " wv-outline-collapsed" : "");
             tw.innerHTML = RP_OUTLINE_CHEVRON;
             const label = idoc.createElementNS(NS, "span");
             label.className = "wv-outline-label";
@@ -1103,12 +1338,12 @@ class _ReaderPanelsMixin {
             tw.addEventListener("click", (e: any) => {
                 e.stopPropagation();
                 if (!hasKids) { this._wvOutlineNavigate(reader, idoc, node, row); return; }
-                node._collapsed = !node._collapsed;
+                node._expanded = !node._expanded;
                 this._wvReaderRenderOutline(reader, idoc);   // cache preserved
             });
             row.addEventListener("click", () => this._wvOutlineNavigate(reader, idoc, node, row));
             container.appendChild(row);
-            if (hasKids && !node._collapsed) {
+            if (hasKids && expanded) {
                 this._wvRenderOutlineNodes(reader, idoc, container, node.items, depth + 1);
             }
         }

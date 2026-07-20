@@ -9131,11 +9131,18 @@ class _ReaderPanelsMixin {
      *  also NOT a pdf.js viewer (no PDFViewerApplication / _pages / viewport), so
      *  our geometry helpers have nothing to target there either. Hence: detect,
      *  and degrade honestly instead of acting invisibly.
-     *  Verified live on Zotero 10.0-beta.12 (2026-07-20); see work/TODO.md. */
+     *  `readingModeLoading` also counts as active: during the transition BEFORE
+     *  an enabled flag flips, the base view is already being hidden / the SDT
+     *  view swapped in, so navigating then would still act on a view the user
+     *  can't see. Treating the loading window as active makes us refuse (show the
+     *  note) rather than nav into the churn -- verified on beta.13 the enabled
+     *  flags lag this by the load.
+     *  Verified live on Zotero 10.0-beta.13 (2026-07-20); see work/TODO.md. */
     _wvReadingModeActive(reader: any): boolean {
         try {
             const st = reader && reader._internalReader && reader._internalReader._state;
-            return !!(st && (st.primaryReadingModeEnabled || st.secondaryReadingModeEnabled));
+            return !!(st && (st.primaryReadingModeEnabled || st.secondaryReadingModeEnabled
+                || st.readingModeLoading));
         } catch (_) { return false; }
     }
 

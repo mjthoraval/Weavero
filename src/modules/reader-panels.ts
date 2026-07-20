@@ -365,6 +365,239 @@ function wvGetClosestOffset(chars: any[], rect: number[]): number {
     }
     return idx;
 }
+// Group a page's chars into text LINES. Chars arrive in reading order, so a
+// line break is simply a significant vertical step between consecutive chars.
+// Each line records where it STARTS in the stream (`start`) plus its extent.
+function wvBuildLines(chars: any[]): any[] {
+    const lines: any[] = [];
+    let cur: any = null;
+    for (let i = 0; i < chars.length; i++) {
+        const r = chars[i] && chars[i].rect;
+        if (!r) continue;
+        const yc = (r[1] + r[3]) / 2;
+        const h = Math.abs(r[3] - r[1]) || 1;
+        if (!cur || Math.abs(yc - cur.yc) > h * 0.6) {
+            cur = { start: i, yc, yMin: r[1], yMax: r[3], xMin: r[0], xMax: r[2] };
+            lines.push(cur);
+        } else {
+            if (r[1] < cur.yMin) cur.yMin = r[1];
+            if (r[3] > cur.yMax) cur.yMax = r[3];
+            if (r[0] < cur.xMin) cur.xMin = r[0];
+            if (r[2] > cur.xMax) cur.xMax = r[2];
+        }
+    }
+    return lines;
+}
+// For a PIN dropped in the whitespace BETWEEN lines, return the stream offset
+// where the line it PRECEDES begins -- so it sorts ahead of that whole line
+// rather than wherever the nearest glyph happens to fall. Without this a pin
+// in the gap above a line anchors to the closest character, which is typically
+// MID-line, so it sorted after an annotation starting at that same line (seen
+// live: a pin visually between two highlights listing after both).
+// Returns null when the point sits ON a line (then the normal closest-offset
+// math applies) or when nothing follows it.
+function wvGapLineStartOffset(lines: any[], rect: number[]): number | null {
+    const px = (rect[0] + rect[2]) / 2, py = (rect[1] + rect[3]) / 2;
+    if (!lines.length) return null;
+    // "On a line" needs BOTH axes. Testing only the vertical band matched
+    // whatever else happened to sit at that height -- a narrow left-column line,
+    // or the rotated licence text running down the margin -- so a pin plainly in
+    // a gap in the body column was treated as on-line and never re-anchored.
+    for (const L of lines) {
+        if (py >= L.yMin && py <= L.yMax && px >= L.xMin - 2 && px <= L.xMax + 2) return null;
+    }
+    // "Precedes" = the nearest line BELOW it (PDF y grows upward). Strongly
+    // prefer a line whose horizontal span covers the point, so a pin in one
+    // column doesn't latch onto the neighbouring column's line.
+    let best: any = null, bestScore = Infinity;
+    for (const L of lines) {
+        if (L.yMax >= py) continue;
+        const overlaps = px >= L.xMin - 2 && px <= L.xMax + 2;
+        const score = (py - L.yMax) + (overlaps ? 0 : 10000);
+        if (score < bestScore) { bestScore = score; best = L; }
+    }
+    return best ? best.start : null;
+}
+// Bump when the PIN anchoring rule changes: keys minted by an older rule are
+// then recomputed even though the bookmark never moved (see _wvBmSortIndexStale).
+const RP_SORTINDEX_ALGO = 8;
+// Flag lines that sit OUT OF BAND in the PDF's content stream -- running heads,
+// footers, marginalia. Zotero's sortIndex keys on a character's index in that
+// stream, which for body text tracks reading order but for page furniture does
+// not: measured on this journal (pages 0/1/4, 2026-07-20) the footer is stream
+// index 0 while sitting at the very BOTTOM of the page, and the running heads
+// are near the END of the stream while sitting at the top. A pin anchored to
+// such a line inherits its offset, which is how a pin dropped by the footer got
+// key `00000|000000|00746` and sorted ABOVE everything on the page.
+//
+// A line is out of band when its stream position disagrees wildly with that of
+// its vertical neighbours IN THE SAME COLUMN. Same-column is essential: on a
+// two-column page the line at the same HEIGHT in the other column sits about
+// half a stream away, so including those would drag the median far enough to
+// flag ordinary body lines. Falls back to "in band" whenever there is too
+// little evidence -- this only ever REMOVES anchor candidates, so a wrong
+// positive is worse than a miss.
+// LIMITATIONS -- read before trusting this on a new document (2026-07-20).
+//
+// This detector is a HEURISTIC, tuned and measured against exactly ONE layout:
+// the Soft Matter (RSC) review used during development, pages 0/1/4/17. There it
+// flags 0-3% of lines and everything it flags is genuine furniture. It has NOT
+// been tried on other publishers, on single-column papers, on slides, on scanned
+// pages with OCR text, or on right-to-left or vertical scripts.
+//
+// Known-fragile assumptions, each of which cost a bug here:
+//   - "Furniture is a stream outlier vs its neighbours" FAILS when furniture
+//     clusters (running heads validate each other) -- hence the structural rule.
+//   - "Lines partition the page cleanly" FAILS for rotated marginalia, which
+//     yields one line PER GLYPH and, before it was excluded, both skewed the
+//     body's median and bridged the vertical gaps that define the body band.
+//   - "The body band is the content" is FALSE on a title page: abstract, title
+//     and masthead sit outside the largest contiguous run and are still content,
+//     so being outside the band never by itself means furniture.
+//   - The width thresholds (20 / 15 units) and the 0.25*charCount tolerance are
+//     empirical, not derived. A document with a very different type size or page
+//     scale may need them relative rather than absolute.
+//
+// A wrong POSITIVE is the expensive direction: a flagged line is removed from
+// the anchor candidates, so bookmarks near it jump somewhere unexpected. Prefer
+// missing a header over flagging body text. More layouts should be added as test
+// fixtures before this is relied on generally -- see work/TODO.md.
+function wvOutOfBandLines(lines: any[], charCount: number): { flags: boolean[], bodyBand: any } {
+    const tol = Math.max(400, charCount * 0.25);
+    const flags: boolean[] = lines.map(() => false);
+    let bodyBand: any = null;
+    // Only REAL text lines define the structure. Rotated marginalia (this
+    // journal prints its licence vertically down the left margin) produce one
+    // "line" per glyph, since every character sits at a different y: on page 0
+    // that was 135 of 225 lines, all starting at 4301+, which dragged the body's
+    // median stream position to 4322 out of 4474 chars and made a genuine running
+    // head look perfectly ordinary. A glyph strip is ~7 units wide, a real line
+    // far more, so width is a clean separator.
+    const MIN_LINE_W = 20;
+    const ys = lines
+        .map((L: any, i: number) => ({ yc: L.yc, i, w: L.xMax - L.xMin }))
+        .filter((e: any) => e.w >= MIN_LINE_W)
+        .sort((a, b) => a.yc - b.yc);
+    if (ys.length < 6) return { flags, bodyBand };
+    const diffs: number[] = [];
+    for (let i = 1; i < ys.length; i++) diffs.push(ys[i].yc - ys[i - 1].yc);
+    const sorted = diffs.slice().sort((a, b) => a - b);
+    const medGap = sorted[Math.floor(sorted.length / 2)] || 1;
+    const split = Math.max(20, medGap * 4);
+    // Contiguous runs in y; the biggest is the body.
+    const groups: any[][] = [[ys[0]]];
+    for (let i = 1; i < ys.length; i++) {
+        if (ys[i].yc - ys[i - 1].yc > split) groups.push([]);
+        groups[groups.length - 1].push(ys[i]);
+    }
+    let body = groups[0];
+    for (const g of groups) if (g.length > body.length) body = g;
+    if (body.length < 3) return { flags, bodyBand };
+    const bYMin = body[0].yc, bYMax = body[body.length - 1].yc;
+    bodyBand = { yMin: bYMin, yMax: bYMax };
+    const bStarts = body.map(e => lines[e.i].start).sort((a, b) => a - b);
+    const bMed = bStarts[Math.floor(bStarts.length / 2)];
+    for (let i = 0; i < lines.length; i++) {
+        const L = lines[i], st = L.start;
+        if (L.yc > bYMax && st > bMed) flags[i] = true;        // above the body, yet late  -> running head
+        else if (L.yc < bYMin && st < bMed) flags[i] = true;   // below the body, yet early -> footer
+        // A glyph-per-line strip inside the body's band is rotated marginalia,
+        // never a sensible anchor when its stream position also disagrees.
+        else if ((L.xMax - L.xMin) < 15 && Math.abs(st - bMed) > tol) flags[i] = true;
+    }
+    return { flags, bodyBand };
+}
+// Stream offset to anchor a PIN to, ignoring out-of-band lines entirely (see
+// above). Returns null when there is nothing usable, so the caller can fall
+// back to the plain closest-character math.
+function wvPinAnchorOffset(chars: any[], rect: number[]): { offset: number, lineTop: number | null } | null {
+    const { lines, bad, bodyBand } = wvLinesAndBands(chars);
+    if (!lines.length) return null;
+    const inBand = lines.filter((_: any, i: number) => !bad[i]);
+    if (!inBand.length) return null;
+    // OUTSIDE the body block entirely -- a running head or a footer. Anchor it to
+    // the body's reading START or END rather than to whichever line happens to be
+    // nearest: "nearest" depends on x/y accidents and gave two pieces of
+    // top-of-page furniture wildly different keys (live: a running head landed
+    // mid-document at 1131 while a note beside it landed at 109). Above the body
+    // reads first, below it reads last -- which is also just where the eye puts
+    // them.
+    if (bodyBand) {
+        const py = (rect[1] + rect[3]) / 2;
+        // Outside the band is NOT enough on its own. The band is just the largest
+        // contiguous run of lines, so on a title page the abstract, title and
+        // masthead all sit outside it while being perfectly ordinary content --
+        // and a pin dropped in the abstract was being treated as a running head
+        // and thrown to the top of the page (live 2026-07-20: band collapsed to
+        // 67..420 once the rotated glyph strip stopped bridging the gaps, and a
+        // pin at y=515 anchored to the masthead at offset 77). Require that the
+        // point actually sits ON furniture, i.e. its natural anchor is a flagged
+        // line -- which is exactly the condition annotations are filtered by
+        // before they ever reach here.
+        const naturalIsFurniture = wvOffsetOutOfBand(chars, wvGetClosestOffset(chars, rect));
+        if (naturalIsFurniture && (py > bodyBand.yMax || py < bodyBand.yMin)) {
+            const above = py > bodyBand.yMax;
+            let pickL: any = null;
+            for (const L of inBand) {
+                if (!pickL) { pickL = L; continue; }
+                if (above ? (L.start < pickL.start) : (L.start > pickL.start)) pickL = L;
+            }
+            if (pickL) return { offset: pickL.start, lineTop: pickL.yMax };
+        }
+    }
+    // The line an offset falls in, so the caller can key the pin's `top` off the
+    // LINE rather than the point (see wvComputeSortIndex).
+    const lineTopFor = (off: number): number | null => {
+        let best: any = null;
+        for (const L of lines) { if (L.start <= off && (!best || L.start > best.start)) best = L; }
+        return best ? best.yMax : null;
+    };
+    // Gap rule first, restricted to in-band lines.
+    const gap = wvGapLineStartOffset(inBand, rect);
+    if (gap != null) return { offset: gap, lineTop: lineTopFor(gap) };
+    // Otherwise the closest character, again only from in-band lines. Lines are
+    // built by walking chars in stream order, so line i owns [start, next.start).
+    let dist = Infinity, idx: number | null = null;
+    for (let li = 0; li < lines.length; li++) {
+        if (bad[li]) continue;
+        const end = (li + 1 < lines.length) ? lines[li + 1].start : chars.length;
+        for (let i = lines[li].start; i < end; i++) {
+            const c = chars[i];
+            if (!c || !c.rect) continue;
+            const d = wvRectsDist(c.rect, rect);
+            if (d < dist) { dist = d; idx = i; }
+        }
+    }
+    return idx == null ? null : { offset: idx, lineTop: lineTopFor(idx) };
+}
+// True when `offset` falls on a line the out-of-band detector flagged. Lines are
+// built in stream order, so their `start` values increase and the scan can stop
+// at the first line past the offset.
+function wvOffsetOutOfBand(chars: any[], offset: number): boolean {
+    const { lines, bad } = wvLinesAndBands(chars);
+    let li = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].start <= offset) li = i;
+        else break;
+    }
+    return li >= 0 ? !!bad[li] : false;
+}
+// wvOutOfBandLines is O(lines^2) (~85k ops on a dense page) and a backfill runs
+// it once per bookmark on a page, so memoise. Keyed on the CHARS array identity
+// -- page data is cached per page, so the same page hands back the same array,
+// while the line array is rebuilt on every call and would never match.
+let wvLineCacheChars: any = null, wvLineCacheLines: any[] = [], wvLineCacheBad: boolean[] = [];
+let wvLineCacheBand: any = null;
+function wvLinesAndBands(chars: any[]): { lines: any[], bad: boolean[], bodyBand: any } {
+    if (wvLineCacheChars !== chars) {
+        wvLineCacheLines = wvBuildLines(chars);
+        const r = wvOutOfBandLines(wvLineCacheLines, chars.length);
+        wvLineCacheBad = r.flags;
+        wvLineCacheBand = r.bodyBand;
+        wvLineCacheChars = chars;
+    }
+    return { lines: wvLineCacheLines, bad: wvLineCacheBad, bodyBand: wvLineCacheBand };
+}
 // Verbatim from the reader: sorts rects by index [2] descending (the source
 // comment says "y2" but the code uses [2]; matched exactly for identical output).
 function wvTopMostRect(position: any): number[] | null {
@@ -396,8 +629,40 @@ function wvComputeSortIndex(pageData: any, position: any): string | null {
         if (!Array.isArray(chars) || !viewBox) return null;
         const rect = wvTopMostRect(position) || wvBoundingRect(position);
         if (!rect) return null;
-        const offset = chars.length ? wvGetClosestOffset(chars, rect) : 0;
-        const top = (viewBox[3] - viewBox[1]) - rect[3];
+        // A PIN is a degenerate (point) rect. When it sits in the gap BETWEEN
+        // lines, anchor it to the start of the line it precedes rather than the
+        // nearest glyph -- see `wvGapLineStartOffset`.
+        const isPoint = rect[0] === rect[2] && rect[1] === rect[3];
+        let offset = 0;
+        let anchor: any = null;
+        if (chars.length) {
+            const natural = wvGetClosestOffset(chars, rect);
+            // Nothing anchors to out-of-band page furniture (running heads /
+            // footers), whose stream position contradicts where it sits on the
+            // page -- see `wvPinAnchorOffset`. For a REAL rect this correction
+            // only engages when its natural anchor is itself furniture, so every
+            // body-text annotation keeps the verbatim Zotero math and a
+            // byte-identical key; only the header/footer cases are re-anchored
+            // (2026-07-20: a footer highlight keyed `…|000013|…` sorted above
+            // every body highlight, and a running-head one `…|004282|…` below
+            // them all -- the two exactly inverted).
+            if (isPoint || wvOffsetOutOfBand(chars, natural)) {
+                try { anchor = wvPinAnchorOffset(chars, rect); } catch (_) { anchor = null; }
+            }
+            offset = anchor ? anchor.offset : natural;
+        }
+        // `top` breaks ties between items at the same offset. An annotation's is
+        // measured from the TOP EDGE of its rect; a pin is a POINT, and a pin
+        // dropped on a line sits mid-band, always a few units below that line's
+        // top edge. Keying a pin off its own y therefore made it sort AFTER every
+        // annotation sharing its line -- systematically, not just occasionally
+        // (seen live 2026-07-20: pin `…|000380|00219` vs the highlight it marks,
+        // `…|000380|00214`, same page and same anchor character). So a pin takes
+        // the top edge of the LINE it anchored to, which is the same quantity the
+        // annotation's key uses, and the two become directly comparable.
+        const top = (isPoint && anchor && anchor.lineTop != null)
+            ? (viewBox[3] - viewBox[1]) - anchor.lineTop
+            : (viewBox[3] - viewBox[1]) - rect[3];
         return wvSortIndexStr(position.pageIndex, offset, top);
     } catch (_) { return null; }
 }
@@ -3930,6 +4195,11 @@ class _ReaderPanelsMixin {
                 list.appendChild(empty);
             }
             try { this._wvReaderRenderBmChipBar(reader, idoc); } catch (_) {}
+            // A just-edited bookmark gets FOCUSED after the re-render. Renaming
+            // can move a row (alphabetical sort) or leave it off-screen, so
+            // without this you lose track of what you just edited. One-shot: the
+            // pending id is consumed here, so it clears on the next render.
+            try { this._wvReaderApplyPendingBmFocus(reader, idoc); } catch (_) {}
             // Lazy sortIndex backfill for this document's Weavero bookmarks.
             // Fire-and-forget and self-gating: it returns after a cheap scan if
             // nothing needs migrating, so this is essentially free on an
@@ -3938,6 +4208,42 @@ class _ReaderPanelsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderRenderBmList err: " + e);
         }
+    }
+
+    /** Mark a bookmark to be focused after the NEXT list render. Set when an edit
+     *  commits, so the row you just changed is findable even if the sort moved it. */
+    _wvMarkBmFocus(reader: any, id: string) {
+        try { if (reader && id) reader._wvBmFocusId = id; } catch (_) {}
+    }
+
+    /** Consume a pending focus mark: highlight that row and scroll it into view.
+     *  `block:"nearest"` so an already-visible row doesn't jump the list. */
+    _wvReaderApplyPendingBmFocus(reader: any, idoc: any) {
+        const id = reader && reader._wvBmFocusId;
+        if (!id) return;
+        reader._wvBmFocusId = null;   // one-shot
+        try {
+            for (const el of idoc.querySelectorAll(".wv-bm-reader-row.wv-bm-reader-focused")) {
+                el.classList.remove("wv-bm-reader-focused");
+            }
+            const row = idoc.querySelector('.wv-bm-reader-row[data-wv-bm-id="' + String(id).replace(/"/g, '\\"') + '"]');
+            if (row) {
+                row.classList.add("wv-bm-reader-focused");
+                try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+            }
+            // For a PIN, also show it IN THE DOCUMENT at its location -- the row
+            // highlight says WHICH bookmark you edited, the pin says WHERE it is
+            // (it fades on its own, like every other pin display).
+            try {
+                const att = this._wvReaderAtt(reader);
+                const bdoc = att && this._bmReaderDoc(att.libraryID, att.itemKey);
+                const loc = bdoc && (this._bmLocate(id, bdoc.local) || this._bmLocate(id, bdoc.global));
+                const bm = loc && loc.entry;
+                if (bm && bm.type === "position" && bm.position) {
+                    this._wvReaderShowPin(reader, bm.position, bm.id);
+                }
+            } catch (_) {}
+        } catch (_) {}
     }
 
     /** Render one tree level (folders + bookmarks) into a container; folders
@@ -4067,6 +4373,14 @@ class _ReaderPanelsMixin {
                 const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
                 const attId = att && att.att && att.att.id;
                 if (it && it.isAnnotation && it.isAnnotation() && it.parentID === attId) {
+                    // A CORRECTED key, when the backfill found this annotation
+                    // anchored to out-of-band page furniture. Zotero's own key
+                    // puts a footer highlight above the whole page and a running
+                    // head below it (verified in the native sidebar), because it
+                    // keys on content-stream position. Only such annotations get
+                    // an override; every other one still returns Zotero's key
+                    // verbatim, so the common case stays identical to the reader.
+                    if (typeof bm.sortIndexAnn === "string" && bm.sortIndexAnn) return bm.sortIndexAnn;
                     return it.annotationSortIndex || null;
                 }
             }
@@ -4105,6 +4419,7 @@ class _ReaderPanelsMixin {
             const r = n && n.position && n.position.rects && n.position.rects[0];
             if (!r) return;
             n.sortIndexPos = [n.position.pageIndex, Math.round(r[0]), Math.round(r[1])];
+            n.sortIndexAlgo = RP_SORTINDEX_ALGO;
         } catch (_) {}
     }
 
@@ -4119,6 +4434,13 @@ class _ReaderPanelsMixin {
             if (!r) return false;
             const fp = n.sortIndexPos;
             if (!Array.isArray(fp) || fp.length < 3) return true;   // legacy -> verify once
+            // A PIN's key also depends on the anchoring RULE, which changed when
+            // out-of-band headers/footers stopped being valid anchors. Keys minted
+            // by an older rule are wrong even though the pin never moved, so treat
+            // an algorithm-version mismatch as stale (points only -- real rects are
+            // unaffected by that rule and must not trigger needless extraction).
+            const isPoint = r[0] === r[2] && r[1] === r[3];
+            if (isPoint && n.sortIndexAlgo !== RP_SORTINDEX_ALGO) return true;
             return fp[0] !== n.position.pageIndex
                 || fp[1] !== Math.round(r[0])
                 || fp[2] !== Math.round(r[1]);
@@ -4140,6 +4462,11 @@ class _ReaderPanelsMixin {
             await this._bmInit();
             const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
             const cands: any[] = [];
+            // Annotation bookmarks needing an out-of-band CHECK (see
+            // `_wvBmNodeSortKey`). Each carries the annotation's position so the
+            // page pass can key it without re-reading the item.
+            const annCands: any[] = [];
+            const attId = att && att.att && att.att.id;
             const walk = (nodes: any[]) => {
                 for (const n of (nodes || [])) {
                     if (n.type === "folder") { walk(n.children); continue; }
@@ -4150,10 +4477,21 @@ class _ReaderPanelsMixin {
                                 || this._wvBmSortIndexStale(n))) {     // computed for an OLD position
                         cands.push(n);
                     }
+                    else if (n.type === "item" && n.sortIndexAnnAlgo !== RP_SORTINDEX_ALGO) {
+                        try {
+                            const it: any = Zotero.Items.getByLibraryAndKey(n.libraryID, n.itemKey);
+                            if (it && it.isAnnotation && it.isAnnotation() && it.parentID === attId) {
+                                const pos = JSON.parse(it.annotationPosition);
+                                if (pos && Number.isInteger(pos.pageIndex) && pos.rects && pos.rects.length) {
+                                    annCands.push({ node: n, pos, native: it.annotationSortIndex || null });
+                                }
+                            }
+                        } catch (_) {}
+                    }
                 }
             };
             walk(doc.local); walk(doc.global);
-            if (!cands.length) return;   // GATE: nothing to migrate -> no extraction
+            if (!cands.length && !annCands.length) return;   // GATE: nothing to do -> no extraction
 
             const guardKey = att.libraryID + ":" + att.itemKey;
             if (!this._wvSortBackfillRunning) this._wvSortBackfillRunning = new Set();
@@ -4167,9 +4505,43 @@ class _ReaderPanelsMixin {
                     if (!byPage.has(pi)) byPage.set(pi, []);
                     byPage.get(pi)!.push(n);
                 }
+                const annByPage = new Map<number, any[]>();
+                for (const a of annCands) {
+                    const pi = a.pos.pageIndex;
+                    if (!annByPage.has(pi)) annByPage.set(pi, []);
+                    annByPage.get(pi)!.push(a);
+                    if (!byPage.has(pi)) byPage.set(pi, []);   // ensure the page is visited
+                }
                 let changed = false;
                 for (const [pi, list] of byPage) {
                     const pd = await this._wvReaderGetPageData(reader, pi);
+                    // Annotations: store a key ONLY when our out-of-band-aware
+                    // math disagrees with Zotero's, i.e. the annotation sits on a
+                    // running head or footer. Everything else keeps Zotero's key,
+                    // so the override set stays tiny and the common case is
+                    // untouched. The algo stamp records "checked" either way, so
+                    // this runs once per document, not on every open.
+                    for (const a of (annByPage.get(pi) || [])) {
+                        // Override ONLY when the out-of-band correction actually
+                        // engaged -- i.e. this annotation's natural anchor is on
+                        // page furniture. Storing whenever the recomputed key
+                        // merely DIFFERS was wrong: our arithmetic can land a
+                        // character either side of Zotero's on ordinary body text
+                        // (seen live: 381 vs 380 for a mid-paragraph highlight),
+                        // which would replace a correct key with a near-identical
+                        // one for no reason and quietly drift from the reader.
+                        let engaged = false;
+                        try {
+                            const r = wvTopMostRect(a.pos) || wvBoundingRect(a.pos);
+                            if (pd && pd.chars && pd.chars.length && r) {
+                                engaged = wvOffsetOutOfBand(pd.chars, wvGetClosestOffset(pd.chars, r));
+                            }
+                        } catch (_) {}
+                        const si = engaged && pd ? wvComputeSortIndex(pd, a.pos) : null;
+                        if (si && si !== a.native) { a.node.sortIndexAnn = si; changed = true; }
+                        else if (a.node.sortIndexAnn) { delete a.node.sortIndexAnn; changed = true; }
+                        if (pd) a.node.sortIndexAnnAlgo = RP_SORTINDEX_ALGO;
+                    }
                     for (const n of list) {
                         const si = pd ? wvComputeSortIndex(pd, n.position) : null;
                         if (si) { n.sortIndex = si; changed = true; }
@@ -4254,7 +4626,20 @@ class _ReaderPanelsMixin {
             const idxs = byPage.get(pg)!;
             // Keyed entries first, ordered by Zotero's reading-order key.
             const keyed = idxs.filter(i => sortKeys[i] != null)
-                .sort((i, j) => { const a = sortKeys[i]!, b = sortKeys[j]!; return a < b ? -1 : a > b ? 1 : i - j; });
+                .sort((i, j) => {
+                    const a = sortKeys[i]!, b = sortKeys[j]!;
+                    if (a !== b) return a < b ? -1 : 1;
+                    // EXACT key tie. Now that a pin keys its `top` off the line it
+                    // anchors to (see wvComputeSortIndex), a pin dropped on the
+                    // same line as an annotation, at the same character, produces
+                    // a byte-identical key -- which is correct, they ARE at the
+                    // same spot. Order them deliberately rather than by insertion
+                    // accident: a pin MARKS a place, so it reads as sitting just
+                    // before the annotation occupying it.
+                    const pa = flat[i] && flat[i].type === "position" ? 0 : 1;
+                    const pb = flat[j] && flat[j].type === "position" ? 0 : 1;
+                    return (pa - pb) || (i - j);
+                });
             const rank = new Map<number, number>();
             keyed.forEach((i, r) => rank.set(i, r));
             // Read-position of each entry on the page:

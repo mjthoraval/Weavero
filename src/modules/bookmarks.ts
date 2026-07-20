@@ -598,6 +598,33 @@ class _BookmarksMixin {
         if (e) { e.title = String(title == null ? "" : title); await this._wvOutlinePersist(); }
     }
 
+    /** Reset an entry's title to its frozen original (`source.title`). */
+    async _wvOutlineResetEntryName(libraryID: number, itemKey: string, id: string) {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return;
+        const e = d.entries.find((x: any) => x.id === id);
+        if (e && e.source && typeof e.source.title === "string") {
+            e.title = e.source.title;
+            await this._wvOutlinePersist();
+        }
+    }
+
+    /** Persist an entry's ESTABLISHED navigation position (`resolvedPosition`).
+     *  The embedded outline's own dests are coarse page-top points; the precise
+     *  heading box is recovered ONCE (from the frozen original title) and stored
+     *  here, so navigation thereafter uses this saved box directly and never
+     *  re-searches the PDF -- editing the display title can't move the target.
+     *  A recovery that FAILS stores the coarse point itself, which still counts
+     *  as established (so it isn't re-searched every click). */
+    async _wvOutlineSetEntryPosition(libraryID: number, itemKey: string, id: string, position: any) {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return;
+        const e = d.entries.find((x: any) => x.id === id);
+        if (e) { e.resolvedPosition = position; await this._wvOutlinePersist(); }
+    }
+
     /** Discard the curated outline -- revert to embedded/extracted. */
     async _wvOutlineRevert(libraryID: number, itemKey: string) {
         await this._wvOutlineInit();

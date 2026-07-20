@@ -2159,10 +2159,23 @@ class WeaveroPlugin {
             // ─────────────────────────────────────────────────────────────────────────
             // TEMPORARY WORKAROUND — REMOVE WHEN FIXED UPSTREAM  (grep tag: WV-TEMP-132342)
             // Tracking the bug report: https://forums.zotero.org/discussion/132342
-            // When Zotero stops leaving orphaned ReaderTab entries in Reader._readers,
-            // delete this whole guard: the `tabAliveForReader` + `dropGhostTabsForItem`
-            // helpers below AND the `dropGhostTabsForItem(itemID)` call in the Reader.open
-            // wrapper. Nothing else depends on them.
+            //
+            // FIX STATUS (checked 2026-07-20): fixed upstream in zotero/zotero commit
+            // c233fcf5f "Fix reopening reader tabs during queued close notifications"
+            // (Martynas Bagdonas, 2026-07-17; fixes forums comment #515471, the same
+            // reopen-fails-after-close failure). Native Reader.open now skips entries
+            // flagged `_isTabClosed`, i.e. does what dropGhostTabsForItem does by hand.
+            // Verified present/live in the 10.0-source build. BUT the fix is on the
+            // branch tip only — NOT in any tagged release (all tags are 9.0.x) and not
+            // in Zotero 9, both of which Weavero still supports. So KEEP this guard until
+            // the fix ships in the minimum Zotero beta Weavero targets; it coexists
+            // harmlessly with the fix (it only drops entries whose tab is truly gone,
+            // which the fixed Reader.open already ignores).
+            //
+            // When that release trigger is met, delete this whole guard: the
+            // `tabAliveForReader` + `dropGhostTabsForItem` helpers below AND the
+            // `dropGhostTabsForItem(itemID)` call in the Reader.open wrapper. Nothing
+            // else depends on them.
             // ─────────────────────────────────────────────────────────────────────────
             // Defensive guard for an upstream Zotero bug (forums.zotero.org/discussion/132342):
             // a reader whose tab is closed during a PDF page-edit RELOAD can be left behind in

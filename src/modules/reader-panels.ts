@@ -4095,6 +4095,36 @@ class _ReaderPanelsMixin {
         } catch (_) { return null; }
     }
 
+    /** Record WHICH position a bookmark's stored `sortIndex` was computed from.
+     *  Without this a moved pin keeps a key describing where it USED to be, and
+     *  the location sort places it by that ghost position (seen live: a pin at
+     *  the very top of page 1 carrying a key whose offset/top pointed mid-page,
+     *  so it sorted below annotations it visually sat above). */
+    _wvBmStampSortIndexPos(n: any) {
+        try {
+            const r = n && n.position && n.position.rects && n.position.rects[0];
+            if (!r) return;
+            n.sortIndexPos = [n.position.pageIndex, Math.round(r[0]), Math.round(r[1])];
+        } catch (_) {}
+    }
+
+    /** True when the stored `sortIndex` was computed for a DIFFERENT position
+     *  than the bookmark now has -- i.e. it moved and the key wasn't refreshed.
+     *  Legacy records (a key but no `sortIndexPos` fingerprint) count as stale so
+     *  they're repaired once, then skipped forever after. Cheap: no extraction. */
+    _wvBmSortIndexStale(n: any): boolean {
+        try {
+            if (!n || !n.sortIndex) return false;
+            const r = n.position && n.position.rects && n.position.rects[0];
+            if (!r) return false;
+            const fp = n.sortIndexPos;
+            if (!Array.isArray(fp) || fp.length < 3) return true;   // legacy -> verify once
+            return fp[0] !== n.position.pageIndex
+                || fp[1] !== Math.round(r[0])
+                || fp[2] !== Math.round(r[1]);
+        } catch (_) { return false; }
+    }
+
     /** Lazy, gated background backfill: compute + store the Zotero sortIndex for
      *  this document's Weavero position/text bookmarks that lack one, so they
      *  sort by the identical mechanism as annotations. GATED -- if every
@@ -4116,7 +4146,8 @@ class _ReaderPanelsMixin {
                     if ((n.type === "position" || n.type === "text")
                             && n.position && Number.isInteger(n.position.pageIndex)
                             && n.position.rects && n.position.rects.length
-                            && !n.sortIndex && !n._sortIndexTried) {
+                            && ((!n.sortIndex && !n._sortIndexTried)   // never computed
+                                || this._wvBmSortIndexStale(n))) {     // computed for an OLD position
                         cands.push(n);
                     }
                 }
@@ -4142,6 +4173,10 @@ class _ReaderPanelsMixin {
                     for (const n of list) {
                         const si = pd ? wvComputeSortIndex(pd, n.position) : null;
                         if (si) { n.sortIndex = si; changed = true; }
+                        // Fingerprint the position this key was computed FROM, so a
+                        // later move (which changes the position) is detectable as
+                        // stale and gets recomputed -- see `_wvBmSortIndexStale`.
+                        this._wvBmStampSortIndexPos(n);
                         n._sortIndexTried = true;
                     }
                 }
@@ -8344,7 +8379,10 @@ class _ReaderPanelsMixin {
                                 // keeps its name across a move.
                                 Promise.resolve(this._wvReaderGetPageData(reader, newPos.pageIndex)).then((pd: any) => {
                                     const si = pd ? wvComputeSortIndex(pd, newPos) : null;
-                                    const upd: any = { position: newPos, pageLabel, sortIndex: si || null, _sortIndexTried: !!si };
+                                    const r0 = newPos.rects && newPos.rects[0];
+                                    const upd: any = { position: newPos, pageLabel, sortIndex: si || null, _sortIndexTried: !!si,
+                                        // Fingerprint the position this key belongs to (see _wvBmSortIndexStale).
+                                        sortIndexPos: r0 ? [newPos.pageIndex, Math.round(r0[0]), Math.round(r0[1])] : null };
                                     let renamed = false;
                                     try {
                                         const bdoc = this._bmReaderDoc(att.libraryID, att.itemKey);

@@ -106,6 +106,27 @@ Weavero also **recolours** AM's own links to match its scheme colours
 (web / `zotero://` / app), controlled by the `weavero.recolorAmLinks`
 preference (default on).
 
+### Annotation types (verified 2026-07-20, AM v0.5.2)
+
+Comment rendering + link handling is **type-independent** — it works the
+same across every annotation type that shows a comment in the reader
+sidebar, both with AM (AM renders, Weavero rescues `zotero://` + recolours)
+and without AM (Weavero linkifies).
+
+| Annotation type | Comment in sidebar card? | AM on | AM off (Weavero) |
+|---|---|---|---|
+| highlight | yes | AM renders | Weavero linkifies |
+| underline | yes | AM renders | Weavero linkifies |
+| note | yes | AM renders | Weavero linkifies |
+| image | yes | AM renders | Weavero linkifies |
+| text (free-text) | yes | AM renders | Weavero linkifies |
+| **ink** | **no** | — | — |
+
+**Ink is the sole exception, and it's native Zotero:** ink-annotation
+comments are not surfaced in the sidebar card at all (verified both
+collapsed and expanded — no `.comment` element), so there is nothing for
+either plugin to act on. Not an AM or Weavero limitation.
+
 ### AM version history relevant to interop
 
 These were surfaced during Weavero interop testing and fixed by AM's author:

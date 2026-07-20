@@ -237,3 +237,15 @@ Build/test tooling is all `devDependencies` (nothing from npm ships in the XPI):
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE) — same license as Zotero itself.
+
+### Third-party assets
+
+The position-bookmark pushpin icon adapts the `pin-angle-fill` glyph from
+[Bootstrap Icons](https://github.com/twbs/icons) — MIT License, Copyright (c)
+2019–2024 The Bootstrap Authors:
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy of
+> this software and associated documentation files (the "Software"), to deal in
+> the Software without restriction … The above copyright notice and this
+> permission notice shall be included in all copies or substantial portions of
+> the Software.

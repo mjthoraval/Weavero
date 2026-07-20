@@ -617,12 +617,21 @@ class _BookmarksMixin {
      *  re-searches the PDF -- editing the display title can't move the target.
      *  A recovery that FAILS stores the coarse point itself, which still counts
      *  as established (so it isn't re-searched every click). */
-    async _wvOutlineSetEntryPosition(libraryID: number, itemKey: string, id: string, position: any) {
+    async _wvOutlineSetEntryPosition(libraryID: number, itemKey: string, id: string, position: any,
+            regionTitle?: string) {
         await this._wvOutlineInit();
         const d = this._wvOutlineDoc(libraryID, itemKey);
         if (!d || !Array.isArray(d.entries)) return;
         const e = d.entries.find((x: any) => x.id === id);
-        if (e) { e.resolvedPosition = position; await this._wvOutlinePersist(); }
+        if (e) {
+            e.resolvedPosition = position;
+            // WHICH title this region was detected from. "Re-detect Region from
+            // Title" is only offered while the entry's title differs from this,
+            // i.e. only when re-detecting could actually land somewhere new --
+            // re-running it against the same text would just redo the same work.
+            if (regionTitle != null) e.regionTitle = regionTitle;
+            await this._wvOutlinePersist();
+        }
     }
 
     /** Discard the curated outline -- revert to embedded/extracted. */

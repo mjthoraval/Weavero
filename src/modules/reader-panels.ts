@@ -30,6 +30,10 @@ declare const Services: any;
 const RP_FILTER_BTN_CLASS = "wv-reader-filter-btn";
 const RP_FILTER_POPUP_ID = "wv-reader-filter-popup";
 const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
+// Wiring version for the window-scoped context-menu listeners. Bump to force a
+// clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
+// instance's handler in place (see the comment at the bookmark ctx wiring).
+const RP_BM_CTX_WIRE_V = 2;
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 
@@ -919,6 +923,12 @@ const RP_BM_CSS = [
     ".wv-bm-reader-missing-badge{flex:0 0 auto;margin-left:2px;color:#e0483b;font-size:11px;line-height:1;}",
     "@keyframes wv-bm-reader-pulse{0%,100%{background:transparent;}30%{background:rgba(224,72,59,.30);}}",
     ".wv-bm-reader-row.wv-bm-reader-flash{animation:wv-bm-reader-pulse .6s ease;}",
+    // Transient "why did nothing happen" note shown while Reading Mode is on.
+    ".wv-readingmode-note{margin:6px 8px;padding:6px 8px;border-radius:4px;font-size:11px;line-height:1.35;"
+        + "background:rgba(127,127,127,.16);color:var(--fill-secondary);}",
+    // The row just edited -- same accent-outline treatment the outline's active
+    // row uses, so "what did I just change / where did it move to" is obvious.
+    ".wv-bm-reader-row.wv-bm-reader-focused{outline:2px solid var(--accent-blue50,var(--color-accent,#5e6ad2));outline-offset:-1px;border-radius:4px;}",
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     // Inherit the 20×20 svg size from the .wv-bm-actionbar rule above;
     // the previous 15×15 override forced 15/16 sub-pixel scaling on a
@@ -1304,21 +1314,35 @@ class _ReaderPanelsMixin {
             // Right-click an outline row -> Rename/Delete menu. The reader
             // suppresses `contextmenu` in the sidebar, so use auxclick button 2
             // (same as the bookmark context menu). One listener per window.
+            // Versioned + live-plugin, for the same reason as the bookmark
+            // context menu below (a window-scoped boolean guard survives a plugin
+            // reload and pins the listener to the dead instance).
+            // Remember selections as they are made, so the region command still
+            // has its input once the menu-opening click lands. Called
+            // UNCONDITIONALLY -- it carries its own guard, and nesting it inside
+            // the context-menu guard below meant an already-wired window skipped
+            // it entirely and the capture never installed.
+            try { this._wvOutlineWireSelectionCapture(reader); } catch (_) {}
             const olCtxWin: any = idoc.defaultView;
-            if (olCtxWin && !olCtxWin._wvOutlineCtxWired) {
-                olCtxWin._wvOutlineCtxWired = true;
-                olCtxWin.addEventListener("auxclick", (e: any) => {
+            if (olCtxWin && olCtxWin._wvOutlineCtxWired !== RP_BM_CTX_WIRE_V) {
+                try { if (olCtxWin._wvOutlineCtxHandler) olCtxWin.removeEventListener("auxclick", olCtxWin._wvOutlineCtxHandler, true); } catch (_) {}
+                const olCtxHandler = (e: any) => {
                     try {
                         if (e.button !== 2) return;
                         const row: any = e.target && e.target.closest && e.target.closest(".wv-outline-row");
                         if (!row || !row._wvOl) return;
                         const container = idoc.getElementById("sidebarContainer");
                         if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) return;
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
                         e.preventDefault(); e.stopPropagation();
                         const ol = row._wvOl;
-                        this._wvOutlineShowEntryMenu(reader, idoc, e, ol.entry, ol.index, ol.curatedView);
+                        P._wvOutlineShowEntryMenu(reader, idoc, e, ol.entry, ol.index, ol.curatedView);
                     } catch (_) {}
-                }, true);
+                };
+                olCtxWin._wvOutlineCtxHandler = olCtxHandler;
+                olCtxWin._wvOutlineCtxWired = RP_BM_CTX_WIRE_V;
+                olCtxWin.addEventListener("auxclick", olCtxHandler, true);
             }
             // If the native outline is ALREADY the active view (restored on open,
             // or the user was on it before our panel injected), take over now.
@@ -1410,6 +1434,15 @@ class _ReaderPanelsMixin {
 
     async _wvReaderRenderOutline(reader: any, idoc: any) {
         try {
+            // Reading Mode swaps `state.outline` to the SDT overlay's own outline
+            // (and stashes the base one). Ours describes the HIDDEN base view, and
+            // its entries can't be navigated to while the overlay is up -- so hand
+            // the tab back to the native outline, which does describe what's on
+            // screen. We re-take it when Reading Mode goes off.
+            if (this._wvReadingModeActive(reader)) {
+                try { this._wvReaderActivateOutlineTakeover(reader, idoc, false); } catch (_) {}
+                return;
+            }
             const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
             const list = view && view.querySelector(".wv-outline-list");
             if (!list) return;
@@ -1656,13 +1689,211 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** The reader's CURRENT text selection as {position, text}, or null when
+     *  nothing is selected. Built with the view's own
+     *  `_getAnnotationFromSelectionRanges` -- the same call the reader uses to
+     *  turn a selection into a highlight -- so multi-line and page-spanning
+     *  selections come out with exactly the rects Zotero would have used.
+     *
+     *  The result is DEEP-COPIED: that method assigns `nextPageRects` onto the
+     *  live selection range's own position object (upstream flags this as "not a
+     *  good practice" in pdf-view.js), and the object lives in the content
+     *  compartment, so storing it directly would both mutate the view's state and
+     *  keep an Xray reference in our JSON store. */
+    _wvOutlineSelectionInfo(reader: any): any {
+        const live = this._wvOutlineReadSelection(reader);
+        if (live) { try { reader._wvLastSelInfo = live; } catch (_) {} return live; }
+        // Fall back to the last selection we saw. Requiring a LIVE one made the
+        // command unusable in practice: by the time the context menu is built the
+        // press on the sidebar row has often already collapsed the document
+        // selection, so the item simply never appeared (reported 2026-07-20 --
+        // "I do not see where I can do the Set Region from Selection?"). The
+        // remembered one is captured on pointerup in the document, which is the
+        // same moment the reader itself finalises a selection.
+        try { return reader._wvLastSelInfo || null; } catch (_) { return null; }
+    }
+
+    /** The reader's live selection as {position, text}, or null. See
+     *  `_wvOutlineSelectionInfo` for why the result is deep-copied. */
+    _wvOutlineReadSelection(reader: any): any {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const sr = pv && pv._selectionRanges;
+            if (!Array.isArray(sr) || !sr.length || sr[0].collapsed) return null;
+            if (typeof pv._getAnnotationFromSelectionRanges !== "function") return null;
+            const a = pv._getAnnotationFromSelectionRanges(sr, "highlight");
+            if (!a || !a.position || !Array.isArray(a.position.rects) || !a.position.rects.length) return null;
+            const position = JSON.parse(JSON.stringify(a.position));
+            const text = String(a.text || "").replace(/\s+/g, " ").trim();
+            return { position, text };
+        } catch (_) { return null; }
+    }
+
+    /** Remember the last non-empty text selection, so "Set Region from Selection"
+     *  still has its input after the click that opens the context menu. Wired on
+     *  the PDF iframe document, once per view, versioned so a plugin reload
+     *  re-hooks (a boolean guard would strand the listener on a dead instance --
+     *  the same trap the context menus hit). */
+    _wvOutlineWireSelectionCapture(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const doc = win && win.document;
+            if (!doc) return;
+            if (doc._wvSelCaptureWired === RP_BM_CTX_WIRE_V) return;
+            try { if (doc._wvSelCaptureHandler) doc.removeEventListener("pointerup", doc._wvSelCaptureHandler, true); } catch (_) {}
+            const handler = () => {
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P) return;
+                    const w: any = win;
+                    // After pointerup the view still has to finalise its ranges.
+                    w.setTimeout(() => {
+                        try {
+                            const sel = P._wvOutlineReadSelection(reader);
+                            if (sel) reader._wvLastSelInfo = sel;
+                        } catch (_) {}
+                    }, 0);
+                } catch (_) {}
+            };
+            doc._wvSelCaptureHandler = handler;
+            doc._wvSelCaptureWired = RP_BM_CTX_WIRE_V;
+            doc.addEventListener("pointerup", handler, true);
+        } catch (_) {}
+    }
+
+    /** Re-anchor an outline entry to the current text selection.
+     *
+     *  This is the ESTABLISHED position (`resolvedPosition`), the same slot the
+     *  one-time title recovery writes, so navigation uses it directly and never
+     *  re-searches the PDF -- see `_wvOutlineSetEntryPosition`. That is the whole
+     *  point: a heading whose PDF text is wrong or truncated can be pointed at
+     *  the right region by hand, once, and it stays there.
+     *
+     *  The title follows the selection ONLY while the entry still carries its
+     *  frozen original name, mirroring the pin's "auto-label only if unrenamed"
+     *  rule -- so this fixes a heading the PDF truncated (the reason this exists:
+     *  an entry read "4 An outline of experimental and", losing "computational
+     *  methods") without ever clobbering a title the user chose. */
+    async _wvOutlineSetRegionFromSelection(reader: any, idoc: any, entry: any, index: number,
+            curatedView: boolean, sel: any) {
+        try {
+            if (!sel || !sel.position) return;
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, sel.position);
+            const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
+            const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
+            const untouched = !!(e && e.source && typeof e.source.title === "string" && e.title === e.source.title);
+            if (e && sel.text && untouched) {
+                await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, sel.text);
+            }
+            await this._wvReaderRenderOutline(reader, idoc);
+            // Show the new region straight away, so the edit is visibly confirmed.
+            try {
+                const ir = reader._internalReader;
+                const pv = ir && (ir._primaryView || ir._lastView);
+                const rects = sel.position.rects || [];
+                if (pv && rects.length) {
+                    this._wvOutlineHighlightInPlace(pv, sel.position.pageIndex || 0, rects, 0, 0);
+                }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineSetRegionFromSelection err: " + e); }
+    }
+
+    /** True when the entry's title no longer matches the title its current
+     *  region was detected from -- i.e. re-detection could move the highlight.
+     *  False for an untouched entry, and false again straight after a
+     *  re-detection, so the command appears only when it would do something.
+     *
+     *  Falls back to the frozen `source.title` for entries stored before
+     *  `regionTitle` existed: automatic recovery always keyed off that, so it is
+     *  the correct historical answer, not a guess. */
+    _wvOutlineRegionTitleStale(entry: any): boolean {
+        try {
+            if (!entry) return false;
+            const title = String(entry.title == null ? "" : entry.title).trim();
+            if (!title) return false;
+            const from = entry.regionTitle != null
+                ? entry.regionTitle
+                : (entry.source && entry.source.title);
+            if (from == null) return false;   // nothing to compare against
+            return title !== String(from).trim();
+        } catch (_) { return false; }
+    }
+
+    /** Re-run the heading-text recovery using the entry's CURRENT title, and
+     *  store the result as the established position.
+     *
+     *  This is the deliberate, user-asked-for exception to the "resolve once,
+     *  never search again" contract. That contract exists so editing a title
+     *  can't silently move the target -- so this never runs by itself; it is only
+     *  ever invoked from the menu. Its purpose is the opposite direction: when
+     *  the PDF's own outline text was truncated or wrong, you fix the title and
+     *  then ask for the region to be found again from the corrected text.
+     *
+     *  Uses per-line rects, so a wrapped heading highlights like real text. */
+    async _wvOutlineRedetectRegion(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            await this._wvOutlineDetectRegionForId(reader, idoc, ref.att, ref.id);
+        } catch (err) { Zotero.debug("[Weavero] _wvOutlineRedetectRegion err: " + err); }
+    }
+
+    /** Detect and store an entry's region from whatever title it CURRENTLY has.
+     *  Shared by "Re-detect Region from Title" and by the original-name reset,
+     *  so restoring a name always restores the matching highlight. */
+    async _wvOutlineDetectRegionForId(reader: any, idoc: any, att: any, id: string) {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv) return;
+            const ref = { att, id };
+            const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
+            const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
+            if (!e) return;
+            const title = String(e.title || "").trim();
+            if (!title) return;
+            const base = e.resolvedPosition || e.position;
+            const pageIndex = (base && base.pageIndex) || 0;
+            const r0 = (base && base.rects && base.rects[0]) || [0, 0, 0, 0];
+            const res: any = await this._wvOutlineRecoverRect(pv, pageIndex, r0[0], r0[1], title);
+            if (!res) {
+                this._wvReaderPanelNote(idoc, "Couldn’t find that text on the page — the region is unchanged.");
+                return;
+            }
+            const rects = (res.rects && res.rects.length) ? res.rects : [res.rect];
+            const precise = { pageIndex: res.pageIndex, rects };
+            e.resolvedPosition = precise;
+            await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, title);
+            await this._wvReaderRenderOutline(reader, idoc);
+            try {
+                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                this._wvOutlineScrollToRect(pv, res.pageIndex, rects[0]);
+                this._wvOutlineHighlightInPlace(pv, res.pageIndex, rects, gen, 0);
+            } catch (_) {}
+        } catch (err) { Zotero.debug("[Weavero] _wvOutlineRedetectRegion err: " + err); }
+    }
+
     /** Reset a (curated) entry's name to its frozen original. */
     _wvOutlineDoResetName(reader: any, idoc: any, id: string) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             Promise.resolve(this._wvOutlineResetEntryName(att.libraryID, att.itemKey, id))
-                .then(() => this._wvReaderRenderOutline(reader, idoc)).catch(() => {});
+                // Restore the REGION too. Putting the original name back while
+                // leaving a hand-corrected highlight in place left the entry in a
+                // mixed state -- a title from the PDF pointing at a box the user
+                // chose for different text. Re-detecting from the just-restored
+                // (original) title reproduces the region the entry would have had
+                // before any editing, and stamps `regionTitle` so the re-detect
+                // command correctly disappears again.
+                .then(() => this._wvOutlineDetectRegionForId(reader, idoc, att, id))
+                .then(() => this._wvReaderRenderOutline(reader, idoc))
+                .catch(() => {});
         } catch (_) {}
     }
 
@@ -1697,10 +1928,10 @@ class _ReaderPanelsMixin {
                     const resolveTitle = curated ? ((entry.source && entry.source.title) || entry.title) : entry.title;
                     if (pv && r0 && resolveTitle) {
                         const res = await this._wvOutlineRecoverRect(pv, target.pageIndex, r0[0], r0[1], resolveTitle);
-                        const precise = res ? { pageIndex: res.pageIndex, rects: [res.rect] } : target;
+                        const precise = res ? { pageIndex: res.pageIndex, rects: (res.rects && res.rects.length) ? res.rects : [res.rect] } : target;
                         if (curated && entry.id) {
                             entry.resolvedPosition = precise;
-                            this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, entry.id, precise);
+                            this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, entry.id, precise, resolveTitle);
                         }
                         target = precise;
                     }
@@ -1819,7 +2050,16 @@ class _ReaderPanelsMixin {
                 const v = String(input.value || "").trim();
                 if (save && v && v !== entry.title && entry.id) {
                     Promise.resolve(this._wvOutlineRenameEntry(att.libraryID, att.itemKey, entry.id, v))
-                        .then(() => this._wvReaderRenderOutline(reader, idoc)).catch(() => {});
+                        .then(() => this._wvReaderRenderOutline(reader, idoc))
+                        // Offer -- never perform -- re-detection. Editing a title
+                        // must not move the target on its own (that contract is
+                        // why `resolvedPosition` exists), but a title edit is the
+                        // one moment when re-detecting is likely to be wanted:
+                        // the usual reason to retype a heading is that the PDF's
+                        // outline text was truncated or wrong.
+                        .then(() => this._wvReaderPanelNote(idoc,
+                            "Title updated. To move the highlight to match, right-click → Re-detect Region from Title."))
+                        .catch(() => {});
                 } else {
                     this._wvReaderRenderOutline(reader, idoc);   // restore the label
                 }
@@ -1847,9 +2087,10 @@ class _ReaderPanelsMixin {
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const mk = (label: string, icon: string, fn: () => void, danger?: boolean) => {
+            const mk = (label: string, icon: string, fn: () => void, danger?: boolean, disabled?: boolean) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item" + (danger ? " wv-ctx-danger" : "");
+                if (disabled) it.setAttribute("style", "opacity:.5;pointer-events:none;");
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
                 ic.className = "wv-ctx-ic";
                 if (icon && icon.indexOf("chrome://") === 0) {
@@ -1875,11 +2116,34 @@ class _ReaderPanelsMixin {
             mk("Open in New Window", openIcon, () => this._wvOutlineOpenInWindow(reader, entry));
             sep();
             mk("Edit…", RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView));
+            // Re-anchor to the selected text. ALWAYS listed and always live:
+            // hiding it when nothing was selected made it undiscoverable, and a
+            // permanently greyed row is just clutter. If it's used without a
+            // selection, say so in the panel instead.
+            //
+            // NOT gated on "the entry was edited": needing this is close to
+            // uncorrelated with editing. The case that prompted it was an
+            // UNEDITED entry whose PDF outline text was itself truncated ("4 An
+            // outline of experimental and"), so recovery matched only that
+            // fragment. A missing or broken text layer is the same story. Editing
+            // the title is in fact the safe case -- recovery keys off the frozen
+            // `source.title`, so a rename never moves the target.
+            // Offered ONLY while re-detecting could actually land somewhere new:
+            // the title must differ from the one the current region was detected
+            // from. Re-running it against the same text would repeat identical
+            // work, so once used the item disappears until the title changes
+            // again. `regionTitle` is stamped wherever a region is established;
+            // entries predating it fall back to the frozen original, which is
+            // what the automatic recovery always used.
+            if (this._wvOutlineRegionTitleStale(entry)) {
+                mk("Re-detect Region from Title", RP_REVERT_SVG,
+                    () => this._wvOutlineRedetectRegion(reader, idoc, entry, index, curatedView));
+            }
             // "Reset to Original Name" only when the title has been changed from
             // its frozen original (curated entries carry `source.title`).
             if (curatedView && entry && entry.source && typeof entry.source.title === "string"
                     && entry.title !== entry.source.title) {
-                mk("Reset to Original Name", RP_REVERT_SVG, () => this._wvOutlineDoResetName(reader, idoc, entry.id));
+                mk("Reset to Original Name and Region", RP_REVERT_SVG, () => this._wvOutlineDoResetName(reader, idoc, entry.id));
             }
             mk("Delete", RP_DELETE_SVG, () => this._wvOutlineDoDelete(reader, idoc, entry, index, curatedView), true);
             (idoc.body || idoc.documentElement).appendChild(menu);
@@ -1936,17 +2200,21 @@ class _ReaderPanelsMixin {
             title.className = "wv-outline-head-title";
             title.textContent = "Outline";
             head.appendChild(title);
-            // Revert (only when curated) -- sits to the LEFT of the source chip.
+            // NO revert button here, deliberately (removed 2026-07-20).
+            //
+            // It discarded the ENTIRE curated outline for the document -- every
+            // rename, every hand-set region, every added or deleted entry -- in
+            // one click, with no undo. A confirm dialog is not adequate cover for
+            // that: the work destroyed can represent a long session, the dialog
+            // cannot convey how much, and a mis-click is unrecoverable. It also
+            // sat immediately beside the source chip, which is a harmless
+            // switcher, so the two invited the same casual click.
+            //
+            // `_wvOutlineDoRevert` / `_wvOutlineRevert` are intentionally KEPT --
+            // they are the mechanism a safe version would use. Re-expose only
+            // with a real undo path (or a per-entry revert, which is what users
+            // usually actually want), never as a bare button.
             const att = this._wvReaderAtt(reader);
-            const curated = !!(att && this._wvOutlineHasCurated(att.libraryID, att.itemKey));
-            if (curated) {
-                const rev = idoc.createElementNS(NS, "button");
-                rev.className = "wv-outline-head-btn";
-                rev.setAttribute("title", "Revert to the original outline");
-                rev.innerHTML = RP_OUTLINE_REVERT;
-                rev.addEventListener("click", (e: any) => { e.stopPropagation(); this._wvOutlineDoRevert(reader, idoc); });
-                head.appendChild(rev);
-            }
             // Source chip at the RIGHT end -- a switcher when >1 source exists.
             const chip = idoc.createElementNS(NS, "button");
             chip.className = "wv-outline-src-chip wv-outline-src-" + source;
@@ -2049,6 +2317,9 @@ class _ReaderPanelsMixin {
             try { const prev = idoc.querySelector(".wv-outline-row.wv-outline-active"); if (prev) prev.classList.remove("wv-outline-active"); } catch (_) {}
             if (row) row.classList.add("wv-outline-active");
             if (node.url) { try { Zotero.launchURL(node.url); } catch (_) {} return; }
+            // In Reading Mode the view we'd scroll is hidden, so navigating would
+            // look like nothing happened. Say so instead of failing silently.
+            if (this._wvReadingModeActive(reader)) { this._wvReaderNotifyReadingMode(reader, idoc); return; }
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             const curated = !!(node && node.source);
@@ -2074,7 +2345,14 @@ class _ReaderPanelsMixin {
                     this._wvOutlineNavRaw(reader, pv, target);
                 } else {
                     if (!this._wvOutlineScrollToRect(pv, target.pageIndex, rr)) this._wvOutlineNavRaw(reader, pv, target);
-                    this._wvOutlineHighlightInPlace(pv, target.pageIndex, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
+                    // ALL the rects, not just the first. A recovered heading box
+                    // is a single rect, but a region set from a selection has one
+                    // per line -- highlighting rects[0] alone lit up only the
+                    // heading's first line and left the rest unmarked (2026-07-20).
+                    // Scrolling still targets the first rect: that is the start of
+                    // the region, and where the eye should land.
+                    this._wvOutlineHighlightInPlace(pv, target.pageIndex,
+                        rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]), gen, 0);
                 }
                 return;
             }
@@ -2095,11 +2373,11 @@ class _ReaderPanelsMixin {
                 Promise.resolve(this._wvOutlineRecoverRect(pv, target.pageIndex, r0[0], r0[1], resolveTitle))
                     .then((res: any) => {
                         if (pv._wvHlSeq !== gen) return;   // superseded by a newer click
-                        const precise = res ? { pageIndex: res.pageIndex, rects: [res.rect] } : target;
+                        const precise = res ? { pageIndex: res.pageIndex, rects: (res.rects && res.rects.length) ? res.rects : [res.rect] } : target;
                         if (curated && node.id) {
                             node.resolvedPosition = precise;   // in-memory (same store object)
                             const att = this._wvReaderAtt(reader);
-                            if (att) this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, node.id, precise);
+                            if (att) this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, node.id, precise, resolveTitle);
                         }
                         if (res) {
                             try { this._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
@@ -2112,6 +2390,34 @@ class _ReaderPanelsMixin {
                 return;
             }
             this._wvOutlineNavRaw(reader, pv, target);
+        } catch (_) {}
+    }
+
+    /** Transient banner explaining why an in-document jump did nothing while
+     *  Reading Mode is on. Cheap and self-removing -- better than a silent no-op
+     *  or a scroll the user can't see. */
+    _wvReaderNotifyReadingMode(reader: any, idoc: any) {
+        this._wvReaderPanelNote(idoc, "Turn off Reading Mode to jump to this location.");
+    }
+
+    /** A transient note at the bottom of whichever Weavero panel is showing.
+     *  Used for "you asked for something that needs a precondition" messages,
+     *  which is friendlier than a permanently greyed-out menu row. */
+    _wvReaderPanelNote(idoc: any, text: string) {
+        try {
+            if (!idoc) return;
+            const NS = NS_HTML_RP;
+            idoc.querySelectorAll(".wv-readingmode-note").forEach((n: any) => n.remove());
+            const host = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)
+                || idoc.querySelector("." + RP_BM_VIEW_CLASS)
+                || idoc.getElementById("sidebarContent");
+            if (!host) return;
+            const note = idoc.createElementNS(NS, "div");
+            note.className = "wv-readingmode-note";
+            note.textContent = text;
+            host.appendChild(note);
+            const win = idoc.defaultView;
+            if (win && win.setTimeout) win.setTimeout(() => { try { note.remove(); } catch (_) {} }, 3200);
         } catch (_) {}
     }
 
@@ -3718,25 +4024,39 @@ class _ReaderPanelsMixin {
             // right-click only surfaces as pointer events / `auxclick` with
             // button 2 (verified live). So we trigger on `auxclick`, capture
             // phase on the window, one listener per window (survives re-renders).
+            // VERSIONED re-wiring + live plugin lookup. Both matter: the guard
+            // lives on the WINDOW, which outlives a plugin reload, so a plain
+            // boolean meant the listener was never re-wired and kept running the
+            // OLD instance's methods against its stale bookmark cache. Symptom
+            // (2026-07-20): right-clicking a pin created AFTER the reload gave the
+            // container menu instead of Rename/Delete, because the old instance's
+            // cache had no such entry -- bookmarks predating the reload still
+            // worked, which is what made it look like one broken bookmark.
             const ctxWin: any = idoc.defaultView;
-            if (ctxWin && !ctxWin._wvBmCtxWired) {
-                ctxWin._wvBmCtxWired = true;
-                ctxWin.addEventListener("auxclick", (e: any) => {
+            if (ctxWin && ctxWin._wvBmCtxWired !== RP_BM_CTX_WIRE_V) {
+                try { if (ctxWin._wvBmCtxHandler) ctxWin.removeEventListener("auxclick", ctxWin._wvBmCtxHandler, true); } catch (_) {}
+                const bmCtxHandler = (e: any) => {
                     try {
                         if (e.button !== 2) return;
                         const t = e.target;
                         if (!t || !t.closest || !t.closest(".wv-bm-reader-list")) return;
+                        // Resolve the LIVE plugin at event time -- never `this`.
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
                         e.preventDefault(); e.stopPropagation();
                         // Dismiss the hover card on right-click so it doesn't
                         // linger over the context menu — re-hover re-shows it,
                         // matching normal browser hover behavior. Also cancel
                         // any pending show-delay timer so the card doesn't pop
                         // in after the context menu opens.
-                        try { const w: any = idoc.defaultView; if (this._wvBmHoverTimer && w) { w.clearTimeout(this._wvBmHoverTimer); this._wvBmHoverTimer = null; } } catch (_) {}
-                        this._wvReaderHideBmHoverCard(idoc);
-                        this._wvReaderShowBmContextMenu(reader, idoc, e);
+                        try { const w: any = idoc.defaultView; if (P._wvBmHoverTimer && w) { w.clearTimeout(P._wvBmHoverTimer); P._wvBmHoverTimer = null; } } catch (_) {}
+                        P._wvReaderHideBmHoverCard(idoc);
+                        P._wvReaderShowBmContextMenu(reader, idoc, e);
                     } catch (_) {}
-                }, true);
+                };
+                ctxWin._wvBmCtxHandler = bmCtxHandler;
+                ctxWin._wvBmCtxWired = RP_BM_CTX_WIRE_V;
+                ctxWin.addEventListener("auxclick", bmCtxHandler, true);
             }
             // Capture which annotation is being dragged from the sidebar so a
             // drop on our tab/view can bookmark it (MIME-independent).
@@ -6029,6 +6349,16 @@ class _ReaderPanelsMixin {
      *  behavior (new tab / new window / show in library). */
     _wvNavigateReaderBookmark(reader: any, bm: any, e: any) {
         if (!bm) return;
+        // An in-document target would scroll the hidden base view (see
+        // `_wvReadingModeActive`). Targets that leave the document -- URLs and
+        // "Elsewhere in Zotero" items -- are unaffected and still work.
+        try {
+            if (this._wvReadingModeActive(reader) && !bm.url && this._wvReaderBookmarkIsLocal(reader, bm)) {
+                const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+                this._wvReaderNotifyReadingMode(reader, iwin && iwin.document);
+                return;
+            }
+        } catch (_) {}
         // URL / app-link bookmark — hand off to the OS browser via
         // Route via Weavero's `_launchURL` — same helper note-editor
         // and annotation clicks use. It honours the per-scheme
@@ -7673,18 +8003,21 @@ class _ReaderPanelsMixin {
         const win = reader && reader._window;
         if (!win || !att || !entry) return;
         const reRenderCb = () => { try { reRender(); } catch (_) {} };
+        // Any committed edit marks this row to be focused by the re-render that
+        // follows -- a rename can re-sort the list, so the row must stay findable.
+        const mark = () => this._wvMarkBmFocus(reader, entry.id);
         const inGlobalStore = !!this._bmLocate(entry.id);
         const strategy = inGlobalStore ? {
-            rename: (title: string) => this._bmRenameBookmark(entry.id, title),
-            resetName: () => this._bmResetBookmarkName(entry.id),
-            setUrl: (url: string) => this._bmSetUrl(entry.id, url),
-            setComment: (comment: string) => this._bmSetComment(entry.id, comment),
+            rename: (title: string) => { mark(); return this._bmRenameBookmark(entry.id, title); },
+            resetName: () => { mark(); return this._bmResetBookmarkName(entry.id); },
+            setUrl: (url: string) => { mark(); return this._bmSetUrl(entry.id, url); },
+            setComment: (comment: string) => { mark(); return this._bmSetComment(entry.id, comment); },
             reRender: reRenderCb,
         } : {
-            rename: (title: string) => this._bmReaderRename(att.libraryID, att.itemKey, entry.id, title),
-            resetName: () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id),
-            setUrl: (url: string) => this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { url }),
-            setComment: (comment: string) => this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment }),
+            rename: (title: string) => { mark(); return this._bmReaderRename(att.libraryID, att.itemKey, entry.id, title); },
+            resetName: () => { mark(); return this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id); },
+            setUrl: (url: string) => { mark(); return this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { url }); },
+            setComment: (comment: string) => { mark(); return this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment }); },
             reRender: reRenderCb,
         };
         return this._bmShowBookmarkEditor(win, entry, strategy);
@@ -8375,7 +8708,7 @@ class _ReaderPanelsMixin {
      *  top; near top → previous page), because a PDF's outline destination often
      *  points a hair before the heading and lands on the adjacent page. Returns
      *  { rect, pageIndex } or null. Best-effort; scanned / odd-font pages may miss. */
-    async _wvOutlineRecoverRect(pv: any, pageIndex: number, destX: number, destY: number, title: string): Promise<{ rect: number[]; pageIndex: number } | null> {
+    async _wvOutlineRecoverRect(pv: any, pageIndex: number, destX: number, destY: number, title: string): Promise<{ rect: number[]; rects?: number[][]; pageIndex: number } | null> {
         try {
             const win = pv && pv._iframeWindow;
             const app = win && win.PDFViewerApplication;
@@ -8448,7 +8781,7 @@ class _ReaderPanelsMixin {
             // Best occurrence of `target` on one page → bounding box. With `refY`
             // (the dest page), pick the occurrence whose top is nearest refY; else
             // (a neighbour) the TOPMOST occurrence, since a section heading sits high.
-            const matchOnPage = (data: any, target: string, refY: number | null): number[] | null => {
+            const matchOnPage = (data: any, target: string, refY: number | null): any => {
                 if (!data) return null;
                 const { toks, concat, map } = data;
                 let best: number[] | null = null, bestScore = Infinity;
@@ -8469,7 +8802,29 @@ class _ReaderPanelsMixin {
                     if (toks[i].y1 > Y1) Y1 = toks[i].y1;
                 }
                 if (!isFinite(X0) || !isFinite(Y0) || !isFinite(X1) || !isFinite(Y1)) return null;
-                return [X0, Y0, X1, Y1];
+                // PER-LINE rects as well as the union box. A heading that wraps
+                // needs one rect per line, the way real text selection looks --
+                // the union alone paints a single slab across both lines and the
+                // empty space to the right of the shorter one. Tokens run in
+                // reading order, so a line break is a step in y.
+                const lineRects: number[][] = [];
+                let cur: any = null;
+                for (let i = best[0]; i <= best[1]; i++) {
+                    const t = toks[i];
+                    const yc = (t.y0 + t.y1) / 2;
+                    const h = Math.abs(t.y1 - t.y0) || 1;
+                    if (!cur || Math.abs(yc - cur.yc) > h * 0.6) {
+                        cur = { yc, x0: t.x0, y0: t.y0, x1: t.x1, y1: t.y1 };
+                        lineRects.push([t.x0, t.y0, t.x1, t.y1]);
+                    } else {
+                        const r = lineRects[lineRects.length - 1];
+                        if (t.x0 < r[0]) r[0] = t.x0;
+                        if (t.y0 < r[1]) r[1] = t.y0;
+                        if (t.x1 > r[2]) r[2] = t.x1;
+                        if (t.y1 > r[3]) r[3] = t.y1;
+                    }
+                }
+                return { box: [X0, Y0, X1, Y1], rects: lineRects.length ? lineRects : [[X0, Y0, X1, Y1]] };
             };
 
             // Page search order: dest page, then the neighbour the dest leans toward.
@@ -8486,8 +8841,11 @@ class _ReaderPanelsMixin {
             for (const target of candidates) {
                 for (const pi of order) {
                     const data = await tokensFor(pi);
-                    const box = matchOnPage(data, target, pi === pageIndex ? destY : null);
-                    if (box) return { rect: box, pageIndex: pi };
+                    const m = matchOnPage(data, target, pi === pageIndex ? destY : null);
+                    // `rect` stays the union box for existing callers; `rects`
+                    // carries the per-line boxes for anyone who wants real text
+                    // geometry.
+                    if (m) return { rect: m.box, rects: m.rects, pageIndex: pi };
                 }
             }
             return null;
@@ -8708,13 +9066,17 @@ class _ReaderPanelsMixin {
                                     // block:'start' top-jump — so both outline kinds land
                                     // identically and there's no flicker. Fall back to the native
                                     // nav only if the page isn't laid out yet.
-                                    const rr = location.position.rects[0];
+                                    const allR = location.position.rects || [];
+                                    const rr = allR[0];
                                     markNav();
                                     if (!plugin._wvOutlineScrollToRect(pv, pi, rr)) {
                                         try { pv.navigateToPosition(location.position, options); }
                                         catch (e) { try { origNavigate(location, options); } catch (_) {} }
                                     }
-                                    plugin._wvOutlineHighlightInPlace(pv, pi, [[rr[0], rr[1], rr[2], rr[3]]], gen, 0);
+                                    // Every rect -- a region set from a selection has one per
+                                    // line, and highlighting only the first left the rest bare.
+                                    plugin._wvOutlineHighlightInPlace(pv, pi,
+                                        allR.map((r: number[]) => [r[0], r[1], r[2], r[3]]), gen, 0);
                                 }
                             }
                         }

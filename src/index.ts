@@ -1331,6 +1331,12 @@ class WeaveroPlugin {
             for (const span of doc.querySelectorAll(".annotation-row .wv-url-span") as any) {
                 span.replaceWith(doc.createTextNode(span.textContent || ""));
             }
+            // 2b. Same for note-ITEM title cells (the note-item sweep in
+            //     _markCellLinks marks `.cell.title .cell-text` on note rows;
+            //     we only ever add spans to note titles, so this is safe).
+            for (const span of doc.querySelectorAll(".cell.title .wv-url-span") as any) {
+                span.replaceWith(doc.createTextNode(span.textContent || ""));
+            }
             // 3. Remove any leftover tree icons that escaped the cell flatten.
             for (const ic of doc.querySelectorAll(".annotation-row .wv-tree-icon") as any) {
                 ic.remove();

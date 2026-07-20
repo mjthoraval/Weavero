@@ -2361,6 +2361,29 @@ class _PaneMixin {
                     + noteMarked + " note-annotation cells");
             }
 
+            // Note ITEMS (standalone / child notes) in the items tree show
+            // their first line in `.cell.title .cell-text`. Colour URLs there
+            // too so a bare link in a note's first line is clickable in the
+            // library view (the generic `.wv-url-span` click/colour/hover
+            // handlers already cover any tree row). linksOnly: a note title
+            // isn't a markdown body, so don't strip markers from it.
+            // `_markTextLinks` is idempotent, so the tree mutation observer
+            // re-firing this pass settles without a loop.
+            // NB: `data-item-type` lives on the ROW'S ICON, not the row, so we
+            // key off `.cell.title .icon[data-item-type="note"]` and mark its
+            // sibling `.cell-text`.
+            let noteItemMarked = 0;
+            for (const icon of doc.querySelectorAll(
+                    ".cell.title .icon[data-item-type=\"note\"]") as any) {
+                const cell = icon.closest(".cell.title");
+                const ct = cell && cell.querySelector(".cell-text");
+                if (ct && this._markTextLinks(ct, { mode: "tree", linksOnly: true })) noteItemMarked++;
+            }
+            if (noteItemMarked) {
+                this._dbg("[Weavero] _markCellLinks: marked "
+                    + noteItemMarked + " note-item title cells");
+            }
+
             // After layout settles, mark cells whose text-wrap is overflowing
             // so the icon shows as a fallback even when the pref is off.
             const win = Zotero.getMainWindow();

@@ -26,7 +26,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
-import { BM_HOVERCARD_CSS } from "./reader-panels";
+import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -120,9 +120,9 @@ const BM_DELETE_ICON = "data:image/svg+xml," + encodeURIComponent(
 // is wrapped in an SVG <text> element and the others are data: URIs.
 // Page + text use context-fill so they inherit the row's text colour
 // via the -moz-context-properties: fill set on the <img>.
-const BM_PIN_ICON = "data:image/svg+xml," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">'
-    + '<text x="8" y="13" font-size="13" text-anchor="middle">📌</text></svg>');
+// The SAME pushpin drawing as the reader (in-document marker, list rows, menus)
+// rather than a platform emoji, so one bookmark shows one pin everywhere.
+const BM_PIN_ICON = WV_PIN_ICON_URI;
 // Page bookmark uses a SOLID-FILLED ribbon (just the outer half of
 // BOOKMARK_PATH, no inner cutout) so it visually contrasts with the
 // hollow ribbon used elsewhere for "general bookmarks" (e.g. the

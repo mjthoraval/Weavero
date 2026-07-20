@@ -250,6 +250,130 @@ const RP_TEXT_SVG =
 // line map-pin). Used both as the list-row icon and the temporary in-document
 // marker dropped on click.
 const RP_PIN_EMOJI = "📌";
+// The IN-DOCUMENT pin. Deliberately NOT the 📌 emoji: an emoji's visual point
+// sits wherever the platform font puts it (Segoe's pushpin points down-LEFT),
+// while we anchor the element by its box, so the stored position never matched
+// the point the icon appeared to indicate -- and it differed per platform.
+// This pin's needle ends at EXACTLY (12,24), the bottom-centre of the viewBox,
+// so `translate(-50%,-100%)` lands the tip on the anchor; the drag places the
+// same bottom-centre under the cursor, so drop stores precisely the tip. Size is
+// in CSS px (independent of PDF zoom), and the anchor is re-derived from PDF
+// coords on every show, so it stays put across zoom.
+// Drawn upright, then rotated ABOUT THE TIP (16,26) so the incline is purely
+// cosmetic -- the point stays exactly at the viewBox's bottom-centre however far
+// it leans. viewBox is widened to 32 so the leaning head still fits.
+// NOTE the width/height MUST keep the viewBox's aspect ratio (42:30). With a
+// mismatched aspect the default preserveAspectRatio letterboxes the drawing,
+// which would shift the tip off the element's bottom-centre and break anchoring.
+// Modelled on the 📌 emoji it replaces: a plump rounded body over a SILVER
+// needle (not a red one), body:needle roughly 55:45. Tip at (24,32) = the
+// viewBox's bottom-centre; the 40deg lean is applied ABOUT that point, so the
+// anchor is unaffected by the styling. width/height MUST keep the 48:32 aspect
+// or SVG letterboxes the drawing and the tip drifts off the box's bottom-centre.
+// In-document position-bookmark marker: Bootstrap Icons `pin-angle-fill`,
+// path copied VERBATIM. MIT licence (Copyright (c) 2019-2024 The Bootstrap
+// Authors) -- attribution + notice in README "Third-party assets". Chosen over Zotero's own
+// `16/universal/pin.svg`, which is line-art AND unreferenced anywhere in
+// Zotero's UI, and over hand-drawn attempts that never read as a pushpin.
+//
+// ANCHORING. The needle tip was measured by rasterising the icon at 32x and
+// taking the extreme point along the down-left diagonal: (1.31, 14.63) in the
+// source 16x16 viewBox. The viewBox below is re-framed so that point lands at
+// the viewBox's bottom-CENTRE -- height 14.63 puts the tip on the bottom edge,
+// and width 2*14.63 = 29.26 centred on x=1.31 (so minX = 1.31 - 14.63) puts it
+// on the vertical centreline. Callers therefore keep using
+// `translate(-50%,-100%)` and the tip lands exactly on the anchor.
+// The 29.26:14.63 viewBox is EXACTLY 2:1, matching width/height 64:32 -- an
+// aspect mismatch would letterbox the drawing and drift the tip off centre.
+// Set true to fall back to the 📌-emoji bitmap marker (kept as a working backup
+// -- see `_wvPinEmojiBitmap`). The SVG is primary; flip this one constant if the
+// vector pin turns out badly in practice.
+const RP_PIN_USE_EMOJI = false;
+// Pointer travel (px) a press must exceed before it counts as a pin DRAG rather
+// than a click. Absorbs the hand jitter of a normal click on a trackpad.
+const RP_PIN_DRAG_SLOP = 4;
+// The shaft, thickened to half-width 1.0 -- Bootstrap's own needle measures ~0.5
+// half-width (rasterised and sampled along its length), so this is 2x stock and
+// stays legible at the ~32px display size. Constant width from inside the head
+// (8.20,7.80) -- starting there rather than where the needle visually emerges
+// means the thickening covers its WHOLE length -- then converging to a point.
+//
+// EXACTLY symmetric about the pin's own diagonal axis, the line x+y=15.94 that
+// runs through the tip: the far edge is the mirror of the near one, since
+// reflecting in that line maps (x,y) -> (15.94-y, 15.94-x). The stock Bootstrap
+// geometry was ~1.4% off that axis, which at 32px reads as a shaft that sits
+// crooked in its own outline. The point is also drawn longer and finer than
+// stock (2026-07-20 request).
+const RP_PIN_SHAFT_PATH = 'M7.50 7.09 L1.90 12.63 L1.05 14.89 L3.31 14.04 L8.85 8.44 Z';
+const RP_PIN_BODY_PATH = 'M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 '
+    + '0-.335-.018-.46-.039l-3.134 3.134a6 6 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 '
+    // Bootstrap's own thin needle is EXCISED here: the original ran
+    // `l-2.829-2.828-3.182 3.182c…l3.182-3.182-2.828-2.829`, i.e. out to the
+    // point and back. We draw our own thickened shaft instead, and because the
+    // head is painted on top of it, that built-in needle -- stroked along with
+    // everything else in the group -- laid a dark 1.1-wide line straight down
+    // the middle of the shaft and buried its fill (measured 2026-07-20: grey
+    // dropped from 10841px to 261px). Cutting it out is a straight shortcut
+    // from the same start point to the same end point: the two legs sum to
+    // (-.707,-.707), so one `l-.707-.707` replaces them and every later
+    // coordinate stays valid (they are all RELATIVE).
+    + '0l-2.829-2.828-.707-.707-2.828-2.829a.5.5 '
+    + '0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a6 6 0 0 1 1.013.16l3.134-3.133a3 3 0 0 1-.04-.461c0-.43.108-'
+    + '1.022.589-1.503a.5.5 0 0 1 .353-.146';
+// Thin dark outline, with MITRED joins so the tip and the head's points come to
+// real corners instead of the rounded nubs `round` produced at 32px.
+//
+// The rim expands the silhouette, so the VISUAL tip is not the fill's tip
+// (1.05,14.89) -- the mitre carries it further out still. Re-measured by
+// rasterising this exact icon at 100px/unit: (0.115,15.82). The viewBox is
+// framed on THAT point -- height = tip.y puts it on the bottom edge, and it is
+// centred horizontally -- so `translate(-50%,-100%)` lands the visible point on
+// the anchor. Width stays 31 (clearance past the rightmost ink at 14.45 is 1.17
+// units). width/height MUST keep the 31:15.82 aspect exactly or the image
+// letterboxes and the tip shifts off centre; holding width at 66.34 also keeps
+// px-per-unit identical to the previous icon, so the pin's on-screen size is
+// unchanged despite the taller viewBox.
+const RP_PIN_OUTLINE_W = 1.1;
+// Head size, scaled about the head/shaft JUNCTION (8.20,7.80) -- the point the
+// shaft path starts from. Pivoting THERE shrinks the head toward the shaft while
+// leaving the shaft untouched -- so the tip, and therefore the viewBox framing
+// described above, stay exactly where they are, and the visible shaft run simply
+// gets proportionally longer. 1.0 is Bootstrap's stock proportion; 0.82 chosen
+// 2026-07-20. Shrinking also pulls the rightmost ink further inside the frame,
+// so the width margin noted above only grows.
+const RP_PIN_HEAD_SCALE = 0.82;
+const RP_PIN_SHAFT_FILL = "#c9c9c9";
+const RP_PIN_HEAD_FILL = "#d13b2e";
+// Shaft FIRST, head painted over it, both stroked -- so the head's own outline
+// lands on top of the shaft and reads as a line SEPARATING the two parts. (The
+// earlier version deliberately did the opposite: it drew the union stroked-and-
+// filled dark underneath, then the fills on top, specifically to SUPPRESS that
+// internal seam. Requested back 2026-07-20.) Draw order is what does the work
+// here -- the head must come second, or the shaft's outline cuts across it.
+// The shaft path and stroke width are untouched, so the measured visual tip
+// (0.859,14.953) and the viewBox framing above still hold.
+// The artwork itself, independent of framing -- shared by the in-document pin
+// and the 16x16 row/menu icon so every pin in the UI is literally the same
+// drawing (they diverged before: the rows used the 📌 emoji, whose shape and
+// colour are whatever the platform font supplies).
+const RP_PIN_SHAPES_MARKUP =
+    '<g stroke="#1a1a1a" stroke-width="' + RP_PIN_OUTLINE_W + '" stroke-linejoin="miter" '
+    + 'stroke-miterlimit="6" stroke-linecap="round">'
+    + '<path fill="' + RP_PIN_SHAFT_FILL + '" d="' + RP_PIN_SHAFT_PATH + '"/>'
+    + '<g transform="translate(8.20,7.80) scale(' + RP_PIN_HEAD_SCALE + ') translate(-8.20,-7.80)">'
+    + '<path fill="' + RP_PIN_HEAD_FILL + '" d="' + RP_PIN_BODY_PATH + '"/></g>'
+    + '</g>';
+const RP_PIN_TIP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15.385 0 31 15.82" '
+    + 'width="66.34" height="33.855">' + RP_PIN_SHAPES_MARKUP + '</svg>';
+// The same pin as a square ICON, for list rows and menus. The anchor framing
+// above is deliberately dropped -- an icon wants the drawing centred in its box,
+// not its tip on the bottom edge. Ink measures x 0.11..14.45, y 1.55..15.82, so
+// this viewBox trims the empty margins without clipping.
+export const WV_PIN_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" '
+    + 'viewBox="0 0.8 15.2 15.2" width="16" height="16">' + RP_PIN_SHAPES_MARKUP + '</svg>';
+// …and as a data: URI, for the places that can only host an <img> (the reader
+// context menu, and the library popup's rows over in bookmarks.ts).
+export const WV_PIN_ICON_URI = "data:image/svg+xml," + encodeURIComponent(WV_PIN_ICON_SVG);
 // Filled folder + folder-with-"+" matching the library popup icons
 // (BM_FOLDER_ICON / BM_MENU_NEWFOLDER_ICON), themed via currentColor.
 // Rounded body corners and a left-aligned tab; the "+" variant carves
@@ -6016,11 +6140,10 @@ class _ReaderPanelsMixin {
         const ic = idoc.createElementNS(NS, "span");
         ic.className = "wv-bm-reader-ic";
         if (bm.type === "position") {
-            // "Add Bookmark to This Position" — a precise spot, marked with
-            // the 📌 pushpin both in the list row and as the in-document
-            // overlay (`_wvReaderShowPin`).
-            ic.classList.add("wv-bm-emoji");
-            ic.textContent = RP_PIN_EMOJI;
+            // "Add Bookmark to This Position" — a precise spot, marked with the
+            // SAME pushpin drawing used for the in-document overlay
+            // (`_wvReaderShowPin`), so the row and the pin on the page match.
+            ic.innerHTML = WV_PIN_ICON_SVG;
         }
         else if (bm.type === "page") {
             // "Add Bookmark to This Page" — whole-page bookmark, ribbon
@@ -8076,14 +8199,10 @@ class _ReaderPanelsMixin {
         return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
-    /** Pushpin (📌) data URI for the reader context-menu icon, matching the
-     *  in-document position-bookmark marker. The menu lives in chrome, so the
-     *  emoji is baked into an SVG <text> data URI. */
+    /** Pushpin data URI for the reader context-menu icon -- the same drawing as
+     *  the in-document position-bookmark marker and the list rows. */
     _wvReaderPinMenuIconURL() {
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
-            + 'viewBox="0 0 16 16"><text x="8" y="13" font-size="13" '
-            + 'text-anchor="middle">' + RP_PIN_EMOJI + '</text></svg>';
-        return "data:image/svg+xml," + encodeURIComponent(svg);
+        return WV_PIN_ICON_URI;
     }
 
     /** Stamp an icon onto a reader context-menu item (matched by label) once
@@ -8641,8 +8760,79 @@ class _ReaderPanelsMixin {
         }
     }
 
+    /** True while upstream "Reading Mode" is showing its SDT overlay for either
+     *  split. Upstream does NOT restyle the current view: it builds a SEPARATE
+     *  view (`_primarySDTView`/`_secondarySDTView`) and leaves the base view in
+     *  the DOM at `visibility:hidden`. Every Weavero reader feature resolves
+     *  `_primaryView || _lastView`, which is that HIDDEN base view -- so pins,
+     *  scrolls and highlights land somewhere the user cannot see. The overlay is
+     *  also NOT a pdf.js viewer (no PDFViewerApplication / _pages / viewport), so
+     *  our geometry helpers have nothing to target there either. Hence: detect,
+     *  and degrade honestly instead of acting invisibly.
+     *  Verified live on Zotero 10.0-beta.12 (2026-07-20); see work/TODO.md. */
+    _wvReadingModeActive(reader: any): boolean {
+        try {
+            const st = reader && reader._internalReader && reader._internalReader._state;
+            return !!(st && (st.primaryReadingModeEnabled || st.secondaryReadingModeEnabled));
+        } catch (_) { return false; }
+    }
+
+    /** The in-document marker, built ONCE per session from the 📌 emoji so it is
+     *  pixel-identical to the pin shown on bookmark rows -- hand-drawn and
+     *  icon-set replacements all read as a different object next to it.
+     *
+     *  The reason the emoji couldn't simply be placed as text: we anchor elements
+     *  by their BOX, but the glyph's needle tip sits wherever the platform font
+     *  puts it (Segoe points down-LEFT; measured here at fraction 0.004/0.976 of
+     *  the ink, i.e. the bottom-left corner), so the tip never coincided with the
+     *  box. Fix: rasterise, find the ink box, find the tip (extreme point along
+     *  the down-left diagonal), then redraw onto a canvas padded so the tip lands
+     *  at the image's bottom-CENTRE. Callers keep using `translate(-50%,-100%)`
+     *  and the tip is exact -- on any platform, because it is MEASURED not
+     *  assumed. Rasterised at ~7x the display size so it stays crisp.
+     *  Returns null when no emoji font is available; caller falls back to SVG. */
+    _wvPinEmojiBitmap(doc: any): any {
+        if (this._wvPinBitmap !== undefined) return this._wvPinBitmap;
+        this._wvPinBitmap = null;
+        try {
+            const S = 320;
+            const cv: any = doc.createElementNS(NS_HTML_RP, "canvas");
+            cv.width = S; cv.height = S;
+            const cx = cv.getContext("2d");
+            cx.font = Math.round(S * 0.8) + "px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
+            cx.textBaseline = "alphabetic";
+            cx.fillText(RP_PIN_EMOJI, S * 0.1, S * 0.85);
+            const d = cx.getImageData(0, 0, S, S).data;
+            let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, tipX = 0, tipY = 0, best = -1e9;
+            for (let y = 0; y < S; y++) {
+                for (let x = 0; x < S; x++) {
+                    if (d[(y * S + x) * 4 + 3] > 24) {
+                        if (x < minX) minX = x;
+                        if (x > maxX) maxX = x;
+                        if (y < minY) minY = y;
+                        if (y > maxY) maxY = y;
+                        const sc = y - x;                    // down-left extreme = needle tip
+                        if (sc > best) { best = sc; tipX = x; tipY = y; }
+                    }
+                }
+            }
+            if (maxX < 0) return this._wvPinBitmap;          // nothing rendered -> no emoji font
+            const w = maxX - minX + 1;
+            const tx = tipX - minX, ty = tipY - minY;
+            const outW = 2 * Math.max(tx, w - tx), outH = ty;   // tip -> bottom-centre
+            if (!(outW > 0 && outH > 0)) return this._wvPinBitmap;
+            const out: any = doc.createElementNS(NS_HTML_RP, "canvas");
+            out.width = outW; out.height = outH;
+            out.getContext("2d").drawImage(cv, minX, minY, w, ty, outW / 2 - tx, 0, w, ty);
+            this._wvPinBitmap = { url: out.toDataURL("image/png"), w: outW, h: outH };
+        } catch (_) { this._wvPinBitmap = null; }
+        return this._wvPinBitmap;
+    }
+
     _wvReaderShowPin(reader: any, position: any, bmId?: string) {
         try {
+            // Would be drawn onto the hidden base view -- an invisible pin.
+            if (this._wvReadingModeActive(reader)) return;
             if (!position || !Array.isArray(position.rects) || !position.rects.length) return;
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
@@ -8657,21 +8847,104 @@ class _ReaderPanelsMixin {
             const b = pageView.viewport.convertToViewportPoint(rect[2], rect[3]);
             const left = (a[0] + b[0]) / 2;
             const top = Math.min(a[1], b[1]);
+            // Convert to UNSCALED page units so the CSS calc() below can re-apply
+            // the live `--scale-factor` itself (see the style block).
+            const sf = pageView.viewport.scale || 1;
+            const uLeft = left / sf, uTop = top / sf;
             const doc = win.document;
             try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-reader-pin";
-            pin.textContent = RP_PIN_EMOJI;
+            // Vector pin is primary. The emoji-bitmap marker is kept as a working
+            // backup behind `RP_PIN_USE_EMOJI` (both anchor their tip identically,
+            // so switching needs no other change).
+            const PIN_H = 32;
+            const bmp = RP_PIN_USE_EMOJI ? this._wvPinEmojiBitmap(doc) : null;
+            if (bmp) {
+                const bw = Math.round(bmp.w / bmp.h * PIN_H);
+                pin.innerHTML = '<img src="' + bmp.url + '" width="' + bw + '" height="' + PIN_H + '">';
+            } else {
+                pin.innerHTML = RP_PIN_TIP_SVG;
+            }
             pin.setAttribute("title", bmId ? "Drag to move this bookmark" : "");
             pin.style.cssText = "position:absolute;z-index:2147483646;"
                 + (bmId ? "pointer-events:auto;cursor:grab;" : "pointer-events:none;")
-                + "user-select:none;font-size:26px;line-height:1;left:" + left + "px;top:" + top + "px;"
-                + "transform:translate(-50%,-118%) scale(.4);opacity:0;"
+                // transform-origin at the TIP, so the grow/shrink animations pivot
+                // on the anchor instead of sliding the point around.
+                + "user-select:none;line-height:0;transform-origin:50% 100%;"
+                // Position in UNSCALED page units times the live `--scale-factor`,
+                // and stay INSIDE `.page` so the coordinates are relative to the
+                // page itself. Two earlier versions were wrong:
+                //   - baking a pixel left/top: correct only at the zoom it was
+                //     computed at, so zooming drifted it off its word;
+                //   - the badges' overlay scheme (page offset + scale factor):
+                //     that needs `--page-offset-left` refreshed on every reflow,
+                //     and the refresh runs in requestAnimationFrame, which Gecko
+                //     throttles in this iframe -- measured drift of dx 24px at
+                //     2.0x and -98px back at 1.25x, horizontal only, because a
+                //     page's offsetLeft moves with zoom (centring) while its
+                //     offsetTop barely does.
+                // Anchored to the page, no offset variable is involved at all, so
+                // CSS re-evaluates the position on zoom by itself -- nothing to
+                // refresh, nothing to throttle.
+                + "top:calc(var(--page-offset-top,0px) + " + uTop + "px * var(--scale-factor,1));"
+                + "left:calc(var(--page-offset-left,0px) + " + uLeft + "px * var(--scale-factor,1));"
+                // Render at FINAL size/opacity immediately. There used to be a
+                // grow-in from scale(.4) driven by requestAnimationFrame (and
+                // later a setTimeout fallback) -- but Gecko throttles BOTH rAF
+                // and timers in the PDF iframe while it isn't actively painting,
+                // so the pin regularly stayed parked at 40% size forever. A
+                // permanently tiny pin made every restyling look like it hadn't
+                // shipped. Correctness beats the flourish: no JS callback is
+                // needed to reach the state the user must see.
+                + "transform:translate(-50%,-100%) scale(1);opacity:1;"
                 + "transition:opacity .18s ease-out,transform .18s ease-out;"
                 + "filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));";
-            pageView.div.appendChild(pin);
-            const raf = win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : ((f: any) => win.setTimeout(f, 16));
-            raf(() => { try { pin.style.opacity = "1"; pin.style.transform = "translate(-50%,-100%) scale(1)"; } catch (_) {} });
+            // HOST: the badge overlay (sibling of `.page` inside `.pdfViewer`),
+            // never inside `.page` -- PDF.js rebuilds a page's children on zoom
+            // re-render, which simply DELETED the pin mid-zoom.
+            let pinHost: any = null;
+            try { pinHost = this._ensureBadgeOverlay(doc); } catch (_) {}
+            (pinHost || pageView.div).appendChild(pin);
+
+            // Living in the overlay means the page's own offset has to be folded
+            // in, and it MOVES on zoom (pages are centre-aligned, so offsetLeft
+            // shifts while offsetTop barely does -- measured as horizontal-only
+            // drift of dx 24px at 2.0x, -98px back at 1.25x). The shared badge
+            // observer refreshes these vars inside requestAnimationFrame, which
+            // Gecko throttles in this iframe, so it can't be relied on here.
+            // This observer therefore updates SYNCHRONOUSLY in the mutation
+            // callback -- no rAF, nothing to throttle -- and disconnects itself
+            // once the pin leaves the DOM (it is short-lived by design).
+            try {
+                const pgDiv = pageView.div;
+                const applyPageOffsets = () => {
+                    if (!pin.isConnected) { try { pin._wvOffObs && pin._wvOffObs.disconnect(); } catch (_) {} return; }
+                    try {
+                        pin.style.setProperty("--page-offset-top", pgDiv.offsetTop + "px");
+                        pin.style.setProperty("--page-offset-left", pgDiv.offsetLeft + "px");
+                    } catch (_) {}
+                };
+                applyPageOffsets();
+                const MO = (win as any).MutationObserver;
+                if (MO) {
+                    // The init object MUST be cloned into the iframe compartment.
+                    // A chrome-side literal reads as EMPTY across the Xray
+                    // boundary, and `observe()` then throws "One of 'childList',
+                    // 'attributes', 'characterData' must not be false" -- which,
+                    // being inside this try/catch, silently left the pin with a
+                    // frozen --page-offset-left and reintroduced the zoom drift.
+                    const Cu: any = (Components as any).utils;
+                    const init = Cu ? Cu.cloneInto({ attributes: true, attributeFilter: ["style"] }, win)
+                        : { attributes: true, attributeFilter: ["style"] };
+                    const mo = new MO(applyPageOffsets);
+                    const viewerEl = app.pdfViewer.viewer || pgDiv.parentNode;
+                    if (viewerEl) mo.observe(viewerEl, init);
+                    mo.observe(pgDiv, init);
+                    pin._wvOffObs = mo;
+                }
+            } catch (_) {}
+            // (No intro animation -- the pin is created at its final size above.)
 
             // Lifecycle: fade after a beat, but pause while hovered/dragged so
             // there's time to grab it.
@@ -8695,6 +8968,8 @@ class _ReaderPanelsMixin {
                     e.preventDefault(); e.stopPropagation();
                     stopFade();
                     pin._wvDragging = true;
+                    // Press point, for the drag threshold in `onUp`.
+                    const downX = e.clientX, downY = e.clientY;
                     // The reader builds its PDF text selection in JS:
                     // _handlePointerMove extends _selectionRanges while
                     // this.action.type === 'selectText' (action + pointerDownPosition
@@ -8717,22 +8992,61 @@ class _ReaderPanelsMixin {
                     try { win.getSelection().removeAllRanges(); } catch (_) {}
                     const cleanup = () => {
                         try { doc.removeEventListener("mousedown", onDocMouseDown, true); } catch (_) {}
+                        // The drag listeners live on the DOCUMENT (see the
+                        // registration below), so unlike pin-hosted ones they do
+                        // NOT die with the element -- they must be removed by hand.
+                        try { doc.removeEventListener("pointermove", onMove, true); } catch (_) {}
+                        try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
+                        try { doc.removeEventListener("pointercancel", onCancel, true); } catch (_) {}
                         try { win.getSelection().removeAllRanges(); } catch (_) {}
                     };
-                    pin.style.transition = "none"; pin.style.opacity = "1"; pin.style.cursor = "grabbing";
-                    pin.style.position = "fixed";
-                    try { rootEl.appendChild(pin); } catch (_) {}
+                    pin.style.transition = "none"; pin.style.opacity = "1";
                     try { pin.setPointerCapture(e.pointerId); } catch (_) {}
                     const place = (cx: number, cy: number) => { pin.style.left = cx + "px"; pin.style.top = cy + "px"; pin.style.transform = "translate(-50%,-100%) scale(1)"; };
-                    place(e.clientX, e.clientY);
+                    // GRAB OFFSET. `place` positions the pin by its TIP, so feeding
+                    // it the raw cursor teleports the tip under the pointer -- grab
+                    // the head and the whole pin lurches down-left before it has
+                    // moved an inch. Instead we measure, at press time, where the
+                    // tip sits RELATIVE to the cursor and preserve that gap for the
+                    // whole drag: the pin then travels exactly with the hand, and
+                    // the drop point is the tip's real landing spot rather than the
+                    // cursor's. (The pin is framed tip-at-bottom-centre, so the tip
+                    // is the bounding box's bottom centre -- verified dx/dy 0.)
+                    const pr0 = pin.getBoundingClientRect();
+                    const grabDX = (pr0.left + pr0.width / 2) - e.clientX;
+                    const grabDY = pr0.bottom - e.clientY;
+                    const tipOf = (ev: any): [number, number] => [ev.clientX + grabDX, ev.clientY + grabDY];
+                    // DEFERRED LIFT. The pin is drawn translate(-50%,-100%) -- its
+                    // head sits ABOVE the anchor -- so `place(cursor)` snaps the tip
+                    // under the cursor, a jump of roughly the pin's own height. Doing
+                    // that on pointerDOWN made a plain CLICK visibly move the pin
+                    // (it snapped to the cursor, then the pointerup threshold below
+                    // put it back). So we stay parked until the pointer has actually
+                    // travelled past the threshold, and only THEN detach to fixed
+                    // positioning and start following. A click never lifts, so it
+                    // never moves.
+                    let lifted = false;
+                    const lift = () => {
+                        lifted = true;
+                        pin.style.cursor = "grabbing";
+                        pin.style.position = "fixed";
+                        try { rootEl.appendChild(pin); } catch (_) {}
+                    };
                     const PIN_SHADOW = "drop-shadow(0 2px 3px rgba(0,0,0,.45))";
                     const onMove = (ev: any) => {
                         killSel(); ev.preventDefault();
                         try { win.getSelection().removeAllRanges(); } catch (_) {}
-                        place(ev.clientX, ev.clientY);
+                        if (!lifted) {
+                            if (Math.abs(ev.clientX - downX) <= RP_PIN_DRAG_SLOP
+                                && Math.abs(ev.clientY - downY) <= RP_PIN_DRAG_SLOP) return;
+                            lift();
+                        }
+                        const [tx, ty] = tipOf(ev);
+                        place(tx, ty);
                         // Visual clue: a drop is only accepted over a page. Off-page
                         // greys the pin out + shows a no-drop cursor to say "not here".
-                        const onPage = !!this._wvReaderPdfPosFromPoint(pv, ev.clientX, ev.clientY);
+                        // Tested against the TIP, since that is what gets stored.
+                        const onPage = !!this._wvReaderPdfPosFromPoint(pv, tx, ty);
                         pin.style.cursor = onPage ? "grabbing" : "no-drop";
                         pin.style.opacity = onPage ? "1" : "0.4";
                         pin.style.filter = onPage ? PIN_SHADOW : ("grayscale(1) " + PIN_SHADOW);
@@ -8740,7 +9054,24 @@ class _ReaderPanelsMixin {
                     const onUp = (ev: any) => {
                         cleanup();
                         pin._wvDragging = false;
-                        const newPos = this._wvReaderPdfPosFromPoint(pv, ev.clientX, ev.clientY);
+                        // DRAG THRESHOLD. Without one, a plain CLICK committed the
+                        // cursor point as the bookmark's new position -- and since
+                        // the pin is drawn translate(-50%,-100%) (its head sits
+                        // ABOVE the anchor), clicking the head shifted the pin
+                        // upward every time, silently changing its stored position
+                        // and its By-location order. `lifted` is the same threshold
+                        // seen from the move side (see the deferred-lift comment):
+                        // never lifted == the press was a CLICK, so nothing moves
+                        // and the pin is simply re-shown where it already was.
+                        if (!lifted) {
+                            try { pin.remove(); } catch (_) {}
+                            this._wvReaderShowPin(reader, position, bmId);
+                            return;
+                        }
+                        // The TIP is the anchor, so the drop point is where the tip
+                        // landed -- not where the cursor happens to be (see tipOf).
+                        const [upX, upY] = tipOf(ev);
+                        const newPos = this._wvReaderPdfPosFromPoint(pv, upX, upY);
                         try { pin.remove(); } catch (_) {}
                         if (newPos) {
                             const att = this._wvReaderAtt(reader);
@@ -8767,7 +9098,8 @@ class _ReaderPanelsMixin {
                                     const r0 = newPos.rects && newPos.rects[0];
                                     const upd: any = { position: newPos, pageLabel, sortIndex: si || null, _sortIndexTried: !!si,
                                         // Fingerprint the position this key belongs to (see _wvBmSortIndexStale).
-                                        sortIndexPos: r0 ? [newPos.pageIndex, Math.round(r0[0]), Math.round(r0[1])] : null };
+                                        sortIndexPos: r0 ? [newPos.pageIndex, Math.round(r0[0]), Math.round(r0[1])] : null,
+                                        sortIndexAlgo: RP_SORTINDEX_ALGO };
                                     let renamed = false;
                                     try {
                                         const bdoc = this._bmReaderDoc(att.libraryID, att.itemKey);
@@ -8788,9 +9120,19 @@ class _ReaderPanelsMixin {
                         }
                     };
                     const onCancel = () => { cleanup(); pin._wvDragging = false; try { pin.remove(); } catch (_) {} };
-                    pin.addEventListener("pointermove", onMove);
-                    pin.addEventListener("pointerup", onUp);
-                    pin.addEventListener("pointercancel", onCancel);
+                    // On the DOCUMENT, not on the pin. Hosting them on the pin only
+                    // ever worked by accident: the old code lifted the pin on
+                    // pointerDOWN so it chased the cursor, keeping the pointer over
+                    // the element and the events flowing. With the lift deferred
+                    // (see above) the pin stays parked, the very first move takes
+                    // the cursor off it, and pin-hosted listeners go silent -- the
+                    // drag could never start. setPointerCapture is not enough to
+                    // rely on here (it sits in a swallowing try/catch and was
+                    // demonstrably not carrying the events), so bind where the
+                    // events actually are.
+                    doc.addEventListener("pointermove", onMove, true);
+                    doc.addEventListener("pointerup", onUp, true);
+                    doc.addEventListener("pointercancel", onCancel, true);
                 };
                 pin.addEventListener("pointerdown", onDown, true);
             }

@@ -26,7 +26,7 @@ class _NoteEditorMixin {
      *  reuse `_markTextLinks(.., {mode:"tree"})` — same path the
      *  note-annotation rows already use. */
     _processNoteRows(doc) {
-        if (!this._getEnableNotes()) return;
+        if (!this._getEnableNotesPane()) return;
         // No doc → sweep EVERY main window (not just the focused one).
         if (!doc) {
             try {
@@ -59,7 +59,7 @@ class _NoteEditorMixin {
      *  (`<notes-box>` listing child notes for a parent item). Each
      *  row's `.label` span holds the note's first-line excerpt. */
     _processNotesBoxes(doc) {
-        if (!this._getEnableNotes()) return;
+        if (!this._getEnableNotesPane()) return;
         // No doc → sweep EVERY main window (not just the focused one).
         if (!doc) {
             try {
@@ -1459,9 +1459,11 @@ class _NoteEditorMixin {
                 if (!doc) continue;
                 // Context-pane lazy-editor watcher (added by _processNoteEditors).
                 try { (doc.getElementById("zotero-context-pane") as any)?._wvCtxNoteWatchOff?.(); } catch (e) {}
-                // Items-tree note rows + right-pane notes-box labels
+                // Context-notes rows (titles + bodies) + right-pane notes-box labels
                 for (const span of doc.querySelectorAll(
                         "note-row .note-content .wv-url-span,"
+                        + " note-row .parent-title .wv-url-span,"
+                        + " note-row .note-title .wv-url-span,"
                         + " notes-box .body .row .label .wv-url-span") as any) {
                     span.replaceWith(doc.createTextNode(span.textContent || ""));
                 }

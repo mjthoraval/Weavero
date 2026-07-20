@@ -700,6 +700,23 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
+    /** Notes — context notes pane (the "All Notes" list: note-row titles /
+     *  bodies + right-pane notes-box labels). Default ON. */
+    _getEnableNotesPane() {
+        if (!this._getEnableLinksAndRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableNotesPane");
+            return v === undefined ? true : !!v;
+        } catch(e) { return false; }
+    }
+    /** Notes — note-item title cells in the items list. Default ON. */
+    _getEnableNotesList() {
+        if (!this._getEnableLinksAndRelations()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableNotesList");
+            return v === undefined ? true : !!v;
+        } catch(e) { return false; }
+    }
     /** Ctrl/Cmd+click split orientation when no split is open yet:
      *  "horizontal" (default) or "vertical". */
     _getCtrlClickSplit() {
@@ -1926,7 +1943,7 @@ class WeaveroPlugin {
                 "enableReaderViewIcons",
                 // Apply-to surfaces (incl. notes — default ON)
                 "enableItemsList", "enableRightPane", "enableReaderSidebar",
-                "enableReaderView", "enableNotes",
+                "enableReaderView", "enableNotes", "enableNotesPane", "enableNotesList",
                 // URI utilities + relations
                 "enableCopyItemLink", "enableCopyCollectionLink",
                 "enableAddRelatedMenu", "enableChainBadge",
@@ -2290,7 +2307,8 @@ class WeaveroPlugin {
         // Per-surface enable prefs — default to true so every surface
         // (including notes) is decorated out of the box.
         for (const k of ["enableItemsList", "enableRightPane",
-                         "enableReaderSidebar", "enableReaderView", "enableNotes"]) {
+                         "enableReaderSidebar", "enableReaderView", "enableNotes",
+                         "enableNotesPane", "enableNotesList"]) {
             try {
                 Services.prefs.getDefaultBranch("extensions.zotero.")
                     .setBoolPref("weavero." + k, true);
@@ -3431,6 +3449,20 @@ class WeaveroPlugin {
                             if (!this._getEnableNotes()) this._stripNotes();
                         } catch(e) { Zotero.debug("[Weavero] strip-notes err: " + e); }
                         this._applySurfacePref("notes");
+                    }
+                    if (data === "extensions.zotero.weavero.enableNotesPane") {
+                        // Context-notes pane (note-row titles/bodies + notes-box).
+                        try {
+                            if (!this._getEnableNotesPane()) this._stripNotes();
+                        } catch(e) { Zotero.debug("[Weavero] strip-notes-pane err: " + e); }
+                        this._applySurfacePref("notes");
+                    }
+                    if (data === "extensions.zotero.weavero.enableNotesList") {
+                        // Note-item titles in the items list.
+                        try {
+                            if (!this._getEnableNotesList()) this._stripItemsList();
+                        } catch(e) { Zotero.debug("[Weavero] strip-notes-list err: " + e); }
+                        try { this._markCellLinks(); } catch(e) {}
                     }
                     if (data === "extensions.zotero.weavero.enableReaderSidebar") {
                         this._applySurfacePref("readerSidebar");

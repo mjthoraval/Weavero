@@ -2373,11 +2373,13 @@ class _PaneMixin {
             // key off `.cell.title .icon[data-item-type="note"]` and mark its
             // sibling `.cell-text`.
             let noteItemMarked = 0;
-            for (const icon of doc.querySelectorAll(
-                    ".cell.title .icon[data-item-type=\"note\"]") as any) {
-                const cell = icon.closest(".cell.title");
-                const ct = cell && cell.querySelector(".cell-text");
-                if (ct && this._markTextLinks(ct, { mode: "tree", linksOnly: true })) noteItemMarked++;
+            if (this._getEnableNotesList()) {
+                for (const icon of doc.querySelectorAll(
+                        ".cell.title .icon[data-item-type=\"note\"]") as any) {
+                    const cell = icon.closest(".cell.title");
+                    const ct = cell && cell.querySelector(".cell-text");
+                    if (ct && this._markTextLinks(ct, { mode: "tree", linksOnly: true })) noteItemMarked++;
+                }
             }
             if (noteItemMarked) {
                 this._dbg("[Weavero] _markCellLinks: marked "
@@ -4869,7 +4871,9 @@ class _PaneMixin {
                 catch(e) { Zotero.debug(
                     "[Weavero] related-box scan err: " + e); }
             }
-            if (needsNotesScan && this._getEnableNotes()) {
+            // Either the pane toggle or the editor toggle can drive this scan;
+            // each _process* self-gates on its own pref.
+            if (needsNotesScan && (this._getEnableNotes() || this._getEnableNotesPane())) {
                 try { this._processNoteRows(doc); }
                 catch(e) { Zotero.debug("[Weavero] note-rows scan err: " + e); }
                 try { this._processNotesBoxes(doc); }

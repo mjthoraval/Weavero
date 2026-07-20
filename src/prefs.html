@@ -399,8 +399,15 @@
       </html:div>
       <html:div class="wv-apply-row">
         <html:span class="wv-apply-label">Notes:</html:span>
-        <checkbox label="Render in Notes" native="true"
+        <checkbox label="Editor" native="true"
+          tooltiptext="Links &amp; markdown in the note editor"
           preference="extensions.zotero.weavero.enableNotes"/>
+        <checkbox label="Notes Pane" native="true"
+          tooltiptext="Links in the context notes list (All Notes)"
+          preference="extensions.zotero.weavero.enableNotesPane"/>
+        <checkbox label="Items List" native="true"
+          tooltiptext="Links in note-item titles in the items list"
+          preference="extensions.zotero.weavero.enableNotesList"/>
       </html:div>
       <html:p class="wv-desc">Surfaces where Weavero renders annotation links &amp; markdown.</html:p>
 

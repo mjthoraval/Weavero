@@ -8336,9 +8336,24 @@ class _ReaderPanelsMixin {
                                     position: newPos, srcLibraryID: att.libraryID, srcItemKey: att.itemKey };
                                 const pageLabel = this._bmReaderPageLabel(probeBm)
                                     || String((newPos.pageIndex || 0) + 1);
-                                this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bmId,
-                                    { position: newPos, pageLabel, label: "Page " + pageLabel })
-                                    .then(() => { try { if (ridoc) this._wvReaderRenderBmList(reader, ridoc); } catch (_) {} });
+                                // Recompute the reading-order sortIndex for the NEW
+                                // spot so a moved pin re-sorts when the list is
+                                // ordered by location (the stored key is now stale).
+                                // And auto-rename to "Page N" ONLY if the pin still
+                                // carries its DEFAULT name -- a manually-renamed pin
+                                // keeps its name across a move.
+                                Promise.resolve(this._wvReaderGetPageData(reader, newPos.pageIndex)).then((pd: any) => {
+                                    const si = pd ? wvComputeSortIndex(pd, newPos) : null;
+                                    const upd: any = { position: newPos, pageLabel, sortIndex: si || null, _sortIndexTried: !!si };
+                                    let renamed = false;
+                                    try {
+                                        const bdoc = this._bmReaderDoc(att.libraryID, att.itemKey);
+                                        const loc = bdoc && (this._bmLocate(bmId, bdoc.local) || this._bmLocate(bmId, bdoc.global));
+                                        renamed = !!(loc && this._bmReaderIsRenamed(loc.entry));
+                                    } catch (_) {}
+                                    if (!renamed) upd.label = "Page " + pageLabel;
+                                    return this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bmId, upd);
+                                }).then(() => { try { if (ridoc) this._wvReaderRenderBmList(reader, ridoc); } catch (_) {} }).catch(() => {});
                             }
                             // Re-drop the pin where it landed (then it fades).
                             this._wvReaderShowPin(reader, newPos, bmId);

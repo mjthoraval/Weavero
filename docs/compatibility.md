@@ -69,3 +69,66 @@ On v9 the "N items in this view" status counter reads Zotero's raw
 path via `tree.props` / `jsWindow`). So that count can show the unfiltered
 total while the tree itself shows the correct filtered/expanded rows.
 Cosmetic only — no effect on what's displayed or selected.
+
+## Plugin interoperability — Annotation Markdown (AM)
+
+[Annotation Markdown](https://github.com/qrkks/zotero-annotation-markdown)
+(AM) renders annotation comments as Markdown/LaTeX in the reader. Weavero
+makes links in those same comments clickable. Both can be enabled together;
+Weavero detects AM per-document and **yields** the rendering AM will claim,
+then fills the gaps AM leaves. Verified against **AM v0.5.1 + Weavero
+v0.16.2-dev** on Zotero 10-beta (2026-07-20).
+
+### Where each plugin renders (both enabled)
+
+| Surface | AM | Weavero |
+|---|---|---|
+| Reader **sidebar** comment | Renders (Markdown + KaTeX) | Yields to AM; renders itself when AM is off |
+| **In-view (in-PDF) annotation popup** | **Does not render** (its comment node is filtered out) | **Renders** it (Markdown + clickable links) |
+| Item pane annotation comment | — | Renders |
+
+The in-view popup only appears when the reader **sidebar is closed** — with
+the sidebar open, selecting an annotation shows it in the sidebar instead.
+
+### Link types — what becomes clickable
+
+| Link form in the comment | AM (v0.5.x) | With Weavero |
+|---|---|---|
+| Bare web URL (`https://` / `http://`) | Linkified (added in v0.5.0) | Yields to AM; renders if AM off |
+| Markdown web link `[text](https://…)` | Rendered | Yields to AM |
+| `mailto:` | Linkified | Yields to AM |
+| Markdown link to `zotero://` / app schemes | **Stripped → dead anchor** (AM keeps only web/mailto) | **Rescued** — Weavero rebuilds the anchor so it clicks |
+| Bare `zotero://` URL | Not linkified | Rendered by Weavero |
+| Raw HTML `<a>` | Not rendered (`html:false`) | — (neither renders HTML links) |
+| LaTeX `\href{}` | Not rendered (KaTeX `trust:false`) | — |
+
+Weavero also **recolours** AM's own links to match its scheme colours
+(web / `zotero://` / app), controlled by the `weavero.recolorAmLinks`
+preference (default on).
+
+### AM version history relevant to interop
+
+These were surfaced during Weavero interop testing and fixed by AM's author:
+
+- **v0.4.1** — fixed an *empty-comment lockout*: AM had hidden Zotero's
+  native "Add comment" control for empty comments, so a first comment could
+  not be typed. (This was AM behaviour, code-identical on Zotero 9 — not a
+  Zotero 10 regression.)
+- **v0.5.0** — added bare-URL linkification (web URLs had rendered as dead
+  text).
+- **v0.5.1** — disabling AM now removes its rendered previews from open
+  readers (they had previously persisted until restart).
+  [Reported as issue #1](https://github.com/qrkks/zotero-annotation-markdown/issues/1).
+
+**Known remaining AM edge case (v0.5.1):** if AM had rendered in a reader
+tab that was later *closed*, disabling AM afterwards throws
+`can't access dead object` from its shutdown and aborts cleanup, leaving
+previews stale in the still-open readers until restart. Does not affect
+Weavero's own rendering. (Tracked in the same issue thread.)
+
+### Weavero requirement
+
+Weavero's link handling degrades cleanly: with AM absent it renders and
+links comments itself; with AM present it yields the surfaces AM owns and
+only adds what AM doesn't (the in-view popup, non-web-scheme link rescue,
+recolouring). No Weavero feature is lost by running AM alongside it.

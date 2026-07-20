@@ -35,11 +35,23 @@ class _NoteEditorMixin {
             } catch (e) {}
             return;
         }
-        const rows = doc.querySelectorAll("note-row .note-content");
-        this._dbg("[Weavero] _processNoteRows: " + rows.length + " row(s)");
-        for (const el of rows) {
+        // `.note-content` (the note body) is `hidden`/empty in the compact
+        // list for most rows -- the VISIBLE text is `.parent-title` (standalone
+        // note's first line, or the parent item's title) and `.note-title`.
+        // Mark URLs in all three so bare links in the visible row become
+        // clickable. Titles use linksOnly so a bibliographic title with `*`/`_`
+        // isn't markdown-stripped; the body keeps full markdown rendering.
+        const bodies = doc.querySelectorAll("note-row .note-content");
+        const titles = doc.querySelectorAll("note-row .parent-title, note-row .note-title");
+        this._dbg("[Weavero] _processNoteRows: " + bodies.length + " body(s), "
+            + titles.length + " title(s)");
+        for (const el of bodies) {
             try { this._markTextLinks(el, { mode: "tree" }); }
-            catch (e) { Zotero.debug("[Weavero] note-row render: " + e); }
+            catch (e) { Zotero.debug("[Weavero] note-row body render: " + e); }
+        }
+        for (const el of titles) {
+            try { this._markTextLinks(el, { mode: "tree", linksOnly: true }); }
+            catch (e) { Zotero.debug("[Weavero] note-row title render: " + e); }
         }
     }
 
@@ -453,6 +465,17 @@ class _NoteEditorMixin {
                 });
                 popupMo.observe(idoc.body || idoc.documentElement,
                     { childList: true, subtree: true });
+
+                // NOTE: bare-URL linkification of the editor BODY is not done
+                // here. The editor is a live ProseMirror instance; wrapping bare
+                // text in `.wv-url-span` is reverted synchronously by ProseMirror's
+                // reconciliation (verified 2026-07-20: `_markTextLinks` returns
+                // true but zero spans survive even immediately). Doing it properly
+                // needs a ProseMirror decoration plugin on Zotero's EditorView,
+                // not DOM mutation. Existing `<a href>` links are still coloured +
+                // handled (CSS + the listeners above). Read-only note surfaces
+                // (note-row titles / bodies, notes-box labels) DO linkify bare
+                // URLs -- see `_processNoteRows` / `_processNotesBoxes`.
 
                 this._noteEditorObservers.set(noteEditorEl,
                     { iframe, idoc, popupMo,

@@ -11002,7 +11002,10 @@ class _ReaderMixin {
         // URL marking + markdown-link rendering, both of which work
         // regardless of useMd. Full popup / sidebar markdown rendering goes
         // through _renderPreviewPanel and _renderPaneCommentInline now.
-        const useMd = isTreeMode && this._getEnableCommentMarkdown();
+        // `linksOnly` (used for note-row titles / the note-editor body sweep)
+        // suppresses markdown rendering so plain titles like "C*-algebras"
+        // aren't mangled -- only URLs get marked.
+        const useMd = isTreeMode && !(opts && opts.linksOnly) && this._getEnableCommentMarkdown();
         const hasMd = useMd && this.MD_REGEX.test(this.normalize(text));
         if (!this.hasURI(text) && !hasMd) {
             // No renderable content according to `text`. Two cases:

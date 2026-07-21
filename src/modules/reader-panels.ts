@@ -34,6 +34,17 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
 const RP_BM_CTX_WIRE_V = 2;
+// Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
+// filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
+// leaves an already-open reader's injected buttons wired to the DEAD instance --
+// they are create-if-absent, so the ensure calls never re-wire them and new
+// panel code never reaches tabs open across the update (verified 2026-07-21:
+// even a fresh XPI install didn't refresh them). On a stamp mismatch,
+// `_wvProcessReaderPanels` tears the panels down and rebuilds them fresh. BUMP
+// this whenever the panel wiring/render structure changes so open tabs self-heal
+// on the next update. (undefined !== value, so the first stamp-aware build
+// already heals currently-stale tabs.)
+const RP_PANELS_WIRE_V = 1;
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 
@@ -1261,15 +1272,71 @@ class _ReaderPanelsMixin {
             if (!idoc) return;
             const reader = this._findReaderForDoc(idoc);
             if (!reader) return;
+            // Self-heal a hot plugin update (no restart): if this doc's panels
+            // were wired by an OLDER build, tear them down so the ensure calls
+            // below rebuild them with LIVE handlers. See RP_PANELS_WIRE_V. Runs
+            // ONCE per doc per version (the stamp is set after), so the frequent
+            // mutation-scan calls don't re-tear.
+            let didRewire = false;
+            if ((idoc as any)._wvPanelsWireV !== RP_PANELS_WIRE_V) {
+                this._wvReaderRewirePanels(reader, idoc);
+                (idoc as any)._wvPanelsWireV = RP_PANELS_WIRE_V;
+                didRewire = true;
+            }
             this._wvEnsureReaderPanelStyles(idoc);
             this._wvReaderPrefetchIcons();
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvReaderEnsureBookmarksTab(reader, idoc);
             this._wvReaderEnsureOutlinePanel(reader, idoc);
             this._wvEnsureSpringDragEnd(reader, idoc);
+            if (didRewire) {
+                // Restore whichever of OUR panels the user had active before the
+                // teardown, so a hot update doesn't bounce them to the native
+                // sidebar. (Bookmarks tab may be gone if auto-hide-empty applies
+                // -- then the restore no-ops, which is correct.)
+                try {
+                    const restore = (idoc as any)._wvRewireRestore;
+                    if (restore === "bookmarks" && idoc.querySelector("." + RP_BM_TAB_CLASS)) {
+                        this._wvReaderSetBmActive(reader, idoc, true);
+                    } else if (restore === "outline") {
+                        this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                    }
+                } catch (_) {}
+            }
         } catch (e) {
             Zotero.debug("[Weavero] _wvProcessReaderPanels err: " + e);
         }
+    }
+
+    /** Tear down this reader doc's injected panel surfaces so the ensure calls
+     *  in `_wvProcessReaderPanels` rebuild them fresh with live handlers. Used
+     *  to self-heal a hot plugin update (install/reload without a Zotero
+     *  restart), where the create-if-absent panels otherwise stay wired to the
+     *  dead instance. Records the active panel on the doc for restoration. */
+    _wvReaderRewirePanels(reader: any, idoc: any) {
+        try {
+            // Remember the active panel (restored after the ensure rebuild).
+            let active = "native";
+            const sc = idoc.getElementById("sidebarContainer");
+            if (sc && sc.classList.contains(RP_BM_TAB_ON)) active = "bookmarks";
+            else if (sc && sc.classList.contains(RP_OUTLINE_TAB_ON)) active = "outline";
+            (idoc as any)._wvRewireRestore = active;
+            // Dismiss transient popups so they can't outlive their dead handlers.
+            try { this._wvReaderCloseBmChipPopup(idoc); } catch (_) {}
+            try { this._wvCloseReaderBmContextMenu(idoc); } catch (_) {}
+            // Remove the injected surfaces. The ensure calls recreate each; the
+            // sidebar-actions host (funnel/search) is rebuilt inside the bookmark
+            // view construction, so removing the view is enough for it too.
+            const rm = (sel: string) => { try { for (const el of idoc.querySelectorAll(sel)) el.remove(); } catch (_) {} };
+            rm("." + RP_FILTER_BTN_CLASS);
+            rm("." + RP_BM_TAB_CLASS);
+            rm("." + RP_BM_VIEW_CLASS);
+            rm("." + RP_OUTLINE_VIEW_CLASS);
+            rm(".wv-bm-sidebar-actions");
+            rm(".wv-bm-chip-popup");
+            // Clear our active-tab classes so the restore re-applies cleanly.
+            if (sc) { sc.classList.remove(RP_BM_TAB_ON); sc.classList.remove(RP_OUTLINE_TAB_ON); }
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderRewirePanels err: " + e); }
     }
 
     // ---- Feature C: Outline takeover (Phase 2, read-only) -------------------
@@ -4045,7 +4112,8 @@ class _ReaderPanelsMixin {
                 tab.innerHTML = RP_BM_RIBBON_TAB;
                 tab.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
-                    this._wvReaderSetBmActive(reader, idoc, true);
+                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
+                    P._wvReaderSetBmActive(reader, idoc, true);
                 });
                 // Drop an annotation/selection (from the sidebar OR the center
                 // pane) onto the tab to bookmark it (activates the tab).
@@ -4358,7 +4426,11 @@ class _ReaderPanelsMixin {
                 filterBtn.appendChild(chev);
                 filterBtn.addEventListener("click", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
-                    this._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
+                    // Resolve the LIVE plugin at click time, not the captured
+                    // `this` -- so a hot plugin update runs the CURRENT toggle/
+                    // render code even before the panel is rebuilt.
+                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
+                    P._wvReaderToggleBmChipPopup(reader, idoc, filterBtn);
                 });
                 // Only show the scope group when there's a real choice
                 // to make. With `showLibraryBookmarksInReader` off, the

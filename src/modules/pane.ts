@@ -2989,7 +2989,10 @@ class _PaneMixin {
                 dataKey: "weaveroAnnotations",
                 label: "Annotations",
                 pluginID: "weavero@mjthoraval",
-                iconPath: "chrome://zotero/skin/16/universal/annotate-highlight.svg",
+                // General "any annotation" glyph (Zotero's own item-pane
+                // annotation-count icon), not the highlight-specific one -- the
+                // column counts ALL annotation types, not just highlights.
+                iconPath: "chrome://zotero/skin/16/universal/annotation.svg",
                 width: "30",
                 minWidth: 26,
                 staticWidth: true,

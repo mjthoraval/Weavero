@@ -1077,6 +1077,16 @@ const RP_BM_CSS = [
     // at a glance that the list is sorted, not in manual order.
     ".wv-bm-reader-sortbtn.wv-bm-sort-active{opacity:1;color:var(--color-accent,#5e6ad2);}",
     ".wv-bm-reader-sortbtn.wv-bm-sort-active:hover{background:rgba(94,102,210,.18);}",
+    // Active-sort label riding beside the sort icon: field name + direction
+    // arrow, both in the accent colour so it reads as one unit. Auto-widens the
+    // button; the header row has room. `white-space:nowrap` keeps "Location ↑"
+    // on one line.
+    ".wv-bm-reader-sortbtn{position:relative;width:auto;gap:2px;padding:0 5px 0 3px;white-space:nowrap;}",
+    ".wv-bm-sort-label{font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;gap:3px;}",
+    ".wv-bm-sort-dir{font-size:10px;line-height:1;}",
+    // Menu section heading + a divider between the field group and the
+    // direction group (option B: fields on top, Ascending/Descending below).
+    ".wv-ctx-heading{padding:4px 10px 2px;font-size:10px;opacity:.55;text-transform:uppercase;letter-spacing:.04em;}",
     "." + RP_BM_TAB_CLASS + ".wv-bm-dropok{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;}",
     ".wv-bm-reader-row.wv-bm-dragging{opacity:.4;}",
     // Before/after indicators are INDENTED lines (a pseudo-element from
@@ -2300,7 +2310,7 @@ class _ReaderPanelsMixin {
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
             menu.style.top = (r.bottom + 2) + "px";
-            const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor) return; close(); } catch (_) {} };
+            const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return; close(); } catch (_) {} };
             const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
             // Dismiss across ALL reachable docs, incl. the nested PDF view iframe
             // (a page-region click otherwise wouldn't reach `idoc`).
@@ -4602,16 +4612,45 @@ class _ReaderPanelsMixin {
                 // highlight class + a descriptive tooltip so the current sort is
                 // discoverable without opening the menu.
                 const sortMode = this._wvReaderBmSortMode(section);
+                const sortDir = this._wvReaderBmSortDir(section);
                 const sortBtn = idoc.createElementNS(NS, "button");
                 sortBtn.className = "wv-bm-reader-newfolder wv-bm-reader-sortbtn"
                     + (sortMode !== "manual" ? " wv-bm-sort-active" : "");
+                // Persistent indicator. A 7px corner caret over the (also-accent)
+                // icon was there but unreadable, and it never showed the FIELD --
+                // so "which sort is active?" had no at-a-glance answer (reported
+                // 2026-07-21). Active state now shows a legible FIELD + ARROW
+                // label beside the icon (Name/Date/Location + ↑/↓); manual shows
+                // just the icon. Tooltip still spells it out in full.
+                const fieldLabel = this._wvReaderBmSortFieldLabel(sortMode);
                 sortBtn.setAttribute("title", sortMode === "manual"
                     ? "Sort bookmarks"
-                    : ("Sorted by " + (sortMode === "location" ? "location" : "title")
-                        + " — click to change (manual order is preserved)"));
-                sortBtn.innerHTML = RP_SORT_SVG;
+                    : ("Sorted by " + fieldLabel + " (" + (sortDir === "asc" ? "ascending" : "descending")
+                        + ") — click to change (manual order is preserved)"));
+                if (sortMode === "manual") {
+                    sortBtn.innerHTML = RP_SORT_SVG;
+                } else {
+                    const shortField = sortMode === "location" ? "Location"
+                        : sortMode === "date" ? "Date" : "Name";
+                    // Filled triangles read far more clearly than thin ↑/↓ arrows
+                    // at this size (2026-07-21: user couldn't see the arrow).
+                    const arr = sortDir === "asc" ? "▲" : "▼";
+                    sortBtn.innerHTML = RP_SORT_SVG
+                        + '<span class="wv-bm-sort-label">' + shortField
+                        + '<span class="wv-bm-sort-dir">' + arr + "</span></span>";
+                }
                 sortBtn.addEventListener("click", (e: any) => {
                     e.stopPropagation();
+                    // TOGGLE: a second click on the button while ITS menu is open
+                    // closes it. Without this the dismiss handler deliberately
+                    // ignores pointerdown on the anchor (so the press doesn't
+                    // dismiss-then-reopen), which made the second click appear to
+                    // do nothing -- the menu just stayed open (2026-07-21).
+                    const open = idoc.getElementById(RP_BM_CTX_ID);
+                    if (open && open.getAttribute("data-wv-sort-menu") === section) {
+                        this._wvCloseReaderBmContextMenu(idoc);
+                        return;
+                    }
                     this._wvShowReaderBmSortMenu(reader, idoc, sortBtn, section);
                 });
                 h.appendChild(sortBtn);
@@ -4633,7 +4672,7 @@ class _ReaderPanelsMixin {
                     // the stored manual order intact. Filter sets (visible/dimmed)
                     // key off ids, so they still apply to the sorted copy.
                     const renderNodes = sortMode === "manual"
-                        ? nodes : this._wvBmSortNodesForDisplay(att, nodes, sortMode);
+                        ? nodes : this._wvBmSortNodesForDisplay(att, nodes, sortMode, sortDir);
                     this._wvReaderRenderTree(reader, idoc, att, treeWrap, renderNodes, section, 0, f ? f.visible : undefined, f ? f.dimmed : undefined);
                     gc.appendChild(treeWrap);
                 }
@@ -4802,22 +4841,58 @@ class _ReaderPanelsMixin {
     // "This Document" only -- the "Elsewhere" section has no in-document
     // positions to sort by.
 
-    /** Sort mode for a section: "manual" (default) | "location" | "alpha". */
-    _wvReaderBmSortMode(section: "local" | "global"): string {
-        try {
-            const v = Zotero.Prefs.get("weavero.readerBmSort." + section);
-            if (v === "alpha") return "alpha";
-            if (v === "location" && section === "local") return "location";
-        } catch (_) {}
-        return "manual";
+    /** Sort for a section. The pref stores "<field>:<dir>"; a bare legacy value
+     *  ("manual"|"location"|"alpha") parses as that field at its default
+     *  direction. Fields: "manual" (default) | "location" | "alpha" | "date".
+     *  Default direction per field: alpha A->Z, date newest-first, location
+     *  reading-order; manual has none. `_wvReaderBmSortMode` still returns the
+     *  FIELD so its existing callers (checks against "manual"/"location") are
+     *  unchanged; `_wvReaderBmSortDir` adds the direction. */
+    _wvReaderBmSortDefaultDir(field: string): "asc" | "desc" {
+        return field === "date" ? "desc" : "asc";   // newest-first reads best for dates
     }
-    _wvReaderSetBmSortMode(section: "local" | "global", mode: string) {
+    _wvReaderBmSort(section: "local" | "global"): { field: string, dir: "asc" | "desc" } {
+        let field = "manual", dir: "asc" | "desc" = "asc";
         try {
-            let norm = "manual";
-            if (mode === "alpha") norm = "alpha";
-            else if (mode === "location" && section === "local") norm = "location";
-            Zotero.Prefs.set("weavero.readerBmSort." + section, norm);
+            const raw = String(Zotero.Prefs.get("weavero.readerBmSort." + section) || "");
+            const [f, d] = raw.split(":");
+            if (f === "alpha" || f === "date") field = f;
+            else if (f === "location" && section === "local") field = "location";
+            dir = (d === "asc" || d === "desc") ? d : this._wvReaderBmSortDefaultDir(field);
         } catch (_) {}
+        return { field, dir };
+    }
+    _wvReaderBmSortMode(section: "local" | "global"): string {
+        return this._wvReaderBmSort(section).field;
+    }
+    /** Human label for a sort field (menu rows + button tooltip). */
+    _wvReaderBmSortFieldLabel(field: string): string {
+        return field === "location" ? "location"
+            : field === "alpha" ? "name"
+            : field === "date" ? "date added"
+            : "manual order";
+    }
+    _wvReaderBmSortDir(section: "local" | "global"): "asc" | "desc" {
+        return this._wvReaderBmSort(section).dir;
+    }
+    /** Set field and/or direction. Passing only a field keeps the current
+     *  direction if the field is unchanged, else adopts the field's default
+     *  (so switching Name->Date lands on newest-first, not a stale asc). */
+    _wvReaderSetBmSort(section: "local" | "global", field?: string, dir?: "asc" | "desc") {
+        try {
+            const curr = this._wvReaderBmSort(section);
+            let f = field != null ? field : curr.field;
+            if (f !== "alpha" && f !== "date" && !(f === "location" && section === "local")) f = "manual";
+            let d: "asc" | "desc";
+            if (dir != null) d = dir;
+            else if (field != null && field !== curr.field) d = this._wvReaderBmSortDefaultDir(f);
+            else d = curr.dir;
+            Zotero.Prefs.set("weavero.readerBmSort." + section, f === "manual" ? "manual" : (f + ":" + d));
+        } catch (_) {}
+    }
+    /** Back-compat shim: old single-arg setter still used by a couple of paths. */
+    _wvReaderSetBmSortMode(section: "local" | "global", mode: string) {
+        this._wvReaderSetBmSort(section, mode);
     }
 
     /** Document geometry of a bookmark: { page, x (left edge), top (upper edge) }
@@ -5086,7 +5161,7 @@ class _ReaderPanelsMixin {
      *  key (not yet backfilled) are slotted AMONG the keyed ones by vertical
      *  position (page bookmarks pin to the page top); positionless entries keep
      *  their manual order at the tail. */
-    _wvBmSortNodesForDisplay(att: any, nodes: any[], mode: string): any[] {
+    _wvBmSortNodesForDisplay(att: any, nodes: any[], mode: string, dir: "asc" | "desc" = "asc"): any[] {
         if (!Array.isArray(nodes) || mode === "manual") return nodes;
         const flat: any[] = [];
         const collect = (ns: any[]) => {
@@ -5097,12 +5172,26 @@ class _ReaderPanelsMixin {
         };
         collect(nodes);
         if (flat.length < 2) return flat;
+        // Direction is applied by reversing the ascending order. `i` keeps every
+        // tie STABLE, so a reverse is exact (not just "roughly backwards").
+        const rev = (arr: any[]) => dir === "desc" ? arr.slice().reverse() : arr;
 
         if (mode === "alpha") {
-            return flat
+            return rev(flat
                 .map((n, i) => ({ n, i, lab: this._wvBmNodeSortLabel(n) }))
                 .sort((a, b) => a.lab.localeCompare(b.lab) || a.i - b.i)
-                .map(d => d.n);
+                .map(d => d.n));
+        }
+
+        if (mode === "date") {
+            // `created` is an ISO timestamp (lexical compare == chronological);
+            // asc = oldest first. Entries without a created stamp have no place on
+            // a time axis, so they stay in manual order at the TAIL regardless of
+            // direction (reversing them to the front would be misleading).
+            const withDate: any[] = [], noDate: any[] = [];
+            flat.forEach((n, i) => { (n && n.created ? withDate : noDate).push({ n, i, c: String((n && n.created) || "") }); });
+            withDate.sort((a, b) => (a.c < b.c ? -1 : a.c > b.c ? 1 : 0) || a.i - b.i);
+            return rev(withDate.map(d => d.n)).concat(noDate.map(d => d.n));
         }
 
         // --- location ---
@@ -5163,8 +5252,11 @@ class _ReaderPanelsMixin {
             dec.sort((a, b) => (a.pos - b.pos) || (b.top - a.top) || (a.x - b.x) || (a.i - b.i));
             for (const d of dec) out.push(flat[d.i]);
         }
-        for (const i of tail) out.push(flat[i]);   // positionless -> stable tail
-        return out;
+        // `out` is reading order (page-ascending, top-to-bottom within a page);
+        // desc reverses it to last-page-last-line first. Positionless entries
+        // (URLs / cross-doc items) have no location, so they stay at the TAIL in
+        // manual order either way.
+        return rev(out).concat(tail.map(i => flat[i]));
     }
     /** Reflect the current scope on the header toggle buttons. "both"
      *  highlights BOTH buttons so the merged state is visually obvious. */
@@ -7689,7 +7781,10 @@ class _ReaderPanelsMixin {
             const onDown = (ev: any) => {
                 try {
                     if (ev.target && menu.contains && menu.contains(ev.target)) return;
-                    if (ev.target === anchor) return;
+                    // contains(), not ===: a real click's pointerdown lands on the
+                    // anchor's CHILD (svg/arrow span), and dismissing here made the
+                    // following click REOPEN the menu -- the toggle looked broken.
+                    if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return;
                     close();
                 } catch (_) {}
             };
@@ -7723,27 +7818,50 @@ class _ReaderPanelsMixin {
             this._wvCloseReaderBmContextMenu(idoc);
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
+            // Marks this as the sort menu for `section`, so the sort button's
+            // click handler can recognise its own open menu and toggle it closed.
+            menu.setAttribute("data-wv-sort-menu", section);
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const cur = this._wvReaderBmSortMode(section);
-            const mkItem = (label: string, mode: string) => {
+            const curField = this._wvReaderBmSortMode(section);
+            const curDir = this._wvReaderBmSortDir(section);
+            const apply = (field?: string, dir?: "asc" | "desc") => {
+                close();
+                this._wvReaderSetBmSort(section, field, dir);
+                try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+            };
+            // Option B (Explorer/Thunderbird): FIELD radios on top, a divider,
+            // then DIRECTION radios. A checkmark on each active row shows both
+            // axes the moment the menu opens. Direction rows disable under Manual
+            // (nothing to order). Clicking a different field keeps the current
+            // direction unless the field has a better default (see setter).
+            const heading = (text: string) => {
+                const hd = idoc.createElementNS(NS_HTML_RP, "div");
+                hd.className = "wv-ctx-heading"; hd.textContent = text; menu.appendChild(hd);
+            };
+            const mkItem = (label: string, active: boolean, onClick: () => void, disabled?: boolean) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
+                if (disabled) it.setAttribute("style", "opacity:.4;pointer-events:none;");
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
                 ic.className = "wv-ctx-ic";
-                ic.innerHTML = (cur === mode) ? RP_CHECK_SVG : "";
+                ic.innerHTML = active ? RP_CHECK_SVG : "";
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
                 lb.textContent = label;
                 it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => {
-                    close();
-                    this._wvReaderSetBmSortMode(section, mode);
-                    try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
-                });
+                if (!disabled) it.addEventListener("click", onClick);
                 menu.appendChild(it);
             };
-            mkItem("Manual order", "manual");
-            if (section === "local") mkItem("Sort by location", "location");
-            mkItem("Sort by title (A–Z)", "alpha");
+            const sep = () => { const s = idoc.createElementNS(NS_HTML_RP, "div"); s.className = "wv-ctx-sep"; menu.appendChild(s); };
+
+            heading("Sort by");
+            mkItem("Manual order", curField === "manual", () => apply("manual"));
+            if (section === "local") mkItem("Location", curField === "location", () => apply("location"));
+            mkItem("Name", curField === "alpha", () => apply("alpha"));
+            mkItem("Date added", curField === "date", () => apply("date"));
+            sep();
+            const manual = curField === "manual";
+            mkItem("Ascending", !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
+            mkItem("Descending", !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
             (idoc.body || idoc.documentElement).appendChild(menu);
 
             const r = anchor.getBoundingClientRect();
@@ -7760,7 +7878,10 @@ class _ReaderPanelsMixin {
             const onDown = (ev: any) => {
                 try {
                     if (ev.target && menu.contains && menu.contains(ev.target)) return;
-                    if (ev.target === anchor) return;
+                    // contains(), not ===: a real click's pointerdown lands on the
+                    // anchor's CHILD (svg/arrow span), and dismissing here made the
+                    // following click REOPEN the menu -- the toggle looked broken.
+                    if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return;
                     close();
                 } catch (_) {}
             };

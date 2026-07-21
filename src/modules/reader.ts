@@ -7825,9 +7825,23 @@ class _ReaderMixin {
                         const donor = await (this as any)._wvSwapOpenDonor(mainWin, itemID, true);
                         if (donor) {
                             const donorTabId = donor.tabID;
-                            let targetIndex = 1;
-                            try { const TZ: any = mainWin.Zotero_Tabs; targetIndex = TZ && TZ._tabs ? TZ._tabs.length : 1; } catch (e) {}
-                            await (this as any)._wvSwapCommitDonor(win, mainWin, S, donor, { itemID, sourceTabId: tabId }, targetIndex, 0,
+                            // Drop slot: the caller's computed index when it has one
+                            // (the tab-bar drop handler passes the gap under the
+                            // cursor), else append. This MUST reach the commit --
+                            // the commit does its own DEFERRED positioning pass
+                            // (~150ms after detach), which with a hardcoded END
+                            // index silently overwrote the drop handler's earlier,
+                            // correct `positionNewTab` move: the merged tab landed
+                            // at the end of the strip no matter where it was
+                            // dropped (user report 2026-07-21).
+                            let targetIndex = (opts && Number.isInteger(opts.targetIndex) && opts.targetIndex >= 1)
+                                ? opts.targetIndex : -1;
+                            if (targetIndex < 0) {
+                                targetIndex = 1;
+                                try { const TZ: any = mainWin.Zotero_Tabs; targetIndex = TZ && TZ._tabs ? TZ._tabs.length : 1; } catch (e) {}
+                            }
+                            const maxPinned = (opts && Number.isInteger(opts.maxOtherPinned)) ? opts.maxOtherPinned : 0;
+                            await (this as any)._wvSwapCommitDonor(win, mainWin, S, donor, { itemID, sourceTabId: tabId }, targetIndex, maxPinned,
                                 { detachSource: () => this._wvWTDetachTabKeepReader(win, tabId) });
                             // Closing the source reader window removes its (now
                             // re-homed, still-live) reader from Zotero.Reader._readers

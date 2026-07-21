@@ -5858,8 +5858,13 @@ class _TabsMixin {
                             }
                             // Pass THIS window: the movers default to the anchor
                             // main window, so a drop on a secondary main window
-                            // used to land the tab in the wrong window.
-                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId, win); } catch (er) {}
+                            // used to land the tab in the wrong window. And pass
+                            // the DROP SLOT: the mover's swap-commit runs its own
+                            // deferred positioning (~150ms after detach) with
+                            // whatever index it holds -- defaulting to END, it
+                            // overwrote positionNewTab's earlier correct move and
+                            // the tab always landed at the end (2026-07-21).
+                            try { live._wvWTMoveTabToMain(srcWin, data.sourceTabId, win, { targetIndex, maxOtherPinned }); } catch (er) {}
                             win.setTimeout(positionNewTab, 200);
                             return;
                         }

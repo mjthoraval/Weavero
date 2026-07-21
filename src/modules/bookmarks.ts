@@ -580,6 +580,23 @@ class _BookmarksMixin {
         return store[key];
     }
 
+    /** Insert a NEW user-created entry into a curated outline at `atIndex`
+     *  (clamped; -1/past-end appends). Mints the id; the caller supplies the
+     *  working fields plus a frozen `source` (origin "user" -- user-created
+     *  entries freeze their creation-time state exactly like imported ones
+     *  freeze the import). Returns the stored entry. */
+    async _wvOutlineInsertEntry(libraryID: number, itemKey: string, entry: any, atIndex: number): Promise<any> {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return null;
+        const e = Object.assign({ id: "wvo-" + Zotero.Utilities.randomString(8) }, entry);
+        let i = Number.isInteger(atIndex) && atIndex >= 0 ? atIndex : d.entries.length;
+        i = Math.min(i, d.entries.length);
+        d.entries.splice(i, 0, e);
+        await this._wvOutlinePersist();
+        return e;
+    }
+
     /** Delete a curated outline entry by id. */
     async _wvOutlineDeleteEntry(libraryID: number, itemKey: string, id: string) {
         await this._wvOutlineInit();

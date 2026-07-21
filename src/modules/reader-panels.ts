@@ -1288,6 +1288,9 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-src-caret{display:inline-flex;opacity:.6;}",
     ".wv-outline-src-caret svg{width:8px;height:8px;}",
     ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:12px;text-align:center;}",
+    ".wv-outline-empty.wv-outline-empty-sub{padding-top:0;}",
+    ".wv-outline-create-btn{margin:0 auto;padding:5px 12px;font-size:12px;border:1px solid var(--color-accent,#5e6ad2);background:transparent;color:var(--color-accent,#5e6ad2);border-radius:5px;cursor:pointer;}",
+    ".wv-outline-create-btn:hover{background:var(--accent-blue10,rgba(94,106,210,.12));}",
     // Header action buttons (edit / revert).
     ".wv-outline-head-btn{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;border:none;background:none;color:inherit;opacity:.55;cursor:pointer;border-radius:3px;padding:0;}",
     ".wv-outline-head-btn:hover{opacity:.95;background:rgba(127,127,127,.2);}",
@@ -1696,9 +1699,29 @@ class _ReaderPanelsMixin {
                 const empty = idoc.createElementNS(NS_HTML_RP, "div");
                 empty.className = "wv-outline-empty";
                 empty.textContent = curatedView
-                    ? "Outline is empty — revert to restore the original."
+                    ? "Your outline is empty."
                     : (stillTrying ? "Extracting outline…" : "No outline for this document.");
                 list.appendChild(empty);
+                // Empty-state paths to a curated outline (without these, a doc
+                // whose extraction found nothing had NO way to start one --
+                // reported 2026-07-21). Curated-but-empty: how to add. Non-curated
+                // & settled: a button that bootstraps an editable Weavero outline.
+                if (curatedView) {
+                    const hint = idoc.createElementNS(NS_HTML_RP, "div");
+                    hint.className = "wv-outline-empty wv-outline-empty-sub";
+                    hint.textContent = "Select text in the document, then right-click → Add Selected Text to Outline.";
+                    list.appendChild(hint);
+                } else if (!stillTrying) {
+                    const wrap = idoc.createElementNS(NS_HTML_RP, "div");
+                    wrap.className = "wv-outline-empty wv-outline-empty-sub";
+                    const btn = idoc.createElementNS(NS_HTML_RP, "button");
+                    btn.className = "wv-outline-create-btn";
+                    btn.textContent = "Create Weavero Outline";
+                    btn.setAttribute("title", "Start an editable outline for this document");
+                    btn.addEventListener("click", () => this._wvOutlineCreateEmpty(reader, idoc));
+                    wrap.appendChild(btn);
+                    list.appendChild(wrap);
+                }
                 if (stillTrying) {
                     const win = idoc.defaultView;
                     if (win && win.setTimeout) win.setTimeout(() => {
@@ -2209,6 +2232,145 @@ class _ReaderPanelsMixin {
                 }
             } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineSetRegionFromSelection err: " + e); }
+    }
+
+    /** Bootstrap an editable (curated) outline for a document that has none --
+     *  the "Create Weavero Outline" button in the empty state. Snapshots the
+     *  extracted/embedded tree if one exists (usually empty here), else starts
+     *  an empty curated store, then switches the view to it so the user can add
+     *  entries by selecting text. Without this a doc whose extraction found
+     *  nothing had no path to a Weavero outline at all (2026-07-21). */
+    async _wvOutlineCreateEmpty(reader: any, idoc: any) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            let cache = reader._wvOutlineCache;
+            if (!cache || !cache.tree) {
+                try { cache = await this._wvReaderFetchOutline(reader); reader._wvOutlineCache = cache; } catch (_) {}
+            }
+            await this._wvOutlineEnsureCurated(att.libraryID, att.itemKey,
+                (cache && cache.source) || "extracted", (cache && cache.tree) || []);
+            reader._wvOutlineViewSource = null;
+            this._wvReaderRenderOutline(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineCreateEmpty err: " + e); }
+    }
+
+    /** Add a NEW outline entry from the current text selection (reader
+     *  right-click menu). The selected text becomes the title AND the entry's
+     *  region: position and `resolvedPosition` are the selection's real rects,
+     *  so navigation goes straight there and highlights -- no title recovery
+     *  ever runs for it (same ESTABLISHED contract as Set Region from
+     *  Selection). Curates first if needed (copy-on-first-edit). */
+    async _wvOutlineAddFromSelection(reader: any) {
+        try {
+            const sel = this._wvOutlineSelectionInfo(reader);
+            if (!sel || !sel.position || !sel.text) return;
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            await this._wvOutlineInit();
+            if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
+                // The original tree may never have been fetched (Outline tab not
+                // yet opened this session) -- fetch it so curation snapshots the
+                // real outline, not an empty list.
+                let cache = reader._wvOutlineCache;
+                if (!cache || !cache.tree) {
+                    try { cache = await this._wvReaderFetchOutline(reader); reader._wvOutlineCache = cache; } catch (_) {}
+                }
+                await this._wvOutlineEnsureCurated(att.libraryID, att.itemKey,
+                    (cache && cache.source) || "extracted", (cache && cache.tree) || []);
+                reader._wvOutlineViewSource = null;
+            }
+            const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+            const entries: any[] = (d && d.entries) || [];
+            const title = sel.text.slice(0, 160);
+            const pos = sel.position;
+            const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos);
+            const entry = {
+                title, indentLevel: indent,
+                position: pos, resolvedPosition: pos, regionTitle: title,
+                url: null,
+                source: { title, position: pos, url: null, origin: "user" },
+            };
+            const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
+            // SHOW the result (user request 2026-07-21): open the sidebar on the
+            // Outline tab, ON THE WEAVERO SOURCE, with the new row visible and
+            // selected -- adding into a closed panel (or while the chip shows
+            // the original view, where the new entry simply isn't) gave no
+            // visible confirmation the entry existed.
+            reader._wvOutlineViewSource = null;   // the view the entry lives in
+            try {
+                // Expand the new entry's ancestors -- its parent chain may be
+                // collapsed, and a hidden row can't be scrolled to or flashed.
+                const dd = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const ce: any[] = (dd && dd.entries) || [];
+                const idx = stored ? ce.findIndex((x: any) => x.id === stored.id) : -1;
+                if (idx >= 0) {
+                    const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+                    let lvl = Math.max(0, ce[idx].indentLevel || 0);
+                    for (let j = idx - 1; j >= 0 && lvl > 0; j--) {
+                        const jl = Math.max(0, ce[j].indentLevel || 0);
+                        if (jl < lvl) { expandedSet.add(String(ce[j].id)); lvl = jl; }
+                    }
+                }
+            } catch (_) {}
+            const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+            const idoc = iwin && iwin.document;
+            try {
+                const ir = reader._internalReader;
+                if (ir) { ir.toggleSidebar(true); ir.setSidebarView("outline"); }
+            } catch (_) {}
+            if (idoc && idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) {
+                try { this._wvReaderActivateOutlineTakeover(reader, idoc, true); } catch (_) {}
+                await this._wvReaderRenderOutline(reader, idoc);
+                try {
+                    if (stored) {
+                        const row: any = [...idoc.querySelectorAll(".wv-outline-row")]
+                            .find((r: any) => r._wvOl && r._wvOl.entry && r._wvOl.entry.id === stored.id);
+                        if (row) { row.scrollIntoView({ block: "nearest" }); row.classList.add("wv-outline-active"); }
+                    }
+                } catch (_) {}
+            }
+            try {
+                const ir = reader._internalReader;
+                const pv = ir && (ir._primaryView || ir._lastView);
+                if (pv && pos.rects && pos.rects.length) {
+                    this._wvOutlineHighlightInPlace(pv, pos.pageIndex || 0, pos.rects, 0, 0);
+                }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddFromSelection err: " + e); }
+    }
+
+    /** Document-order insertion point for a new entry at `pos`: the gap before
+     *  the first entry that lies AFTER pos (later page, or same page but lower
+     *  down -- rect tops compared in PDF coords, where larger y is higher).
+     *  Entries without a usable position (url-only) inherit the last seen page,
+     *  so they stay glued to the entry they follow.
+     *
+     *  Indent = sibling of the entry above the gap -- EXCEPT when the entry
+     *  below is deeper (the gap splits a parent from its descendants): adopt
+     *  the deeper level, so the new entry joins those siblings instead of
+     *  becoming their parent (contiguity means everything deeper after it
+     *  would otherwise read as ITS subtree). */
+    _wvOutlineDocOrderGap(entries: any[], pos: any): { gap: number, indent: number } {
+        const page = (pos && pos.pageIndex) || 0;
+        const top = (() => { try { return pos.rects[0][3]; } catch (_) { return 0; } })();
+        let gap = entries.length;
+        let lastPage = -1;
+        for (let i = 0; i < entries.length; i++) {
+            const en = entries[i];
+            const p = en.resolvedPosition || en.position;
+            let ePage = lastPage, eTop: any = null;
+            if (p && Number.isInteger(p.pageIndex)) {
+                ePage = p.pageIndex;
+                try { eTop = p.rects[0][3]; } catch (_) { eTop = null; }
+            }
+            lastPage = ePage;
+            if (ePage > page || (ePage === page && eTop != null && eTop < top)) { gap = i; break; }
+        }
+        const prevIndent = gap > 0 ? Math.max(0, entries[gap - 1].indentLevel || 0) : 0;
+        const nextIndent = gap < entries.length ? Math.max(0, entries[gap].indentLevel || 0) : 0;
+        const indent = nextIndent > prevIndent ? nextIndent : prevIndent;
+        return { gap, indent };
     }
 
     /** True when the entry's title no longer matches the title its current
@@ -9258,6 +9420,13 @@ class _ReaderPanelsMixin {
                 const LABEL = "Add Selected Text to Bookmarks";
                 append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
                 this._wvReaderStampMenuIcon(reader, LABEL, icon);
+                // Same selection, other store: a new OUTLINE heading anchored to
+                // this text (PDF only -- the outline is a PDF concept here).
+                if ((reader._type || "pdf") === "pdf") {
+                    const OLABEL = "Add Selected Text to Outline";
+                    append({ label: OLABEL, onCommand: () => this._wvOutlineAddFromSelection(reader) });
+                    this._wvReaderStampMenuIcon(reader, OLABEL, this._wvReaderOutlineMenuIconURL());
+                }
             } else {
                 // Menu items are scope-aware: when the bookmarks panel's
                 // Library tab is the active scope, the right-click items
@@ -9404,6 +9573,24 @@ class _ReaderPanelsMixin {
      *  the in-document position-bookmark marker and the list rows. */
     _wvReaderPinMenuIconURL() {
         return WV_PIN_ICON_URI;
+    }
+
+    /** Outline glyph for the reader context menu: the native Outline tab's
+     *  dot-and-line motif (reader res/icons/20/outline.svg), REDRAWN on a 16
+     *  grid -- menu icons render at 16px and scaling the 20-grid original puts
+     *  every line on fractional pixels (viewBox must equal rendered size). */
+    _wvReaderOutlineMenuIconURL() {
+        let dark = true;
+        try { dark = this._detectUIDark(); } catch (_) {}
+        const color = dark ? "#e3e3e3" : "#555555";
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+            + 'viewBox="0 0 16 16" fill="' + color + '">'
+            + '<rect x="2" y="2" width="1" height="1"/><rect x="5" y="2" width="9" height="1"/>'
+            + '<rect x="4" y="6" width="1" height="1"/><rect x="7" y="6" width="7" height="1"/>'
+            + '<rect x="4" y="10" width="1" height="1"/><rect x="7" y="10" width="7" height="1"/>'
+            + '<rect x="2" y="14" width="1" height="1"/><rect x="5" y="14" width="9" height="1"/>'
+            + '</svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
     /** Stamp an icon onto a reader context-menu item (matched by label) once

@@ -250,6 +250,24 @@ const RP_PLUS_20_SVG =
 // (was: 1.4-tall lines on fractional y → every edge anti-aliased).
 const RP_TEXT_SVG =
     '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3H10V5H3ZM3 7H13V9H3ZM3 11H10V13H3Z"/></svg>';
+// Generic "item" glyph for the bookmark-type filter's Item category (attachment
+// / note / collection / library refs, i.e. everything that isn't an annotation).
+// A document outline with a folded top-right corner -- reads as "a thing in the
+// library" without implying any single item type.
+const RP_BM_TYPE_ITEM_SVG =
+    '<svg viewBox="0 0 16 16" fill="none"><path d="M3 1.5H9.5L13 5V14.5H3V1.5Z" stroke="currentColor" '
+    + 'stroke-width="1.2" stroke-linejoin="round"/><path d="M9.3 1.6V5H12.9" stroke="currentColor" '
+    + 'stroke-width="1.2" stroke-linejoin="round"/></svg>';
+// GENERAL "any annotation" glyph -- Zotero's own `annotation.svg` /
+// `attachment-annotations.svg` (the item pane's annotation-count icon), path
+// copied verbatim with `context-fill` -> `currentColor` so it themes in the
+// reader iframe (which can't load chrome:// images). Used for the bookmark-type
+// filter's Annotation category -- semantically correct for "any annotation type"
+// where the highlight glyph would wrongly imply highlights only.
+const RP_ANNOTATION_GENERIC_SVG =
+    '<svg viewBox="0 0 16 16" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" '
+    + 'd="M3 3V0H16V13H13V15.5V16H12.5H6.5H6.29289L6.14645 15.8536L0.146447 9.85355L0 9.70711V9.5V3.5V3H0.5H3ZM4 3H12.5H13V3.5V12H15V1H4V3ZM1 9V4H12V15H7V9.5V9H6.5H1ZM1.70711 10L6 14.2929V10H1.70711Z" '
+    + 'fill="currentColor"/></svg>';
 // Pushpin glyph for position bookmarks — the 📌 emoji (user preference over a
 // line map-pin). Used both as the list-row icon and the temporary in-document
 // marker dropped on click.
@@ -2601,8 +2619,10 @@ class _ReaderPanelsMixin {
             const fresh = () => ({
                 colors: new Set<string>(), tags: new Set<string>(),
                 authors: new Set<string>(), types: new Set<string>(),
+                bmTypes: new Set<string>(),
                 colorsExcl: new Set<string>(), tagsExcl: new Set<string>(),
                 authorsExcl: new Set<string>(), typesExcl: new Set<string>(),
+                bmTypesExcl: new Set<string>(),
             });
             bag = { document: fresh(), library: fresh(), global: fresh(), pinned: false };
             this._wvBmChips.set(reader, bag);
@@ -2636,10 +2656,12 @@ class _ReaderPanelsMixin {
             tags: new Set(src.tags),
             authors: new Set(src.authors),
             types: new Set(src.types),
+            bmTypes: new Set(src.bmTypes || []),
             colorsExcl: new Set(this._wvBmChipExcl(src, "colors")),
             tagsExcl: new Set(this._wvBmChipExcl(src, "tags")),
             authorsExcl: new Set(this._wvBmChipExcl(src, "authors")),
             typesExcl: new Set(this._wvBmChipExcl(src, "types")),
+            bmTypesExcl: new Set(this._wvBmChipExcl(src, "bmTypes")),
         };
     }
 
@@ -2669,9 +2691,11 @@ class _ReaderPanelsMixin {
 
     _wvReaderBmChipsActive(reader: any): boolean {
         const st = this._wvReaderBmChipState(reader);
-        return (st.colors.size + st.tags.size + st.authors.size + st.types.size
+        const bmTypes = (st.bmTypes instanceof Set) ? st.bmTypes.size : 0;
+        return (st.colors.size + st.tags.size + st.authors.size + st.types.size + bmTypes
             + this._wvBmChipExcl(st, "colors").size + this._wvBmChipExcl(st, "tags").size
-            + this._wvBmChipExcl(st, "authors").size + this._wvBmChipExcl(st, "types").size) > 0;
+            + this._wvBmChipExcl(st, "authors").size + this._wvBmChipExcl(st, "types").size
+            + this._wvBmChipExcl(st, "bmTypes").size) > 0;
     }
 
     /** Walk the bookmarks the chip filter should consider and collect
@@ -2687,11 +2711,35 @@ class _ReaderPanelsMixin {
      *  Earlier this method always walked all three sources, which made
      *  the chip bar show library-only facets while the user was on the
      *  "This Document" tab. */
+    /** The bookmark-TYPE filter category for a leaf node (never a folder):
+     *  "pin" | "page" | "text" | "annotation" | "item" | "link", or null.
+     *  `item` nodes split: an underlying annotation is "annotation", everything
+     *  else (attachment / note / collection / library) is "item". */
+    _wvBmNodeTypeCategory(node: any): string | null {
+        if (!node) return null;
+        switch (node.type) {
+            case "position": return "pin";
+            case "page": return "page";
+            case "text": return "text";
+            case "url": return "link";
+            case "item": {
+                try {
+                    const it: any = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey);
+                    if (it && it.isAnnotation && it.isAnnotation()) return "annotation";
+                } catch (_) {}
+                return "item";
+            }
+            default: return null;
+        }
+    }
     _wvReaderBmChipFacets(reader: any) {
         const colors = new Map<string, number>();
         const tags = new Map<string, { color: string, count: number, position: number }>();
         const authors = new Map<string, number>();
         const types = new Map<string, number>();
+        // Bookmark-type categories present in the current list (present-only, so
+        // the row shows only the kinds actually there).
+        const bmTypes = new Map<string, number>();
         try {
             const att = this._wvReaderAtt(reader);
             const userLib = (Zotero as any).Libraries && (Zotero as any).Libraries.userLibraryID;
@@ -2704,6 +2752,8 @@ class _ReaderPanelsMixin {
                 for (const n of (nodes || [])) {
                     if (!n) continue;
                     if (n.type === "folder") { collect(n.children); continue; }
+                    // Bookmark-type facet applies to EVERY leaf, not just items.
+                    try { const cat = this._wvBmNodeTypeCategory(n); if (cat) bmTypes.set(cat, (bmTypes.get(cat) || 0) + 1); } catch (_) {}
                     if (n.type !== "item") continue;
                     let it: any = null;
                     try { it = Zotero.Items.getByLibraryAndKey(n.libraryID, n.itemKey); } catch (_) {}
@@ -2757,7 +2807,7 @@ class _ReaderPanelsMixin {
                 collect(lib);
             }
         } catch (_) {}
-        return { colors, tags, authors, types };
+        return { colors, tags, authors, types, bmTypes };
     }
 
     /** True iff this node (a bookmark leaf, never a folder) satisfies every
@@ -2767,6 +2817,17 @@ class _ReaderPanelsMixin {
      *  else stays, including non-annotation bookmarks. */
     _wvBmNodeMatchesChips(node: any, st: any): boolean {
         if (!node || node.type === "folder") return false;
+        // BOOKMARK-TYPE dimension. Applies to EVERY leaf (pin/page/text/link and
+        // items alike), so it is gated first, before the annotation-only logic
+        // below. Kept independent: it composes with colour/type/tag by AND, and
+        // its EXCLUDE removes matching leaves even under exclude-only filtering.
+        const bmInc: Set<string> = (st.bmTypes instanceof Set) ? st.bmTypes : new Set();
+        const bmExc = this._wvBmChipExcl(st, "bmTypes");
+        if (bmInc.size || bmExc.size) {
+            const cat = this._wvBmNodeTypeCategory(node);
+            if (bmInc.size && (!cat || !bmInc.has(cat))) return false;
+            if (bmExc.size && cat && bmExc.has(cat)) return false;
+        }
         const excColors = this._wvBmChipExcl(st, "colors");
         const excTypes = this._wvBmChipExcl(st, "types");
         const excAuthors = this._wvBmChipExcl(st, "authors");
@@ -5424,7 +5485,8 @@ class _ReaderPanelsMixin {
                 highlight: "Highlights", underline: "Underlines", note: "Notes",
                 text: "Text annotations", image: "Image annotations", ink: "Ink annotations",
             };
-            const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size;
+            const anyFacets = facets.colors.size || facets.tags.size || facets.authors.size || facets.types.size
+                || (facets.bmTypes && facets.bmTypes.size);
             if (!anyFacets) {
                 const empty = idoc.createElementNS(NS, "div");
                 empty.className = "wv-bm-chip-popup-empty";
@@ -5451,6 +5513,34 @@ class _ReaderPanelsMixin {
             // now driven by the merged-scope state — Ctrl-click on the
             // Reader/Library scope buttons to merge, and the filter
             // auto-applies across both. See `_wvReaderBmChipState`.)
+            // Bookmark-TYPE row FIRST — it's the primary "what kind of bookmark"
+            // facet and applies to every leaf (unlike colour/annotation-type/tag,
+            // which only touch annotation-referencing items). Present-only: a
+            // category chip appears only when that kind exists in the list.
+            if (facets.bmTypes && facets.bmTypes.size) {
+                const BM_TYPE_META: Array<[string, string, string]> = [
+                    ["pin", "Pins", WV_PIN_ICON_SVG],
+                    ["page", "Page bookmarks", RP_BM_RIBBON],
+                    ["text", "Text selections", RP_TEXT_SVG],
+                    ["annotation", "Annotations", RP_ANNOTATION_GENERIC_SVG],
+                    ["item", "Items", RP_BM_TYPE_ITEM_SVG],
+                    ["link", "Links", URL_GLOBE_SVG],
+                ];
+                const row = mkRow();
+                for (const [cat, label, svg] of BM_TYPE_META) {
+                    if (!facets.bmTypes.has(cat)) continue;
+                    const chip = idoc.createElementNS(NS, "button");
+                    (chip as any).type = "button";
+                    chip.className = "wv-filter-opt wv-filter-opt-icon";
+                    chip.setAttribute("title", label + " — " + facets.bmTypes.get(cat) + " — Alt+click to exclude");
+                    if ((st.bmTypes instanceof Set) && st.bmTypes.has(cat)) (chip as any).dataset.selected = "true";
+                    if (this._wvBmChipExcl(st, "bmTypes").has(cat)) (chip as any).dataset.excluded = "true";
+                    chip.innerHTML = svg;
+                    chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "bmTypes", cat, !!e.altKey); rerender(); });
+                    row.appendChild(chip);
+                }
+                bar.appendChild(row);
+            }
             // Colors row — button wrapper + inner 16×16 rounded-square tile,
             // matching the reader's annotations-pane Selector .colors.
             // Order matches upstream's ANNOTATION_COLORS (defines.js): yellow,

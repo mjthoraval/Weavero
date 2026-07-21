@@ -1212,6 +1212,11 @@ const RP_BM_CSS = [
     "#" + RP_BM_CTX_ID + " .wv-ctx-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-item:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic{flex:0 0 auto;width:16px;height:16px;display:flex;align-items:center;justify-content:center;opacity:.8;}",
+    // Trailing check (source menu): pushed to the RIGHT so every option's dot +
+    // label align on the left, regardless of which is current. min 12px gap
+    // from the label when the current row is the widest item.
+    "#" + RP_BM_CTX_ID + " .wv-ctx-check-right{margin-left:auto;padding-left:12px;flex:0 0 auto;display:flex;align-items:center;opacity:.85;}",
+    "#" + RP_BM_CTX_ID + " .wv-ctx-check-right svg{width:14px;height:14px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic.wv-ctx-ic-native{opacity:1;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-ic svg{width:16px;height:16px;}",
     "#" + RP_BM_CTX_ID + " .wv-ctx-sep{height:1px;background:rgba(127,127,127,.3);margin:4px 2px;}",
@@ -3462,8 +3467,21 @@ class _ReaderPanelsMixin {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             try {
+                // Name what is at stake (counts). Reset deletes the Weavero
+                // outline outright -- no bespoke archive. (A general Undo path for
+                // outline edits, incl. reset, is the parked TODO; until it lands
+                // the confirm is the only guard, so it states the loss plainly.)
+                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const entries: any[] = (d && d.entries) || [];
+                const renamed = entries.filter((e: any) => e.source
+                    && typeof e.source.title === "string" && e.title !== e.source.title).length;
+                const added = entries.filter((e: any) => e.source && e.source.origin === "user").length;
+                let what = entries.length + " entries";
+                if (renamed) what += ", " + renamed + " renamed";
+                if (added) what += ", " + added + " added by you";
                 const ok = Services.prompt.confirm(null, "Weavero",
-                    "Discard your edited outline and restore the original for this document?");
+                    "Reset the outline to the original for this document?\n\n"
+                    + "This deletes your Weavero outline (" + what + ").");
                 if (!ok) return;
             } catch (_) {}
             Promise.resolve(this._wvOutlineRevert(att.libraryID, att.itemKey))
@@ -3526,8 +3544,26 @@ class _ReaderPanelsMixin {
                 chip.appendChild(caret);
                 chip.addEventListener("click", (e: any) => {
                     e.stopPropagation();
+                    // Toggle: a second click on the chip closes the open menu
+                    // instead of rebuilding it. (The menu's outside-click dismiss
+                    // ignores the anchor, so without this the chip could never
+                    // close its own menu.)
+                    if (idoc.getElementById(RP_BM_CTX_ID)) { this._wvCloseReaderBmContextMenu(idoc); return; }
                     this._wvOutlineShowSourceMenu(reader, idoc, chip, sources, source);
                 });
+                // Reset lives on a RIGHT-CLICK of the chip (the outline-type
+                // button, top-right) -- user choice 2026-07-21. Left-click
+                // switches source; right-click opens a one-item reset menu.
+                // sources.length > 1 <=> a curated (Weavero) outline exists, so
+                // this only wires when there is something to reset. The reader
+                // suppresses `contextmenu` in the sidebar, so use auxclick btn 2.
+                chip.setAttribute("title", "Click to switch source · Right-click to reset the Weavero outline");
+                chip.addEventListener("auxclick", (e: any) => {
+                    if (e.button !== 2) return;
+                    e.preventDefault(); e.stopPropagation();
+                    this._wvOutlineShowChipMenu(reader, idoc, chip);
+                });
+                chip.addEventListener("contextmenu", (e: any) => { try { e.preventDefault(); } catch (_) {} }, true);
             }
             head.appendChild(chip);
         } catch (_) {}
@@ -3550,6 +3586,35 @@ class _ReaderPanelsMixin {
         return [current];
     }
 
+    /** Right-click menu on the source chip: outline-level actions. One item for
+     *  now -- Reset (delete the Weavero outline). Kept OFF the left-click source
+     *  switcher so switching source can't be a destructive mis-click. */
+    _wvOutlineShowChipMenu(reader: any, idoc: any, anchor: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const att = this._wvReaderAtt(reader);
+            if (!att || !this._wvOutlineHasCurated(att.libraryID, att.itemKey)) return;
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const it = idoc.createElementNS(NS_HTML_RP, "div");
+            it.className = "wv-ctx-item wv-ctx-danger";
+            const ic = idoc.createElementNS(NS_HTML_RP, "span");
+            ic.className = "wv-ctx-ic";
+            ic.innerHTML = RP_REVERT_SVG;
+            const lb = idoc.createElementNS(NS_HTML_RP, "span");
+            lb.textContent = "Reset to Original Outline…";
+            it.appendChild(ic); it.appendChild(lb);
+            it.addEventListener("click", () => { close(); this._wvOutlineDoRevert(reader, idoc); });
+            menu.appendChild(it);
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
+        } catch (_) {}
+    }
+
     /** Source-switch menu (used when >1 source exists -- Phase 3). Mirrors the
      *  bookmark sort menu's build + dismiss. */
     _wvOutlineShowSourceMenu(reader: any, idoc: any, anchor: any, sources: string[], current: string) {
@@ -3560,13 +3625,23 @@ class _ReaderPanelsMixin {
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             for (const src of sources) {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
-                it.className = "wv-ctx-item";
-                const ic = idoc.createElementNS(NS_HTML_RP, "span");
-                ic.className = "wv-ctx-ic";
-                ic.innerHTML = (src === current) ? RP_CHECK_SVG : "";
+                // wv-outline-src-<src> so the same dot-colour CSS the chip uses
+                // applies to this item's dot -- the menu carries the chip's colour
+                // code (green Embedded / amber Extracted / accent Weavero).
+                // Layout: [dot][label] left-aligned across all rows, with the
+                // current row's check pushed to the RIGHT so the dots line up.
+                it.className = "wv-ctx-item wv-outline-src-" + src;
+                const dot = idoc.createElementNS(NS_HTML_RP, "span");
+                dot.className = "wv-outline-src-dot";
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
                 lb.textContent = this._wvOutlineSourceLabel(src);
-                it.appendChild(ic); it.appendChild(lb);
+                it.appendChild(dot); it.appendChild(lb);
+                if (src === current) {
+                    const ck = idoc.createElementNS(NS_HTML_RP, "span");
+                    ck.className = "wv-ctx-check-right";
+                    ck.innerHTML = RP_CHECK_SVG;
+                    it.appendChild(ck);
+                }
                 it.addEventListener("click", () => { close(); this._wvOutlineSwitchSource(reader, idoc, src); });
                 menu.appendChild(it);
             }
@@ -3574,24 +3649,31 @@ class _ReaderPanelsMixin {
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
             menu.style.top = (r.bottom + 2) + "px";
-            const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return; close(); } catch (_) {} };
-            const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
-            // Dismiss across ALL reachable docs, incl. the nested PDF view iframe
-            // (a page-region click otherwise wouldn't reach `idoc`).
-            const docs: any[] = [idoc]; const wins: any[] = [];
-            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
-            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
-            try {
-                const ir = reader._internalReader;
-                for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
-                    const vd = v && v._iframeWindow && v._iframeWindow.document;
-                    if (vd && docs.indexOf(vd) < 0) docs.push(vd);
-                }
-            } catch (_) {}
-            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
-            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
-            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
         } catch (_) {}
+    }
+
+    /** Outside-click + Escape dismissal for a Weavero outline popup, across ALL
+     *  reachable docs (incl. the nested PDF view iframe -- a page-region click
+     *  otherwise wouldn't reach `idoc`). Clicks on the menu or its anchor are
+     *  ignored (the anchor toggles/handles itself). Stored on
+     *  `_wvReaderBmCtxDismiss` so `_wvCloseReaderBmContextMenu` unhooks it. */
+    _wvOutlineWireMenuDismiss(reader: any, idoc: any, menu: any, anchor: any, close: () => void) {
+        const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return; close(); } catch (_) {} };
+        const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
+        const docs: any[] = [idoc]; const wins: any[] = [];
+        try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+        try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
+        try {
+            const ir = reader._internalReader;
+            for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
+                const vd = v && v._iframeWindow && v._iframeWindow.document;
+                if (vd && docs.indexOf(vd) < 0) docs.push(vd);
+            }
+        } catch (_) {}
+        for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+        for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+        this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
     }
 
     /** Switch the displayed outline source: "weavero" shows the curated

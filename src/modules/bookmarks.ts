@@ -652,6 +652,10 @@ class _BookmarksMixin {
     }
 
     /** Discard the curated outline -- revert to embedded/extracted. */
+    /** Reset: discard the curated outline for this attachment (fall back to
+     *  embedded/extracted). A plain delete -- resetting IS deleting the Weavero
+     *  outline. Gated behind a right-click on the Weavero source option + a
+     *  confirm, which is the deliberate-action safety (no backup archive). */
     async _wvOutlineRevert(libraryID: number, itemKey: string) {
         await this._wvOutlineInit();
         delete this._wvOutlineStore()[this._bmReaderKey(libraryID, itemKey)];

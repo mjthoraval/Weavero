@@ -1047,6 +1047,17 @@ const RP_BM_CSS = [
     // The row just edited -- same accent-outline treatment the outline's active
     // row uses, so "what did I just change / where did it move to" is obvious.
     ".wv-bm-reader-row.wv-bm-reader-focused{outline:2px solid var(--accent-blue50,var(--color-accent,#5e6ad2));outline-offset:-1px;border-radius:4px;}",
+    // Keyboard cursor (wv-bm-reader-active) + multi-selection tint
+    // (wv-bm-reader-selected) -- same treatment as the outline's rows. The row
+    // takes programmatic focus (tabindex=-1) for the Del/nav key path, so its
+    // native focus ring is suppressed (the active outline is the cursor).
+    ".wv-bm-reader-row.wv-bm-reader-active{outline:2px solid var(--accent-blue50,var(--color-accent,#5e6ad2));outline-offset:-1px;border-radius:4px;}",
+    ".wv-bm-reader-row.wv-bm-reader-selected{background:var(--accent-blue10,rgba(94,106,210,.15));border-radius:4px;}",
+    // Suppress the browser focus ring ONLY when the row isn't the active cursor
+    // -- otherwise :focus{outline:none} erased the active ring (same element,
+    // equal specificity, later rule), so Ctrl-skip moved an INVISIBLE cursor
+    // (2026-07-21).
+    ".wv-bm-reader-row:focus:not(.wv-bm-reader-active){outline:none;}",
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     // Inherit the 20×20 svg size from the .wv-bm-actionbar rule above;
     // the previous 15×15 override forced 15/16 sub-pixel scaling on a
@@ -1138,6 +1149,10 @@ const RP_BM_CSS = [
     // !important so dragging a bookmark — pins especially — never selects text.
     ".wv-bm-reader-row, .wv-bm-reader-row *{-moz-user-select:none!important;user-select:none!important;}",
     ".wv-bm-reader-row:hover{background:rgba(127,127,127,.14);}",
+    // A selected row must KEEP its accent tint on hover -- the grey hover
+    // background otherwise made it look deselected (2026-07-21). Slightly
+    // stronger on hover so there's still hover feedback.
+    ".wv-bm-reader-row.wv-bm-reader-selected:hover{background:var(--accent-blue20,rgba(94,106,210,.22));}",
     ".wv-bm-reader-row .wv-bm-reader-ic{flex:0 0 auto;width:16px;height:16px;display:flex;align-items:center;justify-content:center;}",
     // Decorative monochrome glyphs (text quote / folder) stay subtle at 14px;
     // native item-type icons (<img>) render at full size/opacity to match the
@@ -5476,6 +5491,24 @@ class _ReaderPanelsMixin {
                 ctxWin._wvBmCtxWired = RP_BM_CTX_WIRE_V;
                 ctxWin.addEventListener("auxclick", bmCtxHandler, true);
             }
+            // Keyboard + multi-select for the bookmarks panel (document scope),
+            // mirroring the outline. Thin shims -> live plugin, so behaviour
+            // changes need no rewire. keydown = nav/edit/delete/expand; click =
+            // Ctrl/Shift multi-select; dblclick = edit.
+            const bmKeyWin: any = idoc.defaultView;
+            if (bmKeyWin && bmKeyWin._wvBmKeyWired !== RP_BM_CTX_WIRE_V) {
+                for (const [ev, ref] of [["keydown", "_wvBmKeyHandler"], ["click", "_wvBmClickHandler"], ["dblclick", "_wvBmDblHandler"]] as any) {
+                    try { if (bmKeyWin[ref]) bmKeyWin.removeEventListener(ev, bmKeyWin[ref], true); } catch (_) {}
+                }
+                const live = () => (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                bmKeyWin._wvBmKeyHandler = (e: any) => { try { const P: any = live(); if (P) P._wvReaderBmHandleKey(reader, idoc, e); } catch (_) {} };
+                bmKeyWin._wvBmClickHandler = (e: any) => { try { const P: any = live(); if (P) P._wvReaderBmHandleClick(reader, idoc, e); } catch (_) {} };
+                bmKeyWin._wvBmDblHandler = (e: any) => { try { const P: any = live(); if (P) P._wvReaderBmHandleDblClick(reader, idoc, e); } catch (_) {} };
+                bmKeyWin.addEventListener("keydown", bmKeyWin._wvBmKeyHandler, true);
+                bmKeyWin.addEventListener("click", bmKeyWin._wvBmClickHandler, true);
+                bmKeyWin.addEventListener("dblclick", bmKeyWin._wvBmDblHandler, true);
+                bmKeyWin._wvBmKeyWired = RP_BM_CTX_WIRE_V;
+            }
             // Capture which annotation is being dragged from the sidebar so a
             // drop on our tab/view can bookmark it (MIME-independent).
             if (!idoc._wvBmAnnDragWired) {
@@ -6095,6 +6128,9 @@ class _ReaderPanelsMixin {
             // without this you lose track of what you just edited. One-shot: the
             // pending id is consumed here, so it clears on the next render.
             try { this._wvReaderApplyPendingBmFocus(reader, idoc); } catch (_) {}
+            // Make rows keyboard-focusable and restore the multi-selection tint
+            // (the Set survives the re-render; the classes don't).
+            try { this._wvReaderBmDecorateRows(reader, idoc); } catch (_) {}
             // Lazy sortIndex backfill for this document's Weavero bookmarks.
             // Fire-and-forget and self-gating: it returns after a cheap scan if
             // nothing needs migrating, so this is essentially free on an
@@ -7545,6 +7581,379 @@ class _ReaderPanelsMixin {
         });
         this._wvReaderWireRowDrag(reader, idoc, att, row, folder, section, true);
         return row;
+    }
+
+    // ===== Bookmarks panel: keyboard nav + multi-select (document scope) =====
+    // Mirrors the outline keyboard model (_wvOutlineHandleKey & friends), over
+    // `.wv-bm-reader-row` rows keyed by `data-wv-bm-id`. Only active on the
+    // Bookmarks tab in the DOCUMENT scope ("This Document" + "Elsewhere").
+
+    /** tabindex + restore the multi-selection tint AND the active cursor from
+     *  `_wvBmSel` / `_wvBmActiveId` -- the classes are lost on every re-render
+     *  (e.g. toggling a folder rebuilds the rows), so the keyboard cursor must be
+     *  re-applied or arrows act on the wrong row (2026-07-21). */
+    _wvReaderBmDecorateRows(reader: any, idoc: any) {
+        const list = idoc.querySelector("." + RP_BM_VIEW_CLASS + " .wv-bm-reader-list");
+        if (!list) return;
+        const sel: Set<string> = reader._wvBmSel;
+        const activeId = reader._wvBmActiveId;
+        for (const r of [...list.querySelectorAll(".wv-bm-reader-row")]) {
+            if (!(r as any).hasAttribute("tabindex")) (r as any).setAttribute("tabindex", "-1");
+            const id = (r as any).getAttribute("data-wv-bm-id");
+            if (sel && id && sel.has(id)) (r as any).classList.add("wv-bm-reader-selected");
+            if (activeId && id === activeId) (r as any).classList.add("wv-bm-reader-active");
+        }
+    }
+
+    _wvBmRowKey(r: any): string | null { return r ? r.getAttribute("data-wv-bm-id") : null; }
+
+    /** Resolve a row to { att, entry, section, isFolder } or null. */
+    _wvBmResolveRow(reader: any, r: any): any {
+        const att = this._wvReaderAtt(reader);
+        if (!att || !r) return null;
+        const id = r.getAttribute("data-wv-bm-id");
+        if (!id) return null;
+        const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+        if (!doc) return null;
+        const locL = this._bmLocate(id, doc.local);
+        const loc = locL || this._bmLocate(id, doc.global);
+        if (!loc || !loc.entry) return null;
+        return { att, entry: loc.entry, section: locL ? "local" : "global", isFolder: r.classList.contains("wv-bm-reader-folder") };
+    }
+
+    /** True when the Bookmarks tab is active AND in document scope (the only
+     *  scope this keyboard handling covers -- library rows are a different store). */
+    _wvBmKbScope(reader: any, idoc: any): boolean {
+        const c = idoc.getElementById("sidebarContainer");
+        if (!c || !c.classList.contains(RP_BM_TAB_ON)) return false;
+        try { return this._wvReaderBmScope() === "document"; } catch (_) { return false; }
+    }
+
+    _wvBmList(idoc: any): any { return idoc.querySelector("." + RP_BM_VIEW_CLASS + " .wv-bm-reader-list"); }
+    _wvBmRows(idoc: any): any[] { const l = this._wvBmList(idoc); return l ? [...l.querySelectorAll(".wv-bm-reader-row")] : []; }
+
+    /** Ctrl/Shift click = multi-select; plain click sets the cursor + lets the
+     *  row's own navigate run. Double-click opens the editor (separate handler). */
+    _wvReaderBmHandleClick(reader: any, idoc: any, e: any) {
+        try {
+            if (!this._wvBmKbScope(reader, idoc)) return;
+            const t = e.target;
+            const row = t && t.closest && t.closest(".wv-bm-reader-row");
+            if (!row) return;
+            // Leave the hover action buttons / add / chevron clicks alone.
+            if (t.closest(".wv-bm-reader-actions,.wv-bm-reader-newfolder,.wv-bm-reader-chev")) return;
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault(); e.stopPropagation();
+                this._wvBmKeyToggle(reader, row); try { row.focus(); } catch (_) {}
+                return;
+            }
+            if (e.shiftKey) {
+                e.preventDefault(); e.stopPropagation();
+                const rows = this._wvBmRows(idoc);
+                this._wvBmKeyMove(reader, idoc, rows, rows.indexOf(row), true, false, true);
+                return;
+            }
+            // Plain click: single-select cursor; the row's own click navigates.
+            const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
+            const key = this._wvBmRowKey(row);
+            sel.clear();
+            for (const r of this._wvBmRows(idoc)) { r.classList.remove("wv-bm-reader-selected"); r.classList.remove("wv-bm-reader-active"); }
+            if (key != null) { sel.add(key); reader._wvBmSelAnchor = key; row.classList.add("wv-bm-reader-selected"); }
+            row.classList.add("wv-bm-reader-active");
+            reader._wvBmActiveId = key;
+            try { row.focus(); } catch (_) {}
+        } catch (_) {}
+    }
+
+    /** Double-click a row = edit (bookmark editor, or folder rename). */
+    _wvReaderBmHandleDblClick(reader: any, idoc: any, e: any) {
+        try {
+            if (!this._wvBmKbScope(reader, idoc)) return;
+            const row = e.target && e.target.closest && e.target.closest(".wv-bm-reader-row");
+            if (!row) return;
+            if (e.target.closest(".wv-bm-reader-actions,.wv-bm-reader-newfolder,.wv-bm-reader-chev")) return;
+            e.preventDefault(); e.stopPropagation();
+            this._wvBmEditRow(reader, idoc, row);
+        } catch (_) {}
+    }
+
+    /** All bookmark-panel keyboard handling (see _wvOutlineHandleKey for the
+     *  matching key map). */
+    _wvReaderBmHandleKey(reader: any, idoc: any, e: any) {
+        try {
+            if (!this._wvBmKbScope(reader, idoc)) return;
+            const t = e.target;
+            if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) return;
+            const list = this._wvBmList(idoc);
+            if (!list) return;
+            const rows: any[] = [...list.querySelectorAll(".wv-bm-reader-row")];
+            if (!rows.length) return;
+            const k = e.key;
+            // Escape: keep keyboard focus in the panel. The reader otherwise
+            // steers focus to the PDF view on Escape (verified 2026-07-21),
+            // killing bookmark keyboard nav. Swallow it and re-seat the cursor.
+            if (k === "Escape") {
+                const ae0 = idoc.activeElement;
+                const inView0 = !!(ae0 && ae0.closest && ae0.closest("." + RP_BM_VIEW_CLASS));
+                const bodyish0 = !ae0 || ae0 === idoc.body || ae0 === idoc.documentElement;
+                const activeRow = list.querySelector(".wv-bm-reader-row.wv-bm-reader-active");
+                if (activeRow && (inView0 || bodyish0)) {
+                    e.preventDefault(); e.stopPropagation();
+                    try { e.stopImmediatePropagation(); } catch (_) {}
+                    // The reader focuses the PDF-view iframe on Escape, from a
+                    // handler that runs BEFORE ours and can't be stopped from
+                    // here. It focuses ONCE (not a trap), so re-seating the cursor
+                    // on the next tick -- after the reader's focus-move -- wins and
+                    // sticks (verified 2026-07-21).
+                    const win = idoc.defaultView;
+                    const doRefocus = () => { try { this._wvBmRefocusRow(reader, idoc, reader._wvBmActiveId); } catch (_) {} };
+                    if (win && win.setTimeout) win.setTimeout(doRefocus, 0); else doRefocus();
+                }
+                return;
+            }
+            if (k === "Delete" || k === "Backspace") {
+                const selRows = rows.filter((r: any) => r.classList.contains("wv-bm-reader-selected"));
+                const use = selRows.length ? selRows : rows.filter((r: any) => r.classList.contains("wv-bm-reader-active"));
+                if (!use.length) return;
+                e.preventDefault(); e.stopPropagation();
+                this._wvBmDeleteSelected(reader, idoc, use);
+                return;
+            }
+            // Nav: focus in the bookmarks view, or body-level with an active row
+            // (the reader reverts focus to <body>; the active class is the cursor).
+            const ae = idoc.activeElement;
+            const inView = !!(ae && ae.closest && ae.closest("." + RP_BM_VIEW_CLASS));
+            const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
+            const hasActive = !!list.querySelector(".wv-bm-reader-row.wv-bm-reader-active");
+            if (!inView && !(bodyish && hasActive)) return;
+            if (e.altKey) return;
+            if ((k === "a" || k === "A") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+                e.preventDefault(); e.stopPropagation();
+                const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
+                sel.clear();
+                for (const r of rows) { const kk = this._wvBmRowKey(r); if (kk != null) { sel.add(kk); r.classList.add("wv-bm-reader-selected"); } }
+                return;
+            }
+            const moveFocused = (typeof Zotero !== "undefined" && (Zotero as any).isMac) ? e.metaKey : e.ctrlKey;
+            if ((e.ctrlKey || e.metaKey) && !moveFocused) return;
+            if (!moveFocused) {
+                if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, true); return; }
+                if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, false); return; }
+            }
+            const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
+            if (NAV.indexOf(k) < 0) return;
+            if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
+            e.preventDefault(); e.stopPropagation();
+            let i = rows.findIndex((r: any) => this._wvBmRowKey(r) === reader._wvBmActiveId);
+            if (i < 0) i = rows.findIndex((r: any) => r.classList.contains("wv-bm-reader-active"));
+            if (i < 0) i = 0;
+            const row = rows[i];
+            const info = this._wvBmResolveRow(reader, row);
+            const isFolder = !!(info && info.isFolder);
+            const expanded = !!(info && info.entry && info.entry.expanded);
+            const selCount = rows.filter((r: any) => r.classList.contains("wv-bm-reader-selected")).length;
+            switch (k) {
+            case "ArrowDown": this._wvBmKeyMove(reader, idoc, rows, i + 1, e.shiftKey, moveFocused); break;
+            case "ArrowUp": this._wvBmKeyMove(reader, idoc, rows, i - 1, e.shiftKey, moveFocused); break;
+            case "Home": this._wvBmKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); break;
+            case "End": this._wvBmKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); break;
+            case "Enter": if (selCount <= 1) this._wvBmEditRow(reader, idoc, row); break;
+            case " ": this._wvBmKeyToggle(reader, row); break;
+            case "ArrowRight":
+                if (selCount > 1) { this._wvBmSetSelectedFolders(reader, idoc, true); break; }
+                if (isFolder && !expanded) this._wvBmToggleFolder(reader, idoc, row);
+                else if (isFolder && expanded) this._wvBmKeyMove(reader, idoc, rows, i + 1, false, false);
+                break;
+            case "ArrowLeft":
+                if (selCount > 1) { this._wvBmSetSelectedFolders(reader, idoc, false); break; }
+                if (isFolder && expanded) this._wvBmToggleFolder(reader, idoc, row);
+                else {
+                    const depth = this._wvBmRowDepth(row);
+                    let p = i - 1;
+                    while (p >= 0 && this._wvBmRowDepth(rows[p]) >= depth) p--;
+                    if (p >= 0) this._wvBmKeyMove(reader, idoc, rows, p, false, false);
+                }
+                break;
+            }
+        } catch (_) {}
+    }
+
+    /** Row depth from its inline paddingLeft (8 + depth*14). */
+    _wvBmRowDepth(row: any): number {
+        try { const pl = parseInt(row.style.paddingLeft || "8", 10); return Math.max(0, Math.round((pl - 8) / 14)); } catch (_) { return 0; }
+    }
+
+    _wvBmKeyMove(reader: any, idoc: any, rows: any[], j: number, extend: boolean, focusOnly?: boolean, noNav?: boolean) {
+        j = Math.max(0, Math.min(j, rows.length - 1));
+        const row = rows[j];
+        if (!row) return;
+        reader._wvBmActiveId = this._wvBmRowKey(row);   // persists across re-renders
+        const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
+        if (focusOnly && !extend) {
+            for (const r of rows) r.classList.remove("wv-bm-reader-active");
+            row.classList.add("wv-bm-reader-active");
+            const key = this._wvBmRowKey(row);
+            if (key != null) reader._wvBmSelAnchor = key;
+            try { row.focus(); } catch (_) {}
+            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+        else if (extend) {
+            let a = rows.findIndex((r: any) => this._wvBmRowKey(r) === reader._wvBmSelAnchor);
+            if (a < 0) a = j;
+            const lo = Math.min(a, j), hi = Math.max(a, j);
+            if (!focusOnly) { sel.clear(); for (const r of rows) r.classList.remove("wv-bm-reader-selected"); }
+            for (let x = lo; x <= hi; x++) { const kk = this._wvBmRowKey(rows[x]); if (kk != null) { sel.add(kk); rows[x].classList.add("wv-bm-reader-selected"); } }
+            for (const r of rows) r.classList.remove("wv-bm-reader-active");
+            row.classList.add("wv-bm-reader-active");
+            try { row.focus(); } catch (_) {}
+            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+        else {
+            const key = this._wvBmRowKey(row);
+            sel.clear();
+            for (const r of rows) r.classList.remove("wv-bm-reader-selected");
+            if (key != null) { sel.add(key); reader._wvBmSelAnchor = key; row.classList.add("wv-bm-reader-selected"); }
+            for (const r of rows) r.classList.remove("wv-bm-reader-active");
+            row.classList.add("wv-bm-reader-active");
+            if (!noNav) this._wvBmNavigateRow(reader, row);
+            try { row.focus(); } catch (_) {}
+            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+    }
+
+    _wvBmKeyToggle(reader: any, row: any) {
+        const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
+        const key = this._wvBmRowKey(row);
+        if (key == null) return;
+        if (sel.has(key)) { sel.delete(key); row.classList.remove("wv-bm-reader-selected"); }
+        else { sel.add(key); row.classList.add("wv-bm-reader-selected"); }
+        reader._wvBmSelAnchor = key;
+        for (const r of [...(row.parentNode ? row.parentNode.querySelectorAll(".wv-bm-reader-row.wv-bm-reader-active") : [])]) (r as any).classList.remove("wv-bm-reader-active");
+        row.classList.add("wv-bm-reader-active");
+        reader._wvBmActiveId = key;
+        try { row.focus(); } catch (_) {}
+    }
+
+    _wvBmRefocusRow(reader: any, idoc: any, key: string | null) {
+        const list = this._wvBmList(idoc);
+        if (!list) return;
+        const rows: any[] = [...list.querySelectorAll(".wv-bm-reader-row")];
+        if (!rows.length) return;
+        let target = key != null ? rows.find((r: any) => this._wvBmRowKey(r) === key) : null;
+        if (!target) target = rows[0];
+        for (const r of rows) r.classList.remove("wv-bm-reader-active");
+        target.classList.add("wv-bm-reader-active");
+        reader._wvBmActiveId = this._wvBmRowKey(target);
+        try { target.focus(); } catch (_) {}
+        try { target.scrollIntoView({ block: "nearest" }); } catch (_) {}
+    }
+
+    /** Navigate to a bookmark row (folders don't navigate -- Left/Right toggles). */
+    _wvBmNavigateRow(reader: any, row: any) {
+        const info = this._wvBmResolveRow(reader, row);
+        if (!info || info.isFolder) return;
+        try { this._wvNavigateReaderBookmark(reader, info.entry, {}); } catch (_) {}
+    }
+
+    /** Enter / double-click: edit the row (bookmark editor, or folder rename). */
+    _wvBmEditRow(reader: any, idoc: any, row: any) {
+        const info = this._wvBmResolveRow(reader, row);
+        if (!info) return;
+        const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
+        if (info.isFolder) {
+            const n = this._bmPromptName(Zotero.getMainWindow(), "Rename Folder", info.entry.name || "");
+            if (n) this._bmReaderRename(info.att.libraryID, info.att.itemKey, info.entry.id, n).then(reRender);
+        }
+        else {
+            this._wvReaderEditBookmarkDialog(reader, info.att, info.entry, reRender);
+        }
+    }
+
+    /** Toggle one folder row open/closed, keeping the cursor on it. */
+    _wvBmToggleFolder(reader: any, idoc: any, row: any) {
+        const info = this._wvBmResolveRow(reader, row);
+        if (!info || !info.isFolder) return;
+        const key = this._wvBmRowKey(row);
+        Promise.resolve(this._bmReaderToggleFolder(info.att.libraryID, info.att.itemKey, info.entry.id))
+            .then(() => { this._wvReaderRenderBmList(reader, idoc); this._wvBmRefocusRow(reader, idoc, key); }).catch(() => {});
+    }
+
+    /** +/- : expand or collapse EVERY folder in the document sections. */
+    async _wvBmSetAllFolders(reader: any, idoc: any, expand: boolean) {
+        const att = this._wvReaderAtt(reader);
+        if (!att) return;
+        const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+        if (!doc) return;
+        const activeEl = idoc.querySelector(".wv-bm-reader-row.wv-bm-reader-active");
+        const activeKey = activeEl ? this._wvBmRowKey(activeEl) : null;
+        let changed = false;
+        const walk = (nodes: any[]) => {
+            for (const n of (nodes || [])) {
+                if (n && n.type === "folder") {
+                    if (!!n.expanded !== expand) { changed = true; }
+                    if (Array.isArray(n.children)) walk(n.children);
+                }
+            }
+        };
+        walk(doc.local); walk(doc.global);
+        // Apply by toggling only the ones that differ.
+        const applyAll = async (nodes: any[]) => {
+            for (const n of (nodes || [])) {
+                if (n && n.type === "folder") {
+                    if (!!n.expanded !== expand) { try { await this._bmReaderToggleFolder(att.libraryID, att.itemKey, n.id); } catch (_) {} }
+                    if (Array.isArray(n.children)) await applyAll(n.children);
+                }
+            }
+        };
+        if (!changed) return;
+        await applyAll(doc.local); await applyAll(doc.global);
+        this._wvReaderRenderBmList(reader, idoc);
+        if (activeKey != null) this._wvBmRefocusRow(reader, idoc, activeKey);
+    }
+
+    /** Left/Right with >1 selected: expand/collapse every selected FOLDER. */
+    async _wvBmSetSelectedFolders(reader: any, idoc: any, expand: boolean) {
+        const att = this._wvReaderAtt(reader);
+        if (!att) return;
+        const list = this._wvBmList(idoc);
+        if (!list) return;
+        const selRows: any[] = [...list.querySelectorAll(".wv-bm-reader-row.wv-bm-reader-folder.wv-bm-reader-selected")];
+        if (!selRows.length) return;
+        const activeEl = list.querySelector(".wv-bm-reader-row.wv-bm-reader-active");
+        const activeKey = activeEl ? this._wvBmRowKey(activeEl) : null;
+        let changed = false;
+        for (const r of selRows) {
+            const info = this._wvBmResolveRow(reader, r);
+            if (!info || !info.isFolder) continue;
+            if (!!info.entry.expanded !== expand) { try { await this._bmReaderToggleFolder(att.libraryID, att.itemKey, info.entry.id); changed = true; } catch (_) {} }
+        }
+        if (!changed) return;
+        this._wvReaderRenderBmList(reader, idoc);
+        if (activeKey != null) this._wvBmRefocusRow(reader, idoc, activeKey);
+    }
+
+    /** Delete the given rows (bookmarks + folders). Confirms once if a folder is
+     *  in the set (deleting a folder removes its contents). */
+    async _wvBmDeleteSelected(reader: any, idoc: any, rows: any[]) {
+        const att = this._wvReaderAtt(reader);
+        if (!att) return;
+        const ids: string[] = [];
+        let hasFolder = false;
+        for (const r of rows) {
+            const id = this._wvBmRowKey(r);
+            if (id != null && !ids.includes(id)) { ids.push(id); if (r.classList.contains("wv-bm-reader-folder")) hasFolder = true; }
+        }
+        if (!ids.length) return;
+        if (hasFolder) {
+            try {
+                const ok = Services.prompt.confirm(Zotero.getMainWindow(), "Weavero",
+                    "Delete " + ids.length + " selected bookmark" + (ids.length === 1 ? "" : "s") + "? Folders are removed with their contents.");
+                if (!ok) return;
+            } catch (_) {}
+        }
+        for (const id of ids) { try { await this._bmReaderRemove(att.libraryID, att.itemKey, id); } catch (_) {} }
+        try { if (reader._wvBmSel) reader._wvBmSel.clear(); } catch (_) {}
+        this._wvReaderRenderBmList(reader, idoc);
     }
 
     /** Drop wiring for one bookmark group, matched to where the item will

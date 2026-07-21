@@ -120,6 +120,13 @@ class _NoteEditorMixin {
             // text); since we take over the click ourselves, we
             // need to advertise that the link is clickable.
             "a[href] { cursor: pointer !important; }",
+            // Bare URLs linkified by the injected decoration plugin render as
+            // `<span class="wv-note-linkified wv-link-*" data-wv-href="…">`
+            // (display-only overlay; the note text is unchanged).
+            ".wv-note-linkified { cursor: pointer !important; text-decoration: underline; }",
+            ".wv-note-linkified.wv-link-zotero { color: var(--wv-link-zotero) !important; }",
+            ".wv-note-linkified.wv-link-http { color: var(--wv-link-http) !important; }",
+            ".wv-note-linkified.wv-link-app { color: var(--wv-link-app) !important; }",
         ];
         const prefOn = (name) => {
             try { const v = Zotero.Prefs.get("weavero." + name); return v === undefined ? true : !!v; }
@@ -207,6 +214,64 @@ class _NoteEditorMixin {
      *  reconciliation and produced an infinite blink-loop. CSS
      *  attribute-prefix selectors (`a[href^="..."]`) need no
      *  per-mutation work at all. */
+    /** Inject the bundled ProseMirror decoration-plugin script into the note
+     *  editor iframe (PAGE compartment) so bare URLs render clickable without
+     *  editing the note. `Decoration` can't be built from chrome (Xray), so we
+     *  eval a version-matched bundle (note-editor-inject.js) in the iframe's
+     *  own compartment -- the same tactic Better Notes uses. The script is
+     *  idempotent per view. Colour + click are handled Weavero-side (CSS on
+     *  `.wv-note-linkified`, click on `[data-wv-href]`). */
+    async _wvInstallNoteLinkify(iframe) {
+        if ((this as any)._wvDestroyed) return;
+        try {
+            if (!(this as any)._wvNoteInjectCode) {
+                const root = String((this as any)._rootURI || "");
+                if (!root) return;
+                const resp = await fetch(root + "note-editor-inject.js");
+                (this as any)._wvNoteInjectCode = await resp.text();
+            }
+            const iwin = iframe && iframe.contentWindow;
+            if (!iwin) return;
+            // One attempt = (inject if needed) + install. Cheap when already
+            // injected: just re-calls the page-side installer, which is
+            // idempotent via the plugin-spec marker. A transient
+            // "err: …editorView is undefined" during updateState actually
+            // LANDS the plugin (verified live); the next call then returns
+            // "already", so errors self-heal on any later attempt.
+            const attempt = (): string => {
+                try {
+                    const wj = (iwin as any).wrappedJSObject;
+                    if (wj && typeof wj.__wvInstallNoteLinkify === "function") {
+                        return String(wj.__wvInstallNoteLinkify());
+                    }
+                    const pageWin = (Components as any).utils.waiveXrays(iwin);
+                    return String(pageWin.eval((this as any)._wvNoteInjectCode));
+                } catch (e: any) { return "chrome-err: " + (e && e.message); }
+            };
+            const first = attempt();
+            this._dbg("[Weavero] note linkify inject: " + first);
+            if (first === "installed" || first === "already") return;
+            // The editor's view is created asynchronously WHEN A NOTE LOADS
+            // into this editor -- possibly long after the iframe doc loaded
+            // (wireUp time). Timers inside the page compartment never fire
+            // (verified live), so retry from chrome. This loop covers the
+            // load-lag; the per-sweep call in _processNoteEditors covers
+            // notes opened much later into a pre-created editor.
+            for (let i = 0; i < 15; i++) {
+                await (Zotero as any).Promise.delay(700);
+                if ((this as any)._wvDestroyed) return;
+                const r = attempt();
+                if (r === "installed" || r === "already") {
+                    this._dbg("[Weavero] note linkify installed (attempt " + (i + 2) + "): " + r);
+                    return;
+                }
+                if (r.indexOf("chrome-err") === 0) return;   // window gone
+            }
+        } catch (e) {
+            this._dbg("[Weavero] _wvInstallNoteLinkify err: " + e);
+        }
+    }
+
     _setupNoteEditorObserver(noteEditorEl) {
         if ((this as any)._wvDestroyed) return;   // plugin torn down — never re-wire
         if (!noteEditorEl) return;
@@ -271,8 +336,14 @@ class _NoteEditorMixin {
                     let t = e.target;
                     if (t && t.nodeType === 3) t = t.parentNode;
                     if (!t || !t.closest) return null;
-                    return t.closest("a[href]");
+                    // Real `<a>` links OR bare-URL decoration spans (the injected
+                    // linkify plugin renders `<span … data-wv-href="…">`).
+                    return t.closest("a[href], [data-wv-href]");
                 };
+                // `<a>` carries `href`; decoration spans carry `data-wv-href`.
+                const hrefOf = (a) => a
+                    ? (a.getAttribute("href") || a.getAttribute("data-wv-href") || "")
+                    : "";
                 // Swallow left-click only on mousedown/mouseup/pointerdown.
                 // Calling preventDefault on a RIGHT-click mousedown
                 // also suppresses the contextmenu event in Firefox —
@@ -283,7 +354,7 @@ class _NoteEditorMixin {
                     if (e.button !== 0) return null;
                     const a = findAnchor(e);
                     if (!a) return null;
-                    const href = a.getAttribute("href") || "";
+                    const href = hrefOf(a);
                     // Scheme whose toggle is OFF → don't take over: let the event
                     // through so the editor's native link popup appears.
                     if (!this._noteTakeoverForHref(href)) return null;
@@ -300,7 +371,7 @@ class _NoteEditorMixin {
                     // links (and non-links) clear it so the popup stays hidden.
                     try {
                         const a = findAnchor(e);
-                        const href = a ? (a.getAttribute("href") || "") : "";
+                        const href = hrefOf(a);
                         const takeover = !!a && this._noteTakeoverForHref(href);
                         idoc.body.classList.toggle("wv-note-native-link", !!a && !takeover);
                     } catch (er) {}
@@ -312,7 +383,7 @@ class _NoteEditorMixin {
                 const onClick = (e) => {
                     const a = swallowLeft(e);
                     if (!a) return;   // off-scheme (toggle off) → native click/popup
-                    const href = a.getAttribute("href") || "";
+                    const href = hrefOf(a);
                     if (href) this._launchURL(href);
                 };
 
@@ -326,6 +397,8 @@ class _NoteEditorMixin {
                 const onContext = (e) => {
                     const a = findAnchor(e);
                     if (!a) return;
+                    // Decoration spans aren't real links to edit → native menu.
+                    if (a.tagName !== "A") return;
                     // Off-scheme (toggle off) → let the native context menu through.
                     if (!this._noteTakeoverForHref(a.getAttribute("href"))) return;
                     e.preventDefault();
@@ -375,7 +448,7 @@ class _NoteEditorMixin {
                         this._hideLinkTooltipFromIframe();
                     }
                     if (!a) return;
-                    const href = a.getAttribute("href") || "";
+                    const href = hrefOf(a);
                     if (!href) return;
                     // Off-scheme (toggle off) → no Weavero tooltip; native handles it.
                     if (!this._noteTakeoverForHref(href)) return;
@@ -466,16 +539,17 @@ class _NoteEditorMixin {
                 popupMo.observe(idoc.body || idoc.documentElement,
                     { childList: true, subtree: true });
 
-                // NOTE: bare-URL linkification of the editor BODY is not done
-                // here. The editor is a live ProseMirror instance; wrapping bare
-                // text in `.wv-url-span` is reverted synchronously by ProseMirror's
-                // reconciliation (verified 2026-07-20: `_markTextLinks` returns
-                // true but zero spans survive even immediately). Doing it properly
-                // needs a ProseMirror decoration plugin on Zotero's EditorView,
-                // not DOM mutation. Existing `<a href>` links are still coloured +
-                // handled (CSS + the listeners above). Read-only note surfaces
-                // (note-row titles / bodies, notes-box labels) DO linkify bare
-                // URLs -- see `_processNoteRows` / `_processNotesBoxes`.
+                // Bare-URL linkify in the editor BODY: display-only, via an
+                // injected ProseMirror decoration plugin (DOM-wrapping is
+                // reverted by ProseMirror; a decoration overlay is not). The
+                // plugin can't be built from chrome (`Decoration` is unreachable
+                // across the Xray boundary), so we inject a bundled script into
+                // the iframe -- see `_wvInstallNoteLinkify`. Gated on the same
+                // "Editor" toggle as the rest of the editor link handling.
+                if (this._getEnableNotes()) {
+                    try { this._wvInstallNoteLinkify(iframe); }
+                    catch (e) { this._dbg("[Weavero] note linkify install: " + e); }
+                }
 
                 this._noteEditorObservers.set(noteEditorEl,
                     { iframe, idoc, popupMo,
@@ -1266,6 +1340,15 @@ class _NoteEditorMixin {
             for (const ne of md.querySelectorAll("note-editor")) {
                 this._setupNoteEditorObserver(ne);
                 mainCount++;
+                // Re-attempt the bare-URL linkify install on every sweep: the
+                // editor VIEW is created when a note loads into the editor,
+                // which can be long after wireUp's retry window (editors are
+                // pre-created by the pane). Cheap when already installed
+                // ("already" via the plugin-spec marker, no re-eval).
+                try {
+                    const fr = ne.querySelector("iframe#editor-view") || ne.querySelector("iframe");
+                    if (fr) this._wvInstallNoteLinkify(fr);
+                } catch (e) {}
             }
             // The reader CONTEXT PANE builds its <note-editor> elements
             // lazily on first render — often after every post-restore sweep

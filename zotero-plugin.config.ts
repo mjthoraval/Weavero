@@ -40,6 +40,17 @@ export default defineConfig({
         format: "iife",
         outfile: "addon/prefs.js",
       },
+      {
+        // Injected INTO the note-editor iframe (page compartment) to add a
+        // ProseMirror decoration plugin. Bundles version-matched
+        // prosemirror-view/-state so `Decoration` is available there.
+        entryPoints: ["src/note-editor-inject.ts"],
+        bundle: true,
+        target: "firefox115",
+        platform: "browser",
+        format: "iife",
+        outfile: "addon/note-editor-inject.js",
+      },
     ],
     // Disable scaffold's PrefsManager. It expects `prefs.js` to be
     // in Mozilla's default-preferences format (lines like

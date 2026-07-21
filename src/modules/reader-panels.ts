@@ -33,7 +33,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 2;
+const RP_BM_CTX_WIRE_V = 4;
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -44,7 +44,7 @@ const RP_BM_CTX_WIRE_V = 2;
 // this whenever the panel wiring/render structure changes so open tabs self-heal
 // on the next update. (undefined !== value, so the first stamp-aware build
 // already heals currently-stale tabs.)
-const RP_PANELS_WIRE_V = 2;
+const RP_PANELS_WIRE_V = 10;
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 
@@ -1255,6 +1255,9 @@ const RP_OUTLINE_CSS = [
     //  render's per-level padding, active = 3px accent outline).
     ".wv-outline-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 8px;}",
     ".wv-outline-row{display:flex;align-items:center;}",
+    // Rows take programmatic focus (tabindex=-1, for Del-to-delete); the
+    // wv-outline-active ring is the selection marker, so no second focus ring.
+    ".wv-outline-row:focus{outline:none;}",
     // Drag-reorder: the dragged row (and its subtree) dims; a blue drop bar shows
     // where the block lands, indented to the target level (margin-left set inline).
     ".wv-outline-row.wv-outline-dragging{opacity:.4;}",
@@ -1262,6 +1265,9 @@ const RP_OUTLINE_CSS = [
     // "Nest into" affordance (orient 0): box the target row -- mirrors Zotero's
     // collection/item tree `.drop` class for drop-onto-row.
     ".wv-outline-row.wv-outline-drop-into{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;border-radius:4px;background:var(--accent-blue10,rgba(94,106,210,.12));}",
+    // Multi-selection tint (Ctrl/Shift+click). Distinct from wv-outline-active
+    // (the navigation ring): selection is what Del / a multi-drag operates on.
+    ".wv-outline-row.wv-outline-selected{background:var(--accent-blue10,rgba(94,106,210,.15));border-radius:4px;}",
     ".wv-outline-label{display:block;flex:1 1 auto;min-width:0;font-size:.6875rem;line-height:1.2;padding:.21875rem;white-space:normal;cursor:pointer;user-select:none;-moz-user-select:none;overflow-wrap:anywhere;}",
     ".wv-outline-row.wv-outline-active .wv-outline-label{outline:3px solid var(--accent-blue50,var(--color-accent,#5e6ad2));border-radius:5px;}",
     // Page number at the row's right end -- same treatment as bookmark rows
@@ -1537,6 +1543,26 @@ class _ReaderPanelsMixin {
                 olCtxWin._wvOutlineCtxHandler = olCtxHandler;
                 olCtxWin._wvOutlineCtxWired = RP_BM_CTX_WIRE_V;
                 olCtxWin.addEventListener("auxclick", olCtxHandler, true);
+            }
+            // Keyboard for the outline: arrows/Home/End/Enter/Space navigate +
+            // expand/collapse (mirrors Zotero's tree, see _wvOutlineHandleKey),
+            // Del deletes the selection. Same versioned live-plugin wiring as the
+            // context menu above.
+            // THIN shim: all logic lives on the live plugin (_wvOutlineHandleKey),
+            // so changing the key behaviour never again needs a wire-version bump
+            // for this handler.
+            const olDelWin: any = idoc.defaultView;
+            if (olDelWin && olDelWin._wvOutlineDelWired !== RP_BM_CTX_WIRE_V) {
+                try { if (olDelWin._wvOutlineDelHandler) olDelWin.removeEventListener("keydown", olDelWin._wvOutlineDelHandler, true); } catch (_) {}
+                const olDelHandler = (e: any) => {
+                    try {
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (P) P._wvOutlineHandleKey(reader, idoc, e);
+                    } catch (_) {}
+                };
+                olDelWin._wvOutlineDelHandler = olDelHandler;
+                olDelWin._wvOutlineDelWired = RP_BM_CTX_WIRE_V;
+                olDelWin.addEventListener("keydown", olDelHandler, true);
             }
             // If the native outline is ALREADY the active view (restored on open,
             // or the user was on it before our panel injected), take over now.
@@ -1817,7 +1843,58 @@ class _ReaderPanelsMixin {
                     this._wvReaderRenderOutline(reader, idoc);
                 });
             }
-            row.addEventListener("click", () => this._wvOutlineNavigate(reader, idoc, entry, row));
+            // Focusable (programmatic only -- not in the tab order) so a click
+            // leaves keyboard focus ON the row and the Del-to-delete handler
+            // (wired on this document's window) actually receives the key;
+            // without this, navigation can move focus into the nested PDF
+            // iframe, whose key events never reach this document.
+            row.setAttribute("tabindex", "-1");
+            // Selection state survives re-renders on `reader` (a Set of the same
+            // keys `keyOf` produces: curated ids / "idx-N").
+            if (reader._wvOutlineSel && reader._wvOutlineSel.has(key)) row.classList.add("wv-outline-selected");
+            row.addEventListener("click", (e: any) => {
+                const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+                const rowKey = (r: any) => r._wvOl
+                    ? (r._wvOl.curatedView ? String(r._wvOl.entry.id) : ("idx-" + r._wvOl.index)) : null;
+                // Ctrl/Cmd+click: toggle membership. NO navigation (user-specified
+                // 2026-07-21) -- selecting a batch must not bounce the view around.
+                if (e.ctrlKey || e.metaKey) {
+                    if (sel.has(key)) { sel.delete(key); row.classList.remove("wv-outline-selected"); }
+                    else { sel.add(key); row.classList.add("wv-outline-selected"); }
+                    reader._wvOutlineSelAnchor = key;
+                    try { row.focus(); } catch (_) {}
+                    return;
+                }
+                // Shift+click: select the visible range from the anchor. No navigation.
+                if (e.shiftKey) {
+                    try {
+                        const rows: any[] = [...container.querySelectorAll(".wv-outline-row")];
+                        const ai = rows.findIndex((r: any) => rowKey(r) === reader._wvOutlineSelAnchor);
+                        const bi = rows.indexOf(row);
+                        if (ai >= 0 && bi >= 0) {
+                            sel.clear();
+                            const lo = Math.min(ai, bi), hi = Math.max(ai, bi);
+                            for (let k2 = 0; k2 < rows.length; k2++) {
+                                const kk = rowKey(rows[k2]);
+                                if (k2 >= lo && k2 <= hi && kk != null) { sel.add(kk); rows[k2].classList.add("wv-outline-selected"); }
+                                else rows[k2].classList.remove("wv-outline-selected");
+                            }
+                        }
+                    } catch (_) {}
+                    try { row.focus(); } catch (_) {}
+                    return;
+                }
+                // Plain click: collapse to a single selection + navigate (as before).
+                try {
+                    sel.clear(); sel.add(key); reader._wvOutlineSelAnchor = key;
+                    for (const r of [...container.querySelectorAll(".wv-outline-row.wv-outline-selected")]) {
+                        if (r !== row) (r as any).classList.remove("wv-outline-selected");
+                    }
+                    row.classList.add("wv-outline-selected");
+                } catch (_) {}
+                this._wvOutlineNavigate(reader, idoc, entry, row);
+                try { row.focus(); } catch (_) {}
+            });
             label.addEventListener("dblclick", (e: any) => {
                 e.stopPropagation();
                 this._wvOutlineBeginRename(reader, idoc, entry, i, curatedView);
@@ -1841,13 +1918,43 @@ class _ReaderPanelsMixin {
                     // a reload swaps the instance, so if dragstart wrote to one
                     // instance and the list's drop handler read another the drag
                     // would silently not register. `reader` survives reloads.
-                    reader._wvOutlineDragSrc = i;
+                    // ALWAYS an array of entry indices: dragging a row that is part
+                    // of the multi-selection moves the WHOLE selection; any other
+                    // row drags alone.
+                    const sel: Set<string> = reader._wvOutlineSel;
+                    let indices = [i];
+                    if (sel && sel.size > 1 && sel.has(key)) {
+                        indices = [];
+                        for (const kk of sel) {
+                            if (curatedView) {
+                                const ix = entries.findIndex((x: any) => String(x.id) === kk);
+                                if (ix >= 0) indices.push(ix);
+                            } else {
+                                const m = /^idx-(\d+)$/.exec(kk);
+                                if (m) indices.push(+m[1]);
+                            }
+                        }
+                        indices.sort((a, b) => a - b);
+                        if (!indices.length) indices = [i];
+                    }
+                    reader._wvOutlineDragSrc = indices;
                     row.classList.add("wv-outline-dragging");
-                    if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("application/x-weavero-outline-move", String(i)); } catch (_) {} }
+                    if (indices.length > 1) {
+                        for (const r of [...container.querySelectorAll(".wv-outline-row.wv-outline-selected")]) {
+                            (r as any).classList.add("wv-outline-dragging");
+                        }
+                    }
+                    if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("application/x-weavero-outline-move", indices.join(",")); } catch (_) {} }
                 } catch (_) {}
             });
             row.addEventListener("dragend", () => {
-                try { row.classList.remove("wv-outline-dragging"); this._wvOutlineHideDropInd(idoc); reader._wvOutlineDragSrc = null; } catch (_) {}
+                try {
+                    for (const r of [...container.querySelectorAll(".wv-outline-row.wv-outline-dragging")]) {
+                        (r as any).classList.remove("wv-outline-dragging");
+                    }
+                    this._wvOutlineHideDropInd(idoc);
+                    reader._wvOutlineDragSrc = null;
+                } catch (_) {}
             });
             container.appendChild(row);
             if (hasKids && !isExpanded) hideBelow = depth;   // collapsed -> hide descendants
@@ -1968,7 +2075,8 @@ class _ReaderPanelsMixin {
                 const t = p._wvOutlineDropAt(list, e.clientY);
                 p._wvOutlineHideDropInd(idoc);
                 reader._wvOutlineDragSrc = null;
-                if (Number.isInteger(src) && t && t.index >= 0) p._wvOutlineReorder(reader, idoc, src, t.index, t.orient);
+                const ok = Array.isArray(src) ? src.length > 0 : Number.isInteger(src);
+                if (ok && t && t.index >= 0) p._wvOutlineReorder(reader, idoc, src, t.index, t.orient);
             }, true);
             list.addEventListener("dragleave", (e: any) => {
                 // Only hide when the pointer actually leaves the list bounds.
@@ -1980,10 +2088,15 @@ class _ReaderPanelsMixin {
     /** Move a dragged entry's SUBTREE to a new position + indent, in the curated
      *  store. Curates first if needed (indices map: the store is built in the same
      *  flatten order the rows were rendered from). Persists + re-renders. */
-    async _wvOutlineReorder(reader: any, idoc: any, srcIndex: number, targetIndex: number, orient: number) {
+    async _wvOutlineReorder(reader: any, idoc: any, srcIndices: any, targetIndex: number, orient: number) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
+            // The original view over an EXISTING curated store is a read-only
+            // reference -- row indices don't map to curated entries (same rule
+            // as _wvOutlineResolveId; found via the Del-key corruption).
+            if (reader._wvOutlineViewSource === "original"
+                    && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) return;
             // Ensure a curated store (a fresh outline reorders its own copy).
             if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
                 const cache = reader._wvOutlineCache;
@@ -1993,19 +2106,29 @@ class _ReaderPanelsMixin {
             }
             const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
             const entries: any[] = (d && d.entries) || [];
-            if (srcIndex < 0 || srcIndex >= entries.length) return;
+            let srcs: number[] = (Array.isArray(srcIndices) ? srcIndices : [srcIndices])
+                .filter((s: any) => Number.isInteger(s) && s >= 0 && s < entries.length)
+                .sort((a: number, b: number) => a - b);
+            if (!srcs.length) return;
             if (targetIndex < 0 || targetIndex >= entries.length) return;
-            const dragged = entries[srcIndex];
-            const baseIndent = Math.max(0, dragged.indentLevel || 0);
-            // Dragged subtree = dragged + contiguous entries indented deeper than it.
-            let end = srcIndex;
-            while (end + 1 < entries.length && Math.max(0, entries[end + 1].indentLevel || 0) > baseIndent) end++;
-            // Can't drop into your own subtree.
-            if (targetIndex >= srcIndex && targetIndex <= end) return;
+            // Each dragged subtree = entry + contiguous deeper-indented entries.
+            // A selected entry already inside the previous block is subsumed by it
+            // (its subtree moves with the parent -- selecting both is not an error).
+            const blocks: Array<{ start: number, end: number, base: number }> = [];
+            for (const s of srcs) {
+                const last = blocks[blocks.length - 1];
+                if (last && s <= last.end) continue;
+                const base = Math.max(0, entries[s].indentLevel || 0);
+                let end = s;
+                while (end + 1 < entries.length && Math.max(0, entries[end + 1].indentLevel || 0) > base) end++;
+                blocks.push({ start: s, end, base });
+            }
+            // Can't drop into any dragged subtree.
+            for (const b of blocks) if (targetIndex >= b.start && targetIndex <= b.end) return;
             // Resolve (gap, newIndent) from the orientation, Zotero items-list style:
             //   -1 = sibling before target; 0 = first child of target; +1 = sibling
             //   after target's WHOLE subtree. Depth follows the target, never the
-            //   cursor X. gap is an index into the FULL entry array.
+            //   cursor X. gap is an index into the FULL (pre-removal) entry array.
             const tDepth = Math.max(0, entries[targetIndex].indentLevel || 0);
             let gap: number, newIndent: number;
             if (orient === 0) {
@@ -2017,45 +2140,113 @@ class _ReaderPanelsMixin {
                 while (te + 1 < entries.length && Math.max(0, entries[te + 1].indentLevel || 0) > tDepth) te++;
                 gap = te + 1; newIndent = tDepth;
             }
-            const blockLen = end - srcIndex + 1;
-            // No-op only if the resolved spot is inside the moved block AND the
-            // indent doesn't change (an indent-only change at the same spot -- e.g.
-            // a child dragged to sit just after its own parent -- is a real move).
-            if (gap > srcIndex && gap <= end + 1 && newIndent === baseIndent) return;
-            const block = entries.splice(srcIndex, blockLen);
+            // No-op only for a SINGLE block dropped inside itself with the indent
+            // unchanged (an indent-only change at the same spot -- e.g. a child
+            // dragged to sit just after its own parent -- is a real move). A
+            // multi-drag always gathers the blocks together, so it always acts.
+            if (blocks.length === 1) {
+                const b = blocks[0];
+                if (gap > b.start && gap <= b.end + 1 && newIndent === b.base) return;
+            }
+            // Remove the blocks back-to-front (indices stay valid), keeping their
+            // entry arrays in ascending block order.
+            const removed: any[][] = [];
+            for (let k = blocks.length - 1; k >= 0; k--) {
+                removed.unshift(entries.splice(blocks[k].start, blocks[k].end - blocks[k].start + 1));
+            }
+            // The insertion index shifts down by every block that sat wholly
+            // before the gap. (No block can straddle the gap: the gap is derived
+            // from the target, which is outside every block.)
             let ins = gap;
-            if (ins > srcIndex) ins -= blockLen;
+            for (const b of blocks) if (b.end + 1 <= gap) ins -= (b.end - b.start + 1);
             ins = Math.max(0, Math.min(ins, entries.length));
-            const delta = newIndent - baseIndent;
-            if (delta) for (const en of block) en.indentLevel = Math.max(0, (en.indentLevel || 0) + delta);
-            entries.splice(ins, 0, ...block);
+            // Every block lands at the SAME level (they become siblings at the
+            // drop point, in their original relative order), each keeping its
+            // internal shape via a per-block delta.
+            const flat: any[] = [];
+            for (let k = 0; k < removed.length; k++) {
+                const delta = newIndent - blocks[k].base;
+                if (delta) for (const en of removed[k]) en.indentLevel = Math.max(0, (en.indentLevel || 0) + delta);
+                flat.push(...removed[k]);
+            }
+            entries.splice(ins, 0, ...flat);
             await this._wvOutlinePersist();
             await this._wvReaderRenderOutline(reader, idoc);
         } catch (err) { Zotero.debug("[Weavero] _wvOutlineReorder err: " + err); }
+    }
+
+    /** Every expandable (has-children) entry's expand key, in the current view. */
+    _wvOutlineParentKeys(reader: any): { expandedSet: Set<string>, parentKeys: string[] } {
+        const att = this._wvReaderAtt(reader);
+        const viewOriginal = reader._wvOutlineViewSource === "original";
+        const curatedView = !!(att && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) && !viewOriginal;
+        let entries: any[];
+        if (curatedView) { const d = this._wvOutlineDoc(att.libraryID, att.itemKey); entries = (d && d.entries) || []; }
+        else { entries = this._wvOutlineFlattenTree((reader._wvOutlineCache && reader._wvOutlineCache.tree) || []); }
+        const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+        const keyOf = (entry: any, i: number) => curatedView ? String(entry.id) : ("idx-" + i);
+        const parentKeys: string[] = [];
+        for (let i = 0; i < entries.length; i++) {
+            const depth = Math.max(0, entries[i].indentLevel || 0);
+            if (i + 1 < entries.length && Math.max(0, entries[i + 1].indentLevel || 0) > depth) parentKeys.push(keyOf(entries[i], i));
+        }
+        return { expandedSet, parentKeys };
     }
 
     /** Expand-all / collapse-all, matching the native outline double-click: if
      *  ANY expandable entry is collapsed -> expand all, else collapse all. */
     _wvOutlineToggleAll(reader: any, idoc: any) {
         try {
-            const att = this._wvReaderAtt(reader);
-            const viewOriginal = reader._wvOutlineViewSource === "original";
-            const curatedView = !!(att && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) && !viewOriginal;
-            let entries: any[];
-            if (curatedView) { const d = this._wvOutlineDoc(att.libraryID, att.itemKey); entries = (d && d.entries) || []; }
-            else { entries = this._wvOutlineFlattenTree((reader._wvOutlineCache && reader._wvOutlineCache.tree) || []); }
-            const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
-            const keyOf = (entry: any, i: number) => curatedView ? String(entry.id) : ("idx-" + i);
-            const parentKeys: string[] = [];
-            for (let i = 0; i < entries.length; i++) {
-                const depth = Math.max(0, entries[i].indentLevel || 0);
-                if (i + 1 < entries.length && Math.max(0, entries[i + 1].indentLevel || 0) > depth) parentKeys.push(keyOf(entries[i], i));
-            }
+            const { expandedSet, parentKeys } = this._wvOutlineParentKeys(reader);
             const anyCollapsed = parentKeys.some(k => !expandedSet.has(k));
-            if (anyCollapsed) for (const k of parentKeys) expandedSet.add(k);
-            else for (const k of parentKeys) expandedSet.delete(k);
-            this._wvReaderRenderOutline(reader, idoc);
+            this._wvOutlineSetAllExpanded(reader, idoc, anyCollapsed);
         } catch (_) {}
+    }
+
+    /** Explicit expand-all (`+`) / collapse-all (`-`) -- the Collections-pane
+     *  keyboard model (collectionTree.jsx: `+` expandLibrary, `-` collapseLibrary),
+     *  requested for the reader outline in zotero/zotero#3751 (forums #109147). */
+    _wvOutlineSetAllExpanded(reader: any, idoc: any, expand: boolean) {
+        try {
+            const { expandedSet, parentKeys } = this._wvOutlineParentKeys(reader);
+            if (expand) for (const k of parentKeys) expandedSet.add(k);
+            else for (const k of parentKeys) expandedSet.delete(k);
+            // Preserve keyboard focus across the re-render. Rebuilding the rows
+            // drops the focused element, and the key handler's focus-in-outline
+            // guard then ignores the NEXT key -- which is exactly why `-` right
+            // after `+` did nothing (2026-07-21). Only when a row was active
+            // (keyboard use), so a mouse double-click toggle doesn't grab focus.
+            const activeEl = idoc.querySelector(".wv-outline-row.wv-outline-active");
+            const activeKey = activeEl ? this._wvOutlineRowKey(activeEl) : null;
+            const p = this._wvReaderRenderOutline(reader, idoc);
+            if (activeKey != null) Promise.resolve(p).then(() => { try { this._wvOutlineRefocusRow(idoc, activeKey); } catch (_) {} });
+        } catch (_) {}
+    }
+
+    /** Re-focus the outline row for `key` after a re-render (falls back to the
+     *  first row when that row is gone -- e.g. collapse-all hid it), so keyboard
+     *  focus stays inside the outline and the next key still lands there. When
+     *  `reader` is given and `select` is true, also makes it the sole selection
+     *  (so e.g. leaving inline-rename leaves the row both focused AND selected --
+     *  otherwise keyboard control is lost after Escape, reported 2026-07-21). */
+    _wvOutlineRefocusRow(idoc: any, key: string | null, reader?: any, select?: boolean) {
+        const list = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+        if (!list) return;
+        const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+        if (!rows.length) return;
+        let target = key != null ? rows.find((r: any) => this._wvOutlineRowKey(r) === key) : null;
+        if (!target) target = rows[0];
+        for (const r of rows) r.classList.remove("wv-outline-active");
+        target.classList.add("wv-outline-active");
+        if (select && reader) {
+            const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+            sel.clear();
+            for (const r of rows) r.classList.remove("wv-outline-selected");
+            const tk = this._wvOutlineRowKey(target);
+            if (tk != null) { sel.add(tk); reader._wvOutlineSelAnchor = tk; target.classList.add("wv-outline-selected"); }
+        }
+        try { target.focus(); } catch (_) {}
+        try { target.scrollIntoView({ block: "nearest" }); } catch (_) {}
     }
 
     /** Resolve an outline entry to a curated entry id, performing copy-on-first-
@@ -2118,6 +2309,259 @@ class _ReaderPanelsMixin {
             await this._wvOutlineDeleteEntry(ref.att.libraryID, ref.att.itemKey, ref.id);
             this._wvReaderRenderOutline(reader, idoc);
         } catch (_) {}
+    }
+
+    /** All outline keyboard handling, dispatched from the one keydown shim.
+     *  Mirrors Zotero's tree (virtualized-table `_onKeyDown`):
+     *    Up/Down    move selection (+ navigate) to prev/next visible row
+     *    Home/End   first / last row
+     *    Left       collapse an open container, else jump to parent
+     *               (>1 selected: collapse EVERY selected container)
+     *    Right      expand a closed container, else step into first child
+     *               (>1 selected: expand EVERY selected container)
+     *    Enter      begin inline rename of the focused row (single selection
+     *               only; arrows already navigate, so Enter edits)
+     *    Space      toggle the focused row in the multi-selection
+     *    Shift+Up/Down  extend the multi-selection from the anchor (replaces)
+     *    Ctrl/Cmd+Up/Down  move the focus cursor only (skip rows without
+     *                   changing the selection; then Space toggles)
+     *    Ctrl+Shift+Up/Down  extend the range but MERGE into the existing
+     *                   selection (keeps rows selected before the skip)
+     *    Ctrl/Cmd+A     select all rows
+     *    Del/Backspace  delete the selection
+     *  Guards: outline takeover active; never while typing; navigation keys act
+     *  only when focus is inside the outline (so arrows still scroll the PDF when
+     *  the reader has focus). */
+    _wvOutlineHandleKey(reader: any, idoc: any, e: any) {
+        try {
+            const container = idoc.getElementById("sidebarContainer");
+            if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) return;
+            const t = e.target;
+            if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) return;
+            const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+            const list = view && view.querySelector(".wv-outline-list");
+            if (!list) return;
+            const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+            if (!rows.length) return;
+            const k = e.key;
+            // Delete works on the selection regardless of which element has focus
+            // (you select rows, then hit Del) -- keep that reach.
+            if (k === "Delete" || k === "Backspace") {
+                const selRows = rows.filter((r: any) => r.classList.contains("wv-outline-selected"));
+                const use = selRows.length ? selRows : rows.filter((r: any) => r.classList.contains("wv-outline-active"));
+                const items = use.map((r: any) => r._wvOl).filter(Boolean);
+                if (!items.length) return;
+                e.preventDefault(); e.stopPropagation();
+                this._wvOutlineDeleteSelected(reader, idoc, items);
+                return;
+            }
+            // Everything below is navigation. The `.wv-outline-active` row is the
+            // real cursor, NOT DOM focus: the reader reverts focus to <body> when
+            // inline-rename ends, so requiring literal row focus lost keyboard
+            // control after Escape (2026-07-21). Accept focus INSIDE the outline,
+            // OR body-level focus (reader chrome -- never the PDF view, whose key
+            // events fire in a different window and can't reach here) WHEN a row
+            // is active. A real widget elsewhere in the sidebar keeps its keys.
+            const ae = idoc.activeElement;
+            const inOutline = !!(ae && ae.closest && ae.closest("." + RP_OUTLINE_VIEW_CLASS));
+            const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
+            const hasActive = !!list.querySelector(".wv-outline-row.wv-outline-active");
+            if (!inOutline && !(bodyish && hasActive)) return;
+            if (e.altKey) return;
+            if ((k === "a" || k === "A") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+                e.preventDefault(); e.stopPropagation();
+                const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+                sel.clear();
+                for (const r of rows) { const kk = this._wvOutlineRowKey(r); if (kk != null) { sel.add(kk); r.classList.add("wv-outline-selected"); } }
+                return;
+            }
+            // Ctrl (Cmd on Mac) = "move focus only": step the cursor WITHOUT
+            // changing the selection, so you can Space-toggle rows into a
+            // multi-selection (items-list model, virtualized-table `moveFocused`).
+            // Applies to the vertical moves; any OTHER ctrl/meta combo is left
+            // alone (Ctrl+Left/Right etc. do nothing, matching the tree).
+            const moveFocused = (typeof Zotero !== "undefined" && (Zotero as any).isMac) ? e.metaKey : e.ctrlKey;
+            if ((e.ctrlKey || e.metaKey) && !moveFocused) return;
+            if (!moveFocused) {
+                // +/- expand-all / collapse-all (Collections-pane model, zotero/zotero#3751).
+                if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, true); return; }
+                if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, false); return; }
+            }
+            const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
+            if (NAV.indexOf(k) < 0) return;
+            if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
+            e.preventDefault(); e.stopPropagation();
+            let i = rows.findIndex((r: any) => r.classList.contains("wv-outline-active"));
+            if (i < 0) i = 0;
+            const row = rows[i];
+            const tw = row.querySelector(".wv-outline-twisty");
+            const hasKids = !!(tw && !tw.classList.contains("wv-outline-leaf"));
+            const collapsed = !!(tw && tw.classList.contains("wv-outline-collapsed"));
+            const selCount = rows.filter((r: any) => r.classList.contains("wv-outline-selected")).length;
+            switch (k) {
+            case "ArrowDown": this._wvOutlineKeyMove(reader, idoc, rows, i + 1, e.shiftKey, moveFocused); break;
+            case "ArrowUp": this._wvOutlineKeyMove(reader, idoc, rows, i - 1, e.shiftKey, moveFocused); break;
+            case "Home": this._wvOutlineKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); break;
+            case "End": this._wvOutlineKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); break;
+            // Enter edits -- but only a SINGLE selection; renaming makes no sense
+            // for a multi-selection (there's no one row to edit).
+            case "Enter": if (selCount <= 1) this._wvOutlineBeginRename(reader, idoc, row._wvOl.entry, row._wvOl.index, row._wvOl.curatedView); break;
+            case " ": this._wvOutlineKeyToggle(reader, row); break;
+            case "ArrowRight":
+                // >1 selected -> expand every selected container (items-tree model).
+                if (selCount > 1) { this._wvOutlineKeyExpandSelection(reader, idoc, true); break; }
+                if (hasKids && collapsed) this._wvOutlineKeyExpand(reader, idoc, row, true);
+                else if (hasKids) this._wvOutlineKeyMove(reader, idoc, rows, i + 1, false);
+                break;
+            case "ArrowLeft":
+                if (selCount > 1) { this._wvOutlineKeyExpandSelection(reader, idoc, false); break; }
+                if (hasKids && !collapsed) this._wvOutlineKeyExpand(reader, idoc, row, false);
+                else {
+                    const depth = Math.max(0, row._wvOl.entry.indentLevel || 0);
+                    let p = i - 1;
+                    while (p >= 0 && Math.max(0, rows[p]._wvOl.entry.indentLevel || 0) >= depth) p--;
+                    if (p >= 0) this._wvOutlineKeyMove(reader, idoc, rows, p, false);
+                }
+                break;
+            }
+        } catch (_) {}
+    }
+
+    /** Stable key for an outline row, matching the render loop's `keyOf` and the
+     *  expand set: curated id, or "idx-N" for the read-only view. */
+    _wvOutlineRowKey(r: any): string | null {
+        return r && r._wvOl ? (r._wvOl.curatedView ? String(r._wvOl.entry.id) : ("idx-" + r._wvOl.index)) : null;
+    }
+
+    /** Move the outline "focus" to row `j`.
+     *   - focusOnly (Ctrl/Cmd): move the cursor ONLY -- no selection change, no
+     *     navigate; updates the anchor so a following Shift/Space acts from here.
+     *   - extend (Shift): extend the multi-selection from the anchor, no navigate.
+     *   - plain: single-select + navigate (mirrors the collections pane). */
+    _wvOutlineKeyMove(reader: any, idoc: any, rows: any[], j: number, extend: boolean, focusOnly?: boolean) {
+        j = Math.max(0, Math.min(j, rows.length - 1));
+        const row = rows[j];
+        if (!row) return;
+        const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+        if (focusOnly && !extend) {
+            for (const r of rows) r.classList.remove("wv-outline-active");
+            row.classList.add("wv-outline-active");
+            const key = this._wvOutlineRowKey(row);
+            if (key != null) reader._wvOutlineSelAnchor = key;
+            try { row.focus(); } catch (_) {}
+            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+        else if (extend) {
+            let a = rows.findIndex((r: any) => this._wvOutlineRowKey(r) === reader._wvOutlineSelAnchor);
+            if (a < 0) a = j;
+            const lo = Math.min(a, j), hi = Math.max(a, j);
+            // Plain Shift REPLACES the selection with the anchor..j range;
+            // Ctrl+Shift (focusOnly) MERGES the range INTO the existing selection
+            // -- so a scattered selection built with Ctrl-skip + Space survives
+            // (the items-list `toggleSelection` merge; reported 2026-07-21 that
+            // "the items before skipping are unselected").
+            if (!focusOnly) {
+                sel.clear();
+                for (const r of rows) r.classList.remove("wv-outline-selected");
+            }
+            for (let x = lo; x <= hi; x++) {
+                const kk = this._wvOutlineRowKey(rows[x]);
+                if (kk != null) { sel.add(kk); rows[x].classList.add("wv-outline-selected"); }
+            }
+            for (const r of rows) r.classList.remove("wv-outline-active");
+            row.classList.add("wv-outline-active");
+            try { row.focus(); } catch (_) {}
+            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+        else {
+            const key = this._wvOutlineRowKey(row);
+            sel.clear();
+            for (const r of rows) r.classList.remove("wv-outline-selected");
+            if (key != null) { sel.add(key); reader._wvOutlineSelAnchor = key; row.classList.add("wv-outline-selected"); }
+            this._wvOutlineNavigate(reader, idoc, row._wvOl.entry, row);   // sets active + jumps
+            try { row.focus(); } catch (_) {}
+            try { row.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+    }
+
+    /** Space: toggle the focused row in the multi-selection (like Ctrl+click). */
+    _wvOutlineKeyToggle(reader: any, row: any) {
+        const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+        const key = this._wvOutlineRowKey(row);
+        if (key == null) return;
+        if (sel.has(key)) { sel.delete(key); row.classList.remove("wv-outline-selected"); }
+        else { sel.add(key); row.classList.add("wv-outline-selected"); }
+        reader._wvOutlineSelAnchor = key;
+        try { row.focus(); } catch (_) {}
+    }
+
+    /** Left/Right expand or collapse a container row, then keep focus on it. */
+    async _wvOutlineKeyExpand(reader: any, idoc: any, row: any, expand: boolean) {
+        const key = this._wvOutlineRowKey(row);
+        if (key == null) return;
+        const set: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+        if (expand) set.add(key); else set.delete(key);
+        await this._wvReaderRenderOutline(reader, idoc);
+        const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+        const list = view && view.querySelector(".wv-outline-list");
+        if (!list) return;
+        const nr: any = [...list.querySelectorAll(".wv-outline-row")]
+            .find((r: any) => this._wvOutlineRowKey(r) === key);
+        if (nr) {
+            for (const r of [...list.querySelectorAll(".wv-outline-row.wv-outline-active")]) (r as any).classList.remove("wv-outline-active");
+            nr.classList.add("wv-outline-active");
+            try { nr.focus(); } catch (_) {}
+            try { nr.scrollIntoView({ block: "nearest" }); } catch (_) {}
+        }
+    }
+
+    /** Left/Right with >1 rows selected: expand or collapse EVERY selected
+     *  container at once -- Zotero items-tree model (itemTree.jsx
+     *  expandSelectedRows/collapseSelectedRows: expand only closed containers,
+     *  collapse any container; leaves and already-in-state rows are skipped).
+     *  The multi-selection tint survives the re-render (rows re-read it from
+     *  `_wvOutlineSel`); only the active row's focus is restored. */
+    async _wvOutlineKeyExpandSelection(reader: any, idoc: any, expand: boolean) {
+        const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+        const list = view && view.querySelector(".wv-outline-list");
+        if (!list) return;
+        const selRows: any[] = [...list.querySelectorAll(".wv-outline-row.wv-outline-selected")];
+        if (!selRows.length) return;
+        const set: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+        const activeEl = list.querySelector(".wv-outline-row.wv-outline-active");
+        const activeKey = activeEl ? this._wvOutlineRowKey(activeEl) : null;
+        let changed = false;
+        for (const r of selRows) {
+            const tw = r.querySelector(".wv-outline-twisty");
+            if (!tw || tw.classList.contains("wv-outline-leaf")) continue;   // not a container
+            const key = this._wvOutlineRowKey(r);
+            if (key == null) continue;
+            if (expand) { if (!set.has(key)) { set.add(key); changed = true; } }
+            else { if (set.has(key)) { set.delete(key); changed = true; } }
+        }
+        if (!changed) return;
+        await this._wvReaderRenderOutline(reader, idoc);
+        this._wvOutlineRefocusRow(idoc, activeKey);
+    }
+
+    /** Delete several outline rows in one action. Resolves EVERY row to a
+     *  curated id FIRST (one copy-on-first-edit if needed; in that snapshot,
+     *  row index == entry index, so resolving all before deleting anything is
+     *  what keeps the index mapping valid), then deletes by id -- ids are
+     *  stable under the mutations, indices are not. */
+    async _wvOutlineDeleteSelected(reader: any, idoc: any, items: any[]) {
+        try {
+            let att: any = null;
+            const ids: string[] = [];
+            for (const it of items) {
+                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                if (ref && ref.id != null && !ids.includes(ref.id)) { att = ref.att; ids.push(ref.id); }
+            }
+            if (!att || !ids.length) return;
+            for (const id of ids) await this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id);
+            try { if (reader._wvOutlineSel) reader._wvOutlineSel.clear(); } catch (_) {}
+            this._wvReaderRenderOutline(reader, idoc);
+        } catch (err) { Zotero.debug("[Weavero] _wvOutlineDeleteSelected err: " + err); }
     }
 
     /** The reader's CURRENT text selection as {position, text}, or null when
@@ -2880,6 +3324,11 @@ class _ReaderPanelsMixin {
                     if (vd && docs.indexOf(vd) < 0) docs.push(vd);
                 }
             } catch (_) {}
+            // The row to hand focus + selection back to when editing ends, so
+            // keyboard control survives Enter/Escape (the re-render below drops
+            // the input's focus otherwise).
+            const rowKey = entry && entry.id != null ? String(entry.id) : null;
+            const refocus = () => { try { this._wvOutlineRefocusRow(idoc, rowKey, reader, true); } catch (_) {} };
             let done = false;
             let onDownOutside: any = null;
             const finish = (save: boolean) => {
@@ -2897,9 +3346,10 @@ class _ReaderPanelsMixin {
                         // outline text was truncated or wrong.
                         .then(() => this._wvReaderPanelNote(idoc,
                             "Title updated. To move the highlight to match, right-click → Re-detect Region from Title."))
+                        .then(refocus)
                         .catch(() => {});
                 } else {
-                    this._wvReaderRenderOutline(reader, idoc);   // restore the label
+                    Promise.resolve(this._wvReaderRenderOutline(reader, idoc)).then(refocus);   // restore the label
                 }
             };
             onDownOutside = (ev: any) => {

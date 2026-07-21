@@ -44,7 +44,7 @@ const RP_BM_CTX_WIRE_V = 2;
 // this whenever the panel wiring/render structure changes so open tabs self-heal
 // on the next update. (undefined !== value, so the first stamp-aware build
 // already heals currently-stale tabs.)
-const RP_PANELS_WIRE_V = 1;
+const RP_PANELS_WIRE_V = 2;
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 
@@ -1255,6 +1255,13 @@ const RP_OUTLINE_CSS = [
     //  render's per-level padding, active = 3px accent outline).
     ".wv-outline-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 8px;}",
     ".wv-outline-row{display:flex;align-items:center;}",
+    // Drag-reorder: the dragged row (and its subtree) dims; a blue drop bar shows
+    // where the block lands, indented to the target level (margin-left set inline).
+    ".wv-outline-row.wv-outline-dragging{opacity:.4;}",
+    ".wv-outline-drop-ind{height:0;border-top:2px solid var(--color-accent,#5e6ad2);margin:-1px 0;pointer-events:none;border-radius:1px;}",
+    // "Nest into" affordance (orient 0): box the target row -- mirrors Zotero's
+    // collection/item tree `.drop` class for drop-onto-row.
+    ".wv-outline-row.wv-outline-drop-into{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;border-radius:4px;background:var(--accent-blue10,rgba(94,106,210,.12));}",
     ".wv-outline-label{display:block;flex:1 1 auto;min-width:0;font-size:.6875rem;line-height:1.2;padding:.21875rem;white-space:normal;cursor:pointer;user-select:none;-moz-user-select:none;overflow-wrap:anywhere;}",
     ".wv-outline-row.wv-outline-active .wv-outline-label{outline:3px solid var(--accent-blue50,var(--color-accent,#5e6ad2));border-radius:5px;}",
     // Page number at the row's right end -- same treatment as bookmark rows
@@ -1792,9 +1799,216 @@ class _ReaderPanelsMixin {
                 e.stopPropagation();
                 this._wvOutlineBeginRename(reader, idoc, entry, i, curatedView);
             });
+            // Drag to reorder / re-indent. The whole SUBTREE (this entry + its
+            // contiguous deeper-indented descendants) moves together; the drop
+            // handler on the list computes the target gap + indent.
+            row.setAttribute("draggable", "true");
+            // The reader's focus-manager has a WINDOW-level pointerdown handler
+            // that preventDefault()s everything outside its whitelist -- and
+            // preventDefault on pointerdown blocks a native drag from ever
+            // starting (the "draggable never fires in the sidebar" trap; see the
+            // bookmark row drag wiring). Stop the event before it reaches that
+            // handler (stopPropagation ONLY -- keep the default so the drag AND
+            // the navigating click still happen). Without this, dragstart never
+            // fired for a real mouse (2026-07-21).
+            row.addEventListener("pointerdown", (e: any) => { try { e.stopPropagation(); } catch (_) {} });
+            row.addEventListener("dragstart", (e: any) => {
+                try {
+                    // Drag state lives on `reader` (stable), NOT the plugin instance:
+                    // a reload swaps the instance, so if dragstart wrote to one
+                    // instance and the list's drop handler read another the drag
+                    // would silently not register. `reader` survives reloads.
+                    reader._wvOutlineDragSrc = i;
+                    row.classList.add("wv-outline-dragging");
+                    if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("application/x-weavero-outline-move", String(i)); } catch (_) {} }
+                } catch (_) {}
+            });
+            row.addEventListener("dragend", () => {
+                try { row.classList.remove("wv-outline-dragging"); this._wvOutlineHideDropInd(idoc); reader._wvOutlineDragSrc = null; } catch (_) {}
+            });
             container.appendChild(row);
             if (hasKids && !isExpanded) hideBelow = depth;   // collapsed -> hide descendants
         }
+        // Wire the list-level dragover/drop ONCE (the list element persists across
+        // renders; only its rows are rebuilt). Reorder mutates the curated store.
+        this._wvOutlineWireListDnD(reader, idoc, container);
+    }
+
+    /** Zotero items-list drop model: from the pointer Y over the rows, the hovered
+     *  row + an orientation -- -1 (insert before, as sibling), 0 (nest as child),
+     *  +1 (insert after target's whole subtree, as sibling). Uses the SAME vertical
+     *  thirds as Zotero's `getDragTargetOrient` (<=1/6 before, <=5/6 into, else
+     *  after). Horizontal position is deliberately IGNORED -- depth follows the
+     *  target, matching the collections/items trees (2026-07-21, replacing the
+     *  earlier outliner cursor-X indent model at the user's request). */
+    _wvOutlineDropAt(list: any, clientY: number): { row: any, index: number, orient: number } {
+        const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+        if (!rows.length) return { row: null, index: -1, orient: 1 };
+        const first = rows[0];
+        if (clientY < first.getBoundingClientRect().top) {
+            return { row: first, index: first._wvOl.index, orient: -1 };
+        }
+        const last = rows[rows.length - 1];
+        if (clientY > last.getBoundingClientRect().bottom) {
+            return { row: last, index: last._wvOl.index, orient: 1 };
+        }
+        let hov = last;
+        for (const r of rows) {
+            const b = r.getBoundingClientRect();
+            if (clientY >= b.top && clientY <= b.bottom) { hov = r; break; }
+        }
+        const rect = hov.getBoundingClientRect();
+        const ratio = rect.height ? (clientY - rect.top) / rect.height : 0.5;
+        // Matches components/utils.js getDragTargetOrient thirds.
+        const orient = ratio <= 0.166 ? -1 : (ratio <= 0.833 ? 0 : 1);
+        return { row: hov, index: hov._wvOl.index, orient };
+    }
+
+    /** Client-X of a level-0 row's LABEL left (past the twisty). Measured from a
+     *  real row so a sibling drop-line aligns with the rendered indentation;
+     *  falls back to list content-left (padding 8) + twisty box (3+9+3 = 15). */
+    _wvOutlineIndentOrigin(list: any, rows: any[], step: number): number {
+        try {
+            const r = (rows && rows[0]) || (list && list.querySelector(".wv-outline-row"));
+            const label = r && r.querySelector(".wv-outline-label");
+            if (label && r._wvOl) {
+                const depth = Math.max(0, (r._wvOl.entry && r._wvOl.entry.indentLevel) || 0);
+                return label.getBoundingClientRect().left - depth * step;
+            }
+        } catch (_) {}
+        return list.getBoundingClientRect().left + 8 + 15;
+    }
+
+    /** Clear both drop affordances: the sibling line AND the "nest into" box. */
+    _wvOutlineHideDropInd(idoc: any) {
+        try {
+            const el = idoc.querySelector(".wv-outline-drop-ind"); if (el) el.remove();
+            const into = idoc.querySelector(".wv-outline-row.wv-outline-drop-into");
+            if (into) into.classList.remove("wv-outline-drop-into");
+        } catch (_) {}
+    }
+    /** Draw the drop affordance for the items-list model: a box on the target row
+     *  for "nest into" (orient 0), else a horizontal line at the target's OWN
+     *  indent, above it (before) or below its whole visible subtree (after). */
+    _wvOutlineShowDrop(idoc: any, list: any, target: any, orient: number) {
+        try {
+            this._wvOutlineHideDropInd(idoc);
+            if (!target) return;
+            if (orient === 0) { target.classList.add("wv-outline-drop-into"); return; }
+            const step = 16;
+            const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+            const origin0 = this._wvOutlineIndentOrigin(list, rows, step);
+            const listContentLeft = list.getBoundingClientRect().left + 8;   // list padding
+            const depth = Math.max(0, (target._wvOl && target._wvOl.entry.indentLevel) || 0);
+            const ind = idoc.createElementNS(NS_HTML_RP, "div");
+            ind.className = "wv-outline-drop-ind";
+            ind.style.marginLeft = ((origin0 - listContentLeft) + depth * step) + "px";
+            if (orient < 0) {
+                list.insertBefore(ind, target);
+            } else {
+                // After the target's whole VISIBLE subtree (deeper-indented rows).
+                let afterEl = target, n = target.nextElementSibling;
+                while (n && n.classList && n.classList.contains("wv-outline-row")
+                    && Math.max(0, (n._wvOl && n._wvOl.entry.indentLevel) || 0) > depth) {
+                    afterEl = n; n = n.nextElementSibling;
+                }
+                if (afterEl.nextElementSibling) list.insertBefore(ind, afterEl.nextElementSibling);
+                else list.appendChild(ind);
+            }
+        } catch (_) {}
+    }
+
+    /** Wire list-level dragover/drop for outline reorder (idempotent per list). */
+    _wvOutlineWireListDnD(reader: any, idoc: any, list: any) {
+        try {
+            if (!list || (list as any)._wvOutlineDnDWired) return;
+            (list as any)._wvOutlineDnDWired = true;
+            // Resolve the LIVE plugin at event time (never close over `this`): the
+            // list element persists across reloads and re-renders, so a handler
+            // bound to the instance at wire-time would call a stale copy after any
+            // reload. Drag state is read from `reader` (see the row dragstart).
+            const P = (): any => ((typeof Zotero !== "undefined" && (Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this);
+            const isOutlineDrag = () => reader._wvOutlineDragSrc != null;
+            list.addEventListener("dragover", (e: any) => {
+                if (!isOutlineDrag()) return;
+                e.preventDefault();
+                try { if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; } catch (_) {}
+                const p = P();
+                const t = p._wvOutlineDropAt(list, e.clientY);
+                p._wvOutlineShowDrop(idoc, list, t.row, t.orient);
+            }, true);
+            list.addEventListener("drop", (e: any) => {
+                if (!isOutlineDrag()) return;
+                e.preventDefault(); e.stopPropagation();
+                const p = P();
+                const src = reader._wvOutlineDragSrc;
+                const t = p._wvOutlineDropAt(list, e.clientY);
+                p._wvOutlineHideDropInd(idoc);
+                reader._wvOutlineDragSrc = null;
+                if (Number.isInteger(src) && t && t.index >= 0) p._wvOutlineReorder(reader, idoc, src, t.index, t.orient);
+            }, true);
+            list.addEventListener("dragleave", (e: any) => {
+                // Only hide when the pointer actually leaves the list bounds.
+                try { const r = list.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) P()._wvOutlineHideDropInd(idoc); } catch (_) {}
+            }, true);
+        } catch (_) {}
+    }
+
+    /** Move a dragged entry's SUBTREE to a new position + indent, in the curated
+     *  store. Curates first if needed (indices map: the store is built in the same
+     *  flatten order the rows were rendered from). Persists + re-renders. */
+    async _wvOutlineReorder(reader: any, idoc: any, srcIndex: number, targetIndex: number, orient: number) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            // Ensure a curated store (a fresh outline reorders its own copy).
+            if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
+                const cache = reader._wvOutlineCache;
+                await this._wvOutlineEnsureCurated(att.libraryID, att.itemKey,
+                    (cache && cache.source) || "extracted", (cache && cache.tree) || []);
+                reader._wvOutlineViewSource = null;
+            }
+            const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+            const entries: any[] = (d && d.entries) || [];
+            if (srcIndex < 0 || srcIndex >= entries.length) return;
+            if (targetIndex < 0 || targetIndex >= entries.length) return;
+            const dragged = entries[srcIndex];
+            const baseIndent = Math.max(0, dragged.indentLevel || 0);
+            // Dragged subtree = dragged + contiguous entries indented deeper than it.
+            let end = srcIndex;
+            while (end + 1 < entries.length && Math.max(0, entries[end + 1].indentLevel || 0) > baseIndent) end++;
+            // Can't drop into your own subtree.
+            if (targetIndex >= srcIndex && targetIndex <= end) return;
+            // Resolve (gap, newIndent) from the orientation, Zotero items-list style:
+            //   -1 = sibling before target; 0 = first child of target; +1 = sibling
+            //   after target's WHOLE subtree. Depth follows the target, never the
+            //   cursor X. gap is an index into the FULL entry array.
+            const tDepth = Math.max(0, entries[targetIndex].indentLevel || 0);
+            let gap: number, newIndent: number;
+            if (orient === 0) {
+                gap = targetIndex + 1; newIndent = tDepth + 1;
+            } else if (orient < 0) {
+                gap = targetIndex; newIndent = tDepth;
+            } else {
+                let te = targetIndex;
+                while (te + 1 < entries.length && Math.max(0, entries[te + 1].indentLevel || 0) > tDepth) te++;
+                gap = te + 1; newIndent = tDepth;
+            }
+            const blockLen = end - srcIndex + 1;
+            // No-op only if the resolved spot is inside the moved block AND the
+            // indent doesn't change (an indent-only change at the same spot -- e.g.
+            // a child dragged to sit just after its own parent -- is a real move).
+            if (gap > srcIndex && gap <= end + 1 && newIndent === baseIndent) return;
+            const block = entries.splice(srcIndex, blockLen);
+            let ins = gap;
+            if (ins > srcIndex) ins -= blockLen;
+            ins = Math.max(0, Math.min(ins, entries.length));
+            const delta = newIndent - baseIndent;
+            if (delta) for (const en of block) en.indentLevel = Math.max(0, (en.indentLevel || 0) + delta);
+            entries.splice(ins, 0, ...block);
+            await this._wvOutlinePersist();
+            await this._wvReaderRenderOutline(reader, idoc);
+        } catch (err) { Zotero.debug("[Weavero] _wvOutlineReorder err: " + err); }
     }
 
     /** Expand-all / collapse-all, matching the native outline double-click: if

@@ -58,6 +58,12 @@ touching drag/drop, window moves, or focus code.
 ## Focus rules (after any window/tab machinery change)
 
 - [ ] Tear-off: the new window has OS focus.
+      **Known limitation (Windows, 2026-07-21):** if the drag is *released
+      over another application's window*, that app keeps the foreground —
+      Windows' foreground lock forbids a background process stealing it
+      back, so the plugin's `focus()` is a no-op and the new reader window
+      opens behind. Expected-fail; only drops on Zotero's own surfaces or
+      the desktop guarantee focus.
 - [ ] Merge-back: the target window has focus and the merged tab is
       selected.
 - [ ] Closing a window: focus falls to a sensible surviving window; the
@@ -65,6 +71,27 @@ touching drag/drop, window moves, or focus code.
 - [ ] Restoring a saved window/session: the restored window opens with
       its saved geometry (maximized windows reopen maximized) and does
       not steal focus from where you are typing (background restore).
+
+## Reader pin bookmarks (after touching pin drag / `_wvReaderShowPin`)
+
+The in-document pushpin for a **position** bookmark. Surface it: open a
+PDF, open Weavero's reader **Bookmarks** panel, click a position-type
+bookmark row → the pin drops at that spot (it fades after a moment but
+stays while hovered). Then, at the mouse:
+
+- [ ] **Click the pin without moving** → it stays put; the bookmark's
+      stored position is unchanged. (A press under the drag threshold is a
+      click, not a drag — the lift is deferred until the pointer travels
+      past it, so a click can't nudge the tip.)
+- [ ] **Grab the head and drag slowly** → the pin follows the hand **from
+      the grab point**, not snapping its tip under the cursor (grab offset
+      preserved).
+- [ ] **Drop on the page** → the bookmark re-anchors to where the **tip**
+      landed; the sidebar list re-sorts by location; the label
+      auto-updates to "Page N" **only** if it wasn't manually renamed.
+- [ ] **Drag off the page and drop** → pin greys out / no-drop cursor
+      while off-page, and on release the bookmark is **unchanged**
+      (cancels back to its original spot).
 
 ## Popups (after touching popup code)
 

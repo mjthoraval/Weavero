@@ -22,10 +22,11 @@ import { Plugin, PluginKey } from "prosemirror-state";
     const KEY = new PluginKey("wvNoteLinkify");
     // Schemes with `://` plus mailto:. Kept in sync (loosely) with Weavero's
     // URL_SCHEMES; broad enough for the common cases.
-    const URL_RE = /(?:https?|ftp|zotero|obsidian|vscode|notion|slack|figma|file|magnet|msteams|evernote|discord|zoommtg|spotify):\/\/[^\s<>]+|mailto:[^\s<>]+/gi;
+    const URL_RE = /(?:https?|ftp|zotero|obsidian|vscode|notion|slack|figma|file|magnet|msteams|evernote|discord|zoommtg|spotify):\/\/[^\s<>]+|mailto:[^\s<>]+|\bwww\.[^\s<>]+/gi;
 
     function schemeClass(url: string): string {
-        if (/^(?:https?|ftp):/i.test(url)) return "wv-link-http";
+        // Schemeless `www.` counts as a web link (launched as https).
+        if (/^(?:https?|ftp):/i.test(url) || /^www\./i.test(url)) return "wv-link-http";
         if (/^zotero:/i.test(url)) return "wv-link-zotero";
         return "wv-link-app";
     }

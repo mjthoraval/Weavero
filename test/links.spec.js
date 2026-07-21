@@ -31,6 +31,11 @@ describe("Weavero — URL classification", () => {
                 .to.equal("wv-link-http");
         });
 
+        it("schemeless www. → wv-link-http", () => {
+            expect(wv._urlLinkClass("www.google.fr")).to.equal("wv-link-http");
+            expect(wv._urlLinkClass("WWW.Example.COM")).to.equal("wv-link-http");
+        });
+
         it("everything else → wv-link-app", () => {
             expect(wv._urlLinkClass("mailto:foo@bar.com"))
                 .to.equal("wv-link-app");
@@ -71,9 +76,18 @@ describe("Weavero — URL_REGEX", () => {
             .to.equal(true);
     });
 
+    it("matches a schemeless www. link", () => {
+        expect(wv.URL_REGEX.test("www.google.fr")).to.equal(true);
+        // Embedded in text.
+        expect(wv.URL_REGEX.test("see www.google.fr now")).to.equal(true);
+    });
+
     it("does NOT match plain text without a scheme", () => {
         expect(wv.URL_REGEX.test("just some words")).to.equal(false);
+        // Bare domains (no scheme, no www) stay plain — false positives.
         expect(wv.URL_REGEX.test("example.com")).to.equal(false);
+        // `www.` only at a word boundary (not mid-word).
+        expect(wv.URL_REGEX.test("awww.example")).to.equal(false);
     });
 
     it("URL body stops at whitespace and quote characters", () => {

@@ -86,7 +86,13 @@ export const urlMethods = {
             const v = Zotero.Prefs.get("weavero.enableInlineUrls");
             httpUrlsOn = v === undefined ? true : !!v;
         } catch (e) {}
-        if (httpUrlsOn) parts.push("https?:\\/\\/");
+        if (httpUrlsOn) {
+            parts.push("https?:\\/\\/");
+            // Schemeless `www.` web links (gated by the same URLs toggle).
+            // `\b` avoids matching mid-word (e.g. "awww."); launch prepends
+            // https:// (see _launchURL) and urlLinkClass buckets it as http.
+            parts.push("\\bwww\\.");
+        }
         // Zotero links toggle (v0.8.1) — when off, zotero:// is
         // excluded from the URL regex so deep links render as plain
         // text. Default ON. Mirrors the App Links pattern below.
@@ -589,6 +595,9 @@ export const urlMethods = {
      *  by `_applyAppLinkConfirmPref` are honored. */
     _launchURL(url) {
         if (!url) return;
+        // Schemeless `www.` links (uniform autolink -- URL_REGEX matches them
+        // as web links): give them an https scheme before dispatch.
+        if (/^www\./i.test(url)) url = "https://" + url;
         try {
             // zotero:// URLs must NOT go through the OS dispatch
             // (which would trigger Firefox's "Allow this site to open

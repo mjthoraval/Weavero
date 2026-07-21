@@ -44,5 +44,7 @@ export function urlLinkClass(url: string | null | undefined): string {
     if (!url) return "wv-link-http";
     if (url.startsWith("zotero://")) return "wv-link-zotero";
     if (/^https?:\/\//i.test(url)) return "wv-link-http";
+    // Schemeless `www.` web links bucket as http (they launch as https).
+    if (/^www\./i.test(url)) return "wv-link-http";
     return "wv-link-app";
 }

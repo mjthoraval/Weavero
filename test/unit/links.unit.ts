@@ -13,6 +13,10 @@ describe("lib/links — urlLinkClass()", () => {
         expect(urlLinkClass("https://x.org")).to.equal("wv-link-http");
         expect(urlLinkClass("HTTP://x.org")).to.equal("wv-link-http");
     });
+    it("schemeless www. → wv-link-http", () => {
+        expect(urlLinkClass("www.google.fr")).to.equal("wv-link-http");
+        expect(urlLinkClass("WWW.X.ORG")).to.equal("wv-link-http");
+    });
     it("everything else → wv-link-app", () => {
         expect(urlLinkClass("obsidian://open?vault=v")).to.equal("wv-link-app");
         expect(urlLinkClass("mailto:a@b.c")).to.equal("wv-link-app");

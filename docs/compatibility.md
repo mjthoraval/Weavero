@@ -44,7 +44,7 @@ depend on v10-only row classes), but unconfirmed — check before relying.
 | Feature | v9 | v10-beta | Notes |
 |---|---|---|---|
 | Clickable links in annotation comments (reader sidebar) | Untested | Yes | reader module. |
-| Clickable links in notes (note editor) | Untested | Yes | note-editor module. |
+| Clickable links in notes (note editor) | Untested | Yes | note-editor module; existing `<a>` links coloured/handled, plus bare-URL/`www.` display-only decoration via an injected ProseMirror plugin (dev.95+, note content untouched). |
 | Clickable links in items-tree / right pane | Untested | Yes | pane module. |
 | Annotation icons rendering | Untested | Yes | annotation module. |
 | Items-tree extra columns | Untested | Yes | pane module. |
@@ -95,6 +95,7 @@ the sidebar open, selecting an annotation shows it in the sidebar instead.
 | Link form in the comment | AM (v0.5.x) | With Weavero |
 |---|---|---|
 | Bare web URL (`https://` / `http://`) | Linkified (added in v0.5.0) | Yields to AM; renders if AM off |
+| Schemeless `www.` (e.g. `www.zotero.org`) | Linkified → `http://…` (markdown-it linkify) | Linkified → launches as `https://…`; yields to AM. Added in Weavero dev.96 (bare domains without `www` stay plain in both) |
 | Markdown web link `[text](https://…)` | Rendered | Yields to AM |
 | `mailto:` | Linkified | Yields to AM |
 | Markdown link to `zotero://` / app schemes | **Stripped → dead anchor** (AM keeps only web/mailto) | **Rescued** — Weavero rebuilds the anchor so it clicks |

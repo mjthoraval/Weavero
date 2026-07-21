@@ -1028,9 +1028,15 @@ const RP_BM_CSS = [
     // build doesn't reserve space at the bottom of the pane.
     ".wv-bm-chip-bar{display:none!important;}",
     ".wv-bm-chip-resizer{display:none!important;}",
-    ".wv-bm-search-row{display:flex;padding:0 8px 6px;}",
-    ".wv-bm-search-input{flex:1;padding:3px 6px;font-size:12px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
+    ".wv-bm-search-row{display:flex;padding:0 8px 6px;position:relative;}",
+    ".wv-bm-search-input{flex:1;padding:3px 22px 3px 6px;font-size:12px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
     ".wv-bm-search-input:focus{outline:none;border-color:var(--color-accent,#5e6ad2);}",
+    // Clear ("x") button inside the field -- shown only when there's a query,
+    // matching the native annotation/collections search (issue #19).
+    ".wv-bm-search-clear{position:absolute;right:14px;top:0;bottom:6px;width:14px;display:none;align-items:center;justify-content:center;padding:0;border:none;background:transparent;cursor:pointer;opacity:.75;}",
+    ".wv-bm-search-clear:hover{opacity:1;}",
+    ".wv-bm-search-clear.wv-bm-visible{display:flex;}",
+    ".wv-bm-search-clear svg{width:14px;height:14px;display:block;}",
     // Dim folders shown only because of a matching descendant (the folder
     // itself doesn't match the search query) so direct matches stand out.
     ".wv-bm-reader-row.wv-bm-dimmed{opacity:.55;}",
@@ -5680,10 +5686,27 @@ class _ReaderPanelsMixin {
                 // Annotations tab's search box, which uses type="text" too.
                 searchInput.setAttribute("type", "text");
                 searchInput.setAttribute("placeholder", "Search bookmarks…");
-                searchInput.addEventListener("input", () => this._wvReaderRenderBmList(reader, idoc));
+                // Clear ("x") button inside the field (issue #19) -- same grey
+                // circle + white x as the native search (searchfield-cancel.svg),
+                // shown only when there is a query.
+                const clearBtn = idoc.createElementNS(NS_HTML_RP, "button") as any;
+                clearBtn.className = "wv-bm-search-clear";
+                clearBtn.setAttribute("type", "button");
+                clearBtn.setAttribute("title", "Clear search");
+                clearBtn.setAttribute("aria-label", "Clear search");
+                clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
+                const syncClear = () => { clearBtn.classList.toggle("wv-bm-visible", !!String(searchInput.value || "")); };
+                blockBmRowDrag(clearBtn);
+                searchInput.addEventListener("input", () => { syncClear(); this._wvReaderRenderBmList(reader, idoc); });
+                clearBtn.addEventListener("click", (ev: any) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    searchInput.value = ""; syncClear();
+                    this._wvReaderRenderBmList(reader, idoc);
+                    try { searchInput.focus(); } catch (_) {}   // keep the field open + focused (unlike Escape, which closes it)
+                });
                 searchInput.addEventListener("keydown", (ev: any) => {
                     if (ev.key === "Escape") {
-                        searchInput.value = ""; searchRow.style.display = "none";
+                        searchInput.value = ""; syncClear(); searchRow.style.display = "none";
                         searchBtn.classList.remove("wv-bm-search-active");
                         this._wvReaderRenderBmList(reader, idoc);
                     }
@@ -5697,6 +5720,7 @@ class _ReaderPanelsMixin {
                     }
                 });
                 searchRow.appendChild(searchInput);
+                searchRow.appendChild(clearBtn);
                 searchBtn.addEventListener("click", () => {
                     const showing = searchRow.style.display !== "none";
                     if (showing) {
@@ -5707,6 +5731,7 @@ class _ReaderPanelsMixin {
                         searchBtn.classList.add("wv-bm-search-active");
                         try { searchInput.focus(); } catch (_) {}
                     }
+                    syncClear();
                     this._wvReaderRenderBmList(reader, idoc);
                 });
                 // Filter-funnel button — opens a popover that holds the

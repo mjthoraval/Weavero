@@ -11299,6 +11299,8 @@ class _TabsMixin {
         if (prevGear) prevGear.remove();
         let prevGearPopup = panel.querySelector("#wv-tabs-menu-settings-popup");
         if (prevGearPopup) prevGearPopup.remove();
+        let prevClear = panel.querySelector("#wv-tabs-menu-clear-btn");
+        if (prevClear) prevClear.remove();
 
         const NS_HTML = "http://www.w3.org/1999/xhtml";
         const btn = doc.createElementNS(NS_HTML, "button");
@@ -11369,6 +11371,38 @@ class _TabsMixin {
         // Insert BEFORE the input so the visual order is
         // [gear] [search field] [funnel].
         input.insertAdjacentElement("beforebegin", gear);
+
+        // Clear ("x") button for the filter field (parity with the reader
+        // bookmark / native annotation search -- user request 2026-07-22). The
+        // native tabs-menu filter is a bare <input> with no clear affordance.
+        // Sits just right of the field ([gear] [field] [x] [funnel]); shown only
+        // when there's text. Grey-circle-white-x, same as searchfield-cancel.svg.
+        const clearBtn = doc.createElementNS(NS_HTML, "button") as any;
+        clearBtn.id = "wv-tabs-menu-clear-btn";
+        clearBtn.type = "button";
+        clearBtn.title = "Clear filter";
+        clearBtn.setAttribute("aria-label", "Clear filter");
+        clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
+        // Visibility + input-room reserved via a panel class (CSS in constants;
+        // the row uses absolute-positioned buttons, not flex).
+        const syncClear = () => { panel.classList.toggle("wv-tabs-filter-hastext", !!String(input.value || "")); };
+        // Re-add the toggle listener cleanly across hot-reload re-setups (the
+        // input is the NATIVE element and persists, so a stale listener would
+        // accumulate).
+        try { if ((input as any)._wvClearInputListener) input.removeEventListener("input", (input as any)._wvClearInputListener); } catch (_) {}
+        (input as any)._wvClearInputListener = syncClear;
+        input.addEventListener("input", syncClear);
+        clearBtn.addEventListener("click", (e: any) => {
+            e.stopPropagation(); e.preventDefault();
+            input.value = "";
+            // Drive Zotero's own filter off the cleared value, then re-run ours.
+            try { input.dispatchEvent(new doc.defaultView.Event("input", { bubbles: true })); } catch (_) {}
+            syncClear();
+            try { this._wvRegroupTabsMenu(panel); } catch (_) {}
+            try { input.focus(); } catch (_) {}
+        });
+        input.insertAdjacentElement("afterend", clearBtn);
+        syncClear();
 
         this._refreshFileTypeFilterButtonState(panel);
     }

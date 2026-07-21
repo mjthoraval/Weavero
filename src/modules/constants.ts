@@ -1867,6 +1867,33 @@ export const PLUGIN_CSS = [
     "#zotero-tabs-menu-panel:has(#wv-tabs-menu-filetype-btn) #zotero-tabs-menu-filter {",
     "  margin-inline-end: 38px !important;",
     "}",
+    // Clear ("x") for the filter field -- parity with the reader search
+    // boxes (user request 2026-07-22). Absolutely positioned INSIDE the
+    // input's right edge (the funnel owns the 38px outside the field);
+    // visible only while the panel carries wv-tabs-filter-hastext, which
+    // the input listener toggles on text.
+    "#wv-tabs-menu-clear-btn {",
+    "  position: absolute;",
+    "  top: 0;",
+    "  inset-inline-end: 44px;",
+    "  height: 32px;",
+    "  display: none;",
+    "  align-items: center; justify-content: center;",
+    "  padding: 0 2px;",
+    "  border: none;",
+    "  background: transparent;",
+    "  cursor: pointer;",
+    "  opacity: .75;",
+    "  appearance: none;",
+    "  -moz-appearance: none;",
+    "}",
+    "#wv-tabs-menu-clear-btn:hover { opacity: 1; }",
+    "#zotero-tabs-menu-panel.wv-tabs-filter-hastext #wv-tabs-menu-clear-btn { display: inline-flex; }",
+    // Extra right padding inside the field while the x is visible, so
+    // typed text doesn't run under the button.
+    "#zotero-tabs-menu-panel.wv-tabs-filter-hastext #zotero-tabs-menu-filter {",
+    "  padding-inline-end: 22px;",
+    "}",
     // Transparent at rest, hover/active fills from the same
     // `--fill-*` vars Zotero's `toolbarbutton` (and the items-tree
     // filter button) uses. No border, no permanent background.

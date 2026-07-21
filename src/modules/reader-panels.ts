@@ -2044,6 +2044,16 @@ class _ReaderPanelsMixin {
         const att = this._wvReaderAtt(reader);
         if (!att) return null;
         if (curatedView && entry && entry.id) return { att, id: entry.id };
+        // Index-mapping into the curated entries is ONLY valid when the curation
+        // is created right here, from this very view (copy-on-first-edit: the
+        // snapshot flattens in render order, so row index == entry index). If a
+        // curated store ALREADY exists, it has its own history -- renames,
+        // deletes, reorders, added entries -- and the original view's row index
+        // points at an unrelated entry. Editing from the original view is then
+        // refused (it's a read-only reference); switch to the Weavero source to
+        // edit. (Found 2026-07-21: Del in the Embedded view deleted a random
+        // Weavero entry through exactly this index mismatch.)
+        if (!curatedView && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) return null;
         const cache = reader._wvOutlineCache;
         const source = (cache && cache.source) || "extracted";
         const tree = (cache && cache.tree) || [];

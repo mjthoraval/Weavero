@@ -522,6 +522,95 @@ function wvGetClosestOffset(chars: any[], rect: number[]): number {
     }
     return idx;
 }
+// Snap a dragged handle to a char, LINE-AWARE: prefer a glyph whose vertical
+// band contains the pointer (nearest by horizontal edge distance), and only fall
+// back to the globally-nearest glyph when the pointer is between lines. Plain
+// nearest-centre snapping jumped a line -- dragging the end handle up toward
+// line 1 but releasing near the boundary snapped to the char directly BELOW on
+// line 2, so a reduce never shrank the range (reported 2026-07-21).
+function wvSnapCharToPoint(chars: any[], px: number, py: number): number {
+    let onLine = -1, onLineDx = Infinity;
+    let any = 0, anyD = Infinity;
+    for (let i = 0; i < chars.length; i++) {
+        const r = chars[i] && chars[i].rect;
+        if (!r) continue;
+        const h = Math.abs(r[3] - r[1]) || 1;
+        if (py >= r[1] - h * 0.35 && py <= r[3] + h * 0.35) {
+            const dx = px < r[0] ? r[0] - px : (px > r[2] ? px - r[2] : 0);
+            if (dx < onLineDx) { onLineDx = dx; onLine = i; }
+        }
+        const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+        const d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+        if (d < anyD) { anyD = d; any = i; }
+    }
+    return onLine >= 0 ? onLine : any;
+}
+// Per-line PDF rects covering chars[startIdx..endIdx] (inclusive). Chars run in
+// reading order, so a vertical step starts a new line rect. Mirrors the grouping
+// `_wvOutlineRecoverRect` uses, so an edited region highlights like a recovered
+// heading. Returns [] when the range is empty/invalid.
+function wvRectsForCharRange(chars: any[], startIdx: number, endIdx: number): number[][] {
+    const a = Math.max(0, Math.min(startIdx, endIdx));
+    const b = Math.min(chars.length - 1, Math.max(startIdx, endIdx));
+    const rects: number[][] = [];
+    let cur: number[] | null = null, curYc = 0;
+    for (let i = a; i <= b; i++) {
+        const r = chars[i] && chars[i].rect;
+        if (!r) continue;
+        const yc = (r[1] + r[3]) / 2;
+        const h = Math.abs(r[3] - r[1]) || 1;
+        if (!cur || Math.abs(yc - curYc) > h * 0.6) {
+            cur = [r[0], r[1], r[2], r[3]]; curYc = yc; rects.push(cur);
+        } else {
+            if (r[0] < cur[0]) cur[0] = r[0];
+            if (r[1] < cur[1]) cur[1] = r[1];
+            if (r[2] > cur[2]) cur[2] = r[2];
+            if (r[3] > cur[3]) cur[3] = r[3];
+        }
+    }
+    return rects;
+}
+// Map a region's stored rects to a [startIdx, endIdx] char range: the span of
+// chars whose centre falls inside any rect. Lets the editor seed its two
+// endpoint handles from the current region. Returns null when nothing matches
+// (e.g. a coarse point region with no covered glyphs).
+function wvCharRangeFromRects(chars: any[], rects: number[][]): { start: number, end: number } | null {
+    if (!Array.isArray(rects) || !rects.length) return null;
+    let start = -1, end = -1;
+    for (let i = 0; i < chars.length; i++) {
+        const r = chars[i] && chars[i].rect;
+        if (!r) continue;
+        const cx = (r[0] + r[2]) / 2, cy = (r[1] + r[3]) / 2;
+        let inside = false;
+        for (const q of rects) { if (cx >= q[0] - 1 && cx <= q[2] + 1 && cy >= q[1] - 1 && cy <= q[3] + 1) { inside = true; break; } }
+        if (inside) { if (start < 0) start = i; end = i; }
+    }
+    return start >= 0 ? { start, end } : null;
+}
+// Reconstruct readable text for chars[startIdx..endIdx]. The glyph stream has NO
+// explicit space chars (verified: joining `.c` gives "Anoutlineof…"), so a space
+// is inferred where consecutive glyphs jump a line (vertical step) or leave a
+// horizontal gap wider than a fraction of the line height. Used by "Set Title
+// from Region" -- the inverse of title->region recovery.
+function wvTextForCharRange(chars: any[], startIdx: number, endIdx: number): string {
+    const a = Math.max(0, Math.min(startIdx, endIdx));
+    const b = Math.min(chars.length - 1, Math.max(startIdx, endIdx));
+    let out = "", prev: any = null;
+    for (let i = a; i <= b; i++) {
+        const c = chars[i]; const ch = c && c.c; const r = c && c.rect;
+        if (!ch || !r) continue;
+        if (prev) {
+            const pr = prev.rect;
+            const h = Math.abs(r[3] - r[1]) || 1;
+            const yStep = Math.abs((r[1] + r[3]) / 2 - (pr[1] + pr[3]) / 2);
+            const gap = r[0] - pr[2];
+            if (yStep > h * 0.6 || gap > h * 0.25) out += " ";
+        }
+        out += ch;
+        prev = c;
+    }
+    return out.replace(/\s+/g, " ").trim();
+}
 // Group a page's chars into text LINES. Chars arrive in reading order, so a
 // line break is simply a significant vertical step between consecutive chars.
 // Each line records where it STARTS in the stream (`start`) plus its extent.
@@ -1973,6 +2062,274 @@ class _ReaderPanelsMixin {
         } catch (err) { Zotero.debug("[Weavero] _wvOutlineRedetectRegion err: " + err); }
     }
 
+    /** Interactive region editor: drag two text-snapping handles (like editing
+     *  an annotation highlight) to reshape an outline entry's highlighted region.
+     *  Snaps to the page's glyph stream, so it needs a usable text layer (the
+     *  bad-text-layer / geometric case is deliberately left for later). Confirm
+     *  writes the new rects as the entry's established position; cancel discards.
+     *  One editor at a time per view (`pv._wvRegionEditor`). */
+    async _wvOutlineEditRegion(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
+            const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
+            if (!e) return;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const app = win && win.PDFViewerApplication;
+            if (!app || !app.pdfViewer || !win || !win.document) {
+                this._wvReaderPanelNote(idoc, "Open the PDF view to edit the region."); return;
+            }
+            const base = e.resolvedPosition || e.position;
+            const pageIndex = (base && base.pageIndex) || 0;
+            const pd = await this._wvReaderGetPageData(reader, pageIndex);
+            const chars = pd && pd.chars;
+            if (!Array.isArray(chars) || !chars.length) {
+                this._wvReaderPanelNote(idoc, "This page has no selectable text to snap to."); return;
+            }
+            // Seed the char range from the current region; fall back to the glyph
+            // nearest the stored point (a coarse region) as a 1-char seed.
+            let range = (base && base.rects) ? wvCharRangeFromRects(chars, base.rects) : null;
+            if (!range) {
+                const r0 = (base && base.rects && base.rects[0]) || [0, 0, 0, 0];
+                const near = wvGetClosestOffset(chars, r0);
+                range = { start: near, end: near };
+            }
+            let start = range.start, end = range.end;
+
+            const pageView = app.pdfViewer._pages[pageIndex];
+            if (!pageView || !pageView.viewport || !pageView.div) return;
+            const doc = win.document;
+            // Close any prior editor on this view.
+            try { if (pv._wvRegionEditor) pv._wvRegionEditor.destroy(); } catch (_) {}
+
+            const sf = () => pageView.viewport.scale || 1;
+            // PDF point -> UNSCALED overlay coords (the CSS calc re-applies the
+            // live --scale-factor, so this tracks zoom, same as the pin).
+            const toU = (px: number, py: number): [number, number] => {
+                const v = pageView.viewport.convertToViewportPoint(px, py);
+                const s = sf();
+                return [v[0] / s, v[1] / s];
+            };
+            // Client point -> PDF point (for snapping a dragged handle).
+            const clientToPdf = (cx: number, cy: number): [number, number] => {
+                const pr = pageView.div.getBoundingClientRect();
+                return pageView.viewport.convertToPdfPoint(cx - pr.left, cy - pr.top) as [number, number];
+            };
+
+            const NS = "http://www.w3.org/1999/xhtml";
+            const host = this._ensureBadgeOverlay(doc) || pageView.div;
+            const container: any = doc.createElementNS(NS, "div");
+            container.className = "wv-region-editor";
+            container.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:2147483646;";
+            host.appendChild(container);
+
+            // Position an element by a PDF rect (fills it) or a PDF point (small).
+            const placeRect = (el: any, r: number[]) => {
+                const [lx, ty] = toU(r[0], r[3]);   // top-left (PDF y up -> top uses y1)
+                const [rx, by] = toU(r[2], r[1]);
+                const w = Math.max(1, rx - lx), h = Math.max(1, by - ty);
+                el.style.left = "calc(var(--page-offset-left,0px) + " + lx + "px * var(--scale-factor,1))";
+                el.style.top = "calc(var(--page-offset-top,0px) + " + ty + "px * var(--scale-factor,1))";
+                el.style.width = "calc(" + w + "px * var(--scale-factor,1))";
+                el.style.height = "calc(" + h + "px * var(--scale-factor,1))";
+            };
+            const placePoint = (el: any, px: number, py: number) => {
+                const [ux, uy] = toU(px, py);
+                el.style.left = "calc(var(--page-offset-left,0px) + " + ux + "px * var(--scale-factor,1))";
+                el.style.top = "calc(var(--page-offset-top,0px) + " + uy + "px * var(--scale-factor,1))";
+            };
+            // A handle bar spans the char's height at its start-left / end-right
+            // edge (PDF y1 = top after the viewport flip).
+            const placeBar = (el: any, r: number[], atStart: boolean) => {
+                const x = atStart ? r[0] : r[2];
+                const [ux, uyTop] = toU(x, r[3]);
+                const uyBot = toU(x, r[1])[1];
+                el.style.left = "calc(var(--page-offset-left,0px) + " + ux + "px * var(--scale-factor,1))";
+                el.style.top = "calc(var(--page-offset-top,0px) + " + uyTop + "px * var(--scale-factor,1))";
+                el.style.height = "calc(" + Math.max(1, uyBot - uyTop) + "px * var(--scale-factor,1))";
+            };
+
+            const hlEls: any[] = [];
+            // Text-selection-style handles: a thin vertical bar the height of the
+            // line at the range edge, with a round grab knob -- knob ABOVE the
+            // line at the start, BELOW at the end, so the two ends read clearly
+            // (the plain floating circles looked "strange", reported 2026-07-21).
+            const HANDLE_COL = "#4072e5";
+            const mkHandle = (atStart: boolean) => {
+                const h: any = doc.createElementNS(NS, "div");
+                h.className = "wv-region-handle";
+                h.style.cssText = "position:absolute;width:2px;margin-left:-1px;background:" + HANDLE_COL + ";"
+                    + "box-shadow:0 0 0 .5px rgba(255,255,255,.6);pointer-events:auto;cursor:ew-resize;touch-action:none;";
+                const knob: any = doc.createElementNS(NS, "div");
+                knob.style.cssText = "position:absolute;left:50%;margin-left:-6px;width:12px;height:12px;border-radius:50%;"
+                    + "background:" + HANDLE_COL + ";border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,.5);"
+                    + (atStart ? "top:0;margin-top:-12px;" : "bottom:0;margin-bottom:-12px;");
+                h.appendChild(knob);
+                container.appendChild(h);
+                return h;
+            };
+            const startHandle = mkHandle(true);
+            const endHandle = mkHandle(false);
+            // Toolbar (Save / Cancel), pinned above the region's first line.
+            const bar: any = doc.createElementNS(NS, "div");
+            bar.className = "wv-region-bar";
+            bar.style.cssText = "position:absolute;transform:translate(0,-125%);display:flex;gap:4px;"
+                + "background:rgba(30,30,30,.94);border-radius:6px;padding:3px 4px;pointer-events:auto;"
+                + "box-shadow:0 2px 6px rgba(0,0,0,.5);font:12px sans-serif;white-space:nowrap;";
+            const mkBtn = (label: string, bg: string) => {
+                const b: any = doc.createElementNS(NS, "button");
+                b.textContent = label;
+                b.style.cssText = "font:inherit;color:#fff;background:" + bg + ";border:none;border-radius:4px;"
+                    + "padding:2px 8px;cursor:pointer;";
+                return b;
+            };
+            // Two save actions: region only, or region + reload the title text
+            // from the newly-covered glyphs (the region->title direction lives
+            // HERE, right after an edit -- not as a standalone always-on item).
+            const saveBtn = mkBtn("Save Region", "#2e7d32");
+            const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
+            const cancelBtn = mkBtn("Cancel", "#555");
+            bar.appendChild(saveBtn); bar.appendChild(saveTextBtn); bar.appendChild(cancelBtn);
+            container.appendChild(bar);
+
+            let destroyed = false;
+            const rerender = () => {
+                if (destroyed) return;
+                const rects = wvRectsForCharRange(chars, start, end);
+                // Highlight rects (recycle a pool).
+                while (hlEls.length < rects.length) {
+                    const h: any = doc.createElementNS(NS, "div");
+                    h.className = "wv-region-hl";
+                    h.style.cssText = "position:absolute;background:rgba(64,114,229,.30);pointer-events:none;";
+                    container.appendChild(h); hlEls.push(h);
+                }
+                for (let i = 0; i < hlEls.length; i++) {
+                    if (i < rects.length) { hlEls[i].style.display = "block"; placeRect(hlEls[i], rects[i]); }
+                    else hlEls[i].style.display = "none";
+                }
+                const sc = chars[Math.min(start, end)].rect, ec = chars[Math.max(start, end)].rect;
+                placeBar(startHandle, sc, true);
+                placeBar(endHandle, ec, false);
+                if (rects.length) placePoint(bar, rects[0][0], rects[0][3]);
+            };
+
+            // Keep --page-offset vars fresh across zoom/reflow (see the pin's note
+            // on why this must be synchronous, not rAF). One observer feeds the
+            // whole container; children inherit the vars.
+            let offObs: any = null;
+            try {
+                const pgDiv = pageView.div;
+                const apply = () => {
+                    if (destroyed || !container.isConnected) { try { offObs && offObs.disconnect(); } catch (_) {} return; }
+                    container.style.setProperty("--page-offset-top", pgDiv.offsetTop + "px");
+                    container.style.setProperty("--page-offset-left", pgDiv.offsetLeft + "px");
+                };
+                apply();
+                const MO = (win as any).MutationObserver;
+                if (MO) {
+                    const Cu: any = (Components as any).utils;
+                    const init = Cu ? Cu.cloneInto({ attributes: true, attributeFilter: ["style"] }, win) : { attributes: true };
+                    offObs = new MO(apply);
+                    const viewerEl = app.pdfViewer.viewer || pgDiv.parentNode;
+                    if (viewerEl) offObs.observe(viewerEl, init);
+                    offObs.observe(pgDiv, init);
+                }
+            } catch (_) {}
+
+            const onKey = (ev: any) => {
+                if (ev.key === "Escape") { ev.preventDefault(); destroy(); }
+                else if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+            };
+            const destroy = () => {
+                if (destroyed) return;
+                destroyed = true;
+                try { offObs && offObs.disconnect(); } catch (_) {}
+                try { container.remove(); } catch (_) {}
+                try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
+                if (pv._wvRegionEditor && pv._wvRegionEditor._id === ref.id) pv._wvRegionEditor = null;
+            };
+            const commit = (withText?: boolean) => {
+                const rects = wvRectsForCharRange(chars, start, end);
+                const text = withText ? wvTextForCharRange(chars, start, end) : "";
+                destroy();
+                if (!rects.length) return;
+                const precise = { pageIndex, rects };
+                let chain = Promise.resolve();
+                // With text: set the title from the region first, then stamp the
+                // position with that title as `regionTitle` so the two stay in
+                // sync (no spurious "Re-detect from Title" afterward).
+                if (withText && text) {
+                    chain = chain
+                        .then(() => this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text))
+                        .then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text));
+                } else {
+                    chain = chain.then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise));
+                }
+                chain
+                    .then(() => this._wvReaderRenderOutline(reader, idoc))
+                    .then(() => { try { const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1); this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0); } catch (_) {} })
+                    .catch(() => {});
+            };
+
+            // Handle drag: snap the dragged end to the char nearest the pointer.
+            const wireHandle = (hnd: any, which: "start" | "end") => {
+                hnd.addEventListener("pointerdown", (e: any) => {
+                    try { e.preventDefault(); e.stopPropagation(); hnd.setPointerCapture(e.pointerId); } catch (_) {}
+                    // NEUTRALISE the reader's own text drag-selection (same
+                    // technique as the pin drag). Dragging a handle over the text
+                    // layer otherwise triggers the reader's `selectText` action,
+                    // painting a stray selection from the mousedown point that
+                    // MASKS our editable highlight -- so a reduce looked like it
+                    // did nothing even though our rects had shrunk underneath
+                    // (reported 2026-07-21). The reader sets `action`/
+                    // `pointerDownPosition` in a WINDOW-capture mousedown handler
+                    // that fires before our document-capture one, so we null them
+                    // right after (pointerdown precedes mousedown, so registering
+                    // here is in time), and clear the DOM selection on every move.
+                    const killSel = () => { try { pv.action = null; pv.pointerDownPosition = null; } catch (_) {} };
+                    const onDocDown = () => killSel();
+                    try { doc.addEventListener("mousedown", onDocDown, true); } catch (_) {}
+                    killSel();
+                    try { win.getSelection().removeAllRanges(); } catch (_) {}
+                    const onMove = (ev: any) => {
+                        try {
+                            killSel();
+                            try { win.getSelection().removeAllRanges(); } catch (_) {}
+                            ev.preventDefault();
+                            const [px, py] = clientToPdf(ev.clientX, ev.clientY);
+                            const idx = wvSnapCharToPoint(chars, px, py);
+                            if (which === "start") start = Math.min(idx, end);
+                            else end = Math.max(idx, start);
+                            rerender();
+                        } catch (_) {}
+                    };
+                    const onUp = () => {
+                        try { hnd.removeEventListener("pointermove", onMove); hnd.removeEventListener("pointerup", onUp); } catch (_) {}
+                        try { doc.removeEventListener("mousedown", onDocDown, true); } catch (_) {}
+                        try { win.getSelection().removeAllRanges(); } catch (_) {}
+                    };
+                    hnd.addEventListener("pointermove", onMove);
+                    hnd.addEventListener("pointerup", onUp);
+                }, true);
+            };
+            wireHandle(startHandle, "start");
+            wireHandle(endHandle, "end");
+            saveBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(false); });
+            saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
+            cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
+            doc.addEventListener("keydown", onKey, true);
+
+            pv._wvRegionEditor = { _id: ref.id, destroy };
+            // Bring the region into view, then paint.
+            try { this._wvOutlineScrollToRect(pv, pageIndex, wvRectsForCharRange(chars, start, end)[0] || base.rects[0]); } catch (_) {}
+            rerender();
+            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the title. (Enter = Save Region, Esc = cancel.)");
+        } catch (err) { Zotero.debug("[Weavero] _wvOutlineEditRegion err: " + err); }
+    }
+
     /** Reset a (curated) entry's name to its frozen original. */
     _wvOutlineDoResetName(reader: any, idoc: any, id: string) {
         try {
@@ -2234,6 +2591,10 @@ class _ReaderPanelsMixin {
                 mk("Re-detect Region from Title", RP_REVERT_SVG,
                     () => this._wvOutlineRedetectRegion(reader, idoc, entry, index, curatedView));
             }
+            // Interactive handle-drag editor (text-snapping, like editing an
+            // annotation highlight).
+            mk("Edit Region…", RP_TEXT_SVG,
+                () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
             // "Reset to Original Name" only when the title has been changed from
             // its frozen original (curated entries carry `source.title`).
             if (curatedView && entry && entry.source && typeof entry.source.title === "string"

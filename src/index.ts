@@ -3939,6 +3939,12 @@ class WeaveroPlugin {
                         catch(e) { Zotero.debug("[Weavero] note-css refresh err: " + e); }
                         this._urlRegexCache     = null;
                         this._urlSchemeAltCache = null;
+                        // Re-scope the note-editor bare-URL decoration to the
+                        // new toggle state (AFTER the cache reset so URL_REGEX
+                        // rebuilds first). Pushes the fresh source into each
+                        // open editor + forces a re-decorate.
+                        try { this._refreshNoteLinkifyRegex(); }
+                        catch(e) { Zotero.debug("[Weavero] note linkify refresh err: " + e); }
                         // Hard-reset every items-tree comment cell so
                         // the next _markCellLinks pass rebuilds from
                         // scratch with the new URL_SCHEME_ALT.

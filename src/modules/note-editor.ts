@@ -241,8 +241,19 @@ class _NoteEditorMixin {
             const attempt = (): string => {
                 try {
                     const wj = (iwin as any).wrappedJSObject;
+                    // Always push the current pref-gated URL_REGEX source before
+                    // (re)installing so the editor honours the live "Show:"
+                    // toggles, exactly like every other surface.
+                    try { if (wj) wj.__wvLinkifyRegexSrc = String((this as any).URL_REGEX.source); }
+                    catch (e) {}
                     if (wj && typeof wj.__wvInstallNoteLinkify === "function") {
-                        return String(wj.__wvInstallNoteLinkify());
+                        const r = String(wj.__wvInstallNoteLinkify());
+                        // Repaint after a fresh install so decorations appear
+                        // immediately (not only on the next edit).
+                        if (r === "installed" && typeof wj.__wvRedecorateNotes === "function") {
+                            try { wj.__wvRedecorateNotes(); } catch (e) {}
+                        }
+                        return r;
                     }
                     const pageWin = (Components as any).utils.waiveXrays(iwin);
                     return String(pageWin.eval((this as any)._wvNoteInjectCode));
@@ -269,6 +280,38 @@ class _NoteEditorMixin {
             }
         } catch (e) {
             this._dbg("[Weavero] _wvInstallNoteLinkify err: " + e);
+        }
+    }
+
+    /** After a "Show:" scheme toggle changes, push the new pref-gated
+     *  URL_REGEX source into every open note-editor iframe and force a
+     *  re-scan, so bare-URL decorations re-scope live (no reload). Sweeps
+     *  main windows + pop-out note/reader windows. */
+    _refreshNoteLinkifyRegex() {
+        if ((this as any)._wvDestroyed) return;
+        const src = (() => { try { return String((this as any).URL_REGEX.source); } catch (e) { return ""; } })();
+        const docs: any[] = [];
+        try {
+            const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of mains) { if (w && w.document) docs.push(w.document); }
+        } catch (e) {}
+        try {
+            for (const wt of ["zotero:note", "zotero:reader"]) {
+                const en = Services.wm.getEnumerator(wt);
+                while (en.hasMoreElements()) { const win: any = en.getNext(); if (win && win.document) docs.push(win.document); }
+            }
+        } catch (e) {}
+        for (const doc of docs) {
+            try {
+                for (const ne of doc.querySelectorAll("note-editor")) {
+                    const fr = ne.querySelector("iframe#editor-view") || ne.querySelector("iframe");
+                    const iwin = fr && fr.contentWindow;
+                    const wj = iwin && (iwin as any).wrappedJSObject;
+                    if (!wj) continue;
+                    try { wj.__wvLinkifyRegexSrc = src; } catch (e) {}
+                    try { if (typeof wj.__wvRedecorateNotes === "function") wj.__wvRedecorateNotes(); } catch (e) {}
+                }
+            } catch (e) {}
         }
     }
 

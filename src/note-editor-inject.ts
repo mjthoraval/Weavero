@@ -20,9 +20,18 @@ import { Plugin, PluginKey } from "prosemirror-state";
 
 (function () {
     const KEY = new PluginKey("wvNoteLinkify");
-    // Schemes with `://` plus mailto:. Kept in sync (loosely) with Weavero's
-    // URL_SCHEMES; broad enough for the common cases.
-    const URL_RE = /(?:https?|ftp|zotero|obsidian|vscode|notion|slack|figma|file|magnet|msteams|evernote|discord|zoommtg|spotify):\/\/[^\s<>]+|mailto:[^\s<>]+|\bwww\.[^\s<>]+/gi;
+    // The matcher is Weavero's pref-gated URL_REGEX.source, passed in on
+    // `window.__wvLinkifyRegexSrc` by note-editor.ts so the editor honours the
+    // exact same "Show: URLs / Zotero links / App links" toggles as every
+    // other surface (when a scheme's toggle is off it drops out of the
+    // source; all-off yields the never-matching \b\B sentinel). Fallback below
+    // only if chrome never set it. `decorations` reads it fresh each call, so a
+    // toggle change + a re-decorate (empty tx from chrome) re-scopes live.
+    const FALLBACK = "(https?:\\/\\/|zotero:\\/\\/|\\bwww\\.)[^\\s<>\"')\\]]*";
+    function currentRe(): RegExp {
+        const src = (window as any).__wvLinkifyRegexSrc || FALLBACK;
+        return new RegExp(src, "gi");
+    }
 
     function schemeClass(url: string): string {
         // Schemeless `www.` counts as a web link (launched as https).
@@ -33,12 +42,13 @@ import { Plugin, PluginKey } from "prosemirror-state";
 
     function buildDecos(doc: any): any {
         const decos: any[] = [];
+        const re = currentRe();
         doc.descendants((node: any, pos: number) => {
             if (!node.isText) return;
             const text: string = node.text || "";
-            URL_RE.lastIndex = 0;
+            re.lastIndex = 0;
             let m: RegExpExecArray | null;
-            while ((m = URL_RE.exec(text))) {
+            while ((m = re.exec(text))) {
                 // Trim trailing punctuation that's rarely part of the URL.
                 let url = m[0].replace(/[.,;:)\]}>'"]+$/, "");
                 if (!url) continue;
@@ -74,23 +84,39 @@ import { Plugin, PluginKey } from "prosemirror-state";
     }
 
     function install(): string {
+        const ci: any = (window as any)._currentEditorInstance;
+        const view: any = ci && ci._editorCore && ci._editorCore.view;
+        if (!view) return "no-view";
+        const has = () => view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify);
+        if (has()) return "already";
         try {
-            const ci: any = (window as any)._currentEditorInstance;
-            const view: any = ci && ci._editorCore && ci._editorCore.view;
-            if (!view) return "no-view";
-            if (view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify)) {
-                return "already";
-            }
             view.updateState(view.state.reconfigure({
                 plugins: view.state.plugins.concat(makePlugin()),
             }));
             return "installed";
         } catch (e: any) {
+            // reconfigure re-initialises EVERY plugin's view; with other plugins
+            // present (e.g. Better Notes) one can throw during re-init (`t.destroy`
+            // / `editorView is undefined`) AFTER our plugin is already in the new
+            // state. If ours landed, that's a success -- don't report an error
+            // (which would keep the chrome retry loop spinning).
+            if (has()) return "installed";
             return "err: " + (e && e.message);
         }
     }
 
     (window as any).__wvInstallNoteLinkify = install;
+    // Force a re-scan: `decorations` reads __wvLinkifyRegexSrc fresh each call,
+    // so dispatching an empty transaction re-runs it under the current toggle
+    // state (chrome calls this after a "Show:" toggle changes, and once after
+    // install to guarantee the first paint). Empty tx = no doc change.
+    (window as any).__wvRedecorateNotes = function () {
+        try {
+            const ci: any = (window as any)._currentEditorInstance;
+            const view: any = ci && ci._editorCore && ci._editorCore.view;
+            if (view) view.dispatch(view.state.tr);
+        } catch (e) { /* view gone */ }
+    };
     // NO in-page retry loop: timers scheduled by eval'd code in this
     // compartment never fire (verified live -- setTimeout schedules but the
     // callback doesn't run), so retrying is driven from the CHROME side

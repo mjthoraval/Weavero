@@ -7956,6 +7956,120 @@ class _ReaderPanelsMixin {
         this._wvReaderRenderBmList(reader, idoc);
     }
 
+    /** The set of TEXT-selection bookmarks a context-menu bulk action applies
+     *  to: the whole multi-selection when the clicked row is part of it, else
+     *  just the clicked row. Returns null -- action not applicable -- unless
+     *  EVERY row in that set is a local (This Document) text bookmark. */
+    _wvBmCtxTextSelectionSet(reader: any, idoc: any, rowEl: any, entry: any): any[] | null {
+        try {
+            if (!rowEl || !entry) return null;
+            let rows: any[] = [rowEl];
+            if (rowEl.classList.contains("wv-bm-reader-selected")) {
+                const sel = [...idoc.querySelectorAll(".wv-bm-reader-row.wv-bm-reader-selected")];
+                if (sel.length > 1) rows = sel;
+            }
+            const out: any[] = [];
+            for (const r of rows) {
+                const info = this._wvBmResolveRow(reader, r);
+                if (!info || info.isFolder || info.section !== "local"
+                        || !info.entry || info.entry.type !== "text") return null;
+                out.push(info.entry);
+            }
+            return out.length ? out : null;
+        } catch (_) { return null; }
+    }
+
+    /** Copy text-selection bookmarks into the outline: each becomes a curated
+     *  entry with the bookmark's label as title and its selection as the
+     *  ESTABLISHED region (position + resolvedPosition -- real rects, so
+     *  navigation highlights; no title recovery ever runs). Entries land in
+     *  document order via the same gap logic as add-from-selection. Curates
+     *  first if needed. The bookmarks themselves are untouched (copy, not
+     *  move). */
+    async _wvBmCopyTextToOutline(reader: any, idoc: any, bms: any[]) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            await this._wvOutlineInit();
+            if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
+                let cache = reader._wvOutlineCache;
+                if (!cache || !cache.tree) {
+                    try { cache = await this._wvReaderFetchOutline(reader); reader._wvOutlineCache = cache; } catch (_) {}
+                }
+                await this._wvOutlineEnsureCurated(att.libraryID, att.itemKey,
+                    (cache && cache.source) || "extracted", (cache && cache.tree) || []);
+                reader._wvOutlineViewSource = null;
+            }
+            const newIds: string[] = [];
+            for (const bm of bms) {
+                let pos: any = null;
+                try { pos = bm.position ? JSON.parse(JSON.stringify(bm.position)) : null; } catch (_) {}
+                if (!pos || !Array.isArray(pos.rects) || !pos.rects.length) continue;
+                const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const entries: any[] = (d && d.entries) || [];
+                const title = String(bm.label || "").replace(/\s+/g, " ").trim().slice(0, 160) || "Bookmark";
+                const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos);
+                const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, {
+                    title, indentLevel: indent,
+                    position: pos, resolvedPosition: pos, regionTitle: title,
+                    url: null,
+                    source: { title, position: pos, url: null, origin: "user" },
+                }, gap);
+                if (stored && stored.id) newIds.push(String(stored.id));
+            }
+            if (!newIds.length) { this._wvReaderPanelNote(idoc, "Nothing to copy — no selection region on the bookmark."); return; }
+            // SHOW the result (user request 2026-07-22): switch to the Outline
+            // tab with the new entries selected and the first one focused --
+            // same landing the add-from-selection path gives.
+            reader._wvOutlineViewSource = null;
+            try {
+                // Expand every new entry's ancestor chain so all new rows render.
+                const dd = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const ce: any[] = (dd && dd.entries) || [];
+                const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+                for (const id of newIds) {
+                    const idx = ce.findIndex((x: any) => String(x.id) === id);
+                    if (idx < 0) continue;
+                    let lvl = Math.max(0, ce[idx].indentLevel || 0);
+                    for (let j = idx - 1; j >= 0 && lvl > 0; j--) {
+                        const jl = Math.max(0, ce[j].indentLevel || 0);
+                        if (jl < lvl) { expandedSet.add(String(ce[j].id)); lvl = jl; }
+                    }
+                }
+            } catch (_) {}
+            try {
+                const ir = reader._internalReader;
+                if (ir) { ir.toggleSidebar(true); ir.setSidebarView("outline"); }
+            } catch (_) {}
+            if (idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) {
+                try { this._wvReaderActivateOutlineTakeover(reader, idoc, true); } catch (_) {}
+                await this._wvReaderRenderOutline(reader, idoc);
+                try {
+                    const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
+                    sel.clear();
+                    for (const id of newIds) sel.add(id);
+                    reader._wvOutlineSelAnchor = newIds[0];
+                    const rows: any[] = [...idoc.querySelectorAll(".wv-outline-row")];
+                    let first: any = null;
+                    for (const r of rows) {
+                        const kk = this._wvOutlineRowKey(r);
+                        if (kk != null && sel.has(kk)) { r.classList.add("wv-outline-selected"); if (!first) first = r; }
+                        // Drop the tint the render restored from the PREVIOUS
+                        // selection -- only the just-added entries are selected.
+                        else r.classList.remove("wv-outline-selected");
+                        r.classList.remove("wv-outline-active");
+                    }
+                    if (first) {
+                        first.classList.add("wv-outline-active");
+                        try { first.focus(); } catch (_) {}
+                        try { first.scrollIntoView({ block: "nearest" }); } catch (_) {}
+                    }
+                } catch (_) {}
+            }
+            this._wvReaderPanelNote(idoc, "Copied " + newIds.length + " bookmark" + (newIds.length === 1 ? "" : "s") + " to the outline.");
+        } catch (err) { Zotero.debug("[Weavero] _wvBmCopyTextToOutline err: " + err); }
+    }
+
     /** Drop wiring for one bookmark group, matched to where the item will
      *  actually file: an annotation/selection from the OPEN document belongs
      *  in "In this document" (local); one dragged from ANOTHER document
@@ -10110,6 +10224,21 @@ class _ReaderPanelsMixin {
                         const orig = this._bmReaderOriginalLabel(entry);
                         if (orig && orig !== entry.label) {
                             item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                        }
+                    }
+                    {
+                        // "Copy to Outline" -- a text-selection bookmark carries
+                        // real rects, so it converts 1:1 into an outline entry
+                        // (title = label, region = the selection). Acts on the
+                        // whole multi-selection when the clicked row is part of
+                        // it; offered ONLY when every row in that set is a local
+                        // TEXT bookmark -- any other type (position pin, item,
+                        // folder, Elsewhere row) in the set hides it.
+                        const texts = this._wvBmCtxTextSelectionSet(reader, idoc, rowEl, entry);
+                        if (texts) {
+                            item(texts.length > 1 ? ("Copy " + texts.length + " to Outline") : "Copy to Outline",
+                                this._wvReaderOutlineMenuIconURL(),
+                                () => this._wvBmCopyTextToOutline(reader, idoc, texts));
                         }
                     }
                     item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));

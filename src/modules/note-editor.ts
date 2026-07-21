@@ -241,11 +241,16 @@ class _NoteEditorMixin {
             const attempt = (): string => {
                 try {
                     const wj = (iwin as any).wrappedJSObject;
-                    // Always push the current pref-gated URL_REGEX source before
-                    // (re)installing so the editor honours the live "Show:"
-                    // toggles, exactly like every other surface.
-                    try { if (wj) wj.__wvLinkifyRegexSrc = String((this as any).URL_REGEX.source); }
-                    catch (e) {}
+                    // Always push the current pref-gated URL_REGEX source + the
+                    // master enable flag before (re)installing so the editor
+                    // honours the live "Show:" toggles and the "Editor" toggle,
+                    // exactly like every other surface.
+                    try {
+                        if (wj) {
+                            wj.__wvLinkifyRegexSrc = String((this as any).URL_REGEX.source);
+                            wj.__wvLinkifyEnabled = !!this._getEnableNotes();
+                        }
+                    } catch (e) {}
                     if (wj && typeof wj.__wvInstallNoteLinkify === "function") {
                         const r = String(wj.__wvInstallNoteLinkify());
                         // Repaint after a fresh install so decorations appear
@@ -283,13 +288,14 @@ class _NoteEditorMixin {
         }
     }
 
-    /** After a "Show:" scheme toggle changes, push the new pref-gated
-     *  URL_REGEX source into every open note-editor iframe and force a
-     *  re-scan, so bare-URL decorations re-scope live (no reload). Sweeps
-     *  main windows + pop-out note/reader windows. */
+    /** After a "Show:" scheme toggle OR the master "Editor" toggle changes,
+     *  push the new pref-gated URL_REGEX source + enable flag into every open
+     *  note-editor iframe and force a re-scan, so decorations re-scope (or
+     *  clear entirely) live -- no reload. Sweeps main + pop-out windows. */
     _refreshNoteLinkifyRegex() {
         if ((this as any)._wvDestroyed) return;
         const src = (() => { try { return String((this as any).URL_REGEX.source); } catch (e) { return ""; } })();
+        const enabled = !!this._getEnableNotes();
         const docs: any[] = [];
         try {
             const mains = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
@@ -308,7 +314,7 @@ class _NoteEditorMixin {
                     const iwin = fr && fr.contentWindow;
                     const wj = iwin && (iwin as any).wrappedJSObject;
                     if (!wj) continue;
-                    try { wj.__wvLinkifyRegexSrc = src; } catch (e) {}
+                    try { wj.__wvLinkifyRegexSrc = src; wj.__wvLinkifyEnabled = enabled; } catch (e) {}
                     try { if (typeof wj.__wvRedecorateNotes === "function") wj.__wvRedecorateNotes(); } catch (e) {}
                 }
             } catch (e) {}

@@ -3449,6 +3449,11 @@ class WeaveroPlugin {
                             if (!this._getEnableNotes()) this._stripNotes();
                         } catch(e) { Zotero.debug("[Weavero] strip-notes err: " + e); }
                         this._applySurfacePref("notes");
+                        // Editor bare-URL decoration: flip the enable flag +
+                        // re-decorate in every open editor so it clears/returns
+                        // live (no reload) -- closes the toggle-off residue.
+                        try { this._refreshNoteLinkifyRegex(); }
+                        catch(e) { Zotero.debug("[Weavero] note linkify toggle err: " + e); }
                     }
                     if (data === "extensions.zotero.weavero.enableNotesPane") {
                         // Context-notes pane (note-row titles/bodies + notes-box).

@@ -71,6 +71,12 @@ import { Plugin, PluginKey } from "prosemirror-state";
             // the doc, so nothing is saved/synced.
             props: {
                 decorations(state: any) {
+                    // Master "Editor" toggle (enableNotes) off → no decorations,
+                    // WITHOUT uninstalling (uninstall = reconfigure = the
+                    // t.destroy risk). Chrome flips the flag + re-decorates.
+                    if ((window as any).__wvLinkifyEnabled === false) {
+                        return DecorationSet.empty;
+                    }
                     return buildDecos(state.doc);
                 },
             },

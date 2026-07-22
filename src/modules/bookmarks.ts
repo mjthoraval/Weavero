@@ -257,9 +257,15 @@ const BM_POPUP_CSS = [
     ".wv-bm-iconbtn:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
     ".wv-bm-iconbtn.wv-active{background:var(--fill-quarternary,rgba(128,128,128,.24));}",
     "#" + BM_INNER_ID + " .wv-bm-funnel-spacer{margin-left:auto;}",
-    "#" + BM_INNER_ID + " .wv-bm-search{display:flex;padding:0 6px 4px;}",
-    ".wv-bm-search-input{flex:1;padding:4px 8px;font-size:13px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
+    "#" + BM_INNER_ID + " .wv-bm-search{display:flex;padding:0 6px 4px;position:relative;}",
+    ".wv-bm-search-input{flex:1;padding:4px 24px 4px 8px;font-size:13px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
     ".wv-bm-search-input:focus{outline:none;border-color:var(--color-accent,#5e6ad2);}",
+    // Clear ("x") inside the field, shown only with a query -- same affordance
+    // as the reader bookmark / tabs-menu / native annotation search.
+    ".wv-bm-search-clear{position:absolute;right:12px;top:0;bottom:4px;width:16px;display:none;align-items:center;justify-content:center;padding:0;border:none;background:transparent;cursor:pointer;opacity:.75;}",
+    ".wv-bm-search-clear:hover{opacity:1;}",
+    ".wv-bm-search-clear.wv-visible{display:flex;}",
+    ".wv-bm-search-clear svg{width:14px;height:14px;display:block;}",
     ".wv-bm-search-empty{padding:10px 12px;opacity:.55;font-style:italic;}",
     // Chip filter SIDE popup — a separate XUL panel anchored to the
     // right edge of the bookmarks popup. Lives in its own <panel> so the
@@ -3252,8 +3258,27 @@ class _BookmarksMixin {
             searchInput.setAttribute("type", "text");
             searchInput.setAttribute("placeholder", "Search bookmarks…");
             searchInput.value = this._bmLibFilterText || "";
+            // Clear ("x") button -- same grey-circle-white-x as the reader
+            // search boxes and the native annotation search; visible only
+            // while there's a query. Clears + keeps the field open/focused.
+            const clearBtn: any = doc.createElementNS(NS_HTML, "button");
+            clearBtn.className = "wv-bm-search-clear";
+            clearBtn.setAttribute("type", "button");
+            clearBtn.setAttribute("title", "Clear search");
+            clearBtn.setAttribute("aria-label", "Clear search");
+            clearBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
+            const syncClear = () => { clearBtn.classList.toggle("wv-visible", !!String(searchInput.value || "")); };
+            clearBtn.addEventListener("click", (e: any) => {
+                e.preventDefault(); e.stopPropagation();
+                searchInput.value = "";
+                this._bmLibFilterText = "";
+                syncClear();
+                this._bmRefreshPopupList(win);
+                try { searchInput.focus(); } catch (_) {}
+            });
             searchInput.addEventListener("input", () => {
                 this._bmLibFilterText = searchInput.value;
+                syncClear();
                 this._bmRefreshPopupList(win);
             });
             searchInput.addEventListener("keydown", (e: any) => {
@@ -3261,10 +3286,13 @@ class _BookmarksMixin {
                     e.stopPropagation();
                     searchInput.value = "";
                     this._bmLibFilterText = "";
+                    syncClear();
                     this._bmRefreshPopupList(win);
                 }
             });
             searchRow.appendChild(searchInput);
+            searchRow.appendChild(clearBtn);
+            syncClear();
             inner.appendChild(searchRow);
             win.setTimeout(() => { try { searchInput.focus(); searchInput.select(); } catch (_) {} }, 0);
         }

@@ -4149,6 +4149,21 @@ class _ReaderMixin {
                 "}",
                 "#wv-wtl-settings-btn { inset-inline-start: 4px; }",
                 "#wv-wtl-filetype-btn { inset-inline-end: 4px; gap: 1px; }",
+                // Clear ("x") for the search field -- parity with the main
+                // window's tabs-menu filter. Inside the input's right edge
+                // (the funnel owns the 38px outside it); visible only while
+                // the wrapper carries wv-wtl-hastext (input listener toggles).
+                "#wv-wtl-clear-btn {",
+                "  position: absolute; top: 0; height: 32px;",
+                "  inset-inline-end: 42px;",
+                "  display: none; align-items: center; justify-content: center;",
+                "  padding: 0 2px; border: none; background: transparent;",
+                "  cursor: pointer; opacity: .75;",
+                "  appearance: none; -moz-appearance: none;",
+                "}",
+                "#wv-wtl-clear-btn:hover { opacity: 1; }",
+                "#wv-wtl-wrapper.wv-wtl-hastext #wv-wtl-clear-btn { display: inline-flex; }",
+                "#wv-wtl-wrapper.wv-wtl-hastext #wv-wtl-filter { padding-inline-end: 22px; }",
                 "#wv-wtl-settings-btn:hover, #wv-wtl-filetype-btn:hover { background-color: var(--fill-quinary); }",
                 "#wv-wtl-settings-btn:active, #wv-wtl-filetype-btn:active { background-color: var(--fill-quarternary); }",
                 "#wv-wtl-settings-btn .wv-wtl-settings-icon {",
@@ -6232,8 +6247,14 @@ class _ReaderMixin {
             if (!win || !win.document) return null;
             const doc = win.document;
             const HTML = "http://www.w3.org/1999/xhtml";
+            // Versioned rebuild: the panel DOM is cached per window, so a plain
+            // create-if-absent guard would pin an old-layout panel across plugin
+            // reloads (the clear-x shipped invisible this way, 2026-07-22).
+            // Bump WTL_PANEL_V whenever the panel's structure changes.
+            const WTL_PANEL_V = "2";
             let panel: any = doc.getElementById("wv-window-tablist-panel");
-            if (panel) return panel;
+            if (panel && panel.getAttribute("wv-build") === WTL_PANEL_V) return panel;
+            if (panel) { try { panel.remove(); } catch (er) {} }
 
             this._wvWTPanelState(win);
             this._ensureReaderWindowTabStripStyles(doc);
@@ -6242,6 +6263,7 @@ class _ReaderMixin {
             panel.id = "wv-window-tablist-panel";
             panel.setAttribute("type", "arrow");
             panel.setAttribute("animate", "false");
+            panel.setAttribute("wv-build", WTL_PANEL_V);
 
             const wrapper: any = doc.createElementNS(HTML, "div");
             wrapper.id = "wv-wtl-wrapper";
@@ -6271,14 +6293,38 @@ class _ReaderMixin {
             input.id = "wv-wtl-filter";
             input.type = "text";
             input.setAttribute("placeholder", "Search Tabs");
+            const syncWtlClear = () => {
+                try { wrapper.classList.toggle("wv-wtl-hastext", !!String(input.value || "")); } catch (er) {}
+            };
             input.addEventListener("input", () => {
                 try {
                     const st = this._wvWTPanelState(win);
                     if (st) st.search = input.value || "";
+                    syncWtlClear();
                     this._wvWTRenderTabListPanel(win);
                 } catch (er) {}
             });
             wrapper.appendChild(input);
+            // Clear ("x") — same grey-circle-white-x as every other Weavero
+            // search box; shown only with a query, clears + keeps focus.
+            const wtlClear: any = doc.createElementNS(HTML, "button");
+            wtlClear.id = "wv-wtl-clear-btn";
+            wtlClear.type = "button";
+            wtlClear.title = "Clear search";
+            wtlClear.setAttribute("aria-label", "Clear search");
+            wtlClear.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="#808080"/><line x1="4" y1="4" x2="10" y2="10" stroke-width="1.5" stroke="#fff"/><line x1="10" y1="4" x2="4" y2="10" stroke-width="1.5" stroke="#fff"/></svg>';
+            wtlClear.addEventListener("click", (e: any) => {
+                try {
+                    e.stopPropagation(); e.preventDefault();
+                    input.value = "";
+                    const st = this._wvWTPanelState(win);
+                    if (st) st.search = "";
+                    syncWtlClear();
+                    this._wvWTRenderTabListPanel(win);
+                    try { input.focus(); } catch (er) {}
+                } catch (er) {}
+            });
+            wrapper.appendChild(wtlClear);
 
             // File-type funnel — same artwork (Weavero-identity funnel,
             // amber stem) + dropmarker chevron as the main window's

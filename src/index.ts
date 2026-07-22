@@ -4976,6 +4976,14 @@ class WeaveroPlugin {
                     const idoc = iwin && iwin.document;
                     if (!idoc) continue;
 
+                    // Remove the injected panel surfaces (bookmark tab/view,
+                    // outline takeover, filter button, panels stylesheet,
+                    // window-level handlers) and restore the native sidebar.
+                    // Without this, DISABLING the plugin left the outline
+                    // takeover in place (2026-07-22). On a hot reload the new
+                    // instance's ensure pass simply rebuilds them.
+                    try { this._wvReaderTeardownPanels(reader, idoc); } catch (e) {}
+
                     // Disconnect observer + drop the iframe-doc listeners.
                     const data = this._readerObservers.get(reader);
                     if (data) {

@@ -1470,6 +1470,64 @@ class _ReaderPanelsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvReaderRewirePanels err: " + e); }
     }
 
+    /** FULL teardown for plugin shutdown/disable: everything the rewire pass
+     *  removes, PLUS the panels stylesheet, the window-level handlers (stored
+     *  refs), the hover card, and the wiring stamps -- so the native sidebar is
+     *  fully restored and a later re-enable starts from scratch. (Disabling
+     *  previously left the outline takeover + bookmark tab in place, reported
+     *  2026-07-22 -- destroy() cleaned the older reader features but predates
+     *  the panels.) Called from destroy() for every open reader. */
+    _wvReaderTeardownPanels(reader: any, idoc: any) {
+        try {
+            this._wvReaderRewirePanels(reader, idoc);
+            try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
+            try { this._wvReaderHideBmHoverCard(idoc); } catch (_) {}
+            try { const st = idoc.getElementById(RP_STYLE_ID); if (st) st.remove(); } catch (_) {}
+            // Window handlers wired with stored refs + version stamps.
+            const w: any = idoc.defaultView;
+            if (w) {
+                for (const [ev, ref, stamp] of [
+                    ["auxclick", "_wvOutlineCtxHandler", "_wvOutlineCtxWired"],
+                    ["keydown", "_wvOutlineDelHandler", "_wvOutlineDelWired"],
+                    ["auxclick", "_wvBmCtxHandler", "_wvBmCtxWired"],
+                    ["keydown", "_wvBmKeyHandler", "_wvBmKeyWired"],
+                    ["click", "_wvBmClickHandler", "_wvBmKeyWired"],
+                    ["dblclick", "_wvBmDblHandler", "_wvBmKeyWired"],
+                ] as any) {
+                    try { if (w[ref]) w.removeEventListener(ev, w[ref], true); } catch (_) {}
+                    try { w[ref] = null; w[stamp] = null; } catch (_) {}
+                }
+            }
+            // Selection capture on the PDF-view doc.
+            try {
+                const ir = reader._internalReader;
+                const pv = ir && (ir._primaryView || ir._lastView);
+                const d = pv && pv._iframeWindow && pv._iframeWindow.document;
+                if (d && d._wvSelCaptureHandler) {
+                    d.removeEventListener("pointerup", d._wvSelCaptureHandler, true);
+                    d._wvSelCaptureHandler = null; d._wvSelCaptureWired = null;
+                }
+            } catch (_) {}
+            // Doc-level listeners: all wired with stored refs (versioned), so
+            // they're fully removable here -- no orphan can accumulate across
+            // reloads or survive a disable.
+            const dref = (idoc as any);
+            for (const [ev, ref, stamp] of [
+                ["click", "_wvOutlineTabClickH", "_wvOutlineTabWired"],
+                ["dblclick", "_wvOutlineTabDblH", "_wvOutlineTabWired"],
+                ["click", "_wvBmTabClickH", "_wvBmTabClickWired"],
+                ["dragstart", "_wvDragSrcStartH", "_wvDragSrcHooked"],
+                ["dragend", "_wvDragSrcEndH", "_wvDragSrcHooked"],
+                ["dragstart", "_wvBmAnnDragStartH", "_wvBmAnnDragWired"],
+                ["dragend", "_wvBmAnnDragEndH", "_wvBmAnnDragWired"],
+            ] as any) {
+                try { if (dref[ref]) idoc.removeEventListener(ev, dref[ref], true); } catch (_) {}
+                try { dref[ref] = null; dref[stamp] = null; } catch (_) {}
+            }
+            try { (idoc as any)._wvPanelsWireV = null; } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderTeardownPanels err: " + e); }
+    }
+
     // ---- Feature C: Outline takeover (Phase 2, read-only) -------------------
 
     _getEnableOutlineTakeover(): boolean {
@@ -1508,34 +1566,49 @@ class _ReaderPanelsMixin {
             }
             // One capture-phase click listener per idoc: take over on the
             // Outline tab, release on any other native tab or our Bookmarks tab.
-            if (!(idoc as any)._wvOutlineTabWired) {
-                (idoc as any)._wvOutlineTabWired = true;
-                idoc.addEventListener("click", (e: any) => {
+            // VERSIONED + stored-ref wiring on the persistent idoc (never a bare
+            // boolean guard here -- an anonymous listener can't be unhooked, so
+            // every hot reload would stack another copy; a stacked dblclick
+            // handler toggle-alls TWICE = visibly nothing). Live-plugin
+            // resolution keeps a surviving listener inert after disable.
+            if ((idoc as any)._wvOutlineTabWired !== RP_BM_CTX_WIRE_V) {
+                try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
+                const tabClickH = (e: any) => {
                     try {
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
                         const t = e.target;
                         if (!t || !t.closest) return;
                         if (t.closest("#viewOutline")) {
-                            this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                            P._wvReaderActivateOutlineTakeover(reader, idoc, true);
                         } else if (t.closest("#viewThumbnail,#viewAnnotations")
                                 || t.closest("." + RP_BM_TAB_CLASS)) {
-                            this._wvReaderActivateOutlineTakeover(reader, idoc, false);
+                            P._wvReaderActivateOutlineTakeover(reader, idoc, false);
                         }
                     } catch (_) {}
-                }, true);
+                };
                 // Double-click the Outline tab = expand-all / collapse-all, the
                 // native behaviour. When Weavero has taken over, drive OUR
                 // outline (the native handler still runs on its hidden view --
                 // harmless). Gate on the takeover being active.
-                idoc.addEventListener("dblclick", (e: any) => {
+                const tabDblH = (e: any) => {
                     try {
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
                         const t = e.target;
                         if (!t || !t.closest || !t.closest("#viewOutline")) return;
                         const container = idoc.getElementById("sidebarContainer");
                         if (container && container.classList.contains(RP_OUTLINE_TAB_ON)) {
-                            this._wvOutlineToggleAll(reader, idoc);
+                            P._wvOutlineToggleAll(reader, idoc);
                         }
                     } catch (_) {}
-                }, true);
+                };
+                (idoc as any)._wvOutlineTabClickH = tabClickH;
+                (idoc as any)._wvOutlineTabDblH = tabDblH;
+                (idoc as any)._wvOutlineTabWired = RP_BM_CTX_WIRE_V;
+                idoc.addEventListener("click", tabClickH, true);
+                idoc.addEventListener("dblclick", tabDblH, true);
             }
             // Right-click an outline row -> Rename/Delete menu. The reader
             // suppresses `contextmenu` in the sidebar, so use auxclick button 2
@@ -5388,17 +5461,30 @@ class _ReaderPanelsMixin {
             // drives the per-section "no drop" cursor (a same-doc item may
             // only land in "In this document"; a cross-doc item only in
             // "Elsewhere"). Idempotent per idoc; cleared on dragend.
-            if (!(idoc as any)._wvDragSrcHooked) {
-                (idoc as any)._wvDragSrcHooked = true;
-                idoc.addEventListener("dragstart", () => {
+            // Versioned + stored-ref (see the outline tab wiring for why): the
+            // old boolean guard pinned these to the wiring-time instance, so
+            // after a hot reload the drag-source id was written to the DEAD
+            // instance and cross-section drop rules read null on the live one.
+            if ((idoc as any)._wvDragSrcHooked !== RP_BM_CTX_WIRE_V) {
+                try { if ((idoc as any)._wvDragSrcStartH) idoc.removeEventListener("dragstart", (idoc as any)._wvDragSrcStartH, true); } catch (_) {}
+                try { if ((idoc as any)._wvDragSrcEndH) idoc.removeEventListener("dragend", (idoc as any)._wvDragSrcEndH, true); } catch (_) {}
+                const dragSrcStartH = () => {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P) return;
                     try {
-                        const a = this._wvReaderAtt(reader);
-                        this._wvDragSourceAttId = (a && a.att) ? a.att.id : null;
-                    } catch (_) { this._wvDragSourceAttId = null; }
-                }, true);
-                idoc.addEventListener("dragend", () => {
-                    this._wvDragSourceAttId = null;
-                }, true);
+                        const a = P._wvReaderAtt(reader);
+                        P._wvDragSourceAttId = (a && a.att) ? a.att.id : null;
+                    } catch (_) { P._wvDragSourceAttId = null; }
+                };
+                const dragSrcEndH = () => {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (P) P._wvDragSourceAttId = null;
+                };
+                (idoc as any)._wvDragSrcStartH = dragSrcStartH;
+                (idoc as any)._wvDragSrcEndH = dragSrcEndH;
+                (idoc as any)._wvDragSrcHooked = RP_BM_CTX_WIRE_V;
+                idoc.addEventListener("dragstart", dragSrcStartH, true);
+                idoc.addEventListener("dragend", dragSrcEndH, true);
             }
 
             // Tab button.
@@ -5447,16 +5533,25 @@ class _ReaderPanelsMixin {
 
             // Deactivate our tab whenever a native tab is clicked (one
             // document-level capture listener, survives React re-renders).
-            if (!idoc._wvBmTabClickWired) {
-                idoc._wvBmTabClickWired = true;
-                idoc.addEventListener("click", (e: any) => {
+            // Versioned + stored-ref + live-plugin: THIS was the dev.111
+            // flicker -- old-instance copies of this handler accumulated
+            // across reloads and fought the outline takeover by re-adding
+            // the BM class from dead code.
+            if ((idoc as any)._wvBmTabClickWired !== RP_BM_CTX_WIRE_V) {
+                try { if ((idoc as any)._wvBmTabClickH) idoc.removeEventListener("click", (idoc as any)._wvBmTabClickH, true); } catch (_) {}
+                const bmTabClickH = (e: any) => {
                     try {
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
                         const t = e.target;
                         if (t && t.closest && t.closest("#viewThumbnail,#viewAnnotations,#viewOutline")) {
-                            this._wvReaderSetBmActive(reader, idoc, false);
+                            P._wvReaderSetBmActive(reader, idoc, false);
                         }
                     } catch (_) {}
-                }, true);
+                };
+                (idoc as any)._wvBmTabClickH = bmTabClickH;
+                (idoc as any)._wvBmTabClickWired = RP_BM_CTX_WIRE_V;
+                idoc.addEventListener("click", bmTabClickH, true);
             }
             // Right-click in the Bookmarks pane → our context menu. The reader
             // SUPPRESSES `contextmenu` (and mousedown/up) in its sidebar — a
@@ -5517,20 +5612,33 @@ class _ReaderPanelsMixin {
             }
             // Capture which annotation is being dragged from the sidebar so a
             // drop on our tab/view can bookmark it (MIME-independent).
-            if (!idoc._wvBmAnnDragWired) {
-                idoc._wvBmAnnDragWired = true;
-                idoc.addEventListener("dragstart", (e: any) => {
+            // Versioned + stored-ref + live-plugin, same reason as above: the
+            // dragged-annotation key was being written to the reload-dead
+            // instance, so annotation drops silently degraded after reloads.
+            if ((idoc as any)._wvBmAnnDragWired !== RP_BM_CTX_WIRE_V) {
+                try { if ((idoc as any)._wvBmAnnDragStartH) idoc.removeEventListener("dragstart", (idoc as any)._wvBmAnnDragStartH, true); } catch (_) {}
+                try { if ((idoc as any)._wvBmAnnDragEndH) idoc.removeEventListener("dragend", (idoc as any)._wvBmAnnDragEndH, true); } catch (_) {}
+                const annDragStartH = (e: any) => {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P) return;
                     try {
                         const a = e.target && e.target.closest && e.target.closest("[data-sidebar-annotation-id]");
-                        this._wvDraggedAnnKey = a ? a.getAttribute("data-sidebar-annotation-id") : null;
-                    } catch (_) { this._wvDraggedAnnKey = null; }
-                }, true);
-                idoc.addEventListener("dragend", () => {
-                    this._wvDraggedAnnKey = null;
-                    this._wvBmRowDrag = null;
-                    this._wvCancelBmSpring();
-                    try { const a = this._wvReaderAtt(reader); if (a) this._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
-                }, true);
+                        P._wvDraggedAnnKey = a ? a.getAttribute("data-sidebar-annotation-id") : null;
+                    } catch (_) { P._wvDraggedAnnKey = null; }
+                };
+                const annDragEndH = () => {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P) return;
+                    P._wvDraggedAnnKey = null;
+                    P._wvBmRowDrag = null;
+                    P._wvCancelBmSpring();
+                    try { const a = P._wvReaderAtt(reader); if (a) P._wvRecollapseAllSprings(reader, idoc, a); } catch (_) {}
+                };
+                (idoc as any)._wvBmAnnDragStartH = annDragStartH;
+                (idoc as any)._wvBmAnnDragEndH = annDragEndH;
+                (idoc as any)._wvBmAnnDragWired = RP_BM_CTX_WIRE_V;
+                idoc.addEventListener("dragstart", annDragStartH, true);
+                idoc.addEventListener("dragend", annDragEndH, true);
             }
 
             // View panel.

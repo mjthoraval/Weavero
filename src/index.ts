@@ -27,6 +27,7 @@ import { bookmarksMethods } from "./modules/bookmarks";
 import { readerPanelsMethods } from "./modules/reader-panels";
 import { tabGroupsMethods } from "./modules/tab-groups";
 import { sessionsMethods } from "./modules/sessions";
+import { outlineEvalMethods } from "./modules/outline-eval";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -5165,6 +5166,10 @@ Object.defineProperties(
 Object.defineProperties(
     WeaveroPlugin.prototype,
     sessionsMethods,
+);
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    outlineEvalMethods,
 );
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================

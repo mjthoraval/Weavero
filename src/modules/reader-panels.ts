@@ -48,6 +48,65 @@ const RP_PANELS_WIRE_V = 10;
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 
+// Sidebar/box content-type icon for outline entries tagged `kind:"box"` -- a
+// framed panel (rounded rect + header rule). Raw inline SVG using currentColor
+// so it themes with the row text (light/dark).
+const RP_BOX_SVG = "<svg width='15' height='15' viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.3'><rect x='2' y='3.5' width='12' height='9' rx='1.5'/><line x1='2' y1='6.3' x2='14' y2='6.3'/></svg>";
+
+// Common academic heading words (lowercase, accent-preserving). Used to
+// disambiguate a "dropped initial" title ("R eferences") from a legitimate
+// leading single-letter word ("A model of the flow"): the fix is offered/
+// applied ONLY when JOINING the stray letter to the next word yields a word in
+// this set -- "References" is here, "Amodel" is not. Deliberately just heading
+// words (not a general dictionary): keeps the false-positive surface tiny.
+//
+// Latin-script languages only. Chinese (and other non-alphabetic scripts) have
+// no "dropped initial" failure mode -- there is no single letter split off by a
+// space -- so they need no entries here; space-separated CJK ("参 考 文 献") is
+// instead collapsed by the glyph-spacing repair (_wvLooksGlyphSpaced), which is
+// script-agnostic and needs no dictionary. Matching is via .toLowerCase(), so
+// accented forms ("références") compare correctly against the Unicode-aware
+// regex in _wvStrayLeadingSpace / _wvCleanTitleSpacing (2026-07-23).
+const RP_HEADING_WORDS = new Set([
+    // English
+    "introduction", "references", "summary", "abstract", "conclusion", "conclusions",
+    "discussion", "methods", "method", "methodology", "results", "result", "background",
+    "appendix", "appendices", "acknowledgements", "acknowledgments", "notation",
+    "nomenclature", "bibliography", "theory", "experimental", "experiments", "experiment",
+    "materials", "overview", "motivation", "preliminaries", "contents", "analysis",
+    "apparatus", "procedure", "procedures", "calibration", "measurements", "observations",
+    "formulation", "derivation", "validation", "simulation", "simulations", "comparison",
+    "implications", "limitations", "outlook", "review", "model", "modelling", "modeling",
+    "framework", "definitions", "definition", "assumptions", "hypothesis", "hypotheses",
+    "objectives", "scope", "findings", "sampling", "statistics", "photography", "target",
+    "synchronization", "production", "investigation", "measured", "impacts", "impact",
+    // French
+    "résumé", "résultats", "résultat", "méthodes", "méthode", "méthodologie",
+    "références", "remerciements", "annexe", "annexes", "bibliographie", "contexte",
+    "théorie", "expérimental", "expérience", "expériences", "matériels", "aperçu",
+    "appareil", "procédure", "mesures", "comparaison", "sommaire", "hypothèse",
+    "hypothèses", "objectifs", "définitions", "définition", "conclusion",
+    // German
+    "einleitung", "einführung", "zusammenfassung", "ergebnisse", "ergebnis",
+    "schlussfolgerung", "schlussfolgerungen", "methoden", "methodik", "diskussion",
+    "literatur", "literaturverzeichnis", "danksagung", "danksagungen", "anhang",
+    "überblick", "grundlagen", "fazit", "ausblick", "versuchsaufbau", "messungen",
+    "beobachtungen", "validierung", "vergleich", "hypothese", "hypothesen", "ziele",
+    "definitionen",
+    // Spanish
+    "introducción", "resumen", "resultados", "resultado", "conclusión", "conclusiones",
+    "discusión", "métodos", "método", "metodología", "referencias", "agradecimientos",
+    "apéndice", "bibliografía", "teoría", "experimento", "experimentos", "materiales",
+    "análisis", "aparato", "procedimiento", "mediciones", "observaciones", "formulación",
+    "validación", "comparación", "antecedentes", "hipótesis", "objetivos", "definiciones",
+    // Italian
+    "introduzione", "riassunto", "risultati", "risultato", "conclusione", "conclusioni",
+    "discussione", "metodi", "metodo", "metodologia", "bibliografia", "riferimenti",
+    "ringraziamenti", "appendice", "teoria", "sperimentale", "esperimento", "esperimenti",
+    "materiali", "panoramica", "analisi", "apparato", "procedura", "misure", "osservazioni",
+    "formulazione", "validazione", "confronto", "ipotesi", "obiettivi", "definizioni",
+]);
+
 // Same funnel + related icons as the library filter.
 const RP_FUNNEL_ICON = "chrome://zotero/skin/16/universal/filter.svg";
 const RP_RELATED_ICON = "chrome://zotero/skin/16/universal/related.svg";
@@ -1328,6 +1387,18 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-head-btn:hover{opacity:.95;background:rgba(127,127,127,.2);}",
     ".wv-outline-head-btn.wv-outline-edit-on{opacity:1;color:var(--color-accent,#5e6ad2);}",
     ".wv-outline-head-btn svg{width:15px;height:15px;}",
+    // Developer outline-eval quick-mark button (pref weavero.devOutlineEval only;
+    // invisible to normal users). Emoji glyph, not an SVG, so bump the font.
+    ".wv-outline-eval-btn{font-size:13px;line-height:1;}",
+    ".wv-outline-eval-btn.wv-outline-eval-marked{opacity:1;}",
+    // Content-type tagging: box/sidebar entries render with a framed-panel icon
+    // and a muted italic label, so they read as asides rather than sections.
+    ".wv-outline-kind-ic{flex:0 0 auto;display:inline-flex;align-items:center;opacity:.7;margin-right:1px;}",
+    ".wv-outline-kind-ic svg{width:12px;height:12px;}",
+    ".wv-outline-row.wv-outline-kind-box .wv-outline-label{font-style:italic;opacity:.82;}",
+    // The pane is programmatically focusable (tabindex=-1) so empty-area clicks
+    // enable +/- and arrow keys; hide the focus ring on the wrapper itself.
+    "." + RP_OUTLINE_VIEW_CLASS + ":focus{outline:none;}",
     // Inline rename input (opened by double-click / the Rename menu item) --
     // matches the label's font/size/spacing exactly so nothing shifts in edit
     // mode. SCOPED with the view class (0,2,0 specificity) so it beats the
@@ -1555,6 +1626,24 @@ class _ReaderPanelsMixin {
             if (!view) {
                 view = idoc.createElementNS(NS_HTML_RP, "div");
                 view.className = "viewWrapper " + RP_OUTLINE_VIEW_CLASS;
+                // Focusable (programmatic only) so clicking the empty part of the
+                // pane gives it focus -- then the +/- and arrow-key shortcuts work
+                // whenever the pane is focused, not only when a row is selected
+                // (the key handler's `inOutline` guard, 2026-07-23).
+                view.setAttribute("tabindex", "-1");
+                view.addEventListener("mousedown", (e: any) => {
+                    try {
+                        const t = e.target;
+                        if (t && t.closest && t.closest(".wv-outline-row, .wv-outline-head-btn, .wv-outline-src-chip, input, button")) return;
+                        // preventDefault is REQUIRED: a tabindex=-1 element is not
+                        // mouse-focusable, so the browser's default mousedown focus
+                        // handling would move focus OFF the view right after our
+                        // focus() call. Cancelling the default keeps the pane focused
+                        // so +/- work on an empty-area click (2026-07-23).
+                        e.preventDefault();
+                        view.focus();
+                    } catch (_) {}
+                });
                 const head = idoc.createElementNS(NS_HTML_RP, "div");
                 head.className = "wv-outline-head";
                 head.textContent = "Outline";
@@ -1801,6 +1890,24 @@ class _ReaderPanelsMixin {
                     if (cache && (treeLen > 0 || !extracting)) {
                         reader._wvOutlineCache = cache;
                         reader._wvOutlineFetchTries = 0;
+                        // Dev outline-eval: opportunistically classify + store this
+                        // outline. Never blocks render; writes only to the eval store
+                        // (nothing to the library). Gated to the testing pref.
+                        try {
+                            if ((this as any)._wvOeEnabled && (this as any)._wvOeEnabled()) {
+                                const oeAtt = this._wvReaderAtt(reader);
+                                if (oeAtt) {
+                                    let pages: number | null = null;
+                                    try {
+                                        const iw: any = reader._iframeWindow;
+                                        const app: any = iw && (iw.PDFViewerApplication || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication));
+                                        pages = app ? app.pagesCount : null;
+                                    } catch (_) {}
+                                    const cls = (this as any)._wvOeClassifyTree(cache.tree, cache.source, pages);
+                                    Promise.resolve((this as any)._wvOeSetClassification(oeAtt.libraryID, oeAtt.itemKey, cls)).catch(() => {});
+                                }
+                            }
+                        } catch (_) {}
                     }
                 }
                 source = (cache && cache.source) || "extracted";
@@ -1911,6 +2018,8 @@ class _ReaderPanelsMixin {
             const isExpanded = expandedSet.has(key);
             const row = idoc.createElementNS(NS, "div");
             row.className = "wv-outline-row";
+            // Content-type tag (e.g. "box" for a sidebar) -> distinct styling.
+            if (entry.kind) row.classList.add("wv-outline-kind-" + entry.kind);
             if (depth > 0) row.style.paddingLeft = (depth * 16) + "px";   // 16px/level, matches native .children
             (row as any)._wvOl = { entry, index: i, curatedView };   // what this row edits
             const tw = idoc.createElementNS(NS, "span");
@@ -1922,6 +2031,14 @@ class _ReaderPanelsMixin {
             label.textContent = entry.title || "(untitled)";
             label.setAttribute("title", "Double-click to rename, right-click for more");
             row.appendChild(tw);
+            // Box/sidebar entries get a framed-panel icon before the label.
+            if (entry.kind === "box") {
+                const kic = idoc.createElementNS(NS, "span");
+                kic.className = "wv-outline-kind-ic";
+                kic.setAttribute("title", "Sidebar / box");
+                kic.innerHTML = RP_BOX_SVG;
+                row.appendChild(kic);
+            }
             row.appendChild(label);
             // Page number at the right (position entries only; URL entries have none).
             const pi = (!entry.url && entry.position && Number.isInteger(entry.position.pageIndex))
@@ -2229,9 +2346,43 @@ class _ReaderPanelsMixin {
             //   after target's WHOLE subtree. Depth follows the target, never the
             //   cursor X. gap is an index into the FULL (pre-removal) entry array.
             const tDepth = Math.max(0, entries[targetIndex].indentLevel || 0);
+            // Reading-order key for an entry: earlier page first; within a page,
+            // higher on the page (larger y) first. Positionless entries sort last.
+            const posKey = (en: any) => {
+                const pp = en && en.position;
+                const page = (pp && Number.isInteger(pp.pageIndex)) ? pp.pageIndex : Infinity;
+                let y = -Infinity;
+                if (pp && Array.isArray(pp.rects) && pp.rects[0]) { const r = pp.rects[0]; y = Math.max(r[1] || 0, r[3] || 0); }
+                return { page, y };
+            };
+            const readingBefore = (a: any, b: any) => (a.page !== b.page) ? (a.page < b.page) : (a.y > b.y);
             let gap: number, newIndent: number;
             if (orient === 0) {
-                gap = targetIndex + 1; newIndent = tDepth + 1;
+                newIndent = tDepth + 1;
+                gap = targetIndex + 1;   // default = first child
+                // Insert among the target's DIRECT children by READING ORDER (page
+                // position), so an entry dropped into a parent lands where it
+                // actually reads -- not always at the top (user choice 2026-07-23).
+                const movedKey = blocks.length === 1 ? posKey(entries[blocks[0].start]) : null;
+                if (movedKey && movedKey.page !== Infinity) {
+                    const bStart = blocks[0].start, bEnd = blocks[0].end;
+                    let i = targetIndex + 1;
+                    while (i < entries.length && Math.max(0, entries[i].indentLevel || 0) > tDepth) {
+                        if (i >= bStart && i <= bEnd) { i = bEnd + 1; continue; }   // skip the dragged block
+                        if (Math.max(0, entries[i].indentLevel || 0) === tDepth + 1) {
+                            const ck = posKey(entries[i]);
+                            if (ck.page === Infinity || readingBefore(ck, movedKey)) {
+                                // child sorts before the moved entry (or has no
+                                // position) -> place after this child's whole subtree
+                                let ce = i;
+                                while (ce + 1 < entries.length && Math.max(0, entries[ce + 1].indentLevel || 0) > tDepth + 1) ce++;
+                                gap = ce + 1; i = ce + 1; continue;
+                            }
+                            gap = i; break;   // this child sorts after -> insert before it
+                        }
+                        i++;
+                    }
+                }
             } else if (orient < 0) {
                 gap = targetIndex; newIndent = tDepth;
             } else {
@@ -2269,6 +2420,19 @@ class _ReaderPanelsMixin {
                 flat.push(...removed[k]);
             }
             entries.splice(ins, 0, ...flat);
+            // Keep the just-moved item VISIBLE: expand its new ancestor chain.
+            // Nesting into a collapsed parent (or under a target whose subtree
+            // was collapsed) would otherwise hide the row you just dragged
+            // (reported 2026-07-22). Ancestors = the entries before the insertion
+            // point with progressively shallower indent.
+            try {
+                const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+                let lvl = newIndent;
+                for (let j = ins - 1; j >= 0 && lvl > 0; j--) {
+                    const jl = Math.max(0, entries[j].indentLevel || 0);
+                    if (jl < lvl) { if (entries[j].id != null) expandedSet.add(String(entries[j].id)); lvl = jl; }
+                }
+            } catch (_) {}
             await this._wvOutlinePersist();
             await this._wvReaderRenderOutline(reader, idoc);
         } catch (err) { Zotero.debug("[Weavero] _wvOutlineReorder err: " + err); }
@@ -2317,8 +2481,18 @@ class _ReaderPanelsMixin {
             // (keyboard use), so a mouse double-click toggle doesn't grab focus.
             const activeEl = idoc.querySelector(".wv-outline-row.wv-outline-active");
             const activeKey = activeEl ? this._wvOutlineRowKey(activeEl) : null;
+            // Also keep PANE focus (focus on the view itself, no active row) across
+            // the re-render, so `-` right after `+` -- or any repeat -- still lands
+            // in the outline and isn't dropped by the focus guard (2026-07-23).
+            const ae = idoc.activeElement;
+            const focusInOutline = !!(ae && ae.closest && ae.closest("." + RP_OUTLINE_VIEW_CLASS));
             const p = this._wvReaderRenderOutline(reader, idoc);
-            if (activeKey != null) Promise.resolve(p).then(() => { try { this._wvOutlineRefocusRow(idoc, activeKey); } catch (_) {} });
+            Promise.resolve(p).then(() => {
+                try {
+                    if (activeKey != null) this._wvOutlineRefocusRow(idoc, activeKey);
+                    else if (focusInOutline) { const v: any = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS); if (v && v.focus) v.focus(); }
+                } catch (_) {}
+            });
         } catch (_) {}
     }
 
@@ -3182,7 +3356,12 @@ class _ReaderPanelsMixin {
             };
             const commit = (withText?: boolean) => {
                 const rects = wvRectsForCharRange(chars, start, end);
-                const text = withText ? wvTextForCharRange(chars, start, end) : "";
+                let text = withText ? wvTextForCharRange(chars, start, end) : "";
+                // "Save Region and Text" re-reads the raw text layer, which may be
+                // glyph-spaced ("1. I n t r o d u c t i o n"); clean it the same
+                // way titles are cleaned so this path can't reintroduce the
+                // spacing (asked 2026-07-22).
+                if (text && this._wvLooksGlyphSpaced(text)) text = this._wvDeGlyphSpace(text);
                 destroy();
                 if (!rects.length) return;
                 const precise = { pageIndex, rects };
@@ -3468,6 +3647,163 @@ class _ReaderPanelsMixin {
     /** Right-click menu for an outline row -- mirrors the bookmark menu's item
      *  names: Open / Open in New Window / Edit… / Reset to Original Name /
      *  Delete. */
+    /** True when a title looks GLYPH-SPACED -- a bad text layer that puts a
+     *  space between (nearly) every character, e.g. "1. I n t r o d u c t i o
+     *  n". Gate: >=4 single-character whitespace-separated tokens AND they're
+     *  the majority. Keeps legitimate short single-letter runs ("A B testing",
+     *  initials) from being flagged. */
+    _wvLooksGlyphSpaced(s: string): boolean {
+        const t = String(s || "").trim();
+        if (!t) return false;
+        const toks = t.split(/\s+/);
+        if (toks.length < 5) return false;
+        const singles = toks.filter((x) => x.length === 1).length;
+        return singles >= 4 && singles / toks.length > 0.5;
+    }
+
+    /** Repair glyph-spaced text: join runs of single characters into words,
+     *  treating a WIDE gap (2+ spaces) or a multi-character token as a word
+     *  boundary. "1. I n t r o d u c t i o n" -> "1. Introduction";
+     *  "T h e   d y n a m i c s" -> "The dynamics". Single spaces between
+     *  single glyphs are absorbed; real word gaps survive. Safe to call only
+     *  behind `_wvLooksGlyphSpaced` (on normal text it can merge single-letter
+     *  words). */
+    _wvDeGlyphSpace(s: string): string {
+        const parts = String(s || "").split(/(\s+)/);   // text, gap, text, gap, ...
+        const out: string[] = [];
+        let cur = "";
+        for (const p of parts) {
+            if (/^\s+$/.test(p)) {
+                if (p.length >= 2 && cur) { out.push(cur); cur = ""; }   // wide gap = boundary
+            } else if (p.length === 1) {
+                cur += p;
+            } else {
+                if (cur) { out.push(cur); cur = ""; }
+                out.push(p);
+            }
+        }
+        if (cur) out.push(cur);
+        return out.join(" ").replace(/\s+/g, " ").trim();
+    }
+
+    /** A leading "dropped initial" -- a lone letter split off the front of its
+     *  word ("R eferences", "4. S ummary") that a bad text layer produces.
+     *  Matched only at the title START (after an optional number / "(x)"
+     *  prefix), AND only when joining the letter to the next word yields a known
+     *  heading word (RP_HEADING_WORDS). The dictionary gate is what avoids the
+     *  false positive on a genuine leading single-letter word: "A model" joins
+     *  to "amodel" (not a heading word) so it is NOT flagged (2026-07-23). */
+    _wvStrayLeadingSpace(s: string): boolean {
+        // Unicode-aware: \p{L} for the stray initial, \p{Ll}+ for the remainder,
+        // so accented heading words ("R éférences"->"références") are matched.
+        const m = String(s || "").match(/^(?:\d+[.)]?\s+|\([a-z0-9ivx]+\)\s+)?(\p{L}) (\p{Ll}+)/u);
+        return !!m && RP_HEADING_WORDS.has((m[1] + m[2]).toLowerCase());
+    }
+
+    /** True when a title's spacing looks off ENOUGH to offer a fix -- unless the
+     *  user has confirmed it's fine (`entry.spacingOk`). Broader than
+     *  `_wvLooksGlyphSpaced`: also catches a leading dropped-initial and any
+     *  double-spacing. Deliberately errs toward OFFERING (the user can dismiss
+     *  or ignore), since a stray-space can't be told from a real title
+     *  automatically (2026-07-23). */
+    _wvTitleSpacingSuspect(entry: any): boolean {
+        if (!entry || entry.spacingOk) return false;
+        const t = String(entry.title || "");
+        return this._wvLooksGlyphSpaced(t) || this._wvStrayLeadingSpace(t) || /\S {2,}\S/.test(t);
+    }
+
+    /** Best-effort spacing repair for a title: full glyph-spacing via
+     *  `_wvDeGlyphSpace`, plus a leading dropped-initial re-join and
+     *  double-space squash. NOT guaranteed correct (the dropped-initial join
+     *  can over-merge a genuine leading single-letter word) -- it's an OFFER,
+     *  paired with a dismiss. Returns the (possibly unchanged) string. */
+    _wvCleanTitleSpacing(s: string): string {
+        let t = String(s || "");
+        if (this._wvLooksGlyphSpaced(t)) t = this._wvDeGlyphSpace(t);
+        // Re-join a leading dropped initial ("R eferences"->"References") ONLY
+        // when the joined word is a known heading word -- so a genuine leading
+        // single-letter word ("A model") is left alone (its join "amodel" isn't
+        // a heading word). First occurrence only, after an optional prefix.
+        t = t.replace(/^((?:\d+[.)]?\s+|\([a-z0-9ivx]+\)\s+)?)(\p{L}) (?=(\p{Ll}+))/u,
+            (full: string, pre: string, letter: string, rest: string) =>
+                RP_HEADING_WORDS.has((letter + rest).toLowerCase()) ? (pre + letter) : full);
+        return t.replace(/\s{2,}/g, " ").trim();
+    }
+
+    /** "Fix Spacing": clean the target rows (the multi-selection if the clicked
+     *  entry is part of it, else just that entry). Renames each changed title;
+     *  leaves unchanged ones alone. */
+    async _wvOutlineCleanSpacing(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            let items: any[] = [{ entry, index, curatedView }];
+            try {
+                const list = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+                const clickedKey = curatedView ? String(entry.id) : ("idx-" + index);
+                const selRows = list ? [...list.querySelectorAll(".wv-outline-row.wv-outline-selected")] : [];
+                if (selRows.length > 1 && selRows.some((r: any) => this._wvOutlineRowKey(r) === clickedKey)) {
+                    items = selRows.map((r: any) => r._wvOl).filter(Boolean);
+                }
+            } catch (_) {}
+            let n = 0;
+            for (const it of items) {
+                const t = String(it.entry.title || "");
+                const fixed = this._wvCleanTitleSpacing(t);
+                if (!fixed || fixed === t) continue;
+                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                if (!ref) continue;
+                await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, fixed);
+                n++;
+            }
+            await this._wvReaderRenderOutline(reader, idoc);
+            this._wvReaderPanelNote(idoc, n ? ("Cleaned spacing on " + n + " title" + (n === 1 ? "" : "s") + ".")
+                : "Nothing changed — if a title is already correct, use “Spacing is Correct” to dismiss.");
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineCleanSpacing err: " + e); }
+    }
+
+    /** "Spacing is Correct": mark the target rows so the fix affordance stops
+     *  offering itself for a title the heuristic flags but the user says is
+     *  fine. Same multi-selection reach as the clean action. */
+    async _wvOutlineDismissSpacing(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            let items: any[] = [{ entry, index, curatedView }];
+            try {
+                const list = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+                const clickedKey = curatedView ? String(entry.id) : ("idx-" + index);
+                const selRows = list ? [...list.querySelectorAll(".wv-outline-row.wv-outline-selected")] : [];
+                if (selRows.length > 1 && selRows.some((r: any) => this._wvOutlineRowKey(r) === clickedKey)) {
+                    items = selRows.map((r: any) => r._wvOl).filter(Boolean);
+                }
+            } catch (_) {}
+            for (const it of items) {
+                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                if (ref) await this._wvOutlineSetSpacingOk(ref.att.libraryID, ref.att.itemKey, ref.id, true);
+            }
+            await this._wvReaderRenderOutline(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineDismissSpacing err: " + e); }
+    }
+
+    /** Set/clear an entry's content-type `kind` (e.g. "box" for a sidebar) on the
+     *  target rows -- multi-selection aware, curates first if needed, then
+     *  re-renders. The title/position are never touched. */
+    async _wvOutlineSetKind(reader: any, idoc: any, entry: any, index: number, curatedView: boolean, kind: string | null) {
+        try {
+            let items: any[] = [{ entry, index, curatedView }];
+            try {
+                const list = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+                const clickedKey = curatedView ? String(entry.id) : ("idx-" + index);
+                const selRows = list ? [...list.querySelectorAll(".wv-outline-row.wv-outline-selected")] : [];
+                if (selRows.length > 1 && selRows.some((r: any) => this._wvOutlineRowKey(r) === clickedKey)) {
+                    items = selRows.map((r: any) => r._wvOl).filter(Boolean);
+                }
+            } catch (_) {}
+            for (const it of items) {
+                const ref = await this._wvOutlineResolveId(reader, it.entry, it.index, it.curatedView);
+                if (ref) await this._wvOutlineSetEntryKind(ref.att.libraryID, ref.att.itemKey, ref.id, kind);
+            }
+            await this._wvReaderRenderOutline(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineSetKind err: " + e); }
+    }
+
     _wvOutlineShowEntryMenu(reader: any, idoc: any, ev: any, entry: any, index: number, curatedView: boolean) {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
@@ -3526,6 +3862,17 @@ class _ReaderPanelsMixin {
                 mk("Re-detect Region from Title", RP_REVERT_SVG,
                     () => this._wvOutlineRedetectRegion(reader, idoc, entry, index, curatedView));
             }
+            // Bad-text-layer spacing repair. Shown when the title's spacing looks
+            // off (glyph-spacing "1. I n t r o d u c t i o n", a leading dropped
+            // initial "R eferences", or double spaces) AND the user hasn't
+            // marked it correct. Since a stray space can't be told from a real
+            // title automatically, we OFFER a best-effort fix plus a dismiss.
+            if (this._wvTitleSpacingSuspect(entry)) {
+                mk("Fix Spacing", RP_TEXT_SVG,
+                    () => this._wvOutlineCleanSpacing(reader, idoc, entry, index, curatedView));
+                mk("Spacing is Correct", RP_CHECK_SVG,
+                    () => this._wvOutlineDismissSpacing(reader, idoc, entry, index, curatedView));
+            }
             // Interactive handle-drag editor (text-snapping, like editing an
             // annotation highlight).
             mk("Edit Region…", RP_TEXT_SVG,
@@ -3536,6 +3883,17 @@ class _ReaderPanelsMixin {
                     && entry.title !== entry.source.title) {
                 mk("Reset to Original Name and Region", RP_REVERT_SVG, () => this._wvOutlineDoResetName(reader, idoc, entry.id));
             }
+            // Content type: tag this entry as a sidebar/box (stored as `kind`,
+            // title/position untouched) so it renders distinctly -- or clear it
+            // back to a normal heading. Multi-selection aware. (Figures/tables/
+            // equations will join this list in a later phase.)
+            sep();
+            if (entry && entry.kind === "box") {
+                mk("Not a Box (Section)", RP_TEXT_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, null));
+            } else {
+                mk("Mark as Box / Sidebar", RP_BOX_SVG, () => this._wvOutlineSetKind(reader, idoc, entry, index, curatedView, "box"));
+            }
+            sep();
             mk("Delete", RP_DELETE_SVG, () => this._wvOutlineDoDelete(reader, idoc, entry, index, curatedView), true);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
@@ -3645,21 +4003,87 @@ class _ReaderPanelsMixin {
                     if (idoc.getElementById(RP_BM_CTX_ID)) { this._wvCloseReaderBmContextMenu(idoc); return; }
                     this._wvOutlineShowSourceMenu(reader, idoc, chip, sources, source);
                 });
-                // Reset lives on a RIGHT-CLICK of the chip (the outline-type
-                // button, top-right) -- user choice 2026-07-21. Left-click
-                // switches source; right-click opens a one-item reset menu.
-                // sources.length > 1 <=> a curated (Weavero) outline exists, so
-                // this only wires when there is something to reset. The reader
-                // suppresses `contextmenu` in the sidebar, so use auxclick btn 2.
                 chip.setAttribute("title", "Click to switch source · Right-click to reset the Weavero outline");
-                chip.addEventListener("auxclick", (e: any) => {
-                    if (e.button !== 2) return;
-                    e.preventDefault(); e.stopPropagation();
-                    this._wvOutlineShowChipMenu(reader, idoc, chip);
+            }
+            // Reset lives on a RIGHT-CLICK of the chip (the outline-type button,
+            // top-right) -- user choice 2026-07-21. Wired UNCONDITIONALLY (not
+            // just when switchable): the dev outline-eval menu also lives here
+            // and must be reachable before any curation exists. The menu itself
+            // decides what to show and no-ops when empty. The reader suppresses
+            // `contextmenu` in the sidebar, so use auxclick button 2.
+            chip.addEventListener("auxclick", (e: any) => {
+                if (e.button !== 2) return;
+                e.preventDefault(); e.stopPropagation();
+                this._wvOutlineShowChipMenu(reader, idoc, chip);
+            });
+            chip.addEventListener("contextmenu", (e: any) => { try { e.preventDefault(); } catch (_) {} }, true);
+            // Developer outline-eval quick-mark button -- gated to the testing
+            // module (pref weavero.devOutlineEval, default OFF). Sits just LEFT of
+            // the source chip. Left-click opens the same Good/Bad/Scan menu that
+            // the chip right-click offers; the glyph reflects the current verdict
+            // (👍/👎/🖼, 🧪 = unmarked). Writes NOTHING to the library -- all state
+            // stays in the module's own store (2026-07-23).
+            if (att && (this as any)._wvOeEnabled && (this as any)._wvOeEnabled()) {
+                const P: any = this;
+                const evalBtn = idoc.createElementNS(NS, "button");
+                evalBtn.className = "wv-outline-head-btn wv-outline-eval-btn";
+                const setIcon = () => {
+                    const cur = P._wvOeCase ? P._wvOeCase(att.libraryID, att.itemKey) : null;
+                    const v = cur && cur.verdict;
+                    evalBtn.textContent = v === "good" ? "👍" : v === "bad" ? "👎" : v === "scan" ? "🖼" : "🧪";
+                    evalBtn.setAttribute("title", "Eval (dev): " + (v ? String(v).toUpperCase() : "not marked") + " — click to mark");
+                    evalBtn.classList.toggle("wv-outline-eval-marked", !!v);
+                };
+                setIcon();
+                Promise.resolve(P._wvOeInit && P._wvOeInit()).then(setIcon).catch(() => {});
+                evalBtn.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    if (idoc.getElementById(RP_BM_CTX_ID)) { this._wvCloseReaderBmContextMenu(idoc); return; }
+                    this._wvOeShowMenu(reader, idoc, evalBtn, setIcon);
                 });
-                chip.addEventListener("contextmenu", (e: any) => { try { e.preventDefault(); } catch (_) {} }, true);
+                head.appendChild(evalBtn);
             }
             head.appendChild(chip);
+        } catch (_) {}
+    }
+
+    /** Good/Bad/Scan menu for the header eval button (dev outline-eval module).
+     *  Same verdicts as the chip right-click menu, but standalone (no Reset) and
+     *  anchored to the eval button; refreshes the button glyph via `onDone`. */
+    _wvOeShowMenu(reader: any, idoc: any, anchor: any, onDone?: () => void) {
+        try {
+            if (!(this as any)._wvOeEnabled || !(this as any)._wvOeEnabled()) return;
+            this._wvCloseReaderBmContextMenu(idoc);
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            const P: any = this;
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            Promise.resolve(P._wvOeInit && P._wvOeInit()).catch(() => {});
+            const cur = P._wvOeCase ? P._wvOeCase(att.libraryID, att.itemKey) : null;
+            const tag = (v: string) => (cur && cur.verdict === v ? " ✓" : "");
+            const mk = (label: string, icon: string, fn: () => void) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.textContent = icon;
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { close(); fn(); });
+                menu.appendChild(it);
+            };
+            mk("Eval: Not marked" + (cur ? "" : " ✓"), "🧪", async () => { await P._wvOeUnmark(reader, idoc); if (onDone) onDone(); });
+            mk("Eval: extraction Good" + tag("good"), "👍", async () => { await P._wvOeMark(reader, idoc, "good"); if (onDone) onDone(); });
+            mk("Eval: extraction Bad" + tag("bad"), "👎", async () => { await P._wvOeMark(reader, idoc, "bad"); if (onDone) onDone(); });
+            mk("Eval: Scan (no text layer)" + tag("scan"), "🖼", async () => { await P._wvOeMark(reader, idoc, "scan"); if (onDone) onDone(); });
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
         } catch (_) {}
     }
 
@@ -3687,20 +4111,46 @@ class _ReaderPanelsMixin {
         try {
             this._wvCloseReaderBmContextMenu(idoc);
             const att = this._wvReaderAtt(reader);
-            if (!att || !this._wvOutlineHasCurated(att.libraryID, att.itemKey)) return;
+            if (!att) return;
+            const hasCurated = this._wvOutlineHasCurated(att.libraryID, att.itemKey);
+            const devEval = (this as any)._wvOeEnabled && (this as any)._wvOeEnabled();
+            if (!hasCurated && !devEval) return;   // nothing to offer
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const it = idoc.createElementNS(NS_HTML_RP, "div");
-            it.className = "wv-ctx-item wv-ctx-danger";
-            const ic = idoc.createElementNS(NS_HTML_RP, "span");
-            ic.className = "wv-ctx-ic";
-            ic.innerHTML = RP_REVERT_SVG;
-            const lb = idoc.createElementNS(NS_HTML_RP, "span");
-            lb.textContent = "Reset to Original Outline…";
-            it.appendChild(ic); it.appendChild(lb);
-            it.addEventListener("click", () => { close(); this._wvOutlineDoRevert(reader, idoc); });
-            menu.appendChild(it);
+            const mk = (label: string, icon: string, fn: () => void, danger?: boolean) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item" + (danger ? " wv-ctx-danger" : "");
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.innerHTML = icon;
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { close(); fn(); });
+                menu.appendChild(it);
+            };
+            if (hasCurated) {
+                mk("Reset to Original Outline…", RP_REVERT_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
+            }
+            // Developer outline-eval section (pref weavero.devOutlineEval, default
+            // OFF -- invisible to normal users). Marks the CURRENT document's
+            // as-extracted outline Good/Bad/Scan into the module's own store
+            // (weavero/outline-eval.json). Writes NOTHING to the library.
+            if (devEval) {
+                if (hasCurated) {
+                    const sp = idoc.createElementNS(NS_HTML_RP, "div");
+                    sp.className = "wv-ctx-sep";
+                    menu.appendChild(sp);
+                }
+                const P: any = this;
+                Promise.resolve((this as any)._wvOeInit && (this as any)._wvOeInit()).catch(() => {});
+                const cur = (this as any)._wvOeCase ? (this as any)._wvOeCase(att.libraryID, att.itemKey) : null;
+                const tag = (v: string) => (cur && cur.verdict === v ? " ✓" : "");
+                mk("Eval: extraction Good" + tag("good"), "👍", () => P._wvOeMark(reader, idoc, "good"));
+                mk("Eval: extraction Bad" + tag("bad"), "👎", () => P._wvOeMark(reader, idoc, "bad"));
+                mk("Eval: Scan (no text layer)" + tag("scan"), "🖼", () => P._wvOeMark(reader, idoc, "scan"));
+            }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";

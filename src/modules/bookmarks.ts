@@ -621,6 +621,29 @@ class _BookmarksMixin {
         if (e) { e.title = String(title == null ? "" : title); await this._wvOutlinePersist(); }
     }
 
+    /** Mark an entry's title spacing as user-confirmed-OK (or clear the flag),
+     *  so the "Fix Spacing" affordance stops offering itself for a title the
+     *  heuristic flags but the user says is correct. */
+    async _wvOutlineSetSpacingOk(libraryID: number, itemKey: string, id: string, val: boolean) {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return;
+        const e = d.entries.find((x: any) => x.id === id);
+        if (e) { if (val) e.spacingOk = true; else delete e.spacingOk; await this._wvOutlinePersist(); }
+    }
+
+    /** Set (or clear) an entry's content-type `kind` (e.g. "box" for a sidebar).
+     *  Title and position are UNTOUCHED -- only the type tag is added, so a box
+     *  is stored like any other outline entry but can render distinctly. A falsy
+     *  `kind` removes the tag, making it a normal heading again. */
+    async _wvOutlineSetEntryKind(libraryID: number, itemKey: string, id: string, kind: string | null) {
+        await this._wvOutlineInit();
+        const d = this._wvOutlineDoc(libraryID, itemKey);
+        if (!d || !Array.isArray(d.entries)) return;
+        const e = d.entries.find((x: any) => x.id === id);
+        if (e) { if (kind) e.kind = String(kind); else delete e.kind; await this._wvOutlinePersist(); }
+    }
+
     /** Reset an entry's title to its frozen original (`source.title`). */
     async _wvOutlineResetEntryName(libraryID: number, itemKey: string, id: string) {
         await this._wvOutlineInit();

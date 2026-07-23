@@ -116,3 +116,11 @@ Use `test/restart/fixture-notes.md` (2 main windows + 2 reader windows + 3 group
    `<data dir>/weavero/tab-groups.json`) so a lost pref is recoverable.
 3. **Automated specs** for A1–A5 (Mocha, in-Zotero) so these run on every PR rather
    than by hand — the infrastructure (`snapshot.js`, `_tabGroupsGet`) already exists.
+   *Started:* [test/tab-groups.spec.js](../test/tab-groups.spec.js) covers the
+   chip-renderer's resilience to a leaked "drag in flight" flag — the
+   2026-07-23 incident where a live group's chip silently stopped rendering
+   because a cancelled drag on the library (`zotero-pane`) tab left
+   `_wvTabGroupDragTabID` stuck non-null. It asserts both the root-cause fix
+   (dragstart never arms the flag for `zotero-pane`) and the renderer self-heal
+   (a stale flag no longer freezes chip drawing), and was verified to FAIL on
+   the pre-fix code. A1–A5 (restart/session survival) remain to be automated.

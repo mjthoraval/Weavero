@@ -11123,11 +11123,16 @@ class _TabsMixin {
             catch (e) {}
         }
 
-        // Non-group-library tab: keep upstream's plain-text tooltip
-        // instead of an empty Weavero card.
+        // Non-group-library tab: plain-text tooltip = the HOVERED tab's OWN
+        // title. tabData.title (Zotero's tab title, which follows Zotero's
+        // display settings) MUST come before findTitle(): findTitle() uses
+        // .closest(), which walks UP to an ancestor [title] -- that ancestor is
+        // the WINDOW/title-bar, whose title is the ACTIVE tab's name. So the old
+        // order showed the same wrong (active-tab / window) title for EVERY
+        // hovered tab (2026-07-23).
         if (!lib || lib.libraryType !== "group") {
-            const t = findTitle()
-                || (tabData && tabData.title)
+            const t = (tabData && tabData.title)
+                || findTitle()
                 || null;
             if (t) {
                 renderPlainLabel(t);

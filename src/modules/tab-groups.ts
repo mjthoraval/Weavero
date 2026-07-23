@@ -582,23 +582,36 @@ class _TabGroupsMixin {
             // (worst around the pinned region). Everything re-applies from
             // the dragend membership pass.
             if (win._wvTabGroupDragTabID != null) {
-                // …but keep multi-drag stow classes alive: React rewrites
-                // className on its re-renders, which strips them mid-drag.
-                try {
-                    for (const oid of win._wvMultiDragIDs || []) {
-                        const el = win.document.querySelector('#tab-bar-container .tab[data-id="' + oid + '"]');
-                        if (el && !el.classList.contains("wv-drag-stowed")) el.classList.add("wv-drag-stowed");
-                    }
-                } catch (e) {}
-                // Same for the group-create target highlight.
-                try {
-                    const tid = win._wvGroupCreateTarget;
-                    if (tid) {
-                        const el = win.document.querySelector('#tab-bar-container .tab[data-id="' + tid + '"]');
-                        if (el && !el.classList.contains("wv-group-create-target")) el.classList.add("wv-group-create-target");
-                    }
-                } catch (e) {}
-                return;
+                // Self-heal a LEAKED drag flag. A cancelled drag-gesture can end
+                // without firing dragend, leaving this non-null forever -- which
+                // permanently short-circuits the chip renderer below, so a live
+                // group's chip silently stops drawing (a "Notes" group vanished
+                // from the bar exactly this way, 2026-07-23). No real drag lasts
+                // 30s, so an older flag is stale: clear it and render normally
+                // instead of honouring a phantom drag.
+                if (Date.now() - (win._wvTabGroupDragStartAt || 0) > 30000) {
+                    win._wvTabGroupDragTabID = null;
+                    win._wvMultiDragIDs = null;
+                    win._wvGroupCreateTarget = null;
+                } else {
+                    // …but keep multi-drag stow classes alive: React rewrites
+                    // className on its re-renders, which strips them mid-drag.
+                    try {
+                        for (const oid of win._wvMultiDragIDs || []) {
+                            const el = win.document.querySelector('#tab-bar-container .tab[data-id="' + oid + '"]');
+                            if (el && !el.classList.contains("wv-drag-stowed")) el.classList.add("wv-drag-stowed");
+                        }
+                    } catch (e) {}
+                    // Same for the group-create target highlight.
+                    try {
+                        const tid = win._wvGroupCreateTarget;
+                        if (tid) {
+                            const el = win.document.querySelector('#tab-bar-container .tab[data-id="' + tid + '"]');
+                            if (el && !el.classList.contains("wv-group-create-target")) el.classList.add("wv-group-create-target");
+                        }
+                    } catch (e) {}
+                    return;
+                }
             }
             const doc = win.document;
             if (!this._getEnableTabGroups()) { this._stripTabGroups(win); return; }
@@ -1725,7 +1738,14 @@ class _TabGroupsMixin {
     _wvTabGroupDnDDragStart(win: any, e: any) {
         try {
             const tabNode = e.target && e.target.closest && e.target.closest(".tab[data-id]");
-            win._wvTabGroupDragTabID = tabNode ? tabNode.getAttribute("data-id") : null;
+            const did = tabNode ? tabNode.getAttribute("data-id") : null;
+            // Never arm drag-state for the library ("zotero-pane") tab: it is not
+            // groupable/reorderable, and a cancelled drag-gesture on it can end
+            // without firing dragend -- which left the flag stuck at "zotero-pane"
+            // and permanently froze the chip renderer's drag guard (2026-07-23).
+            win._wvTabGroupDragTabID = (did && did !== "zotero-pane") ? did : null;
+            // Timestamp for the renderer's stale-flag self-heal (see _applyTabGroups).
+            win._wvTabGroupDragStartAt = Date.now();
             // Firefox-style sliding gap. We never reorder during the drag (that
             // races the chip system and corrupts groups); instead dragover
             // slides the other tabs aside (transforms only) to open a gap at the

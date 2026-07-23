@@ -1752,6 +1752,34 @@ class _ReaderPanelsMixin {
                 olDelWin._wvOutlineDelWired = RP_BM_CTX_WIRE_V;
                 olDelWin.addEventListener("keydown", olDelHandler, true);
             }
+            // FIX: the reader hosts the outline in an in-process <browser>, and an empty-region
+            // click's mousedown is only observed at the MAIN window -- the in-idoc view handler
+            // never fires, and focus otherwise defaults to the PDF a11y cursor (keys then fire in
+            // the PDF iframe, never reaching the outline). Programmatically focusing the view DOES
+            // stick. So wire a capture mousedown on each main window: clicking the outline's EMPTY
+            // area gives the view REAL focus, and the existing focus-gated key handler then
+            // receives +/- -- scoped to the outline, no global key capture (2026-07-23).
+            try {
+                const mains: any[] = (Zotero.getMainWindows && Zotero.getMainWindows()) || [Zotero.getMainWindow()].filter(Boolean);
+                for (const mw of mains) {
+                    if (!mw || mw._wvOutlineClickFocusWired === RP_BM_CTX_WIRE_V) continue;
+                    if (mw._wvOutlineClickFocusH) { try { mw.removeEventListener("mousedown", mw._wvOutlineClickFocusH, true); } catch (_) {} }
+                    const h = (ev: any) => {
+                        try {
+                            const tg = ev.target;
+                            if (!tg || !tg.closest) return;
+                            const v = tg.closest("." + RP_OUTLINE_VIEW_CLASS);
+                            if (!v) return;   // not an outline click -> ignore
+                            if (tg.closest(".wv-outline-row, .wv-outline-head-btn, .wv-outline-src-chip, input, button")) return;   // rows/widgets keep their own handling
+                            ev.preventDefault();   // stop the reader moving focus off to the browser/PDF
+                            v.focus();
+                        } catch (_) {}
+                    };
+                    mw._wvOutlineClickFocusH = h;
+                    mw._wvOutlineClickFocusWired = RP_BM_CTX_WIRE_V;
+                    mw.addEventListener("mousedown", h, true);
+                }
+            } catch (_) {}
             // If the native outline is ALREADY the active view (restored on open,
             // or the user was on it before our panel injected), take over now.
             try {
@@ -2628,6 +2656,16 @@ class _ReaderPanelsMixin {
                 this._wvOutlineDeleteSelected(reader, idoc, items);
                 return;
             }
+            // +/- = expand-all / collapse-all. GLOBAL to the outline (not row-specific), so
+            // they fire whenever the Outline tab is active and the key reaches this handler
+            // (focus anywhere in the reader chrome) -- NOT only when a row is focused/selected.
+            // An empty-area click leaves focus on the reader CHROME (not the view, not <body>),
+            // so the strict focus gate below used to reject them even though the handler fired
+            // (2026-07-23). Bare keys only -- Ctrl/Cmd +/- is Zotero's zoom.
+            if (!e.altKey && !e.ctrlKey && !e.metaKey) {
+                if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, true); return; }
+                if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, false); return; }
+            }
             // Everything below is navigation. The `.wv-outline-active` row is the
             // real cursor, NOT DOM focus: the reader reverts focus to <body> when
             // inline-rename ends, so requiring literal row focus lost keyboard
@@ -2655,11 +2693,7 @@ class _ReaderPanelsMixin {
             // alone (Ctrl+Left/Right etc. do nothing, matching the tree).
             const moveFocused = (typeof Zotero !== "undefined" && (Zotero as any).isMac) ? e.metaKey : e.ctrlKey;
             if ((e.ctrlKey || e.metaKey) && !moveFocused) return;
-            if (!moveFocused) {
-                // +/- expand-all / collapse-all (Collections-pane model, zotero/zotero#3751).
-                if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, true); return; }
-                if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvOutlineSetAllExpanded(reader, idoc, false); return; }
-            }
+            // (+/- expand-all / collapse-all handled above the focus gate.)
             const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
             if (NAV.indexOf(k) < 0) return;
             if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
@@ -8302,6 +8336,13 @@ class _ReaderPanelsMixin {
                 this._wvBmDeleteSelected(reader, idoc, use);
                 return;
             }
+            // +/- = expand-all / collapse-all folders. GLOBAL to the panel, so they fire
+            // whenever the Bookmarks tab is active -- not only with a row focused/selected (an
+            // empty-area click leaves focus on the reader chrome). Bare keys only (2026-07-23).
+            if (!e.altKey && !e.ctrlKey && !e.metaKey) {
+                if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, true); return; }
+                if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, false); return; }
+            }
             // Nav: focus in the bookmarks view, or body-level with an active row
             // (the reader reverts focus to <body>; the active class is the cursor).
             const ae = idoc.activeElement;
@@ -8319,10 +8360,7 @@ class _ReaderPanelsMixin {
             }
             const moveFocused = (typeof Zotero !== "undefined" && (Zotero as any).isMac) ? e.metaKey : e.ctrlKey;
             if ((e.ctrlKey || e.metaKey) && !moveFocused) return;
-            if (!moveFocused) {
-                if (k === "+") { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, true); return; }
-                if (k === "-" && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); this._wvBmSetAllFolders(reader, idoc, false); return; }
-            }
+            // (+/- expand-all / collapse-all handled above the focus gate.)
             const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter", " "];
             if (NAV.indexOf(k) < 0) return;
             if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;

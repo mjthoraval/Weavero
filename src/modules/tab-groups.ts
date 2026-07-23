@@ -64,6 +64,34 @@ class _TabGroupsMixin {
 
     _tabGroupsSet(arr: any[]) {
         try { Zotero.Prefs.set("weavero.tabGroups", JSON.stringify(arr || [])); } catch (e) {}
+        // Defence-in-depth mirror into the Weavero data dir. The pref lives in
+        // prefs.js; a lost/corrupt prefs.js (a real Zotero failure mode) left the
+        // 2026-07-23 incident with NO recovery source. This file is a second copy.
+        try { (this as any)._wvTabGroupsBackupWrite(arr || []); } catch (e) {}
+    }
+
+    /** Serialised atomic write of the tab-groups backup mirror. */
+    _wvTabGroupsBackupWrite(this: any, arr: any[]) {
+        const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+        const path = PathUtils.join(dir, "tab-groups.json");
+        const payload = JSON.stringify({ version: 1, savedAt: new Date().toISOString(), groups: arr || [] }, null, 2);
+        this._wvTabGroupsBackupChain = (this._wvTabGroupsBackupChain || Promise.resolve())
+            .then(async () => {
+                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                await IOUtils.writeUTF8(path, payload, { tmpPath: path + ".tmp" });
+            })
+            .catch((e: any) => Zotero.debug("[Weavero] tab-groups backup write err: " + e));
+        return this._wvTabGroupsBackupChain;
+    }
+
+    /** Read the tab-groups backup mirror (recovery source when the pref is lost).
+     *  Returns the groups array, or null if the file is missing/unreadable. */
+    async _wvTabGroupsBackupRead(this: any): Promise<any[] | null> {
+        try {
+            const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "tab-groups.json");
+            const d = JSON.parse(await IOUtils.readUTF8(path));
+            return (d && Array.isArray(d.groups)) ? d.groups : null;
+        } catch (e) { return null; }
     }
 
     _tabGroupColorHex(colorID: any) {
@@ -670,6 +698,22 @@ class _TabGroupsMixin {
                 try { this._wvTabGroupStabilize(win); } catch (e) {}
                 (this as any)._wvStabilizing = false;
             }
+            // Teardown/quit guard: while the app is shutting down (INCLUDING the
+            // restart path -- Gecko's shuttingDown flag doesn't depend on observer
+            // ordering, see _wvPatchReaderGetWindowStates), tabs close en masse.
+            // Do NOT prune members or delete "empty" groups then: an OPEN group
+            // whose tabs are merely being torn down would be destroyed before the
+            // session can restore it (real, unrecoverable loss reported 2026-07-23
+            // -- two open groups vanished across a restart). The pref snapshot must
+            // survive quit so the claim pass re-stamps the restored member tabs on
+            // the next launch.
+            const tearingDown = (() => {
+                try {
+                    return !!((Services.startup && Services.startup.shuttingDown)
+                        || (this as any)._wvQuitting
+                        || ((Zotero as any).Weavero && (Zotero as any).Weavero._quitting));
+                } catch (e) { return false; }
+            })();
             for (const g of groups) {
                 // SAVED (parked) group ("Save and close group"): keeps its item-key
                 // snapshot to reopen, shows no chip, never auto-deleted here.
@@ -700,7 +744,7 @@ class _TabGroupsMixin {
                     // window's first apply. Without this guard a group living only
                     // in a reader window looks empty here and gets deleted from
                     // prefs before the reader window restores → the group is lost.
-                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
+                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
                     continue;
                 }
                 // SHADOW SYNC (fixes "broken groups"): for a LIVE group settled in
@@ -712,7 +756,7 @@ class _TabGroupsMixin {
                 // (they keep their snapshot), and `reopening` / `_wvTabGroupRestoreGuard`
                 // prevent pruning while tabs are still coming back (a member not yet
                 // restored isn't dropped before the claim pass re-stamps it).
-                if (!reopening && !(this as any)._wvTabGroupRestoreGuard
+                if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown
                         && this._wvTabGroupHomeWin(g.id) === win) {
                     const openKeys: any[] = [];
                     for (const om of openMembers) {

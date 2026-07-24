@@ -6936,7 +6936,7 @@ class _TabsMixin {
     }
 
     /** Add a "New Main Window" entry to the tab context menu, gated on the
-     *  pref `weavero.devNewMainWindow` (default OFF — exposed in prefs.html
+     *  pref `weavero.newMainWindow` (default OFF — exposed in prefs.html
      *  under "Multiple main windows", flagged experimental). Lets the user
      *  spin up a second *native* main window
      *  via `Zotero.openMainWindow()` to experiment with the multi-main-
@@ -6960,7 +6960,7 @@ class _TabsMixin {
                     onShowing: (_ev, ctx) => {
                         try {
                             let on = false;
-                            try { on = (this as any)._getDevNewMainWindow(); } catch (e) {}
+                            try { on = (this as any)._getNewMainWindow(); } catch (e) {}
                             // Cascades from the Tabs and Windows section master.
                             try { if (on && !(this as any)._getTabsAndWindowsMaster()) on = false; } catch (e) {}
                             // This is a WINDOW-level action — it does nothing to the
@@ -7273,7 +7273,7 @@ class _TabsMixin {
     // *windows* — Weavero reopens them on the next launch. NOT the user-facing
     // "tab sessions" feature (that's modules/sessions.ts, `_wvTabSession*`,
     // file `tab-sessions.json`); this is internal window-restore plumbing.
-    // Phase 1 covers dev main windows (spawned via the hidden devNewMainWindow
+    // Phase 1 covers dev main windows (spawned via the hidden newMainWindow
     // feature); separate reader windows keep their own persistence
     // (reader-tab-windows.json) until Phase 2 folds them in here.
     // Store: <data dir>/weavero/windows.json, v4 = { windows: [ {kind, tabs} ] }.
@@ -8228,8 +8228,8 @@ class _TabsMixin {
     }
 
     /** Recreate previously-open dev main windows from the store, gated by the
-     *  prefs (`devNewMainWindow` on — see prefs.html — AND the still-hidden
-     *  `devSessionAutoReopen` ≠ false).
+     *  prefs (`newMainWindow` on — see prefs.html — AND the still-hidden
+     *  `sessionAutoReopen` ≠ false).
      *  Queues the saved groups and spawns windows one at a time, chained off
      *  each window's load (no timing races); Weavero owning the recreation is
      *  what resolves window↔group identity, Firefox-style. */
@@ -8246,12 +8246,12 @@ class _TabsMixin {
                 while (en.hasMoreElements()) { if ((en.getNext() as any)._wvManagedWindow) return; }
             } catch (e) {}
             let featureOn = false;
-            try { featureOn = (this as any)._getDevNewMainWindow(); } catch (e) {}
+            try { featureOn = (this as any)._getNewMainWindow(); } catch (e) {}
             // Cascades from the Tabs and Windows section master.
             try { if (featureOn && !(this as any)._getTabsAndWindowsMaster()) featureOn = false; } catch (e) {}
             if (!featureOn) return;
             let auto = true;
-            try { const v = Zotero.Prefs.get("weavero.devSessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}
+            try { const v = Zotero.Prefs.get("weavero.sessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}
             if (!auto) return;
             const groups = (await this._wvWindowStoreLoad())
                 .filter((g: any) => g && g.kind === "main-dev" && g.tabs && g.tabs.length > 1);

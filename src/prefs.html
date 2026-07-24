@@ -592,12 +592,12 @@
 
   <!-- ============================ Multiple main windows -->
   <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows">
-    <label><html:h2>Multiple main windows</html:h2></label>    <checkbox label="“New Main Window” in the tab right-click menu" native="true"
-      preference="extensions.zotero.weavero.devNewMainWindow"/>
+    <label><html:h2>Multiple main windows</html:h2></label>    <checkbox label="Open a new main window (Ctrl+N, or the hamburger menu)" native="true"
+      preference="extensions.zotero.weavero.newMainWindow"/>
     <html:p class="wv-desc">Opens an independent second main window with its own tabs, columns, filters and pane widths.</html:p>
-    <vbox class="wv-children" data-master="devNewMainWindow">
+    <vbox class="wv-children" data-master="newMainWindow">
       <checkbox label="Restore extra windows on restart" native="true"
-        preference="extensions.zotero.weavero.devSessionAutoReopen"/>
+        preference="extensions.zotero.weavero.sessionAutoReopen"/>
       <html:p class="wv-desc">Reopen the extra windows you had open when Zotero restarts.</html:p>
     </vbox>
   </groupbox>

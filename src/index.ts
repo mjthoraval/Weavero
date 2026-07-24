@@ -894,11 +894,14 @@ class WeaveroPlugin {
         } catch (e) { return true; }
     }
 
-    /** "New Main Window" entry in the tab menu (Multiple main windows). Default
-     *  ON. Callers still cascade from the Tabs and Windows section master. */
-    _getDevNewMainWindow() {
+    /** Whether the "Multiple main windows" feature is on (default ON). Callers
+     *  still cascade from the Tabs and Windows section master. The pref dropped
+     *  its historical "dev" prefix when the feature graduated from experimental
+     *  (2026-07-24, weavero.devNewMainWindow -> weavero.newMainWindow); a startup
+     *  migration in _wvRegisterDefaultPrefs carries a user's old value over. */
+    _getNewMainWindow() {
         try {
-            const v = Zotero.Prefs.get("weavero.devNewMainWindow");
+            const v = Zotero.Prefs.get("weavero.newMainWindow");
             if (v === undefined) return true;
             if (typeof v === "string") return v.toLowerCase() !== "false";
             return !!v;
@@ -1965,7 +1968,7 @@ class WeaveroPlugin {
                 "enableTabGroups", "enableTabSessions",
                 "compactTitleBar", "compactTitleBarMain", "compactTitleBarReader", "compactTitleBarNote",
                 "noteOpenInDeckWindow",
-                "devNewMainWindow", "devSessionAutoReopen",
+                "newMainWindow", "sessionAutoReopen",
                 "readerItemPane",
                 // PDF reader outline heading-highlight — on by default.
                 "enableOutlineTextHighlight",
@@ -1999,6 +2002,25 @@ class WeaveroPlugin {
             // Window-name-in-title mode: "off" (default — current design,
             // user decision 2026-07-16) | "prefix" | "replace".
             try { branch.setCharPref(P + "windowTitleNameMode", "off"); } catch (e) {}
+            // Pref-rename migration (2026-07-24): "Multiple main windows"
+            // graduated from experimental, so its prefs dropped the historical
+            // "dev" prefix. Carry a user's EXPLICIT old value to the new key once
+            // (the old key then becomes inert). Guarded by prefHasUserValue so a
+            // real new-key choice is never masked, and the mere default (just
+            // registered above) is never mistaken for a user value. Mirrors the
+            // enablePdfReader rename below.
+            try {
+                const PB: any = (Services as any).prefs;
+                const renames: [string, string][] = [
+                    ["devNewMainWindow", "newMainWindow"],
+                    ["devSessionAutoReopen", "sessionAutoReopen"],
+                ];
+                for (const [oldShort, newShort] of renames) {
+                    if (PB.prefHasUserValue(P + oldShort) && !PB.prefHasUserValue(P + newShort)) {
+                        Zotero.Prefs.set("weavero." + newShort, !!Zotero.Prefs.get("weavero." + oldShort));
+                    }
+                }
+            } catch (e) { Zotero.debug("[Weavero] dev-pref rename migration err: " + e); }
         } catch (e) {
             Zotero.debug("[Weavero] _wvRegisterDefaultPrefs err: " + e);
         }
@@ -3029,7 +3051,7 @@ class WeaveroPlugin {
         try { (this as any)._registerPluginsSearch(); } catch (e) {}
         // Unified Weavero window store (Phase 1): flush dev-window state on
         // quit, and once the UI is ready re-open the dev windows that were
-        // open last time (gated by devNewMainWindow + devSessionAutoReopen).
+        // open last time (gated by newMainWindow + sessionAutoReopen).
         try { this._wvWindowStoreRegisterQuitFlush(); } catch (e) {}
         try {
             (Zotero as any).uiReadyPromise

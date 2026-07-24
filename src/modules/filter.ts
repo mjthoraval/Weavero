@@ -247,6 +247,56 @@ class _FilterMixin {
         return true;
     }
 
+    /** DEV outline-eval facets. The set of filter tokens an ATTACHMENT
+     *  satisfies, drawn from its recorded classification (source + flags)
+     *  and its eval verdict. Two facet namespaces share ONE set so
+     *  `_outlineMatchesList` (set intersection) naturally scopes each facet
+     *  by whatever tokens its own list holds:
+     *   - `outlineClass`:  the classification source ("embedded" /
+     *     "extracted" / "scan" / "empty" / "unknown") and "flag:<name>"
+     *     for each classification flag.
+     *   - `outlineVerdict`: "verdict:<good|bad|scan>", or "verdict:unmarked"
+     *     when no case is recorded.
+     *  Reads ONLY the in-memory eval store (loaded lazily by the dev filter
+     *  UI, which calls `_wvOeInit`); an unloaded/empty store yields just the
+     *  "verdict:unmarked" token rather than throwing. Keyed by `item.key`
+     *  to match `_wvOeScanLibrary` / `_wvOeMark` (both store under
+     *  `libraryID:<item.key>` — see `_wvReaderAtt`). */
+    _wvOutlineTokens(libraryID, itemKey) {
+        const out = new Set();
+        try {
+            const cls = this._wvOeGetClassification(libraryID, itemKey);
+            if (cls) {
+                if (cls.source) out.add(String(cls.source));
+                for (const f of (cls.flags || [])) out.add("flag:" + f);
+            }
+            const cse = this._wvOeCase(libraryID, itemKey);
+            out.add("verdict:" + ((cse && cse.verdict) || "unmarked"));
+        } catch (e) {}
+        return out;
+    }
+
+    /** "att's outline token set INTERSECTS `list`" (OR) — used by the Source and
+     *  Verdict facets (an item has exactly one of each, so any-of is the sensible
+     *  combine) and by every EXCLUDE list (has-any-excluded -> reject). */
+    _outlineMatchesList(item, list) {
+        if (!item || !list || !list.length) return false;
+        const toks = this._wvOutlineTokens(item.libraryID, item.key);
+        if (!toks.size) return false;
+        for (const v of list) if (toks.has(v)) return true;
+        return false;
+    }
+
+    /** "att's outline token set CONTAINS ALL of `list`" (AND) — used by the Flags
+     *  facet: an item can carry several independent flags, so selecting two means
+     *  "has both". 2026-07-24. */
+    _outlineMatchesAll(item, list) {
+        if (!item || !list || !list.length) return false;
+        const toks = this._wvOutlineTokens(item.libraryID, item.key);
+        for (const v of list) if (!toks.has(v)) return false;
+        return true;
+    }
+
     /** Temporarily un-patch the items-tree rowProvider so Zotero's
      *  internal load / refresh logic sees the live `_rows` instead
      *  of our stale `getRow` / `getRowCount`. Mirrors the inactive
@@ -2076,6 +2126,17 @@ class _FilterMixin {
             // separately. Multi-select.
             attachmentFileType: [],
             attachmentFileTypeExclude: [],
+            // DEV outline-eval facets (shown only when `weavero.devOutlineEval`
+            // is on). Attachment-resolving like `attachmentFileType`:
+            //   `outlineClass`   — classification source + flags.
+            //   `outlineVerdict` — recorded eval verdict (or unmarked).
+            // Matched via `_outlineMatchesList` (token-set intersection).
+            outlineClass: [],
+            outlineClassExclude: [],
+            outlineFlags: [],
+            outlineFlagsExclude: [],
+            outlineVerdict: [],
+            outlineVerdictExclude: [],
             addedBy: [],
             addedByExclude: [],
             // Per-row-kind scope for the addedBy filter — checked
@@ -2195,6 +2256,12 @@ class _FilterMixin {
         if (group.itemTypeExclude && group.itemTypeExclude.length) return true;
         if (group.attachmentFileType && group.attachmentFileType.length) return true;
         if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length) return true;
+        if (group.outlineClass && group.outlineClass.length) return true;
+        if (group.outlineClassExclude && group.outlineClassExclude.length) return true;
+        if (group.outlineFlags && group.outlineFlags.length) return true;
+        if (group.outlineFlagsExclude && group.outlineFlagsExclude.length) return true;
+        if (group.outlineVerdict && group.outlineVerdict.length) return true;
+        if (group.outlineVerdictExclude && group.outlineVerdictExclude.length) return true;
         if (group.addedBy && group.addedBy.length) return true;
         if (group.addedByExclude && group.addedByExclude.length) return true;
         if (group.hasRelated != null) return true;
@@ -2295,7 +2362,10 @@ class _FilterMixin {
             annotation: ["annotationColor", "annotationColorExclude", "annotationType",
                 "annotationTypeExclude", "annotationHasComment",
                 "annotationAuthor", "annotationAuthorExclude"],
-            attachment: ["attachmentFileType", "attachmentFileTypeExclude"],
+            attachment: ["attachmentFileType", "attachmentFileTypeExclude",
+                "outlineClass", "outlineClassExclude",
+                "outlineFlags", "outlineFlagsExclude",
+                "outlineVerdict", "outlineVerdictExclude"],
             parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
                 "hasPMID", "hasPMCID", "hasURL",
                 "hasAttachment", "publication", "publicationExclude",
@@ -2819,6 +2889,23 @@ class _FilterMixin {
                 if (this._attachmentMatchesFileTypeList(
                     item, group.attachmentFileTypeExclude)) return false;
             }
+        }
+        // DEV outline-eval facets — attachment-resolving. Source + Verdict use OR
+        // (any-of); Flags use AND (must have all selected). Excludes are always
+        // has-any -> reject.
+        if (item.isAttachment && item.isAttachment()) {
+            if (group.outlineClass && group.outlineClass.length
+                && !this._outlineMatchesList(item, group.outlineClass)) return false;
+            if (group.outlineClassExclude && group.outlineClassExclude.length
+                && this._outlineMatchesList(item, group.outlineClassExclude)) return false;
+            if (group.outlineFlags && group.outlineFlags.length
+                && !this._outlineMatchesAll(item, group.outlineFlags)) return false;
+            if (group.outlineFlagsExclude && group.outlineFlagsExclude.length
+                && this._outlineMatchesList(item, group.outlineFlagsExclude)) return false;
+            if (group.outlineVerdict && group.outlineVerdict.length
+                && !this._outlineMatchesList(item, group.outlineVerdict)) return false;
+            if (group.outlineVerdictExclude && group.outlineVerdictExclude.length
+                && this._outlineMatchesList(item, group.outlineVerdictExclude)) return false;
         }
         if (group.annotationColor && group.annotationColor.length) {
             const isAnn = !!(item.isAnnotation && item.isAnnotation());
@@ -3359,7 +3446,13 @@ class _FilterMixin {
             || group.annotationHasComment != null;
         const attActive = !!(
             (group.attachmentFileType && group.attachmentFileType.length)
-            || (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length));
+            || (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length)
+            || (group.outlineClass && group.outlineClass.length)
+            || (group.outlineClassExclude && group.outlineClassExclude.length)
+            || (group.outlineFlags && group.outlineFlags.length)
+            || (group.outlineFlagsExclude && group.outlineFlagsExclude.length)
+            || (group.outlineVerdict && group.outlineVerdict.length)
+            || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
         const regActive = !!(
             (group.itemType && group.itemType.length)
             || (group.itemTypeExclude && group.itemTypeExclude.length));
@@ -3701,7 +3794,13 @@ class _FilterMixin {
             const attFTActive = !!(
                 (group.attachmentFileType && group.attachmentFileType.length)
                 || (group.attachmentFileTypeExclude
-                    && group.attachmentFileTypeExclude.length));
+                    && group.attachmentFileTypeExclude.length)
+                || (group.outlineClass && group.outlineClass.length)
+                || (group.outlineClassExclude && group.outlineClassExclude.length)
+                || (group.outlineFlags && group.outlineFlags.length)
+                || (group.outlineFlagsExclude && group.outlineFlagsExclude.length)
+                || (group.outlineVerdict && group.outlineVerdict.length)
+                || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
             if (!attFTActive) {
                 // Vertical-only: the row's spine must contain an
                 // item note. `candidates.attachment` was built from
@@ -3845,6 +3944,18 @@ class _FilterMixin {
             if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length
                 && this._attachmentMatchesFileTypeList(
                     item, group.attachmentFileTypeExclude)) return false;
+            if (group.outlineClass && group.outlineClass.length
+                && !this._outlineMatchesList(item, group.outlineClass)) return false;
+            if (group.outlineClassExclude && group.outlineClassExclude.length
+                && this._outlineMatchesList(item, group.outlineClassExclude)) return false;
+            if (group.outlineFlags && group.outlineFlags.length
+                && !this._outlineMatchesAll(item, group.outlineFlags)) return false;
+            if (group.outlineFlagsExclude && group.outlineFlagsExclude.length
+                && this._outlineMatchesList(item, group.outlineFlagsExclude)) return false;
+            if (group.outlineVerdict && group.outlineVerdict.length
+                && !this._outlineMatchesList(item, group.outlineVerdict)) return false;
+            if (group.outlineVerdictExclude && group.outlineVerdictExclude.length
+                && this._outlineMatchesList(item, group.outlineVerdictExclude)) return false;
             return true;
         }
         if (kind === "regular") {
@@ -3914,6 +4025,18 @@ class _FilterMixin {
                     item, group.attachmentFileTypeExclude)) {
                 return true;
             }
+            if (group.outlineClass && group.outlineClass.length
+                && this._outlineMatchesList(item, group.outlineClass)) return true;
+            if (group.outlineClassExclude && group.outlineClassExclude.length
+                && !this._outlineMatchesList(item, group.outlineClassExclude)) return true;
+            if (group.outlineFlags && group.outlineFlags.length
+                && this._outlineMatchesAll(item, group.outlineFlags)) return true;
+            if (group.outlineFlagsExclude && group.outlineFlagsExclude.length
+                && !this._outlineMatchesList(item, group.outlineFlagsExclude)) return true;
+            if (group.outlineVerdict && group.outlineVerdict.length
+                && this._outlineMatchesList(item, group.outlineVerdict)) return true;
+            if (group.outlineVerdictExclude && group.outlineVerdictExclude.length
+                && !this._outlineMatchesList(item, group.outlineVerdictExclude)) return true;
         }
 
         // Regular-targeting filters
@@ -4130,7 +4253,13 @@ class _FilterMixin {
                         (group.attachmentFileType
                             && group.attachmentFileType.length)
                         || (group.attachmentFileTypeExclude
-                            && group.attachmentFileTypeExclude.length));
+                            && group.attachmentFileTypeExclude.length)
+                        || (group.outlineClass && group.outlineClass.length)
+                        || (group.outlineClassExclude && group.outlineClassExclude.length)
+                        || (group.outlineFlags && group.outlineFlags.length)
+                        || (group.outlineFlagsExclude && group.outlineFlagsExclude.length)
+                        || (group.outlineVerdict && group.outlineVerdict.length)
+                        || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
                     const parChipActive = !!(
                         (group.itemType && group.itemType.length)
                         || (group.itemTypeExclude
@@ -5197,6 +5326,30 @@ class _FilterMixin {
             if (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length) {
                 bar.appendChild(this._buildAttachmentFileTypeChip(doc, group, gi, true));
             }
+            // DEV outline-eval chips -- gated on the pref (belt-and-suspenders on
+            // top of the toggle-time scrub in _wvOeOnPrefToggle), so a disabled
+            // pref never surfaces a dev chip even if a group somehow still held
+            // dev tokens. This is per-group (not per-row), so the pref read is cheap.
+            if (this._wvOeEnabled()) {
+                if (group.outlineClass && group.outlineClass.length) {
+                    bar.appendChild(this._buildOutlineClassChip(doc, group, gi));
+                }
+                if (group.outlineClassExclude && group.outlineClassExclude.length) {
+                    bar.appendChild(this._buildOutlineClassChip(doc, group, gi, true));
+                }
+                if (group.outlineFlags && group.outlineFlags.length) {
+                    bar.appendChild(this._buildOutlineFlagsChip(doc, group, gi));
+                }
+                if (group.outlineFlagsExclude && group.outlineFlagsExclude.length) {
+                    bar.appendChild(this._buildOutlineFlagsChip(doc, group, gi, true));
+                }
+                if (group.outlineVerdict && group.outlineVerdict.length) {
+                    bar.appendChild(this._buildOutlineVerdictChip(doc, group, gi));
+                }
+                if (group.outlineVerdictExclude && group.outlineVerdictExclude.length) {
+                    bar.appendChild(this._buildOutlineVerdictChip(doc, group, gi, true));
+                }
+            }
             if (group.addedBy && group.addedBy.length) {
                 bar.appendChild(this._buildAddedByChip(doc, group, gi));
             }
@@ -5837,6 +5990,296 @@ class _FilterMixin {
         });
     }
 
+    /** DEV outline-eval: the outlineClass facet's token catalogue
+     *  ({value,label}), shared by its chip + panel section. Source tokens
+     *  first, then the `flag:*` quality flags. Kept in sync with
+     *  `_wvOutlineTokens` / `_wvOeClassifyTree`. */
+    _wvOutlineClassCatalogue() {
+        return [
+            { value: "embedded", label: "Embedded" },
+            { value: "extracted", label: "Extracted" },
+            { value: "scan", label: "Scanned (no text)" },
+            { value: "empty", label: "Empty" },
+            { value: "unknown", label: "Unknown" },
+            { value: "flag:content-empty", label: "Content-empty" },
+            { value: "flag:entity-leak", label: "Entity leak" },
+            { value: "flag:ws-junk", label: "Whitespace junk" },
+            { value: "flag:fig-table", label: "Fig/Table headings" },
+            { value: "flag:spacing", label: "Spacing suspect" },
+        ];
+    }
+
+    /** DEV outline-eval: the outlineVerdict facet's token catalogue. */
+    _wvOutlineVerdictCatalogue() {
+        return [
+            { value: "verdict:good", label: "Good" },
+            { value: "verdict:bad", label: "Bad" },
+            { value: "verdict:scan", label: "Scan" },
+            { value: "verdict:unmarked", label: "Unmarked" },
+        ];
+    }
+
+    _buildOutlineClassChip(doc, group, gi, exclude?) {
+        const vals = exclude ? group.outlineClassExclude : group.outlineClass;
+        const cat = this._wvOutlineClassCatalogue();
+        const labelOf = (k) => { const d = cat.find(x => x.value === k); return d ? d.label : k; };
+        return this._buildFilterChip(doc, {
+            field: "Outline Source",
+            op: exclude ? "is not" : "is",
+            fillValue: (valSeg) => { valSeg.textContent = vals.map(labelOf).join(", "); },
+            onRemove: () => {
+                if (exclude) group.outlineClassExclude = [];
+                else group.outlineClass = [];
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildOutlineFlagsChip(doc, group, gi, exclude?) {
+        const vals = exclude ? group.outlineFlagsExclude : group.outlineFlags;
+        const cat = this._wvOutlineClassCatalogue();
+        const labelOf = (k) => { const d = cat.find(x => x.value === k); return d ? d.label : k; };
+        return this._buildFilterChip(doc, {
+            field: "Outline Flags",
+            // Include is AND ("has all"); exclude is has-any -> hide.
+            op: exclude ? "has none of" : "has",
+            fillValue: (valSeg) => { valSeg.textContent = vals.map(labelOf).join(exclude ? ", " : " + "); },
+            onRemove: () => {
+                if (exclude) group.outlineFlagsExclude = [];
+                else group.outlineFlags = [];
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildOutlineVerdictChip(doc, group, gi, exclude?) {
+        const vals = exclude ? group.outlineVerdictExclude : group.outlineVerdict;
+        const cat = this._wvOutlineVerdictCatalogue();
+        const labelOf = (k) => { const d = cat.find(x => x.value === k); return d ? d.label : k; };
+        return this._buildFilterChip(doc, {
+            field: "Outline Verdict",
+            op: exclude ? "is not" : "is",
+            fillValue: (valSeg) => { valSeg.textContent = vals.map(labelOf).join(", "); },
+            onRemove: () => {
+                if (exclude) group.outlineVerdictExclude = [];
+                else group.outlineVerdict = [];
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    /** DEV outline-eval: token → count over the in-memory eval store, for the
+     *  facet tiles. "verdict:unmarked" is intentionally absent (it means "no
+     *  case recorded", which the store doesn't enumerate). Cheap — iterates
+     *  the store maps, not the library. */
+    _wvOutlineTokenCounts() {
+        const counts = new Map();
+        const bump = (t) => counts.set(t, (counts.get(t) || 0) + 1);
+        const r = this._wvOeRoot;
+        if (r) {
+            const cls = r.classifications || {};
+            for (const k of Object.keys(cls)) {
+                const c = cls[k];
+                if (c && c.source) bump(String(c.source));
+                for (const f of ((c && c.flags) || [])) bump("flag:" + f);
+            }
+            const cases = r.cases || {};
+            for (const k of Object.keys(cases)) bump("verdict:" + ((cases[k] && cases[k].verdict) || "unmarked"));
+        }
+        return counts;
+    }
+
+    /** DEV: "Scan library" control + a "N classified · M marked" status. The
+     *  scan opens/closes a background reader per PDF (heavy, dev-only); while
+     *  running it polls to update the label, then re-applies the filter. Also
+     *  lazily loads the eval store so token matching + counts work. */
+    _renderOutlineScanSection(doc, section, refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "wv-filter-section";
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        // Load the store once so `_outlineMatchesList` and the counts have data.
+        if (!this._wvOeRoot) { this._wvOeInit().then(() => { try { refreshAll(); } catch (e) {} }); }
+        const row = doc.createElementNS(NS_HTML, "div");
+        row.className = "wv-filter-options";
+        section.appendChild(row);
+        const st = this._wvOeScanState;
+        const running = !!(st && st.running);
+        const btn = doc.createElementNS(NS_HTML, "button");
+        btn.type = "button";
+        btn.className = "wv-filter-opt";
+        let btnText = "Scan library";
+        if (running) {
+            btnText = st.phase === "quick"
+                ? ("Quick scan… " + Math.min(st.quickIdx + 1, st.quickTotal) + "/" + st.quickTotal)
+                : ("Scanning… " + Math.min(st.idx + 1, st.total) + "/" + st.total);
+        }
+        btn.textContent = btnText;
+        (btn as any).disabled = running;
+        btn.title = "Classify every PDF's outline in this library (opens each in the background). Writes nothing to the library.";
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            Promise.resolve(this._wvOeScanLibrary()).then(() => {
+                const poll = () => {
+                    if (!section.isConnected) return;   // panel closed → stop polling
+                    try { refreshAll(); } catch (e2) {}
+                    const s = this._wvOeScanState;
+                    if (s && s.running) { try { doc.defaultView.setTimeout(poll, 800); } catch (e3) {} }
+                    else { try { this._applyItemsListFilter({ cascade: true }); } catch (e4) {} }
+                };
+                try { doc.defaultView.setTimeout(poll, 400); } catch (e5) {}
+            });
+        });
+        row.appendChild(btn);
+        const r = this._wvOeRoot;
+        const nClass = r && r.classifications ? Object.keys(r.classifications).length : 0;
+        const nCase = r && r.cases ? Object.keys(r.cases).length : 0;
+        const lbl = doc.createElementNS(NS_HTML, "span");
+        lbl.style.opacity = "0.6";
+        lbl.style.fontSize = "12px";
+        lbl.style.alignSelf = "center";
+        lbl.style.marginLeft = "6px";
+        lbl.textContent = nClass + " classified · " + nCase + " marked";
+        row.appendChild(lbl);
+    }
+
+    /** DEV: outlineClass facet — rendered as TWO titled rows, "Source" (how the
+     *  outline was obtained) and "Flags" (quality issues), both filtering the
+     *  same `outlineClass` field. Icon tiles: click = include, Alt+click =
+     *  exclude; the tooltip carries the label + store count. */
+    _renderOutlineClassSection(doc, section, refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        // All THREE facet rows (Source / Flags / Verdict) live here in a single
+        // flex-column with ONE gap, so the vertical spacing between them is
+        // uniform. (Splitting Verdict into its own panel section made the
+        // Flags->Verdict gap the panel's inter-section gap, wider than the
+        // Source->Flags one -- 2026-07-24.) The Verdict field is still separate;
+        // `_renderOutlineVerdictSection` just stays empty.
+        section.className = "";
+        section.style.display = "flex";
+        section.style.flexDirection = "column";
+        section.style.gap = "4px";
+        const cat = this._wvOutlineClassCatalogue();
+        const source = cat.filter(d => d.value.indexOf("flag:") !== 0);
+        const flags = cat.filter(d => d.value.indexOf("flag:") === 0);
+        this._renderOutlineFacetGrid(doc, section, refreshAll, "Source", source, "outlineClass", "outlineClassExclude", true);
+        this._renderOutlineFacetGrid(doc, section, refreshAll, "Flags", flags, "outlineFlags", "outlineFlagsExclude", false);
+        this._renderOutlineFacetGrid(doc, section, refreshAll, "Verdict",
+            this._wvOutlineVerdictCatalogue(), "outlineVerdict", "outlineVerdictExclude", true);
+    }
+
+    /** DEV: the Verdict row is rendered inside `_renderOutlineClassSection` (so
+     *  all three rows share one uniform gap); this section stays empty. */
+    _renderOutlineVerdictSection(doc, section, refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "";
+        section.style.display = "none";
+    }
+
+    /** Inline SVG glyph (inner markup, 16×16 viewBox) for a dev outline
+     *  token — theme-aware via `wv-filter-svg`'s `-moz-context-properties`
+     *  (`context-stroke`/`context-fill` resolve to currentColor). Kept simple
+     *  and monochrome to match the panel's other icon tiles. */
+    _wvOutlineTokenIcon(value) {
+        const S = "stroke='context-stroke' fill='none' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'";
+        const DOT = "fill='context-fill' stroke='none'";
+        const doc0 = "<rect x='3.5' y='2.5' width='9' height='11' rx='1' " + S + "/>";
+        const pic = "<rect x='2.5' y='3.5' width='11' height='9' rx='1' " + S + "/><circle cx='6' cy='6.5' r='1' " + S + "/><path d='M3 12l3.5-3.5 2.5 2.5 2-2 3 3' " + S + "/>";
+        const M = {
+            // verdicts
+            "verdict:good": "<path d='M3.5 8.6l3 3 6-7' " + S + "/>",
+            "verdict:bad": "<path d='M4.5 4.5l7 7M11.5 4.5l-7 7' " + S + "/>",
+            "verdict:scan": pic,
+            "verdict:unmarked": "<circle cx='8' cy='8' r='5.3' stroke-dasharray='2 2' " + S + "/>",
+            // classification source
+            "embedded": doc0 + "<path d='M5.5 6h5M5.5 8h5M5.5 10h3' " + S + "/>",
+            "extracted": doc0 + "<path d='M8 5v4.4M6 8l2 2 2-2' " + S + "/>",
+            "scan": pic,
+            "empty": doc0,
+            "unknown": "<path d='M6 6.2a2 2 0 1 1 2.6 1.9c-.6.25-.85.6-.85 1.15V10' " + S + "/><circle cx='7.75' cy='12' r='.7' " + DOT + "/>",
+            // quality flags
+            "flag:content-empty": doc0 + "<path d='M5 12.5l6-8.5' " + S + "/>",
+            "flag:entity-leak": "<path d='M6.8 9.2a1.8 1.8 0 0 1 0-2.4l.7-.7M9.2 6.8a1.8 1.8 0 0 1 0 2.4l-.7.7' " + S + "/><path d='M5.6 10.4l4.8-4.8' " + S + "/>",
+            "flag:ws-junk": "<path d='M3.5 8h9' " + S + "/><circle cx='6' cy='8' r='.7' " + DOT + "/><circle cx='8' cy='8' r='.7' " + DOT + "/><circle cx='10' cy='8' r='.7' " + DOT + "/>",
+            "flag:fig-table": "<rect x='3' y='4' width='10' height='8' rx='.5' " + S + "/><path d='M3 7h10M3 9.5h10M6.5 4v8M9.5 4v8' " + S + "/>",
+            "flag:spacing": "<path d='M5 5v6M11 5v6' " + S + "/><path d='M6.5 8h3M8.7 6.6L10 8 8.7 9.4' " + S + "/>",
+        };
+        return M[value] || ("<circle cx='8' cy='8' r='5' " + S + "/>");
+    }
+
+    /** Shared icon-tile facet ROW for the dev outline facets — a "Title: [icons]"
+     *  row APPENDED to `container` (the caller clears + may add several). Mirrors
+     *  `_renderAttachmentFileTypeSection` (icon tiles + tooltip), with the label +
+     *  store count in the tooltip and include/exclude via `_toggleIncludeExclude`. */
+    _renderOutlineFacetGrid(doc, container, refreshAll, title, catalogue, incField, excField, grouped) {
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        const section = doc.createElementNS(NS_HTML, "div");
+        // `wv-filter-or-group` = the grouped-category tint the OR facets use
+        // (Source / Verdict, "pick any of these"). The Flags facet is AND
+        // (independent conditions, "has all"), so it is NOT grouped -- pass
+        // grouped === false to drop the tint. 2026-07-24.
+        section.className = "wv-filter-section" + (grouped === false ? "" : " wv-filter-or-group");
+        section.style.display = "flex";
+        section.style.alignItems = "center";
+        section.style.gap = "6px";
+        // Match `wv-filter-or-group`'s padding on EVERY row (tinted or not) so the
+        // label + icon columns line up horizontally across Source / Flags / Verdict.
+        // The ungrouped Flags row otherwise has no padding and its icons shift 6px
+        // left of the tinted rows. 2026-07-24.
+        section.style.padding = "5px 6px";
+        container.appendChild(section);
+        const lbl = doc.createElementNS(NS_HTML, "span");
+        lbl.textContent = title;
+        lbl.style.cssText = "font-size:11px;opacity:.6;min-width:52px;flex:0 0 auto;text-align:right;";
+        section.appendChild(lbl);
+        const opts = doc.createElementNS(NS_HTML, "div");
+        opts.className = "wv-filter-options";
+        section.appendChild(opts);
+        const g0 = this._activeGroup();
+        const selected = new Set((g0 && g0[incField]) || []);
+        const excluded = new Set((g0 && g0[excField]) || []);
+        const counts = this._wvOutlineTokenCounts();
+        for (const def of catalogue) {
+            const btn = doc.createElementNS(NS_HTML, "button");
+            btn.type = "button";
+            btn.className = "wv-filter-opt wv-filter-opt-icon";
+            const n = counts.get(def.value) || 0;
+            btn.title = def.label + (n ? " (" + n + ")" : "") + " — click to include, Alt+click to exclude";
+            if (selected.has(def.value)) btn.dataset.selected = "true";
+            if (excluded.has(def.value)) btn.dataset.excluded = "true";
+            const icon = doc.createElementNS(NS_HTML, "img");
+            icon.className = "wv-filter-svg";
+            icon.src = "data:image/svg+xml;utf8,"
+                + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+                + this._wvOutlineTokenIcon(def.value) + "</svg>";
+            btn.appendChild(icon);
+            // Count badge, bottom-right of the tile (dev filters only). Shown when
+            // the store has entries for this token; the tooltip still carries it too.
+            btn.style.position = "relative";
+            if (n) {
+                const badge = doc.createElementNS(NS_HTML, "span");
+                badge.textContent = String(n);
+                badge.setAttribute("style", "position:absolute;right:0;bottom:-2px;font:600 8px/1 sans-serif;"
+                    + "opacity:.85;pointer-events:none;padding:0 1px;border-radius:2px;"
+                    + "background:color-mix(in srgb, Canvas 65%, transparent);");
+                btn.appendChild(badge);
+            }
+            btn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const next = this._toggleIncludeExclude(
+                    def.value, [...selected], [...excluded], e.altKey);
+                const g = this._activeGroup();
+                if (g) { g[incField] = next.include; g[excField] = next.exclude; }
+                this._renderFilterBar();
+                this._applyItemsListFilter({ cascade: true });
+                refreshAll();
+            });
+            opts.appendChild(btn);
+        }
+    }
+
     _buildAddedByChip(doc, group, gi, exclude?) {
         const users = exclude ? group.addedByExclude : group.addedBy;
         const colorOn = this._getEnableAddedByColors();
@@ -6044,6 +6487,13 @@ class _FilterMixin {
         // Cross-level icon-trigger group (Has Related, Has Link).
         const crossLevelSection = doc.createElementNS(NS_HTML, "div");
 
+        // DEV outline-eval group (shown only when `weavero.devOutlineEval` is
+        // on): a "Scan library" control plus the outlineClass / outlineVerdict
+        // label grids. Attachment-resolving facets over the eval store.
+        const outlineScanSection = doc.createElementNS(NS_HTML, "div");
+        const outlineClassSection = doc.createElementNS(NS_HTML, "div");
+        const outlineVerdictSection = doc.createElementNS(NS_HTML, "div");
+
         // Selection Target uses include/exclude semantics like every
         // other filter group: empty include + empty exclude means
         // "show all". Picking a kind narrows to just that kind;
@@ -6217,6 +6667,15 @@ class _FilterMixin {
         inner.appendChild(colorSection);
         inner.appendChild(typeSection);
         inner.appendChild(commentSection);
+
+        // DEV outline-eval group — only when the pref is on. The whole header
+        // + sections are omitted otherwise, so normal users never see them.
+        if (this._wvOeEnabled()) {
+            addGroupHeader("Outline (dev)");
+            inner.appendChild(outlineScanSection);
+            inner.appendChild(outlineClassSection);
+            inner.appendChild(outlineVerdictSection);
+        }
 
         // Bottom: Selection Target bar (controls Ctrl+A scope only,
         // doesn't affect filtering itself).
@@ -6404,6 +6863,11 @@ class _FilterMixin {
             this._renderUnifiedSearchSection(doc, searchSection, refreshAll, searchCtx);
             this._renderCrossLevelSection(doc, crossLevelSection, refreshAll);
             this._renderQuickSearchSection(doc, quickSearchSection, refreshAll);
+            if (this._wvOeEnabled()) {
+                this._renderOutlineScanSection(doc, outlineScanSection, refreshAll);
+                this._renderOutlineClassSection(doc, outlineClassSection, refreshAll);
+                this._renderOutlineVerdictSection(doc, outlineVerdictSection, refreshAll);
+            }
             renderHeader();
             // Filters changed → the smart Selection Target may have changed
             // too; re-sync the chip cue (the bar itself isn't re-rendered).

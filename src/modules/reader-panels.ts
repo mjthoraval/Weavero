@@ -1367,8 +1367,9 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 8px 5px;border-bottom:1px solid rgba(127,127,127,.18);}",
     ".wv-outline-head-title{flex:1 1 auto;font-size:11px;text-transform:uppercase;letter-spacing:.04em;opacity:.55;font-weight:600;}",
     // Source chip: a coloured dot + label. Embedded=green (from the file),
-    // Extracted=amber (heuristic), Weavero=accent (curated). Non-switchable
-    // chips are inert; switchable ones (>1 source) get hover + a caret.
+    // Extracted=amber (heuristic), Weavero=accent (curated), None=muted grey
+    // (no outline at all). Non-switchable chips are inert; switchable ones
+    // (>1 source) get hover + a caret.
     ".wv-outline-src-chip{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border:1px solid rgba(127,127,127,.3);border-radius:10px;background:transparent;color:inherit;font-size:10.5px;font-weight:500;cursor:default;}",
     ".wv-outline-src-chip.wv-outline-src-switchable{cursor:pointer;}",
     ".wv-outline-src-chip.wv-outline-src-switchable:hover{background:rgba(127,127,127,.14);}",
@@ -1376,6 +1377,7 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-src-embedded .wv-outline-src-dot{background:#3ca03c;}",
     ".wv-outline-src-extracted .wv-outline-src-dot{background:#d99a2b;}",
     ".wv-outline-src-weavero .wv-outline-src-dot{background:var(--color-accent,#5e6ad2);}",
+    ".wv-outline-src-none .wv-outline-src-dot{background:#888;opacity:.6;}",
     ".wv-outline-src-caret{display:inline-flex;opacity:.6;}",
     ".wv-outline-src-caret svg{width:8px;height:8px;}",
     ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:12px;text-align:center;}",
@@ -1860,11 +1862,13 @@ class _ReaderPanelsMixin {
     _wvOutlineSourceLabel(source: string): string {
         if (source === "embedded") return "Embedded";
         if (source === "weavero") return "Weavero";
+        if (source === "none") return "None";
         return "Extracted";
     }
     _wvOutlineSourceTip(source: string): string {
         if (source === "embedded") return "Outline embedded in the PDF file";
         if (source === "weavero") return "Outline curated in Weavero";
+        if (source === "none") return "No outline in this document";
         return "Outline extracted automatically by Zotero";
     }
 
@@ -1941,6 +1945,21 @@ class _ReaderPanelsMixin {
                 source = (cache && cache.source) || "extracted";
                 entries = this._wvOutlineFlattenTree((cache && cache.tree) || []);
             }
+            // Source categories are a strict, ordered, MUTUALLY-EXCLUSIVE ladder --
+            // every document lands in exactly one, decided top-down:
+            //   1. weavero  -- a curated outline exists AND is being viewed (set
+            //                  in the branch above; wins over everything).
+            //   2. none     -- the displayed tree is empty (getOutline2 returned
+            //                  nothing: no embedded bookmarks AND no extractable
+            //                  headings). Keyed on the RENDERED entries so the
+            //                  badge can never contradict the "No outline" pane.
+            //   3. embedded -- the PDF ships its own bookmark tree (getOutline
+            //                  non-empty; set in _wvReaderFetchOutline).
+            //   4. extracted-- else: no embedded bookmarks, but pdf.js extracted
+            //                  >=1 heading from the text.
+            // Without step 2 an empty doc mislabels as "extracted" (the fetch's
+            // default). 2026-07-24.
+            if (!curatedView && (!entries || !entries.length)) source = "none";
             this._wvOutlineRenderHeader(reader, idoc, view, source);
             while (list.firstChild) list.firstChild.remove();
             if (!entries.length) {
@@ -2253,6 +2272,19 @@ class _ReaderPanelsMixin {
         return list.getBoundingClientRect().left + 8 + 15;
     }
 
+    /** The indent level implied by the cursor's X during a drag: distance from a
+     *  level-0 label's left, in indent steps. Lets the user drag left/right to
+     *  set the drop level (like a native tree) -- clamped to the valid range at
+     *  drop time. 2026-07-23. */
+    _wvOutlineDesiredIndent(list: any, clientX: number): number {
+        try {
+            const step = 16;
+            const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+            const origin0 = this._wvOutlineIndentOrigin(list, rows, step);
+            return Math.max(0, Math.round((clientX - origin0) / step));
+        } catch (_) { return 0; }
+    }
+
     /** Clear both drop affordances: the sibling line AND the "nest into" box. */
     _wvOutlineHideDropInd(idoc: any) {
         try {
@@ -2264,7 +2296,7 @@ class _ReaderPanelsMixin {
     /** Draw the drop affordance for the items-list model: a box on the target row
      *  for "nest into" (orient 0), else a horizontal line at the target's OWN
      *  indent, above it (before) or below its whole visible subtree (after). */
-    _wvOutlineShowDrop(idoc: any, list: any, target: any, orient: number) {
+    _wvOutlineShowDrop(idoc: any, list: any, target: any, orient: number, desiredIndent?: number | null) {
         try {
             this._wvOutlineHideDropInd(idoc);
             if (!target) return;
@@ -2273,22 +2305,34 @@ class _ReaderPanelsMixin {
             const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
             const origin0 = this._wvOutlineIndentOrigin(list, rows, step);
             const listContentLeft = list.getBoundingClientRect().left + 8;   // list padding
-            const depth = Math.max(0, (target._wvOl && target._wvOl.entry.indentLevel) || 0);
+            const isRow = (r: any) => !!(r && r.classList && r.classList.contains("wv-outline-row"));
+            const depthOf = (r: any) => isRow(r) && r._wvOl && r._wvOl.entry ? Math.max(0, r._wvOl.entry.indentLevel || 0) : -1;
+            const tDepth = Math.max(0, depthOf(target));
+            // Bound the indent by the rows the line sits BETWEEN, then let cursor-X
+            // (desiredIndent) choose within: from the depth of the row BELOW (can't
+            // be shallower -- that would re-parent it) up to one deeper than the row
+            // ABOVE. At the very end the row below is absent -> min 0, so top level
+            // is reachable (2026-07-23).
+            let insertRef: any = null, prevRow: any = null, nextRow: any = null;
+            if (orient < 0) {
+                nextRow = target;
+                prevRow = isRow(target.previousElementSibling) ? target.previousElementSibling : null;
+                insertRef = target;
+            } else {
+                let afterEl = target, n = target.nextElementSibling;
+                while (isRow(n) && depthOf(n) > tDepth) { afterEl = n; n = n.nextElementSibling; }
+                prevRow = afterEl;
+                nextRow = isRow(n) ? n : null;
+                insertRef = afterEl.nextElementSibling || null;
+            }
+            const prevDepth = prevRow ? depthOf(prevRow) : -1;
+            const nextDepth = nextRow ? depthOf(nextRow) : 0;
+            const minI = nextDepth, maxI = Math.max(nextDepth, prevDepth + 1);
+            const drawDepth = (desiredIndent != null) ? Math.max(minI, Math.min(desiredIndent, maxI)) : tDepth;
             const ind = idoc.createElementNS(NS_HTML_RP, "div");
             ind.className = "wv-outline-drop-ind";
-            ind.style.marginLeft = ((origin0 - listContentLeft) + depth * step) + "px";
-            if (orient < 0) {
-                list.insertBefore(ind, target);
-            } else {
-                // After the target's whole VISIBLE subtree (deeper-indented rows).
-                let afterEl = target, n = target.nextElementSibling;
-                while (n && n.classList && n.classList.contains("wv-outline-row")
-                    && Math.max(0, (n._wvOl && n._wvOl.entry.indentLevel) || 0) > depth) {
-                    afterEl = n; n = n.nextElementSibling;
-                }
-                if (afterEl.nextElementSibling) list.insertBefore(ind, afterEl.nextElementSibling);
-                else list.appendChild(ind);
-            }
+            ind.style.marginLeft = ((origin0 - listContentLeft) + drawDepth * step) + "px";
+            if (insertRef) list.insertBefore(ind, insertRef); else list.appendChild(ind);
         } catch (_) {}
     }
 
@@ -2309,7 +2353,8 @@ class _ReaderPanelsMixin {
                 try { if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; } catch (_) {}
                 const p = P();
                 const t = p._wvOutlineDropAt(list, e.clientY);
-                p._wvOutlineShowDrop(idoc, list, t.row, t.orient);
+                const di = t.orient === 0 ? null : p._wvOutlineDesiredIndent(list, e.clientX);
+                p._wvOutlineShowDrop(idoc, list, t.row, t.orient, di);
             }, true);
             list.addEventListener("drop", (e: any) => {
                 if (!isOutlineDrag()) return;
@@ -2317,10 +2362,11 @@ class _ReaderPanelsMixin {
                 const p = P();
                 const src = reader._wvOutlineDragSrc;
                 const t = p._wvOutlineDropAt(list, e.clientY);
+                const di = t.orient === 0 ? null : p._wvOutlineDesiredIndent(list, e.clientX);
                 p._wvOutlineHideDropInd(idoc);
                 reader._wvOutlineDragSrc = null;
                 const ok = Array.isArray(src) ? src.length > 0 : Number.isInteger(src);
-                if (ok && t && t.index >= 0) p._wvOutlineReorder(reader, idoc, src, t.index, t.orient);
+                if (ok && t && t.index >= 0) p._wvOutlineReorder(reader, idoc, src, t.index, t.orient, di);
             }, true);
             list.addEventListener("dragleave", (e: any) => {
                 // Only hide when the pointer actually leaves the list bounds.
@@ -2332,7 +2378,7 @@ class _ReaderPanelsMixin {
     /** Move a dragged entry's SUBTREE to a new position + indent, in the curated
      *  store. Curates first if needed (indices map: the store is built in the same
      *  flatten order the rows were rendered from). Persists + re-renders. */
-    async _wvOutlineReorder(reader: any, idoc: any, srcIndices: any, targetIndex: number, orient: number) {
+    async _wvOutlineReorder(reader: any, idoc: any, srcIndices: any, targetIndex: number, orient: number, desiredIndent?: number | null) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
@@ -2417,6 +2463,23 @@ class _ReaderPanelsMixin {
                 let te = targetIndex;
                 while (te + 1 < entries.length && Math.max(0, entries[te + 1].indentLevel || 0) > tDepth) te++;
                 gap = te + 1; newIndent = tDepth;
+            }
+            // Cursor-X indent (drag left/right to set the level), clamped to the
+            // valid range at the gap: from the depth of the entry that will sit
+            // BELOW (can't be shallower -- that would re-parent it) up to one
+            // deeper than the entry ABOVE (nest under it). Neighbours skip the
+            // dragged blocks. Sibling drops only; orient 0 (explicit nest-into)
+            // keeps tDepth+1. This is what lets an item move to the TOP LEVEL at
+            // the last position -- the row below is absent there, so min = 0
+            // (2026-07-23).
+            if (orient !== 0 && desiredIndent != null) {
+                const inBlk = (i: number) => blocks.some(b => i >= b.start && i <= b.end);
+                let pIdx = gap - 1; while (pIdx >= 0 && inBlk(pIdx)) pIdx--;
+                let nIdx = gap; while (nIdx < entries.length && inBlk(nIdx)) nIdx++;
+                const prevDepth = pIdx >= 0 ? Math.max(0, entries[pIdx].indentLevel || 0) : -1;
+                const nextDepth = nIdx < entries.length ? Math.max(0, entries[nIdx].indentLevel || 0) : 0;
+                const minI = nextDepth, maxI = Math.max(nextDepth, prevDepth + 1);
+                newIndent = Math.max(minI, Math.min(desiredIndent, maxI));
             }
             // No-op only for a SINGLE block dropped inside itself with the indent
             // unchanged (an indent-only change at the same spot -- e.g. a child
@@ -2592,13 +2655,31 @@ class _ReaderPanelsMixin {
      *  (curating if needed), re-renders, then opens the input on its row. */
     async _wvOutlineBeginRename(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
         try {
-            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
-            if (!ref) return;
-            await this._wvReaderRenderOutline(reader, idoc);
-            const row: any = [...idoc.querySelectorAll(".wv-outline-row")]
-                .find((r: any) => r._wvOl && r._wvOl.entry && r._wvOl.entry.id === ref.id);
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            // Editing from the ORIGINAL view once a curated store exists is a
+            // read-only reference (row indices don't map to curated entries) --
+            // refuse, same rule as _wvOutlineResolveId / _wvOutlineReorder.
+            if (!curatedView && this._wvOutlineHasCurated(att.libraryID, att.itemKey)) return;
+            // Commit-time resolver. An already-curated entry knows its id up front
+            // (no new snapshot). For the not-yet-curated original view we DEFER:
+            // curation (copy-on-first-edit) runs only if the user commits a CHANGED
+            // title -- so merely OPENING the editor (e.g. double-clicking a row to
+            // read its full text / inspect whitespace) never spawns a Weavero
+            // outline. The outline stays Embedded/Extracted. 2026-07-24.
+            let resolve: () => Promise<any>;
+            if (curatedView && entry && entry.id) {
+                resolve = async () => ({ att, id: entry.id });
+            } else {
+                resolve = () => this._wvOutlineResolveId(reader, entry, index, curatedView);
+            }
+            // Open the inline editor on the CURRENT row -- no curation, no
+            // re-render yet (both would fire prematurely for a no-op rename).
+            const rows: any[] = [...idoc.querySelectorAll(".wv-outline-row")];
+            const row: any = rows.find((r: any) => r._wvOl && r._wvOl.index === index)
+                || rows.find((r: any) => r._wvOl && r._wvOl.entry && entry && r._wvOl.entry.id != null && r._wvOl.entry.id === entry.id);
             const labelEl = row && row.querySelector(".wv-outline-label");
-            if (labelEl && row._wvOl) this._wvOutlineStartRename(reader, idoc, row._wvOl.entry, labelEl);
+            if (labelEl) this._wvOutlineStartRename(reader, idoc, entry, labelEl, resolve);
         } catch (_) {}
     }
 
@@ -2983,6 +3064,512 @@ class _ReaderPanelsMixin {
                 }
             } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineSetRegionFromSelection err: " + e); }
+    }
+
+    /** The 0-based index of the page currently shown in the reader (the page
+     *  the user is looking at) -- the basis for the "Set Target" page anchors. */
+    _wvOutlineCurrentPageIndex(reader: any): number {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            const n = app && app.pdfViewer && app.pdfViewer.currentPageNumber;
+            if (Number.isInteger(n) && n >= 1) return n - 1;
+        } catch (_) {}
+        return 0;
+    }
+
+    /** The "+" (Add Entry) menu. Target placement is chosen HERE, at creation,
+     *  since it's only meaningful for hand-made entries that have no PDF heading
+     *  to auto-locate: top/bottom of the current page, a manual pin (click), or
+     *  a text selection (2026-07-23). */
+    _wvOutlineShowAddMenu(reader: any, idoc: any, anchor: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const page = this._wvOutlineCurrentPageIndex(reader) + 1;
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const item = (label: string, fn: () => void) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(lb);
+                it.addEventListener("click", () => { close(); fn(); });
+                menu.appendChild(it);
+            };
+            item("Top of page " + page, () => this._wvOutlineAddWithAnchor(reader, idoc, "top"));
+            item("Bottom of page " + page, () => this._wvOutlineAddWithAnchor(reader, idoc, "bottom"));
+            item("Pin a spot…", () => this._wvOutlineAddWithPin(reader, idoc));
+            item("Select text…", () => this._wvOutlineAddWithSelection(reader, idoc));
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
+        } catch (_) {}
+    }
+
+    /** Modal title prompt for a new entry. Returns the trimmed title or null. */
+    _wvOutlinePromptTitle(): string | null {
+        try {
+            const o: any = { value: "" };
+            const ok = Services.prompt.prompt(null, "Weavero", "New outline entry title:", o, null, {});
+            if (!ok) return null;
+            const t = String(o.value || "").trim();
+            return t || null;
+        } catch (_) { return null; }
+    }
+
+    /** Add a new entry targeting the TOP or BOTTOM of the current page. */
+    async _wvOutlineAddWithAnchor(reader: any, idoc: any, anchor: "top" | "bottom") {
+        try {
+            const title = this._wvOutlinePromptTitle();
+            if (!title) return;
+            const pageIndex = this._wvOutlineCurrentPageIndex(reader);
+            const res = await this._wvOutlineCreateEntry(reader, idoc, title, { pageIndex, anchor });
+            if (!res || !res.stored) return;
+            try {
+                const d = this._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
+                const en = d && d.entries ? d.entries.find((x: any) => x.id === res.stored.id) : null;
+                if (en) this._wvOutlineNavigate(reader, idoc, en, null);
+            } catch (_) {}
+            this._wvReaderPanelNote(idoc, "Added “" + title + "” → " + anchor + " of page " + (pageIndex + 1) + ".");
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithAnchor err: " + e); }
+    }
+
+    /** Add a pin entry: PLACE the pin first (click in the document), THEN prompt
+     *  for the name, then create the entry at that spot -- the natural order the
+     *  user asked for (drop it where you want, then name it). 2026-07-23. */
+    _wvOutlineAddWithPin(reader: any, idoc: any) {
+        try {
+            this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex, x, y, pageNum) => {
+                const title = this._wvOutlinePromptTitle();
+                if (!title) return;   // cancelled after placing -> no entry created
+                const pos = { pageIndex, rects: [[x, y, x, y]], anchor: "point" };
+                Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos))
+                    .then((res: any) => {
+                        if (!res || !res.stored) return;
+                        this._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos);
+                        this._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page " + pageNum + ". Drag the pin to adjust.");
+                    }).catch(() => {});
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithPin err: " + e); }
+    }
+
+    /** Add a select-text entry: SELECT the text first, THEN prompt for the name,
+     *  then create the entry with the selection as its target region -- same
+     *  place-then-name order as the pin. The title is what the user types (NOT
+     *  the selected text). 2026-07-23. */
+    _wvOutlineAddWithSelection(reader: any, idoc: any) {
+        try {
+            this._wvOutlineArmSelectRegion(reader, idoc, (sel) => {
+                const title = this._wvOutlinePromptTitle();
+                if (!title) return;   // cancelled after selecting -> no entry created
+                Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, sel.position))
+                    .then((res: any) => {
+                        if (!res || !res.stored) return;
+                        const d = this._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
+                        const en = d && d.entries ? d.entries.find((x: any) => x.id === res.stored.id) : null;
+                        if (en) this._wvOutlineNavigate(reader, idoc, en, null);
+                        this._wvReaderPanelNote(idoc, "Added “" + title + "” from selection.");
+                    }).catch(() => {});
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithSelection err: " + e); }
+    }
+
+    /** Manual pin: enter a one-shot mode where the NEXT click in the document
+     *  sets this entry's target to that exact spot (anchor "point"). For a place
+     *  with no heading text to select. Esc cancels. 2026-07-23. */
+    /** Arm a one-shot mode where the next click in the document yields a PDF
+     *  point. `onPlaced(pageIndex, x, y, pageNum)` is invoked with it (it may do
+     *  async work, e.g. prompt for a title). Esc cancels. Shared by the create
+     *  and modify pin flows. 2026-07-23. */
+    _wvOutlineArmPinPlacement(reader: any, idoc: any, onPlaced: (pageIndex: number, x: number, y: number, pageNum: number) => void) {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const pdoc = win && win.document;
+            if (!pdoc) return;
+            const viewerC = pdoc.getElementById("viewerContainer");
+            this._wvReaderPanelNote(idoc, "Move to a spot and click to drop the pin (Esc to cancel).");
+            // A GHOST pin that REPLACES the cursor and follows the mouse until the
+            // click drops it. Same marker as the anchored/bookmark pin, tip at the
+            // pointer. pointer-events:none so it never eats the click. (2026-07-23)
+            const ghost: any = pdoc.createElementNS(NS_HTML_RP, "div");
+            ghost.className = "wv-reader-pin wv-pin-ghost";
+            const PIN_H = 32;
+            const bmp = RP_PIN_USE_EMOJI ? this._wvPinEmojiBitmap(pdoc) : null;
+            if (bmp) { const bw = Math.round(bmp.w / bmp.h * PIN_H); ghost.innerHTML = '<img src="' + bmp.url + '" width="' + bw + '" height="' + PIN_H + '">'; }
+            else ghost.innerHTML = RP_PIN_TIP_SVG;
+            ghost.style.cssText = "position:fixed;z-index:2147483646;pointer-events:none;line-height:0;"
+                + "user-select:none;transform:translate(-50%,-100%) scale(1);opacity:0;"
+                + "filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));left:-9999px;top:-9999px;";
+            (pdoc.body || pdoc.documentElement).appendChild(ghost);
+            try { if (viewerC) viewerC.style.cursor = "none"; } catch (_) {}   // replace the mouse
+            let onMove: any, onClick: any, onKey: any;
+            const cleanup = () => {
+                try { if (viewerC) viewerC.style.cursor = ""; } catch (_) {}
+                try { ghost.remove(); } catch (_) {}
+                try { pdoc.removeEventListener("pointermove", onMove, true); } catch (_) {}
+                try { pdoc.removeEventListener("click", onClick, true); } catch (_) {}
+                try { pdoc.removeEventListener("keydown", onKey, true); } catch (_) {}
+            };
+            onMove = (e: any) => { try { ghost.style.left = e.clientX + "px"; ghost.style.top = e.clientY + "px"; ghost.style.opacity = "1"; } catch (_) {} };
+            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Pin cancelled."); } };
+            onClick = (e: any) => {
+                try {
+                    const pageEl = e.target && e.target.closest && e.target.closest(".page");
+                    if (!pageEl) return;   // outside a page -> stay armed
+                    e.preventDefault(); e.stopPropagation();
+                    const pageNum = parseInt(pageEl.getAttribute("data-page-number") || "0", 10);
+                    const pageIndex = pageNum - 1;
+                    const app = (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication) || win.PDFViewerApplication;
+                    const pageView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+                    const vp = pageView && pageView.viewport;
+                    const rect = pageEl.getBoundingClientRect();
+                    let pdfPt: any = null;
+                    try { pdfPt = vp && vp.convertToPdfPoint(e.clientX - rect.left, e.clientY - rect.top); } catch (_) {}
+                    cleanup();
+                    if (!pdfPt || pageIndex < 0) { this._wvReaderPanelNote(idoc, "Could not read that position."); return; }
+                    try { onPlaced(pageIndex, pdfPt[0], pdfPt[1], pageNum); } catch (_) {}
+                } catch (_) { cleanup(); }
+            };
+            pdoc.addEventListener("pointermove", onMove, true);
+            pdoc.addEventListener("click", onClick, true);
+            pdoc.addEventListener("keydown", onKey, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineArmPinPlacement err: " + e); }
+    }
+
+    /** Re-pin an EXISTING entry: click a spot, and its target moves there. */
+    async _wvOutlineBeginManualPin(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex, x, y, pageNum) => {
+                const pos = { pageIndex, rects: [[x, y, x, y]], anchor: "point" };
+                Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pos))
+                    .then(() => this._wvReaderRenderOutline(reader, idoc))
+                    .then(() => {
+                        this._wvOutlineShowEntryPin(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id, pos);
+                        this._wvReaderPanelNote(idoc, "Target pinned on page " + pageNum + ". Drag the pin to adjust.");
+                    }).catch(() => {});
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineBeginManualPin err: " + e); }
+    }
+
+    /** Show the shared draggable in-document pin for an outline PIN entry, wired
+     *  so a drag rewrites the entry's target (anchor "point") and re-renders --
+     *  the same marker + behaviour as a position bookmark. 2026-07-23. */
+    _wvOutlineShowEntryPin(reader: any, idoc: any, libraryID: number, itemKey: string, id: string, position: any) {
+        try {
+            if (!position || !Array.isArray(position.rects) || !position.rects.length) return;
+            const onMove = (newPos: any) => {
+                const pos = { pageIndex: newPos.pageIndex, rects: newPos.rects, anchor: "point" };
+                Promise.resolve(this._wvOutlineSetEntryPosition(libraryID, itemKey, id, pos))
+                    .then(() => this._wvOutlineReplaceByPosition(reader, idoc, libraryID, itemKey, id)).catch(() => {});
+            };
+            const w: any = Zotero.getMainWindow();
+            const run = () => { try { this._wvReaderShowPin(reader, position, undefined, { onMove }); } catch (_) {} };
+            // A short beat lets a just-navigated page finish rendering (the pin
+            // no-ops if its page view isn't built yet).
+            if (w && w.setTimeout) w.setTimeout(run, 200); else run();
+        } catch (_) {}
+    }
+
+    /** Pin "Edit Position": show the marker PERSISTENTLY (it won't fade) so it
+     *  stays draggable, and only COMMIT the new spot when the user clicks Done.
+     *  Dragging is tentative until then -- "permanent until manually approved".
+     *  Esc/closing without Done keeps the original position. 2026-07-23. */
+    async _wvOutlineEditPinPosition(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            const tgt = (entry && (entry.resolvedPosition || entry.position)) || null;
+            if (!tgt || !Array.isArray(tgt.rects) || !tgt.rects.length) return;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv) return;
+            try { this._wvOutlineScrollToRect(pv, tgt.pageIndex, tgt.rects[0]); } catch (_) {}
+            // Tentative: each drag updates `pending` only -- NOT the store.
+            let pending: any = { pageIndex: tgt.pageIndex, rects: tgt.rects, anchor: "point" };
+            const onMove = (newPos: any) => { pending = { pageIndex: newPos.pageIndex, rects: newPos.rects, anchor: "point" }; };
+            const removePin = () => {
+                try { const pdoc = pv._iframeWindow && pv._iframeWindow.document; const el = pdoc && pdoc.querySelector(".wv-reader-pin"); if (el) el.remove(); } catch (_) {}
+            };
+            const commit = () => {
+                removePin();
+                Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pending))
+                    .then(() => this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id))
+                    .then(() => this._wvReaderPanelNote(idoc, "Pin position saved."))
+                    .catch(() => {});
+            };
+            // The Done button rides ON the pin (re-created with it on every drag),
+            // so approval is obvious and right where the eye is.
+            const showOpts = { onMove, persist: true, approve: { label: "Done", onClick: commit } };
+            const w: any = Zotero.getMainWindow();
+            const run = () => { try { this._wvReaderShowPin(reader, tgt, undefined, showOpts); } catch (_) {} };
+            if (w && w.setTimeout) w.setTimeout(run, 200); else run();
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPinPosition err: " + e); }
+    }
+
+    /** Re-place an entry (and its subtree) at the reading-order slot for its
+     *  CURRENT position -- called after a position edit (Edit Position, pin
+     *  move) so the list re-sorts by page + vertical position, page-anchors via
+     *  a synthetic y. Persists + re-renders. 2026-07-23. */
+    async _wvOutlineReplaceByPosition(reader: any, idoc: any, libraryID: number, itemKey: string, id: string) {
+        try {
+            await this._wvOutlineInit();
+            const d = this._wvOutlineDoc(libraryID, itemKey);
+            if (!d || !Array.isArray(d.entries)) return;
+            const entries: any[] = d.entries;
+            const idx = entries.findIndex((e: any) => e.id === id);
+            if (idx < 0) return;
+            const entry = entries[idx];
+            const pos = entry.resolvedPosition || entry.position;
+            if (!pos) return;
+            // Extract the entry + its contiguous deeper-indented subtree.
+            const base = Math.max(0, entry.indentLevel || 0);
+            let end = idx;
+            while (end + 1 < entries.length && Math.max(0, entries[end + 1].indentLevel || 0) > base) end++;
+            const block = entries.splice(idx, end - idx + 1);
+            // Ordering position: page-anchor -> synthetic y (top/bottom of page).
+            let posForOrder = pos;
+            if (!(pos.rects && pos.rects.length)) {
+                const yy = pos.anchor === "bottom" ? 0 : 100000;
+                posForOrder = { pageIndex: pos.pageIndex, rects: [[0, yy, 0, yy]] };
+            }
+            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder);
+            const delta = indent - base;
+            if (delta) for (const en of block) en.indentLevel = Math.max(0, (en.indentLevel || 0) + delta);
+            entries.splice(gap, 0, ...block);
+            await this._wvOutlinePersist();
+            await this._wvReaderRenderOutline(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineReplaceByPosition err: " + e); }
+    }
+
+    /** Create a hand-made outline entry with a given target `pos`, curating the
+     *  outline if needed and ordering the entry by its target page (a light
+     *  heuristic; drag reorders precisely). Returns `{ att, stored }` or null.
+     *  Shared by every "+" add flow. 2026-07-23. */
+    async _wvOutlineCreateEntry(reader: any, idoc: any, title: string, pos: any): Promise<any> {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return null;
+            await this._wvOutlineInit();
+            if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) {
+                let cache = reader._wvOutlineCache;
+                if (!cache || !cache.tree) {
+                    try { cache = await this._wvReaderFetchOutline(reader); reader._wvOutlineCache = cache; } catch (_) {}
+                }
+                await this._wvOutlineEnsureCurated(att.libraryID, att.itemKey,
+                    (cache && cache.source) || "extracted", (cache && cache.tree) || []);
+                reader._wvOutlineViewSource = null;
+            }
+            const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+            const entries: any[] = (d && d.entries) || [];
+            // Reading-order placement -- by page AND vertical position -- the SAME
+            // helper "Add from Selection" uses. (Page-number-only ordering dropped
+            // a pin after EVERYTHING else on its page, ignoring where it actually
+            // sits: a pin near the top of page 16 landed below Acknowledgments,
+            // 2026-07-23.) A page-anchor has no rect, so give it a synthetic y for
+            // ordering only: top-anchor -> top of page, bottom-anchor -> bottom.
+            let posForOrder = pos;
+            if (pos && !(pos.rects && pos.rects.length)) {
+                const yy = pos.anchor === "bottom" ? 0 : 100000;
+                posForOrder = { pageIndex: pos.pageIndex, rects: [[0, yy, 0, yy]] };
+            }
+            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder);
+            const entry = {
+                title, indentLevel: indent,
+                position: pos, resolvedPosition: pos, regionTitle: title,
+                url: null,
+                source: { title, position: pos, url: null, origin: "user" },
+            };
+            const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
+            reader._wvOutlineViewSource = null;
+            await this._wvReaderRenderOutline(reader, idoc);
+            return { att, stored };
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineCreateEntry err: " + e); return null; }
+    }
+
+    /** Arm a one-shot mode where the next TEXT SELECTION in the document sets
+     *  this entry's target region (rects). Mirrors `_wvOutlineBeginManualPin`
+     *  but captures a selection instead of a click; the entry's title is left
+     *  as-is (unlike "Set Region from Selection", which may relabel). Esc
+     *  cancels. 2026-07-23. */
+    /** Arm a one-shot mode where the next non-empty TEXT SELECTION invokes
+     *  `onSelected(sel)` with `{position, text}`. Esc cancels. Shared by the
+     *  create and modify select-region flows. 2026-07-23. */
+    _wvOutlineArmSelectRegion(reader: any, idoc: any, onSelected: (sel: any) => void) {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const pdoc = win && win.document;
+            if (!pdoc) return;
+            this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
+            let onUp: any, onKey: any;
+            const cleanup = () => {
+                try { pdoc.removeEventListener("pointerup", onUp, true); } catch (_) {}
+                try { pdoc.removeEventListener("keydown", onKey, true); } catch (_) {}
+            };
+            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); } };
+            onUp = () => {
+                try {
+                    win.setTimeout(() => {
+                        try {
+                            const sel = this._wvOutlineReadSelection(reader);
+                            if (!sel || !sel.position) return;   // nothing selected yet -> stay armed
+                            cleanup();
+                            try { onSelected(sel); } catch (_) {}
+                        } catch (_) {}
+                    }, 0);
+                } catch (_) {}
+            };
+            pdoc.addEventListener("pointerup", onUp, true);
+            pdoc.addEventListener("keydown", onKey, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineArmSelectRegion err: " + e); }
+    }
+
+    /** Re-target an EXISTING entry from the next text selection. */
+    async _wvOutlineBeginSelectRegion(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            this._wvOutlineArmSelectRegion(reader, idoc, (sel) => {
+                Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, sel.position))
+                    .then(() => this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id))
+                    .then(() => {
+                        const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
+                        const en = d && Array.isArray(d.entries) ? d.entries.find((z: any) => z.id === ref.id) : null;
+                        if (en) this._wvOutlineNavigate(reader, idoc, en, null);
+                        this._wvReaderPanelNote(idoc, "Target set from selection.");
+                    }).catch(() => {});
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineBeginSelectRegion err: " + e); }
+    }
+
+    /** Edit Position: a manual window (page number + a Top/Bottom choice) for a
+     *  page-anchor entry. One native prompt -- a page field plus a "Bottom of
+     *  page" checkbox (unchecked = top). Defaults to the entry's current page +
+     *  anchor; clamps the page to the document. 2026-07-23. */
+    async _wvOutlineEditPosition(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
+        try {
+            const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
+            if (!ref) return;
+            const tgt = (entry && (entry.resolvedPosition || entry.position)) || {};
+            const curPageIdx = Number.isInteger(tgt.pageIndex) ? tgt.pageIndex : this._wvOutlineCurrentPageIndex(reader);
+            let pageCount = 0;
+            try {
+                const pv = reader._internalReader && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                const app = pv && pv._iframeWindow && pv._iframeWindow.PDFViewerApplication;
+                pageCount = (app && app.pdfViewer && app.pdfViewer.pagesCount) || 0;
+            } catch (_) {}
+            const res = await this._wvOutlineEditPositionDialog(idoc, curPageIdx + 1, tgt.anchor === "bottom", pageCount);
+            if (!res) return;
+            const pageNum = res.page;
+            const anchor = res.bottom ? "bottom" : "top";
+            const pageIndex = pageNum - 1;
+            await this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, { pageIndex, anchor });
+            await this._wvOutlineReplaceByPosition(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id);
+            try {
+                const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
+                const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
+                if (e) this._wvOutlineNavigate(reader, idoc, e, null);
+            } catch (_) {}
+            this._wvReaderPanelNote(idoc, "Position: " + anchor + " of page " + pageNum + ".");
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPosition err: " + e); }
+    }
+
+    /** The Edit Position modal: a page-number field + TWO exclusive radio options
+     *  (Top / Bottom of page). Lives in the reader doc (covers the reader
+     *  viewport), like the URL-bookmark dialog. Resolves `{page, bottom}` on OK,
+     *  null on Cancel / backdrop / Escape. 2026-07-23. */
+    _wvOutlineEditPositionDialog(idoc: any, initialPage: number, initialBottom: boolean, pageCount: number): Promise<any> {
+        return new Promise((resolve) => {
+            try {
+                const NS = NS_HTML_RP;
+                const backdrop = idoc.createElementNS(NS, "div");
+                backdrop.className = "wv-bm-url-dialog-backdrop";
+                const dlg = idoc.createElementNS(NS, "div");
+                dlg.className = "wv-bm-url-dialog";
+
+                const title = idoc.createElementNS(NS, "div");
+                title.className = "wv-bm-url-dialog-label";
+                title.textContent = "Edit Position";
+                title.setAttribute("style", "font-size:13px;opacity:.9;margin-bottom:2px;");
+
+                const pageRow = idoc.createElementNS(NS, "div");
+                pageRow.className = "wv-bm-url-dialog-row";
+                const pLbl = idoc.createElementNS(NS, "label");
+                pLbl.className = "wv-bm-url-dialog-label";
+                pLbl.textContent = "Page" + (pageCount ? " (1–" + pageCount + ")" : "");
+                const pInput: any = idoc.createElementNS(NS, "input");
+                pInput.className = "wv-bm-url-dialog-input";
+                pInput.setAttribute("type", "number");
+                pInput.setAttribute("min", "1");
+                if (pageCount) pInput.setAttribute("max", String(pageCount));
+                pInput.value = String(initialPage);
+                pInput.setAttribute("style", "max-width:110px;");
+                pageRow.appendChild(pLbl); pageRow.appendChild(pInput);
+
+                const posRow = idoc.createElementNS(NS, "div");
+                posRow.className = "wv-bm-url-dialog-row";
+                const posLbl = idoc.createElementNS(NS, "label");
+                posLbl.className = "wv-bm-url-dialog-label";
+                posLbl.textContent = "Position";
+                const optsBox = idoc.createElementNS(NS, "div");
+                optsBox.setAttribute("style", "display:flex;gap:16px;margin-top:3px;");
+                const mkRadio = (val: string, label: string, checked: boolean) => {
+                    const wrap = idoc.createElementNS(NS, "label");
+                    wrap.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;cursor:pointer;");
+                    const r: any = idoc.createElementNS(NS, "input");
+                    r.setAttribute("type", "radio"); r.setAttribute("name", "wv-outline-pos"); r.value = val;
+                    if (checked) r.setAttribute("checked", "checked");
+                    const t = idoc.createElementNS(NS, "span"); t.textContent = label;
+                    wrap.appendChild(r); wrap.appendChild(t);
+                    return r;
+                };
+                const topR = mkRadio("top", "Top of page", !initialBottom);
+                const botR = mkRadio("bottom", "Bottom of page", !!initialBottom);
+                optsBox.appendChild(topR.parentNode); optsBox.appendChild(botR.parentNode);
+                posRow.appendChild(posLbl); posRow.appendChild(optsBox);
+
+                const btnRow = idoc.createElementNS(NS, "div");
+                btnRow.className = "wv-bm-url-dialog-btns";
+                const cancelBtn: any = idoc.createElementNS(NS, "button");
+                cancelBtn.textContent = "Cancel"; cancelBtn.className = "wv-bm-url-dialog-btn";
+                const okBtn: any = idoc.createElementNS(NS, "button");
+                okBtn.textContent = "OK"; okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
+                btnRow.appendChild(cancelBtn); btnRow.appendChild(okBtn);
+
+                dlg.appendChild(title); dlg.appendChild(pageRow); dlg.appendChild(posRow); dlg.appendChild(btnRow);
+                backdrop.appendChild(dlg);
+                (idoc.body || idoc.documentElement).appendChild(backdrop);
+
+                let resolved = false;
+                const finish = (r: any) => { if (resolved) return; resolved = true; try { backdrop.remove(); } catch (_) {} resolve(r); };
+                const submit = () => {
+                    let page = parseInt(String(pInput.value), 10);
+                    if (!Number.isInteger(page) || page < 1) { try { pInput.focus(); } catch (_) {} return; }
+                    if (pageCount) page = Math.min(page, pageCount);
+                    finish({ page, bottom: !!botR.checked });
+                };
+                cancelBtn.addEventListener("click", () => finish(null));
+                okBtn.addEventListener("click", submit);
+                backdrop.addEventListener("click", (e: any) => { if (e.target === backdrop) finish(null); });
+                const onKey = (e: any) => {
+                    if (e.key === "Escape") { e.preventDefault(); finish(null); }
+                    else if (e.key === "Enter") { e.preventDefault(); submit(); }
+                };
+                dlg.addEventListener("keydown", onKey);
+                try { pInput.focus(); pInput.select(); } catch (_) {}
+            } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPositionDialog err: " + e); resolve(null); }
+        });
     }
 
     /** Bootstrap an editable (curated) outline for a document that has none --
@@ -3614,7 +4201,7 @@ class _ReaderPanelsMixin {
     /** Inline-rename: swap the label for a text input. Enter / blur commits,
      *  Escape cancels; a re-render restores the row either way. `entry` is a
      *  curated entry (has id). */
-    _wvOutlineStartRename(reader: any, idoc: any, entry: any, labelEl: any) {
+    _wvOutlineStartRename(reader: any, idoc: any, entry: any, labelEl: any, resolve?: () => Promise<any>) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att || !labelEl || !labelEl.parentNode) return;
@@ -3636,33 +4223,50 @@ class _ReaderPanelsMixin {
                     if (vd && docs.indexOf(vd) < 0) docs.push(vd);
                 }
             } catch (_) {}
-            // The row to hand focus + selection back to when editing ends, so
-            // keyboard control survives Enter/Escape (the re-render below drops
-            // the input's focus otherwise).
-            const rowKey = entry && entry.id != null ? String(entry.id) : null;
-            const refocus = () => { try { this._wvOutlineRefocusRow(idoc, rowKey, reader, true); } catch (_) {} };
             let done = false;
             let onDownOutside: any = null;
-            const finish = (save: boolean) => {
+            const restore = (rowKey: string | null) => {
+                // No change -> just repaint the label and hand focus back to the
+                // row. Crucially does NOT curate, so the outline source is left
+                // exactly as it was (Embedded/Extracted).
+                Promise.resolve(this._wvReaderRenderOutline(reader, idoc))
+                    .then(() => { try { this._wvOutlineRefocusRow(idoc, rowKey, reader, true); } catch (_) {} });
+            };
+            const finish = async (save: boolean) => {
                 if (done) return; done = true;
                 for (const d of docs) { try { d.removeEventListener("pointerdown", onDownOutside, true); } catch (_) {} }
                 const v = String(input.value || "").trim();
-                if (save && v && v !== entry.title && entry.id) {
-                    Promise.resolve(this._wvOutlineRenameEntry(att.libraryID, att.itemKey, entry.id, v))
-                        .then(() => this._wvReaderRenderOutline(reader, idoc))
-                        // Offer -- never perform -- re-detection. Editing a title
-                        // must not move the target on its own (that contract is
-                        // why `resolvedPosition` exists), but a title edit is the
-                        // one moment when re-detecting is likely to be wanted:
-                        // the usual reason to retype a heading is that the PDF's
-                        // outline text was truncated or wrong.
-                        .then(() => this._wvReaderPanelNote(idoc,
-                            "Title updated. To move the highlight to match, right-click → Re-detect Region from Title."))
-                        .then(refocus)
-                        .catch(() => {});
-                } else {
-                    Promise.resolve(this._wvReaderRenderOutline(reader, idoc)).then(refocus);   // restore the label
+                // A COMMIT (Enter / click-away / blur -- anything but Escape)
+                // curates iff the committed value differs from the original title.
+                // The trim is deliberate and DOES count as a change: committing a
+                // whitespace-junk title (e.g. "Acknowledgments ") cleans it, which
+                // genuinely produces a new, edited outline -- exactly the change we
+                // want recorded and surfaced as a Weavero (curated) outline. To
+                // merely INSPECT a title without curating, press Escape (finish
+                // (false) -- that path never reaches this block). Only curation
+                // (resolve() = copy-on-first-edit) creates the Weavero outline, so
+                // opening the editor and cancelling never spawns one. 2026-07-24.
+                if (save && v && v !== (entry.title || "")) {
+                    let ref: any = null;
+                    try { ref = resolve ? await resolve() : (entry.id ? { att, id: entry.id } : null); } catch (_) {}
+                    if (ref && ref.id) {
+                        try {
+                            await this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, v);
+                            await this._wvReaderRenderOutline(reader, idoc);
+                            // Offer -- never perform -- re-detection. Editing a title
+                            // must not move the target on its own (that contract is
+                            // why `resolvedPosition` exists), but a title edit is the
+                            // one moment when re-detecting is likely to be wanted:
+                            // the usual reason to retype a heading is that the PDF's
+                            // outline text was truncated or wrong.
+                            this._wvReaderPanelNote(idoc,
+                                "Title updated. To move the highlight to match, right-click → Re-detect Region from Title.");
+                            this._wvOutlineRefocusRow(idoc, String(ref.id), reader, true);
+                        } catch (_) {}
+                        return;
+                    }
                 }
+                restore(entry && entry.id != null ? String(entry.id) : null);
             };
             onDownOutside = (ev: any) => {
                 try { if (ev.target === input || (input.contains && input.contains(ev.target))) return; finish(true); } catch (_) {}
@@ -3872,7 +4476,7 @@ class _ReaderPanelsMixin {
             mk("Open", openIcon, () => this._wvOutlineNavigate(reader, idoc, entry, null));
             mk("Open in New Window", openIcon, () => this._wvOutlineOpenInWindow(reader, entry));
             sep();
-            mk("Edit…", RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView));
+            mk("Rename…", RP_RENAME_SVG, () => this._wvOutlineBeginRename(reader, idoc, entry, index, curatedView));
             // Re-anchor to the selected text. ALWAYS listed and always live:
             // hiding it when nothing was selected made it undiscoverable, and a
             // permanently greyed row is just clutter. If it's used without a
@@ -3909,8 +4513,27 @@ class _ReaderPanelsMixin {
             }
             // Interactive handle-drag editor (text-snapping, like editing an
             // annotation highlight).
-            mk("Edit Region…", RP_TEXT_SVG,
-                () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
+            // The modifier depends on the target type. A page-anchor or pin entry
+            // has NO editable text region, so "Edit Region" doesn't apply -- offer
+            // the target modifiers instead. Region/heading entries keep the
+            // handle-drag "Edit Region" editor. (2026-07-23)
+            {
+                const _tgt = (entry && (entry.resolvedPosition || entry.position)) || null;
+                const _anchor = _tgt && _tgt.anchor;
+                if (_anchor === "top" || _anchor === "bottom") {
+                    // Page-anchor entry: Edit Position (manual page + top/bottom).
+                    mk("Edit Position…", RP_TEXT_SVG,
+                        () => this._wvOutlineEditPosition(reader, idoc, entry, index, curatedView));
+                } else if (_anchor === "point") {
+                    // Pin entry: Edit Position drops a persistent, draggable pin
+                    // that commits only when the user clicks Done.
+                    mk("Edit Position", RP_TEXT_SVG,
+                        () => this._wvOutlineEditPinPosition(reader, idoc, entry, index, curatedView));
+                } else {
+                    mk("Edit Region…", RP_TEXT_SVG,
+                        () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
+                }
+            }
             // "Reset to Original Name" only when the title has been changed from
             // its frozen original (curated entries carry `source.title`).
             if (curatedView && entry && entry.source && typeof entry.source.title === "string"
@@ -3996,6 +4619,20 @@ class _ReaderPanelsMixin {
             title.className = "wv-outline-head-title";
             title.textContent = "Outline";
             head.appendChild(title);
+            // "Add Entry": create a hand-made outline entry (an Abstract /
+            // Introduction with no PDF heading, etc.). Prompts for a title and
+            // targets the current page; refine via the row's "Set Target" menu.
+            // 2026-07-23.
+            const addBtn = idoc.createElementNS(NS, "button");
+            addBtn.className = "wv-outline-head-btn wv-outline-add-btn";
+            addBtn.setAttribute("title", "Add a new outline entry");
+            addBtn.innerHTML = RP_PLUS_SVG;
+            addBtn.addEventListener("click", (e: any) => {
+                e.stopPropagation();
+                if (idoc.getElementById(RP_BM_CTX_ID)) { this._wvCloseReaderBmContextMenu(idoc); return; }
+                this._wvOutlineShowAddMenu(reader, idoc, addBtn);
+            });
+            head.appendChild(addBtn);
             // NO revert button here, deliberately (removed 2026-07-20).
             //
             // It discarded the ENTIRE curated outline for the document -- every
@@ -4040,11 +4677,10 @@ class _ReaderPanelsMixin {
                 chip.setAttribute("title", "Click to switch source · Right-click to reset the Weavero outline");
             }
             // Reset lives on a RIGHT-CLICK of the chip (the outline-type button,
-            // top-right) -- user choice 2026-07-21. Wired UNCONDITIONALLY (not
-            // just when switchable): the dev outline-eval menu also lives here
-            // and must be reachable before any curation exists. The menu itself
-            // decides what to show and no-ops when empty. The reader suppresses
-            // `contextmenu` in the sidebar, so use auxclick button 2.
+            // top-right) -- user choice 2026-07-21. The menu no-ops until a
+            // curated store exists (eval verdicts moved to the 🧪 button on the
+            // chip's left, 2026-07-24). The reader suppresses `contextmenu` in the
+            // sidebar, so use auxclick button 2.
             chip.addEventListener("auxclick", (e: any) => {
                 if (e.button !== 2) return;
                 e.preventDefault(); e.stopPropagation();
@@ -4147,8 +4783,10 @@ class _ReaderPanelsMixin {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             const hasCurated = this._wvOutlineHasCurated(att.libraryID, att.itemKey);
-            const devEval = (this as any)._wvOeEnabled && (this as any)._wvOeEnabled();
-            if (!hasCurated && !devEval) return;   // nothing to offer
+            // Eval verdicts (Good/Bad/Scan) live on the dedicated 🧪 button to the
+            // chip's LEFT (_wvOeShowMenu) -- NOT duplicated here (2026-07-24). So
+            // this right-click menu only offers Reset, which needs a curated store.
+            if (!hasCurated) return;   // nothing to offer
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
@@ -4164,27 +4802,7 @@ class _ReaderPanelsMixin {
                 it.addEventListener("click", () => { close(); fn(); });
                 menu.appendChild(it);
             };
-            if (hasCurated) {
-                mk("Reset to Original Outline…", RP_REVERT_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
-            }
-            // Developer outline-eval section (pref weavero.devOutlineEval, default
-            // OFF -- invisible to normal users). Marks the CURRENT document's
-            // as-extracted outline Good/Bad/Scan into the module's own store
-            // (weavero/outline-eval.json). Writes NOTHING to the library.
-            if (devEval) {
-                if (hasCurated) {
-                    const sp = idoc.createElementNS(NS_HTML_RP, "div");
-                    sp.className = "wv-ctx-sep";
-                    menu.appendChild(sp);
-                }
-                const P: any = this;
-                Promise.resolve((this as any)._wvOeInit && (this as any)._wvOeInit()).catch(() => {});
-                const cur = (this as any)._wvOeCase ? (this as any)._wvOeCase(att.libraryID, att.itemKey) : null;
-                const tag = (v: string) => (cur && cur.verdict === v ? " ✓" : "");
-                mk("Eval: extraction Good" + tag("good"), "👍", () => P._wvOeMark(reader, idoc, "good"));
-                mk("Eval: extraction Bad" + tag("bad"), "👎", () => P._wvOeMark(reader, idoc, "bad"));
-                mk("Eval: Scan (no text layer)" + tag("scan"), "🖼", () => P._wvOeMark(reader, idoc, "scan"));
-            }
+            mk("Reset to Original Outline…", RP_REVERT_SVG, () => this._wvOutlineDoRevert(reader, idoc), true);
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -4285,16 +4903,35 @@ class _ReaderPanelsMixin {
             const established = curated && node.resolvedPosition != null;
             const target = established ? node.resolvedPosition : node.position;
             if (!target) return;
+
+            // Explicit page anchors, user-set via "Set Target": align the page's
+            // top/bottom to the view. A manual pin uses anchor "point" and falls
+            // through to the exact-rect path below (NOT the coarse->page-top one).
+            if (target.anchor === "top") { if (pv) this._wvOutlineNavPageTop(reader, pv, target.pageIndex); return; }
+            if (target.anchor === "bottom") { if (pv) this._wvOutlineNavPageBottom(reader, pv, target.pageIndex); return; }
+
             const rects = (target.rects && target.rects.length) ? target.rects : null;
 
             // Established (saved) OR already a real box -> go straight there.
             if (pv && rects && (established || !this._wvOutlineIsPointRect(target))) {
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
                 const rr = rects[0];
-                if (this._wvOutlineIsPointRect(target)) {
-                    // Established but coarse (recovery had failed) -- navigate to
-                    // the saved point; no heading box to highlight.
-                    this._wvOutlineNavRaw(reader, pv, target);
+                if (this._wvOutlineIsPointRect(target) && target.anchor !== "point") {
+                    // Established but coarse -- recovery had failed (e.g. a
+                    // "References" section with no visible heading; the embedded
+                    // dest is only a whole-page anchor, saved verbatim). Go to the
+                    // TOP of the page rather than the raw point, which mislands
+                    // mid-page (2026-07-23).
+                    this._wvOutlineNavPageTop(reader, pv, target.pageIndex);
+                } else if (target.anchor === "point") {
+                    // Manual pin -> the exact spot (1/4-down rule); no region to
+                    // highlight (a zero-area point). Show the draggable pin marker,
+                    // like a position bookmark.
+                    if (!this._wvOutlineScrollToRect(pv, target.pageIndex, rr)) this._wvOutlineNavRaw(reader, pv, target);
+                    try {
+                        const att = this._wvReaderAtt(reader);
+                        if (att && node && node.id) this._wvOutlineShowEntryPin(reader, idoc, att.libraryID, att.itemKey, node.id, target);
+                    } catch (_) {}
                 } else {
                     if (!this._wvOutlineScrollToRect(pv, target.pageIndex, rr)) this._wvOutlineNavRaw(reader, pv, target);
                     // ALL the rects, not just the first. A recovered heading box
@@ -4335,10 +4972,11 @@ class _ReaderPanelsMixin {
                             try { this._wvOutlineScrollToRect(pv, res.pageIndex, res.rect); } catch (_) {}
                             this._wvOutlineHighlightInPlace(pv, res.pageIndex, [res.rect], gen, 0);
                         } else {
-                            this._wvOutlineNavRaw(reader, pv, target);
+                            // No matching heading text on the page -> top of page.
+                            this._wvOutlineNavPageTop(reader, pv, target.pageIndex);
                         }
                     })
-                    .catch(() => { try { this._wvOutlineNavRaw(reader, pv, target); } catch (_) {} });
+                    .catch(() => { try { this._wvOutlineNavPageTop(reader, pv, target.pageIndex); } catch (_) {} });
                 return;
             }
             this._wvOutlineNavRaw(reader, pv, target);
@@ -4373,6 +5011,33 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** A PERSISTENT panel note carrying an action button (does NOT auto-dismiss).
+     *  Returns a `dismiss()` that removes it. Used by the pin "Edit Position"
+     *  mode for its Done button. 2026-07-23. */
+    _wvReaderPanelNoteAction(idoc: any, text: string, buttonLabel: string, onClick: () => void): () => void {
+        try {
+            if (!idoc) return () => {};
+            const NS = NS_HTML_RP;
+            idoc.querySelectorAll(".wv-readingmode-note").forEach((n: any) => n.remove());
+            const host = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)
+                || idoc.querySelector("." + RP_BM_VIEW_CLASS)
+                || idoc.getElementById("sidebarContent");
+            if (!host) return () => {};
+            const note = idoc.createElementNS(NS, "div");
+            note.className = "wv-readingmode-note";
+            const span = idoc.createElementNS(NS, "span");
+            span.textContent = text + " ";
+            const btn = idoc.createElementNS(NS, "button");
+            btn.textContent = buttonLabel;
+            btn.setAttribute("style", "margin-left:6px;padding:1px 8px;border-radius:4px;border:1px solid rgba(127,127,127,.5);background:var(--color-accent,#5e6ad2);color:#fff;cursor:pointer;font:inherit;");
+            const dismiss = () => { try { note.remove(); } catch (_) {} };
+            btn.addEventListener("click", (e: any) => { e.stopPropagation(); dismiss(); try { onClick(); } catch (_) {} });
+            note.appendChild(span); note.appendChild(btn);
+            host.appendChild(note);
+            return dismiss;
+        } catch (_) { return () => {}; }
+    }
+
     /** Fallback navigation to a raw position via the reader's own navigate
      *  (`internalReader.navigate`, which loads the page). The location must be
      *  cloned into the iframe compartment. */
@@ -4385,6 +5050,59 @@ class _ReaderPanelsMixin {
                 try { ir.navigate((iw && Cu) ? Cu.cloneInto({ position: pos }, iw) : { position: pos }); return; } catch (_) {}
             }
             if (pv && typeof pv.navigateToPosition === "function") { try { pv.navigateToPosition(pos); } catch (_) {} }
+        } catch (_) {}
+    }
+
+    /** Navigate to the TOP of a page -- the fallback when an outline entry's
+     *  title text can't be located (e.g. a "References" section with no visible
+     *  heading; the embedded dest is only a whole-page anchor). Far better than
+     *  the raw coarse point, which mislands mid-page: the top of the page is
+     *  where such a section actually begins (2026-07-23). */
+    _wvOutlineNavPageTop(reader: any, pv: any, pageIndex: number) {
+        try {
+            if (pageIndex == null || pageIndex < 0) return;
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            const viewer = app && app.pdfViewer;
+            const container = win && win.document && win.document.getElementById("viewerContainer");
+            const pageView = viewer && viewer._pages && viewer._pages[pageIndex];
+            if (viewer && container && pageView && pageView.div) {
+                // Top-ALIGN the page: this entry has no locatable heading and its
+                // section begins at the page top, so put the page's top edge right
+                // at the top of the view. Deliberately NOT the 1/4-down rule used
+                // for real headings (_wvOutlineScrollToRect), nor the reader's
+                // vertical centre (which drops the page top to mid-screen). 2026-07-23.
+                // NOTE: do NOT also set viewer.currentPageNumber -- pdf.js reacts
+                // to that by scrolling the page to the TOP, which would override
+                // this alignment (invisible for top, but it broke bottom-align).
+                // pdf.js updates the current page from the scroll itself.
+                container.scrollTop = Math.max(0, pageView.div.offsetTop);
+                return;
+            }
+            // Page view not built yet -> at least land on the right page.
+            this._wvOutlineNavRaw(reader, pv, { pageIndex, rects: [[0, 100000, 0, 100000]] });
+        } catch (_) {}
+    }
+
+    /** Bottom-ALIGN a page: put the page's bottom edge at the bottom of the
+     *  view. The user-facing counterpart to `_wvOutlineNavPageTop`, for a
+     *  "Set Target: Bottom of Page" anchor (2026-07-23). */
+    _wvOutlineNavPageBottom(reader: any, pv: any, pageIndex: number) {
+        try {
+            if (pageIndex == null || pageIndex < 0) return;
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            const viewer = app && app.pdfViewer;
+            const container = win && win.document && win.document.getElementById("viewerContainer");
+            const pageView = viewer && viewer._pages && viewer._pages[pageIndex];
+            if (viewer && container && pageView && pageView.div) {
+                const pageBottom = pageView.div.offsetTop + pageView.div.offsetHeight;
+                // NOT viewer.currentPageNumber -- that re-scrolls to the page top
+                // and would cancel this bottom-align (2026-07-23).
+                container.scrollTop = Math.max(0, pageBottom - container.clientHeight);
+                return;
+            }
+            this._wvOutlineNavRaw(reader, pv, { pageIndex, rects: [[0, 0, 0, 0]] });
         } catch (_) {}
     }
 
@@ -5703,6 +6421,93 @@ class _ReaderPanelsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvApplyReaderFilter err: " + e);
         }
+    }
+
+    /** When a bookmark navigates to an annotation the reader filter is currently
+     *  HIDING, briefly spotlight ONLY that annotation -- rendered by the reader
+     *  itself, so it looks 100% like the real thing (its own colour/type) -- then
+     *  restore the filter so it fades back out, signalling "hidden by the filter".
+     *  No-op if no filter is active or the target is already visible.
+     *
+     *  History (2026-07-24): a first version toggled the filter and (a)
+     *  permanently dropped the colour channel on restore -- fixed by restoring the
+     *  SAVED native includes -- then (b) over-revealed because it cleared the
+     *  native channel and leaned on `hiddenIDs` alone. This version uses the SAME
+     *  colour+hiddenIDs combination the live filter uses (include the target's
+     *  colour, hide every other annotation of that colour) so exactly one renders.
+     *  A brief highlight-box-only variant was rejected: it couldn't show the
+     *  annotation's real colour. */
+    _wvReaderFlashHiddenAnnotation(reader: any, key: string) {
+        try {
+            if (!key || !this._wvReaderFilterActive(reader)) return;
+            const anns = this._wvReaderAnnotations(reader);
+            const a = anns.find((x: any) => x.key === key);
+            if (!a) return;
+            const st = this._wvReaderFilterState(reader);
+            const nat = this._wvReaderNativeIncludes(reader);
+            const natPass = (x: any) => {
+                try {
+                    if (nat.colors.length && nat.colors.indexOf(x.annotationColor) < 0) return false;
+                    if (nat.authors.length) { const au = x.annotationAuthorName || ""; if (nat.authors.indexOf(au) < 0) return false; }
+                    if (nat.tags.length) { let t: any[] = []; try { t = (x.getTags() || []).map((g: any) => g.tag); } catch (_) {} if (!t.some((g: any) => nat.tags.indexOf(g) >= 0)) return false; }
+                } catch (_) {}
+                return true;
+            };
+            // Already visible? Nothing to flash.
+            if (this._wvReaderPluginMatch(st, a) && natPass(a)) return;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!ir || typeof ir.setFilter !== "function" || !a.annotationColor || !pv) return;
+            let pos: any = null;
+            try { pos = typeof a.annotationPosition === "string" ? JSON.parse(a.annotationPosition) : a.annotationPosition; } catch (_) {}
+            const pageIndex = (pos && Number.isInteger(pos.pageIndex)) ? pos.pageIndex : 0;
+            // Spotlight ONLY the target, rendered by the reader itself (so it's
+            // 100% the real annotation -- its own colour/type). Use the PROVEN
+            // colour+hiddenIDs combination the live filter uses: include the
+            // target's colour, and hide every OTHER annotation of that colour, so
+            // exactly one renders. (Do NOT clear the native channel + lean on
+            // hiddenIDs alone -- that over-revealed, 2026-07-24.) The currently-
+            // visible annotations drop for the ~1.8s flash, then everything
+            // restores -- and the fade signals "hidden by the filter".
+            const savedNat = nat;   // captured before the change; used to restore
+            const otherSameColor = anns
+                .filter((x: any) => x.annotationColor === a.annotationColor && x.key !== key)
+                .map((x: any) => x.key);
+            const setF = (arg: any) => {
+                const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+                let cloned = arg;
+                try { if (iwin && Components && (Components as any).utils) cloned = (Components as any).utils.cloneInto(arg, iwin); } catch (_) {}
+                ir.setFilter(cloned);
+            };
+            const w: any = Zotero.getMainWindow();
+            const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            // Guard against a newer flash superseding this one (rapid clicks).
+            const gen = (pv._wvFlashSeq = (pv._wvFlashSeq || 0) + 1);
+            // Wait until the target's page is FULLY rendered (renderingState 3)
+            // before spotlighting, and start the 1.8s timer FROM THAT MOMENT, so
+            // the on-screen duration is STABLE. Gecko throttles the iframe's
+            // re-render while a page is still scrolling into view, so spotlighting
+            // too early made the appear time (and thus the visible duration)
+            // jitter -- the same fix the outline in-place highlight uses.
+            const run = (tries: number) => {
+                if (pv._wvFlashSeq !== gen) return;   // superseded by a newer click
+                let ready = false;
+                try {
+                    const app = pv._iframeWindow && pv._iframeWindow.PDFViewerApplication;
+                    const pView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+                    ready = !!(pView && pView.div && pView.renderingState === 3);
+                } catch (_) {}
+                if (ready || tries >= 60) {
+                    setF({ colors: [a.annotationColor], tags: [], authors: [], hiddenIDs: otherSameColor });
+                    // Restore the real filter (SAVED native, so it doesn't read
+                    // back the temporarily-changed colour channel and drop it).
+                    t(() => { if (pv._wvFlashSeq === gen) { try { this._wvApplyReaderFilter(reader, savedNat); } catch (_) {} } }, 1800);
+                    return;
+                }
+                t(() => run(tries + 1), 100);
+            };
+            run(0);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderFlashHiddenAnnotation err: " + e); }
     }
 
     // ---- Feature B: Bookmarks tab -----------------------------------------
@@ -7601,9 +8406,43 @@ class _ReaderPanelsMixin {
             const rerender = () => {
                 try {
                     this._wvReaderRenderBmList(reader, idoc);
-                    this._wvReaderRenderBmChipBar(reader, idoc);   // refresh selected states
+                    this._wvReaderRenderBmChipBar(reader, idoc);   // refresh selected states (re-renders THIS popup)
                 } catch (_) {}
             };
+
+            // Header: title + Clear / Clear-and-Close -- mirrors the annotations
+            // filter popup, which the bookmark filter previously lacked. Buttons
+            // are hidden (layout preserved) until a filter is active; `rerender`
+            // re-runs this function so they appear/disappear in lockstep. 2026-07-24.
+            {
+                const head = idoc.createElementNS(NS, "div");
+                head.setAttribute("style", "display:flex;align-items:center;gap:8px;margin:0 0 4px;");
+                const title = idoc.createElementNS(NS, "div");
+                title.textContent = "Filter Bookmarks";
+                title.setAttribute("style", "font-weight:600;flex:1;opacity:.85;");
+                head.appendChild(title);
+                const active = this._wvReaderBmChipsActive(reader);
+                const clearBmFilter = () => {
+                    try {
+                        for (const dim of ["colors", "tags", "authors", "types", "bmTypes"]) {
+                            if (st[dim] instanceof Set) st[dim].clear();
+                            if (st[dim + "Excl"] instanceof Set) st[dim + "Excl"].clear();
+                        }
+                    } catch (_) {}
+                };
+                const clearBtn: any = idoc.createElementNS(NS, "button");
+                clearBtn.type = "button"; clearBtn.textContent = "Clear";
+                clearBtn.setAttribute("title", "Clear all filters (keep this window open)");
+                clearBtn.setAttribute("style", "font:inherit;font-size:11px;line-height:1;padding:2px 8px;border-radius:4px;border:none;background:rgba(127,127,127,.18);color:inherit;cursor:pointer;" + (active ? "" : "visibility:hidden;"));
+                clearBtn.addEventListener("click", (e: any) => { e.stopPropagation(); clearBmFilter(); rerender(); });
+                const clearCloseBtn: any = idoc.createElementNS(NS, "button");
+                clearCloseBtn.type = "button"; clearCloseBtn.textContent = "×";
+                clearCloseBtn.setAttribute("title", "Clear and Close");
+                clearCloseBtn.setAttribute("style", "font:inherit;font-size:15px;line-height:1;padding:0 7px;border-radius:50%;border:none;background:rgba(220,72,72,.16);color:rgb(220,72,72);cursor:pointer;" + (active ? "" : "visibility:hidden;"));
+                clearCloseBtn.addEventListener("click", (e: any) => { e.stopPropagation(); clearBmFilter(); rerender(); this._wvReaderCloseBmChipPopup(idoc); });
+                head.appendChild(clearBtn); head.appendChild(clearCloseBtn);
+                bar.appendChild(head);
+            }
 
             // (Filter-scope-pin button removed: scope-sharing of filters is
             // now driven by the merged-scope state — Ctrl-click on the
@@ -9119,6 +9958,9 @@ class _ReaderPanelsMixin {
                 try {
                     reader.navigate({ annotationID: bm.itemKey });
                 } catch (_) {}
+                // If the reader filter is hiding this annotation, flash it in
+                // briefly then let it fade -- confirms it exists yet is filtered.
+                try { this._wvReaderFlashHiddenAnnotation(reader, bm.itemKey); } catch (_) {}
                 try {
                     const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
                     const idsArr: any = (iwin && (Components as any).utils)
@@ -11944,8 +12786,11 @@ class _ReaderPanelsMixin {
         return this._wvPinBitmap;
     }
 
-    _wvReaderShowPin(reader: any, position: any, bmId?: string) {
+    _wvReaderShowPin(reader: any, position: any, bmId?: string, opts?: any) {
         try {
+            // Draggable when it belongs to a bookmark (bmId) OR when a caller
+            // (e.g. an outline pin entry) supplies an onMove writeback. 2026-07-23.
+            const draggable = !!(bmId || (opts && opts.onMove));
             // Would be drawn onto the hidden base view -- an invisible pin.
             if (this._wvReadingModeActive(reader)) return;
             if (!position || !Array.isArray(position.rects) || !position.rects.length) return;
@@ -11981,9 +12826,9 @@ class _ReaderPanelsMixin {
             } else {
                 pin.innerHTML = RP_PIN_TIP_SVG;
             }
-            pin.setAttribute("title", bmId ? "Drag to move this bookmark" : "");
+            pin.setAttribute("title", draggable ? "Drag to move" : "");
             pin.style.cssText = "position:absolute;z-index:2147483646;"
-                + (bmId ? "pointer-events:auto;cursor:grab;" : "pointer-events:none;")
+                + (draggable ? "pointer-events:auto;cursor:grab;" : "pointer-events:none;")
                 // transform-origin at the TIP, so the grow/shrink animations pivot
                 // on the anchor instead of sliding the point around.
                 + "user-select:none;line-height:0;transform-origin:50% 100%;"
@@ -12015,6 +12860,22 @@ class _ReaderPanelsMixin {
                 + "transform:translate(-50%,-100%) scale(1);opacity:1;"
                 + "transition:opacity .18s ease-out,transform .18s ease-out;"
                 + "filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));";
+            // Approve button attached to the pin (edit mode): sits beside the pin
+            // head and moves WITH it (it's a child), so it's obvious the placement
+            // must be confirmed. Its own pointer handlers keep a click from
+            // starting a pin drag. 2026-07-23.
+            if (opts && opts.approve && typeof opts.approve.onClick === "function") {
+                const ab: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+                ab.textContent = opts.approve.label || "Done";
+                ab.className = "wv-reader-pin-approve";
+                ab.setAttribute("style", "position:absolute;left:100%;top:0;transform:translate(8px,-4px);"
+                    + "white-space:nowrap;padding:3px 12px;border-radius:5px;border:1px solid rgba(0,0,0,.35);"
+                    + "background:var(--color-accent,#5e6ad2);color:#fff;font:600 12px/1.2 sans-serif;cursor:pointer;"
+                    + "pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.45);");
+                ab.addEventListener("pointerdown", (e2: any) => { e2.stopPropagation(); }, true);
+                ab.addEventListener("click", (e2: any) => { e2.stopPropagation(); e2.preventDefault(); try { opts.approve.onClick(); } catch (_) {} });
+                pin.appendChild(ab);
+            }
             // HOST: the badge overlay (sibling of `.page` inside `.pdfViewer`),
             // never inside `.page` -- PDF.js rebuilds a page's children on zoom
             // re-render, which simply DELETED the pin mid-zoom.
@@ -12070,16 +12931,25 @@ class _ReaderPanelsMixin {
                 fadeT = win.setTimeout(() => { try { pin.style.transition = "opacity .25s,transform .25s"; pin.style.opacity = "0"; pin.style.transform = "translate(-50%,-118%) scale(.6)"; } catch (_) {} }, delay);
                 killT = win.setTimeout(() => { try { pin.remove(); } catch (_) {} }, delay + 320);
             };
-            startFade(2200);
+            // persist: stay put (no auto-fade) -- used by the pin "Edit Position"
+            // mode, where the marker must remain draggable until the user clicks
+            // Done. (2026-07-23)
+            const persist = !!(opts && opts.persist);
+            if (!persist) startFade(2200);
             pin.addEventListener("mouseenter", () => { stopFade(); try { pin.style.transition = "transform .12s"; pin.style.opacity = "1"; pin.style.transform = "translate(-50%,-100%) scale(1)"; } catch (_) {} });
-            pin.addEventListener("mouseleave", () => { if (!pin._wvDragging) startFade(900); });
+            pin.addEventListener("mouseleave", () => { if (!persist && !pin._wvDragging) startFade(900); });
 
-            if (bmId) {
+            if (draggable) {
                 const ridoc = reader._iframeWindow ? reader._iframeWindow.document
                     : (reader._iframe && reader._iframe.contentWindow && reader._iframe.contentWindow.document);
                 const rootEl = doc.documentElement;
                 const onDown = (e: any) => {
                     if (e.button !== 0) return;
+                    // A press on the attached approve button must NOT start a pin
+                    // drag -- let the button get its own click (2026-07-23). This
+                    // capture handler on the pin otherwise fires first and would
+                    // stopPropagation the button's events.
+                    try { if (e.target && e.target.closest && e.target.closest(".wv-reader-pin-approve")) return; } catch (_) {}
                     e.preventDefault(); e.stopPropagation();
                     stopFade();
                     pin._wvDragging = true;
@@ -12180,7 +13050,7 @@ class _ReaderPanelsMixin {
                         // and the pin is simply re-shown where it already was.
                         if (!lifted) {
                             try { pin.remove(); } catch (_) {}
-                            this._wvReaderShowPin(reader, position, bmId);
+                            this._wvReaderShowPin(reader, position, bmId, opts);
                             return;
                         }
                         // The TIP is the anchor, so the drop point is where the tip
@@ -12188,6 +13058,13 @@ class _ReaderPanelsMixin {
                         const [upX, upY] = tipOf(ev);
                         const newPos = this._wvReaderPdfPosFromPoint(pv, upX, upY);
                         try { pin.remove(); } catch (_) {}
+                        // onMove caller (an outline pin entry): write back through the
+                        // callback instead of the bookmark store, then re-show.
+                        if (opts && opts.onMove) {
+                            if (newPos) { try { opts.onMove(newPos); } catch (_) {} this._wvReaderShowPin(reader, newPos, bmId, opts); }
+                            else this._wvReaderShowPin(reader, position, bmId, opts);
+                            return;
+                        }
                         if (newPos) {
                             const att = this._wvReaderAtt(reader);
                             if (att) {

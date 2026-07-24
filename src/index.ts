@@ -3006,6 +3006,9 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Keep reader-window tab titles in sync with the "Show tabs as" setting.
         try { (this as any)._wvRegisterTabTitlePrefObserver(); } catch (e) {}
+        // Clean tear-off for the dev outline-eval pref: toggling it re-renders
+        // the dev surfaces and strips any active dev filter (see _wvOeOnPrefToggle).
+        try { (this as any)._wvOeRegisterPrefObserver(); } catch (e) {}
         // Same mechanism for the Pin/Unpin Tab entry (Firefox-style pinning).
         this._registerPinTabMenu();
         // (The "Move Tab"→"Move Tabs" multi-select relabel is folded into the
@@ -4559,6 +4562,7 @@ class WeaveroPlugin {
             }
         } catch (e) {}
         try { if ((this as any)._wvTaskbarPrefObs) Zotero.Prefs.unregisterObserver((this as any)._wvTaskbarPrefObs); } catch (e) {}
+        try { (this as any)._wvOeUnregisterPrefObserver(); } catch (e) {}
         // 0a. If Settings is currently open on the Weavero pane, mark a
         //     pref so init() can navigate back once the plugin re-
         //     registers its pane. Without this, plugin reinstall during

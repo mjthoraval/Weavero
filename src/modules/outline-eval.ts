@@ -39,6 +39,78 @@ class _OutlineEvalMixin {
         try { return Zotero.Prefs.get("weavero.devOutlineEval") === true; } catch (_) { return false; }
     }
 
+    /** Live tear-down when the dev pref toggles. Registered ONCE at startup
+     *  (Prefs observers are global, not per-window). Without this, disabling
+     *  `weavero.devOutlineEval` left the eval button in an open reader header and
+     *  any active dev filter still filtering, until the next natural re-render.
+     *  Reload-safe: unhooks a prior registration first. 2026-07-24. */
+    _wvOeRegisterPrefObserver(this: any) {
+        try {
+            if (this._wvOePrefObsID != null) {
+                try { Zotero.Prefs.unregisterObserver(this._wvOePrefObsID); } catch (_) {}
+                this._wvOePrefObsID = null;
+            }
+            // Resolve the LIVE plugin at event time -- never close over `this`
+            // (a reload would leave a stale reference behind).
+            this._wvOePrefObsID = Zotero.Prefs.registerObserver("weavero.devOutlineEval", () => {
+                const plugin = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (plugin) { try { plugin._wvOeOnPrefToggle(); } catch (_) {} }
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvOeRegisterPrefObserver err: " + e); }
+    }
+
+    _wvOeUnregisterPrefObserver(this: any) {
+        try {
+            if (this._wvOePrefObsID != null) {
+                Zotero.Prefs.unregisterObserver(this._wvOePrefObsID);
+                this._wvOePrefObsID = null;
+            }
+        } catch (_) {}
+    }
+
+    /** Clean tear-off / re-arm when the dev pref flips. On DISABLE, strip every
+     *  filter group's dev-only tokens -- they can ONLY have been created while
+     *  the pref was on (the facet UI is pref-gated), and `_filterState` is
+     *  per-window in-memory (never persisted), so stripping here leaves no way
+     *  for a dev filter to linger. Then refresh the live surfaces (filter bar,
+     *  items list, open reader outline headers) whose dev bits are gated at
+     *  render, so they appear on enable and vanish on disable immediately. */
+    _wvOeOnPrefToggle(this: any) {
+        try {
+            const enabled = this._wvOeEnabled();
+            const DEV_FIELDS = ["outlineClass", "outlineClassExclude", "outlineFlags",
+                "outlineFlagsExclude", "outlineVerdict", "outlineVerdictExclude"];
+            const scrub = (fs: any) => {
+                if (!fs || !Array.isArray(fs.groups)) return;
+                for (const g of fs.groups) {
+                    for (const f of DEV_FIELDS) { if (Array.isArray(g[f]) && g[f].length) g[f] = []; }
+                }
+            };
+            if (!enabled) {
+                const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                for (const w of wins) { try { scrub((w as any)._wvFilterState); } catch (_) {} }
+                try { scrub(this._wvFilterStateNoWin); } catch (_) {}
+            }
+            // Filter bar + items list (target the active window; groups scrubbed in
+            // any OTHER window now carry no dev tokens, so their next render is
+            // clean too). Prune groups left empty by the scrub.
+            try { this._pruneEmptyGroups && this._pruneEmptyGroups(); } catch (_) {}
+            try { this._renderFilterBar(); } catch (_) {}
+            try { this._applyItemsListFilter({ cascade: true }); } catch (_) {}
+            // Reader outline headers: the eval button (and the dev chip-menu
+            // reachability) are pref-gated at render, so a re-render flips them.
+            try {
+                for (const rd of ((Zotero.Reader && (Zotero.Reader as any)._readers) || [])) {
+                    try {
+                        const iwin = rd._iframeWindow || (rd._iframe && rd._iframe.contentWindow);
+                        const idoc = iwin && iwin.document;
+                        if (idoc && idoc.querySelector(".wv-outline-reader-view")) this._wvReaderRenderOutline(rd, idoc);
+                    } catch (_) {}
+                }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvOeOnPrefToggle err: " + e); }
+    }
+
     _wvOeFilePath(): string {
         return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "outline-eval.json");
     }
@@ -206,7 +278,8 @@ class _OutlineEvalMixin {
         await this._wvOeInit();
         const items = await Zotero.Items.getAll(lib);
         const pdfs = items.filter((it: any) => it.isPDFAttachment && it.isPDFAttachment());
-        const state = this._wvOeScanState = { running: true, done: false, cancel: false, total: pdfs.length, idx: 0, lib };
+        const state = this._wvOeScanState = { running: true, done: false, cancel: false,
+            phase: "quick", lib, quickIdx: 0, quickTotal: pdfs.length, idx: 0, total: pdfs.length };
         const protectTab = Tabs.selectedID;
         const sleep = (ms: number) => new Promise(r => win.setTimeout(r, ms));
         const getApp = (reader: any) => {
@@ -216,14 +289,43 @@ class _OutlineEvalMixin {
         };
         (async () => {
             try {
-                for (state.idx = 0; state.idx < pdfs.length; state.idx++) {
+                if (!this._wvOeRoot.classifications) this._wvOeRoot.classifications = {};
+                // PHASE 1 -- QUICK: a cheap text/scan signal for every PDF, NO readers
+                // opened. Image-only PDFs (no full-text index) are classified "scan"
+                // immediately -- so the facet + counts populate in seconds -- and are
+                // then skipped by the heavy pass. NOTE: this reuses the existing
+                // "unindexed => scan" heuristic, so a text PDF that merely hasn't been
+                // indexed yet is treated as a scan (same outcome the full pass gave it
+                // before -- source "scan" either way); it just won't get outline flags.
+                const skip = new Set();
+                for (state.quickIdx = 0; state.quickIdx < pdfs.length; state.quickIdx++) {
                     if (state.cancel) break;
-                    const att = pdfs[state.idx];
-                    let tabID: any = null;
+                    const att = pdfs[state.quickIdx];
                     try {
                         let ftState: any = null;
                         try { ftState = await Zotero.FullText.getIndexedState(att); } catch (_) {}
                         const isScan = ftState === Zotero.FullText.INDEX_STATE_UNINDEXED || ftState === Zotero.FullText.INDEX_STATE_UNAVAILABLE;
+                        if (isScan) {
+                            skip.add(att.id);
+                            const cls = this._wvOeClassifyTree([], "scan", null);
+                            this._wvOeRoot.classifications[att.libraryID + ":" + att.key] = Object.assign({ at: new Date().toISOString(), quick: true }, cls);
+                        }
+                    } catch (_) {}
+                    if ((state.quickIdx % 25) === 0) { try { await this._wvOePersist(); } catch (_) {} }
+                }
+                try { await this._wvOePersist(); } catch (_) {}
+                if (state.cancel) return;
+                // PHASE 2 -- FULL: open each remaining (text) PDF, fetch + classify its
+                // real outline (embedded / extracted / empty + flags). Skips the
+                // quick-classified scans, so the slow pass is shorter too.
+                state.phase = "full";
+                const todo = pdfs.filter((a: any) => !skip.has(a.id));
+                state.total = todo.length;
+                for (state.idx = 0; state.idx < todo.length; state.idx++) {
+                    if (state.cancel) break;
+                    const att = todo[state.idx];
+                    let tabID: any = null;
+                    try {
                         let opened: any = null;
                         for (let a = 0; a < 4 && !opened; a++) {
                             try { opened = await Zotero.Reader.open(att.id, null, { openInBackground: true }); } catch (_) {}
@@ -242,8 +344,7 @@ class _OutlineEvalMixin {
                         const rd = Zotero.Reader.getByTabID(tabID);
                         const oc = rd ? await this._wvReaderFetchOutline(rd) : null;
                         const pages = pdfDoc ? pdfDoc.numPages : null;
-                        const cls = this._wvOeClassifyTree(oc && oc.tree, isScan ? "scan" : ((oc && oc.source) || "unknown"), pages);
-                        if (!this._wvOeRoot.classifications) this._wvOeRoot.classifications = {};
+                        const cls = this._wvOeClassifyTree(oc && oc.tree, (oc && oc.source) || "unknown", pages);
                         this._wvOeRoot.classifications[att.libraryID + ":" + att.key] = Object.assign({ at: new Date().toISOString() }, cls);
                     } catch (e) { Zotero.debug("[Weavero] _wvOeScanLibrary item err: " + e); }
                     finally { if (tabID && tabID !== protectTab) { try { Tabs.close(tabID); } catch (_) {} } }

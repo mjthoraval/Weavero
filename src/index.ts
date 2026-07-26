@@ -2910,6 +2910,10 @@ class WeaveroPlugin {
         this._notifierIDs.push(Zotero.Notifier.registerObserver({
             notify: (event, type, ids) => {
                 try { this._wvReaderBmOnNotify(event, type, ids); } catch (e) {}
+                // Reader-filter resurrection guard: re-hide a filtered-out
+                // annotation that core's notifier just re-pushed (see
+                // _wvReaderFilterOnNotify).
+                try { (this as any)._wvReaderFilterOnNotify(event, type, ids); } catch (e) {}
             }
         }, ["item", "collection"], "weavero-reader-bm"));
 

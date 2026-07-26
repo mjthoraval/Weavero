@@ -6,8 +6,9 @@
 //     right of the Find/search icon) that opens a popup mirroring the library
 //     filter pane's design, scoped to the open document's annotations:
 //     annotation type, colour, has-comment, and tags. Applying the filter
-//     drives the reader's own annotation-manager (`setFilter({ hiddenIDs })`),
-//     so matched-out annotations vanish from BOTH the sidebar list AND the
+//     removes non-matching annotations from the reader (unset/setAnnotations
+//     diff -- see _wvReaderSyncHidden; the old setFilter hiddenIDs channel
+//     died with the beta.16 reader), so they vanish from BOTH the sidebar AND the
 //     rendered page/EPUB view — which means the filter still works with the
 //     left sidebar collapsed (the reason it lives in the toolbar, not the
 //     sidebar strip). The native colour/tag strip is intentionally duplicated
@@ -5192,7 +5193,8 @@ class _ReaderPanelsMixin {
                 // the strip and this popup share one source of truth and never
                 // stack. Only EXCLUDES and the dimensions the native filter
                 // lacks (type, has-comment, has-related, has-link, modified-by)
-                // are stored here and applied via hiddenIDs. Author dims are
+                // are stored here and applied by removing the annotations from
+                // the reader (_wvReaderSyncHidden). Author dims are
                 // keyed by display name (what the native `authors` filter uses).
                 types: [], typesExcl: [],
                 colorsExcl: [],
@@ -5857,14 +5859,20 @@ class _ReaderPanelsMixin {
         const title = mk("div", "wv-rf-title");
         title.textContent = "Filter Annotations";
         head.appendChild(title);
-        const clearState = () => {
+        // Async: callers must AWAIT before re-rendering the popup — the popup
+        // renders selection from the LIVE native filter, and the (async) apply
+        // only lands setFilter after its internal await. Re-rendering early
+        // shows a stale selection, and the next click then toggles from stale
+        // values — UI and filter divorce (the "filter is broken" stuck-colour
+        // incident, 2026-07-26).
+        const clearState = async () => {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
             st.addedByExcl = []; st.modifiedBy = []; st.modifiedByExcl = [];
             st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
             // The hide-annotations toggle counts as a filter — clear it too.
             if (this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
             // Also clear the native include channel (colour/tag/author).
-            this._wvApplyReaderFilter(reader, { colors: [], tags: [], authors: [] });
+            await this._wvApplyReaderFilter(reader, { colors: [], tags: [], authors: [] });
         };
         // "Clear" — clears every filter but keeps the popup open.
         const clearBtn = mk("button", "wv-filter-clear-btn");
@@ -5872,9 +5880,9 @@ class _ReaderPanelsMixin {
         clearBtn.textContent = "Clear";
         clearBtn.title = "Clear all filters (keep this window open)";
         clearBtn.setAttribute("aria-label", "Clear all filters");
-        clearBtn.addEventListener("click", (e: any) => {
+        clearBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
-            clearState();
+            await clearState();
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             this._wvReaderEnsureFilterButton(reader, idoc);
         });
@@ -5883,9 +5891,9 @@ class _ReaderPanelsMixin {
         clearCloseBtn.type = "button";
         clearCloseBtn.title = "Clear and Close";
         clearCloseBtn.setAttribute("aria-label", "Clear and Close");
-        clearCloseBtn.addEventListener("click", (e: any) => {
+        clearCloseBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
-            clearState();
+            await clearState();
             this._wvReaderEnsureFilterButton(reader, idoc);
             this._wvCloseReaderFilterPopup(idoc);
         });
@@ -5918,11 +5926,11 @@ class _ReaderPanelsMixin {
             if (exc) btn.dataset.excluded = "true";
             if (active && !sel && !exc && !active.has(value)) btn.dataset.inactive = "true";
             fillIcon(btn);
-            btn.addEventListener("click", (e: any) => {
+            btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 const next = this._toggleIncludeExclude(value, incl.slice(), excl.slice(), e.altKey);
                 onChange.call(null, next);
-                this._wvApplyReaderFilter(reader);
+                await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
                 this._wvReaderEnsureFilterButton(reader, idoc);
             });
@@ -5971,16 +5979,31 @@ class _ReaderPanelsMixin {
             if (exc) btn.dataset.excluded = "true";
             if (active && !sel && !exc && !active.has(value)) btn.dataset.inactive = "true";
             fillIcon(btn);
-            btn.addEventListener("click", (e: any) => {
+            btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
-                // Read the LIVE native include at click time so a sidebar-strip
-                // change to the same dimension (while the popup is open) isn't
-                // clobbered by a stale render-time snapshot.
-                const live = (this._wvReaderNativeIncludes(reader) as any)[dimKey] || [];
-                const next = this._toggleIncludeExclude(value, live.slice(), exclArr.slice(), e.altKey);
-                exclArr.length = 0; for (const v of next.exclude) exclArr.push(v);
-                const inc: any = {}; inc[dimKey] = next.include;
-                this._wvApplyReaderFilter(reader, inc);
+                const alt = !!e.altKey;
+                // SERIALIZE native-dim toggles per reader. The apply is async
+                // (setFilter lands after an internal await), and this handler
+                // reads the LIVE native include to compute the toggle -- so a
+                // second click racing an in-flight apply would read the OLD
+                // value and re-toggle it, diverging the UI from the filter
+                // until they deadlock (the stuck-colour "filter is broken"
+                // incident, 2026-07-26). Queuing each click behind the previous
+                // apply makes rapid clicks well-defined: every toggle reads the
+                // settled result of the one before. Reading `live` INSIDE the
+                // chain also keeps a concurrent sidebar-strip change from being
+                // clobbered by a stale snapshot.
+                const chain = reader._wvFilterUiChain || Promise.resolve();
+                reader._wvFilterUiChain = chain.then(async () => {
+                    const live = (this._wvReaderNativeIncludes(reader) as any)[dimKey] || [];
+                    const next = this._toggleIncludeExclude(value, live.slice(), exclArr.slice(), alt);
+                    exclArr.length = 0; for (const v of next.exclude) exclArr.push(v);
+                    const inc: any = {}; inc[dimKey] = next.include;
+                    await this._wvApplyReaderFilter(reader, inc);
+                }).catch(() => {});
+                await reader._wvFilterUiChain;
+                // Re-render only after the apply settled -- the popup paints
+                // selection from the live native filter.
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
                 this._wvReaderEnsureFilterButton(reader, idoc);
             });
@@ -5995,10 +6018,10 @@ class _ReaderPanelsMixin {
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
             try { const ic = iconBuilder(); if (ic) btn.appendChild(ic); } catch (_) {}
-            btn.addEventListener("click", (e: any) => {
+            btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 apply(!!e.altKey);
-                this._wvApplyReaderFilter(reader);
+                await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
                 this._wvReaderEnsureFilterButton(reader, idoc);
             });
@@ -6314,11 +6337,11 @@ class _ReaderPanelsMixin {
         else if (st.hasComment === false) btn.dataset.excluded = "true";
         btn.title = "Has Comment — annotations with non-empty comment text. Alt+click to exclude.";
         try { btn.appendChild(this._makeHasCommentSvg(idoc)); } catch (_) {}
-        btn.addEventListener("click", (e: any) => {
+        btn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
             if (e.altKey) st.hasComment = (st.hasComment === false) ? null : false;
             else st.hasComment = (st.hasComment === true) ? null : true;
-            this._wvApplyReaderFilter(reader);
+            await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             this._wvReaderEnsureFilterButton(reader, idoc);
         });
@@ -6326,7 +6349,7 @@ class _ReaderPanelsMixin {
     }
 
     /** Plugin-layer match (dimensions the native filter lacks + all excludes).
-     *  An annotation is hidden (added to hiddenIDs) when this returns false. */
+     *  An annotation is hidden (removed from the reader) when this returns false. */
     _wvReaderPluginMatch(st: any, a: any) {
         try {
             const ty = a.annotationType;
@@ -6387,9 +6410,110 @@ class _ReaderPanelsMixin {
         } catch (_) { return true; }
     }
 
-    /** Compute the non-matching annotation keys and push them to the reader's
-     *  annotation manager as hiddenIDs — hides in BOTH sidebar and view. */
-    _wvApplyReaderFilter(reader: any, inc?: any) {
+    /** Remove/restore annotations in the reader so only filter-matching ones
+     *  render (sidebar AND view). Diffs `wantedHiddenKeys` against the tracked
+     *  per-reader hidden set and calls the Zotero-side reader wrapper's
+     *  `unsetAnnotations` / `setAnnotations` — the SAME chrome-side API core's
+     *  own notifier uses to remove deleted and push modified annotations
+     *  (xpcom/reader.js), so it is stable across reader-submodule bumps in a
+     *  way `setFilter` fields are not (see the hiddenIDs note below). Restores
+     *  re-read the live Zotero items, so an annotation deleted while hidden
+     *  simply drops out. */
+    async _wvReaderSyncHidden(reader: any, wantedHiddenKeys: string[]) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            const cur: Set<string> = reader._wvUnsetKeys || (reader._wvUnsetKeys = new Set());
+            const want = new Set(wantedHiddenKeys);
+            const toHide = [...want].filter(k => !cur.has(k));
+            const toShow = [...cur].filter(k => !want.has(k));
+            if (toHide.length && typeof reader.unsetAnnotations === "function") {
+                reader.unsetAnnotations(toHide);
+                for (const k of toHide) cur.add(k);
+            }
+            if (toShow.length && typeof reader.setAnnotations === "function") {
+                const items: any[] = [];
+                for (const k of toShow) {
+                    cur.delete(k);
+                    try {
+                        const it: any = Zotero.Items.getByLibraryAndKey(att.libraryID, k);
+                        if (it) items.push(it);
+                    } catch (_) {}
+                }
+                if (items.length) await reader.setAnnotations(items);
+            }
+            return { hid: toHide.length, shown: toShow.length };
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderSyncHidden err: " + e);
+            return { hid: 0, shown: 0 };
+        }
+    }
+
+    /** Repaint Weavero's view-icon overlays (marker badges / link buttons,
+     *  modules/reader.ts) so they change TOGETHER with annotation visibility.
+     *  The first pass runs synchronously -- marker badges are positioned from
+     *  PDF coordinates (not the annotation's rendered DOM), so nothing needs
+     *  waiting for; icons trailing the annotations was the lag reported
+     *  2026-07-26. One follow-up pass catches DOM-dependent leftovers (a
+     *  text-annotation link button needs its textarea, which the reader can
+     *  recreate a beat later). Called from every filter apply (native-channel
+     *  changes hide annotations too) and from the flash spotlight. */
+    _wvReaderRepaintViewIcons(reader: any) {
+        try {
+            const cached = (this as any)._readerObservers && (this as any)._readerObservers.get(reader);
+            const innerDoc = cached && cached.innerDoc;
+            const outerDoc = (() => {
+                try {
+                    const iw = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+                    return iw && iw.document;
+                } catch (_) { return null; }
+            })();
+            if (!innerDoc && !outerDoc) return;
+            const repaint = () => {
+                const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!P) return;
+                if (innerDoc) {
+                    try { P._processNoteAnnotationOverlays(innerDoc, reader); } catch (_) {}
+                    try { P._processTextAnnotations(innerDoc); } catch (_) {}
+                    try { P._sweepStaleOverlays(innerDoc, reader); } catch (_) {}
+                }
+                // Sidebar decorations too (comment preview + link icons): a row
+                // that remounts on un-hide otherwise appears BARE and only gets
+                // its icon when the debounced sidebar scan runs ~80-160ms later
+                // -- the "blinking link icon" reported 2026-07-26. Idempotent +
+                // re-entry-guarded, so the extra pass is safe.
+                if (outerDoc) {
+                    try { P._processReaderSidebar(outerDoc); } catch (_) {}
+                }
+            };
+            repaint();
+            // Staggered follow-ups: React commits the remounted rows (and can
+            // fill their .comment subtrees) across several later ticks; the MO
+            // classification catches most, these idempotent passes are the
+            // insurance that no row stays bare longer than ~120ms. Cheap: the
+            // painters' data-source caches make a no-op pass trivial.
+            const w: any = Zotero.getMainWindow();
+            const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            for (const d of [60, 150, 300, 600, 1000]) t(repaint, d);
+        } catch (_) {}
+    }
+
+    /** Apply the Weavero reader filter: hide every non-matching annotation in
+     *  BOTH sidebar and view.
+     *
+     *  Channel split (revised 2026-07-26): colour/tag/author INCLUDES still go
+     *  through the reader's native `setFilter` (shared with the sidebar strip,
+     *  one source of truth). EVERYTHING ELSE (type include/exclude, colour/tag
+     *  excludes, has-comment/related/link/tag, added/modified-by) is applied by
+     *  physically removing the annotations from the reader via
+     *  `_wvReaderSyncHidden`. It previously rode a `hiddenIDs` field on
+     *  setFilter, but the reader bundled with Zotero 10.0-beta.16 (reader
+     *  submodule bumps of 2026-07-14/20) REMOVED that field -- setFilter still
+     *  stores it but never applies it, so the old channel silently no-oped
+     *  (forum report, comment 516063). Core itself never used hiddenIDs, so
+     *  nothing upstream guards it; unset/setAnnotations IS core-used and safe.
+     *  Regression suite: test/reader-filter.spec.js. */
+    async _wvApplyReaderFilter(reader: any, inc?: any) {
         try {
             const st = this._wvReaderFilterState(reader);
             const anns = this._wvReaderAnnotations(reader);
@@ -6400,21 +6524,41 @@ class _ReaderPanelsMixin {
             const colors = (inc && inc.colors) ? inc.colors : natCur.colors;
             const tags = (inc && inc.tags) ? inc.tags : natCur.tags;
             const authors = (inc && inc.authors) ? inc.authors : natCur.authors;
-            // hiddenIDs carries everything the native filter can't: type,
-            // has-comment/related/link, modified-by, and ALL excludes.
-            const hiddenIDs = anns.filter(a => !this._wvReaderPluginMatch(st, a)).map(a => a.key);
+            // Plugin-dimension hides FIRST (unset/re-add), then one native
+            // setFilter pass -- so a just-restored annotation is immediately
+            // re-checked against the native includes (setAnnotations alone
+            // renders without re-running the filter).
+            const sync = await this._wvReaderSyncHidden(reader,
+                anns.filter(a => !this._wvReaderPluginMatch(st, a)).map(a => a.key));
+            // Run setFilter only when it can change anything: the caller passed
+            // new native includes (`inc` -- a chip click), or annotations were
+            // just RESTORED while native includes are active (they must be
+            // re-checked). A redundant setFilter re-renders every sidebar row
+            // for nothing -- each extra render is a remount window in which
+            // Weavero's row decorations vanish and re-inject (the sidebar icon
+            // "blink" reported 2026-07-26).
+            const natsActive = !!(colors.length || tags.length || authors.length);
+            const needSetFilter = (inc != null) || (sync && sync.shown && natsActive);
             const ir = reader._internalReader;
-            if (ir && typeof ir.setFilter === "function") {
+            if (needSetFilter && ir && typeof ir.setFilter === "function") {
                 const iwin = reader._iframeWindow
                     || (reader._iframe && reader._iframe.contentWindow);
-                let arg: any = { colors, tags, authors, hiddenIDs };
+                let arg: any = { colors, tags, authors };
                 try {
                     if (iwin && Components && Components.utils) {
                         arg = Components.utils.cloneInto(arg, iwin);
                     }
                 } catch (_) {}
+                // setFilter's body recomputes the _hidden flags synchronously
+                // during this call (it's async only in name), so the repaint
+                // below sees the fresh state.
                 ir.setFilter(arg);
             }
+            // Repaint the view-icon overlays UNCONDITIONALLY -- native-channel
+            // changes (colour/tag/author) hide annotations without touching the
+            // unset diff, and were the one path still lagging (icons trailed
+            // annotations when un-hiding by colour; reported 2026-07-26).
+            this._wvReaderRepaintViewIcons(reader);
             // When "Hide Annotations in the Reader" is on (fallback path), the
             // view's setAnnotations is blocked, so this filter only updates the
             // sidebar — nothing extra to do here.
@@ -6432,11 +6576,14 @@ class _ReaderPanelsMixin {
      *  History (2026-07-24): a first version toggled the filter and (a)
      *  permanently dropped the colour channel on restore -- fixed by restoring the
      *  SAVED native includes -- then (b) over-revealed because it cleared the
-     *  native channel and leaned on `hiddenIDs` alone. This version uses the SAME
-     *  colour+hiddenIDs combination the live filter uses (include the target's
-     *  colour, hide every other annotation of that colour) so exactly one renders.
-     *  A brief highlight-box-only variant was rejected: it couldn't show the
-     *  annotation's real colour. */
+     *  native channel and leaned on `hiddenIDs` alone. A colour+hiddenIDs
+     *  spotlight then worked until the beta.16 reader REMOVED hiddenIDs
+     *  (2026-07-26); the spotlight now rides `_wvReaderSyncHidden` instead:
+     *  during the flash every annotation EXCEPT the target is unset (the target
+     *  is re-added), then the normal filter re-applies and its diff restores
+     *  everything. The native channel is never touched, so there is nothing to
+     *  save/restore on that side. A brief highlight-box-only variant was
+     *  rejected: it couldn't show the annotation's real colour. */
     _wvReaderFlashHiddenAnnotation(reader: any, key: string) {
         try {
             if (!key || !this._wvReaderFilterActive(reader)) return;
@@ -6457,28 +6604,10 @@ class _ReaderPanelsMixin {
             if (this._wvReaderPluginMatch(st, a) && natPass(a)) return;
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
-            if (!ir || typeof ir.setFilter !== "function" || !a.annotationColor || !pv) return;
+            if (!ir || !pv) return;
             let pos: any = null;
             try { pos = typeof a.annotationPosition === "string" ? JSON.parse(a.annotationPosition) : a.annotationPosition; } catch (_) {}
             const pageIndex = (pos && Number.isInteger(pos.pageIndex)) ? pos.pageIndex : 0;
-            // Spotlight ONLY the target, rendered by the reader itself (so it's
-            // 100% the real annotation -- its own colour/type). Use the PROVEN
-            // colour+hiddenIDs combination the live filter uses: include the
-            // target's colour, and hide every OTHER annotation of that colour, so
-            // exactly one renders. (Do NOT clear the native channel + lean on
-            // hiddenIDs alone -- that over-revealed, 2026-07-24.) The currently-
-            // visible annotations drop for the ~1.8s flash, then everything
-            // restores -- and the fade signals "hidden by the filter".
-            const savedNat = nat;   // captured before the change; used to restore
-            const otherSameColor = anns
-                .filter((x: any) => x.annotationColor === a.annotationColor && x.key !== key)
-                .map((x: any) => x.key);
-            const setF = (arg: any) => {
-                const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
-                let cloned = arg;
-                try { if (iwin && Components && (Components as any).utils) cloned = (Components as any).utils.cloneInto(arg, iwin); } catch (_) {}
-                ir.setFilter(cloned);
-            };
             const w: any = Zotero.getMainWindow();
             const t = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
             // Guard against a newer flash superseding this one (rapid clicks).
@@ -6498,10 +6627,16 @@ class _ReaderPanelsMixin {
                     ready = !!(pView && pView.div && pView.renderingState === 3);
                 } catch (_) {}
                 if (ready || tries >= 60) {
-                    setF({ colors: [a.annotationColor], tags: [], authors: [], hiddenIDs: otherSameColor });
-                    // Restore the real filter (SAVED native, so it doesn't read
-                    // back the temporarily-changed colour channel and drop it).
-                    t(() => { if (pv._wvFlashSeq === gen) { try { this._wvApplyReaderFilter(reader, savedNat); } catch (_) {} } }, 1800);
+                    // Spotlight: hide EVERYTHING except the target (the sync diff
+                    // re-adds the target, which the filter had unset). The reader
+                    // renders the real annotation -- its own colour/type.
+                    const allButTarget = anns.filter((x: any) => x.key !== key).map((x: any) => x.key);
+                    Promise.resolve(this._wvReaderSyncHidden(reader, allButTarget))
+                        .then(() => { try { this._wvReaderRepaintViewIcons(reader); } catch (_) {} })
+                        .catch(() => {});
+                    // Restore: re-apply the normal filter; its diff un-hides the
+                    // regular visible set and re-hides the target.
+                    t(() => { if (pv._wvFlashSeq === gen) { try { this._wvApplyReaderFilter(reader); } catch (_) {} } }, 1800);
                     return;
                 }
                 t(() => run(tries + 1), 100);
@@ -6586,6 +6721,41 @@ class _ReaderPanelsMixin {
             }
         } catch (_) {}
         return out;
+    }
+
+    /** Re-assert the reader filter when core resurrects a hidden annotation.
+     *  Core's own notifier (xpcom/reader.js) re-pushes an annotation into the
+     *  reader on add/modify via reader.setAnnotations -- which re-ADDS any
+     *  annotation Weavero's filter had removed (`_wvUnsetKeys`), making it
+     *  visible despite the filter. Wired to the same index.ts observer as
+     *  `_wvReaderBmOnNotify`. Cheap: no-ops unless a reader is actively hiding
+     *  AND a changed id is one of its hidden annotations; debounced past core's
+     *  own (async, ~ms) push so the re-apply always lands second. 2026-07-26. */
+    _wvReaderFilterOnNotify(event: string, type: string, ids: any[]) {
+        if (type !== "item" || (event !== "add" && event !== "modify")) return;
+        const hit: any[] = [];
+        try {
+            for (const rd of ((Zotero.Reader && (Zotero.Reader as any)._readers) || [])) {
+                const cur: Set<string> = rd._wvUnsetKeys;
+                if (!cur || !cur.size) continue;
+                for (const id of (ids || [])) {
+                    const it: any = Zotero.Items.get(id);
+                    if (it && it.key && cur.has(it.key)) { hit.push(rd); break; }
+                }
+            }
+        } catch (_) {}
+        if (!hit.length) return;
+        try {
+            const win = Zotero.getMainWindow();
+            if (this._wvReaderFilterNotifyTimer && win) win.clearTimeout(this._wvReaderFilterNotifyTimer);
+            const st = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            this._wvReaderFilterNotifyTimer = st(() => {
+                this._wvReaderFilterNotifyTimer = null;
+                const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!P) return;
+                for (const rd of hit) { try { P._wvApplyReaderFilter(rd); } catch (_) {} }
+            }, 400);
+        } catch (_) {}
     }
 
     /** Live-refresh handler for the bookmarks pane, wired to a Zotero.Notifier

@@ -1557,6 +1557,58 @@ class _ReaderPanelsMixin {
             try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
             try { this._wvReaderHideBmHoverCard(idoc); } catch (_) {}
             try { const st = idoc.getElementById(RP_STYLE_ID); if (st) st.remove(); } catch (_) {}
+            // Restore annotations the reader FILTER removed (unset/setAnnotations
+            // channel). Without this, disabling the plugin with a filter active
+            // left the hidden annotations MISSING from the open reader until the
+            // tab reloaded -- found by the disable protocol, 2026-07-26. On a hot
+            // reload this is equally right: the new instance starts with empty
+            // filter state, so the reader must show everything.
+            try {
+                const cur: Set<string> = reader._wvUnsetKeys;
+                if (cur && cur.size) {
+                    const att = this._wvReaderAtt(reader);
+                    const items: any[] = [];
+                    for (const k of [...cur]) {
+                        try {
+                            const it: any = att && Zotero.Items.getByLibraryAndKey(att.libraryID, k);
+                            if (it) items.push(it);
+                        } catch (_) {}
+                    }
+                    cur.clear();
+                    if (items.length && typeof reader.setAnnotations === "function") {
+                        Promise.resolve(reader.setAnnotations(items)).catch(() => {});
+                    }
+                }
+            } catch (_) {}
+            // Strip every injected Weavero surface from the reader doc. A
+            // GENERIC sweep, deliberately: the old enumerated removals rotted as
+            // features were added (the funnel button, Bookmarks tab, outer
+            // stylesheet, and the wv-ui-dark root class all survived a disable
+            // -- leftovers scan, 2026-07-26). Everything Weavero injects carries
+            // a wv-/weavero id or a wv- class per the namespacing convention,
+            // so: remove OUR root elements, then strip wv- classes and data-wv-*
+            // markers from the native nodes that remain.
+            try {
+                // NOTE: do NOT call _wvReaderActivateOutlineTakeover(false) here
+                // -- it re-renders panel surfaces and re-injects them AFTER this
+                // sweep (verified live 2026-07-26: the leftover list GREW). The
+                // native-view handback is already covered by _wvReaderRewirePanels
+                // above (the 2026-07-22 outline-takeover disable fix).
+                const ROOTS = ".wv-reader-filter-btn, ." + RP_BM_TAB_CLASS + ", ." + RP_BM_VIEW_CLASS
+                    + ", ." + RP_OUTLINE_VIEW_CLASS + ", .wv-bm-chip-popup, .wv-bm-hover-card"
+                    + ", [id^='wv-'], [id^='weavero']";
+                for (const el of [...idoc.querySelectorAll(ROOTS)]) { try { el.remove(); } catch (_) {} }
+                for (const el of [...idoc.querySelectorAll("[class*='wv-']")]) {
+                    try { for (const c of [...el.classList]) if (c.startsWith("wv-")) el.classList.remove(c); } catch (_) {}
+                }
+                try { for (const c of [...idoc.documentElement.classList]) if (c.startsWith("wv-")) idoc.documentElement.classList.remove(c); } catch (_) {}
+                // Keep this list aligned with test/disable/leftovers.js DATA_ATTRS.
+                for (const a of ["data-wv-last-rebuild", "data-wv-source", "data-wv-rendered", "data-wv-raw",
+                                 "data-wv-related-rendered", "data-wv-ctx-wired", "data-wv-pin-sticky",
+                                 "data-wv-pin-preview", "data-wv-drag-join"]) {
+                    try { for (const el of [...idoc.querySelectorAll("[" + a + "]")]) el.removeAttribute(a); } catch (_) {}
+                }
+            } catch (_) {}
             // Window handlers wired with stored refs + version stamps.
             const w: any = idoc.defaultView;
             if (w) {

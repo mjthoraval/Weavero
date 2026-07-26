@@ -10546,9 +10546,25 @@ class _ReaderMixin {
                         // makes subsequent calls cheap.
                         if (node.matches?.(".annotation-row, .annotation, .comment")
                             || node.querySelector?.(
-                                ".annotation-row .comment, .annotation .comment")) {
+                                ".annotation-row .comment, .annotation .comment")
+                            // Filter un-hide remounts arrive as commits keyed by
+                            // the sidebar's row attribute (and the .comment
+                            // subtree can land in a LATER commit than the row
+                            // shell) -- without these matches the remounted row
+                            // sat bare ~700ms until the debounced safety scan
+                            // (sidebar icon blink, 2026-07-26).
+                            || node.matches?.("[data-sidebar-annotation-id]")
+                            || node.querySelector?.("[data-sidebar-annotation-id]")) {
                             needsSyncScan = true;
                         }
+                    }
+                    // Late commits INSIDE an existing row (e.g. React fills the
+                    // .comment subtree a beat after mounting the row shell):
+                    // added nodes there don't match the row selectors above.
+                    if (!needsSyncScan && m.addedNodes.length && m.target
+                        && m.target.closest
+                        && m.target.closest(".annotation, .annotation-row, [data-sidebar-annotation-id]")) {
+                        needsSyncScan = true;
                     }
                     // Also re-check when comment text mutates inside an existing popup
                     const popup = m.target?.closest?.(".annotation-popup");
@@ -10583,25 +10599,35 @@ class _ReaderMixin {
             // Hook clicks (filter button toggles) and keyup (search field
             // typing) on the outer iframe and schedule a debounced
             // re-process of the inner overlays.
+            const runOverlayRefresh = () => {
+                try {
+                    const cached = this._readerObservers
+                        && this._readerObservers.get(reader);
+                    const innerDoc = cached && cached.innerDoc;
+                    if (innerDoc) {
+                        this._processNoteAnnotationOverlays(innerDoc, reader);
+                        this._sweepStaleOverlays(innerDoc, reader);
+                    }
+                } catch(e) {
+                    Zotero.debug("[Weavero] overlay refresh err: " + e);
+                }
+            };
             let overlayRefreshTimer = null;
             const scheduleOverlayRefresh = () => {
                 if (overlayRefreshTimer) iwin.clearTimeout(overlayRefreshTimer);
                 overlayRefreshTimer = iwin.setTimeout(() => {
                     overlayRefreshTimer = null;
-                    try {
-                        const cached = this._readerObservers
-                            && this._readerObservers.get(reader);
-                        const innerDoc = cached && cached.innerDoc;
-                        if (innerDoc) {
-                            this._processNoteAnnotationOverlays(innerDoc, reader);
-                            this._sweepStaleOverlays(innerDoc, reader);
-                        }
-                    } catch(e) {
-                        Zotero.debug("[Weavero] overlay refresh err: " + e);
-                    }
+                    runOverlayRefresh();
                 }, 300);
             };
-            idoc.addEventListener("click", scheduleOverlayRefresh, true);
+            // Clicks repaint IMMEDIATELY (the native strip's setFilter updates
+            // the _hidden flags synchronously during the click's own dispatch,
+            // so a same-tick pass sees fresh state) -- icons trailing the
+            // annotations by the debounce interval was the lag reported
+            // 2026-07-26 when un-hiding by colour via the native strip. The
+            // debounced pass still follows as a settle net. Search typing
+            // (keyup) stays debounce-only: a pass per keystroke would thrash.
+            idoc.addEventListener("click", () => { runOverlayRefresh(); scheduleOverlayRefresh(); }, true);
             idoc.addEventListener("keyup", scheduleOverlayRefresh, true);
 
             // Preview-panel architecture (v0.0.106):
@@ -11193,6 +11219,15 @@ class _ReaderMixin {
                     if (a && a._hidden && a.id) hiddenKeys.add(a.id);
                 }
             }
+        } catch (e) {}
+        // Weavero's own filter dims REMOVE annotations from the reader
+        // (_wvReaderSyncHidden, since the beta.16 reader dropped hiddenIDs)
+        // -- those carry no _hidden flag because they're absent from the
+        // state entirely, so union the tracked unset set. Without this the
+        // badges lingered over empty space (reported 2026-07-26).
+        try {
+            const unset = reader && reader._wvUnsetKeys;
+            if (unset && unset.size) for (const k of unset) hiddenKeys.add(k);
         } catch (e) {}
         // Text annotations: button has a coord-derived stable ID
         // (`p{N}-t{top}-l{left}`); orphan = no textarea at the same
@@ -12183,6 +12218,15 @@ class _ReaderMixin {
         } catch (e) {
             this._dbg("[Weavero] overlay: read filter state err: " + e);
         }
+        // Weavero's own filter dims REMOVE annotations from the reader
+        // (_wvReaderSyncHidden, since the beta.16 reader dropped hiddenIDs)
+        // -- those are absent from the state entirely, so no _hidden flag
+        // exists for them; union the tracked unset set or their badges
+        // linger over empty space (reported 2026-07-26).
+        try {
+            const unset = reader._wvUnsetKeys;
+            if (unset && unset.size) for (const k of unset) hiddenKeys.add(k);
+        } catch (e) {}
 
         // Drop entries from the recently-deleted set ONLY when
         // getAnnotations() also stops returning them — i.e. when Zotero's

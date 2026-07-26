@@ -70,14 +70,29 @@ class _TabGroupsMixin {
         try { (this as any)._wvTabGroupsBackupWrite(arr || []); } catch (e) {}
     }
 
-    /** Serialised atomic write of the tab-groups backup mirror. */
+    /** Serialised atomic write of the tab-groups backup mirror. Rotates the
+     *  previous generation to `.bak` ONLY when a group is about to disappear
+     *  from the mirror -- so after any wrongful deletion the lost group is
+     *  still recoverable from the .bak. (The 2026-07-26 BN-update incident:
+     *  the mirror faithfully overwrote itself with the post-loss state, so
+     *  the only copy of the deleted group was clobbered within minutes.)
+     *  Rotating only on group-removal keeps the .bak from being churned by
+     *  the frequent membership-only rewrites. */
     _wvTabGroupsBackupWrite(this: any, arr: any[]) {
         const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
         const path = PathUtils.join(dir, "tab-groups.json");
         const payload = JSON.stringify({ version: 1, savedAt: new Date().toISOString(), groups: arr || [] }, null, 2);
+        const newIds = new Set((arr || []).map((g: any) => g && g.id));
         this._wvTabGroupsBackupChain = (this._wvTabGroupsBackupChain || Promise.resolve())
             .then(async () => {
                 await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                try {
+                    const prev = JSON.parse(await IOUtils.readUTF8(path));
+                    const prevGroups = (prev && Array.isArray(prev.groups)) ? prev.groups : [];
+                    if (prevGroups.some((g: any) => g && !newIds.has(g.id))) {
+                        await IOUtils.copy(path, path + ".bak");
+                    }
+                } catch (_) {}   // no previous mirror / unreadable -> nothing to rotate
                 await IOUtils.writeUTF8(path, payload, { tmpPath: path + ".tmp" });
             })
             .catch((e: any) => Zotero.debug("[Weavero] tab-groups backup write err: " + e));
@@ -634,7 +649,17 @@ class _TabGroupsMixin {
                 const gid = this._wvRecentClosedGroup(pk.libraryID, pk.itemKey);
                 if (!gid) continue;
                 const tg = groups.find((x: any) => x.id === gid && !(x as any).saved);
-                if (tg) { this._wvTabGroupSetStamp(t, gid); this._wvForgetClosed(pk.libraryID, pk.itemKey); }
+                if (!tg) continue;
+                // Home guard, same as the claim pass below (it was MISSING here):
+                // without it, a DUPLICATE copy of the member's item open in
+                // another window rejoined the group THERE, splitting it across
+                // windows -- a "Notes 1" chip leaked into a second main window
+                // while the real group ("Notes 6") lived in its home window
+                // (2026-07-26). Single-window model: rejoin only in the group's
+                // home window (or when it has no home yet).
+                const rjHome = this._wvTabGroupHomeWin(gid);
+                if (rjHome && rjHome !== win) continue;
+                this._wvTabGroupSetStamp(t, gid); this._wvForgetClosed(pk.libraryID, pk.itemKey);
             }
             // Claim pass: stamp any UNSTAMPED open tab whose item is in a live
             // group's item-key shadow (covers add paths that only wrote the
@@ -745,6 +770,17 @@ class _TabGroupsMixin {
                     if (this._wvTabGroupStamp(t) === g.id) openMembers.push({ tab: t });
                 }
                 const reopening = this._wvReopeningGroups().has(g.id);
+                // Seen-open ledger: a live group observed WITH an open member at
+                // least once this plugin-session. Only such groups are eligible
+                // for empty-deletion below -- a group that was NEVER seen open
+                // cannot have been emptied by the user, so "it's empty" can only
+                // mean its members haven't come back yet (slow/atypical restore).
+                // The 2026-07-26 BN-update restart deleted a live group exactly
+                // that way: the 3s restore guard lifted before the note tabs were
+                // re-stamped, and the reconciler read not-yet-restored as empty.
+                const seenOpen: Set<string> = (this as any)._wvGroupSeenOpen
+                    || ((this as any)._wvGroupSeenOpen = new Set());
+                if (openMembers.length) seenOpen.add(g.id);
                 if (!openMembers.length) {
                     const sc = doc.getElementById("wv-tgchip-" + g.id);
                     if (sc) sc.remove();
@@ -757,7 +793,10 @@ class _TabGroupsMixin {
                     // window's first apply. Without this guard a group living only
                     // in a reader window looks empty here and gets deleted from
                     // prefs before the reader window restores → the group is lost.
-                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown && !this._wvTabGroupOpenAnywhere(g.id)) emptyGroupIds.add(g.id);
+                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown && !this._wvTabGroupOpenAnywhere(g.id)) {
+                        if (seenOpen.has(g.id)) emptyGroupIds.add(g.id);
+                        else this._wvTGDbg("empty-delete SKIPPED — group " + g.id + " ('" + (g.name || "") + "') never seen open this session");
+                    }
                     continue;
                 }
                 // SHADOW SYNC (fixes "broken groups"): for a LIVE group settled in

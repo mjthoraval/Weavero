@@ -605,6 +605,9 @@ class _TabGroupsMixin {
                 // 30s, so an older flag is stale: clear it and render normally
                 // instead of honouring a phantom drag.
                 if (Date.now() - (win._wvTabGroupDragStartAt || 0) > 30000) {
+                    this._wvTGDbg("self-heal: cleared STALE drag flag tabID=" + win._wvTabGroupDragTabID
+                        + " age=" + Math.round((Date.now() - (win._wvTabGroupDragStartAt || 0)) / 1000) + "s"
+                        + " (dragend never fired for this drag)");
                     win._wvTabGroupDragTabID = null;
                     win._wvMultiDragIDs = null;
                     win._wvGroupCreateTarget = null;
@@ -633,6 +636,58 @@ class _TabGroupsMixin {
             const Z_Tabs: any = win.Zotero_Tabs;
             const tabsBox = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
             if (!Z_Tabs || !Z_Tabs._tabs || !tabsBox) return;
+            // Boot tracer: snapshot membership at every apply (see _wvBootTraceArm).
+            try {
+                const brec = (this as any)._wvBootTraceRec;
+                if (brec) {
+                    const counts: any = {};
+                    for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                        const s = this._wvTabGroupStamp(Z_Tabs._tabs[i]);
+                        if (s) counts[String(s).slice(-6)] = (counts[String(s).slice(-6)] || 0) + 1;
+                    }
+                    brec("APPLY", { win: win._wvManagedWindow ? "managed" : "anchor",
+                        tabs: Z_Tabs._tabs.length, stamped: counts,
+                        guard: !!(this as any)._wvTabGroupRestoreGuard,
+                        bootMap: ((this as any)._wvBootStampMap && (this as any)._wvBootStampMap.size) || 0 });
+                }
+            } catch (eT) {}
+            // Boot stamp map (armed by _wvRestoreAnchorTabs): quit-time
+            // (itemID -> groupID) truth for member tabs Zotero's native session
+            // restore hadn't delivered yet at the one-shot re-stamp. This runs on
+            // every tab-arrival mutation, so each late member is stamped the
+            // moment its tab EXISTS -- it renders inside its group from its first
+            // frame instead of sitting ungrouped and visibly moving in later
+            // (chip grew 4 -> 6 across seconds; reported 2026-07-27). Anchor
+            // window only; the map self-expires after 2 minutes.
+            try {
+                const bm: Map<any, any> = (this as any)._wvBootStampMap;
+                if (bm && bm.size && !win._wvManagedWindow) {
+                    if (Date.now() - ((this as any)._wvBootStampMapAt || 0) > 120000) {
+                        (this as any)._wvBootStampMap = null;
+                    } else {
+                        for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                            const t = Z_Tabs._tabs[i];
+                            const iid = t && t.data && t.data.itemID;
+                            if (iid == null || !bm.has(iid)) continue;
+                            if (!this._wvTabGroupStamp(t)) {
+                                this._wvTabGroupSetStamp(t, bm.get(iid));
+                                this._wvTGDbg("boot-stamp: " + t.id + " -> " + String(bm.get(iid)).slice(-6) + " on arrival");
+                            }
+                            // Entry deliberately KEPT: native restore can replace
+                            // this tab object again during the restore window.
+                        }
+                        // Disarm once the restore guard is down AND a grace has
+                        // passed (guard-down is the end of restore; the grace
+                        // covers the last replacements). After that, membership
+                        // is the user's to change.
+                        if (!(this as any)._wvTabGroupRestoreGuard
+                                && Date.now() - ((this as any)._wvBootStampMapAt || 0) > 12000) {
+                            (this as any)._wvBootStampMap = null;
+                            this._wvTGDbg("boot-stamp map disarmed (restore settled)");
+                        }
+                    }
+                }
+            } catch (eB) {}
             let groups = this._tabGroupsGet();
             if (!groups.length) { this._stripTabGroups(win); return; }
 
@@ -1045,6 +1100,12 @@ class _TabGroupsMixin {
                 e.dataTransfer.effectAllowed = "move";
                 e.dataTransfer.setData("application/x-weavero-tabgroup", groupID);
                 p._wvGroupDrag = { groupID, sourceWin: win };
+                // Record the full strip order for Esc-cancel restore: the live
+                // preview (_wvTabGroupLiveMoveGroup) PHYSICALLY relocates the
+                // member block during the drag, so a cancel must replay this
+                // order or the group stays at the cursor's slot (2026-07-27,
+                // same class as the tab-drag cancel bug).
+                try { win._wvGroupDragOrigOrder = win.Zotero_Tabs._tabs.slice(1).map((t: any) => t.id); } catch (er2) {}
                 // Drag image: the chip itself (it's small and recognizable).
                 try { e.dataTransfer.setDragImage(chip, 10, 10); } catch (er2) {}
                 // AFTER the drag image is captured: hide the member tabs so
@@ -1090,6 +1151,24 @@ class _TabGroupsMixin {
                 if (gd && gd.groupID === groupID && !cancelled && !overZoteroWin) {
                     try { p._wvTabGroupMoveToNewWindow(win, groupID); } catch (er2) {}
                 }
+                // Esc-cancel: replay the recorded pre-drag strip order (absolute
+                // rebuild, same loop shape as _wvTabGroupStabilize) -- the live
+                // preview moved the member block for real, and non-members kept
+                // their relative order, so the replay lands the group back at
+                // its exact original slot.
+                if (cancelled && p) {
+                    try {
+                        const orig: string[] = win._wvGroupDragOrigOrder || [];
+                        const Z: any = win.Zotero_Tabs;
+                        for (let i = 0; i < orig.length; i++) {
+                            const cur = Z._tabs.findIndex((t: any) => t && t.id === orig[i]);
+                            if (cur >= 0 && cur !== i + 1) { try { Z.move(orig[i], i + 1); } catch (er3) {} }
+                        }
+                        p._wvTGDbg("chip-drag cancel-restore: strip order replayed (" + orig.length + " tabs)");
+                        try { p._applyTabGroups(win); } catch (er3) {}
+                    } catch (er2) { try { p._wvTGDbg("chip cancel-restore ERR=" + er2); } catch (er4) {} }
+                }
+                win._wvGroupDragOrigOrder = null;
                 if (p) { p._wvGroupDrag = null; p._wvTabGroupHideAllDropGhosts(); }
             } catch (er) {}
         });
@@ -1752,9 +1831,25 @@ class _TabGroupsMixin {
                 ["dragend", mk("_wvTabGroupDnDDragEnd")],
             ];
             for (const [t, h] of hs) container.addEventListener(t, h, true);
+            // Esc-during-drag detector (diagnostic, 2026-07-27): Gecko's drag
+            // service normally swallows key events during a drag session, so
+            // whether this line ever appears in the ring tells us WHERE the
+            // cancel is handled -- if it never fires, Esc is consumed by the
+            // drag service and the cancel manifests only as dragend with
+            // dropEffect "none" (or, pathologically, as no dragend at all).
+            const keyH = (e: any) => {
+                try {
+                    const p: any = live();
+                    if (p && e.key === "Escape" && win._wvTabGroupDragTabID) {
+                        p._wvTGDbg("ESC keydown reached content during drag tabID=" + win._wvTabGroupDragTabID);
+                    }
+                } catch (er) {}
+            };
+            win.addEventListener("keydown", keyH, true);
             (container as any)._wvTabGroupDnDVer = WIRE_VERSION;
             (container as any)._wvTabGroupDnDOff = () => {
                 try { for (const [t, h] of hs) container.removeEventListener(t, h, true); } catch (e) {}
+                try { win.removeEventListener("keydown", keyH, true); } catch (e) {}
                 (container as any)._wvTabGroupDnDVer = 0;
             };
         } catch (e) { Zotero.debug("[Weavero] _wvWireTabGroupDnD err: " + e); }
@@ -1770,6 +1865,81 @@ class _TabGroupsMixin {
             arr.push(Date.now() % 1000000 + " " + msg);
             if (arr.length > 120) arr.shift();
         } catch (e) {}
+    }
+
+    /** BOOT TRACER (diagnostic, 2026-07-27): records every group-stamp write and
+     *  clear during the first ~90s after startup, each with a compact call site,
+     *  plus tab arrivals and per-apply member counts. Flushed to
+     *  `weavero/boot-groups-trace.json` so it survives the restart that produced
+     *  it (the whole point: the bridge dies with the app). Armed once at init;
+     *  self-disarms and restores the original method when the window closes.
+     *  Investigating: members joining the group, then LEAVING, then rejoining
+     *  during restore -- something clears stamps mid-boot. */
+    _wvBootTraceArm(this: any) {
+        try {
+            // OPT-IN ONLY (pref `weavero.devBootTrace`, default OFF): this wraps
+            // a hot method and writes a file every 2s for 90s -- diagnostic
+            // overhead that must not run for normal users. Kept in-tree because
+            // it is what cracked the restore-flicker investigation and the next
+            // restore regression will want it: set the pref, restart, then read
+            // weavero/boot-groups-trace.json.
+            let on = false;
+            try { on = Zotero.Prefs.get("weavero.devBootTrace") === true; } catch (e) {}
+            if (!on) return;
+            if (this._wvBootTraceArmed) return;
+            this._wvBootTraceArmed = true;
+            const t0 = Date.now();
+            const log: any[] = (this._wvBootTraceLog = []);
+            const rec = (ev: string, detail: any) => {
+                try {
+                    if (Date.now() - t0 > 90000) return;
+                    log.push(Object.assign({ t: Date.now() - t0, ev }, detail || {}));
+                    if (log.length > 600) log.shift();
+                } catch (e) {}
+            };
+            this._wvBootTraceRec = rec;
+            // 1. Stamp writes/clears with call site.
+            const origSet = this._wvTabGroupSetStamp.bind(this);
+            this._wvBootTraceOrigSet = origSet;
+            this._wvTabGroupSetStamp = (tab: any, gid: any) => {
+                try {
+                    if (Date.now() - t0 <= 90000) {
+                        const prev = tab ? this._wvTabGroupStamp(tab) : null;
+                        if (prev !== (gid || null)) {
+                            let site = "";
+                            try {
+                                site = String(new Error().stack || "").split("\n").slice(1, 5)
+                                    .map((s: string) => s.trim().split("@")[0]).filter(Boolean).join("<");
+                            } catch (e) {}
+                            let key = null;
+                            try { const it = tab && tab.data && tab.data.itemID && Zotero.Items.get(tab.data.itemID); key = it && it.key; } catch (e) {}
+                            rec(gid ? "STAMP" : "CLEAR", { tab: tab && tab.id, key,
+                                gid: gid ? String(gid).slice(-6) : null, prev: prev ? String(prev).slice(-6) : null, site });
+                        }
+                    }
+                } catch (e) {}
+                return origSet(tab, gid);
+            };
+            // 2. Tab arrivals + per-apply snapshot (hooked from _applyTabGroups).
+            rec("ARMED", { note: "boot trace armed" });
+            // 3. Periodic flush so a crash/quit still leaves the evidence.
+            const flush = async () => {
+                try {
+                    const path = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "boot-groups-trace.json");
+                    await IOUtils.writeUTF8(path, JSON.stringify({ t0, entries: log }, null, 1));
+                } catch (e) {}
+            };
+            this._wvBootTraceFlush = flush;
+            const iv = setInterval(() => {
+                if (Date.now() - t0 > 95000) {
+                    try { clearInterval(iv); } catch (e) {}
+                    try { this._wvTabGroupSetStamp = origSet; } catch (e) {}
+                    flush();
+                    return;
+                }
+                flush();
+            }, 2000);
+        } catch (e) { Zotero.debug("[Weavero] _wvBootTraceArm err: " + e); }
     }
 
     /** Remember which native tab a drag started from (independently of
@@ -1829,6 +1999,18 @@ class _TabGroupsMixin {
                 try { this._wvSuppressOSGhost(win, e); } catch (erI) {}
                 try { this._wvDragCacheGeom(win, win._wvTabGroupDragTabID, win._wvDragGrab, win._wvDragWidth); } catch (erC) {}
             }
+            // Record the dragged tabs' ORIGINAL indices for Esc-cancel restore:
+            // Zotero's native dragover live-reorders the REAL tab array during
+            // the drag, so "commit nothing on cancel" alone leaves the tab
+            // wherever the last midpoint crossing put it, and the stabilize
+            // pass then parks it at the group's EDGE rather than its original
+            // slot (2026-07-27). The cancel branch moves each tab back.
+            try {
+                const ids = [win._wvTabGroupDragTabID, ...(win._wvMultiDragIDs || [])].filter(Boolean);
+                win._wvDragOrigIndices = ids.map((id: any) => ({
+                    id, idx: win.Zotero_Tabs._tabs.findIndex((t: any) => t.id === id),
+                })).filter((r: any) => r.idx > 0);
+            } catch (erO) { win._wvDragOrigIndices = null; }
             this._wvTGDbg("dragstart tabID=" + win._wvTabGroupDragTabID
                 + " multi=" + (win._wvMultiDragIDs ? win._wvMultiDragIDs.length : 0)
                 + " target=" + (e.target && e.target.tagName) + "." + (e.target && e.target.className && String(e.target.className).split(" ")[0]));
@@ -2031,6 +2213,8 @@ class _TabGroupsMixin {
 
     _wvTabGroupDnDDrop(win: any, e: any) {
         try {
+            this._wvTGDbg("drop tabID=" + win._wvTabGroupDragTabID
+                + " xy=" + (e ? (e.clientX + "," + e.clientY) : "?"));
             // A tab-move drop that reaches THIS capture-phase handler landed
             // inside #tab-bar-container (it's the only element it's wired on), so
             // the tab landed on a strip — never a tear-off. Suppress the source
@@ -2126,6 +2310,15 @@ class _TabGroupsMixin {
             const tabID = win._wvTabGroupDragTabID;
             const multi = win._wvMultiDragIDs || null;
             const createTarget = win._wvGroupCreateTarget || null;
+            // Esc-cancel diagnosis (2026-07-27): dropEffect "none" here means the
+            // drag was CANCELLED (Esc or invalid drop target) -- Gecko still
+            // fires dragend for a cancel; a missing dragend line after a
+            // dragstart line is the leaked-flag case the self-heal covers.
+            this._wvTGDbg("dragend tabID=" + tabID
+                + " dropEffect=" + (e && e.dataTransfer ? e.dataTransfer.dropEffect : "?")
+                + " xy=" + (e ? (e.clientX + "," + e.clientY) : "?")
+                + (multi ? " multi=" + multi.length : "")
+                + (createTarget ? " createTarget=" + createTarget : ""));
             win._wvTabGroupDragTabID = null;
             win._wvMultiDragIDs = null;
             win._wvGroupDragSlot = null;
@@ -2133,6 +2326,41 @@ class _TabGroupsMixin {
             // Close the visual gap (un-collapse the dragged slot, drop the
             // transforms) before committing the real move. Keeps _wvGapResult.
             try { this._wvClearGap(win); } catch (eG) {}
+            // USER-CANCELLED drag (Esc): commit NOTHING. Firefox's own tab strip
+            // bails here on `dataTransfer.mozUserCancelled` (tabbrowser tabs.js
+            // on_dragend) -- before this check, a cancel released inside the bar
+            // fell through to the dropX fallback below and was committed as a
+            // real move: the tab jumped to the cursor's index and, landing
+            // outside its group's span, was UN-JOINED from the group (ring
+            // log: "dragend dropEffect=none -> gapDrop idx 10 (from 2) join=-",
+            // 2026-07-27). The mid-drag movement is only the gap ILLUSION --
+            // the real order is uncommitted until gapDrop -- so skipping the
+            // commit genuinely restores the pre-drag state: original index,
+            // original group. Re-apply to un-stow followers and redraw chips.
+            if (e && e.dataTransfer && e.dataTransfer.mozUserCancelled) {
+                // Zotero's native live-reorder has already MOVED the real tab
+                // during the drag -- put every dragged tab back at its recorded
+                // pre-drag index. Zotero_Tabs.move(id, n) inserts BEFORE the tab
+                // currently at n (n-- when moving right), so restoring to an
+                // absolute index needs orig+1 when the tab currently sits LEFT
+                // of its original slot. Ascending order keeps indices stable.
+                try {
+                    const orig: any[] = (win._wvDragOrigIndices || []).slice().sort((a: any, b: any) => a.idx - b.idx);
+                    for (const r of orig) {
+                        const cur = win.Zotero_Tabs._tabs.findIndex((t: any) => t.id === r.id);
+                        if (cur > 0 && r.idx > 0 && cur !== r.idx) {
+                            win.Zotero_Tabs.move(r.id, cur < r.idx ? r.idx + 1 : r.idx);
+                            this._wvTGDbg("cancel-restore: " + r.id + " " + cur + " -> " + r.idx);
+                        }
+                    }
+                } catch (eR) { this._wvTGDbg("cancel-restore ERR=" + eR); }
+                win._wvDragOrigIndices = null;
+                this._wvTGDbg("dragend: user-CANCELLED (Esc) -- no commit; pre-drag order and membership restored");
+                win._wvTabDragLastX = null;
+                try { this._applyTabGroups(win); } catch (eA) {}
+                return;
+            }
+            win._wvDragOrigIndices = null;
             // Reliable drop X: the dragleave handler nulls _wvTabDragLastX
             // whenever the pointer grazes outside the bar, which happens even on
             // an in-bar drop — so trust the dragend release point when it's
@@ -2868,6 +3096,16 @@ class _TabGroupsMixin {
     /** Set/clear a tab's group-id stamp. Pass null/"" to clear. */
     _wvTabGroupSetStamp(tab: any, groupID: any) {
         if (!tab) return;
+        // An explicit CLEAR is user intent (ungroup / remove from group): drop
+        // this item from the boot stamp map so the restore-window re-stamper
+        // can't undo the user's action.
+        if (!groupID) {
+            try {
+                const bm: Map<any, any> = (this as any)._wvBootStampMap;
+                const iid = tab.data && tab.data.itemID;
+                if (bm && iid != null) bm.delete(iid);
+            } catch (e) {}
+        }
         if (tab.data) {
             if (groupID) tab.data.wvGroupId = groupID; else { try { delete tab.data.wvGroupId; } catch (e) { tab.data.wvGroupId = undefined; } }
         } else {

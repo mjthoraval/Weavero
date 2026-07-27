@@ -3032,6 +3032,10 @@ class WeaveroPlugin {
         this._registerTabContextMenu();
         // Keep reader-window tab titles in sync with the "Show tabs as" setting.
         try { (this as any)._wvRegisterTabTitlePrefObserver(); } catch (e) {}
+        // Boot tracer for the group-restore investigation (2026-07-27): records
+        // every stamp write/clear + per-apply membership for ~90s, flushed to
+        // weavero/boot-groups-trace.json so it survives the restart it traces.
+        try { (this as any)._wvBootTraceArm(); } catch (e) {}
         // Clean tear-off for the dev outline-eval pref: toggling it re-renders
         // the dev surfaces and strips any active dev filter (see _wvOeOnPrefToggle).
         try { (this as any)._wvOeRegisterPrefObserver(); } catch (e) {}
@@ -4222,6 +4226,11 @@ class WeaveroPlugin {
                     try {
                         _window.addEventListener("unload", () => {
                             try {
+                                // Explicit Save-and-Close park: stay parked -- do
+                                // not feed the closed-in-series buffer, or the
+                                // quit flush resurrects the window as a live
+                                // duplicate of its own saved entry (2026-07-27).
+                                if ((_window as any)._wvSavedParkClose) return;
                                 const Z = _window.Zotero_Tabs;
                                 const tabs = Z && Z.getState ? Z.getState() : null;
                                 if (tabs && tabs.length > 1) {

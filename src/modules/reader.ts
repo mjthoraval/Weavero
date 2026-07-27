@@ -4618,7 +4618,12 @@ class _ReaderMixin {
                 // `_wvWT` is intact) into the closed-in-series buffer; the quit
                 // flush folds recent entries back into the OPEN set and un-parks
                 // their groups. Mid-session closes simply let the entry expire.
-                try { lp._wvWindowStoreNoteClosingWindow(lp._wvWindowStoreCaptureReaderWindow(win), parkedGroupIds); } catch (er) {}
+                // Skip when the close is an EXPLICIT Save-and-Close park -- the
+                // window must stay parked, not be resurrected by the quit
+                // flush's closed-in-series merge (2026-07-27).
+                if (!(win as any)._wvSavedParkClose) {
+                    try { lp._wvWindowStoreNoteClosingWindow(lp._wvWindowStoreCaptureReaderWindow(win), parkedGroupIds); } catch (er) {}
+                }
                 // Record this closing reader window for "Reopen Closed Window"
                 // (Ctrl+Shift+T). Skipped at quit (the window is restored next
                 // launch). Captured here while `win._wvWT.tabs` still exists. Each
@@ -6512,6 +6517,11 @@ class _ReaderMixin {
                     lp._wvTabsMenuGroupsSection(panel);
                     lp._wvTabsMenuWrapCurrentSession(panel);   // box around the current session
                     lp._wvTabSessionsMenuSection(panel);
+                    // Saved (parked) windows — same section the main popup gets;
+                    // it was never called for this clone, so a saved window was
+                    // invisible (and unreopenable) from a reader window's popup
+                    // (reported 2026-07-27).
+                    if (lp._wvSavedWindowsMenuSection) lp._wvSavedWindowsMenuSection(panel);
                     // Apply the funnel's file-type + library filters (shared global
                     // state) to every row now that all sections exist — same post-pass
                     // the main window runs, so the reader clone filters identically.

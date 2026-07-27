@@ -629,6 +629,10 @@ class _TabsMixin {
             if (lp && lp._wvTabsMenuGroupsSection) lp._wvTabsMenuGroupsSection(panel);
             if (lp && lp._wvTabsMenuWrapCurrentSession) lp._wvTabsMenuWrapCurrentSession(panel);
             if (lp && lp._wvTabSessionsMenuSection) lp._wvTabSessionsMenuSection(panel);
+            // Keep every refresh path section-complete: this one lacked the
+            // saved-windows section, so a refresh through here dropped parked
+            // windows from the popup until the next full rebuild (2026-07-27).
+            if (lp && lp._wvSavedWindowsMenuSection) lp._wvSavedWindowsMenuSection(panel);
             if (lp && lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
             if (lp && lp._wvWireTabsMenuRowDnD) lp._wvWireTabsMenuRowDnD(panel);
                 if (lp && lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
@@ -7159,6 +7163,39 @@ class _TabsMixin {
                                 + ((this as any)._wvWindowName ? (this as any)._wvWindowName(win) : ""));
                         }
                     } catch (e) {}
+                    // Strip group stamps whose group is LIVE in ANOTHER open
+                    // window. restoreState reapplies tab.data VERBATIM -- so a
+                    // stamp captured while a duplicate copy of a member was
+                    // (wrongly) grouped in this window resurrects the
+                    // cross-window leak on every reopen, bypassing the claim
+                    // pass and its home guard entirely (the reopened "Probe
+                    // Window" copy of a Notes member came back stamped,
+                    // 2026-07-27). A group with NO open home keeps its stamps:
+                    // a saved window may legitimately carry a whole parked
+                    // group of its own.
+                    try {
+                        restoreTabs = restoreTabs.map((t: any) => {
+                            // ALWAYS clone record + data before restoreState
+                            // adopts them as the live tab's `data` -- a record
+                            // held by reference (spawn queue, saved-window
+                            // entry) must never become (or stay) aliased to a
+                            // live tab in ANOTHER window (see the alias-break
+                            // note in _wvPatchTabsGetState; belt to that fix).
+                            const c: any = t ? { ...t, data: (t.data ? { ...t.data } : t.data) } : t;
+                            try {
+                                const gid = c && c.data && c.data.wvGroupId;
+                                if (gid) {
+                                    const hw = (this as any)._wvTabGroupHomeWin(gid);
+                                    if (hw && hw !== win) {
+                                        delete c.data.wvGroupId;
+                                        (this as any)._wvTGDbg("dev-window restore: stripped foreign-home stamp "
+                                            + gid + " from a restored tab record");
+                                    }
+                                }
+                            } catch (e2) {}
+                            return c;
+                        });
+                    } catch (e2) {}
                     try { tabs.restoreState(restoreTabs); }    // re-add this dev window's own tabs
                     catch (e) { Zotero.debug("[Weavero] dev restore err: " + e); }
                     // Session reconstruct carries this window's library-view state
@@ -7380,7 +7417,7 @@ class _TabsMixin {
             // wrap (the flag-guard once left a pre-takeover wrap in place and
             // the quit save recorded a full session). Always wrap from the
             // stored ORIGINAL, never over a previous wrap.
-            if (Z._wvGetStatePatchVer === 2) return;
+            if (Z._wvGetStatePatchVer === 3) return;
             if (!Z._wvGetStateOrig) Z._wvGetStateOrig = Z.getState.bind(Z);
             const orig = Z._wvGetStateOrig;
             // Full, normalized capture — what Weavero's OWN store records.
@@ -7391,6 +7428,19 @@ class _TabsMixin {
                         if (t && typeof t.type === "string" && t.type.endsWith("-loading")) {
                             t.type = t.type.replace(/-loading$/, "");
                         }
+                        // ALIAS BREAK (2026-07-27): upstream getState returns each
+                        // record's `data` BY REFERENCE to the live tab
+                        // (tabs.js: `o.data = tab.data`). A capture held in
+                        // memory (saved-window entry, spawn queue) therefore
+                        // aliases the live tab -- and restoreState adopts the
+                        // same object into the REBUILT tab, so two tabs in
+                        // different windows can end up sharing ONE data object.
+                        // Observed: a group stamp written to a home-window
+                        // member teleported onto its duplicate in a reopened
+                        // saved window (three tabs cross-window aliased), which
+                        // no claim/rejoin guard could ever fix. Cloning here
+                        // severs the class at the source for every consumer.
+                        if (t && t.data) t.data = { ...t.data };
                     }
                 } catch (e) {}
                 return state;
@@ -7402,7 +7452,7 @@ class _TabsMixin {
             // over (see _wvPatchReaderGetWindowStates) — those are
             // Weavero-only content already.
             Z.getState = Z._wvGetStateFull;
-            Z._wvGetStatePatchVer = 2;
+            Z._wvGetStatePatchVer = 3;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchTabsGetState err: " + e); }
     }
 
@@ -7694,6 +7744,13 @@ class _TabsMixin {
             const p: any = this as any;
             p._wvSavedWinDoc.windows.push(entry);
             this._wvSavedWindowsPersist();
+            // Mark this close as an EXPLICIT park so the closed-in-series
+            // buffer skips it: without the flag, a Save-and-Close shortly
+            // before quitting matched the quit-teardown heuristic and the
+            // quit flush merged the window back into the restore store --
+            // it then reopened at boot as a live DUPLICATE of its own
+            // parked entry (reported 2026-07-27).
+            try { (win as any)._wvSavedParkClose = true; } catch (e) {}
             try { win.close(); } catch (e) {}
             // Show the result immediately — an open List-all-tabs panel
             // otherwise sits stale and the save looks like a no-op (user
@@ -8735,11 +8792,49 @@ class _TabsMixin {
             const f = (this as any)._wvBootFocusedEntry;
             const anchorFocused = !f || f.kind === "anchor";   // default to anchor
             const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
-            let added = 0, deferItem = null, selectNow = null;
+            let added = 0, restamped = 0, deferItem = null, selectNow = null;
+            // Boot stamp map: quit-time (itemID -> groupID) truth for members whose
+            // tabs haven't arrived yet -- Zotero's native session restore streams
+            // tabs in asynchronously, so a single-shot re-stamp grouped only the
+            // members present at that instant and the rest visibly joined seconds
+            // later (chip grew 4 -> 6; reported 2026-07-27). _applyTabGroups
+            // consumes this map on every tab-arrival mutation, so each member is
+            // stamped the moment its tab exists -- no tab ever sits outside its
+            // group. Anchor-window only; expires after 2 minutes.
+            const bootMap: Map<any, any> = new Map();
+            for (const st0 of entry.tabs) {
+                try { if (st0 && st0.data && st0.data.itemID != null && st0.data.wvGroupId) bootMap.set(st0.data.itemID, st0.data.wvGroupId); } catch (e) {}
+            }
             for (let i = 0; i < entry.tabs.length; i++) {
                 const st = entry.tabs[i];
                 const iid = st && st.data && st.data.itemID;
-                if (iid == null || live.has(iid)) continue;
+                if (iid == null) continue;
+                if (live.has(iid)) {
+                    // NATIVELY-restored tab: Zotero's restoreState hooks rebuild
+                    // `data` fresh and DROP the group stamp, so these tabs sat
+                    // ungrouped until the claim pass after the restore guard
+                    // lifted (~6s of visibly ungroupless members, reported
+                    // 2026-07-27). Re-stamp from the quit-time record NOW --
+                    // truth-based, no claim heuristics -- so groups assemble the
+                    // moment the strip exists.
+                    try {
+                        const gid = st.data.wvGroupId;
+                        if (gid) {
+                            const lt = Z._tabs.find((x: any) => x.data && x.data.itemID === iid
+                                && !(this as any)._wvTabGroupStamp(x));
+                            if (lt) { (this as any)._wvTabGroupSetStamp(lt, gid); restamped++; }
+                            // KEEP the entry: stamping this tab is not the end of
+                            // the story -- Zotero's native restore REPLACES these
+                            // tab objects moments later (boot trace 2026-07-27:
+                            // tab count 12->11->12 while stamped fell 6->2, with
+                            // ZERO stamp clears), and each replacement arrives
+                            // with fresh data and no stamp. The map must stay
+                            // armed for the whole restore window so every
+                            // replacement is re-stamped on arrival.
+                        }
+                    } catch (e) {}
+                    continue;
+                }
                 const base = String(st.type || "").replace(/-(unloaded|loading)$/, "");
                 if (base !== "reader" && base !== "note") continue;
                 try {
@@ -8747,9 +8842,19 @@ class _TabsMixin {
                     if (!Zotero.Items.exists(iid)) continue;
                     Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
                     live.add(iid);
-                    added++;
+                    added++;   // entry KEPT in bootMap — this tab can still be replaced by native restore
                     if (st.selected) { if (anchorFocused) selectNow = iid; else deferItem = iid; }
                 } catch (e) {}
+            }
+            // Publish the map for _applyTabGroups. It stays armed for the WHOLE
+            // restore window (not consumed per tab): native restore replaces
+            // member tab objects asynchronously, so the same itemID may need
+            // re-stamping several times. Explicit user un-grouping purges its
+            // entry (see _wvTabGroupSetStamp), so this never fights the user.
+            if (bootMap.size) {
+                (this as any)._wvBootStampMap = bootMap;
+                (this as any)._wvBootStampMapAt = Date.now();
+                (this as any)._wvTrace("restore: boot stamp map armed for " + bootMap.size + " member tab(s)");
             }
             if (selectNow != null) {
                 try { const t = Z._tabs.find((x: any) => x.data && x.data.itemID === selectNow); if (t) Z.select(t.id); } catch (e) {}
@@ -8757,6 +8862,7 @@ class _TabsMixin {
                 try { (this as any)._wvDeferSelect(win, deferItem); } catch (e) {}
             }
             (this as any)._wvTrace("restore: anchor tabs rebuilt from store — " + added + " tab(s)"
+                + (restamped ? ", " + restamped + " native tab(s) re-stamped into groups" : "")
                 + (selectNow != null ? ", selected loading" : (deferItem != null ? ", selection deferred" : "")));
             try { (this as any)._wvTabGroupStabilize(win); (this as any)._applyTabGroups(win); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvRestoreAnchorTabs err: " + e); }

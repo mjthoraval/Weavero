@@ -18,6 +18,18 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    ignore:
+      # prosemirror-* are NOT really dev-only: src/note-editor-inject.ts BUNDLES
+      # them and runs inside Zotero's note editor, so the Decoration objects it
+      # creates must match the EditorView that consumes them. They are pinned
+      # exactly to Zotero's note-editor (model 1.25.2 / state 1.4.3 /
+      # view 1.40.1 -- see zotero/note-editor package.json and the pin note at
+      # the top of note-editor-inject.ts). An automated bump silently breaks
+      # that match, so re-pin these BY HAND when Zotero's note-editor moves.
+      # (#23 proposed view 1.42.2; held deliberately, 2026-07-27.)
+      - dependency-name: "prosemirror-model"
+      - dependency-name: "prosemirror-state"
+      - dependency-name: "prosemirror-view"
     groups:
       dev-dependencies:
         applies-to: version-updates

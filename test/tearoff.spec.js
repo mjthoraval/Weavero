@@ -182,7 +182,11 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         // The exact upstream call path that froze/crashed pre-v0.16.1-dev.32:
         // every tab select recomputes every ReaderTab's docShell activity.
         expect(() => Zotero.Reader.notify("select", "tab", ["zotero-pane"], {})).to.not.throw();
-        await sleep(300);
+        // POLL, don't sleep a fixed 300ms: the safety wrapper re-activates on a
+        // later turn, and under a loaded headless runner that can exceed 300ms —
+        // which flaked this assertion (2026-07-27, one failure in three runs).
+        // Polling asserts the same invariant without encoding a timing guess.
+        await waitFor(() => S._iframe.docShellIsActive === true, 5000, 100);
         expect(S._iframe.docShellIsActive, "safety wrapper did not re-activate").to.equal(true);
     });
 

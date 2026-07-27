@@ -105,7 +105,9 @@ describe("Weavero — note-editor bare-URL decoration", () => {
     });
 
     it("is display-only — stored note HTML is unchanged (no injected anchors)", function () {
-        const stored = Zotero.Items.get(note.id).getNote();
+        const storedItem = Zotero.Items.get(note.id);
+        if (!storedItem) throw new Error("note item vanished");   // also narrows `false | Item`
+        const stored = storedItem.getNote();
         expect((stored.match(/<a /g) || []).length, "no <a> written").to.equal(0);
         expect(stored, "bare URL text still present").to.include("https://example.com/x");
     });

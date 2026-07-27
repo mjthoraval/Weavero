@@ -281,8 +281,10 @@ export const urlMethods = {
             const rank = (t) => (t === "pdf" ? 0 : t === "epub" ? 1 : t === "snapshot" ? 2 : 3);
             let best = null, bestRank = 99;
             for (const id of ids) {
+                // `Zotero.Items.get` returns FALSE for a missing id (typed since
+                // zotero-types 4.1.3) -- guard before touching the item.
                 const att = Zotero.Items.get(id);
-                if (!this._isOpenableFileAttachment(att)) continue;
+                if (!att || !this._isOpenableFileAttachment(att)) continue;
                 const r = rank(att.attachmentReaderType);
                 if (r < bestRank) { best = att; bestRank = r; }
             }

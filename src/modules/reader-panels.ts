@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 5;   // v5: outline search listener added (2026-07-28)
+const RP_BM_CTX_WIRE_V = 6;   // v6: outline search Esc/clear listeners (2026-07-28); v5: search input listener
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1645,6 +1645,8 @@ class _ReaderPanelsMixin {
                 ["click", "_wvOutlineTabClickH", "_wvOutlineTabWired"],
                 ["dblclick", "_wvOutlineTabDblH", "_wvOutlineTabWired"],
                 ["input", "_wvOutlineSearchH", "_wvOutlineTabWired"],
+                ["keydown", "_wvOutlineSearchKeyH", "_wvOutlineTabWired"],
+                ["click", "_wvOutlineSearchClickH", "_wvOutlineTabWired"],
                 ["click", "_wvBmTabClickH", "_wvBmTabClickWired"],
                 ["dragstart", "_wvDragSrcStartH", "_wvDragSrcHooked"],
                 ["dragend", "_wvDragSrcEndH", "_wvDragSrcHooked"],
@@ -1723,6 +1725,8 @@ class _ReaderPanelsMixin {
                 try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineSearchH) idoc.removeEventListener("input", (idoc as any)._wvOutlineSearchH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineSearchKeyH) idoc.removeEventListener("keydown", (idoc as any)._wvOutlineSearchKeyH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineSearchClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineSearchClickH, true); } catch (_) {}
                 const tabClickH = (e: any) => {
                     try {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -1765,35 +1769,83 @@ class _ReaderPanelsMixin {
                 // (reported 2026-07-28). Doc-level capture (React rebuilds the
                 // input node); debounced re-render only while the Outline tab
                 // is active. Versioned alongside the tab handlers above.
+                // Shared: schedule a debounced outline re-render (150ms), so
+                // the query is read AFTER React committed the change. On the
+                // CHROME window's clock, not the reader iframe's: Gecko
+                // throttles/suspends content-iframe timers while the page isn't
+                // actively painting, so an iframe-scheduled debounce could
+                // simply never fire (observed live: timer ID parked forever,
+                // zero renders). Same trap the flash timing hit.
+                const schedOutlineRender = (thenFocusOutline?: boolean) => {
+                    const w: any = Zotero.getMainWindow();
+                    const st2 = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                    const ct2 = (w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout;
+                    if ((idoc as any)._wvOutlineSearchT) ct2((idoc as any)._wvOutlineSearchT);
+                    (idoc as any)._wvOutlineSearchT = st2(() => {
+                        (idoc as any)._wvOutlineSearchT = null;
+                        const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P2) return;
+                        try { P2._wvReaderRenderOutline(reader, idoc); } catch (_) {}
+                        if (thenFocusOutline) {
+                            // After Esc, React collapses the search box on its
+                            // own tick and steals focus back -- refocus the pane
+                            // AFTER that settles (verified: an immediate focus
+                            // didn't stick).
+                            st2(() => {
+                                try { const v = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS); if (v) v.focus(); } catch (_) {}
+                            }, 120);
+                        }
+                    }, 150);
+                };
+                // Is this event happening in the native outline search context?
+                const inOutlineSearchCtx = (t: any) => {
+                    if (!t || !t.closest || !t.closest("#sidebarContainer")) return false;
+                    if (t.classList && t.classList.contains("wv-bm-search-input")) return false;   // bookmarks search has its own path
+                    const cont = idoc.getElementById("sidebarContainer");
+                    return !!(cont && cont.classList.contains(RP_OUTLINE_TAB_ON));
+                };
                 const searchH = (e: any) => {
                     try {
                         const t = e.target;
                         if (!t || t.localName !== "input") return;
-                        if (!t.closest || !t.closest("#sidebarContainer")) return;
-                        if (t.classList && t.classList.contains("wv-bm-search-input")) return;   // bookmarks search has its own path
-                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                        if (!P) return;
-                        const cont = idoc.getElementById("sidebarContainer");
-                        if (!cont || !cont.classList.contains(RP_OUTLINE_TAB_ON)) return;
-                        // Debounce on the CHROME window's clock, not the reader
-                        // iframe's: Gecko throttles/suspends content-iframe
-                        // timers while the page isn't actively painting, so an
-                        // iframe-scheduled debounce could simply never fire
-                        // (observed live: timer ID parked forever, zero
-                        // renders). Same trap the flash timing hit.
-                        const w: any = Zotero.getMainWindow();
-                        const st2 = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
-                        const ct2 = (w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout;
-                        if ((idoc as any)._wvOutlineSearchT) ct2((idoc as any)._wvOutlineSearchT);
-                        (idoc as any)._wvOutlineSearchT = st2(() => {
-                            (idoc as any)._wvOutlineSearchT = null;
-                            const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                            if (P2) { try { P2._wvReaderRenderOutline(reader, idoc); } catch (_) {} }
-                        }, 150);
+                        if (!inOutlineSearchCtx(t)) return;
+                        schedOutlineRender();
+                    } catch (_) {}
+                };
+                // Esc and the native clear (x) button both discard the query by
+                // calling React's onInput('') DIRECTLY (reader search-box.js
+                // handleKeyDown / handleClearButton) -- no DOM input event
+                // fires, so without these the list stayed filtered after the
+                // box visibly cleared (reported 2026-07-28). The debounce reads
+                // the input AFTER React commits, so both re-render with the
+                // fresh (emptied) query. Esc also hands focus back to the
+                // outline pane -- discard-and-return.
+                const searchKeyH = (e: any) => {
+                    try {
+                        if (e.key !== "Escape") return;
+                        const t = e.target;
+                        if (!t || t.localName !== "input") return;
+                        if (!inOutlineSearchCtx(t)) return;
+                        schedOutlineRender(true);
+                    } catch (_) {}
+                };
+                const searchClickH = (e: any) => {
+                    try {
+                        const t = e.target;
+                        if (!t || !t.closest) return;
+                        const btn = t.closest("button");
+                        if (!btn || !inOutlineSearchCtx(btn)) return;
+                        // Only the search area's buttons matter; a re-render is
+                        // idempotent, so being slightly generous here is safe.
+                        schedOutlineRender();
                     } catch (_) {}
                 };
                 (idoc as any)._wvOutlineSearchH = searchH;
+                (idoc as any)._wvOutlineSearchKeyH = searchKeyH;
+                (idoc as any)._wvOutlineSearchClickH = searchClickH;
                 idoc.addEventListener("input", searchH, true);
+                idoc.addEventListener("keydown", searchKeyH, true);
+                idoc.addEventListener("click", searchClickH, true);
             }
             // Right-click an outline row -> Rename/Delete menu. The reader
             // suppresses `contextmenu` in the sidebar, so use auxclick button 2
@@ -2779,11 +2831,12 @@ class _ReaderPanelsMixin {
         try { target.scrollIntoView({ block: "nearest" }); } catch (_) {}
     }
 
-    /** Focus the native outline search box (Ctrl+F from a focused outline).
-     *  Same input-resolution rule as the render's query read: the first
-     *  visible sidebar input that isn't Weavero's bookmarks search (the
-     *  native outline search input carries no class). Selects any existing
-     *  text so typing replaces the query. */
+    /** Focus the active sidebar view's NATIVE search box (outline or
+     *  annotations -- only the active view's box is rendered visible, so one
+     *  finder serves both). Same input-resolution rule as the outline render's
+     *  query read: the first visible sidebar input that isn't Weavero's
+     *  bookmarks search (the native inputs carry no reliable class). Selects
+     *  any existing text so typing replaces the query. */
     _wvOutlineFocusSearch(idoc: any) {
         try {
             for (const inp of idoc.querySelectorAll("#sidebarContainer input") as any) {
@@ -2795,6 +2848,64 @@ class _ReaderPanelsMixin {
                 return;
             }
         } catch (_) {}
+    }
+
+    /** Ctrl/Cmd+F router for the whole reader SIDEBAR (user request
+     *  2026-07-28): when the key is delivered inside the sidebar -- outline,
+     *  annotations, or the Bookmarks tab -- focus that view's search instead
+     *  of opening the reader's document find. Anywhere else (PDF view,
+     *  toolbar) the reader find keeps the shortcut. Returns true when
+     *  handled. Focus test uses the event TARGET first: in the reader's
+     *  in-process <browser>, `idoc.activeElement` can disagree with the
+     *  delivery target (see the outline focus-gate note). */
+    _wvSidebarHandleCtrlF(reader: any, idoc: any, e: any) {
+        try {
+            if (e.key !== "f" && e.key !== "F") return false;
+            if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return false;
+            const t = e.target, ae = idoc.activeElement;
+            // Already typing in some input? Leave the key to its own surface.
+            if (t && t.localName === "input") return false;
+            const inSidebar = (n: any) => !!(n && n.closest && (n.closest("#sidebarContainer")
+                || n.closest("." + RP_OUTLINE_VIEW_CLASS) || n.closest("." + RP_BM_VIEW_CLASS)));
+            const cont = idoc.getElementById("sidebarContainer");
+            const outlineOn = !!(cont && cont.classList.contains(RP_OUTLINE_TAB_ON));
+            if (!inSidebar(t) && !inSidebar(ae)) {
+                // Outline keyboard model parity: reader-chrome focus with an
+                // active outline row counts as outline focus (same rule as the
+                // arrow keys / +/-).
+                const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
+                const hasActive = !!idoc.querySelector(".wv-outline-list .wv-outline-row.wv-outline-active");
+                if (!(outlineOn && bodyish && hasActive)) return false;
+            }
+            // Route by the ACTIVE view.
+            if (outlineOn) {
+                e.preventDefault(); e.stopPropagation();
+                this._wvOutlineFocusSearch(idoc);
+                return true;
+            }
+            const bmTab = idoc.querySelector("." + RP_BM_TAB_CLASS + ".active");
+            if (bmTab) {
+                e.preventDefault(); e.stopPropagation();
+                const row: any = idoc.querySelector(".wv-bm-search-row");
+                const btn: any = idoc.querySelector(".wv-bm-search-btn");
+                if (row && row.style.display === "none" && btn) {
+                    btn.click();   // the button's own handler shows the row AND focuses the input
+                } else {
+                    const inp: any = idoc.querySelector(".wv-bm-search-input");
+                    if (inp) { inp.focus(); try { inp.select(); } catch (_) {} }
+                }
+                return true;
+            }
+            let sv: any = null;
+            try { sv = reader._internalReader && reader._internalReader._state
+                && reader._internalReader._state.sidebarView; } catch (_) {}
+            if (sv === "annotations") {
+                e.preventDefault(); e.stopPropagation();
+                this._wvOutlineFocusSearch(idoc);   // finder resolves the visible annotations box
+                return true;
+            }
+            return false;   // thumbnails etc.: native behaviour
+        } catch (_) { return false; }
     }
 
     /** Resolve an outline entry to a curated entry id, performing copy-on-first-
@@ -2900,15 +3011,36 @@ class _ReaderPanelsMixin {
      *  the reader has focus). */
     _wvOutlineHandleKey(reader: any, idoc: any, e: any) {
         try {
+            // Ctrl/Cmd+F diagnosis ring (2026-07-28, "Ctrl+F not working"):
+            // logs ONLY ctrl/meta+F events, one line per gate decision, into
+            // Zotero._wvOutlineKeyLog (capped) + the debug log.
+            const dbgF = (e.ctrlKey || e.metaKey) && (e.key === "f" || e.key === "F");
+            const dlog = (m: string) => {
+                if (!dbgF) return;
+                try {
+                    Zotero.debug("[Weavero][outlineKey] " + m);
+                    const arr = ((Zotero as any)._wvOutlineKeyLog = (Zotero as any)._wvOutlineKeyLog || []);
+                    arr.push(Date.now() % 1000000 + " " + m);
+                    if (arr.length > 60) arr.shift();
+                } catch (_) {}
+            };
+            dlog("ctrl+F seen: target=" + (e.target && (e.target.localName || "?"))
+                + "." + (e.target && e.target.className ? String(e.target.className).split(" ")[0] : "")
+                + " ae=" + (idoc.activeElement && (idoc.activeElement.localName || "?"))
+                + "." + (idoc.activeElement && idoc.activeElement.className ? String(idoc.activeElement.className).split(" ")[0] : ""));
+            // Sidebar-wide Ctrl+F router (outline / annotations / bookmarks) —
+            // runs before every outline-specific gate so it can serve the
+            // OTHER sidebar views too; this shim receives all window keydowns.
+            if (dbgF && this._wvSidebarHandleCtrlF(reader, idoc, e)) { dlog("HANDLED by sidebar router"); return; }
             const container = idoc.getElementById("sidebarContainer");
-            if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) return;
+            if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) { dlog("BAIL: outline tab not active"); return; }
             const t = e.target;
-            if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) return;
+            if (t && (t.isContentEditable || t.localName === "input" || t.localName === "textarea")) { dlog("BAIL: typing in an input"); return; }
             const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
             const list = view && view.querySelector(".wv-outline-list");
-            if (!list) return;
+            if (!list) { dlog("BAIL: no outline list"); return; }
             const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
-            if (!rows.length) return;
+            if (!rows.length) { dlog("BAIL: no rows"); return; }
             const k = e.key;
             // Delete works on the selection regardless of which element has focus
             // (you select rows, then hit Del) -- keep that reach.
@@ -2939,11 +3071,22 @@ class _ReaderPanelsMixin {
             // events fire in a different window and can't reach here) WHEN a row
             // is active. A real widget elsewhere in the sidebar keeps its keys.
             const ae = idoc.activeElement;
-            const inOutline = !!(ae && ae.closest && ae.closest("." + RP_OUTLINE_VIEW_CLASS));
+            // "Focus is in the outline" = activeElement inside the view OR the
+            // key event TARGETED the view. In the reader's in-process <browser>,
+            // `idoc.activeElement` can disagree with the event target (observed
+            // live 2026-07-28: Ctrl+F delivered to the focused outline view --
+            // target div.viewWrapper -- while activeElement still read the
+            // reader's find input, so the gate bailed and the reader find
+            // opened). The delivery target is the ground truth.
+            const inOutline = !!((ae && ae.closest && ae.closest("." + RP_OUTLINE_VIEW_CLASS))
+                || (t && t.closest && t.closest("." + RP_OUTLINE_VIEW_CLASS)));
             const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
             const hasActive = !!list.querySelector(".wv-outline-row.wv-outline-active");
-            if (!inOutline && !(bodyish && hasActive)) return;
-            if (e.altKey) return;
+            if (!inOutline && !(bodyish && hasActive)) {
+                dlog("BAIL focus gate: inOutline=" + inOutline + " bodyish=" + bodyish + " hasActive=" + hasActive);
+                return;
+            }
+            if (e.altKey) { dlog("BAIL: altKey"); return; }
             if ((k === "a" || k === "A") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
                 e.preventDefault(); e.stopPropagation();
                 const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
@@ -2951,18 +3094,9 @@ class _ReaderPanelsMixin {
                 for (const r of rows) { const kk = this._wvOutlineRowKey(r); if (kk != null) { sel.add(kk); r.classList.add("wv-outline-selected"); } }
                 return;
             }
-            // Ctrl/Cmd+F while the OUTLINE has focus -> the outline search box,
-            // not the reader's document find (user request 2026-07-28, enabled
-            // by the pane being focusable + the search actually filtering the
-            // takeover list). Sits behind the same focus gate as the other
-            // outline keys, so Ctrl+F anywhere else still opens the reader
-            // find. Window-capture shim beats the reader's handler, so
-            // stopPropagation is enough to suppress its find popup.
-            if ((k === "f" || k === "F") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-                e.preventDefault(); e.stopPropagation();
-                this._wvOutlineFocusSearch(idoc);
-                return;
-            }
+            // (Ctrl/Cmd+F is handled by the sidebar-wide router at the top of
+            // this function -- outline, annotations, and Bookmarks all route
+            // to their own search there.)
             // Ctrl (Cmd on Mac) = "move focus only": step the cursor WITHOUT
             // changing the selection, so you can Space-toggle rows into a
             // multi-selection (items-list model, virtualized-table `moveFocused`).

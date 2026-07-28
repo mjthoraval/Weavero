@@ -251,13 +251,28 @@ class _NoteEditorMixin {
                             wj.__wvLinkifyEnabled = !!this._getEnableNotes();
                         }
                     } catch (e) {}
-                    if (wj && typeof wj.__wvInstallNoteLinkify === "function") {
+                    // Re-eval the bundle when the page carries an OLDER inject
+                    // script (plugin was updated while the editor stayed open)
+                    // -- the page-side installer dedups, so re-eval is safe.
+                    const pageV = wj && Number(wj.__wvNoteInjectV || 0);
+                    if (wj && typeof wj.__wvInstallNoteLinkify === "function" && pageV >= 2) {
                         const r = String(wj.__wvInstallNoteLinkify());
                         // Repaint after a fresh install so decorations appear
                         // immediately (not only on the next edit).
                         if (r === "installed" && typeof wj.__wvRedecorateNotes === "function") {
                             try { wj.__wvRedecorateNotes(); } catch (e) {}
                         }
+                        // Repair dead plugin views (the upstream missing-destroy
+                        // bug, armed when Better Notes injects too) -- cheap
+                        // no-op when healthy, so safe on every sweep.
+                        try {
+                            if (typeof wj.__wvHealNotePluginViews === "function") {
+                                const h = String(wj.__wvHealNotePluginViews());
+                                if (h.indexOf("healed") === 0 || h.indexOf("heal-err") === 0) {
+                                    this._dbg("[Weavero] note plugin-view heal: " + h);
+                                }
+                            }
+                        } catch (e) {}
                         return r;
                     }
                     const pageWin = (Components as any).utils.waiveXrays(iwin);

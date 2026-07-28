@@ -20,6 +20,76 @@ import { Plugin, PluginKey } from "prosemirror-state";
 
 (function () {
     const KEY = new PluginKey("wvNoteLinkify");
+    // Bumped when this script gains behaviour chrome depends on; chrome
+    // re-evals the bundle into an already-injected page when the page's
+    // __wvNoteInjectV is older (re-eval is safe: install() dedups via the
+    // __wvLinkify spec marker).
+    const INJECT_V = 2;
+
+    /** Zotero's bundled note-editor has a latent bug (present in 10.0-beta):
+     *  the colour plugins' view wrappers do `destroy(){ pluginState.destroy() }`
+     *  but the HighlightColor pluginState class defines NO destroy method.
+     *  Vanilla never notices -- plugin views are only destroyed when the
+     *  plugin SET changes, which never happens without injectors. But with
+     *  TWO injectors (Weavero + Better Notes), the second updateState()
+     *  destroys the live plugin views, the loop throws `t.destroy is not a
+     *  function` mid-way, recreation never runs, and every popup plugin view
+     *  (citation / link / highlight) is left dead -- no more "Show Item /
+     *  Edit Citation / Go to Page" popups (diagnosed live 2026-07-28).
+     *  Shim a no-op destroy onto any pluginState that has update() but no
+     *  destroy(); instances survive reconfigure, so once shimmed ALL later
+     *  recreates (ours or BN's) are safe. */
+    function shimPluginStateDestroys(view: any): number {
+        let shimmed = 0;
+        try {
+            for (const p of view.state.plugins) {
+                try {
+                    if (!p || !p.spec || !p.spec.view) continue;
+                    const ps = p.key ? view.state[p.key]
+                        : (typeof p.getState === "function" ? p.getState(view.state) : null);
+                    if (ps && typeof ps === "object"
+                            && typeof ps.update === "function"
+                            && typeof ps.destroy !== "function") {
+                        ps.destroy = function () {};
+                        shimmed++;
+                    }
+                } catch (e) { /* next plugin */ }
+            }
+        } catch (e) { /* state shape unexpected */ }
+        return shimmed;
+    }
+
+    function expectedPluginViewCount(view: any): number {
+        let n = 0;
+        try { for (const p of (view.directPlugins || [])) { if (p && p.spec && p.spec.view) n++; } } catch (e) {}
+        try { for (const p of view.state.plugins) { if (p && p.spec && p.spec.view) n++; } } catch (e) {}
+        return n;
+    }
+
+    /** Detect the aborted-destroy state (fewer live plugin views than
+     *  view-spec plugins) and repair it: shim the missing destroys, then
+     *  force a full plugin-view recreate via a same-plugins reconfigure
+     *  (array identity change is what triggers destroy+recreate). Called
+     *  from chrome after every install/sweep, so an editor that Better
+     *  Notes breaks LATER heals on the next sweep. */
+    function healPluginViews(): string {
+        try {
+            const ci: any = (window as any)._currentEditorInstance;
+            const view: any = ci && ci._editorCore && ci._editorCore.view;
+            if (!view) return "no-view";
+            const have = view.pluginViews ? view.pluginViews.length : -1;
+            const want = expectedPluginViewCount(view);
+            if (have < 0 || have >= want) return "healthy:" + have + "/" + want;
+            const shimmed = shimPluginStateDestroys(view);
+            view.updateState(view.state.reconfigure({
+                plugins: view.state.plugins.slice(),
+            }));
+            const now = view.pluginViews ? view.pluginViews.length : -1;
+            return "healed:" + have + "->" + now + "/" + want + " (shimmed " + shimmed + ")";
+        } catch (e: any) {
+            return "heal-err: " + (e && e.message);
+        }
+    }
     // The matcher is Weavero's pref-gated URL_REGEX.source, passed in on
     // `window.__wvLinkifyRegexSrc` by note-editor.ts so the editor honours the
     // exact same "Show: URLs / Zotero links / App links" toggles as every
@@ -95,6 +165,9 @@ import { Plugin, PluginKey } from "prosemirror-state";
         if (!view) return "no-view";
         const has = () => view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify);
         if (has()) return "already";
+        // Make the destroy pass of OUR reconfigure (and any later one) safe
+        // BEFORE touching the plugin set -- see shimPluginStateDestroys.
+        shimPluginStateDestroys(view);
         try {
             view.updateState(view.state.reconfigure({
                 plugins: view.state.plugins.concat(makePlugin()),
@@ -112,6 +185,8 @@ import { Plugin, PluginKey } from "prosemirror-state";
     }
 
     (window as any).__wvInstallNoteLinkify = install;
+    (window as any).__wvHealNotePluginViews = healPluginViews;
+    (window as any).__wvNoteInjectV = INJECT_V;
     // Force a re-scan: `decorations` reads __wvLinkifyRegexSrc fresh each call,
     // so dispatching an empty transaction re-runs it under the current toggle
     // state (chrome calls this after a "Show:" toggle changes, and once after

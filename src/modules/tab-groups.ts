@@ -691,6 +691,49 @@ class _TabGroupsMixin {
             let groups = this._tabGroupsGet();
             if (!groups.length) { this._stripTabGroups(win); return; }
 
+            // Programmatic-churn close grace: Better Notes' enable/disable (and
+            // any similar plugin) rebuilds note tabs by CLOSING and REOPENING
+            // them with new ids. The shadow-sync prune below used to see the
+            // close half of that churn and drop the member for good -- the
+            // claim pass then couldn't re-stamp the reopened tab because the
+            // member was already gone (BN-compat protocol §4 caught a live
+            // group pruned 3→1, 2026-07-28). Diff the stamped-tab snapshot
+            // from the previous apply: a stamped tab that vanished parks
+            // {groupID, ts} under its item key; a fresh entry (a) keeps the
+            // member through shadow sync, (b) blocks empty-deletion of its
+            // group, and (c) is cleared when the claim pass re-stamps the
+            // reopened tab. Entries expire after GRACE_MS, so a real user
+            // close still prunes -- just a few seconds later. Kept on the
+            // Zotero global so a plugin reload mid-churn doesn't lose it.
+            const pendingClose: any = ((Zotero as any)._wvGroupPendingClose
+                = (Zotero as any)._wvGroupPendingClose || {});
+            const GRACE_MS = 20 * 1000;
+            try {
+                const liveIds = new Set(Z_Tabs._tabs.map((t: any) => t.id));
+                const prevSnap: Map<string, any> = (win as any)._wvGroupStampSnap || new Map();
+                for (const [tid, rec] of prevSnap) {
+                    if (!liveIds.has(tid)) {
+                        pendingClose[rec.libraryID + ":" + rec.itemKey] = { groupID: rec.gid, ts: Date.now() };
+                    }
+                }
+                const snap = new Map();
+                for (let i = 1; i < Z_Tabs._tabs.length; i++) {
+                    const t = Z_Tabs._tabs[i];
+                    const s = this._wvTabGroupStamp(t);
+                    if (!s) continue;
+                    const k = (this as any)._tabPinKey(t);
+                    if (k) snap.set(t.id, { gid: s, libraryID: k.libraryID, itemKey: k.itemKey });
+                }
+                (win as any)._wvGroupStampSnap = snap;
+                for (const kk of Object.keys(pendingClose)) {
+                    if (Date.now() - pendingClose[kk].ts > GRACE_MS) delete pendingClose[kk];
+                }
+            } catch (e) {}
+            const pendingFresh = (gid: any) => {
+                try { return Object.keys(pendingClose).some((kk) => pendingClose[kk].groupID === gid); }
+                catch (e) { return false; }
+            };
+
             const emptyGroupIds = new Set<string>();
             const wantClass = new Map<string, { group: any; hidden: boolean; first?: boolean }>();   // tabID →
             let prefDirty = false;
@@ -774,6 +817,8 @@ class _TabGroupsMixin {
                     let set = claimedByGroup.get(g.id); if (!set) { set = new Set(); claimedByGroup.set(g.id, set); }
                     if (set.has(kk)) continue;                          // duplicate copy stays out
                     this._wvTabGroupSetStamp(t, g.id); set.add(kk);
+                    try { delete pendingClose[kk]; } catch (e) {}       // churn reopen landed
+
                 }
             }
             // SELF-HEAL a split group: any path that ended with a loose tab
@@ -848,7 +893,8 @@ class _TabGroupsMixin {
                     // window's first apply. Without this guard a group living only
                     // in a reader window looks empty here and gets deleted from
                     // prefs before the reader window restores → the group is lost.
-                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown && !this._wvTabGroupOpenAnywhere(g.id)) {
+                    if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown
+                            && !this._wvTabGroupOpenAnywhere(g.id) && !pendingFresh(g.id)) {
                         if (seenOpen.has(g.id)) emptyGroupIds.add(g.id);
                         else this._wvTGDbg("empty-delete SKIPPED — group " + g.id + " ('" + (g.name || "") + "') never seen open this session");
                     }
@@ -871,6 +917,16 @@ class _TabGroupsMixin {
                         if (k) openKeys.push({ libraryID: k.libraryID, itemKey: k.itemKey });
                     }
                     const cur = g.members || [];
+                    // Churn grace: a member whose stamped tab JUST closed stays
+                    // in the shadow until the grace expires, so its reopened
+                    // tab can be re-claimed (see pendingClose above).
+                    for (const m of cur) {
+                        const pc = pendingClose[m.libraryID + ":" + m.itemKey];
+                        if (pc && pc.groupID === g.id
+                                && !openKeys.some((ok: any) => ok.libraryID === m.libraryID && ok.itemKey === m.itemKey)) {
+                            openKeys.push({ libraryID: m.libraryID, itemKey: m.itemKey });
+                        }
+                    }
                     const same = cur.length === openKeys.length
                         && openKeys.every((ok: any) => cur.some((m: any) => m.libraryID === ok.libraryID && m.itemKey === ok.itemKey));
                     if (!same) { g.members = openKeys; prefDirty = true; }

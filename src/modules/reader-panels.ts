@@ -2928,6 +2928,52 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** Keyboard-nav bootstrap for a PANE-focused sidebar (user request
+     *  2026-07-28): with focus on #sidebarContainer (what a sidebar click now
+     *  gives), a navigation key hands focus to the active view's proper
+     *  keyboard target and re-dispatches the same key there -- so the first
+     *  press already navigates. Outline -> the takeover view; Bookmarks -> the
+     *  bm view; Annotations/Thumbnails -> the selected (else first) native
+     *  item, which are tabIndex=-1 focusable and carry the native keyboard
+     *  handling. Re-dispatch cannot loop: the second event targets the view,
+     *  not the container. Returns true when consumed. */
+    _wvSidebarNavBootstrap(reader: any, idoc: any, e: any) {
+        try {
+            const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", "Enter", " "];
+            if (NAV.indexOf(e.key) < 0) return false;
+            if (e.ctrlKey || e.metaKey || e.altKey) return false;
+            const t = e.target;
+            if (!t || t.id !== "sidebarContainer") return false;
+            let target: any = null;
+            if (t.classList.contains(RP_OUTLINE_TAB_ON)) {
+                target = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+            } else if (idoc.querySelector("." + RP_BM_TAB_CLASS + ".active")) {
+                target = idoc.querySelector("." + RP_BM_VIEW_CLASS);
+                try { if (target && !target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1"); } catch (_) {}
+            } else {
+                let sv: any = null;
+                try { sv = reader._internalReader && reader._internalReader._state
+                    && reader._internalReader._state.sidebarView; } catch (_) {}
+                if (sv === "annotations") {
+                    target = idoc.querySelector("#annotations .annotation.selected")
+                        || idoc.querySelector("#annotations .annotation");
+                } else if (sv === "thumbnails") {
+                    target = idoc.querySelector("#thumbnailsView .thumbnail.selected")
+                        || idoc.querySelector("#thumbnailsView .thumbnail");
+                }
+            }
+            if (!target) return false;
+            e.preventDefault(); e.stopPropagation();
+            try { target.focus(); } catch (_) {}
+            try {
+                const w: any = idoc.defaultView;
+                target.dispatchEvent(new w.KeyboardEvent("keydown",
+                    { key: e.key, code: e.code || "", shiftKey: !!e.shiftKey, bubbles: true, cancelable: true }));
+            } catch (_) {}
+            return true;
+        } catch (_) { return false; }
+    }
+
     /** Ctrl/Cmd+F router for the whole reader SIDEBAR (user request
      *  2026-07-28): when the key is delivered inside the sidebar -- outline,
      *  annotations, or the Bookmarks tab -- focus that view's search instead
@@ -3158,6 +3204,9 @@ class _ReaderPanelsMixin {
             // runs before every outline-specific gate so it can serve the
             // OTHER sidebar views too; this shim receives all window keydowns.
             if (dbgF && this._wvSidebarHandleCtrlF(reader, idoc, e)) { dlog("HANDLED by sidebar router"); return; }
+            // Pane-focused nav bootstrap: container-targeted nav keys hand
+            // focus to the active view and replay the key there.
+            if (this._wvSidebarNavBootstrap(reader, idoc, e)) return;
             const container = idoc.getElementById("sidebarContainer");
             if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) { dlog("BAIL: outline tab not active"); return; }
             const t = e.target;
@@ -3236,7 +3285,14 @@ class _ReaderPanelsMixin {
             if (moveFocused && !(k === "ArrowUp" || k === "ArrowDown" || k === "Home" || k === "End")) return;
             e.preventDefault(); e.stopPropagation();
             let i = rows.findIndex((r: any) => r.classList.contains("wv-outline-active"));
-            if (i < 0) i = 0;
+            if (i < 0) {
+                // No cursor yet (pane freshly focused): the first nav key ENTERS
+                // the list -- Down/Home land on the first row, Up/End on the
+                // last -- instead of acting relative to a phantom row 0.
+                if (k === "ArrowDown" || k === "Home") { this._wvOutlineKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); return; }
+                if (k === "ArrowUp" || k === "End") { this._wvOutlineKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); return; }
+                i = 0;
+            }
             const row = rows[i];
             const tw = row.querySelector(".wv-outline-twisty");
             const hasKids = !!(tw && !tw.classList.contains("wv-outline-leaf"));
@@ -9831,7 +9887,14 @@ class _ReaderPanelsMixin {
             e.preventDefault(); e.stopPropagation();
             let i = rows.findIndex((r: any) => this._wvBmRowKey(r) === reader._wvBmActiveId);
             if (i < 0) i = rows.findIndex((r: any) => r.classList.contains("wv-bm-reader-active"));
-            if (i < 0) i = 0;
+            if (i < 0) {
+                // Same list-entry semantics as the outline: first nav key with
+                // no cursor enters the list at the top (Down/Home) or bottom
+                // (Up/End).
+                if (k === "ArrowDown" || k === "Home") { this._wvBmKeyMove(reader, idoc, rows, 0, e.shiftKey, moveFocused); return; }
+                if (k === "ArrowUp" || k === "End") { this._wvBmKeyMove(reader, idoc, rows, rows.length - 1, e.shiftKey, moveFocused); return; }
+                i = 0;
+            }
             const row = rows[i];
             const info = this._wvBmResolveRow(reader, row);
             const isFolder = !!(info && info.isFolder);

@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 8;   // v8: whole-sidebar click focus + main-window click tracker; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 9;   // v9: Esc keeps focus in the left pane on all views; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1830,8 +1830,31 @@ class _ReaderPanelsMixin {
                         if (e.key !== "Escape") return;
                         const t = e.target;
                         if (!t || t.localName !== "input") return;
-                        if (!inOutlineSearchCtx(t)) return;
-                        schedOutlineRender(true);
+                        if (!t.closest || !t.closest("#sidebarContainer")) return;
+                        // Esc in ANY sidebar search keeps focus IN the left
+                        // pane (user request 2026-07-28) -- without this the
+                        // reader reclaimed focus and the next keystrokes went
+                        // to the document. Outline: re-render (the native box
+                        // clears via React with no input event) + focus the
+                        // outline view. Annotations / Bookmarks: let their own
+                        // Esc handling run (native clear / bm row close),
+                        // then focus the sidebar container -- the same real
+                        // focus a sidebar click now gives.
+                        const cont = idoc.getElementById("sidebarContainer");
+                        if (cont && cont.classList.contains(RP_OUTLINE_TAB_ON)
+                                && !(t.classList && t.classList.contains("wv-bm-search-input"))) {
+                            schedOutlineRender(true);
+                            return;
+                        }
+                        const w2: any = Zotero.getMainWindow();
+                        ((w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout)(() => {
+                            try {
+                                const sc = idoc.getElementById("sidebarContainer");
+                                if (!sc) return;
+                                if (!sc.hasAttribute("tabindex")) sc.setAttribute("tabindex", "-1");
+                                sc.focus();
+                            } catch (_) {}
+                        }, 150);
                     } catch (_) {}
                 };
                 const searchClickH = (e: any) => {

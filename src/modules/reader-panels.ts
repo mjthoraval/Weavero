@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 7;   // v7: last-click-in-sidebar tracker; v6: search Esc/clear; v5: search input
+const RP_BM_CTX_WIRE_V = 8;   // v8: whole-sidebar click focus + main-window click tracker; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1341,6 +1341,9 @@ const RP_OUTLINE_CSS = [
     //  render's per-level padding, active = 3px accent outline).
     ".wv-outline-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 8px;}",
     ".wv-outline-row{display:flex;align-items:center;}",
+    // Programmatic sidebar-container focus (whole-sidebar click focus) must
+    // not paint a focus ring around the entire pane.
+    "#sidebarContainer:focus{outline:none;}",
     // Search mode: ancestors shown only because a descendant matches (same
     // dimming the bookmark search uses).
     ".wv-outline-row.wv-outline-dimmed{opacity:.55;}",
@@ -1933,11 +1936,46 @@ class _ReaderPanelsMixin {
                         try {
                             const tg = ev.target;
                             if (!tg || !tg.closest) return;
+                            // Last-click tracker for the Ctrl+F router, recorded
+                            // HERE because sidebar header/empty-region clicks
+                            // are only observed at the MAIN window -- the
+                            // doc-level tracker never saw them (traced live
+                            // 2026-07-28: lastDownInSidebar stayed false for
+                            // exactly the failing clicks). Stamped on the
+                            // CLICKED element's own document, so it's correct
+                            // per reader tab regardless of which reader's
+                            // ensure pass wired this window handler.
+                            try {
+                                const od = tg.ownerDocument;
+                                if (od && od.getElementById && od.getElementById("sidebarContainer") !== null) {
+                                    od._wvLastDownInSidebar = !!tg.closest("#sidebarContainer");
+                                }
+                            } catch (_) {}
                             const v = tg.closest("." + RP_OUTLINE_VIEW_CLASS);
-                            if (!v) return;   // not an outline click -> ignore
-                            if (tg.closest(".wv-outline-row, .wv-outline-head-btn, .wv-outline-src-chip, input, button")) return;   // rows/widgets keep their own handling
-                            ev.preventDefault();   // stop the reader moving focus off to the browser/PDF
-                            v.focus();
+                            if (v) {
+                                if (tg.closest(".wv-outline-row, .wv-outline-head-btn, .wv-outline-src-chip, input, button")) return;   // rows/widgets keep their own handling
+                                ev.preventDefault();   // stop the reader moving focus off to the browser/PDF
+                                v.focus();
+                                return;
+                            }
+                            // WHOLE-SIDEBAR focus (2026-07-28): clicks on the
+                            // sidebar tab header or empty view regions never
+                            // reach the reader doc's handlers (only the MAIN
+                            // window observes them) and deliberately don't
+                            // move focus, so Ctrl+F kept targeting whatever
+                            // input held focus before. Give the sidebar REAL
+                            // focus: focus its container, so the next keypress
+                            // targets the sidebar and the Ctrl+F router works
+                            // by delivery, not heuristics -- exactly how the
+                            // outline pane already behaves. Widgets that take
+                            // their own focus are left alone; NO preventDefault
+                            // here, so native buttons (view switcher, etc.)
+                            // keep working.
+                            const sc = tg.closest("#sidebarContainer");
+                            if (!sc) return;
+                            if (tg.closest("input, textarea, select, .annotation")) return;
+                            try { if (!sc.hasAttribute("tabindex")) sc.setAttribute("tabindex", "-1"); } catch (_) {}
+                            try { sc.focus(); } catch (_) {}
                         } catch (_) {}
                     };
                     mw._wvOutlineClickFocusH = h;

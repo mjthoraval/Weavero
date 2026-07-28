@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 4;
+const RP_BM_CTX_WIRE_V = 5;   // v5: outline search listener added (2026-07-28)
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1341,6 +1341,9 @@ const RP_OUTLINE_CSS = [
     //  render's per-level padding, active = 3px accent outline).
     ".wv-outline-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding:4px 8px;}",
     ".wv-outline-row{display:flex;align-items:center;}",
+    // Search mode: ancestors shown only because a descendant matches (same
+    // dimming the bookmark search uses).
+    ".wv-outline-row.wv-outline-dimmed{opacity:.55;}",
     // Rows take programmatic focus (tabindex=-1, for Del-to-delete); the
     // wv-outline-active ring is the selection marker, so no second focus ring.
     ".wv-outline-row:focus{outline:none;}",
@@ -1641,6 +1644,7 @@ class _ReaderPanelsMixin {
             for (const [ev, ref, stamp] of [
                 ["click", "_wvOutlineTabClickH", "_wvOutlineTabWired"],
                 ["dblclick", "_wvOutlineTabDblH", "_wvOutlineTabWired"],
+                ["input", "_wvOutlineSearchH", "_wvOutlineTabWired"],
                 ["click", "_wvBmTabClickH", "_wvBmTabClickWired"],
                 ["dragstart", "_wvDragSrcStartH", "_wvDragSrcHooked"],
                 ["dragend", "_wvDragSrcEndH", "_wvDragSrcHooked"],
@@ -1718,6 +1722,7 @@ class _ReaderPanelsMixin {
             if ((idoc as any)._wvOutlineTabWired !== RP_BM_CTX_WIRE_V) {
                 try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineSearchH) idoc.removeEventListener("input", (idoc as any)._wvOutlineSearchH, true); } catch (_) {}
                 const tabClickH = (e: any) => {
                     try {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -1753,6 +1758,42 @@ class _ReaderPanelsMixin {
                 (idoc as any)._wvOutlineTabWired = RP_BM_CTX_WIRE_V;
                 idoc.addEventListener("click", tabClickH, true);
                 idoc.addEventListener("dblclick", tabDblH, true);
+                // Native sidebar SEARCH -> Weavero outline filter. The native
+                // outline view filters itself on `outlineQuery` (reader
+                // sidebar.js recursiveSearch); the takeover replaced that view,
+                // so typing in the native search box silently did nothing
+                // (reported 2026-07-28). Doc-level capture (React rebuilds the
+                // input node); debounced re-render only while the Outline tab
+                // is active. Versioned alongside the tab handlers above.
+                const searchH = (e: any) => {
+                    try {
+                        const t = e.target;
+                        if (!t || t.localName !== "input") return;
+                        if (!t.closest || !t.closest("#sidebarContainer")) return;
+                        if (t.classList && t.classList.contains("wv-bm-search-input")) return;   // bookmarks search has its own path
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
+                        const cont = idoc.getElementById("sidebarContainer");
+                        if (!cont || !cont.classList.contains(RP_OUTLINE_TAB_ON)) return;
+                        // Debounce on the CHROME window's clock, not the reader
+                        // iframe's: Gecko throttles/suspends content-iframe
+                        // timers while the page isn't actively painting, so an
+                        // iframe-scheduled debounce could simply never fire
+                        // (observed live: timer ID parked forever, zero
+                        // renders). Same trap the flash timing hit.
+                        const w: any = Zotero.getMainWindow();
+                        const st2 = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+                        const ct2 = (w && w.clearTimeout) ? w.clearTimeout.bind(w) : clearTimeout;
+                        if ((idoc as any)._wvOutlineSearchT) ct2((idoc as any)._wvOutlineSearchT);
+                        (idoc as any)._wvOutlineSearchT = st2(() => {
+                            (idoc as any)._wvOutlineSearchT = null;
+                            const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (P2) { try { P2._wvReaderRenderOutline(reader, idoc); } catch (_) {} }
+                        }, 150);
+                    } catch (_) {}
+                };
+                (idoc as any)._wvOutlineSearchH = searchH;
+                idoc.addEventListener("input", searchH, true);
             }
             // Right-click an outline row -> Rename/Delete menu. The reader
             // suppresses `contextmenu` in the sidebar, so use auxclick button 2
@@ -2014,7 +2055,68 @@ class _ReaderPanelsMixin {
             // default). 2026-07-24.
             if (!curatedView && (!entries || !entries.length)) source = "none";
             this._wvOutlineRenderHeader(reader, idoc, view, source);
+            // Native sidebar search: filter by title, keeping every ancestor of
+            // a match visible (dimmed when it doesn't match itself) -- same
+            // model as the bookmark search and the NATIVE outline view this
+            // takeover replaced (its recursiveSearch on outlineQuery). Built as
+            // a visible-INDEX set, never by slicing `entries`: original-view
+            // indices map to curated entries on copy-on-first-edit, and a
+            // filtered array would corrupt that mapping (the 2026-07-21 Del
+            // bug class). Read from the reader state, falling back to the
+            // input box (state field name can move across reader versions).
+            let outlineFilter: any = null;
+            try {
+                // Query source: the VISIBLE input box first (what the user
+                // sees; also survives the reader renaming its state field),
+                // then `_state.outlineQuery` as the fallback. The native
+                // outline search input carries NO class (unlike the
+                // annotations one) -- take the first visible sidebar input
+                // that isn't Weavero's bookmarks search.
+                let q = "";
+                let sawInput = false;
+                for (const inp of idoc.querySelectorAll("#sidebarContainer input") as any) {
+                    if (inp.classList && inp.classList.contains("wv-bm-search-input")) continue;
+                    if (inp.type && inp.type !== "text" && inp.type !== "search") continue;
+                    if (inp.offsetParent === null) continue;
+                    q = String(inp.value || "");
+                    sawInput = true;
+                    break;
+                }
+                if (!sawInput) {
+                    try { q = String((reader._internalReader && reader._internalReader._state
+                        && reader._internalReader._state.outlineQuery) || ""); } catch (_) {}
+                }
+                q = q.trim().toLowerCase();
+                if (q && entries.length) {
+                    const visible = new Set<number>(); const dimmed = new Set<number>();
+                    const direct: boolean[] = entries.map((e: any) =>
+                        String(e.title || "").toLowerCase().indexOf(q) >= 0);
+                    const stack: number[] = [];
+                    for (let i = 0; i < entries.length; i++) {
+                        const lvl = Math.max(0, entries[i].indentLevel || 0);
+                        stack.length = lvl; stack[lvl] = i;
+                        if (!direct[i]) continue;
+                        visible.add(i);
+                        for (let d = 0; d < lvl; d++) {
+                            const ai = stack[d];
+                            if (ai != null && !visible.has(ai)) visible.add(ai);
+                        }
+                    }
+                    for (const i of visible) if (!direct[i]) dimmed.add(i);
+                    outlineFilter = { q, visible, dimmed };
+                }
+            } catch (_) {}
             while (list.firstChild) list.firstChild.remove();
+            // Active search with no hits: say so and stop. Falling through to
+            // the empty branch would show "No outline for this document" (a
+            // lie) and could arm its extraction-retry loop.
+            if (outlineFilter && !outlineFilter.visible.size) {
+                const none = idoc.createElementNS(NS_HTML_RP, "div");
+                none.className = "wv-outline-empty";
+                none.textContent = "No outline entries match the search.";
+                list.appendChild(none);
+                return;
+            }
             if (!entries.length) {
                 // A cached result means extraction has SETTLED (genuinely no
                 // outline) -> no retry. Otherwise retry ONLY while the Outline tab
@@ -2069,7 +2171,7 @@ class _ReaderPanelsMixin {
                 }
                 return;
             }
-            this._wvRenderOutlineEntries(reader, idoc, list, entries, curatedView);
+            this._wvRenderOutlineEntries(reader, idoc, list, entries, curatedView, outlineFilter);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderOutline err: " + e); }
     }
 
@@ -2097,7 +2199,8 @@ class _ReaderPanelsMixin {
      *  renames; right-click opens a Rename/Delete menu. Editing an ORIGINAL
      *  (non-curated) entry triggers copy-on-first-edit. Collapse state is
      *  in-memory (view state, not persisted). */
-    _wvRenderOutlineEntries(reader: any, idoc: any, container: any, entries: any[], curatedView: boolean) {
+    _wvRenderOutlineEntries(reader: any, idoc: any, container: any, entries: any[], curatedView: boolean,
+                            filter?: { q: string, visible: Set<number>, dimmed: Set<number> } | null) {
         const NS = NS_HTML_RP;
         // Page labels come from the SAME path bookmarks use (`_bmReaderPageLabel`):
         // the annotations-sidebar convention (an annotation's page label on that
@@ -2110,14 +2213,24 @@ class _ReaderPanelsMixin {
         for (let i = 0; i < entries.length; i++) {
             const entry = entries[i];
             const depth = Math.max(0, entry.indentLevel || 0);
-            if (depth > hideBelow) continue;   // hidden descendant of a collapsed entry
+            // Search mode (native sidebar query): render exactly the visible
+            // set -- matches plus their ancestor chain -- ignoring collapse
+            // state, so a hit under a collapsed parent still shows (same as
+            // the native outline's search). Indices stay ORIGINAL: rows carry
+            // their true `index` for the edit/rename mapping.
+            if (filter) {
+                if (!filter.visible.has(i)) continue;
+            } else if (depth > hideBelow) {
+                continue;   // hidden descendant of a collapsed entry
+            }
             hideBelow = Infinity;
             const hasKids = (i + 1 < entries.length)
                 && (Math.max(0, entries[i + 1].indentLevel || 0) > depth);
             const key = keyOf(entry, i);
-            const isExpanded = expandedSet.has(key);
+            const isExpanded = filter ? true : expandedSet.has(key);
             const row = idoc.createElementNS(NS, "div");
             row.className = "wv-outline-row";
+            if (filter && filter.dimmed.has(i)) row.classList.add("wv-outline-dimmed");
             // Content-type tag (e.g. "box" for a sidebar) -> distinct styling.
             if (entry.kind) row.classList.add("wv-outline-kind-" + entry.kind);
             if (depth > 0) row.style.paddingLeft = (depth * 16) + "px";   // 16px/level, matches native .children

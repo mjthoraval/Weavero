@@ -16,9 +16,9 @@ lands (BN and Weavero both patch fast around betas).
 
 ## Fixtures
 
-- A BN-authored note containing: a legacy `<libraryID>_<key>` link, a
-  modern `zotero://note/u/<key>/` link, a plain URL, and markdown
-  formatting. (The "WV+BN coexistence test" note serves this role.)
+- A BN-authored note containing: a `zotero://note/u/<key>/` note link,
+  a `zotero://select/...` link, a plain URL, and markdown formatting.
+  (The "WV+BN coexistence test" note serves this role.)
 - A **live** Weavero tab group whose members are BN note tabs, plus one
   saved group as a control.
 - BN's workspace tab open.
@@ -33,10 +33,14 @@ lands (BN and Weavero both patch fast around betas).
     extension (in-process `doAction`) → BN opens/previews the note.
     With a note tab active, BN 3.3 shows the target in its PREVIEW
     split, not a new tab — that's BN's intended behaviour, not a miss.
-  - The legacy `<libraryID>_<key>` leg is OBSOLETE: BN ≥3.2's own
-    parser (`getNoteLinkParams`) only accepts
-    `zotero://note/<u|groupID>/<key>/`, so there is nothing for
-    Weavero to preserve (verified in BN 3.2.2 source, 2026-07-28).
+  - There is NO legacy `<libraryID>_<key>` NOTE-link form to test:
+    BN has emitted and parsed `zotero://note/<u|groupID>/<key>/`
+    unchanged since its first release (verified across tags 0.1.0,
+    0.2.0, 0.5.0, 0.7.9, 1.0.0a, 3.0.7, 3.2.2 and the installed
+    3.3.0-beta.4, 2026-07-28) — old note links in user libraries are
+    the same form BN parses today. The `<libID>_<key>` shape is the
+    `zotero://select/library/items/...` legacy, covered by Weavero's
+    own `handleZoteroURI` best-effort branch.
 - Weavero comment/note popups on annotations whose comments carry
   `zotero://note/...` links to BN notes: links open the right note.
 

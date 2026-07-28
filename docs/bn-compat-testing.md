@@ -25,9 +25,18 @@ lands (BN and Weavero both patch fast around betas).
 
 ## 1. Link interop (Weavero's built-in BN code)
 
-- Open the BN-authored note: legacy-form links resolve (click navigates),
+- Open the BN-authored note: note links resolve (click navigates),
   Weavero's link decorations render inside the BN note without breaking
   BN's own rendering; no duplicate decoration.
+  - Note-link routing contract: Weavero's click swallow →
+    `handleZoteroURI` → BN's registered `zotero://note` protocol
+    extension (in-process `doAction`) → BN opens/previews the note.
+    With a note tab active, BN 3.3 shows the target in its PREVIEW
+    split, not a new tab — that's BN's intended behaviour, not a miss.
+  - The legacy `<libraryID>_<key>` leg is OBSOLETE: BN ≥3.2's own
+    parser (`getNoteLinkParams`) only accepts
+    `zotero://note/<u|groupID>/<key>/`, so there is nothing for
+    Weavero to preserve (verified in BN 3.2.2 source, 2026-07-28).
 - Weavero comment/note popups on annotations whose comments carry
   `zotero://note/...` links to BN notes: links open the right note.
 
@@ -44,8 +53,10 @@ lands (BN and Weavero both patch fast around betas).
 
 - BN note tabs join Weavero groups normally (stamp survives select /
   unload / reload of the tab).
-- BN's workspace tab: groupable or cleanly refuses — must not wedge the
-  chip renderer either way.
+- BN's workspace tab: OBSOLETE for BN ≥3.x — the workspace is a
+  WINDOW (`body.workspace-window`), not a tab; BN creates no custom tab
+  types at all (no `Zotero_Tabs.add` in BN 3.2.2+). BN note tabs are
+  plain native `note` tabs, covered by the leg above.
 - Restart with a live group of BN note tabs: group + membership +
   collapsed state survive (BN recreates note tabs on window load — the
   group's claim pass must re-stamp them).
@@ -69,6 +80,29 @@ reconciler saw an empty live group and deleted it. Hardening: a group
 never seen open in the current session is exempt from empty-deletion,
 and the mirror rotates a `.bak`. If step 3 ever fails again, recover
 from `tab-groups.json.bak` and file it against the seen-open gate.
+
+Run record 2026-07-28 (v0.17.5-dev.31→34, scripted AddonManager
+disable→enable, no restart) — TWO more churn bugs found and fixed:
+
+1. **Members pruned 3→1**: BN's `updateExistingNoteTabs` closes and
+   reopens every note tab with a new id; the shadow-sync prune saw the
+   close half and dropped members before the claim pass could re-stamp
+   the reopened tabs. Fix: 20 s close-grace in `_applyTabGroups`
+   (stamped-tab snapshot diff → `Zotero._wvGroupPendingClose`).
+2. **LOADED note tabs vanished entirely**: a loaded tab's
+   EditorInstance is still registered when BN's reopen calls
+   `Zotero.Notes.open`; upstream takes the `editorInstance` branch and
+   `select(<dead tabID>)` throws → the open aborts, the tab is lost.
+   Fix: stale-instance guard in the `Notes.open` wrapper
+   (unregister-not-uninit — uninit touches the dead iframe and throws
+   before its own unregister). Finding this also exposed that the
+   `_wvOpenPatched` boolean survived destroy() and blocked re-patching
+   after every plugin reload — both open-wrappers are now
+   version-stamped and unpeeled+cleared at destroy.
+
+Both scripted legs (expanded AND collapsed) now pass with members,
+stamps, chip, pref and mirror all intact. The §4 procedure is proven
+scriptable end-to-end via the dev bridge.
 
 ## 5. Shared-editor gotchas (watch list)
 

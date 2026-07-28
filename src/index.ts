@@ -4641,13 +4641,23 @@ class WeaveroPlugin {
             Zotero.debug("[Weavero] openPreferences un-patch err: " + e);
         }
 
-        // 0b. Restore Zotero.Notes.open if we patched it (note-in-deck-window).
+        // 0b. Restore Zotero.Notes.open: unpeel the OUTER deck-window wrapper
+        //     first (patched last, index.ts), then the INNER multi-window
+        //     wrapper (patched first, tabs.ts), and clear the version stamps.
+        //     The stamps MUST be cleared -- the old boolean survived destroy
+        //     and blocked every re-patch after a plugin reload, so wrapper
+        //     changes silently never activated (2026-07-28).
         try {
             const Notes: any = (Zotero as any).Notes;
             if (Notes && Notes._wvOrigOpen) {
                 Notes.open = Notes._wvOrigOpen;
                 delete Notes._wvOrigOpen;
             }
+            if (Notes && Notes._wvMwOrigOpen) {
+                Notes.open = Notes._wvMwOrigOpen;
+                delete Notes._wvMwOrigOpen;
+            }
+            if (Notes) { delete Notes._wvOpenPatched; delete Notes._wvOpenPatchedV; }
         } catch (e) {
             Zotero.debug("[Weavero] Notes.open un-patch err: " + e);
         }
@@ -4657,6 +4667,11 @@ class WeaveroPlugin {
                 Reader.open = Reader._wvOrigOpen;
                 delete Reader._wvOrigOpen;
             }
+            if (Reader && Reader._wvMwOrigOpen) {
+                Reader.open = Reader._wvMwOrigOpen;
+                delete Reader._wvMwOrigOpen;
+            }
+            if (Reader) { delete Reader._wvOpenPatched; delete Reader._wvOpenPatchedV; }
             if (Reader && Reader._wvOrigGetWindowStates) {
                 Reader.getWindowStates = Reader._wvOrigGetWindowStates;
                 delete Reader._wvOrigGetWindowStates;

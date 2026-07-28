@@ -9129,11 +9129,47 @@ class _TabsMixin {
      *  repeatedly in the restart protocol). Wrap: resolve the tab's OWNING
      *  window and point getMainWindow at it for the duration of the call. */
     _wvPatchNotesOpenForMultiWindow() {
+        // Versioned re-wiring (NOT a boolean guard): the old `_wvOpenPatched`
+        // boolean survived destroy() while the wrapper itself was unpeeled, so
+        // after a plugin reload the patch refused to re-install and every
+        // wrapper change shipped between reloads silently never activated
+        // (the dev.32 stale-instance guard was invisible until this fix,
+        // 2026-07-28). A version stamp re-patches whenever the code changed;
+        // destroy() unpeels via _wvMwOrigOpen and clears the stamps.
+        const WV_OPEN_PATCH_V = 2;
         try {
             const N: any = (Zotero as any).Notes;
-            if (!N || typeof N.open !== "function" || N._wvOpenPatched) return;
+            if (!N || typeof N.open !== "function" || N._wvOpenPatchedV === WV_OPEN_PATCH_V) return;
             const orig = N.open;
+            N._wvMwOrigOpen = orig;
             N.open = async function (_itemID: any, _location: any, opts: any) {
+                // STALE-INSTANCE GUARD: a freshly-closed note tab's EditorInstance
+                // can still be registered when a caller reopens the same item --
+                // Better Notes' enable rebuilds every note tab close→reopen, and
+                // the editor teardown lags the tab's removal from _tabs. Upstream
+                // Notes.open then takes the `editorInstance` branch and calls
+                // Zotero_Tabs.select(<dead tabID>), which throws at parseTabType
+                // and ABORTS the open -- the note tab is simply lost (BN-compat
+                // protocol §4 caught loaded note tabs vanishing on BN enable,
+                // 2026-07-28). Unregister any tab-mode instance for this item
+                // whose tab no longer exists in ANY main window before
+                // delegating. unregisterEditorInstance directly, NOT uninit():
+                // uninit touches the closed tab's dead iframe (removeEventListener
+                // / saveSync) and throws BEFORE reaching its own unregister call,
+                // leaving the instance registered (verified live).
+                try {
+                    const stale = (N._editorInstances || []).filter((r: any) => {
+                        try {
+                            if (!r || r.itemID !== _itemID || r.viewMode !== "tab" || !r.tabID) return false;
+                            for (const w of Zotero.getMainWindows()) {
+                                const Zt = (w as any).Zotero_Tabs;
+                                if (Zt && Zt._tabs && Zt._tabs.some((t: any) => t.id === r.tabID)) return false;
+                            }
+                            return true;
+                        } catch (e) { return false; }
+                    });
+                    for (const r of stale) { try { await N.unregisterEditorInstance(r); } catch (e) {} }
+                } catch (e) {}
                 let owner: any = null;
                 try {
                     const tabID = opts && opts.tabID;
@@ -9154,7 +9190,7 @@ class _TabsMixin {
                 try { return await orig.apply(this, arguments); }
                 finally { zAny.getMainWindow = origGMW; }
             };
-            N._wvOpenPatched = true;
+            N._wvOpenPatchedV = WV_OPEN_PATCH_V;
         } catch (e) { Zotero.debug("[Weavero] _wvPatchNotesOpenForMultiWindow err: " + e); }
         // Zotero.Reader.open has the IDENTICAL hardcoded-getMainWindow flaw
         // (xpcom/reader.js): loading a reader tab that lives in a background
@@ -9163,8 +9199,9 @@ class _TabsMixin {
         // (validated live via the deferred-load idle warmer). Same fix.
         try {
             const R: any = (Zotero as any).Reader;
-            if (!R || typeof R.open !== "function" || R._wvOpenPatched) return;
+            if (!R || typeof R.open !== "function" || R._wvOpenPatchedV === WV_OPEN_PATCH_V) return;
             const origR = R.open;
+            R._wvMwOrigOpen = origR;
             R.open = async function (_itemID: any, _location: any, opts: any) {
                 let owner: any = null;
                 try {
@@ -9183,7 +9220,7 @@ class _TabsMixin {
                 try { return await origR.apply(this, arguments); }
                 finally { zAny.getMainWindow = origGMW; }
             };
-            R._wvOpenPatched = true;
+            R._wvOpenPatchedV = WV_OPEN_PATCH_V;
         } catch (e) { Zotero.debug("[Weavero] Reader.open multi-window patch err: " + e); }
     }
 

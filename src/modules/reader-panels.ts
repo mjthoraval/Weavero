@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 6;   // v6: outline search Esc/clear listeners (2026-07-28); v5: search input listener
+const RP_BM_CTX_WIRE_V = 7;   // v7: last-click-in-sidebar tracker; v6: search Esc/clear; v5: search input
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1647,6 +1647,7 @@ class _ReaderPanelsMixin {
                 ["input", "_wvOutlineSearchH", "_wvOutlineTabWired"],
                 ["keydown", "_wvOutlineSearchKeyH", "_wvOutlineTabWired"],
                 ["click", "_wvOutlineSearchClickH", "_wvOutlineTabWired"],
+                ["mousedown", "_wvOutlineDownTrackH", "_wvOutlineTabWired"],
                 ["click", "_wvBmTabClickH", "_wvBmTabClickWired"],
                 ["dragstart", "_wvDragSrcStartH", "_wvDragSrcHooked"],
                 ["dragend", "_wvDragSrcEndH", "_wvDragSrcHooked"],
@@ -1727,6 +1728,7 @@ class _ReaderPanelsMixin {
                 try { if ((idoc as any)._wvOutlineSearchH) idoc.removeEventListener("input", (idoc as any)._wvOutlineSearchH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineSearchKeyH) idoc.removeEventListener("keydown", (idoc as any)._wvOutlineSearchKeyH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineSearchClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineSearchClickH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineDownTrackH) idoc.removeEventListener("mousedown", (idoc as any)._wvOutlineDownTrackH, true); } catch (_) {}
                 const tabClickH = (e: any) => {
                     try {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -1840,12 +1842,27 @@ class _ReaderPanelsMixin {
                         schedOutlineRender();
                     } catch (_) {}
                 };
+                // Last-mousedown region tracker for the Ctrl+F router: sidebar
+                // clicks don't move focus (reader design), so the router needs
+                // to know the user's last click landed in the sidebar even
+                // while the find bar still holds focus. PDF-page clicks fire in
+                // the nested iframe and never reach this doc -- harmless,
+                // because Ctrl+F from the PDF never reaches the router either.
+                const downTrackH = (e: any) => {
+                    try {
+                        const n = e.target;
+                        (idoc as any)._wvLastDownInSidebar = !!(n && n.closest && (n.closest("#sidebarContainer")
+                            || n.closest("." + RP_OUTLINE_VIEW_CLASS) || n.closest("." + RP_BM_VIEW_CLASS)));
+                    } catch (_) {}
+                };
                 (idoc as any)._wvOutlineSearchH = searchH;
                 (idoc as any)._wvOutlineSearchKeyH = searchKeyH;
                 (idoc as any)._wvOutlineSearchClickH = searchClickH;
+                (idoc as any)._wvOutlineDownTrackH = downTrackH;
                 idoc.addEventListener("input", searchH, true);
                 idoc.addEventListener("keydown", searchKeyH, true);
                 idoc.addEventListener("click", searchClickH, true);
+                idoc.addEventListener("mousedown", downTrackH, true);
             }
             // Right-click an outline row -> Rename/Delete menu. The reader
             // suppresses `contextmenu` in the sidebar, so use auxclick button 2
@@ -2874,11 +2891,25 @@ class _ReaderPanelsMixin {
             const t = e.target, ae = idoc.activeElement;
             const desc = (n: any) => n ? (n.localName || "?") + "." + (n.className ? String(n.className).split(" ")[0] : "")
                 + (n.id ? "#" + n.id : "") : "null";
-            rlog("enter: target=" + desc(t) + " ae=" + desc(ae));
-            // Already typing in some input? Leave the key to its own surface.
-            if (t && t.localName === "input") { rlog("decline: target is an input"); return false; }
+            rlog("enter: target=" + desc(t) + " ae=" + desc(ae) + " lastDownInSidebar=" + !!(idoc as any)._wvLastDownInSidebar);
             const inSidebar = (n: any) => !!(n && n.closest && (n.closest("#sidebarContainer")
                 || n.closest("." + RP_OUTLINE_VIEW_CLASS) || n.closest("." + RP_BM_VIEW_CLASS)));
+            // Key delivered to an INPUT: route by intent, not reflexively
+            // decline. An input inside the sidebar is a sidebar search box --
+            // Ctrl+F there just re-selects it (fall through to the routing).
+            // An input OUTSIDE the sidebar is the reader's find bar: it holds
+            // focus even after the user clicks the sidebar header or empty
+            // regions (those clicks deliberately don't move focus), which made
+            // Ctrl+F look dead after a find had ever been opened (traced
+            // 2026-07-28). The last-mousedown tracker disambiguates: last
+            // click in the sidebar -> the user means the sidebar search; last
+            // click elsewhere -> they're really in the find bar, decline.
+            let forceRoute = false;
+            if (t && t.localName === "input" && !inSidebar(t)) {
+                if (!(idoc as any)._wvLastDownInSidebar) { rlog("decline: in a non-sidebar input, last click not in sidebar"); return false; }
+                rlog("accept: in find bar but last click was in the sidebar");
+                forceRoute = true;
+            }
             const cont = idoc.getElementById("sidebarContainer");
             const outlineOn = !!(cont && cont.classList.contains(RP_OUTLINE_TAB_ON));
             rlog("inSidebar(target)=" + inSidebar(t) + " inSidebar(ae)=" + inSidebar(ae)
@@ -2886,7 +2917,7 @@ class _ReaderPanelsMixin {
                 + " bmActive=" + !!idoc.querySelector("." + RP_BM_TAB_CLASS + ".active")
                 + " sv=" + (() => { try { return reader._internalReader._state.sidebarView; } catch (_) { return "?"; } })()
                 + " sidebarOpen=" + (() => { try { return reader._internalReader._state.sidebarOpen; } catch (_) { return "?"; } })());
-            if (!inSidebar(t) && !inSidebar(ae)) {
+            if (!forceRoute && !inSidebar(t) && !inSidebar(ae)) {
                 // BODY-targeted key with the sidebar open still routes: clicks
                 // on the sidebar tab header or its empty regions deliberately
                 // do NOT move focus (the reader's focus manager prevents it),

@@ -2779,6 +2779,24 @@ class _ReaderPanelsMixin {
         try { target.scrollIntoView({ block: "nearest" }); } catch (_) {}
     }
 
+    /** Focus the native outline search box (Ctrl+F from a focused outline).
+     *  Same input-resolution rule as the render's query read: the first
+     *  visible sidebar input that isn't Weavero's bookmarks search (the
+     *  native outline search input carries no class). Selects any existing
+     *  text so typing replaces the query. */
+    _wvOutlineFocusSearch(idoc: any) {
+        try {
+            for (const inp of idoc.querySelectorAll("#sidebarContainer input") as any) {
+                if (inp.classList && inp.classList.contains("wv-bm-search-input")) continue;
+                if (inp.type && inp.type !== "text" && inp.type !== "search") continue;
+                if (inp.offsetParent === null) continue;
+                inp.focus();
+                try { inp.select(); } catch (_) {}
+                return;
+            }
+        } catch (_) {}
+    }
+
     /** Resolve an outline entry to a curated entry id, performing copy-on-first-
      *  edit if the outline isn't curated yet. For the original view this curates
      *  the whole tree and maps by flatten index; it also expands the target's
@@ -2931,6 +2949,18 @@ class _ReaderPanelsMixin {
                 const sel: Set<string> = reader._wvOutlineSel || (reader._wvOutlineSel = new Set());
                 sel.clear();
                 for (const r of rows) { const kk = this._wvOutlineRowKey(r); if (kk != null) { sel.add(kk); r.classList.add("wv-outline-selected"); } }
+                return;
+            }
+            // Ctrl/Cmd+F while the OUTLINE has focus -> the outline search box,
+            // not the reader's document find (user request 2026-07-28, enabled
+            // by the pane being focusable + the search actually filtering the
+            // takeover list). Sits behind the same focus gate as the other
+            // outline keys, so Ctrl+F anywhere else still opens the reader
+            // find. Window-capture shim beats the reader's handler, so
+            // stopPropagation is enough to suppress its find popup.
+            if ((k === "f" || k === "F") && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+                e.preventDefault(); e.stopPropagation();
+                this._wvOutlineFocusSearch(idoc);
                 return;
             }
             // Ctrl (Cmd on Mac) = "move focus only": step the cursor WITHOUT

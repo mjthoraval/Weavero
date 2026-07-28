@@ -2862,30 +2862,61 @@ class _ReaderPanelsMixin {
         try {
             if (e.key !== "f" && e.key !== "F") return false;
             if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return false;
+            // Same diagnosis ring the outline key handler feeds.
+            const rlog = (m: string) => {
+                try {
+                    Zotero.debug("[Weavero][outlineKey] router: " + m);
+                    const arr = ((Zotero as any)._wvOutlineKeyLog = (Zotero as any)._wvOutlineKeyLog || []);
+                    arr.push(Date.now() % 1000000 + " router: " + m);
+                    if (arr.length > 60) arr.shift();
+                } catch (_) {}
+            };
             const t = e.target, ae = idoc.activeElement;
+            const desc = (n: any) => n ? (n.localName || "?") + "." + (n.className ? String(n.className).split(" ")[0] : "")
+                + (n.id ? "#" + n.id : "") : "null";
+            rlog("enter: target=" + desc(t) + " ae=" + desc(ae));
             // Already typing in some input? Leave the key to its own surface.
-            if (t && t.localName === "input") return false;
+            if (t && t.localName === "input") { rlog("decline: target is an input"); return false; }
             const inSidebar = (n: any) => !!(n && n.closest && (n.closest("#sidebarContainer")
                 || n.closest("." + RP_OUTLINE_VIEW_CLASS) || n.closest("." + RP_BM_VIEW_CLASS)));
             const cont = idoc.getElementById("sidebarContainer");
             const outlineOn = !!(cont && cont.classList.contains(RP_OUTLINE_TAB_ON));
+            rlog("inSidebar(target)=" + inSidebar(t) + " inSidebar(ae)=" + inSidebar(ae)
+                + " outlineOn=" + outlineOn
+                + " bmActive=" + !!idoc.querySelector("." + RP_BM_TAB_CLASS + ".active")
+                + " sv=" + (() => { try { return reader._internalReader._state.sidebarView; } catch (_) { return "?"; } })()
+                + " sidebarOpen=" + (() => { try { return reader._internalReader._state.sidebarOpen; } catch (_) { return "?"; } })());
             if (!inSidebar(t) && !inSidebar(ae)) {
-                // Outline keyboard model parity: reader-chrome focus with an
-                // active outline row counts as outline focus (same rule as the
-                // arrow keys / +/-).
-                const bodyish = !ae || ae === idoc.body || ae === idoc.documentElement;
-                const hasActive = !!idoc.querySelector(".wv-outline-list .wv-outline-row.wv-outline-active");
-                if (!(outlineOn && bodyish && hasActive)) return false;
+                // BODY-targeted key with the sidebar open still routes: clicks
+                // on the sidebar tab header or its empty regions deliberately
+                // do NOT move focus (the reader's focus manager prevents it),
+                // so the next keypress targets <body> (traced live
+                // 2026-07-28). And a body-targeted key here cannot mean "the
+                // PDF page has focus" -- keys from the PDF view fire inside
+                // its NESTED iframe and never reach this window's shim at all.
+                // A focused toolbar button still declines (target is the
+                // button, not body), keeping the reader find reachable.
+                const tBodyish = !t || t === idoc.body || t === idoc.documentElement;
+                let sbOpen = false;
+                try { sbOpen = !!(reader._internalReader && reader._internalReader._state
+                    && reader._internalReader._state.sidebarOpen); } catch (_) {}
+                if (!(tBodyish && sbOpen)) {
+                    rlog("decline: focus not in sidebar (tBodyish=" + tBodyish + " sidebarOpen=" + sbOpen + ")");
+                    return false;
+                }
+                rlog("accept: body-targeted with sidebar open");
             }
             // Route by the ACTIVE view.
             if (outlineOn) {
                 e.preventDefault(); e.stopPropagation();
+                rlog("route: OUTLINE search");
                 this._wvOutlineFocusSearch(idoc);
                 return true;
             }
             const bmTab = idoc.querySelector("." + RP_BM_TAB_CLASS + ".active");
             if (bmTab) {
                 e.preventDefault(); e.stopPropagation();
+                rlog("route: BOOKMARKS search");
                 const row: any = idoc.querySelector(".wv-bm-search-row");
                 const btn: any = idoc.querySelector(".wv-bm-search-btn");
                 if (row && row.style.display === "none" && btn) {
@@ -2901,9 +2932,12 @@ class _ReaderPanelsMixin {
                 && reader._internalReader._state.sidebarView; } catch (_) {}
             if (sv === "annotations") {
                 e.preventDefault(); e.stopPropagation();
+                rlog("route: ANNOTATIONS search");
                 this._wvOutlineFocusSearch(idoc);   // finder resolves the visible annotations box
+                try { rlog("after focus: ae=" + ((idoc.activeElement && idoc.activeElement.localName) || "?") + " ph=" + ((idoc.activeElement && idoc.activeElement.placeholder) || "")); } catch (_) {}
                 return true;
             }
+            rlog("decline: no route (sv=" + sv + ")");
             return false;   // thumbnails etc.: native behaviour
         } catch (_) { return false; }
     }

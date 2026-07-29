@@ -1791,6 +1791,18 @@ class _ReaderPanelsMixin {
                         const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!P2) return;
                         try { P2._wvReaderRenderOutline(reader, idoc); } catch (_) {}
+                        // Cleared query -> bring the SELECTED entry back into
+                        // view. Filtering scrolled the (short) result list; the
+                        // restored full list would otherwise sit at a random
+                        // scroll spot (issue #24 follow-up, 2026-07-29).
+                        try {
+                            const boxInp = idoc.querySelector("#sidebarContainer .search-box input");
+                            const qNow = boxInp ? String((boxInp as any).value || "") : "";
+                            if (!qNow) {
+                                const act = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-row.wv-outline-active");
+                                if (act) { try { act.scrollIntoView({ block: "center" }); } catch (_) {} }
+                            }
+                        } catch (_) {}
                         if (thenFocusOutline) {
                             // After Esc, React collapses the search box on its
                             // own tick and steals focus back -- refocus the pane
@@ -1870,7 +1882,13 @@ class _ReaderPanelsMixin {
                     try {
                         const t = e.target;
                         if (!t || !t.closest) return;
-                        const btn = t.closest("button");
+                        // The search box's clear "x" is a DIV with role=button
+                        // (`.search-box .btn.clear`), NOT a <button> -- matching
+                        // only <button> missed it entirely, so the x cleared the
+                        // text but the list stayed filtered (issue #24 follow-up,
+                        // Calorion 2026-07-28; Esc worked because it takes the
+                        // keydown path).
+                        const btn = t.closest("button, .search-box .btn, [role='button']");
                         if (!btn || !inOutlineSearchCtx(btn)) return;
                         // Only the search area's buttons matter; a re-render is
                         // idempotent, so being slightly generous here is safe.

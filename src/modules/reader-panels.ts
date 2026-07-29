@@ -2384,6 +2384,32 @@ class _ReaderPanelsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvBmRmNavigate err: " + e); }
     }
 
+    /** Every document a click could land in for this reader: the sidebar doc,
+     *  the chrome top document, and EVERY view -- base, secondary, last, and
+     *  the Reading Mode overlays. Menus wire their click-outside dismiss to all
+     *  of them; missing the SDT docs meant a click in the reader's centre pane
+     *  left an open context menu standing in Reading Mode (2026-07-29). */
+    _wvReaderReachableDocs(reader: any, idoc: any): { docs: any[]; wins: any[] } {
+        const docs: any[] = [idoc]; const wins: any[] = [];
+        try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
+        try {
+            const top = idoc.defaultView && idoc.defaultView.top;
+            if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); }
+        } catch (_) {}
+        try {
+            const ir = (Components as any).utils.waiveXrays(reader._internalReader);
+            for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView,
+                ir && ir._primarySDTView, ir && ir._secondarySDTView]) {
+                try {
+                    const vw = v && v._iframeWindow;
+                    const vd = vw && vw.document;
+                    if (vd && docs.indexOf(vd) < 0) { docs.push(vd); wins.push(vw); }
+                } catch (_) {}
+            }
+        } catch (_) {}
+        return { docs, wins };
+    }
+
     /** Clear a showing RM navigation spotlight (place navigations supersede a
      *  previous text highlight -- same rule as the base view). */
     _wvClearStaleRmSpotlight(sdtv: any) {
@@ -5774,9 +5800,7 @@ class _ReaderPanelsMixin {
             menu.style.left = x + "px"; menu.style.top = y + "px";
             const onDown = (e2: any) => { try { if (e2.target && menu.contains && menu.contains(e2.target)) return; close(); } catch (_) {} };
             const onKey = (e2: any) => { if (e2.key === "Escape") close(); };
-            const docs: any[] = [idoc]; const wins: any[] = [];
-            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
-            try { const ir = reader._internalReader; const v = ir && (ir._primaryView || ir._lastView); const vd = v && v._iframeWindow && v._iframeWindow.document; if (vd && docs.indexOf(vd) < 0) docs.push(vd); } catch (_) {}
+            const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
@@ -6082,16 +6106,7 @@ class _ReaderPanelsMixin {
     _wvOutlineWireMenuDismiss(reader: any, idoc: any, menu: any, anchor: any, close: () => void) {
         const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; if (ev.target === anchor || (anchor && anchor.contains && anchor.contains(ev.target))) return; close(); } catch (_) {} };
         const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
-        const docs: any[] = [idoc]; const wins: any[] = [];
-        try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
-        try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
-        try {
-            const ir = reader._internalReader;
-            for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
-                const vd = v && v._iframeWindow && v._iframeWindow.document;
-                if (vd && docs.indexOf(vd) < 0) docs.push(vd);
-            }
-        } catch (_) {}
+        const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
         for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
         for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
         this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
@@ -13325,10 +13340,7 @@ class _ReaderPanelsMixin {
             // Dismiss on click-outside / Escape across reachable docs.
             const onDown = (ev: any) => { try { if (ev.target && menu.contains && menu.contains(ev.target)) return; this._wvCloseReaderBmContextMenu(idoc); } catch (_) {} };
             const onKey = (ev: any) => { if (ev.key === "Escape") this._wvCloseReaderBmContextMenu(idoc); };
-            const docs: any[] = [idoc]; const wins: any[] = [];
-            try { const w = idoc.defaultView; if (w) wins.push(w); } catch (_) {}
-            try { const top = idoc.defaultView && idoc.defaultView.top; if (top && top.document && docs.indexOf(top.document) < 0) { docs.push(top.document); wins.push(top); } } catch (_) {}
-            try { const ir = reader._internalReader; const v = ir && (ir._primaryView || ir._lastView); const vd = v && v._iframeWindow && v._iframeWindow.document; if (vd && docs.indexOf(vd) < 0) docs.push(vd); } catch (_) {}
+            const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
             for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
             for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
             this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };

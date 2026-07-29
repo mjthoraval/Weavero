@@ -1241,6 +1241,13 @@ const RP_BM_CSS = [
     ".wv-bm-reader-row .wv-bm-reader-ic img{width:16px;height:16px;}",
     ".wv-bm-reader-row .wv-bm-reader-ic.wv-bm-emoji{font-size:13px;line-height:16px;opacity:1;}",
     ".wv-bm-reader-row .wv-bm-reader-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
+    // Inline rename: the input must occupy EXACTLY the label's box or the row
+    // changes height and the whole list jumps (2026-07-29). `font:inherit`
+    // keeps the row's 13px metrics (the outline's input is 11px), the border is
+    // drawn inside via box-sizing, and the height is pinned in JS to the
+    // label's measured height.
+    ".wv-bm-rename-input{flex:1;min-width:0;font:inherit;padding:0 3px;margin:0;box-sizing:border-box;"
+        + "border:1px solid var(--color-accent,#5e6ad2);border-radius:3px;background:Field;color:FieldText;outline:none;}",
     // URL bookmark labels follow the same scheme palette Weavero uses
     // for inline links in notes / reader / item pane. Self-contained
     // declaration so the sidebar paints correctly even if the surface's
@@ -11134,9 +11141,15 @@ class _ReaderPanelsMixin {
             const labelEl = row.querySelector(".wv-bm-reader-label");
             if (!labelEl || !labelEl.parentNode) return;
             const orig = String(info.entry.label || "");
+            // Measure the label BEFORE swapping so the input takes its exact
+            // height -- otherwise the row grows/shrinks and every row below it
+            // jumps (2026-07-29).
+            let lblH = 0;
+            try { lblH = Math.round(labelEl.getBoundingClientRect().height); } catch (_) {}
             const input: any = idoc.createElementNS(NS_HTML_RP, "input");
-            input.className = "wv-outline-rename-input";
+            input.className = "wv-bm-rename-input";
             input.setAttribute("type", "text");
+            if (lblH >= 12) input.setAttribute("style", "height:" + lblH + "px;line-height:" + lblH + "px;");
             input.value = orig;
             const wasDraggable = row.getAttribute("draggable");
             try { row.removeAttribute("draggable"); } catch (_) {}

@@ -9223,17 +9223,16 @@ class _ReaderPanelsMixin {
                 // lands in the right place by default.
                 const add = idoc.createElementNS(NS, "button");
                 add.className = "wv-bm-reader-newfolder";
-                add.setAttribute("title", section === "local"
-                    ? "Pick an annotation or item to bookmark"
-                    : "Add bookmark");
+                add.setAttribute("title", "Add bookmark");
                 add.innerHTML = RP_PLUS_SVG;
                 add.addEventListener("click", (e: any) => {
                     e.stopPropagation();
-                    if (section === "local") {
-                        this._wvReaderAddViaDialog(reader, idoc, section);
-                    } else {
-                        this._wvShowReaderBmAddMenu(reader, idoc, add, "document", section);
-                    }
+                    // BOTH sections open the menu. "This Document" used to jump
+                    // straight to the pick-item dialog, which made the
+                    // outline-style creation options (page top/bottom, pin,
+                    // select text) unreachable from its + button (2026-07-29);
+                    // picking an item is now one of the menu's entries.
+                    this._wvShowReaderBmAddMenu(reader, idoc, add, "document", section);
                 });
                 h.appendChild(add);
                 const nf = idoc.createElementNS(NS, "button");

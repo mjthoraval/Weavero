@@ -15348,15 +15348,20 @@ class _ReaderPanelsMixin {
                         ? bm.location.pageIndex
                         : null;
                 if (pi != null) {
-                    // Anchor honours the same top/bottom choice as outline page
-                    // anchors (bottom aligns the page bottom to the view).
-                    if (bm.anchor === "bottom") {
-                        try {
-                            const pvB = reader._internalReader
-                                && (reader._internalReader._primaryView || reader._internalReader._lastView);
-                            if (pvB) { this._wvOutlineNavPageBottom(reader, pvB, pi); return; }
-                        } catch (_) {}
-                    }
+                    // Route BOTH anchors through the outline's page navigation:
+                    // it aligns the page edge AND drops the matching page
+                    // marker, so a page bookmark looks the same as a page
+                    // outline entry (asked 2026-07-29). reader.navigate stays
+                    // as the fallback when the view isn't built yet.
+                    try {
+                        const pvB = reader._internalReader
+                            && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                        if (pvB) {
+                            if (bm.anchor === "bottom") this._wvOutlineNavPageBottom(reader, pvB, pi);
+                            else this._wvOutlineNavPageTop(reader, pvB, pi);
+                            return;
+                        }
+                    } catch (_) {}
                     try { reader.navigate({ pageIndex: pi }); } catch (_) {}
                 }
                 return;

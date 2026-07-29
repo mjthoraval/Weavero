@@ -14766,12 +14766,18 @@ class _ReaderPanelsMixin {
             const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
             this._wvClearStalePin(pv);   // text-bookmark click supersedes a showing pin (2026-07-29)
             // Scroll WITHOUT the native flash (which arms the buggy 2s timer).
+            // Land the target 1/4 from the top -- the SAME rule outline entries
+            // use. This used to ask the reader for block:"center", so bookmarks
+            // and outline entries placed the same target differently (reported
+            // 2026-07-29); navigateToPosition stays as the fallback.
             try {
                 if (typeof pv._onManualNavigation === "function") { try { pv._onManualNavigation(); } catch (_) {} }
                 try { pv._lastNavigationTime = Date.now(); } catch (_) {}
-                const cpos = (Components as any).utils.cloneInto({ pageIndex: pi, rects }, iwin);
-                const copts = (Components as any).utils.cloneInto({ block: "center" }, iwin);
-                pv.navigateToPosition(cpos, copts);
+                if (!this._wvOutlineScrollToRect(pv, pi, rects[0])) {
+                    const cpos = (Components as any).utils.cloneInto({ pageIndex: pi, rects }, iwin);
+                    const copts = (Components as any).utils.cloneInto({ block: "center" }, iwin);
+                    pv.navigateToPosition(cpos, copts);
+                }
             } catch (e) {
                 try { reader.navigate({ position: position }); return true; } catch (_) { return false; }
             }
@@ -14818,13 +14824,19 @@ class _ReaderPanelsMixin {
             if (bm && bm.position) {
                 if (bm.type === "position") {
                     // Scroll precisely WITHOUT the built-in highlight box, then
-                    // drop a temporary pin marking the exact spot.
+                    // drop a temporary pin marking the exact spot. 1/4-from-top
+                    // placement (the shared rule), falling back to the reader's
+                    // own centring navigate.
                     let scrolled = false;
                     try {
                         const pv = reader._internalReader
                             && (reader._internalReader._primaryView || reader._internalReader._lastView);
-                        if (pv && typeof pv.navigateToPosition === "function") {
-                            pv.navigateToPosition(bm.position); scrolled = true;
+                        if (pv) {
+                            const r0 = bm.position.rects && bm.position.rects[0];
+                            if (r0 && this._wvOutlineScrollToRect(pv, bm.position.pageIndex, r0)) scrolled = true;
+                            else if (typeof pv.navigateToPosition === "function") {
+                                pv.navigateToPosition(bm.position); scrolled = true;
+                            }
                         }
                     } catch (_) {}
                     if (!scrolled) { try { reader.navigate({ position: bm.position }); } catch (_) {} }

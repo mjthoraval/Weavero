@@ -2377,7 +2377,10 @@ class _ReaderPanelsMixin {
             if (bm.type === "item" && bm.itemKey) {
                 try {
                     const sdtv0 = this._wvOutlineRmView(reader);
-                    if (sdtv0) this._wvClearStaleRmSpotlight(sdtv0);
+                    if (sdtv0) {
+                        this._wvClearStaleRmSpotlight(sdtv0);
+                        this._wvClearStaleRmPin(sdtv0);
+                    }
                 } catch (_) {}
                 try { reader.navigate({ annotationID: bm.itemKey }); } catch (_) {}
                 try {
@@ -2438,6 +2441,21 @@ class _ReaderPanelsMixin {
      *  previous text highlight -- same rule as the base view). */
     _wvClearStaleRmSpotlight(sdtv: any) {
         try { sdtv.setSpotlight("Navigation", null); } catch (_) {}
+    }
+
+    /** Reading Mode twin of `_wvClearStalePin`: navigating to a TEXT or
+     *  ANNOTATION target supersedes a showing page-anchor / pin marker. The
+     *  base-view clear looks in the PDF view's document, but the RM marker
+     *  lives in the SDT overlay's -- so in Reading Mode the previous marker
+     *  stayed on screen after moving to another bookmark (reported with a
+     *  screenshot, 2026-07-29). */
+    _wvClearStaleRmPin(sdtv: any) {
+        try {
+            const iwin = (Components as any).utils.waiveXrays(sdtv && sdtv._iframeWindow);
+            const doc = iwin && iwin.document;
+            const pin = doc && doc.querySelector(".wv-rm-pin");
+            if (pin) pin.remove();
+        } catch (_) {}
     }
 
     /** Drop the 📌 marker in the READING MODE overlay. `_wvReaderShowPin` can't
@@ -2800,7 +2818,10 @@ class _ReaderPanelsMixin {
                 // highlight, AND clear any highlight left by a previous text
                 // navigation (same supersede rule as normal view; user request
                 // 2026-07-29). setSpotlight(key, null) deletes the key.
-                if (!noSpot) { try { sdtv.setSpotlight("Navigation", hit.sel); } catch (_) {} }
+                if (!noSpot) {
+                    try { sdtv.setSpotlight("Navigation", hit.sel); } catch (_) {}
+                    this._wvClearStaleRmPin(sdtv);   // …and the reverse: text supersedes a marker
+                }
                 else { try { sdtv.setSpotlight("Navigation", null); } catch (_) {} }
             };
             const tgtA = node.resolvedPosition || node.position || {};

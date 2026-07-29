@@ -13022,9 +13022,13 @@ class _ReaderPanelsMixin {
                             .catch(() => {});
                     };
                     // Same order as the outline's + menu: most precise anchor
-                    // first (see the comment there).
+                    // first (see the comment there). Same Reading Mode gate on
+                    // the pin, too -- these two menus are meant to offer the
+                    // SAME options, and RM was the one case where they didn't.
                     mkItem("Select text…", RP_TEXT_SVG, () => this._wvBmAddWithSelection(reader, idoc));
-                    mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
+                    if (!this._wvReadingModeActive(reader)) {
+                        mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
+                    }
                     for (const c of this._wvPageAnchorChoices(pageNum, null, addPage)) mkItem(c.label, c.icon, c.fn);
                     const s = idoc.createElementNS(NS_HTML_RP, "div");
                     s.className = "wv-ctx-sep";

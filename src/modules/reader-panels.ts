@@ -2309,28 +2309,51 @@ class _ReaderPanelsMixin {
      *  real text rect via the base view's page text: the destination point sits
      *  at/above the heading's top-left, so take the first text item within a
      *  small window below-right of it. Returns a {pageIndex, rects} or null. */
-    async _wvOutlineRmPointToRect(reader: any, pageIndex: number, x: number, y: number): Promise<any> {
+    async _wvOutlineRmPointToRect(reader: any, pageIndex: number, x: number, y: number, mode?: string): Promise<any> {
         try {
             const ir = (Components as any).utils.waiveXrays(reader._internalReader);
             const pv = ir && (ir._primaryView || ir._lastView);
             const iw = pv && (Components as any).utils.waiveXrays(pv._iframeWindow);
             const app = iw && iw.PDFViewerApplication;
             if (!app || !app.pdfDocument) return null;
-            const page = await app.pdfDocument.getPage(pageIndex + 1);
-            const tc = await page.getTextContent();
-            let best: any = null, bestDy = Infinity;
-            for (const it of tc.items) {
-                if (!it || !it.str || !it.str.trim()) continue;
-                const ix = it.transform[4], iy = it.transform[5];
-                const dy = y - iy;                       // item baseline below the point
-                if (dy < -8 || dy > 40) continue;        // small window under the dest point
-                if (ix < x - 20 || ix > x + 350) continue;
-                if (dy >= 0 && dy < bestDy) { bestDy = dy; best = it; }
-                else if (!best && dy < 0) { best = it; bestDy = 999; }
+            // Awaiting a content promise strips the Xray waiver -- the resolved
+            // PDFPageProxy loses its prototype methods. Prefer the waived-chain
+            // page object; else re-waive the getPage result (2026-07-29).
+            let page: any = null;
+            try { const p0 = app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex]; page = p0 && p0.pdfPage; } catch (_) {}
+            if (!page || typeof page.getTextContent !== "function") {
+                page = (Components as any).utils.waiveXrays(await app.pdfDocument.getPage(pageIndex + 1));
             }
-            if (!best) return null;
-            const bx = best.transform[4], by = best.transform[5];
-            return { pageIndex, rects: [[bx, by, bx + (best.width || 120), by + (best.height || 10)]] };
+            if (!page || typeof page.getTextContent !== "function") return null;
+            const tc = (Components as any).utils.waiveXrays(await page.getTextContent());
+            const toPos = (it: any) => {
+                const bx = it.transform[4], by = it.transform[5];
+                return { pageIndex, rects: [[bx, by, bx + (it.width || 120), by + (it.height || 10)]] };
+            };
+            const items = [];
+            for (const it of tc.items) { if (it && it.str && it.str.trim()) items.push(it); }
+            if (!items.length) return null;
+            // Score per mode, ascending = better. Return SEVERAL candidates --
+            // the best PDF text run may not exist meaningfully in the reflow
+            // (figure labels, page-number footers map to null / zero-size
+            // ranges), so the caller tries candidates until one maps visibly.
+            let score: (it: any) => number;
+            if (mode === "pageTop") score = (it) => -it.transform[5];        // max y first
+            else if (mode === "pageBottom") score = (it) => it.transform[5]; // min y first
+            else {
+                score = (it) => {
+                    const ix = it.transform[4], iy = it.transform[5];
+                    const dy = y - iy;
+                    // tight heading window scores best; then general proximity.
+                    // Very short runs (single-char figure axis labels) reliably
+                    // FAIL to map into the reflow -- push them to the back.
+                    const inWin = (dy >= -8 && dy <= 40 && ix >= x - 20 && ix <= x + 350);
+                    const shortPenalty = (String(it.str).trim().length < 3) ? 500 : 0;
+                    return (inWin ? 0 : 1000) + shortPenalty + Math.abs(dy) + ((iy > y) ? 30 : 0) + 0.3 * Math.abs(x - ix);
+                };
+            }
+            items.sort((a, b) => score(a) - score(b));
+            return items.slice(0, 6).map(toPos);
         } catch (_) { return null; }
     }
 
@@ -2350,11 +2373,23 @@ class _ReaderPanelsMixin {
                 // Options-object form crosses the compartment boundary as an
                 // opaque chrome object and silently no-ops -- cloneInto it for
                 // smooth scrolling, with the numeric form as the fallback.
+                // VERIFIED: smooth scrolls have been observed to silently not
+                // start at all (long jumps) -- check shortly after and jump
+                // numerically if nothing moved (2026-07-29).
                 try {
                     const se = iwin.document.scrollingElement || iwin.document.documentElement;
-                    const target = se.scrollTop + rectTop - iwin.innerHeight * 0.25;
+                    const from = se.scrollTop;
+                    const target = Math.max(0, from + rectTop - iwin.innerHeight * 0.25);
                     try { se.scrollTo(Cu.cloneInto({ top: target, behavior: "smooth" }, iwin)); }
                     catch (_) { iwin.scrollTo(0, target); }
+                    const w5: any = Zotero.getMainWindow();
+                    ((w5 && w5.setTimeout) ? w5.setTimeout.bind(w5) : setTimeout)(() => {
+                        try {
+                            if (Math.abs(se.scrollTop - from) < 5 && Math.abs(target - from) > 20) {
+                                iwin.scrollTo(0, target);
+                            }
+                        } catch (_) {}
+                    }, 450);
                 } catch (_) {}
             };
             const markNav = () => {
@@ -2385,53 +2420,95 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
                 return;
             }
+            // Page anchors (Set Target -> top/bottom of page): land on the
+            // page's FIRST/LAST text in the reflow -- there is no rect to map.
+            // Map a candidate position to a VISIBLE displayed range (a figure
+            // label / footer can map to null or a zero-size collapsed range --
+            // skip those and let the next candidate try).
+            const mapVisible = (cand: any) => {
+                try {
+                    const cpos = Cu.cloneInto({ pageIndex: cand.pageIndex, rects: cand.rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]) }, iwin);
+                    const rg = sdtv.toDisplayedRange(cpos);
+                    if (!rg) return null;
+                    const rr = rg.getBoundingClientRect();
+                    if (!rr || (rr.width === 0 && rr.height === 0)) return null;
+                    return { range: rg, sel: cpos, rect: rr };
+                } catch (_) { return null; }
+            };
+            const landOn = (hit: any, noSpot?: boolean) => {
+                markNav();
+                scrollQuarter(hit.rect.top);
+                // Page anchors are PLACES, not text targets -- no highlight
+                // (user request 2026-07-29).
+                if (!noSpot) { try { sdtv.setSpotlight("Navigation", hit.sel); } catch (_) {} }
+            };
+            const tgtA = node.resolvedPosition || node.position || {};
+            if (tgtA.anchor === "top" || tgtA.anchor === "bottom") {
+                const cands = await this._wvOutlineRmPointToRect(reader, tgtA.pageIndex, 0, 0,
+                    tgtA.anchor === "top" ? "pageTop" : "pageBottom");
+                for (const cand of (cands || [])) {
+                    const hit = mapVisible(cand);
+                    if (hit) { landOn(hit, true); return; }
+                }
+                this._wvReaderPanelNote(idoc, "Couldn’t locate this entry in the Reading Mode text.");
+                return;
+            }
             // Position entry: build a mappable (real-rect) position.
             const isPoint = (p: any) => this._wvOutlineIsPointRect(p);
             const candidates: any[] = [];
             if (node.resolvedPosition && node.resolvedPosition.rects && node.resolvedPosition.rects.length) candidates.push(node.resolvedPosition);
             if (node.position && node.position.rects && node.position.rects.length) candidates.push(node.position);
-            let range: any = null, spotSel: any = null;
+            const isPin = (tgtA.anchor === "point");
+            let hit: any = null;
             for (const cand of candidates) {
                 if (isPoint(cand)) continue;
-                try {
-                    const cpos = Cu.cloneInto({ pageIndex: cand.pageIndex, rects: cand.rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]) }, iwin);
-                    const rg = sdtv.toDisplayedRange(cpos);
-                    if (rg) { range = rg; spotSel = cpos; break; }
-                } catch (_) {}
+                hit = mapVisible(cand);
+                if (hit) break;
             }
-            if (!range) {
-                // Point-only entry: recover the heading rect from the page text.
+            if (!hit) {
+                // Point-only entry: recover text-run candidates near the point.
                 for (const cand of candidates) {
                     const r0 = cand.rects && cand.rects[0];
                     if (!r0) continue;
-                    const real = await this._wvOutlineRmPointToRect(reader, cand.pageIndex, r0[0], r0[1]);
-                    if (!real) continue;
-                    try {
-                        const cpos = Cu.cloneInto(real, iwin);
-                        const rg = sdtv.toDisplayedRange(cpos);
-                        if (rg) { range = rg; spotSel = cpos; break; }
-                    } catch (_) {}
+                    const cands2 = await this._wvOutlineRmPointToRect(reader, cand.pageIndex, r0[0], r0[1]);
+                    for (const c2 of (cands2 || [])) {
+                        hit = mapVisible(c2);
+                        if (hit) break;
+                    }
+                    if (hit) break;
                 }
             }
-            if (!range) {
+            if (!hit && isPin) {
+                // Figure-page pin whose neighbourhood is all unmappable (axis
+                // labels etc.): land at the page's main text instead -- the
+                // closest the reflow can get to the pinned spot.
+                const pg = (node.resolvedPosition || node.position || {}).pageIndex;
+                if (Number.isInteger(pg)) {
+                    const cands3 = await this._wvOutlineRmPointToRect(reader, pg, 0, 0, "pageTop");
+                    for (const c3 of (cands3 || [])) {
+                        hit = mapVisible(c3);
+                        if (hit) break;
+                    }
+                }
+            }
+            if (hit && isPin) { landOn(hit, true); return; }   // a pin is a PLACE -- no text highlight
+            if (!hit) {
                 // Title match against the RM outline (scanned docs, figure pins…).
                 const want = String((node.source && node.source.title) || node.title || "").trim().toLowerCase();
                 if (want) {
                     const rmE = this._wvOutlineRmEntries(reader);
-                    const hit = rmE.find((e: any) => {
+                    const m = rmE.find((e: any) => {
                         const t = String(e.title || "").trim().toLowerCase();
                         return t && (t === want || t.indexOf(want) >= 0 || want.indexOf(t) >= 0);
                     });
-                    if (hit && hit._sdtHref) { await this._wvOutlineRmNavigate(reader, idoc, { _sdtHref: hit._sdtHref, title: node.title }); return; }
+                    if (m && m._sdtHref) { await this._wvOutlineRmNavigate(reader, idoc, { _sdtHref: m._sdtHref, title: node.title }); return; }
                 }
             }
-            if (!range) {
+            if (!hit) {
                 this._wvReaderPanelNote(idoc, "Couldn’t locate this entry in the Reading Mode text.");
                 return;
             }
-            markNav();
-            scrollQuarter(range.getBoundingClientRect().top);
-            try { sdtv.setSpotlight("Navigation", spotSel); } catch (_) {}
+            landOn(hit);
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineRmNavigate err: " + e); }
     }
 

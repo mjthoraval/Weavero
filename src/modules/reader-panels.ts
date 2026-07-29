@@ -2182,15 +2182,24 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             // If the native outline is ALREADY the active view (restored on open,
             // or the user was on it before our panel injected), take over now.
+            // ONCE PER READER DOC: this exists for the FIRST injection only --
+            // the native wrapper's `hidden` class is meaningless under our
+            // takeover, so on every plugin-reload ensure pass this used to
+            // re-fire on EVERY reader, stomping the active tab and PERSISTING
+            // bm-active=false (ring-traced 2026-07-29: ACTIVATE-OUTLINE on all
+            // five readers at init). Reloads are restored by _wvRewireRestore.
             try {
-                const container = idoc.getElementById("sidebarContainer");
-                const nativeOutline = content.querySelector(".viewWrapper > .outline-view");
-                const wrapper = nativeOutline && nativeOutline.parentElement;
-                if (container && wrapper
-                        && !wrapper.classList.contains("hidden")
-                        && !container.classList.contains(RP_BM_TAB_ON)
-                        && !container.classList.contains(RP_OUTLINE_TAB_ON)) {
-                    this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                if (!(idoc as any)._wvOutlineAutoTakeDone) {
+                    (idoc as any)._wvOutlineAutoTakeDone = true;
+                    const container = idoc.getElementById("sidebarContainer");
+                    const nativeOutline = content.querySelector(".viewWrapper > .outline-view");
+                    const wrapper = nativeOutline && nativeOutline.parentElement;
+                    if (container && wrapper
+                            && !wrapper.classList.contains("hidden")
+                            && !container.classList.contains(RP_BM_TAB_ON)
+                            && !container.classList.contains(RP_OUTLINE_TAB_ON)) {
+                        this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                    }
                 }
             } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReaderEnsureOutlinePanel err: " + e); }

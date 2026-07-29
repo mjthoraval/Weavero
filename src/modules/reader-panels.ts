@@ -8436,6 +8436,17 @@ class _ReaderPanelsMixin {
             if (myTab) myTab.classList.toggle("active", on);
             const sc = idoc.getElementById("sidebarContainer");
             if (sc) sc.classList.toggle(RP_BM_TAB_ON, on);
+            // MUTUAL EXCLUSION enforced HERE, not only in callers: turning the
+            // Bookmarks tab on must strip the outline takeover class (and its
+            // tab stop). A persisted-bm re-assert after a programmatic outline
+            // activation left BOTH classes on -- the two CSS regimes then fight
+            // and every corrective pass flips the visible pane ("oscillations
+            // between outline and bookmarks", traced live 2026-07-29; this is
+            // also Calorion's #18 flicker).
+            if (on && sc) {
+                sc.classList.remove(RP_OUTLINE_TAB_ON);
+                try { const ov = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS); if (ov) ov.removeAttribute("data-tabstop"); } catch (_) {}
+            }
             // Only the ACTIVE takeover view is a [data-tabstop] (see the
             // outline takeover's note -- an invisible stop wedges Tab).
             try { if (on) view.setAttribute("data-tabstop", "1"); else view.removeAttribute("data-tabstop"); } catch (_) {}

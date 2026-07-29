@@ -4733,6 +4733,14 @@ class _ReaderPanelsMixin {
             input.className = "wv-outline-rename-input";
             input.setAttribute("type", "text");
             input.value = entry.title || "";
+            // The row is a native drag source (draggable=true), and Gecko
+            // disables caret placement + mouse text-selection inside a child
+            // input of a draggable ancestor -- clicking in the rename input
+            // left the initial select-all in place ("click does nothing",
+            // 2026-07-29). Drop draggable for the edit; finish() restores it
+            // (the re-render rebuilds the row anyway -- belt and braces).
+            const dragRow = labelEl.closest ? labelEl.closest(".wv-outline-row") : null;
+            if (dragRow) { try { dragRow.removeAttribute("draggable"); } catch (_) {} }
             labelEl.replaceWith(input);
             try { input.focus(); input.select(); } catch (_) {}
             // Commit on a pointerdown ANYWHERE outside the input -- e.g. clicking
@@ -4758,6 +4766,7 @@ class _ReaderPanelsMixin {
             };
             const finish = async (save: boolean) => {
                 if (done) return; done = true;
+                if (dragRow) { try { dragRow.setAttribute("draggable", "true"); } catch (_) {} }
                 for (const d of docs) { try { d.removeEventListener("pointerdown", onDownOutside, true); } catch (_) {} }
                 const v = String(input.value || "").trim();
                 // A COMMIT (Enter / click-away / blur -- anything but Escape)

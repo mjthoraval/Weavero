@@ -8616,15 +8616,57 @@ class _ReaderPanelsMixin {
             try {
                 const ir = reader._internalReader;
                 if (ir && typeof ir.setSidebarView === "function" && ir._state) {
+                    // The change guard must NOT rely on `_state.sidebarView`
+                    // alone: it can read undefined (observed live on a reader
+                    // whose state lost the field), and an undefined `cur` makes
+                    // every 300ms sidebar scan re-issue setSidebarView. Two such
+                    // setters (ours + the outline path) then flip the pane
+                    // forever -- the outline<->bookmarks OSCILLATION, with a
+                    // BLANK sidebar whenever the view settles undefined (React
+                    // renders no pane, so annotations vanish too). Ring-traced
+                    // 2026-07-29. Track what WE last set and gate on that.
                     const cur = ir._state.sidebarView;
+                    const lastSet = reader._wvSidebarViewSet;
                     if (on) {
-                        if (cur !== RP_BM_SIDEBAR_VIEW) {
+                        if (cur !== RP_BM_SIDEBAR_VIEW && lastSet !== RP_BM_SIDEBAR_VIEW) {
                             if (cur && cur !== RP_BM_SIDEBAR_VIEW) reader._wvPrevSidebarView = cur;
+                            reader._wvSidebarViewSet = RP_BM_SIDEBAR_VIEW;
                             ir.setSidebarView(RP_BM_SIDEBAR_VIEW);
                         }
-                    } else if (cur === RP_BM_SIDEBAR_VIEW) {
-                        ir.setSidebarView(reader._wvPrevSidebarView || "annotations");
+                    } else if (cur === RP_BM_SIDEBAR_VIEW
+                            || (cur === undefined && lastSet === RP_BM_SIDEBAR_VIEW)) {
+                        const back = reader._wvPrevSidebarView || "annotations";
+                        reader._wvSidebarViewSet = back;
+                        ir.setSidebarView(back);
                     }
+                    // NEVER leave the sidebar with no renderable view: an
+                    // undefined view (not our sentinel, no restore pending)
+                    // shows an empty pane -- put it back on annotations once.
+                    if (cur === undefined && lastSet !== RP_BM_SIDEBAR_VIEW && !reader._wvSidebarViewHealed) {
+                        reader._wvSidebarViewHealed = true;
+                        const back2 = reader._wvPrevSidebarView || "annotations";
+                        reader._wvSidebarViewSet = back2;
+                        ir.setSidebarView(back2);
+                        // LAST RESORT: a reader whose React store stops
+                        // accepting sidebarView (observed live: even a trusted
+                        // click on the native Annotations tab left it
+                        // undefined, every viewWrapper hidden -> BLANK sidebar
+                        // with no annotations, 2026-07-29). Our takeover CSS
+                        // doesn't depend on that state, so showing the outline
+                        // pane beats showing nothing.
+                        const w6: any = Zotero.getMainWindow();
+                        ((w6 && w6.setTimeout) ? w6.setTimeout.bind(w6) : setTimeout)(() => {
+                            try {
+                                const st6 = ir._state || {};
+                                if (st6.sidebarView !== undefined || !st6.sidebarOpen) return;
+                                const c6 = idoc.getElementById("sidebarContainer");
+                                if (!c6 || c6.classList.contains(RP_OUTLINE_TAB_ON) || c6.classList.contains(RP_BM_TAB_ON)) return;
+                                this._wvTabStateRing("BLANK-SIDEBAR RESCUE -> outline takeover");
+                                this._wvReaderActivateOutlineTakeover(reader, idoc, true);
+                            } catch (_) {}
+                        }, 700);
+                    }
+                    if (cur !== undefined) reader._wvSidebarViewHealed = false;
                 }
             } catch (_) {}
         } catch (e) {

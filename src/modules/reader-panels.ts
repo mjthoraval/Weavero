@@ -334,6 +334,11 @@ const WV_PAGE_TOP_SVG =
 const WV_PAGE_BOTTOM_SVG =
     '<svg viewBox="0 0 16 16" fill="none" stroke="' + WV_PAGE_ANCHOR_COLOR + '" stroke-width="1.5" stroke-linecap="round" '
     + 'stroke-linejoin="round"><path d="M3 13h10"/><path d="M8 3v6.5"/><path d="M5 6.5l3 3 3-3"/></svg>';
+// …and as data: URIs, for the reader's context menu (which can only host <img>).
+const WV_PAGE_TOP_URI = "data:image/svg+xml," + encodeURIComponent(
+    WV_PAGE_TOP_SVG.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '));
+const WV_PAGE_BOTTOM_URI = "data:image/svg+xml," + encodeURIComponent(
+    WV_PAGE_BOTTOM_SVG.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '));
 // Generic "item" glyph for the bookmark-type filter's Item category (attachment
 // / note / collection / library refs, i.e. everything that isn't an annotation).
 // A document outline with a folded top-right corner -- reads as "a thing in the
@@ -13976,6 +13981,8 @@ class _ReaderPanelsMixin {
                 // resolved at popupshowing time so the captured pageIndex
                 // is correct even if the popup lingers.
                 let LABEL_PAGE: string | null = null;
+                let pageAddFn: any = null;
+                let piCapturedForMenu = 0;
                 if (reader._type === "pdf") {
                     let pageIndex: number | null = null;
                     try {
@@ -14011,18 +14018,18 @@ class _ReaderPanelsMixin {
                     }
                     if (pageIndex == null) pageIndex = 0;
                     const piCaptured = pageIndex;
+                    piCapturedForMenu = pageIndex;
                     const att = this._wvReaderAtt(reader);
                     if (att && att.libraryID != null && att.itemKey) {
+                        // ONE row that becomes a real SUBMENU: Zotero renders
+                        // the reader's context menu as a XUL popup (which is how
+                        // our icon stamping works), so it supports `menu` +
+                        // `menupopup` exactly like the tab-header menu's
+                        // "Copy As" (user asked why not, 2026-07-29).
                         LABEL_PAGE = isLib
                             ? "Add Library Bookmark to This Page"
                             : "Add Bookmark to This Page";
-                        bmItems.push({
-                            label: LABEL_PAGE,
-                            onCommand: () => {
-                                // The native reader menu can't nest a dropdown, so
-                                // the command opens the shared Top/Bottom chooser
-                                // (same UI as editing a page bookmark's anchor and
-                                // as the outline add-menu) at the click point.
+                        {
                                 const doAdd = async (a: "top" | "bottom") => {
                                     try {
                                         const pageLabel = String(piCaptured + 1);
@@ -14053,19 +14060,17 @@ class _ReaderPanelsMixin {
                                         Zotero.debug("[Weavero] view-menu Add Page Bookmark err: " + e);
                                     }
                                 };
-                                try {
-                                    const mx = (click && typeof click.x === "number") ? click.x : 300;
-                                    const my = (click && typeof click.y === "number") ? click.y : 200;
-                                    this._wvShowPageAnchorMenu(reader, idoc, mx, my, piCaptured + 1, (a) => { doAdd(a); });
-                                } catch (_) { doAdd("top"); }
-                            },
-                        });
+                                bmItems.push({ label: LABEL_PAGE, onCommand: () => { doAdd("top"); } });
+                                pageAddFn = doAdd;
+                        }
                     }
                 }
 
                 append(...bmItems);
                 this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
-                if (LABEL_PAGE) this._wvReaderStampMenuIcon(reader, LABEL_PAGE, icon);
+                if (LABEL_PAGE && pageAddFn) {
+                    this._wvReaderStampPageAnchorSubmenu(reader, LABEL_PAGE, piCapturedForMenu + 1, pageAddFn);
+                }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderViewContextMenu err: " + e); }
     }
@@ -14130,6 +14135,61 @@ class _ReaderPanelsMixin {
                     if (mi) {
                         mi.classList.add("menuitem-iconic");
                         mi.setAttribute("image", iconURL);
+                        done = true;
+                    }
+                } catch (_) { done = true; }
+                if (done) {
+                    try { ps.removeEventListener("popupshowing", onShow, true); } catch (_) {}
+                    if (timer != null) { try { ct(timer); } catch (_) {} timer = null; }
+                }
+            };
+            ps.addEventListener("popupshowing", onShow, true);
+            timer = st(() => {
+                try { ps.removeEventListener("popupshowing", onShow, true); } catch (_) {}
+                timer = null;
+            }, 3000);
+        } catch (_) {}
+    }
+
+    /** Turn the reader menu's "Add Bookmark to This Page" row into a real XUL
+     *  SUBMENU with Top / Bottom children -- the same shape as the tab-header
+     *  menu's "Copy As" (asked 2026-07-29). Zotero renders the reader's context
+     *  menu as a XUL popup, so `menu` + `menupopup` work here; the reader's own
+     *  plugin API only takes flat rows, hence this popupshowing transform. */
+    _wvReaderStampPageAnchorSubmenu(reader: any, label: string, pageNum: number, onPick: (a: "top" | "bottom") => void) {
+        try {
+            const win = reader._window;
+            const ps = reader._popupset;
+            if (!win || !ps || typeof ps.addEventListener !== "function") return;
+            const st = (win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const ct = (win.clearTimeout) ? win.clearTimeout.bind(win) : clearTimeout;
+            let timer: any = null;
+            const onShow = (ev: any) => {
+                let done = false;
+                try {
+                    const popup = ev && ev.target;
+                    const mi = popup && popup.querySelector
+                        && popup.querySelector('menuitem[label="' + label + '"]');
+                    if (mi) {
+                        const doc = win.document;
+                        const menu = doc.createXULElement("menu");
+                        menu.setAttribute("label", label);
+                        menu.classList.add("menu-iconic");
+                        menu.setAttribute("image", WV_PAGE_TOP_URI);
+                        const sub = doc.createXULElement("menupopup");
+                        const mk = (lbl: string, img: string, anchor: "top" | "bottom") => {
+                            const it = doc.createXULElement("menuitem");
+                            it.setAttribute("label", lbl);
+                            it.classList.add("menuitem-iconic");
+                            it.setAttribute("image", img);
+                            it.addEventListener("command", () => { try { onPick(anchor); } catch (_) {} });
+                            sub.appendChild(it);
+                        };
+                        mk("Top of page " + pageNum, WV_PAGE_TOP_URI, "top");
+                        mk("Bottom of page " + pageNum, WV_PAGE_BOTTOM_URI, "bottom");
+                        menu.appendChild(sub);
+                        mi.parentNode.insertBefore(menu, mi);
+                        mi.remove();
                         done = true;
                     }
                 } catch (_) { done = true; }

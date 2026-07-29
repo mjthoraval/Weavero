@@ -1696,6 +1696,12 @@ class _ReaderPanelsMixin {
                 // whenever the pane is focused, not only when a row is selected
                 // (the key handler's `inOutline` guard, 2026-07-23).
                 view.setAttribute("tabindex", "-1");
+                // Register with the reader's focus-manager Tab traversal
+                // (Tab/Shift+Tab move between `[data-tabstop]` groups). The
+                // native outline view is one; without this the takeover view
+                // isn't, so Tab from the sidebar search box had nowhere to go
+                // ("cannot tab out from the search box", 2026-07-29).
+                view.setAttribute("data-tabstop", "1");
                 view.addEventListener("mousedown", (e: any) => {
                     try {
                         const t = e.target;
@@ -7658,6 +7664,10 @@ class _ReaderPanelsMixin {
             if (!view) {
                 view = idoc.createElementNS(NS_HTML_RP, "div");
                 view.className = "viewWrapper " + RP_BM_VIEW_CLASS;
+                // Part of the reader's Tab traversal, like the outline takeover
+                // view (see the data-tabstop note there). 2026-07-29.
+                view.setAttribute("tabindex", "-1");
+                view.setAttribute("data-tabstop", "1");
                 // Single header row: scope toggle on the left, + on the right
                 // (the standalone "Bookmarks" title row was dropped to save
                 // vertical space; the tab already labels the panel).

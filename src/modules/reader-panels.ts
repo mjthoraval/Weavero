@@ -10668,6 +10668,11 @@ class _ReaderPanelsMixin {
                 // setSelectedAnnotations with triggeredFromView=true to
                 // mark the row as selected without re-scrolling.
                 try {
+                    const pvA = reader._internalReader
+                        && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                    if (pvA) this._wvClearStalePin(pvA);   // annotation click supersedes a showing pin
+                } catch (_) {}
+                try {
                     reader.navigate({ annotationID: bm.itemKey });
                 } catch (_) {}
                 // If the reader filter is hiding this annotation, flash it in
@@ -14027,6 +14032,7 @@ class _ReaderPanelsMixin {
             const pi = position.pageIndex;
             const rects = position.rects.map((r: any) => [r[0], r[1], r[2], r[3]]);
             const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+            this._wvClearStalePin(pv);   // text-bookmark click supersedes a showing pin (2026-07-29)
             // Scroll WITHOUT the native flash (which arms the buggy 2s timer).
             try {
                 if (typeof pv._onManualNavigation === "function") { try { pv._onManualNavigation(); } catch (_) {} }
@@ -14044,6 +14050,14 @@ class _ReaderPanelsMixin {
 
     _wvNavigateReaderLocation(reader: any, bm: any) {
         try {
+            // Any bookmark navigation supersedes a showing pin -- covers the
+            // page / text / fallback branches (the position branch replaces
+            // the pin via _wvReaderShowPin anyway). 2026-07-29.
+            try {
+                const pv0 = reader._internalReader
+                    && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                if (pv0) this._wvClearStalePin(pv0);
+            } catch (_) {}
             // Whole-page bookmark — scroll the named page to the top,
             // no pin marker (the bookmark isn't a precise spot). The
             // page index can live in `position.pageIndex` (new records

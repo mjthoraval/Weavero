@@ -1806,6 +1806,12 @@ class _ReaderPanelsMixin {
                 const inOutlineSearchCtx = (t: any) => {
                     if (!t || !t.closest || !t.closest("#sidebarContainer")) return false;
                     if (t.classList && t.classList.contains("wv-bm-search-input")) return false;   // bookmarks search has its own path
+                    // The outline RENAME input is a sidebar input too -- typing in
+                    // it must NOT count as searching: the triggered re-render
+                    // destroys the edit field after the first keystroke ("cannot
+                    // type anymore when editing the outline", 2026-07-29).
+                    if (t.classList && t.classList.contains("wv-outline-rename-input")) return false;
+                    if (t.closest && t.closest(".wv-outline-rename-input")) return false;
                     const cont = idoc.getElementById("sidebarContainer");
                     return !!(cont && cont.classList.contains(RP_OUTLINE_TAB_ON));
                 };
@@ -1831,6 +1837,9 @@ class _ReaderPanelsMixin {
                         const t = e.target;
                         if (!t || t.localName !== "input") return;
                         if (!t.closest || !t.closest("#sidebarContainer")) return;
+                        // Esc in the outline RENAME input cancels the rename --
+                        // that's the rename handler's job, not a search discard.
+                        if (t.classList && t.classList.contains("wv-outline-rename-input")) return;
                         // Esc in ANY sidebar search keeps focus IN the left
                         // pane (user request 2026-07-28) -- without this the
                         // reader reclaimed focus and the next keystrokes went
@@ -2206,6 +2215,9 @@ class _ReaderPanelsMixin {
                 let sawInput = false;
                 for (const inp of idoc.querySelectorAll("#sidebarContainer input") as any) {
                     if (inp.classList && inp.classList.contains("wv-bm-search-input")) continue;
+                    // Never read the outline RENAME input as a query -- its text is
+                    // the entry title being edited, not a search (2026-07-29).
+                    if (inp.classList && inp.classList.contains("wv-outline-rename-input")) continue;
                     if (inp.type && inp.type !== "text" && inp.type !== "search") continue;
                     if (inp.offsetParent === null) continue;
                     q = String(inp.value || "");

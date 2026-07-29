@@ -9917,6 +9917,25 @@ class _TabsMixin {
                     return;
                 }
             } catch (e) {}
+            // An unclaimed but ACTIVE user beats the quit-time descriptor too:
+            // the anchor main window carries no claim hook, so a click on it
+            // records nothing -- and the +10s backstop then raised the reader
+            // window right over the user's choice ("clicking the main window
+            // brings the reader window on the other monitor to front", traced
+            // 2026-07-29: 'restore: focused reader window' at t=5s AND t=15s).
+            // Recent OS input + a Zotero window that actually HAS focus =
+            // the user has chosen; leave focus where they put it.
+            try {
+                if (this._wvUserRecentlyActive(10000)) {
+                    const cur: any = Services.wm.getMostRecentWindow(null);
+                    if (cur && cur.document && typeof cur.document.hasFocus === "function"
+                            && cur.document.hasFocus()) {
+                        (this as any)._wvTrace("restore: focus re-assert skipped -- user active in '"
+                            + String(cur.document.title || "").slice(0, 30) + "'");
+                        return;
+                    }
+                }
+            } catch (e) {}
             const f = (this as any)._wvBootFocusedEntry;
             if (!f || !f.kind) return;
             let target: any = null;

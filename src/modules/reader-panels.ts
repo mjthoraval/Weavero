@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 10;   // v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT this bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 11;   // v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1872,7 +1872,17 @@ class _ReaderPanelsMixin {
                                     const w3: any = Zotero.getMainWindow();
                                     ((w3 && w3.setTimeout) ? w3.setTimeout.bind(w3) : setTimeout)(() => {
                                         try {
-                                            if (idoc.activeElement !== t0) return;   // manager moved focus fine
+                                            // "Stuck" isn't only focus-still-in-the-input:
+                                            // the manager's focus() on the hidden native
+                                            // view can BLUR the input without focusing
+                                            // anything, parking focus on <body> -- the
+                                            // old !== t0 check read that as success and
+                                            // never landed on a row (2026-07-29).
+                                            const ae3 = idoc.activeElement;
+                                            const stuck = (ae3 === t0) || !ae3
+                                                || ae3 === idoc.body || ae3 === idoc.documentElement
+                                                || (ae3.id === "sidebarContainer");
+                                            if (!stuck) return;   // manager genuinely moved focus
                                             const v3 = idoc.querySelector("." + (outlineOn ? RP_OUTLINE_VIEW_CLASS : RP_BM_VIEW_CLASS));
                                             if (!v3) return;
                                             // Land on the ITEMS, not the pane: the

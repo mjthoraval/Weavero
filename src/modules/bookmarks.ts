@@ -835,6 +835,18 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
+    /** Set a PAGE bookmark's page anchor ("top" clears the field -- top is the
+     *  default). Same choice as at creation; navigation honours it. */
+    async _bmReaderSetPageAnchor(libraryID: number, itemKey: string, id: string, anchor: string) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc || loc.entry.type !== "page") return;
+        if (anchor === "bottom") loc.entry.anchor = "bottom";
+        else delete loc.entry.anchor;
+        await this._bmPersist();
+    }
+
     /** The live source name for a bookmark's target — annotation text/comment,
      *  item title, collection/library name, or page. Returns null for targets
      *  with no derivable live source (text selections; deleted items). READ-ONLY:

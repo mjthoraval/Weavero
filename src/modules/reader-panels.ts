@@ -321,6 +321,15 @@ const RP_PLUS_20_SVG =
 // (was: 1.4-tall lines on fractional y → every edge anti-aliased).
 const RP_TEXT_SVG =
     '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3H10V5H3ZM3 7H13V9H3ZM3 11H10V13H3Z"/></svg>';
+// Page-anchor glyphs: an arrow toward a bar (top of page / bottom of page).
+// Shared by the outline add-menu and the page-bookmark anchor UI -- creation
+// and editing are the same choice, so they use the same icons.
+const WV_PAGE_TOP_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><path d="M3 3h10"/><path d="M8 13V6.5"/><path d="M5 9.5l3-3 3 3"/></svg>';
+const WV_PAGE_BOTTOM_SVG =
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><path d="M3 13h10"/><path d="M8 3v6.5"/><path d="M5 6.5l3 3 3-3"/></svg>';
 // Generic "item" glyph for the bookmark-type filter's Item category (attachment
 // / note / collection / library refs, i.e. everything that isn't an annotation).
 // A document outline with a folded top-right corner -- reads as "a thing in the
@@ -4035,6 +4044,47 @@ class _ReaderPanelsMixin {
      *  since it's only meaningful for hand-made entries that have no PDF heading
      *  to auto-locate: top/bottom of the current page, a manual pin (click), or
      *  a text selection (2026-07-23). */
+    /** The shared Top-of-page / Bottom-of-page choices -- one UI for the
+     *  outline add-menu, page-bookmark CREATION, and page-bookmark EDITING
+     *  (creation and editing are the same choice, so they look the same).
+     *  `current` marks the active anchor with a check (null = no checks). */
+    _wvPageAnchorChoices(page: any, current: string | null, onPick: (a: "top" | "bottom") => void): any[] {
+        const chk = (v: string) => (current == null ? "" : ((current === "bottom") === (v === "bottom") ? " ✓" : ""));
+        return [
+            { label: "Top of page " + page + chk("top"), icon: WV_PAGE_TOP_SVG, fn: () => onPick("top") },
+            { label: "Bottom of page " + page + chk("bottom"), icon: WV_PAGE_BOTTOM_SVG, fn: () => onPick("bottom") },
+        ];
+    }
+
+    /** Small standalone chooser menu built from `_wvPageAnchorChoices` --
+     *  used at page-bookmark creation (the native reader menu can't nest a
+     *  dropdown, so the menu item opens this at the click point). */
+    _wvShowPageAnchorMenu(reader: any, idoc: any, x: number, y: number, page: any, onPick: (a: "top" | "bottom") => void) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            for (const c of this._wvPageAnchorChoices(page, null, onPick)) {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic"; ic.innerHTML = c.icon;
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = c.label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { close(); c.fn(); });
+                menu.appendChild(it);
+            }
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const vw = (idoc.defaultView && idoc.defaultView.innerWidth) || 800;
+            const vh = (idoc.defaultView && idoc.defaultView.innerHeight) || 600;
+            menu.style.left = Math.max(6, Math.min(vw - 190, x)) + "px";
+            menu.style.top = Math.max(6, Math.min(vh - 90, y)) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, null, close);
+        } catch (_) {}
+    }
+
     _wvOutlineShowAddMenu(reader: any, idoc: any, anchor: any) {
         if (this._wvReadingModeActive(reader)) { this._wvReaderPanelNote(idoc, "Switch off Reading Mode to edit the outline."); return; }
         try {
@@ -4043,19 +4093,22 @@ class _ReaderPanelsMixin {
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const item = (label: string, fn: () => void) => {
+            const item = (label: string, icon: string, fn: () => void) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic"; ic.innerHTML = icon || "";
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
                 lb.textContent = label;
-                it.appendChild(lb);
+                it.appendChild(ic); it.appendChild(lb);
                 it.addEventListener("click", () => { close(); fn(); });
                 menu.appendChild(it);
             };
-            item("Top of page " + page, () => this._wvOutlineAddWithAnchor(reader, idoc, "top"));
-            item("Bottom of page " + page, () => this._wvOutlineAddWithAnchor(reader, idoc, "bottom"));
-            item("Pin a spot…", () => this._wvOutlineAddWithPin(reader, idoc));
-            item("Select text…", () => this._wvOutlineAddWithSelection(reader, idoc));
+            for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
+                item(c.label, c.icon, c.fn);
+            }
+            item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
+            item("Select text…", RP_TEXT_SVG, () => this._wvOutlineAddWithSelection(reader, idoc));
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -12862,6 +12915,17 @@ class _ReaderPanelsMixin {
                     item("Edit Bookmark…", RP_RENAME_SVG, () => {
                         this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
+                    // Page bookmark: anchor chooser -- the SAME Top/Bottom UI
+                    // used at creation (they are the same choice).
+                    if (entry.type === "page") {
+                        const pgNum = (entry.position && Number.isInteger(entry.position.pageIndex))
+                            ? entry.position.pageIndex + 1
+                            : (entry.location && Number.isInteger(entry.location.pageIndex)) ? entry.location.pageIndex + 1 : "?";
+                        const cur = entry.anchor === "bottom" ? "bottom" : "top";
+                        itemSub("Page Anchor", cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG,
+                            this._wvPageAnchorChoices(pgNum, cur, (a) =>
+                                this._bmReaderSetPageAnchor(att.libraryID, att.itemKey, entry.id, a).then(reRender)));
+                    }
                     {
                         // Gate on label-vs-original, not the `renamed` flag, so a
                         // previously-renamed bookmark with a stale flag still gets
@@ -13229,34 +13293,46 @@ class _ReaderPanelsMixin {
                             : "Add Bookmark to This Page";
                         bmItems.push({
                             label: LABEL_PAGE,
-                            onCommand: async () => {
-                                try {
-                                    const pageLabel = String(piCaptured + 1);
-                                    const rec: any = {
-                                        type: "page",
-                                        viewType: "pdf",
-                                        location: { pageIndex: piCaptured },
-                                        position: { pageIndex: piCaptured },
-                                        pageLabel,
-                                        label: "Page " + pageLabel,
-                                    };
-                                    if (isLib) {
-                                        await this._bmInit();
-                                        const node = Object.assign({
-                                            id: "wv-" + Zotero.Utilities.randomString(8),
-                                            srcLibraryID: att.libraryID,
-                                            srcItemKey: att.itemKey,
-                                            created: new Date().toISOString(),
-                                        }, rec);
-                                        this._bmDoc.bookmarks.push(node);
-                                        await this._bmPersist();
-                                    } else {
-                                        await this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true });
+                            onCommand: () => {
+                                // The native reader menu can't nest a dropdown, so
+                                // the command opens the shared Top/Bottom chooser
+                                // (same UI as editing a page bookmark's anchor and
+                                // as the outline add-menu) at the click point.
+                                const doAdd = async (a: "top" | "bottom") => {
+                                    try {
+                                        const pageLabel = String(piCaptured + 1);
+                                        const rec: any = {
+                                            type: "page",
+                                            viewType: "pdf",
+                                            location: { pageIndex: piCaptured },
+                                            position: { pageIndex: piCaptured },
+                                            pageLabel,
+                                            label: "Page " + pageLabel + (a === "bottom" ? " (bottom)" : ""),
+                                        };
+                                        if (a === "bottom") rec.anchor = "bottom";
+                                        if (isLib) {
+                                            await this._bmInit();
+                                            const node = Object.assign({
+                                                id: "wv-" + Zotero.Utilities.randomString(8),
+                                                srcLibraryID: att.libraryID,
+                                                srcItemKey: att.itemKey,
+                                                created: new Date().toISOString(),
+                                            }, rec);
+                                            this._bmDoc.bookmarks.push(node);
+                                            await this._bmPersist();
+                                        } else {
+                                            await this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true });
+                                        }
+                                        if (idoc) this._wvReaderRenderBmList(reader, idoc);
+                                    } catch (e) {
+                                        Zotero.debug("[Weavero] view-menu Add Page Bookmark err: " + e);
                                     }
-                                    if (idoc) this._wvReaderRenderBmList(reader, idoc);
-                                } catch (e) {
-                                    Zotero.debug("[Weavero] view-menu Add Page Bookmark err: " + e);
-                                }
+                                };
+                                try {
+                                    const mx = (click && typeof click.x === "number") ? click.x : 300;
+                                    const my = (click && typeof click.y === "number") ? click.y : 200;
+                                    this._wvShowPageAnchorMenu(reader, idoc, mx, my, piCaptured + 1, (a) => { doAdd(a); });
+                                } catch (_) { doAdd("top"); }
                             },
                         });
                     }
@@ -14535,6 +14611,15 @@ class _ReaderPanelsMixin {
                         ? bm.location.pageIndex
                         : null;
                 if (pi != null) {
+                    // Anchor honours the same top/bottom choice as outline page
+                    // anchors (bottom aligns the page bottom to the view).
+                    if (bm.anchor === "bottom") {
+                        try {
+                            const pvB = reader._internalReader
+                                && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                            if (pvB) { this._wvOutlineNavPageBottom(reader, pvB, pi); return; }
+                        } catch (_) {}
+                    }
                     try { reader.navigate({ pageIndex: pi }); } catch (_) {}
                 }
                 return;

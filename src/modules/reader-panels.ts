@@ -2424,31 +2424,48 @@ class _ReaderPanelsMixin {
      *  the mapped range, tip at the target. Display-only -- dragging a pin to
      *  MOVE it stays a base-view action (the reflow has no PDF coordinates to
      *  write back). Fades like the base-view pin. */
-    _wvRmShowPin(reader: any, sdtv: any, rect: any) {
+    _wvRmShowPin(reader: any, sdtv: any, range: any, frac?: number) {
         try {
             const iwin = (Components as any).utils.waiveXrays(sdtv._iframeWindow);
             const doc = iwin && iwin.document;
-            if (!doc || !doc.body || !rect) return;
+            if (!doc || !doc.body || !range) return;
             try { const old = doc.querySelector(".wv-rm-pin"); if (old) old.remove(); } catch (_) {}
             const PIN_H = 30;
-            // Viewport rect -> document coords (valid across the scroll that
-            // follows, which is why this is computed before landing).
-            const x = Math.round(rect.left + (iwin.scrollX || 0));
-            const y = Math.round(rect.top + (iwin.scrollY || 0));
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-rm-pin";
             pin.setAttribute("style", "position:absolute;z-index:9999;pointer-events:none;"
-                + "width:" + PIN_H + "px;height:" + PIN_H + "px;"
-                + "left:" + Math.max(0, x - PIN_H) + "px;top:" + Math.max(0, y - PIN_H) + "px;"
-                + "transition:opacity .5s ease;opacity:1;");
+                + "width:" + PIN_H + "px;height:" + PIN_H + "px;transition:opacity .5s ease;opacity:1;");
             pin.innerHTML = WV_PIN_ICON_SVG;
             doc.body.appendChild(pin);
-            // Fade on the CHROME clock: content-iframe timers are throttled
-            // when the page isn't painting (same trap the outline flash hit).
+            // RE-MEASURE the live range instead of freezing document coords:
+            // the reflow re-lays-out on zoom / font-size / width changes, so a
+            // fixed left/top drifted away from its text (reported 2026-07-29).
+            // The tip (bottom-left of the glyph) sits at the requested fraction
+            // along the run, on its baseline.
+            const f = Math.max(0, Math.min(1, typeof frac === "number" ? frac : 0));
+            const place = () => {
+                try {
+                    if (!pin.isConnected) return false;
+                    const rects = range.getClientRects();
+                    const rr = (rects && rects.length) ? rects[rects.length - 1] : range.getBoundingClientRect();
+                    if (!rr || (!rr.width && !rr.height)) return false;
+                    const tipX = rr.left + rr.width * f + (iwin.scrollX || 0);
+                    const tipY = rr.bottom + (iwin.scrollY || 0);
+                    pin.style.left = Math.max(0, Math.round(tipX)) + "px";
+                    pin.style.top = Math.max(0, Math.round(tipY - PIN_H)) + "px";
+                    return true;
+                } catch (_) { return false; }
+            };
+            place();
+            // Track layout changes for as long as the pin is up (zoom, width
+            // drag, font change): cheap re-measure on the chrome clock.
             const w: any = Zotero.getMainWindow();
             const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            const iv = (w && w.setInterval) ? w.setInterval.bind(w) : setInterval;
+            const ci = (w && w.clearInterval) ? w.clearInterval.bind(w) : clearInterval;
+            const timer = iv(() => { if (!place()) { try { ci(timer); } catch (_) {} } }, 250);
             st(() => { try { pin.style.opacity = "0"; } catch (_) {} }, 3500);
-            st(() => { try { pin.remove(); } catch (_) {} }, 4200);
+            st(() => { try { ci(timer); } catch (_) {} try { pin.remove(); } catch (_) {} }, 4200);
         } catch (e) { Zotero.debug("[Weavero] _wvRmShowPin err: " + e); }
     }
 
@@ -2475,7 +2492,10 @@ class _ReaderPanelsMixin {
             const tc = (Components as any).utils.waiveXrays(await page.getTextContent());
             const toPos = (it: any) => {
                 const bx = it.transform[4], by = it.transform[5];
-                return { pageIndex, rects: [[bx, by, bx + (it.width || 120), by + (it.height || 10)]] };
+                const r = [bx, by, bx + (it.width || 120), by + (it.height || 10)];
+                // `srcRect` lets the caller place a marker WITHIN the mapped
+                // run (a pin at the end of a line must not jump to its start).
+                return { pageIndex, rects: [r], srcRect: r };
             };
             const items = [];
             for (const it of tc.items) { if (it && it.str && it.str.trim()) items.push(it); }
@@ -2489,14 +2509,19 @@ class _ReaderPanelsMixin {
             else if (mode === "pageBottom") score = (it) => it.transform[5]; // min y first
             else {
                 score = (it) => {
-                    const ix = it.transform[4], iy = it.transform[5];
-                    const dy = y - iy;
-                    // tight heading window scores best; then general proximity.
+                    // Distance from the point to the run's BOX (0 inside), not
+                    // to its origin: a pin at the end of a line used to score
+                    // worse than a run one or two lines away, because every run
+                    // starts at the left margin so the x-term was ~constant and
+                    // the wrong line won (reported 2026-07-29).
+                    const x0 = it.transform[4], y0 = it.transform[5];
+                    const x1 = x0 + (it.width || 0), y1 = y0 + (it.height || 10);
+                    const dx = (x < x0) ? (x0 - x) : (x > x1 ? x - x1 : 0);
+                    const dy = (y < y0) ? (y0 - y) : (y > y1 ? y - y1 : 0);
                     // Very short runs (single-char figure axis labels) reliably
                     // FAIL to map into the reflow -- push them to the back.
-                    const inWin = (dy >= -8 && dy <= 40 && ix >= x - 20 && ix <= x + 350);
                     const shortPenalty = (String(it.str).trim().length < 3) ? 500 : 0;
-                    return (inWin ? 0 : 1000) + shortPenalty + Math.abs(dy) + ((iy > y) ? 30 : 0) + 0.3 * Math.abs(x - ix);
+                    return shortPenalty + dy * 3 + dx;   // same line beats a nearer x elsewhere
                 };
             }
             items.sort((a, b) => score(a) - score(b));
@@ -2585,7 +2610,7 @@ class _ReaderPanelsMixin {
                     if (!rg) return null;
                     const rr = rg.getBoundingClientRect();
                     if (!rr || (rr.width === 0 && rr.height === 0)) return null;
-                    return { range: rg, sel: cpos, rect: rr };
+                    return { range: rg, sel: cpos, rect: rr, srcRect: cand.srcRect || null };
                 } catch (_) { return null; }
             };
             const landOn = (hit: any, noSpot?: boolean) => {
@@ -2649,8 +2674,16 @@ class _ReaderPanelsMixin {
             }
             if (hit && isPin) {
                 // A pin is a PLACE: no text highlight, but DO show the pin
-                // marker (RM-native version -- see _wvRmShowPin).
-                this._wvRmShowPin(reader, sdtv, hit.rect);
+                // marker (RM-native version -- see _wvRmShowPin). Place it at
+                // the same FRACTION along the run the pin sat at in the PDF, so
+                // an end-of-line pin doesn't jump to the line's start.
+                let frac = 0;
+                try {
+                    const p0 = (tgtA.rects && tgtA.rects[0]) || null;
+                    const sr = hit.srcRect;
+                    if (p0 && sr && sr[2] > sr[0]) frac = Math.max(0, Math.min(1, (p0[0] - sr[0]) / (sr[2] - sr[0])));
+                } catch (_) {}
+                this._wvRmShowPin(reader, sdtv, hit.range, frac);
                 landOn(hit, true);
                 return;
             }

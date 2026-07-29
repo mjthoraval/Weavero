@@ -2436,7 +2436,7 @@ class _ReaderPanelsMixin {
      *  the mapped range, tip at the target. Display-only -- dragging a pin to
      *  MOVE it stays a base-view action (the reflow has no PDF coordinates to
      *  write back). Fades like the base-view pin. */
-    _wvRmShowPin(reader: any, sdtv: any, sel: any, frac?: number, icon?: string) {
+    _wvRmShowPin(reader: any, sdtv: any, sel: any, frac?: number, icon?: string, atBlockEnd?: boolean) {
         try {
             const iwin = (Components as any).utils.waiveXrays(sdtv._iframeWindow);
             const doc = iwin && iwin.document;
@@ -2467,6 +2467,26 @@ class _ReaderPanelsMixin {
             // The tip (bottom-left of the glyph) sits at the requested fraction
             // along the run, on its baseline.
             const f = Math.max(0, Math.min(1, typeof frac === "number" ? frac : 0));
+            // The reflow nests [data-ref-path] elements, so `closest()` finds an
+            // INLINE sub-block whose text ends mid-paragraph -- that is why an
+            // end-of-paragraph pin landed 180px short (2026-07-29). Walk up to
+            // the direct child of #sdt-content, i.e. the paragraph itself.
+            const topBlock = (node: any) => {
+                try {
+                    // The nearest BLOCK-LEVEL ancestor = the paragraph. Neither
+                    // extreme worked: closest('[data-ref-path]') stops at an
+                    // inline sub-block (marker landed mid-paragraph) and the
+                    // direct child of #sdt-content is a full-width section
+                    // wrapper (marker flew into the far margin). 2026-07-29.
+                    let el = node && (node.nodeType === 1 ? node : node.parentElement);
+                    while (el && el !== doc.body) {
+                        const disp = iwin.getComputedStyle(el).display;
+                        if (disp && disp.indexOf("inline") !== 0) return el;
+                        el = el.parentElement;
+                    }
+                    return null;
+                } catch (_) { return null; }
+            };
             const place = () => {
                 try {
                     if (!pin.isConnected) return false;
@@ -2499,19 +2519,66 @@ class _ReaderPanelsMixin {
                     const br = bodyEl.getBoundingClientRect();
                     const z = (br.width && bodyEl.offsetWidth) ? (br.width / bodyEl.offsetWidth) : 1;
                     const atStart = f <= 0.15;
+                    // End-of-paragraph pin: use the block's LAST line end.
+                    if (atBlockEnd) {
+                        try {
+                            const blk2 = topBlock(range.startContainer);
+                            if (blk2) {
+                                // A collapsed RANGE at the end of the block's
+                                // contents gives the caret rect where the TEXT
+                                // ends. The element's last client rect is the
+                                // line BOX, which spans the whole column, so it
+                                // put the pin ~180px past the words
+                                // (2026-07-29).
+                                let last: any = null;
+                                try {
+                                    // Collapse INSIDE the last non-blank text
+                                    // node: an element-boundary collapse gives
+                                    // an EMPTY rect in Gecko, and the element's
+                                    // line box spans the whole column, so both
+                                    // put the pin past the words (2026-07-29).
+                                    const tw = doc.createTreeWalker(blk2, 4 /* SHOW_TEXT */);
+                                    let lastText: any = null;
+                                    while (tw.nextNode()) {
+                                        if (String(tw.currentNode.nodeValue || "").trim()) lastText = tw.currentNode;
+                                    }
+                                    if (lastText) {
+                                        const txt = String(lastText.nodeValue || "");
+                                        const endRg = doc.createRange();
+                                        endRg.setStart(lastText, txt.replace(/\s+$/, "").length);
+                                        endRg.collapse(true);
+                                        const er = endRg.getBoundingClientRect();
+                                        if (er && er.height) last = er;
+                                    }
+                                } catch (_) {}
+                                if (!last) {
+                                    const brs = blk2.getClientRects();
+                                    last = brs && brs.length ? brs[brs.length - 1] : blk2.getBoundingClientRect();
+                                }
+                                if (last && (last.width || last.height)) {
+                                    const bodyEl2 = doc.body;
+                                    const br2 = bodyEl2.getBoundingClientRect();
+                                    const z2 = (br2.width && bodyEl2.offsetWidth) ? (br2.width / bodyEl2.offsetWidth) : 1;
+                                    const tipX2 = (last.right - br2.left) / (z2 || 1);
+                                    const tipY2 = (last.bottom - br2.top) / (z2 || 1);
+                                    pin.style.left = Math.max(0, Math.round(tipX2 - W / 2)) + "px";
+                                    pin.style.top = Math.max(0, Math.round(tipY2 - H)) + "px";
+                                    return true;
+                                }
+                            }
+                        } catch (_) {}
+                    }
                     let blockLeft = rr.left;
                     if (!isPinGlyph) {
                         try {
-                            const startEl = range.startContainer && (range.startContainer.nodeType === 1
-                                ? range.startContainer : range.startContainer.parentElement);
-                            const blk = startEl && startEl.closest && startEl.closest("[data-ref-path]");
+                            const blk = topBlock(range.startContainer);
                             if (blk) blockLeft = blk.getBoundingClientRect().left;
                         } catch (_) {}
                     }
                     const baseX = isPinGlyph ? (rr.left + rr.width * f) : blockLeft;
                     let tipX = (baseX - br.left) / (z || 1);
                     if (isPinGlyph) { if (atStart) tipX -= Math.round(W * 0.58); }
-                    else { tipX -= (W + 8); }
+                    else { tipX -= Math.round(W * 0.75); }   // page glyph: tuck closer to the text (2026-07-29)
                     const tipY = (rr.bottom - br.top) / (z || 1);
                     const leftPx = isPinGlyph ? (tipX - W / 2) : tipX;
                     pin.style.left = Math.max(0, Math.round(leftPx)) + "px";
@@ -2750,12 +2817,19 @@ class _ReaderPanelsMixin {
                 // the same FRACTION along the run the pin sat at in the PDF, so
                 // an end-of-line pin doesn't jump to the line's start.
                 let frac = 0;
+                let atBlockEnd = false;
                 try {
                     const p0 = (tgtA.rects && tgtA.rects[0]) || null;
                     const sr = hit.srcRect;
                     if (p0 && sr && sr[2] > sr[0]) frac = Math.max(0, Math.min(1, (p0[0] - sr[0]) / (sr[2] - sr[0])));
+                    // A pin sitting at/BEYOND the end of its PDF run is an
+                    // "end of paragraph" pin: in the reflow that run continues
+                    // mid-line, so anchoring to its end dropped the pin into
+                    // the middle of the text (reported 2026-07-29). Anchor to
+                    // the END OF THE BLOCK instead.
+                    if (p0 && sr && p0[0] >= sr[2] - 1) atBlockEnd = true;
                 } catch (_) {}
-                this._wvRmShowPin(reader, sdtv, hit.sel, frac);
+                this._wvRmShowPin(reader, sdtv, hit.sel, frac, undefined, atBlockEnd);
                 landOn(hit, true);
                 return;
             }

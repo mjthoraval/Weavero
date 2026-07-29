@@ -2338,6 +2338,58 @@ class _ReaderPanelsMixin {
         return out;
     }
 
+    /** Navigate the Reading Mode overlay to a "This Document" BOOKMARK, by
+     *  mapping each bookmark shape onto the outline RM resolver's node shape
+     *  (`_wvOutlineRmNavigate`), so both panes behave identically in RM:
+     *  text selections highlight and land 1/4 from the top; pins and page
+     *  bookmarks are PLACES (no highlight, and they clear a previous one).
+     *  Annotation bookmarks go through the reader's own annotation
+     *  navigation -- the overlay renders annotations itself. 2026-07-29. */
+    _wvBmRmNavigate(reader: any, idoc: any, bm: any) {
+        try {
+            if (!bm) return;
+            // Annotation bookmark: the SDT overlay maps annotations, so the
+            // reader's own navigate handles it (and selects the annotation).
+            if (bm.type === "item" && bm.itemKey) {
+                try {
+                    const sdtv0 = this._wvOutlineRmView(reader);
+                    if (sdtv0) this._wvClearStaleRmSpotlight(sdtv0);
+                } catch (_) {}
+                try { reader.navigate({ annotationID: bm.itemKey }); } catch (_) {}
+                try {
+                    const iwin: any = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+                    const idsArr: any = (iwin && (Components as any).utils)
+                        ? (Components as any).utils.cloneInto([bm.itemKey], iwin) : [bm.itemKey];
+                    reader.setSelectedAnnotations(idsArr, true);
+                } catch (_) {}
+                return;
+            }
+            const pi = (bm.position && Number.isInteger(bm.position.pageIndex))
+                ? bm.position.pageIndex
+                : (bm.location && Number.isInteger(bm.location.pageIndex)) ? bm.location.pageIndex : null;
+            let node: any = null;
+            if (bm.type === "page") {
+                if (pi == null) return;
+                // Page bookmarks are page ANCHORS -- top unless set to bottom.
+                node = { title: bm.label || "", position: { pageIndex: pi, rects: [[0, 0, 0, 0]], anchor: bm.anchor === "bottom" ? "bottom" : "top" } };
+            } else if (bm.type === "position") {
+                if (!bm.position || !bm.position.rects || !bm.position.rects.length) return;
+                node = { title: bm.label || "", position: Object.assign({}, bm.position, { anchor: "point" }) };
+            } else if (bm.type === "text") {
+                if (!bm.position) return;
+                node = { title: bm.label || "", position: bm.position };
+            }
+            if (!node) return;
+            Promise.resolve(this._wvOutlineRmNavigate(reader, idoc, node)).catch(() => {});
+        } catch (e) { Zotero.debug("[Weavero] _wvBmRmNavigate err: " + e); }
+    }
+
+    /** Clear a showing RM navigation spotlight (place navigations supersede a
+     *  previous text highlight -- same rule as the base view). */
+    _wvClearStaleRmSpotlight(sdtv: any) {
+        try { sdtv.setSpotlight("Navigation", null); } catch (_) {}
+    }
+
     /** Resolve a POINT position (degenerate rect -- embedded destinations) to a
      *  real text rect via the base view's page text: the destination point sits
      *  at/above the heading's top-left, so take the first text item within a
@@ -11246,8 +11298,15 @@ class _ReaderPanelsMixin {
         try {
             if (this._wvReadingModeActive(reader) && !bm.url && this._wvReaderBookmarkIsLocal(reader, bm)) {
                 const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
-                this._wvReaderNotifyReadingMode(reader, iwin && iwin.document);
-                return;
+                const idocR = iwin && iwin.document;
+                // Plain click (no modifiers) navigates the Reading Mode overlay
+                // through the same resolver the outline uses. Ctrl/Shift keep
+                // their meaning (show in library / open in a new window), which
+                // don't touch the hidden base view. 2026-07-29.
+                if (!(e && (e.ctrlKey || e.metaKey || e.shiftKey))) {
+                    this._wvBmRmNavigate(reader, idocR, bm);
+                    return;
+                }
             }
         } catch (_) {}
         // URL / app-link bookmark — hand off to the OS browser via

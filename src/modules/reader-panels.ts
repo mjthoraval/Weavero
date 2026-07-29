@@ -8642,8 +8642,13 @@ class _ReaderPanelsMixin {
                     // NEVER leave the sidebar with no renderable view: an
                     // undefined view (not our sentinel, no restore pending)
                     // shows an empty pane -- put it back on annotations once.
-                    if (cur === undefined && lastSet !== RP_BM_SIDEBAR_VIEW && !reader._wvSidebarViewHealed) {
-                        reader._wvSidebarViewHealed = true;
+                    // Rate-limited, NOT once-ever: a boolean latch persisted on
+                    // the reader across plugin reloads and permanently disabled
+                    // the rescue (observed live 2026-07-29).
+                    const nowH = Date.now();
+                    if (cur === undefined && lastSet !== RP_BM_SIDEBAR_VIEW
+                            && nowH - (reader._wvSidebarViewHealAt || 0) > 5000) {
+                        reader._wvSidebarViewHealAt = nowH;
                         const back2 = reader._wvPrevSidebarView || "annotations";
                         reader._wvSidebarViewSet = back2;
                         ir.setSidebarView(back2);
@@ -8666,7 +8671,7 @@ class _ReaderPanelsMixin {
                             } catch (_) {}
                         }, 700);
                     }
-                    if (cur !== undefined) reader._wvSidebarViewHealed = false;
+                    if (cur !== undefined) reader._wvSidebarViewHealAt = 0;
                 }
             } catch (_) {}
         } catch (e) {

@@ -5046,8 +5046,29 @@ class _ReaderPanelsMixin {
 
                 const title = idoc.createElementNS(NS, "div");
                 title.className = "wv-bm-url-dialog-label";
-                title.textContent = "Edit Position";
+                title.textContent = (opts && opts.title) || "Edit Position";
                 title.setAttribute("style", "font-size:13px;opacity:.9;margin-bottom:2px;");
+
+                // Optional NAME field. Page BOOKMARKS edit name, position and
+                // comment in ONE window -- two menu rows ("Edit Bookmark…" and
+                // "Edit Position…") for what is one thing was confusing (user
+                // request 2026-07-29). Outline callers pass no opts and keep
+                // the position-only dialog.
+                let nInput: any = null;
+                let nameRow: any = null;
+                if (opts && opts.withName) {
+                    nameRow = idoc.createElementNS(NS, "div");
+                    nameRow.className = "wv-bm-url-dialog-row";
+                    const nLbl = idoc.createElementNS(NS, "label");
+                    nLbl.className = "wv-bm-url-dialog-label";
+                    nLbl.textContent = "Name";
+                    nInput = idoc.createElementNS(NS, "input");
+                    nInput.className = "wv-bm-url-dialog-input";
+                    nInput.setAttribute("type", "text");
+                    nInput.setAttribute("style", "font:inherit;");
+                    nInput.value = String(opts.name || "");
+                    nameRow.appendChild(nLbl); nameRow.appendChild(nInput);
+                }
 
                 const pageRow = idoc.createElementNS(NS, "div");
                 pageRow.className = "wv-bm-url-dialog-row";
@@ -5111,7 +5132,9 @@ class _ReaderPanelsMixin {
                 okBtn.textContent = "OK"; okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
                 btnRow.appendChild(cancelBtn); btnRow.appendChild(okBtn);
 
-                dlg.appendChild(title); dlg.appendChild(pageRow); dlg.appendChild(posRow);
+                dlg.appendChild(title);
+                if (nameRow) dlg.appendChild(nameRow);
+                dlg.appendChild(pageRow); dlg.appendChild(posRow);
                 if (commentRow) dlg.appendChild(commentRow);
                 dlg.appendChild(btnRow);
                 backdrop.appendChild(dlg);
@@ -5125,6 +5148,7 @@ class _ReaderPanelsMixin {
                     if (pageCount) page = Math.min(page, pageCount);
                     const out: any = { page, bottom: !!botR.checked };
                     if (cInput) out.comment = String(cInput.value || "").trim();
+                    if (nInput) out.name = String(nInput.value || "").trim();
                     finish(out);
                 };
                 cancelBtn.addEventListener("click", () => finish(null));
@@ -5136,7 +5160,9 @@ class _ReaderPanelsMixin {
                     else if (e.key === "Enter" && !(cInput && e.target === cInput)) { e.preventDefault(); submit(); }
                 };
                 dlg.addEventListener("keydown", onKey);
-                try { pInput.focus(); pInput.select(); } catch (_) {}
+                // Focus the first field: the name when present (that's what an
+                // "Edit Bookmark…" click most often means), else the page.
+                try { const f = nInput || pInput; f.focus(); f.select(); } catch (_) {}
             } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPositionDialog err: " + e); resolve(null); }
         });
     }
@@ -13655,16 +13681,15 @@ class _ReaderPanelsMixin {
                     // target IS the open document, so there's nothing distinct
                     // to reveal (kept only for "Elsewhere in Zotero" items).
                     sep();
-                    // Unified edit: title + comment together in one dialog.
-                    item("Edit Bookmark…", RP_RENAME_SVG, () => {
-                        this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
-                    });
-                    // Page bookmark: "Edit Position…" -- the SAME page+top/bottom
-                    // dialog outline page entries use, extended with the
-                    // bookmark's comment (user request 2026-07-29).
+                    // ONE edit entry per bookmark. A page bookmark's name,
+                    // position and comment are facets of the same thing, so
+                    // splitting them across "Edit Bookmark…" and "Edit
+                    // Position…" just made the user pick a door (2026-07-29);
+                    // its dialog is the position one with a Name field. Every
+                    // other type keeps the shared title+comment editor.
                     if (entry.type === "page") {
                         const cur = entry.anchor === "bottom" ? "bottom" : "top";
-                        item("Edit Position…", cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG, async () => {
+                        item("Edit Bookmark…", cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG, async () => {
                             try {
                                 const curIdx = (entry.position && Number.isInteger(entry.position.pageIndex))
                                     ? entry.position.pageIndex
@@ -13676,15 +13701,40 @@ class _ReaderPanelsMixin {
                                     pageCount = (app && app.pdfViewer && app.pdfViewer.pagesCount) || 0;
                                 } catch (_) {}
                                 const res = await this._wvOutlineEditPositionDialog(idoc, curIdx + 1, cur === "bottom", pageCount,
-                                    { withComment: true, comment: entry.comment || "" });
+                                    { title: "Edit Bookmark", withName: true, name: entry.label || "",
+                                      withComment: true, comment: entry.comment || "" });
                                 if (!res) return;
+                                const name = String(res.name || "");
+                                // Snapshot the label BEFORE any write: `entry` is
+                                // a live reference into the store, so the position
+                                // update below rewrites `entry.label` in place --
+                                // comparing against it afterwards turned an
+                                // untouched automatic name into a manual rename,
+                                // freezing the label at the old page.
+                                const prevLabel = String(entry.label || "");
+                                // ORDER: `_bmReaderSetPageDetails` refreshes the
+                                // auto "Page N" label only while the bookmark is
+                                // NOT renamed. So drop a rename FIRST (an empty
+                                // name means "back to automatic") and apply a new
+                                // one LAST -- otherwise clearing the name while
+                                // also moving the page resurrected the label of
+                                // the OLD page.
+                                if (!name) await this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id);
                                 await this._bmReaderSetPageDetails(att.libraryID, att.itemKey, entry.id, {
                                     pageIndex: res.page - 1,
                                     anchor: res.bottom ? "bottom" : null,
                                     comment: res.comment,
                                 });
+                                if (name && name !== prevLabel) {
+                                    await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, name);
+                                }
+                                this._wvMarkBmFocus(reader, entry.id);
                                 reRender();
-                            } catch (e2) { Zotero.debug("[Weavero] bm Edit Position err: " + e2); }
+                            } catch (e2) { Zotero.debug("[Weavero] bm Edit Bookmark (page) err: " + e2); }
+                        });
+                    } else {
+                        item("Edit Bookmark…", RP_RENAME_SVG, () => {
+                            this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                         });
                     }
                     {

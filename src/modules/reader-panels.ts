@@ -2390,6 +2390,42 @@ class _ReaderPanelsMixin {
         try { sdtv.setSpotlight("Navigation", null); } catch (_) {}
     }
 
+    /** Drop the 📌 marker in the READING MODE overlay. `_wvReaderShowPin` can't
+     *  serve here -- it measures PDF page viewports and deliberately no-ops in
+     *  RM (it would draw onto the hidden base view), so a pin entry navigated
+     *  but showed no pin (reported 2026-07-29). This positions the same glyph
+     *  in the reflowed document instead: absolute document coords derived from
+     *  the mapped range, tip at the target. Display-only -- dragging a pin to
+     *  MOVE it stays a base-view action (the reflow has no PDF coordinates to
+     *  write back). Fades like the base-view pin. */
+    _wvRmShowPin(reader: any, sdtv: any, rect: any) {
+        try {
+            const iwin = (Components as any).utils.waiveXrays(sdtv._iframeWindow);
+            const doc = iwin && iwin.document;
+            if (!doc || !doc.body || !rect) return;
+            try { const old = doc.querySelector(".wv-rm-pin"); if (old) old.remove(); } catch (_) {}
+            const PIN_H = 30;
+            // Viewport rect -> document coords (valid across the scroll that
+            // follows, which is why this is computed before landing).
+            const x = Math.round(rect.left + (iwin.scrollX || 0));
+            const y = Math.round(rect.top + (iwin.scrollY || 0));
+            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            pin.className = "wv-rm-pin";
+            pin.setAttribute("style", "position:absolute;z-index:9999;pointer-events:none;"
+                + "width:" + PIN_H + "px;height:" + PIN_H + "px;"
+                + "left:" + Math.max(0, x - PIN_H) + "px;top:" + Math.max(0, y - PIN_H) + "px;"
+                + "transition:opacity .5s ease;opacity:1;");
+            pin.innerHTML = WV_PIN_ICON_SVG;
+            doc.body.appendChild(pin);
+            // Fade on the CHROME clock: content-iframe timers are throttled
+            // when the page isn't painting (same trap the outline flash hit).
+            const w: any = Zotero.getMainWindow();
+            const st = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => { try { pin.style.opacity = "0"; } catch (_) {} }, 3500);
+            st(() => { try { pin.remove(); } catch (_) {} }, 4200);
+        } catch (e) { Zotero.debug("[Weavero] _wvRmShowPin err: " + e); }
+    }
+
     /** Resolve a POINT position (degenerate rect -- embedded destinations) to a
      *  real text rect via the base view's page text: the destination point sits
      *  at/above the heading's top-left, so take the first text item within a
@@ -2585,7 +2621,13 @@ class _ReaderPanelsMixin {
                     }
                 }
             }
-            if (hit && isPin) { landOn(hit, true); return; }   // a pin is a PLACE -- no text highlight
+            if (hit && isPin) {
+                // A pin is a PLACE: no text highlight, but DO show the pin
+                // marker (RM-native version -- see _wvRmShowPin).
+                this._wvRmShowPin(reader, sdtv, hit.rect);
+                landOn(hit, true);
+                return;
+            }
             if (!hit) {
                 // Title match against the RM outline (scanned docs, figure pins…).
                 const want = String((node.source && node.source.title) || node.title || "").trim().toLowerCase();

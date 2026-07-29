@@ -2432,11 +2432,11 @@ class _ReaderPanelsMixin {
      *  the mapped range, tip at the target. Display-only -- dragging a pin to
      *  MOVE it stays a base-view action (the reflow has no PDF coordinates to
      *  write back). Fades like the base-view pin. */
-    _wvRmShowPin(reader: any, sdtv: any, range: any, frac?: number, icon?: string) {
+    _wvRmShowPin(reader: any, sdtv: any, sel: any, frac?: number, icon?: string) {
         try {
             const iwin = (Components as any).utils.waiveXrays(sdtv._iframeWindow);
             const doc = iwin && iwin.document;
-            if (!doc || !doc.body || !range) return;
+            if (!doc || !doc.body || !sel) return;
             try { const old = doc.querySelector(".wv-rm-pin"); if (old) old.remove(); } catch (_) {}
             // Geometry per glyph. The PIN uses the base view's tip-anchored
             // drawing (RP_PIN_TIP_SVG: tip at bottom-CENTRE of its box) so the
@@ -2466,9 +2466,17 @@ class _ReaderPanelsMixin {
             const place = () => {
                 try {
                     if (!pin.isConnected) return false;
+                    // RE-RESOLVE the range from the stored SELECTOR every tick,
+                    // the way Zotero's own annotation overlay re-derives its
+                    // rects on each view update. A held Range goes stale when a
+                    // scale change re-renders the content: measurement then
+                    // failed silently and the marker froze at pre-reflow
+                    // coordinates -- invisible at any zoom but 1x (2026-07-29).
+                    const range = sdtv.toDisplayedRange(sel);
+                    if (!range) return true;   // transient during re-render: keep trying
                     const rects = range.getClientRects();
                     const rr = (rects && rects.length) ? rects[rects.length - 1] : range.getBoundingClientRect();
-                    if (!rr || (!rr.width && !rr.height)) return false;
+                    if (!rr || (!rr.width && !rr.height)) return true;   // keep trying
                     // Markers never sit on the text (asked 2026-07-29):
                     //  - PIN: tip-anchored at its bottom-CENTRE, so half its
                     //    width lies right of the tip; a start-of-line pin
@@ -2476,12 +2484,22 @@ class _ReaderPanelsMixin {
                     //  - PAGE anchor: a whole-page marker belongs in the LEFT
                     //    MARGIN (as in the base view), so it is always placed
                     //    entirely left of the line start, whatever `f` says.
+                    // COORDINATE SPACE: the overlay scales visually (RM zoom),
+                    // so viewport rects are in scaled px while absolute
+                    // left/top are laid out in the body's LOCAL px. Mixing the
+                    // two put the marker thousands of px off-screen at any zoom
+                    // but 1x ("cannot see the pin at other zoom levels",
+                    // 2026-07-29). Convert through the body's own box, which
+                    // also removes the need for scrollX/scrollY.
+                    const bodyEl = doc.body;
+                    const br = bodyEl.getBoundingClientRect();
+                    const z = (br.width && bodyEl.offsetWidth) ? (br.width / bodyEl.offsetWidth) : 1;
                     const atStart = f <= 0.15;
                     const baseX = isPinGlyph ? (rr.left + rr.width * f) : rr.left;
-                    let tipX = baseX + (iwin.scrollX || 0);
+                    let tipX = (baseX - br.left) / (z || 1);
                     if (isPinGlyph) { if (atStart) tipX -= Math.round(W * 0.58); }
                     else { tipX -= (W + 8); }
-                    const tipY = rr.bottom + (iwin.scrollY || 0);
+                    const tipY = (rr.bottom - br.top) / (z || 1);
                     const leftPx = isPinGlyph ? (tipX - W / 2) : tipX;
                     pin.style.left = Math.max(0, Math.round(leftPx)) + "px";
                     pin.style.top = Math.max(0, Math.round(tipY - H)) + "px";
@@ -2666,7 +2684,7 @@ class _ReaderPanelsMixin {
                     if (hit) {
                         // Page anchors get their own marker in RM too (the
                         // page-anchor twin of the pin marker).
-                        this._wvRmShowPin(reader, sdtv, hit.range, tgtA.anchor === "bottom" ? 1 : 0,
+                        this._wvRmShowPin(reader, sdtv, hit.sel, tgtA.anchor === "bottom" ? 1 : 0,
                             tgtA.anchor === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG);
                         landOn(hit, true);
                         return;
@@ -2724,7 +2742,7 @@ class _ReaderPanelsMixin {
                     const sr = hit.srcRect;
                     if (p0 && sr && sr[2] > sr[0]) frac = Math.max(0, Math.min(1, (p0[0] - sr[0]) / (sr[2] - sr[0])));
                 } catch (_) {}
-                this._wvRmShowPin(reader, sdtv, hit.range, frac);
+                this._wvRmShowPin(reader, sdtv, hit.sel, frac);
                 landOn(hit, true);
                 return;
             }
@@ -4253,6 +4271,29 @@ class _ReaderPanelsMixin {
     /** The 0-based index of the page currently shown in the reader (the page
      *  the user is looking at) -- the basis for the "Set Target" page anchors. */
     _wvOutlineCurrentPageIndex(reader: any): number {
+        // Reading Mode: the base view is hidden and its currentPageNumber is
+        // stale, so derive the page from the topmost visible reflow block via
+        // the reader's own SDT->source mapper (2026-07-29).
+        try {
+            if (this._wvReadingModeActive(reader)) {
+                const sdtv = this._wvOutlineRmView(reader);
+                const iwin = sdtv && (Components as any).utils.waiveXrays(sdtv._iframeWindow);
+                const doc = iwin && iwin.document;
+                if (doc && typeof sdtv.toSelector === "function") {
+                    for (const b of doc.querySelectorAll("#sdt-content > [data-ref-path]")) {
+                        const r = b.getBoundingClientRect();
+                        if (r.bottom < 0 || r.top > iwin.innerHeight) continue;
+                        try {
+                            const rg = doc.createRange();
+                            rg.selectNodeContents(b);
+                            const selp: any = sdtv.toSelector(rg);
+                            if (selp && Number.isInteger(selp.pageIndex)) return selp.pageIndex;
+                        } catch (_) {}
+                        break;
+                    }
+                }
+            }
+        } catch (_) {}
         try {
             const ir = reader && reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
@@ -4310,7 +4351,6 @@ class _ReaderPanelsMixin {
     }
 
     _wvOutlineShowAddMenu(reader: any, idoc: any, anchor: any) {
-        if (this._wvReadingModeActive(reader)) { this._wvReaderPanelNote(idoc, "Switch off Reading Mode to edit the outline."); return; }
         try {
             this._wvCloseReaderBmContextMenu(idoc);
             const page = this._wvOutlineCurrentPageIndex(reader) + 1;
@@ -4331,8 +4371,15 @@ class _ReaderPanelsMixin {
             for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
                 item(c.label, c.icon, c.fn);
             }
-            item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
-            item("Select text…", RP_TEXT_SVG, () => this._wvOutlineAddWithSelection(reader, idoc));
+            const rmOn = this._wvReadingModeActive(reader);
+            // Reading Mode CAN place text-anchored entries: the reflow maps back
+            // to PDF coordinates through the reader's own mapper, so the stored
+            // entry still works in the base view. Only the pin (a raw point in
+            // page space) has no reflow equivalent, so it waits (2026-07-29).
+            if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
+            item("Select text…", RP_TEXT_SVG, () => (rmOn
+                ? this._wvOutlineAddWithSelectionRm(reader, idoc)
+                : this._wvOutlineAddWithSelection(reader, idoc)));
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -4386,6 +4433,55 @@ class _ReaderPanelsMixin {
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithPin err: " + e); }
+    }
+
+    /** Add a select-text entry FROM Reading Mode: the user selects in the
+     *  reflowed text, and the SDT view's own `toSelector` converts that range
+     *  back to a PDF source position -- so the stored entry is identical to one
+     *  made in the base view and navigates in both. 2026-07-29. */
+    _wvOutlineAddWithSelectionRm(reader: any, idoc: any) {
+        try {
+            const sdtv = this._wvOutlineRmView(reader);
+            const iwin = sdtv && (Components as any).utils.waiveXrays(sdtv._iframeWindow);
+            const doc = iwin && iwin.document;
+            if (!doc) { this._wvReaderPanelNote(idoc, "Reading Mode view not ready."); return; }
+            this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
+            let onUp: any, onKey: any;
+            const cleanup = () => {
+                try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
+                try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
+            };
+            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); } };
+            onUp = () => {
+                const w: any = Zotero.getMainWindow();
+                ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(() => {
+                    try {
+                        const selObj = iwin.getSelection();
+                        if (!selObj || selObj.isCollapsed || !selObj.rangeCount) return;   // keep waiting
+                        const rg = selObj.getRangeAt(0);
+                        const text = String(selObj.toString() || "").trim();
+                        const pos: any = sdtv.toSelector(rg);
+                        cleanup();
+                        try { selObj.removeAllRanges(); } catch (_) {}
+                        if (!pos || !Number.isInteger(pos.pageIndex)) {
+                            this._wvReaderPanelNote(idoc, "Couldn’t map that selection back to the document.");
+                            return;
+                        }
+                        const title = this._wvOutlinePromptTitle();
+                        if (!title) return;
+                        const clean = { pageIndex: pos.pageIndex, rects: (pos.rects || []).map((r: number[]) => [r[0], r[1], r[2], r[3]]) };
+                        Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, clean))
+                            .then((res: any) => {
+                                if (!res || !res.stored) return;
+                                this._wvReaderPanelNote(idoc, "Added “" + title + "” from selection"
+                                    + (text ? " (" + text.slice(0, 30) + (text.length > 30 ? "…" : "") + ")" : "") + ".");
+                            }).catch(() => {});
+                    } catch (_) {}
+                }, 30);
+            };
+            doc.addEventListener("pointerup", onUp, true);
+            doc.addEventListener("keydown", onKey, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithSelectionRm err: " + e); }
     }
 
     /** Bookmark twins of the outline pin/selection add flows -- same arming

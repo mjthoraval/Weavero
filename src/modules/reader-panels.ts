@@ -2189,8 +2189,16 @@ class _ReaderPanelsMixin {
             // bm-active=false (ring-traced 2026-07-29: ACTIVATE-OUTLINE on all
             // five readers at init). Reloads are restored by _wvRewireRestore.
             try {
-                if (!(idoc as any)._wvOutlineAutoTakeDone) {
-                    (idoc as any)._wvOutlineAutoTakeDone = true;
+                // Latch PER PLUGIN INSTANCE, not per document: a doc-level flag
+                // survived teardown -- which strips the takeover class -- so
+                // after a reload the pane refused to re-take and the NATIVE
+                // outline showed instead ("the Weavero outline disappeared",
+                // 2026-07-29). A WeakSet on the instance still fires once per
+                // ensure-pass storm, but a fresh instance re-evaluates.
+                const seen: WeakSet<any> = (this as any)._wvOutlineAutoTakeSeen
+                    || ((this as any)._wvOutlineAutoTakeSeen = new WeakSet());
+                if (!seen.has(idoc)) {
+                    seen.add(idoc);
                     const container = idoc.getElementById("sidebarContainer");
                     const nativeOutline = content.querySelector(".viewWrapper > .outline-view");
                     const wrapper = nativeOutline && nativeOutline.parentElement;

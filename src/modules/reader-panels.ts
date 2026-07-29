@@ -2438,7 +2438,13 @@ class _ReaderPanelsMixin {
                 };
             }
             items.sort((a, b) => score(a) - score(b));
-            return items.slice(0, 6).map(toPos);
+            // Page-edge modes need MANY candidates: a page's top/bottom runs are
+            // often headers, footers, figure labels or page numbers, none of
+            // which exist in the reflow -- page 16 of the test doc had its first
+            // SIX top runs all unmappable (2026-07-29). Walking further in
+            // reading order finds the first run that does map.
+            const take = (mode === "pageTop" || mode === "pageBottom") ? 40 : 8;
+            return items.slice(0, take).map(toPos);
         } catch (_) { return null; }
     }
 

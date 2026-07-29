@@ -2467,7 +2467,20 @@ class _ReaderPanelsMixin {
             pin.innerHTML = icon
                 ? ('<span style="display:inline-block;width:' + H + "px;height:" + H + 'px;color:#e5533d;">' + icon + "</span>")
                 : ('<span style="display:inline-block;width:' + W + "px;height:" + H + 'px;">' + RP_PIN_TIP_SVG + "</span>");
-            doc.body.appendChild(pin);
+            // HOST: inside the SCALED content element, not <body>. Reading Mode
+            // zoom applies a transform to #sdt-content, so a marker parked on
+            // body lives in a different coordinate space than the text -- no
+            // amount of scroll/zoom arithmetic can line them up, which is why
+            // the marker vanished at every zoom but 1x (2026-07-29). Parented
+            // here, it is positioned in the content's OWN (unscaled) coords and
+            // scales with the text for free.
+            const host = doc.getElementById("sdt-content") || doc.body;
+            try {
+                if (host !== doc.body && iwin.getComputedStyle(host).position === "static") {
+                    host.style.position = "relative";
+                }
+            } catch (_) {}
+            host.appendChild(pin);
             // COORDINATE ORIGIN: the marker is an absolutely positioned child
             // of a static <body>, so it is laid out against the INITIAL
             // CONTAINING BLOCK -- document coordinates. Convert viewport rects
@@ -2537,10 +2550,13 @@ class _ReaderPanelsMixin {
                     // its text (reported repeatedly 2026-07-29). An absolutely
                     // positioned child of a static body is laid out against the
                     // initial containing block, i.e. <html>.
-                    const rootEl = doc.documentElement;
-                    const rootRect = rootEl.getBoundingClientRect();
-                    const z = (rootRect.width && rootEl.offsetWidth) ? (rootRect.width / rootEl.offsetWidth) : 1;
-                    const br = { left: -(iwin.scrollX || 0), top: -(iwin.scrollY || 0) };
+                    // Host-local coordinates: visual rect -> host box -> divide
+                    // by the host's own scale. No scroll terms: the marker is a
+                    // child of the content it points at.
+                    const hostRect = host.getBoundingClientRect();
+                    const z = (hostRect.width && host.offsetWidth) ? (hostRect.width / host.offsetWidth) : 1;
+                    const toLayoutX = (vx: number) => (vx - hostRect.left) / (z || 1);
+                    const toLayoutY = (vy: number) => (vy - hostRect.top) / (z || 1);
                     const atStart = f <= 0.15;
                     // End-of-paragraph pin: use the block's LAST line end.
                     if (atBlockEnd) {
@@ -2579,12 +2595,10 @@ class _ReaderPanelsMixin {
                                     last = brs && brs.length ? brs[brs.length - 1] : blk2.getBoundingClientRect();
                                 }
                                 if (last && (last.width || last.height)) {
-                                    const br2 = { left: -(iwin.scrollX || 0), top: -(iwin.scrollY || 0) };
-                                    const rootEl2 = doc.documentElement;
-                                    const rootRect2 = rootEl2.getBoundingClientRect();
-                                    const z2 = (rootRect2.width && rootEl2.offsetWidth) ? (rootRect2.width / rootEl2.offsetWidth) : 1;
-                                    const tipX2 = (last.right - br2.left) / (z2 || 1);
-                                    const tipY2 = (last.bottom - br2.top) / (z2 || 1);
+                                    const hostRect2 = host.getBoundingClientRect();
+                                    const z2 = (hostRect2.width && host.offsetWidth) ? (hostRect2.width / host.offsetWidth) : 1;
+                                    const tipX2 = (last.right - hostRect2.left) / (z2 || 1);
+                                    const tipY2 = (last.bottom - hostRect2.top) / (z2 || 1);
                                     pin.style.left = Math.max(0, Math.round(tipX2 - W / 2)) + "px";
                                     pin.style.top = Math.max(0, Math.round(tipY2 - H)) + "px";
                                     return true;
@@ -2600,15 +2614,17 @@ class _ReaderPanelsMixin {
                         } catch (_) {}
                     }
                     const baseX = isPinGlyph ? (rr.left + rr.width * f) : blockLeft;
-                    let tipX = (baseX - br.left) / (z || 1);
+                    let tipX = toLayoutX(baseX);
                     if (isPinGlyph) { if (atStart) tipX -= Math.round(W * 0.58); }
-                    else { tipX -= Math.round(W * 0.75); }   // page glyph: tuck closer to the text (2026-07-29)
-                    const tipY = (rr.bottom - br.top) / (z || 1);
+                    // Page glyph: fully clear of the first character, with a
+                    // small breathing gap (0.75x still grazed it, 2026-07-29).
+                    else { tipX -= (W + 6); }
+                    const tipY = toLayoutY(rr.bottom);
                     const leftPx = isPinGlyph ? (tipX - W / 2) : tipX;
                     pin.style.left = Math.max(0, Math.round(leftPx)) + "px";
                     pin.style.top = Math.max(0, Math.round(tipY - H)) + "px";
                     return true;
-                } catch (_) { return false; }
+                } catch (_) { return true; }   // transient (re-render): keep tracking
             };
             place();
             // Track layout changes for as long as the pin is up (zoom, width

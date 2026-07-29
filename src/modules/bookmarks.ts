@@ -866,10 +866,13 @@ class _BookmarksMixin {
         if (d.comment !== undefined) {
             if (d.comment) e.comment = d.comment; else delete e.comment;
         }
-        if (!e.renamed) {
-            e.label = "Page " + (d.pageIndex + 1) + (d.anchor === "bottom" ? " (bottom)" : "");
-            e.originalLabel = e.label;
-        }
+        // A page bookmark's ORIGINAL name is derived from where it points, so it
+        // follows the page even while a custom label is showing -- otherwise
+        // "Reset to Original Name" on a moved bookmark restored the old page's
+        // name (2026-07-29). The visible label only follows when not renamed.
+        const auto = "Page " + (d.pageIndex + 1) + (d.anchor === "bottom" ? " (bottom)" : "");
+        e.originalLabel = auto;
+        if (!e.renamed) e.label = auto;
         await this._bmPersist();
     }
 

@@ -2468,6 +2468,15 @@ class _ReaderPanelsMixin {
                 ? ('<span style="display:inline-block;width:' + H + "px;height:" + H + 'px;color:#e5533d;">' + icon + "</span>")
                 : ('<span style="display:inline-block;width:' + W + "px;height:" + H + 'px;">' + RP_PIN_TIP_SVG + "</span>");
             doc.body.appendChild(pin);
+            // COORDINATE ORIGIN: the marker is an absolutely positioned child
+            // of a static <body>, so it is laid out against the INITIAL
+            // CONTAINING BLOCK -- document coordinates. Convert viewport rects
+            // with the scroll offsets, exactly as the reader's own
+            // getBoundingPageRect does for annotations. (Body's rect is wrong:
+            // this reflow centres body with a ~180px auto margin, which is how
+            // far the marker kept missing its text; and a once-measured origin
+            // is invalidated by the very scroll the navigation performs --
+            // both tried and rejected, 2026-07-29.)
             // RE-MEASURE the live range instead of freezing document coords:
             // the reflow re-lays-out on zoom / font-size / width changes, so a
             // fixed left/top drifted away from its text (reported 2026-07-29).
@@ -2522,9 +2531,16 @@ class _ReaderPanelsMixin {
                     // but 1x ("cannot see the pin at other zoom levels",
                     // 2026-07-29). Convert through the body's own box, which
                     // also removes the need for scrollX/scrollY.
-                    const bodyEl = doc.body;
-                    const br = bodyEl.getBoundingClientRect();
-                    const z = (br.width && bodyEl.offsetWidth) ? (br.width / bodyEl.offsetWidth) : 1;
+                    // ORIGIN = the marker's containing block, NOT <body>: the
+                    // reflow centres body with a large auto margin, so
+                    // subtracting body's rect placed the marker ~180px left of
+                    // its text (reported repeatedly 2026-07-29). An absolutely
+                    // positioned child of a static body is laid out against the
+                    // initial containing block, i.e. <html>.
+                    const rootEl = doc.documentElement;
+                    const rootRect = rootEl.getBoundingClientRect();
+                    const z = (rootRect.width && rootEl.offsetWidth) ? (rootRect.width / rootEl.offsetWidth) : 1;
+                    const br = { left: -(iwin.scrollX || 0), top: -(iwin.scrollY || 0) };
                     const atStart = f <= 0.15;
                     // End-of-paragraph pin: use the block's LAST line end.
                     if (atBlockEnd) {
@@ -2563,9 +2579,10 @@ class _ReaderPanelsMixin {
                                     last = brs && brs.length ? brs[brs.length - 1] : blk2.getBoundingClientRect();
                                 }
                                 if (last && (last.width || last.height)) {
-                                    const bodyEl2 = doc.body;
-                                    const br2 = bodyEl2.getBoundingClientRect();
-                                    const z2 = (br2.width && bodyEl2.offsetWidth) ? (br2.width / bodyEl2.offsetWidth) : 1;
+                                    const br2 = { left: -(iwin.scrollX || 0), top: -(iwin.scrollY || 0) };
+                                    const rootEl2 = doc.documentElement;
+                                    const rootRect2 = rootEl2.getBoundingClientRect();
+                                    const z2 = (rootRect2.width && rootEl2.offsetWidth) ? (rootRect2.width / rootEl2.offsetWidth) : 1;
                                     const tipX2 = (last.right - br2.left) / (z2 || 1);
                                     const tipY2 = (last.bottom - br2.top) / (z2 || 1);
                                     pin.style.left = Math.max(0, Math.round(tipX2 - W / 2)) + "px";

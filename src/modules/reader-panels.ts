@@ -2445,8 +2445,10 @@ class _ReaderPanelsMixin {
             // (2026-07-29). Page-anchor glyphs are square, tip at bottom-left.
             const PIN_H = 32;
             const isPinGlyph = !icon;
-            const W = isPinGlyph ? Math.round(PIN_H * (66.34 / 33.855)) : 24;
-            const H = isPinGlyph ? PIN_H : 24;
+            // Page glyphs are square and sized like the base view's marker
+            // (32px) -- they rendered noticeably smaller in RM (2026-07-29).
+            const W = isPinGlyph ? Math.round(PIN_H * (66.34 / 33.855)) : PIN_H;
+            const H = PIN_H;
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-rm-pin";
             pin.setAttribute("style", "position:absolute;z-index:9999;pointer-events:none;line-height:0;"
@@ -2467,12 +2469,19 @@ class _ReaderPanelsMixin {
                     const rects = range.getClientRects();
                     const rr = (rects && rects.length) ? rects[rects.length - 1] : range.getBoundingClientRect();
                     if (!rr || (!rr.width && !rr.height)) return false;
-                    // Start-of-line markers move INTO the left margin so they
-                    // don't sit on top of the first words (asked 2026-07-29).
+                    // Markers never sit on the text (asked 2026-07-29):
+                    //  - PIN: tip-anchored at its bottom-CENTRE, so half its
+                    //    width lies right of the tip; a start-of-line pin
+                    //    shifts left by a bit over half the marker.
+                    //  - PAGE anchor: a whole-page marker belongs in the LEFT
+                    //    MARGIN (as in the base view), so it is always placed
+                    //    entirely left of the line start, whatever `f` says.
                     const atStart = f <= 0.15;
-                    const tipX = rr.left + rr.width * f + (iwin.scrollX || 0) - (atStart ? 10 : 0);
+                    const baseX = isPinGlyph ? (rr.left + rr.width * f) : rr.left;
+                    let tipX = baseX + (iwin.scrollX || 0);
+                    if (isPinGlyph) { if (atStart) tipX -= Math.round(W * 0.58); }
+                    else { tipX -= (W + 8); }
                     const tipY = rr.bottom + (iwin.scrollY || 0);
-                    // Pin: tip at bottom-CENTRE. Page glyphs: tip at bottom-left.
                     const leftPx = isPinGlyph ? (tipX - W / 2) : tipX;
                     pin.style.left = Math.max(0, Math.round(leftPx)) + "px";
                     pin.style.top = Math.max(0, Math.round(tipY - H)) + "px";

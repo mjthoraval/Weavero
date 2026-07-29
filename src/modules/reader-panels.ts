@@ -2086,6 +2086,16 @@ class _ReaderPanelsMixin {
             // receives +/- -- scoped to the outline, no global key capture (2026-07-23).
             try {
                 const mains: any[] = (Zotero.getMainWindows && Zotero.getMainWindows()) || [Zotero.getMainWindow()].filter(Boolean);
+                // Reader WINDOWS host sidebars too -- without them in this loop
+                // the click-focus capture + last-click tracker (Ctrl+F routing,
+                // whole-sidebar focus) only worked for readers in MAIN-window
+                // tabs ("make sure the focus improvements also work in reader
+                // windows", 2026-07-29). Secondary main windows are already in
+                // getMainWindows().
+                try {
+                    const enR = Services.wm.getEnumerator("zotero:reader");
+                    while (enR.hasMoreElements()) { const rw: any = enR.getNext(); if (rw && !rw.closed) mains.push(rw); }
+                } catch (_) {}
                 for (const mw of mains) {
                     if (!mw || mw._wvOutlineClickFocusWired === RP_BM_CTX_WIRE_V) continue;
                     if (mw._wvOutlineClickFocusH) { try { mw.removeEventListener("mousedown", mw._wvOutlineClickFocusH, true); } catch (_) {} }

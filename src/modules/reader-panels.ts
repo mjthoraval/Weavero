@@ -1851,6 +1851,36 @@ class _ReaderPanelsMixin {
                 // outline pane -- discard-and-return.
                 const searchKeyH = (e: any) => {
                     try {
+                        // Forward-Tab out of a sidebar input: the reader's focus
+                        // manager walks [data-tabstop] groups, and the NEXT stop
+                        // after the search box is the native #outlineView -- which
+                        // the takeover hides via CSS only, so it stays in the
+                        // walk but focus() on it silently no-ops and focus stays
+                        // stuck in the box ("cannot tab out", 2026-07-29). The
+                        // native view is React-owned (class surgery would be
+                        // clobbered), so instead: after the manager runs, if
+                        // focus is still in the input, hand it to the active
+                        // takeover view.
+                        if (e.key === "Tab" && !e.shiftKey) {
+                            const t0 = e.target;
+                            if (t0 && t0.localName === "input" && t0.closest && t0.closest("#sidebarContainer")
+                                    && !(t0.classList && t0.classList.contains("wv-outline-rename-input"))) {
+                                const cont0 = idoc.getElementById("sidebarContainer");
+                                const outlineOn = cont0 && cont0.classList.contains(RP_OUTLINE_TAB_ON);
+                                const bmOn = cont0 && cont0.classList.contains(RP_BM_TAB_ON);
+                                if (outlineOn || bmOn) {
+                                    const w3: any = Zotero.getMainWindow();
+                                    ((w3 && w3.setTimeout) ? w3.setTimeout.bind(w3) : setTimeout)(() => {
+                                        try {
+                                            if (idoc.activeElement !== t0) return;   // manager moved focus fine
+                                            const v3 = idoc.querySelector("." + (outlineOn ? RP_OUTLINE_VIEW_CLASS : RP_BM_VIEW_CLASS));
+                                            if (v3) v3.focus();
+                                        } catch (_) {}
+                                    }, 80);
+                                }
+                            }
+                            return;
+                        }
                         if (e.key !== "Escape") return;
                         const t = e.target;
                         if (!t || t.localName !== "input") return;

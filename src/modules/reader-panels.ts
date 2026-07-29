@@ -13008,7 +13008,14 @@ class _ReaderPanelsMixin {
                         };
                         if (a === "bottom") rec.anchor = "bottom";
                         Promise.resolve(this._bmReaderAdd(attL.libraryID, attL.itemKey, rec, { allowDuplicate: true }))
-                            .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} })
+                            .then((stored: any) => {
+                                // Land the user on the result: focus the new row
+                                // and navigate the document to it (which drops
+                                // the page marker) -- asked 2026-07-29.
+                                try { if (stored && stored.id) this._wvMarkBmFocus(reader, stored.id); } catch (_) {}
+                                try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+                                try { this._wvNavigateReaderBookmark(reader, stored || rec, {}); } catch (_) {}
+                            })
                             .catch(() => {});
                     };
                     for (const c of this._wvPageAnchorChoices(pageNum, null, addPage)) mkItem(c.label, c.icon, c.fn);
@@ -14030,6 +14037,7 @@ class _ReaderPanelsMixin {
                             : "Add Bookmark to This Page";
                         {
                                 const doAdd = async (a: "top" | "bottom") => {
+                                    let stored: any = null;
                                     try {
                                         const pageLabel = String(piCaptured + 1);
                                         const rec: any = {
@@ -14051,10 +14059,16 @@ class _ReaderPanelsMixin {
                                             }, rec);
                                             this._bmDoc.bookmarks.push(node);
                                             await this._bmPersist();
+                                            stored = node;
                                         } else {
-                                            await this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true });
+                                            stored = await this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true });
                                         }
-                                        if (idoc) this._wvReaderRenderBmList(reader, idoc);
+                                        if (idoc) {
+                                            try { if (stored && stored.id) this._wvMarkBmFocus(reader, stored.id); } catch (_) {}
+                                            this._wvReaderRenderBmList(reader, idoc);
+                                        }
+                                        // Show it where it points, too.
+                                        try { this._wvNavigateReaderBookmark(reader, stored || rec, {}); } catch (_) {}
                                     } catch (e) {
                                         Zotero.debug("[Weavero] view-menu Add Page Bookmark err: " + e);
                                     }

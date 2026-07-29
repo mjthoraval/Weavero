@@ -1874,7 +1874,16 @@ class _ReaderPanelsMixin {
                                         try {
                                             if (idoc.activeElement !== t0) return;   // manager moved focus fine
                                             const v3 = idoc.querySelector("." + (outlineOn ? RP_OUTLINE_VIEW_CLASS : RP_BM_VIEW_CLASS));
-                                            if (v3) v3.focus();
+                                            if (!v3) return;
+                                            // Land on the ITEMS, not the pane: the
+                                            // active/selected row first, else the
+                                            // first row, else the pane itself (rows
+                                            // carry tabindex=-1, so arrows continue
+                                            // from the landed row).
+                                            const row = outlineOn
+                                                ? (v3.querySelector(".wv-outline-row.wv-outline-active") || v3.querySelector(".wv-outline-row"))
+                                                : (v3.querySelector(".wv-bm-reader-row.wv-bm-reader-focused") || v3.querySelector(".wv-bm-reader-row"));
+                                            (row || v3).focus();
                                         } catch (_) {}
                                     }, 80);
                                 }

@@ -2438,9 +2438,12 @@ class _ReaderPanelsMixin {
             const landOn = (hit: any, noSpot?: boolean) => {
                 markNav();
                 scrollQuarter(hit.rect.top);
-                // Page anchors are PLACES, not text targets -- no highlight
-                // (user request 2026-07-29).
+                // Page anchors / pins are PLACES, not text targets -- no
+                // highlight, AND clear any highlight left by a previous text
+                // navigation (same supersede rule as normal view; user request
+                // 2026-07-29). setSpotlight(key, null) deletes the key.
                 if (!noSpot) { try { sdtv.setSpotlight("Navigation", hit.sel); } catch (_) {} }
+                else { try { sdtv.setSpotlight("Navigation", null); } catch (_) {} }
             };
             const tgtA = node.resolvedPosition || node.position || {};
             if (tgtA.anchor === "top" || tgtA.anchor === "bottom") {

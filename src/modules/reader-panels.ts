@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 13;   // v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 14;   // v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1701,12 +1701,10 @@ class _ReaderPanelsMixin {
                 // whenever the pane is focused, not only when a row is selected
                 // (the key handler's `inOutline` guard, 2026-07-23).
                 view.setAttribute("tabindex", "-1");
-                // Register with the reader's focus-manager Tab traversal
-                // (Tab/Shift+Tab move between `[data-tabstop]` groups). The
-                // native outline view is one; without this the takeover view
-                // isn't, so Tab from the sidebar search box had nowhere to go
-                // ("cannot tab out from the search box", 2026-07-29).
-                view.setAttribute("data-tabstop", "1");
+                // data-tabstop (the reader focus-manager Tab traversal) is
+                // owned by _wvReaderActivateOutlineTakeover: only the ACTIVE
+                // takeover view may be a stop -- an invisible one is a dead
+                // stop that wedges the walk (2026-07-29).
                 view.addEventListener("mousedown", (e: any) => {
                     try {
                         const t = e.target;
@@ -1866,7 +1864,7 @@ class _ReaderPanelsMixin {
                         // clobbered), so instead: after the manager runs, if
                         // focus is still in the input, hand it to the active
                         // takeover view.
-                        if (e.key === "Tab" && !e.shiftKey) {
+                        if (e.key === "Tab") {
                             // Diagnosis ring for the Tab-out path (kept cheap):
                             // Zotero._wvTabOutLog
                             const tlog = (m: string, extra?: any) => {
@@ -1879,6 +1877,35 @@ class _ReaderPanelsMixin {
                             };
                             const t0 = e.target;
                             const desc = (n: any) => n ? (n.localName + (n.id ? "#" + n.id : "") + "." + String(n.className && n.className.baseVal || n.className || "").slice(0, 30)) : String(n);
+                            // REVERSE (Shift+Tab) from inside a takeover view ->
+                            // back to the search box. The manager's reverse walk
+                            // dead-ends the same way the forward one did (hidden
+                            // native stop), so: let it run, then repair if stuck.
+                            if (e.shiftKey) {
+                                if (t0 && t0.closest
+                                        && t0.closest("." + RP_OUTLINE_VIEW_CLASS + ", ." + RP_BM_VIEW_CLASS)) {
+                                    tlog("STAB keydown", { target: desc(t0) });
+                                    const wS: any = Zotero.getMainWindow();
+                                    ((wS && wS.setTimeout) ? wS.setTimeout.bind(wS) : setTimeout)(() => {
+                                        try {
+                                            const aeS = idoc.activeElement;
+                                            const stuckS = (aeS === t0) || !aeS
+                                                || aeS === idoc.body || aeS === idoc.documentElement
+                                                || (aeS.id === "sidebarContainer")
+                                                || !!(aeS.closest && aeS.closest("." + RP_OUTLINE_VIEW_CLASS + ", ." + RP_BM_VIEW_CLASS));
+                                            tlog("STAB timer", { active: desc(aeS), stuck: stuckS });
+                                            if (!stuckS) return;
+                                            const inpS = idoc.getElementById("searchInput")
+                                                || idoc.querySelector("#sidebarContainer .search-box input");
+                                            tlog("STAB landing", { input: desc(inpS) });
+                                            if (inpS) inpS.focus();
+                                            else { const scS = idoc.getElementById("sidebarContainer"); if (scS) { if (!scS.hasAttribute("tabindex")) scS.setAttribute("tabindex", "-1"); scS.focus(); } }
+                                            tlog("STAB after-focus", { active: desc(idoc.activeElement) });
+                                        } catch (errS) { tlog("STAB timer-err", { e: String(errS).slice(0, 80) }); }
+                                    }, 80);
+                                }
+                                return;
+                            }
                             tlog("TAB keydown", { target: desc(t0), isInput: !!(t0 && t0.localName === "input"),
                                 inSidebar: !!(t0 && t0.closest && t0.closest("#sidebarContainer")) });
                             if (t0 && t0.localName === "input" && t0.closest && t0.closest("#sidebarContainer")
@@ -2141,6 +2168,12 @@ class _ReaderPanelsMixin {
             } else {
                 container.classList.remove(RP_OUTLINE_TAB_ON);
             }
+            // Only the ACTIVE takeover view participates in the reader's
+            // [data-tabstop] Tab walk -- an invisible stop is a dead stop.
+            try {
+                const ovEl = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+                if (ovEl) { if (on) ovEl.setAttribute("data-tabstop", "1"); else ovEl.removeAttribute("data-tabstop"); }
+            } catch (_) {}
         } catch (_) {}
     }
 
@@ -7738,10 +7771,10 @@ class _ReaderPanelsMixin {
             if (!view) {
                 view = idoc.createElementNS(NS_HTML_RP, "div");
                 view.className = "viewWrapper " + RP_BM_VIEW_CLASS;
-                // Part of the reader's Tab traversal, like the outline takeover
-                // view (see the data-tabstop note there). 2026-07-29.
+                // tabindex for keyboard nav; data-tabstop is owned by
+                // _wvReaderApplyBmTabState (active view only -- see the
+                // outline takeover's data-tabstop note).
                 view.setAttribute("tabindex", "-1");
-                view.setAttribute("data-tabstop", "1");
                 // Single header row: scope toggle on the left, + on the right
                 // (the standalone "Bookmarks" title row was dropped to save
                 // vertical space; the tab already labels the panel).
@@ -8087,6 +8120,9 @@ class _ReaderPanelsMixin {
             if (myTab) myTab.classList.toggle("active", on);
             const sc = idoc.getElementById("sidebarContainer");
             if (sc) sc.classList.toggle(RP_BM_TAB_ON, on);
+            // Only the ACTIVE takeover view is a [data-tabstop] (see the
+            // outline takeover's note -- an invisible stop wedges Tab).
+            try { if (on) view.setAttribute("data-tabstop", "1"); else view.removeAttribute("data-tabstop"); } catch (_) {}
             if (on) {
                 for (const id of ["viewThumbnail", "viewAnnotations", "viewOutline"]) {
                     const t = idoc.getElementById(id);

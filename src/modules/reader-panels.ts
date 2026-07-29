@@ -13254,10 +13254,18 @@ class _ReaderPanelsMixin {
                         .catch((err: any) => Zotero.debug("[Weavero] add-link err: " + err));
                 } },
             ]);
-            item("New Folder…", RP_FOLDER_PLUS_SVG, () => {
-                const n = this._bmPromptName(Zotero.getMainWindow(), "New Folder", "New Folder");
-                if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n).then(reRender);
-            });
+            // Right-clicked ON a folder -> the new folder goes INSIDE it, and
+            // says so ("New Folder" here created a sibling at section level,
+            // which read as a bug; user request 2026-07-29). The folder branch
+            // above already offers its own Subfolder item, so only the generic
+            // trailing entry needs the parent.
+            {
+                const onFolder = !!(entry && entry.type === "folder");
+                item(onFolder ? "New Subfolder…" : "New Folder…", RP_FOLDER_PLUS_SVG, () => {
+                    const n = this._bmPromptName(Zotero.getMainWindow(), onFolder ? "New Subfolder" : "New Folder", "New Folder");
+                    if (n) this._bmReaderAddFolder(att.libraryID, att.itemKey, section, n, onFolder ? entry.id : undefined).then(reRender);
+                });
+            }
             }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;

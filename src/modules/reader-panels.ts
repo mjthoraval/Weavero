@@ -2196,8 +2196,23 @@ class _ReaderPanelsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvReaderEnsureOutlinePanel err: " + e); }
     }
 
+    /** Permanent cheap ring for the sidebar-tab state machine
+     *  (Zotero._wvTabStateLog): every mutator call records who asked for what.
+     *  Baked into the build after the outline<->bookmarks oscillation recurred
+     *  and an instance-bound tracer was lost to a reload (2026-07-29). */
+    _wvTabStateRing(m: string) {
+        try {
+            const z: any = Zotero;
+            (z._wvTabStateLog = z._wvTabStateLog || []).push(
+                (Date.now() % 1000000) + " " + m + " | "
+                + new Error().stack.split("\n").slice(2, 7).map((s: string) => s.replace(/@.*\//, "@").slice(0, 60)).join("<<"));
+            if (z._wvTabStateLog.length > 500) z._wvTabStateLog.splice(0, 120);
+        } catch (_) {}
+    }
+
     _wvReaderActivateOutlineTakeover(reader: any, idoc: any, on: boolean) {
         try {
+            this._wvTabStateRing("ACTIVATE-OUTLINE on=" + on + " " + ((reader && reader._title) || "").slice(0, 14));
             const container = idoc.getElementById("sidebarContainer");
             if (!container) return;
             if (on) {
@@ -4164,6 +4179,55 @@ class _ReaderPanelsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithPin err: " + e); }
     }
 
+    /** Bookmark twins of the outline pin/selection add flows -- same arming
+     *  UIs, but the result is a BOOKMARK (position / text) in This Document
+     *  (the Bookmarks + menu mirrors the outline + menu; 2026-07-29). */
+    _wvBmAddWithPin(reader: any, idoc: any) {
+        try {
+            this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex: number, x: number, y: number, pageNum: number) => {
+                const name = this._bmPromptName(Zotero.getMainWindow(), "New Bookmark", "Page " + pageNum);
+                if (!name) return;   // cancelled after placing -> nothing created
+                const att = this._wvReaderAtt(reader);
+                if (!att) return;
+                const rec: any = {
+                    type: "position", viewType: "pdf",
+                    location: { pageIndex },
+                    position: { pageIndex, rects: [[x, y, x, y]] },
+                    pageLabel: String(pageNum),
+                    label: name,
+                };
+                Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
+                    .then((stored: any) => {
+                        try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+                        try { this._wvReaderShowPin(reader, rec.position, stored && stored.id); } catch (_) {}
+                        this._wvReaderPanelNote(idoc, "Bookmark pinned on page " + pageNum + ". Drag the pin to adjust.");
+                    }).catch(() => {});
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvBmAddWithPin err: " + e); }
+    }
+
+    _wvBmAddWithSelection(reader: any, idoc: any) {
+        try {
+            this._wvOutlineArmSelectRegion(reader, idoc, (sel: any) => {
+                const att = this._wvReaderAtt(reader);
+                if (!att || !sel || !sel.position) return;
+                const txt = String(sel.text || "").trim();
+                const rec: any = {
+                    type: "text", viewType: "pdf",
+                    position: sel.position,
+                    pageLabel: (sel.position && Number.isInteger(sel.position.pageIndex))
+                        ? String(sel.position.pageIndex + 1) : null,
+                    label: (txt || "Selection").slice(0, 160),
+                };
+                Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
+                    .then(() => {
+                        try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+                        this._wvReaderPanelNote(idoc, "Bookmark added from selection.");
+                    }).catch(() => {});
+            });
+        } catch (e) { Zotero.debug("[Weavero] _wvBmAddWithSelection err: " + e); }
+    }
+
     /** Add a select-text entry: SELECT the text first, THEN prompt for the name,
      *  then create the entry with the selection as its target region -- same
      *  place-then-name order as the pin. The title is what the user types (NOT
@@ -4494,7 +4558,7 @@ class _ReaderPanelsMixin {
      *  (Top / Bottom of page). Lives in the reader doc (covers the reader
      *  viewport), like the URL-bookmark dialog. Resolves `{page, bottom}` on OK,
      *  null on Cancel / backdrop / Escape. 2026-07-23. */
-    _wvOutlineEditPositionDialog(idoc: any, initialPage: number, initialBottom: boolean, pageCount: number): Promise<any> {
+    _wvOutlineEditPositionDialog(idoc: any, initialPage: number, initialBottom: boolean, pageCount: number, opts?: any): Promise<any> {
         return new Promise((resolve) => {
             try {
                 const NS = NS_HTML_RP;
@@ -4544,6 +4608,24 @@ class _ReaderPanelsMixin {
                 optsBox.appendChild(topR.parentNode); optsBox.appendChild(botR.parentNode);
                 posRow.appendChild(posLbl); posRow.appendChild(optsBox);
 
+                // Optional comment field (page BOOKMARKS carry a comment; the
+                // outline callers don't pass opts and are unchanged).
+                let cInput: any = null;
+                let commentRow: any = null;
+                if (opts && opts.withComment) {
+                    commentRow = idoc.createElementNS(NS, "div");
+                    commentRow.className = "wv-bm-url-dialog-row";
+                    const cLbl = idoc.createElementNS(NS, "label");
+                    cLbl.className = "wv-bm-url-dialog-label";
+                    cLbl.textContent = "Comment";
+                    cInput = idoc.createElementNS(NS, "textarea");
+                    cInput.className = "wv-bm-url-dialog-input";
+                    cInput.setAttribute("rows", "3");
+                    cInput.setAttribute("style", "resize:vertical;min-height:44px;font:inherit;");
+                    cInput.value = String(opts.comment || "");
+                    commentRow.appendChild(cLbl); commentRow.appendChild(cInput);
+                }
+
                 const btnRow = idoc.createElementNS(NS, "div");
                 btnRow.className = "wv-bm-url-dialog-btns";
                 const cancelBtn: any = idoc.createElementNS(NS, "button");
@@ -4552,7 +4634,9 @@ class _ReaderPanelsMixin {
                 okBtn.textContent = "OK"; okBtn.className = "wv-bm-url-dialog-btn wv-bm-url-dialog-btn-primary";
                 btnRow.appendChild(cancelBtn); btnRow.appendChild(okBtn);
 
-                dlg.appendChild(title); dlg.appendChild(pageRow); dlg.appendChild(posRow); dlg.appendChild(btnRow);
+                dlg.appendChild(title); dlg.appendChild(pageRow); dlg.appendChild(posRow);
+                if (commentRow) dlg.appendChild(commentRow);
+                dlg.appendChild(btnRow);
                 backdrop.appendChild(dlg);
                 (idoc.body || idoc.documentElement).appendChild(backdrop);
 
@@ -4562,14 +4646,17 @@ class _ReaderPanelsMixin {
                     let page = parseInt(String(pInput.value), 10);
                     if (!Number.isInteger(page) || page < 1) { try { pInput.focus(); } catch (_) {} return; }
                     if (pageCount) page = Math.min(page, pageCount);
-                    finish({ page, bottom: !!botR.checked });
+                    const out: any = { page, bottom: !!botR.checked };
+                    if (cInput) out.comment = String(cInput.value || "").trim();
+                    finish(out);
                 };
                 cancelBtn.addEventListener("click", () => finish(null));
                 okBtn.addEventListener("click", submit);
                 backdrop.addEventListener("click", (e: any) => { if (e.target === backdrop) finish(null); });
                 const onKey = (e: any) => {
                     if (e.key === "Escape") { e.preventDefault(); finish(null); }
-                    else if (e.key === "Enter") { e.preventDefault(); submit(); }
+                    // Enter in the comment TEXTAREA inserts a newline, not submit.
+                    else if (e.key === "Enter" && !(cInput && e.target === cInput)) { e.preventDefault(); submit(); }
                 };
                 dlg.addEventListener("keydown", onKey);
                 try { pInput.focus(); pInput.select(); } catch (_) {}
@@ -7736,6 +7823,7 @@ class _ReaderPanelsMixin {
         return false;
     }
     _wvReaderSetBmActive(reader: any, idoc: any, on: boolean) {
+        this._wvTabStateRing("SET-BM on=" + on + " " + ((reader && reader._title) || "").slice(0, 14));
         if (!this._wvReaderBmActiveWM) this._wvReaderBmActiveWM = new WeakMap();
         this._wvReaderBmActiveWM.set(reader, !!on);
         this._wvReaderSaveBmActive(reader, !!on);
@@ -8476,6 +8564,7 @@ class _ReaderPanelsMixin {
     _wvReaderApplyBmTabState(reader: any, idoc: any) {
         try {
             const on = this._wvReaderBmActive(reader);
+            this._wvTabStateRing("APPLY-BM on=" + on + " " + ((reader && reader._title) || "").slice(0, 14));
             const content = idoc.getElementById("sidebarContent");
             const view = content && content.querySelector("." + RP_BM_VIEW_CLASS);
             if (!content || !view) return;
@@ -12312,6 +12401,35 @@ class _ReaderPanelsMixin {
             // Library section, "document" for Elsewhere. Without it, fall
             // back to the active scope (legacy single-scope behaviour).
             const target = destScope || this._wvReaderBmScope();
+            // "This Document": the same in-document creation options as the
+            // outline's + menu (same labels, same icons, same order) --
+            // Top/Bottom of the current page, pin a spot, select text
+            // (user request 2026-07-29).
+            if (section === "local" && target !== "library") {
+                const attL = this._wvReaderAtt(reader);
+                if (attL) {
+                    const pageNum = this._wvOutlineCurrentPageIndex(reader) + 1;
+                    const addPage = (a: "top" | "bottom") => {
+                        const rec: any = {
+                            type: "page", viewType: "pdf",
+                            location: { pageIndex: pageNum - 1 },
+                            position: { pageIndex: pageNum - 1 },
+                            pageLabel: String(pageNum),
+                            label: "Page " + pageNum + (a === "bottom" ? " (bottom)" : ""),
+                        };
+                        if (a === "bottom") rec.anchor = "bottom";
+                        Promise.resolve(this._bmReaderAdd(attL.libraryID, attL.itemKey, rec, { allowDuplicate: true }))
+                            .then(() => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} })
+                            .catch(() => {});
+                    };
+                    for (const c of this._wvPageAnchorChoices(pageNum, null, addPage)) mkItem(c.label, c.icon, c.fn);
+                    mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
+                    mkItem("Select text…", RP_TEXT_SVG, () => this._wvBmAddWithSelection(reader, idoc));
+                    const s = idoc.createElementNS(NS_HTML_RP, "div");
+                    s.className = "wv-ctx-sep";
+                    menu.appendChild(s);
+                }
+            }
             // No icons yet for either entry — the user said icons can come
             // later. Placeholder empty span keeps layout consistent with
             // the rest of the context menu.
@@ -12915,16 +13033,33 @@ class _ReaderPanelsMixin {
                     item("Edit Bookmark…", RP_RENAME_SVG, () => {
                         this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
-                    // Page bookmark: anchor chooser -- the SAME Top/Bottom UI
-                    // used at creation (they are the same choice).
+                    // Page bookmark: "Edit Position…" -- the SAME page+top/bottom
+                    // dialog outline page entries use, extended with the
+                    // bookmark's comment (user request 2026-07-29).
                     if (entry.type === "page") {
-                        const pgNum = (entry.position && Number.isInteger(entry.position.pageIndex))
-                            ? entry.position.pageIndex + 1
-                            : (entry.location && Number.isInteger(entry.location.pageIndex)) ? entry.location.pageIndex + 1 : "?";
                         const cur = entry.anchor === "bottom" ? "bottom" : "top";
-                        itemSub("Page Anchor", cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG,
-                            this._wvPageAnchorChoices(pgNum, cur, (a) =>
-                                this._bmReaderSetPageAnchor(att.libraryID, att.itemKey, entry.id, a).then(reRender)));
+                        item("Edit Position…", cur === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG, async () => {
+                            try {
+                                const curIdx = (entry.position && Number.isInteger(entry.position.pageIndex))
+                                    ? entry.position.pageIndex
+                                    : (entry.location && Number.isInteger(entry.location.pageIndex)) ? entry.location.pageIndex : 0;
+                                let pageCount = 0;
+                                try {
+                                    const pv = reader._internalReader && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                                    const app = pv && pv._iframeWindow && pv._iframeWindow.PDFViewerApplication;
+                                    pageCount = (app && app.pdfViewer && app.pdfViewer.pagesCount) || 0;
+                                } catch (_) {}
+                                const res = await this._wvOutlineEditPositionDialog(idoc, curIdx + 1, cur === "bottom", pageCount,
+                                    { withComment: true, comment: entry.comment || "" });
+                                if (!res) return;
+                                await this._bmReaderSetPageDetails(att.libraryID, att.itemKey, entry.id, {
+                                    pageIndex: res.page - 1,
+                                    anchor: res.bottom ? "bottom" : null,
+                                    comment: res.comment,
+                                });
+                                reRender();
+                            } catch (e2) { Zotero.debug("[Weavero] bm Edit Position err: " + e2); }
+                        });
                     }
                     {
                         // Gate on label-vs-original, not the `renamed` flag, so a

@@ -847,6 +847,32 @@ class _BookmarksMixin {
         await this._bmPersist();
     }
 
+    /** Full page-bookmark position edit (Edit Position… dialog): page number,
+     *  top/bottom anchor, and comment in one write. The auto label ("Page N",
+     *  "Page N (bottom)") refreshes only while the user never renamed it. */
+    async _bmReaderSetPageDetails(libraryID: number, itemKey: string, id: string,
+        d: { pageIndex: number; anchor: string | null; comment?: string }) {
+        await this._bmInit();
+        const doc = this._bmReaderDoc(libraryID, itemKey);
+        const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
+        if (!loc || loc.entry.type !== "page") return;
+        const e: any = loc.entry;
+        if (Number.isInteger(d.pageIndex) && d.pageIndex >= 0) {
+            e.position = Object.assign({}, e.position, { pageIndex: d.pageIndex });
+            e.location = Object.assign({}, e.location, { pageIndex: d.pageIndex });
+            e.pageLabel = String(d.pageIndex + 1);
+        }
+        if (d.anchor === "bottom") e.anchor = "bottom"; else delete e.anchor;
+        if (d.comment !== undefined) {
+            if (d.comment) e.comment = d.comment; else delete e.comment;
+        }
+        if (!e.renamed) {
+            e.label = "Page " + (d.pageIndex + 1) + (d.anchor === "bottom" ? " (bottom)" : "");
+            e.originalLabel = e.label;
+        }
+        await this._bmPersist();
+    }
+
     /** The live source name for a bookmark's target — annotation text/comment,
      *  item title, collection/library name, or page. Returns null for targets
      *  with no derivable live source (text selections; deleted items). READ-ONLY:

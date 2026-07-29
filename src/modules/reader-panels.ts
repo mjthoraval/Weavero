@@ -4516,18 +4516,21 @@ class _ReaderPanelsMixin {
                 it.addEventListener("click", () => { close(); fn(); });
                 menu.appendChild(it);
             };
-            for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
-                item(c.label, c.icon, c.fn);
-            }
             const rmOn = this._wvReadingModeActive(reader);
-            // Reading Mode CAN place text-anchored entries: the reflow maps back
-            // to PDF coordinates through the reader's own mapper, so the stored
-            // entry still works in the base view. Only the pin (a raw point in
-            // page space) has no reflow equivalent, so it waits (2026-07-29).
-            if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
+            // ORDER = precision, best first: text anchors to the exact words, a
+            // pin to a point, a page anchor only to the sheet (asked
+            // 2026-07-29). Reading Mode CAN place text-anchored entries: the
+            // reflow maps back to PDF coordinates through the reader's own
+            // mapper, so the stored entry still works in the base view. Only
+            // the pin (a raw point in page space) has no reflow equivalent, so
+            // it waits.
             item("Select text…", RP_TEXT_SVG, () => (rmOn
                 ? this._wvOutlineAddWithSelectionRm(reader, idoc)
                 : this._wvOutlineAddWithSelection(reader, idoc)));
+            if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
+            for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
+                item(c.label, c.icon, c.fn);
+            }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -12992,7 +12995,7 @@ class _ReaderPanelsMixin {
             const target = destScope || this._wvReaderBmScope();
             // "This Document": the same in-document creation options as the
             // outline's + menu (same labels, same icons, same order) --
-            // Top/Bottom of the current page, pin a spot, select text
+            // select text, pin a spot, Top/Bottom of the current page
             // (user request 2026-07-29).
             if (section === "local" && target !== "library") {
                 const attL = this._wvReaderAtt(reader);
@@ -13018,9 +13021,11 @@ class _ReaderPanelsMixin {
                             })
                             .catch(() => {});
                     };
-                    for (const c of this._wvPageAnchorChoices(pageNum, null, addPage)) mkItem(c.label, c.icon, c.fn);
-                    mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
+                    // Same order as the outline's + menu: most precise anchor
+                    // first (see the comment there).
                     mkItem("Select text…", RP_TEXT_SVG, () => this._wvBmAddWithSelection(reader, idoc));
+                    mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
+                    for (const c of this._wvPageAnchorChoices(pageNum, null, addPage)) mkItem(c.label, c.icon, c.fn);
                     const s = idoc.createElementNS(NS_HTML_RP, "div");
                     s.className = "wv-ctx-sep";
                     menu.appendChild(s);

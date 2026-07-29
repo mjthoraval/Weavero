@@ -5056,6 +5056,8 @@ class _ReaderPanelsMixin {
                 // the position-only dialog.
                 let nInput: any = null;
                 let nameRow: any = null;
+                let origText: any = null;      // the "Original: …" hint
+                let resetBtn: any = null;
                 if (opts && opts.withName) {
                     nameRow = idoc.createElementNS(NS, "div");
                     nameRow.className = "wv-bm-url-dialog-row";
@@ -5068,6 +5070,25 @@ class _ReaderPanelsMixin {
                     nInput.setAttribute("style", "font:inherit;");
                     nInput.value = String(opts.name || "");
                     nameRow.appendChild(nLbl); nameRow.appendChild(nInput);
+                    // The automatic name this bookmark would carry, plus a way
+                    // back to it (asked 2026-07-29). For a page bookmark that
+                    // name is DERIVED from the position, so it is recomputed
+                    // live from the fields below rather than shown as a frozen
+                    // string -- resetting after moving the page should offer
+                    // the new page's name, not the old one.
+                    if (opts.originalName || opts.autoNameFromPosition) {
+                        const oRow = idoc.createElementNS(NS, "div");
+                        oRow.setAttribute("style",
+                            "display:flex;align-items:center;gap:8px;margin-top:4px;font-size:11px;opacity:.75;");
+                        origText = idoc.createElementNS(NS, "span");
+                        origText.setAttribute("style", "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;");
+                        resetBtn = idoc.createElementNS(NS, "button");
+                        resetBtn.className = "wv-bm-url-dialog-btn";
+                        resetBtn.textContent = "Reset";
+                        resetBtn.setAttribute("style", "font-size:11px;padding:1px 8px;");
+                        oRow.appendChild(origText); oRow.appendChild(resetBtn);
+                        nameRow.appendChild(oRow);
+                    }
                 }
 
                 const pageRow = idoc.createElementNS(NS, "div");
@@ -5139,6 +5160,41 @@ class _ReaderPanelsMixin {
                 dlg.appendChild(btnRow);
                 backdrop.appendChild(dlg);
                 (idoc.body || idoc.documentElement).appendChild(backdrop);
+
+                // Keep the "Original: …" hint in step with the position fields,
+                // and grey the Reset button out once the name already matches.
+                const autoName = () => {
+                    if (!(opts && opts.autoNameFromPosition)) return String((opts && opts.originalName) || "");
+                    let p = parseInt(String(pInput.value), 10);
+                    if (!Number.isInteger(p) || p < 1) p = initialPage;
+                    if (pageCount) p = Math.min(p, pageCount);
+                    return "Page " + p + (botR.checked ? " (bottom)" : "");
+                };
+                const syncOrig = () => {
+                    if (!origText) return;
+                    const a = autoName();
+                    origText.textContent = a ? ("Original name: " + a) : "";
+                    if (resetBtn) {
+                        const same = String(nInput.value || "").trim() === a;
+                        resetBtn.disabled = same;
+                        resetBtn.setAttribute("style",
+                            "font-size:11px;padding:1px 8px;" + (same ? "opacity:.45;" : ""));
+                    }
+                };
+                if (origText) {
+                    syncOrig();
+                    for (const el of [pInput, topR, botR]) {
+                        el.addEventListener("input", syncOrig);
+                        el.addEventListener("change", syncOrig);
+                    }
+                    nInput.addEventListener("input", syncOrig);
+                    resetBtn.addEventListener("click", (ev: any) => {
+                        ev.preventDefault();
+                        nInput.value = autoName();
+                        syncOrig();
+                        try { nInput.focus(); nInput.select(); } catch (_) {}
+                    });
+                }
 
                 let resolved = false;
                 const finish = (r: any) => { if (resolved) return; resolved = true; try { backdrop.remove(); } catch (_) {} resolve(r); };
@@ -13702,6 +13758,7 @@ class _ReaderPanelsMixin {
                                 } catch (_) {}
                                 const res = await this._wvOutlineEditPositionDialog(idoc, curIdx + 1, cur === "bottom", pageCount,
                                     { title: "Edit Bookmark", withName: true, name: entry.label || "",
+                                      autoNameFromPosition: true,
                                       withComment: true, comment: entry.comment || "" });
                                 if (!res) return;
                                 const name = String(res.name || "");
@@ -13719,13 +13776,22 @@ class _ReaderPanelsMixin {
                                 // one LAST -- otherwise clearing the name while
                                 // also moving the page resurrected the label of
                                 // the OLD page.
-                                if (!name) await this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id);
+                                // An UNTOUCHED name keeps whatever mode the
+                                // bookmark was in (automatic names then follow
+                                // the new page by themselves). A touched name is
+                                // a rename -- unless it was emptied or set back
+                                // to the automatic one (the Reset button), which
+                                // means "go automatic again".
+                                const auto = "Page " + res.page + (res.bottom ? " (bottom)" : "");
+                                const touched = name !== prevLabel;
+                                const wantsAuto = touched && (!name || name === auto);
+                                if (wantsAuto) await this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id);
                                 await this._bmReaderSetPageDetails(att.libraryID, att.itemKey, entry.id, {
                                     pageIndex: res.page - 1,
                                     anchor: res.bottom ? "bottom" : null,
                                     comment: res.comment,
                                 });
-                                if (name && name !== prevLabel) {
+                                if (touched && !wantsAuto) {
                                     await this._bmReaderRename(att.libraryID, att.itemKey, entry.id, name);
                                 }
                                 this._wvMarkBmFocus(reader, entry.id);

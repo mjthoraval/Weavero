@@ -34,7 +34,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 11;   // v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 13;   // v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -1123,7 +1123,8 @@ const RP_BM_CSS = [
     // -- otherwise :focus{outline:none} erased the active ring (same element,
     // equal specificity, later rule), so Ctrl-skip moved an INVISIBLE cursor
     // (2026-07-21).
-    ".wv-bm-reader-row:focus:not(.wv-bm-reader-active){outline:none;}",
+    ".wv-bm-reader-row:focus:not(.wv-bm-reader-active):not(:focus-visible){outline:none;}",
+    ".wv-bm-reader-row:focus-visible{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;border-radius:4px;}",
     ".wv-bm-reader-add:hover{background:rgba(127,127,127,.16);}",
     // Inherit the 20×20 svg size from the .wv-bm-actionbar rule above;
     // the previous 15×15 override forced 15/16 sub-pixel scaling on a
@@ -1349,7 +1350,11 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-row.wv-outline-dimmed{opacity:.55;}",
     // Rows take programmatic focus (tabindex=-1, for Del-to-delete); the
     // wv-outline-active ring is the selection marker, so no second focus ring.
-    ".wv-outline-row:focus{outline:none;}",
+    // Suppress the ring for POINTER focus only -- keyboard focus (Tab landing,
+    // arrow nav) must be visible or "Tab did nothing" (2026-07-29). The Tab
+    // landing passes focus({focusVisible:true}) to force the ring.
+    ".wv-outline-row:focus:not(:focus-visible){outline:none;}",
+    ".wv-outline-row:focus-visible{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:-2px;border-radius:4px;}",
     // Drag-reorder: the dragged row (and its subtree) dims; a blue drop bar shows
     // where the block lands, indented to the target level (margin-left set inline).
     ".wv-outline-row.wv-outline-dragging{opacity:.4;}",
@@ -1862,12 +1867,26 @@ class _ReaderPanelsMixin {
                         // focus is still in the input, hand it to the active
                         // takeover view.
                         if (e.key === "Tab" && !e.shiftKey) {
+                            // Diagnosis ring for the Tab-out path (kept cheap):
+                            // Zotero._wvTabOutLog
+                            const tlog = (m: string, extra?: any) => {
+                                try {
+                                    const z: any = Zotero;
+                                    (z._wvTabOutLog = z._wvTabOutLog || []).push(
+                                        Date.now() % 1000000 + " " + m + (extra ? " " + JSON.stringify(extra).slice(0, 140) : ""));
+                                    if (z._wvTabOutLog.length > 60) z._wvTabOutLog.splice(0, 20);
+                                } catch (_) {}
+                            };
                             const t0 = e.target;
+                            const desc = (n: any) => n ? (n.localName + (n.id ? "#" + n.id : "") + "." + String(n.className && n.className.baseVal || n.className || "").slice(0, 30)) : String(n);
+                            tlog("TAB keydown", { target: desc(t0), isInput: !!(t0 && t0.localName === "input"),
+                                inSidebar: !!(t0 && t0.closest && t0.closest("#sidebarContainer")) });
                             if (t0 && t0.localName === "input" && t0.closest && t0.closest("#sidebarContainer")
                                     && !(t0.classList && t0.classList.contains("wv-outline-rename-input"))) {
                                 const cont0 = idoc.getElementById("sidebarContainer");
                                 const outlineOn = cont0 && cont0.classList.contains(RP_OUTLINE_TAB_ON);
                                 const bmOn = cont0 && cont0.classList.contains(RP_BM_TAB_ON);
+                                tlog("TAB branch", { outlineOn: !!outlineOn, bmOn: !!bmOn });
                                 if (outlineOn || bmOn) {
                                     const w3: any = Zotero.getMainWindow();
                                     ((w3 && w3.setTimeout) ? w3.setTimeout.bind(w3) : setTimeout)(() => {
@@ -1882,9 +1901,10 @@ class _ReaderPanelsMixin {
                                             const stuck = (ae3 === t0) || !ae3
                                                 || ae3 === idoc.body || ae3 === idoc.documentElement
                                                 || (ae3.id === "sidebarContainer");
+                                            tlog("TAB timer", { active: desc(ae3), stuck });
                                             if (!stuck) return;   // manager genuinely moved focus
                                             const v3 = idoc.querySelector("." + (outlineOn ? RP_OUTLINE_VIEW_CLASS : RP_BM_VIEW_CLASS));
-                                            if (!v3) return;
+                                            if (!v3) { tlog("TAB no-view"); return; }
                                             // Land on the ITEMS, not the pane: the
                                             // active/selected row first, else the
                                             // first row, else the pane itself (rows
@@ -1893,8 +1913,13 @@ class _ReaderPanelsMixin {
                                             const row = outlineOn
                                                 ? (v3.querySelector(".wv-outline-row.wv-outline-active") || v3.querySelector(".wv-outline-row"))
                                                 : (v3.querySelector(".wv-bm-reader-row.wv-bm-reader-focused") || v3.querySelector(".wv-bm-reader-row"));
-                                            (row || v3).focus();
-                                        } catch (_) {}
+                                            tlog("TAB landing", { row: desc(row), rowTabindex: row ? row.getAttribute("tabindex") : null });
+                                            // focusVisible forces the :focus-visible ring --
+                                            // keyboard-driven focus must be SEEN (FF104+).
+                                            try { (row || v3).focus({ focusVisible: true }); }
+                                            catch (_) { (row || v3).focus(); }
+                                            tlog("TAB after-focus", { active: desc(idoc.activeElement) });
+                                        } catch (err) { tlog("TAB timer-err", { e: String(err).slice(0, 80) }); }
                                     }, 80);
                                 }
                             }

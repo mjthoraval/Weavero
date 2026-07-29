@@ -324,11 +324,15 @@ const RP_TEXT_SVG =
 // Page-anchor glyphs: an arrow toward a bar (top of page / bottom of page).
 // Shared by the outline add-menu and the page-bookmark anchor UI -- creation
 // and editing are the same choice, so they use the same icons.
+// The marker red is BAKED IN (not currentColor) so the glyph reads the same
+// in a list row, in a menu and as the in-document marker -- exactly as the pin
+// glyph does with its own colours (asked 2026-07-29).
+const WV_PAGE_ANCHOR_COLOR = "#e5533d";
 const WV_PAGE_TOP_SVG =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+    '<svg viewBox="0 0 16 16" fill="none" stroke="' + WV_PAGE_ANCHOR_COLOR + '" stroke-width="1.5" stroke-linecap="round" '
     + 'stroke-linejoin="round"><path d="M3 3h10"/><path d="M8 13V6.5"/><path d="M5 9.5l3-3 3 3"/></svg>';
 const WV_PAGE_BOTTOM_SVG =
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" '
+    '<svg viewBox="0 0 16 16" fill="none" stroke="' + WV_PAGE_ANCHOR_COLOR + '" stroke-width="1.5" stroke-linecap="round" '
     + 'stroke-linejoin="round"><path d="M3 13h10"/><path d="M8 3v6.5"/><path d="M5 6.5l3 3 3-3"/></svg>';
 // Generic "item" glyph for the bookmark-type filter's Item category (attachment
 // / note / collection / library refs, i.e. everything that isn't an annotation).
@@ -2495,7 +2499,16 @@ class _ReaderPanelsMixin {
                     const br = bodyEl.getBoundingClientRect();
                     const z = (br.width && bodyEl.offsetWidth) ? (br.width / bodyEl.offsetWidth) : 1;
                     const atStart = f <= 0.15;
-                    const baseX = isPinGlyph ? (rr.left + rr.width * f) : rr.left;
+                    let blockLeft = rr.left;
+                    if (!isPinGlyph) {
+                        try {
+                            const startEl = range.startContainer && (range.startContainer.nodeType === 1
+                                ? range.startContainer : range.startContainer.parentElement);
+                            const blk = startEl && startEl.closest && startEl.closest("[data-ref-path]");
+                            if (blk) blockLeft = blk.getBoundingClientRect().left;
+                        } catch (_) {}
+                    }
+                    const baseX = isPinGlyph ? (rr.left + rr.width * f) : blockLeft;
                     let tipX = (baseX - br.left) / (z || 1);
                     if (isPinGlyph) { if (atStart) tipX -= Math.round(W * 0.58); }
                     else { tipX -= (W + 8); }
@@ -3825,9 +3838,6 @@ class _ReaderPanelsMixin {
      *  (curating if needed), re-renders, then opens the input on its row. */
     async _wvOutlineBeginRename(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
         try {
-            // Reading Mode is a navigation LENS -- entries are position-based
-            // and RM shows a reflow, so editing waits for the base view.
-            if (this._wvReadingModeActive(reader)) { this._wvReaderPanelNote(idoc, "Switch off Reading Mode to edit the outline."); return; }
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             // Editing from the ORIGINAL view once a curated store exists is a
@@ -3859,7 +3869,6 @@ class _ReaderPanelsMixin {
     /** Delete an outline entry (double-click / menu). Resolves + curates first. */
     async _wvOutlineDoDelete(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
         try {
-            if (this._wvReadingModeActive(reader)) { this._wvReaderPanelNote(idoc, "Switch off Reading Mode to edit the outline."); return; }
             const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
             if (!ref) return;
             await this._wvOutlineDeleteEntry(ref.att.libraryID, ref.att.itemKey, ref.id);
@@ -5867,8 +5876,12 @@ class _ReaderPanelsMixin {
     }
 
     _wvOutlineShowEntryMenu(reader: any, idoc: any, ev: any, entry: any, index: number, curatedView: boolean) {
-        if (this._wvReadingModeActive(reader)) { this._wvReaderPanelNote(idoc, "Switch off Reading Mode to edit the outline."); return; }
         try {
+            // Reading Mode: renaming, deleting, kind and reset are pure data
+            // edits and work fine, so the menu opens (user request 2026-07-29).
+            // Only the items that PICK A NEW POSITION in the page (Edit
+            // Position / Edit Region / Re-detect) need the base view.
+            const rmLens = this._wvReadingModeActive(reader);
             this._wvCloseReaderBmContextMenu(idoc);
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
@@ -5922,7 +5935,7 @@ class _ReaderPanelsMixin {
             // entries predating it fall back to the frozen original, which is
             // what the automatic recovery always used.
             if (this._wvOutlineRegionTitleStale(entry)) {
-                mk("Re-detect Region from Title", RP_REVERT_SVG,
+                if (!rmLens) mk("Re-detect Region from Title", RP_REVERT_SVG,
                     () => this._wvOutlineRedetectRegion(reader, idoc, entry, index, curatedView));
             }
             // Bad-text-layer spacing repair. Shown when the title's spacing looks
@@ -5947,15 +5960,15 @@ class _ReaderPanelsMixin {
                 const _anchor = _tgt && _tgt.anchor;
                 if (_anchor === "top" || _anchor === "bottom") {
                     // Page-anchor entry: Edit Position (manual page + top/bottom).
-                    mk("Edit Position…", RP_TEXT_SVG,
+                    if (!rmLens) mk("Edit Position…", RP_TEXT_SVG,
                         () => this._wvOutlineEditPosition(reader, idoc, entry, index, curatedView));
                 } else if (_anchor === "point") {
                     // Pin entry: Edit Position drops a persistent, draggable pin
                     // that commits only when the user clicks Done.
-                    mk("Edit Position", RP_TEXT_SVG,
+                    if (!rmLens) mk("Edit Position", RP_TEXT_SVG,
                         () => this._wvOutlineEditPinPosition(reader, idoc, entry, index, curatedView));
                 } else {
-                    mk("Edit Region…", RP_TEXT_SVG,
+                    if (!rmLens) mk("Edit Region…", RP_TEXT_SVG,
                         () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
                 }
             }

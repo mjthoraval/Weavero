@@ -4304,6 +4304,7 @@ class _ReaderPanelsMixin {
             await this._wvReaderRenderOutline(reader, idoc);
             try {
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                this._wvClearStalePin(pv);
                 this._wvOutlineScrollToRect(pv, res.pageIndex, rects[0]);
                 this._wvOutlineHighlightInPlace(pv, res.pageIndex, rects, gen, 0);
             } catch (_) {}
@@ -4523,7 +4524,7 @@ class _ReaderPanelsMixin {
                 }
                 chain
                     .then(() => this._wvReaderRenderOutline(reader, idoc))
-                    .then(() => { try { const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1); this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0); } catch (_) {} })
+                    .then(() => { try { const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1); this._wvClearStalePin(pv); this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0); } catch (_) {} })
                     .catch(() => {});
             };
 
@@ -5448,6 +5449,7 @@ class _ReaderPanelsMixin {
             // Established (saved) OR already a real box -> go straight there.
             if (pv && rects && (established || !this._wvOutlineIsPointRect(target))) {
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                this._wvClearStalePin(pv);
                 const rr = rects[0];
                 if (this._wvOutlineIsPointRect(target) && target.anchor !== "point") {
                     // Established but coarse -- recovery had failed (e.g. a
@@ -5491,6 +5493,7 @@ class _ReaderPanelsMixin {
                 const resolveTitle = curated ? ((node.source && node.source.title) || node.title) : node.title;
                 if (!resolveTitle) { this._wvOutlineNavRaw(reader, pv, target); return; }
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                this._wvClearStalePin(pv);
                 const r0 = rects[0];
                 Promise.resolve(this._wvOutlineRecoverRect(pv, target.pageIndex, r0[0], r0[1], resolveTitle))
                     .then((res: any) => {
@@ -13209,6 +13212,20 @@ class _ReaderPanelsMixin {
      *  In-place highlight technique, outline navigation and TOC extraction are
      *  derived from / call into Zotero's own reader (AGPL-3.0):
      *  https://github.com/zotero/reader/blob/master/src/pdf/pdf-view.js */
+    /** Remove a showing pin marker when a TEXT-highlight click supersedes it --
+     *  the symmetric rule to `_wvReaderShowPin` clearing the text highlight
+     *  ("switching quickly between items should clear the previous marker,
+     *  pins included", 2026-07-29). An EDIT-mode pin (carries the Done/approve
+     *  button) is exempt: wiping it would silently discard a tentative
+     *  position edit. */
+    _wvClearStalePin(pv: any) {
+        try {
+            const pd = pv && pv._iframeWindow && pv._iframeWindow.document;
+            const pin = pd && pd.querySelector(".wv-reader-pin");
+            if (pin && !pin.querySelector(".wv-reader-pin-approve")) pin.remove();
+        } catch (_) {}
+    }
+
     _wvOutlinePaint(pv: any, pageIndex: number, posOrNull: any) {
         try {
             pv._highlightedPosition = posOrNull;
@@ -13307,6 +13324,8 @@ class _ReaderPanelsMixin {
                                 // New click generation — supersedes any in-flight
                                 // recovery/highlight from a previous click.
                                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                                plugin._wvClearStalePin(pv);
+                this._wvClearStalePin(pv);
                                 // Scroll to the dest WITHOUT the reader's native
                                 // flash. The native _highlightPosition arms an
                                 // unconditional 2s timer that nulls
@@ -13522,6 +13541,15 @@ class _ReaderPanelsMixin {
             const uLeft = left / sf, uTop = top / sf;
             const doc = win.document;
             try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
+            // Switching to a PIN also clears any active outline/bookmark TEXT
+            // highlight -- the same supersede rule rapid highlight->highlight
+            // clicks follow. Bump the click generation so an in-flight
+            // recovery/paint from the previous click aborts (2026-07-29).
+            try {
+                pv._wvHlSeq = (pv._wvHlSeq || 0) + 1;
+                const hp = pv._highlightedPosition;
+                if (hp) this._wvOutlinePaint(pv, hp.pageIndex || 0, null);
+            } catch (_) {}
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-reader-pin";
             // Vector pin is primary. The emoji-bitmap marker is kept as a working

@@ -3068,6 +3068,23 @@ class _ReaderPanelsMixin {
                 kic.innerHTML = RP_BOX_SVG;
                 row.appendChild(kic);
             }
+            // Target-kind glyph, matching the bookmark rows: a pin for a pinned
+            // spot, the page-top/page-bottom arrow for a page anchor. Text
+            // regions stay unmarked -- that's the default kind (2026-07-29).
+            {
+                const tgtK = (entry.resolvedPosition || entry.position || {}) as any;
+                const kindIcon = tgtK.anchor === "point" ? WV_PIN_ICON_SVG
+                    : tgtK.anchor === "bottom" ? WV_PAGE_BOTTOM_SVG
+                        : tgtK.anchor === "top" ? WV_PAGE_TOP_SVG : null;
+                if (kindIcon) {
+                    const tic = idoc.createElementNS(NS, "span");
+                    tic.className = "wv-outline-kind-ic";
+                    tic.setAttribute("title", tgtK.anchor === "point" ? "Pinned spot"
+                        : tgtK.anchor === "bottom" ? "Bottom of page" : "Top of page");
+                    tic.innerHTML = kindIcon;
+                    row.appendChild(tic);
+                }
+            }
             row.appendChild(label);
             // Page number at the right (position entries only; URL entries have none).
             const pi = (!entry.url && entry.position && Number.isInteger(entry.position.pageIndex))
@@ -11695,9 +11712,10 @@ class _ReaderPanelsMixin {
             ic.innerHTML = WV_PIN_ICON_SVG;
         }
         else if (bm.type === "page") {
-            // "Add Bookmark to This Page" — whole-page bookmark, ribbon
-            // glyph (no rects → not a precise spot → not a pin).
-            ic.innerHTML = RP_BM_RIBBON;
+            // Whole-page bookmark: the SAME top/bottom glyph its in-document
+            // marker and its Edit Position dialog use, so row, dialog and
+            // marker all agree (2026-07-29). Pins already work this way.
+            ic.innerHTML = bm.anchor === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG;
         }
         else if (bm.type === "text") ic.innerHTML = RP_TEXT_SVG;
         else if (bm.type === "url") {

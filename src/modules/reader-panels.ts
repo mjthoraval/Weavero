@@ -11117,8 +11117,63 @@ class _ReaderPanelsMixin {
             if (n) this._bmReaderRename(info.att.libraryID, info.att.itemKey, info.entry.id, n).then(reRender);
         }
         else {
-            this._wvReaderEditBookmarkDialog(reader, info.att, info.entry, reRender);
+            // Double-click = INLINE rename, exactly like an outline row (user
+            // request 2026-07-29). The full editor (title + comment) and every
+            // other action stay on the right-click menu.
+            this._wvBmStartInlineRename(reader, idoc, row, info);
         }
+    }
+
+    /** Inline-rename a bookmark row: swap the label for an input. Enter / click
+     *  away commits, Escape cancels; a re-render restores the row either way.
+     *  Mirrors _wvOutlineStartRename, including the draggable dance (a row is a
+     *  drag source, and Gecko blocks caret placement inside a draggable
+     *  ancestor). */
+    _wvBmStartInlineRename(reader: any, idoc: any, row: any, info: any) {
+        try {
+            const labelEl = row.querySelector(".wv-bm-reader-label");
+            if (!labelEl || !labelEl.parentNode) return;
+            const orig = String(info.entry.label || "");
+            const input: any = idoc.createElementNS(NS_HTML_RP, "input");
+            input.className = "wv-outline-rename-input";
+            input.setAttribute("type", "text");
+            input.value = orig;
+            const wasDraggable = row.getAttribute("draggable");
+            try { row.removeAttribute("draggable"); } catch (_) {}
+            labelEl.replaceWith(input);
+            try { input.focus(); input.select(); } catch (_) {}
+            const docs: any[] = [idoc];
+            try {
+                const ir = reader._internalReader;
+                for (const v of [ir && ir._primaryView, ir && ir._secondaryView, ir && ir._lastView]) {
+                    const vd = v && v._iframeWindow && v._iframeWindow.document;
+                    if (vd && docs.indexOf(vd) < 0) docs.push(vd);
+                }
+            } catch (_) {}
+            let done = false;
+            let onDownOutside: any = null;
+            const finish = (save: boolean) => {
+                if (done) return; done = true;
+                if (wasDraggable != null) { try { row.setAttribute("draggable", wasDraggable); } catch (_) {} }
+                for (const d of docs) { try { d.removeEventListener("pointerdown", onDownOutside, true); } catch (_) {} }
+                const v = String(input.value || "").trim();
+                const reRender = () => { try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {} };
+                if (save && v && v !== orig) {
+                    Promise.resolve(this._bmReaderRename(info.att.libraryID, info.att.itemKey, info.entry.id, v))
+                        .then(reRender).catch(reRender);
+                } else reRender();
+            };
+            onDownOutside = (e: any) => { try { if (e.target !== input) finish(true); } catch (_) {} };
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDownOutside, true); } catch (_) {} }
+            input.addEventListener("click", (e: any) => e.stopPropagation());
+            input.addEventListener("dblclick", (e: any) => e.stopPropagation());
+            input.addEventListener("blur", () => finish(true));
+            input.addEventListener("keydown", (e: any) => {
+                if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); finish(true); }
+                else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+                else e.stopPropagation();   // keep row nav keys out of the field
+            }, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvBmStartInlineRename err: " + e); }
     }
 
     /** Toggle one folder row open/closed, keeping the cursor on it. */

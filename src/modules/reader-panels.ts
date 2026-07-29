@@ -2424,18 +2424,28 @@ class _ReaderPanelsMixin {
      *  the mapped range, tip at the target. Display-only -- dragging a pin to
      *  MOVE it stays a base-view action (the reflow has no PDF coordinates to
      *  write back). Fades like the base-view pin. */
-    _wvRmShowPin(reader: any, sdtv: any, range: any, frac?: number) {
+    _wvRmShowPin(reader: any, sdtv: any, range: any, frac?: number, icon?: string) {
         try {
             const iwin = (Components as any).utils.waiveXrays(sdtv._iframeWindow);
             const doc = iwin && iwin.document;
             if (!doc || !doc.body || !range) return;
             try { const old = doc.querySelector(".wv-rm-pin"); if (old) old.remove(); } catch (_) {}
-            const PIN_H = 30;
+            // Geometry per glyph. The PIN uses the base view's tip-anchored
+            // drawing (RP_PIN_TIP_SVG: tip at bottom-CENTRE of its box) so the
+            // two modes show the same marker -- the 16px row icon was being
+            // stretched into a 30px box and read as an empty square
+            // (2026-07-29). Page-anchor glyphs are square, tip at bottom-left.
+            const PIN_H = 32;
+            const isPinGlyph = !icon;
+            const W = isPinGlyph ? Math.round(PIN_H * (66.34 / 33.855)) : 24;
+            const H = isPinGlyph ? PIN_H : 24;
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-rm-pin";
-            pin.setAttribute("style", "position:absolute;z-index:9999;pointer-events:none;"
-                + "width:" + PIN_H + "px;height:" + PIN_H + "px;transition:opacity .5s ease;opacity:1;");
-            pin.innerHTML = WV_PIN_ICON_SVG;
+            pin.setAttribute("style", "position:absolute;z-index:9999;pointer-events:none;line-height:0;"
+                + "width:" + W + "px;height:" + H + "px;transition:opacity .25s ease;opacity:1;");
+            pin.innerHTML = icon
+                ? ('<span style="display:inline-block;width:' + H + "px;height:" + H + 'px;color:#e5533d;">' + icon + "</span>")
+                : ('<span style="display:inline-block;width:' + W + "px;height:" + H + 'px;">' + RP_PIN_TIP_SVG + "</span>");
             doc.body.appendChild(pin);
             // RE-MEASURE the live range instead of freezing document coords:
             // the reflow re-lays-out on zoom / font-size / width changes, so a
@@ -2449,10 +2459,15 @@ class _ReaderPanelsMixin {
                     const rects = range.getClientRects();
                     const rr = (rects && rects.length) ? rects[rects.length - 1] : range.getBoundingClientRect();
                     if (!rr || (!rr.width && !rr.height)) return false;
-                    const tipX = rr.left + rr.width * f + (iwin.scrollX || 0);
+                    // Start-of-line markers move INTO the left margin so they
+                    // don't sit on top of the first words (asked 2026-07-29).
+                    const atStart = f <= 0.15;
+                    const tipX = rr.left + rr.width * f + (iwin.scrollX || 0) - (atStart ? 10 : 0);
                     const tipY = rr.bottom + (iwin.scrollY || 0);
-                    pin.style.left = Math.max(0, Math.round(tipX)) + "px";
-                    pin.style.top = Math.max(0, Math.round(tipY - PIN_H)) + "px";
+                    // Pin: tip at bottom-CENTRE. Page glyphs: tip at bottom-left.
+                    const leftPx = isPinGlyph ? (tipX - W / 2) : tipX;
+                    pin.style.left = Math.max(0, Math.round(leftPx)) + "px";
+                    pin.style.top = Math.max(0, Math.round(tipY - H)) + "px";
                     return true;
                 } catch (_) { return false; }
             };
@@ -2464,8 +2479,10 @@ class _ReaderPanelsMixin {
             const iv = (w && w.setInterval) ? w.setInterval.bind(w) : setInterval;
             const ci = (w && w.clearInterval) ? w.clearInterval.bind(w) : clearInterval;
             const timer = iv(() => { if (!place()) { try { ci(timer); } catch (_) {} } }, 250);
-            st(() => { try { pin.style.opacity = "0"; } catch (_) {} }, 3500);
-            st(() => { try { ci(timer); } catch (_) {} try { pin.remove(); } catch (_) {} }, 4200);
+            // SAME lifetime as the base-view pin (fade at 2200ms, gone at
+            // +320ms) -- it lingered longer in RM (asked 2026-07-29).
+            st(() => { try { pin.style.opacity = "0"; } catch (_) {} }, 2200);
+            st(() => { try { ci(timer); } catch (_) {} try { pin.remove(); } catch (_) {} }, 2520);
         } catch (e) { Zotero.debug("[Weavero] _wvRmShowPin err: " + e); }
     }
 
@@ -2629,7 +2646,14 @@ class _ReaderPanelsMixin {
                     tgtA.anchor === "top" ? "pageTop" : "pageBottom");
                 for (const cand of (cands || [])) {
                     const hit = mapVisible(cand);
-                    if (hit) { landOn(hit, true); return; }
+                    if (hit) {
+                        // Page anchors get their own marker in RM too (the
+                        // page-anchor twin of the pin marker).
+                        this._wvRmShowPin(reader, sdtv, hit.range, tgtA.anchor === "bottom" ? 1 : 0,
+                            tgtA.anchor === "bottom" ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG);
+                        landOn(hit, true);
+                        return;
+                    }
                 }
                 this._wvReaderPanelNote(idoc, "Couldn’t locate this entry in the Reading Mode text.");
                 return;
@@ -6338,9 +6362,33 @@ class _ReaderPanelsMixin {
      *  heading; the embedded dest is only a whole-page anchor). Far better than
      *  the raw coarse point, which mislands mid-page: the top of the page is
      *  where such a section actually begins (2026-07-23). */
+    /** Marker for a PAGE-anchor navigation (top/bottom), the page-anchor twin
+     *  of the pin marker: same drawing machinery, same fade, its own glyph, at
+     *  the page's top-left / bottom-left. Asked for 2026-07-29 ("show an icon
+     *  for page bookmarks and outline, like pin bookmarks"). */
+    _wvShowPageAnchorMarker(reader: any, pv: any, pageIndex: number, bottom: boolean) {
+        try {
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            const pageView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
+            const vp = pageView && pageView.viewport;
+            if (!vp) return;
+            // Page corner in PDF units: viewBox is [x0,y0,x1,y1] with y up.
+            const vb: any = vp.viewBox || [0, 0, 612, 792];
+            const x = vb[0] + 26;
+            const y = bottom ? (vb[1] + 26) : (vb[3] - 26);
+            this._wvReaderShowPin(reader, { pageIndex, rects: [[x, y, x, y]] }, undefined,
+                { icon: bottom ? WV_PAGE_BOTTOM_SVG : WV_PAGE_TOP_SVG });
+        } catch (_) {}
+    }
+
     _wvOutlineNavPageTop(reader: any, pv: any, pageIndex: number) {
         try {
             if (pageIndex == null || pageIndex < 0) return;
+            const w0: any = Zotero.getMainWindow();
+            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(() => {
+                try { this._wvShowPageAnchorMarker(reader, pv, pageIndex, false); } catch (_) {}
+            }, 260);
             const win = pv && pv._iframeWindow;
             const app = win && (win.PDFViewerApplication || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
             const viewer = app && app.pdfViewer;
@@ -6370,6 +6418,10 @@ class _ReaderPanelsMixin {
     _wvOutlineNavPageBottom(reader: any, pv: any, pageIndex: number) {
         try {
             if (pageIndex == null || pageIndex < 0) return;
+            const w0: any = Zotero.getMainWindow();
+            ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(() => {
+                try { this._wvShowPageAnchorMarker(reader, pv, pageIndex, true); } catch (_) {}
+            }, 260);
             const win = pv && pv._iframeWindow;
             const app = win && (win.PDFViewerApplication || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
             const viewer = app && app.pdfViewer;
@@ -14453,8 +14505,14 @@ class _ReaderPanelsMixin {
             // backup behind `RP_PIN_USE_EMOJI` (both anchor their tip identically,
             // so switching needs no other change).
             const PIN_H = 32;
-            const bmp = RP_PIN_USE_EMOJI ? this._wvPinEmojiBitmap(doc) : null;
-            if (bmp) {
+            // `opts.icon` swaps the glyph (page-anchor markers reuse this whole
+            // machinery -- placement, fade, supersede -- with their own icon).
+            const altIcon = opts && opts.icon;
+            const bmp = (!altIcon && RP_PIN_USE_EMOJI) ? this._wvPinEmojiBitmap(doc) : null;
+            if (altIcon) {
+                pin.innerHTML = '<span style="display:inline-block;width:' + PIN_H + 'px;height:' + PIN_H
+                    + 'px;color:#e5533d;">' + altIcon + "</span>";
+            } else if (bmp) {
                 const bw = Math.round(bmp.w / bmp.h * PIN_H);
                 pin.innerHTML = '<img src="' + bmp.url + '" width="' + bw + '" height="' + PIN_H + '">';
             } else {

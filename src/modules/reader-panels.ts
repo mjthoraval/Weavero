@@ -2599,8 +2599,8 @@ class _ReaderPanelsMixin {
                                     const z2 = (hostRect2.width && host.offsetWidth) ? (hostRect2.width / host.offsetWidth) : 1;
                                     const tipX2 = (last.right - hostRect2.left) / (z2 || 1);
                                     const tipY2 = (last.bottom - hostRect2.top) / (z2 || 1);
-                                    pin.style.left = Math.max(0, Math.round(tipX2 - W / 2)) + "px";
-                                    pin.style.top = Math.max(0, Math.round(tipY2 - H)) + "px";
+                                    pin.style.left = Math.round(tipX2 - W / 2) + "px";
+                                    pin.style.top = Math.max(-H, Math.round(tipY2 - H)) + "px";
                                     return true;
                                 }
                             }
@@ -2621,8 +2621,11 @@ class _ReaderPanelsMixin {
                     else { tipX -= (W + 6); }
                     const tipY = toLayoutY(rr.bottom);
                     const leftPx = isPinGlyph ? (tipX - W / 2) : tipX;
-                    pin.style.left = Math.max(0, Math.round(leftPx)) + "px";
-                    pin.style.top = Math.max(0, Math.round(tipY - H)) + "px";
+                    // NO left clamp: a page marker belongs in the margin, i.e.
+                    // at a NEGATIVE offset inside the content box -- clamping to
+                    // 0 pinned it back onto the first character (2026-07-29).
+                    pin.style.left = Math.round(leftPx) + "px";
+                    pin.style.top = Math.max(-H, Math.round(tipY - H)) + "px";
                     return true;
                 } catch (_) { return true; }   // transient (re-render): keep tracking
             };

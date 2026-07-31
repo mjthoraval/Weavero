@@ -4185,6 +4185,10 @@ class WeaveroPlugin {
             // Ctrl+Shift+T → reopen last closed reader window / group (falls
             // through to Zotero's native tab-undo when Weavero's stack is empty).
             try { (this as any)._wvWireReopenClosedShortcut(_window); } catch (e) {}
+            // Catch `zotero://open…&wvpos=…` arriving from OUTSIDE Zotero:
+            // commandLineHandler routes those to ZoteroPane.loadURI, which
+            // Weavero's own link surfaces bypass entirely.
+            try { (this as any)._wvWireLoadURIHook(_window); } catch (e) {}
             // Session-save hardening (see startup pass): base types for -loading tabs.
             try { (this as any)._wvPatchTabsGetState(_window); } catch (e) {}
             // Multi-main-window fix: ignore other windows' tab-select notifier
@@ -4411,6 +4415,7 @@ class WeaveroPlugin {
      *  through dead refs. Lighter than destroy() — preferences observer,
      *  reader event listeners etc. survive across windows. */
     onMainWindowUnload(_window) {
+        try { (this as any)._wvUnwireLoadURIHook(_window); } catch (e) {}
         try {
             // Window-close upkeep, only when managed windows are in play:
             //  • re-anchor — if the closing window was the anchor, the new

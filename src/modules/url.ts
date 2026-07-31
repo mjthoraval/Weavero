@@ -62,6 +62,10 @@ export const URL_SCHEMES = [
 // Verified present in the live 10.0-beta runtime via
 // `Zotero.Translators.getAllForType("export")`. Used by the "Copy As → BibTeX /
 // BibLaTeX" submenu entries, which are only shown when BBT is active.
+// Wire version for the ZoteroPane.loadURI hook. BUMP on any change to the
+// wrapped closure -- a reload must unhook the stale copy and re-hook.
+export const WV_LOADURI_WIRE_V = 1;
+
 export const BBT_BIBTEX_TRANSLATOR_ID = "ca65189f-8815-4afe-8c8b-8c7c15f0edca";
 export const BBT_BIBLATEX_TRANSLATOR_ID = "f895aa0d-f28e-47fe-b247-2ea77c6ed583";
 
@@ -348,6 +352,65 @@ export const urlMethods = {
         } catch (e) { return null; }
     },
 
+    /** Intercept `zotero://open…&wvpos=…` at `ZoteroPane.loadURI`.
+     *
+     *  THE choke point for links arriving from OUTSIDE Zotero:
+     *  `commandLineHandler.js` routes an external `zotero://` click to
+     *  `mainWindow.ZoteroPane.loadURI(uri.spec)` with the URL still intact,
+     *  before Zotero's protocol handler parses it and drops params it doesn't
+     *  know. Weavero's own link surfaces call `handleZoteroURI` directly, so
+     *  they never reached here -- which is why a link clicked in another app
+     *  only ever landed on the page (trace ring stayed empty, 2026-07-31).
+     *
+     *  Only wvpos links are diverted; everything else calls straight through,
+     *  so no existing behaviour changes. Versioned re-wiring (not a boolean):
+     *  a reload must be able to unhook the STALE closure and re-hook, or the
+     *  dead copy keeps running -- the trap `Notes.open` / `Reader.open` hit. */
+    _wvWireLoadURIHook(win: any) {
+        try {
+            const zp: any = win && win.ZoteroPane;
+            if (!zp || typeof zp.loadURI !== "function") return;
+            if (zp._wvLoadURIWired === WV_LOADURI_WIRE_V) return;
+            // Peel any earlier version before installing this one.
+            if (zp._wvOrigLoadURI) {
+                try { zp.loadURI = zp._wvOrigLoadURI; } catch (e) {}
+                delete zp._wvOrigLoadURI;
+                delete zp._wvLoadURIWired;
+            }
+            const orig = zp.loadURI;
+            zp._wvOrigLoadURI = orig;
+            zp.loadURI = function (uri: any, ...rest: any[]) {
+                try {
+                    // Resolve the LIVE plugin at call time -- never close over
+                    // `this`; the wrap outlives any single plugin instance.
+                    const plugin: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    if (plugin && typeof uri === "string"
+                        && /^zotero:\/\/open/i.test(uri)
+                        && /[?&]wvpos=/i.test(uri)) {
+                        plugin._wvLinkRing("loadURI: intercepted wvpos link");
+                        Promise.resolve(plugin.handleZoteroURI(uri)).catch(() => {});
+                        return;
+                    }
+                } catch (e) {}
+                return orig.apply(this, [uri, ...rest]);
+            };
+            zp._wvLoadURIWired = WV_LOADURI_WIRE_V;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireLoadURIHook err: " + e); }
+    },
+
+    /** Restore the native `loadURI` (shutdown / window unload). */
+    _wvUnwireLoadURIHook(win: any) {
+        try {
+            const zp: any = win && win.ZoteroPane;
+            if (zp && zp._wvOrigLoadURI) {
+                zp.loadURI = zp._wvOrigLoadURI;
+                delete zp._wvOrigLoadURI;
+                delete zp._wvLoadURIWired;
+            }
+        } catch (e) {}
+    },
+
     /** Capped ring for the wvpos link path, baked into the BUILD so a failing
      *  click is already recorded rather than needing to be reproduced live
      *  (the lesson from the sidebar-oscillation hunt). Read with
@@ -398,6 +461,31 @@ export const urlMethods = {
                 const pageView = app && app.pdfViewer && app.pdfViewer._pages
                     && app.pdfViewer._pages[pageIndex];
                 built = !!(pageView && pageView.div && pageView.viewport);
+                // DEADLOCK BREAKER: pdf.js only builds pages near the viewport,
+                // so waiting for the target page to be built before scrolling
+                // to it waits forever when the reader is parked elsewhere --
+                // observed as `built=false` for the full poll (2026-07-31).
+                // Drive the page in first; the build then follows and the
+                // quarter-rule scroll below refines the landing.
+                if (!built && app && app.pdfViewer) {
+                    if (n === 0 || n === 12 || n === 30) {
+                        this._wvLinkRing("highlightAfterOpen: forcing page " + (pageIndex + 1) + " in (n=" + n + ")");
+                        // A PRIMITIVE assignment, not scrollPageIntoView({...}):
+                        // an options object built in chrome reads as empty
+                        // across the Xray boundary, so the call no-ops WITHOUT
+                        // throwing -- which is why the catch-fallback never ran
+                        // (2026-07-31). Same class of bug as the highlight.
+                        try { app.pdfViewer.currentPageNumber = pageIndex + 1; } catch (e2) {}
+                        try {
+                            const iw: any = pv._iframeWindow;
+                            const Cu: any = (Components as any).utils;
+                            if (iw && Cu) {
+                                app.pdfViewer.scrollPageIntoView(
+                                    Cu.cloneInto({ pageNumber: pageIndex + 1 }, iw));
+                            }
+                        } catch (e3) {}
+                    }
+                }
             } catch (e) {}
             if (n === 10 || n === 30) {
                 this._wvLinkRing("highlightAfterOpen: still waiting n=" + n

@@ -10538,6 +10538,16 @@ class _FilterMixin {
         const itemsView = win.ZoteroPane && win.ZoteroPane.itemsView;
         if (!itemsView || !itemsView.tree) return;
 
+        // Re-arm the reveal hook on the CURRENT collection-tree rows.
+        // Selecting another collection swaps `rowProvider.collectionTreeRows`
+        // for fresh objects, and nothing re-ran the patch afterwards, so the
+        // newly-selected collection's `getItems` stayed unwrapped and reveals
+        // under a filter didn't surface its hidden children. Invisible before
+        // beta.21, when the singular getter exposed only the first row anyway
+        // (caught 2026-07-31). Idempotent: peels a prior wrap before
+        // re-installing.
+        try { this._patchRefreshForReveals(); } catch (e) {}
+
         // Snapshot the native quick-search value once per apply so
         // `_rowPassesFilters` can cheaply consult it inside the
         // per-row loop without repeatedly touching the DOM. Used

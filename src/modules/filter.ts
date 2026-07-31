@@ -854,7 +854,29 @@ class _FilterMixin {
             const iv: any = win && win.ZoteroPane
                 && win.ZoteroPane.itemsView;
             const rp: any = iv && iv.rowProvider;
-            const ctr: any = rp && rp.collectionTreeRow;
+            // Zotero 10.0-beta.21 removed `ItemTree#collectionTreeRow` in
+            // favour of `collectionTreeRows[]` + `viewMode` (upstream
+            // 1d97f6448, "Replace ItemTree#collectionTreeRow with a validated
+            // view mode" -- multi-collection selection had left the singular
+            // getter returning only the FIRST row). Reading the old name
+            // returned undefined, so this whole hook early-returned and the
+            // reveal patch silently stopped installing on beta.21+
+            // (caught 2026-07-31). Keep the singular as the Zotero 9 /
+            // pre-beta.21 fallback.
+            const ctrs: any[] = (rp && Array.isArray(rp.collectionTreeRows))
+                ? rp.collectionTreeRows
+                : (rp && rp.collectionTreeRow ? [rp.collectionTreeRow] : []);
+            for (const ctr of ctrs) this._patchOneCtrGetItems(ctr);
+            this._patchRefreshForChevrons(rp);
+        } catch (e) { dbg("[Weavero] _patchRefreshForReveals err: " + e); }
+    }
+
+    /** Install the reveal-aware `getItems` wrap on ONE collection-tree row.
+     *  Split out of `_patchRefreshForReveals` when beta.21 turned the single
+     *  row into a list (a multi-collection selection has one per collection,
+     *  and every one of them feeds `_refresh`). */
+    _patchOneCtrGetItems(ctr: any) {
+        try {
             if (!ctr || typeof ctr.getItems !== "function") return;
             // Peel any prior-version wrap before installing the
             // current one. Old wraps may lack the `_wvBaseSearchIDs`
@@ -949,12 +971,19 @@ class _FilterMixin {
                 return baseItems;
             };
             ctr._wvGetItemsRevealPatched = true;
-            // Also wrap `rp._refresh` so chevron maps get recomputed
-            // and the tree re-painted whenever Zotero rebuilds `_rows`.
-            // The MutationObserver on the tree DOM doesn't fire for
-            // virtualized-table cell-content swaps, so without this
-            // hook a fresh quick search lands a populated `_rows` but
-            // empty chevron maps — no chevrons appear at all.
+        } catch (e) { dbg("[Weavero] _patchOneCtrGetItems err: " + e); }
+    }
+
+    /** Wrap `rp._refresh` so chevron maps get recomputed and the tree
+     *  re-painted whenever Zotero rebuilds `_rows`. The MutationObserver on
+     *  the tree DOM doesn't fire for virtualized-table cell-content swaps, so
+     *  without this hook a fresh quick search lands a populated `_rows` but
+     *  empty chevron maps — no chevrons appear at all.
+     *
+     *  Per ROW PROVIDER, not per collection-tree row — kept separate from
+     *  `_patchOneCtrGetItems` when beta.21 turned the single row into a list. */
+    _patchRefreshForChevrons(rp: any) {
+        try {
             if (rp && typeof rp._refresh === "function") {
                 // Peel a prior wrap before re-installing (same pattern as
                 // the getItems / renderPrimaryCell patches above) — the
@@ -1180,7 +1209,15 @@ class _FilterMixin {
                                     + e);
                             }
                         }
-                        const tree = iv && iv.tree;
+                        // Resolve the items view at CALL time: this wrap moved
+                        // out of `_patchRefreshForReveals` (which closed over
+                        // `iv`) when beta.21 split the collection-tree row into
+                        // a list, and a stale closure would be wrong here
+                        // anyway once the view is rebuilt.
+                        const winT: any = Zotero.getMainWindow();
+                        const ivT: any = winT && winT.ZoteroPane
+                            && winT.ZoteroPane.itemsView;
+                        const tree = ivT && ivT.tree;
                         if (tree && tree.invalidate) tree.invalidate();
                     } catch (e) {
                         Zotero.debug(

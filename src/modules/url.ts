@@ -578,7 +578,17 @@ export const urlMethods = {
                     // A point gets the PIN MARKER -- highlighting a zero-area
                     // rect paints nothing at all.
                     this._wvLinkRing("highlightAfterOpen: PIN page=" + pageIndex + " afterTries=" + n);
-                    try { this._wvReaderShowPin(reader, { pageIndex, rects }); } catch (e) {}
+                    // DEFER past the scroll. The marker is appended into the
+                    // page's layer, and the scroll we just issued makes pdf.js
+                    // re-render that page -- dropping a pin added in the same
+                    // tick (observed: the PIN branch ran, no element survived).
+                    // `_wvOutlineNavPageTop` defers its page marker by 260ms for
+                    // the same reason.
+                    const w2: any = Zotero.getMainWindow();
+                    const st2: any = (w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout;
+                    st2(() => {
+                        try { this._wvReaderShowPin(reader, { pageIndex, rects }); } catch (e) {}
+                    }, 320);
                     return;
                 }
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);

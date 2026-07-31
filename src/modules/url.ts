@@ -348,6 +348,44 @@ export const urlMethods = {
         } catch (e) { return null; }
     },
 
+    /** Paint the `wvpos` highlight after a link has opened the document.
+     *
+     *  The reader DOES navigate to `location.position`, and its own
+     *  `_highlightPosition()` runs -- but that just stores the object and
+     *  re-renders, and the object we handed it was built in CHROME. Read from
+     *  the view's compartment its `rects` come back undefined, so nothing is
+     *  painted: the link lands on the right words with no highlight (reported
+     *  2026-07-31). Zotero never hits this because its own positions are built
+     *  inside the view.
+     *
+     *  So re-apply it through `_wvOutlineHighlightInPlace`, which already does
+     *  the `cloneInto` dance for exactly this reason and is what the outline's
+     *  own navigation uses. Polls briefly because the reader may still be
+     *  opening when the link is followed. */
+    _wvHighlightAfterOpen(itemID: number, position: any, tries?: number) {
+        const n = tries || 0;
+        try {
+            const reader: any = Zotero.Reader.getByTabID
+                ? (Zotero.Reader._readers || []).find((r: any) => r.itemID === itemID)
+                : null;
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const ready = !!(pv && pv._iframeWindow && Array.isArray(position && position.rects));
+            if (ready) {
+                const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
+                try { this._wvClearStalePin(pv); } catch (e) {}
+                this._wvOutlineHighlightInPlace(pv, position.pageIndex || 0,
+                    position.rects, gen, 0);
+                return;
+            }
+        } catch (e) {}
+        if (n < 40) {
+            const w: any = Zotero.getMainWindow();
+            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => this._wvHighlightAfterOpen(itemID, position, n + 1), 150);
+        }
+    },
+
     /** Full selection link: `<base>?page=<N>&wvpos=<payload>`. `page` first so
      *  a plain Zotero (which ignores `wvpos`) still lands on the right page. */
     _wvBuildSelectionPosLink(linkBase: string, sel: any): string | null {

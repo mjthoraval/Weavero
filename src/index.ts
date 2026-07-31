@@ -541,9 +541,13 @@ class WeaveroPlugin {
                 // as an annotation link would. Wins over a bare `page` (which
                 // is emitted alongside so a plain Zotero still lands close).
                 const wvpos = u.searchParams.get("wvpos");
+                let wvHighlight: any = null;
                 if (wvpos) {
                     const dec = this._wvDecodeSelectionPos(wvpos);
-                    if (dec && dec.position) loc.position = dec.position;
+                    if (dec && dec.position) {
+                        loc.position = dec.position;
+                        wvHighlight = dec.position;
+                    }
                 }
                 const location = Object.keys(loc).length ? loc : null;
                 // Mirror Zotero's own zotero://open / zotero://open-pdf
@@ -566,6 +570,13 @@ class WeaveroPlugin {
                 } catch (e) {
                     Zotero.debug("[Weavero] zotero://open dispatch err: " + e);
                     try { await Zotero.Reader.open(item.id, location as any); } catch (e2) {}
+                }
+                // Repaint the highlight from the VIEW's own compartment: the
+                // reader's native _highlightPosition() stores whatever it is
+                // given, and a chrome-built position reads as empty there, so
+                // the link landed on the words with no highlight.
+                if (wvHighlight) {
+                    try { this._wvHighlightAfterOpen(item.id, wvHighlight); } catch (e) {}
                 }
                 if (openTrashed) {
                     this._showLinkWarning("The linked file's attachment is in the Trash (key "

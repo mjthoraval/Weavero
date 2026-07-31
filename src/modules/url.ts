@@ -442,9 +442,22 @@ export const urlMethods = {
             // three shapes.
             const pick = (...vals: any[]) => vals.find((v) => Number.isFinite(v));
             const p0 = (event && event.params) || {};
-            const cx = pick(event && event.clientX, event && event.x, p0.clientX, p0.x);
-            const cy = pick(event && event.clientY, event && event.y, p0.clientY, p0.y);
+            let cx = pick(event && event.clientX, event && event.x, p0.clientX, p0.x);
+            let cy = pick(event && event.clientY, event && event.y, p0.clientY, p0.y);
             if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+            // COORDINATE SPACES: the menu's x/y are in the READER's space,
+            // while page rects come from the nested pdf.js iframe. Comparing
+            // them directly shifted every point by the iframe's offset, so
+            // clicks genuinely inside the sheet tested as outside it and the
+            // pin entries vanished (2026-07-31). Same conversion the existing
+            // pin capture uses (`_wvCaptureReaderPosition`).
+            try {
+                if (pv._iframe) {
+                    const br = pv._iframe.getBoundingClientRect();
+                    cx -= br.x;
+                    cy -= br.y;
+                }
+            } catch (e) {}
             const pages = app.pdfViewer._pages || [];
             // STRICTLY inside a page. A point outside the sheet has no PDF
             // coordinates, so a pin there is meaningless -- clamping a margin

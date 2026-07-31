@@ -56,6 +56,68 @@ class _PaneMixin {
      *
      *  Standalone attachment rows (in the items list) are returned
      *  directly when they're file attachments. */
+    /* ---- ZoteroPane selection, across the beta.21 removal -----------------
+     *
+     *  Zotero 10.0-beta.21 (upstream `5d1a2cba3`, "Remove the singular
+     *  collection tree selection getters") removed the singular
+     *  `getSelectedLibraryID` / `getSelectedCollection` / `getSelectedSavedSearch`
+     *  / `getSelectedGroup` in favour of plural forms, because multi-collection
+     *  selection made "the selected one" meaningless.
+     *
+     *  The removed names still EXIST and THROW a migration message, so
+     *  Weavero's `typeof fn === "function"` guards sailed straight past them
+     *  and the throw propagated. That is what emptied the filter pulldown
+     *  (GitHub #25): `_renderFilterPanelContents` threw before rendering a
+     *  single row, leaving an open-but-blank popup.
+     *
+     *  Prefer the plural form, fall back to the singular for Zotero 9, and
+     *  never let either throw into a caller. */
+
+    _wvSelectedLibraryID(win?: any): number | null {
+        try {
+            const zp = (win || Zotero.getMainWindow())?.ZoteroPane;
+            if (!zp) return null;
+            if (typeof zp.getSelectedLibraryIDs === "function") {
+                const ids = zp.getSelectedLibraryIDs();
+                return (ids && ids.length) ? ids[0] : null;
+            }
+            if (typeof zp.getSelectedLibraryID === "function") {
+                return zp.getSelectedLibraryID();
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    _wvSelectedCollection(win?: any): any {
+        try {
+            const zp = (win || Zotero.getMainWindow())?.ZoteroPane;
+            if (!zp) return null;
+            if (typeof zp.getSelectedCollections === "function") {
+                const cols = zp.getSelectedCollections();
+                return (cols && cols.length) ? cols[0] : null;
+            }
+            if (typeof zp.getSelectedCollection === "function") {
+                return zp.getSelectedCollection();
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    _wvSelectedSavedSearch(win?: any): any {
+        try {
+            const zp = (win || Zotero.getMainWindow())?.ZoteroPane;
+            if (!zp) return null;
+            if (typeof zp.getSelectedSavedSearches === "function") {
+                const ss = zp.getSelectedSavedSearches();
+                return (ss && ss.length) ? ss[0] : null;
+            }
+            if (typeof zp.getSelectedSavedSearch === "function") {
+                return zp.getSelectedSavedSearch();
+            }
+        } catch (e) {}
+        return null;
+    }
+
     _wvGetBestAttachmentSync(item: any): any {
         try {
             if (!item) return null;
@@ -1945,19 +2007,17 @@ class _PaneMixin {
                     // SavedSearch` returns the Search for a saved-search
                     // row. Library roots, feeds, trash, etc. give false
                     // for both → no entry.
-                    const col = (zp && typeof zp.getSelectedCollection === "function")
-                        ? zp.getSelectedCollection() : null;
+                    const col = this._wvSelectedCollection(win);
                     if (col && col.key) {
                         addEntry(COPY_COLL_ID, "Copy Collection Link",
-                            () => win.ZoteroPane.getSelectedCollection(),
+                            () => this._wvSelectedCollection(win),
                             buildCollectionURI);
                         return;
                     }
-                    const search = (zp && typeof zp.getSelectedSavedSearch === "function")
-                        ? zp.getSelectedSavedSearch() : null;
+                    const search = this._wvSelectedSavedSearch(win);
                     if (search && search.key) {
                         addEntry(COPY_SEARCH_ID, "Copy Saved Search Link",
-                            () => win.ZoteroPane.getSelectedSavedSearch(),
+                            () => this._wvSelectedSavedSearch(win),
                             buildSearchURI);
                     }
                 } catch (showErr) {

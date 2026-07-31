@@ -943,15 +943,31 @@ export const PLUGIN_CSS = [
     // between the search box and the popup — when the search
     // takes focus, Zotero's blue underline draws inside this gap
     // and remains visible.
+    // The frame is drawn with INSET SHADOWS, not borders. Real borders take
+    // layout space: adding 1px on each side pushed the search text 1px right
+    // and narrowed the field 2px every time the popup opened, which reads as
+    // the text twitching (GitHub #26). Inset shadows paint inside the border
+    // box, so the frame appears and disappears with zero reflow.
+    //
+    // They also still bridge the gap: an inset shadow covers the PADDING box,
+    // so the two side lines run down through the `padding-bottom` that
+    // matches the popup's `transform: translateY(3px)` — the same job the
+    // side borders did. Corner rounding clips the shadow just as it clipped
+    // the borders.
     "#zotero-tb-search.wv-filter-search-framed {",
-    "  border-top: 1px solid var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
-    "  border-left: 1px solid var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
-    "  border-right: 1px solid var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
+    "  box-shadow:",
+    "    inset 0 1px 0 0 var(--wv-popup-frame-color, rgba(127,127,127,0.55)),",
+    "    inset 1px 0 0 0 var(--wv-popup-frame-color, rgba(127,127,127,0.55)),",
+    "    inset -1px 0 0 0 var(--wv-popup-frame-color, rgba(127,127,127,0.55));",
     "  border-top-left-radius: 6px;",
     "  border-top-right-radius: 6px;",
     "  border-bottom-left-radius: 0;",
     "  border-bottom-right-radius: 0;",
-    "  padding-bottom: 3px;",
+    // NO `padding-bottom` either. #search-wrapper centres its children, so
+    // 3px of bottom padding stole 3px of content height and lifted the input
+    // 1.5px -- the vertical half of the same twitch. The 3px bridge to the
+    // popup is drawn by the popup instead (see `#wv-filter-popup::before`),
+    // which costs the toolbar no layout at all.
     "}",
     // Injected scope dropdown inside the framed quick-search box.
     // Lives as a sibling of `<search-textbox>` in
@@ -1019,6 +1035,11 @@ export const PLUGIN_CSS = [
     "  border-top-right-radius: 0;",
     "  transform: translateY(3px);",
     "}",
+    // No bridge element is drawn across the `translateY(3px)`: measured on
+    // beta.22, the popup's top lands at y=70 while the search FIELD's bottom
+    // is y=71, so the two already overlap and there is no gap to fill. The
+    // old `padding-bottom: 3px` on the search box was paying for a gap that
+    // isn't there, at the cost of shifting the field's text (GitHub #26).
     ".wv-filter-scope-bar-label {",
     "  flex: 0 0 auto;",
     "  font-size: 12px; opacity: 0.75;",

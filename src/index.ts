@@ -545,6 +545,7 @@ class WeaveroPlugin {
                     + (wvpos ? "yes(" + wvpos.length + ")" : "NO")
                     + " page=" + String(page));
                 let wvHighlight: any = null;
+                let wvHighlightKind: string | null = null;
                 if (wvpos) {
                     const dec = this._wvDecodeSelectionPos(wvpos);
                     if (dec && dec.position) {
@@ -556,6 +557,7 @@ class WeaveroPlugin {
                         // Weavero then does the scroll (quarter rule) and the
                         // highlight itself, from the view's own compartment.
                         wvHighlight = dec.position;
+                        wvHighlightKind = dec.kind || null;
                     }
                 }
                 const location = Object.keys(loc).length ? loc : null;
@@ -586,7 +588,7 @@ class WeaveroPlugin {
                 // the link landed on the words with no highlight.
                 if (wvHighlight) {
                     this._wvLinkRing("handleZoteroURI: scheduling highlight item=" + item.id);
-                    try { this._wvHighlightAfterOpen(item.id, wvHighlight); } catch (e) {
+                    try { this._wvHighlightAfterOpen(item.id, wvHighlight, 0, wvHighlightKind || undefined); } catch (e) {
                         this._wvLinkRing("handleZoteroURI: schedule threw " + e);
                     }
                 }

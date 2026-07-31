@@ -1625,6 +1625,13 @@ class _ReaderMixin {
 
             let MENU_LABEL: string;
             let capturedLink: string;
+            // A SECOND entry, when the click point yields something distinct
+            // from the primary one. Both are kept deliberately: a position link
+            // is precise, a page link is what still works for a recipient
+            // without Weavero, and only the user knows which they want to share
+            // (asked 2026-07-31).
+            let MENU_LABEL_2: string | null = null;
+            let capturedLink2: string | null = null;
 
             if (reader.type === "pdf") {
                 // Which page did the user actually right-click on?
@@ -1695,6 +1702,23 @@ class _ReaderMixin {
                 else {
                     MENU_LABEL = "Copy Link to This Page";
                     capturedLink = linkBase + "?page=" + (pageIndex + 1);
+                    // The exact clicked point, as a pin. Degrades to the page
+                    // for anyone without Weavero, since `page=` rides along.
+                    try {
+                        const pt = this._wvClickPointToPdf(reader, event);
+                        if (pt) {
+                            const pinLink = this._wvBuildSelectionPosLink(linkBase, {
+                                position: { pageIndex: pt.pageIndex,
+                                            rects: [[pt.x, pt.y, pt.x, pt.y]],
+                                            anchor: "point" },
+                                text: "",
+                            });
+                            if (pinLink) {
+                                MENU_LABEL_2 = "Copy Link to This Position";
+                                capturedLink2 = pinLink;
+                            }
+                        }
+                    } catch (e) {}
                 }
             }
             else if (reader.type === "epub" || reader.type === "snapshot") {
@@ -1765,6 +1789,16 @@ class _ReaderMixin {
                         catch (e) { Zotero.debug("[Weavero] copy reader-location link err: " + e); }
                     },
                 });
+                if (MENU_LABEL_2 && capturedLink2) {
+                    const link2 = capturedLink2;
+                    append({
+                        label: MENU_LABEL_2,
+                        onCommand: () => {
+                            try { Zotero.Utilities.Internal.copyTextToClipboard(link2); }
+                            catch (e) { Zotero.debug("[Weavero] copy reader-position link err: " + e); }
+                        },
+                    });
+                }
             } catch (e) {
                 Zotero.debug("[Weavero] _viewContextHandler append err: " + e);
             }

@@ -330,6 +330,14 @@ export const urlMethods = {
             };
             const t = String((sel.text || "")).replace(/\s+/g, " ").trim();
             if (t) payload.t = t.slice(0, 400);
+            // KIND. A pin is a POINT, stored as a zero-area rect
+            // (`rects: [[x,y,x,y]]`, `anchor: "point"`). Encoding it like a text
+            // selection would decode fine and then paint a zero-area highlight
+            // -- i.e. nothing, while reporting success. Say so explicitly, and
+            // fall back to detecting degeneracy so links built from pin
+            // bookmarks that predate this flag still resolve correctly.
+            const degenerate = payload.r.every((x: any) => x[2] - x[0] === 0 && x[3] - x[1] === 0);
+            if (p.anchor === "point" || degenerate) payload.k = "pin";
             const json = JSON.stringify(payload);
             const b64 = btoa(unescape(encodeURIComponent(json)));
             return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -345,9 +353,11 @@ export const urlMethods = {
             const json = decodeURIComponent(escape(atob(b64)));
             const o = JSON.parse(json);
             if (!o || !Array.isArray(o.r) || !o.r.length) return null;
+            const degenerate = o.r.every((x: any) => x[2] - x[0] === 0 && x[3] - x[1] === 0);
             return {
                 position: { pageIndex: Number(o.p) || 0, rects: o.r },
                 text: typeof o.t === "string" ? o.t : "",
+                kind: (o.k === "pin" || degenerate) ? "pin" : "text",
             };
         } catch (e) { return null; }
     },
@@ -411,6 +421,38 @@ export const urlMethods = {
         } catch (e) {}
     },
 
+    /** The right-clicked point, in PDF coordinates: `{pageIndex, x, y}`.
+     *  Resolves the page from the clicked element, then converts through that
+     *  page's viewport (`convertToPdfPoint` expects coordinates relative to the
+     *  page div, hence the rect subtraction). Null when the click wasn't over a
+     *  rendered page. */
+    _wvClickPointToPdf(reader: any, event: any): any {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication
+                || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            if (!app || !app.pdfViewer) return null;
+            const cx = event && (event.clientX != null ? event.clientX
+                : (event.params && event.params.clientX));
+            const cy = event && (event.clientY != null ? event.clientY
+                : (event.params && event.params.clientY));
+            if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+            const pages = app.pdfViewer._pages || [];
+            for (let i = 0; i < pages.length; i++) {
+                const pageView = pages[i];
+                if (!pageView || !pageView.div || !pageView.viewport) continue;
+                const r = pageView.div.getBoundingClientRect();
+                if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) continue;
+                const pt = pageView.viewport.convertToPdfPoint(cx - r.left, cy - r.top);
+                if (!pt) return null;
+                return { pageIndex: i, x: pt[0], y: pt[1] };
+            }
+        } catch (e) {}
+        return null;
+    },
+
     /** Capped ring for the wvpos link path, baked into the BUILD so a failing
      *  click is already recorded rather than needing to be reproduced live
      *  (the lesson from the sidebar-oscillation hunt). Read with
@@ -438,8 +480,14 @@ export const urlMethods = {
      *  the `cloneInto` dance for exactly this reason and is what the outline's
      *  own navigation uses. Polls briefly because the reader may still be
      *  opening when the link is followed. */
-    _wvHighlightAfterOpen(itemID: number, position: any, tries?: number) {
+    _wvHighlightAfterOpen(itemID: number, position: any, tries?: number, kindIn?: string) {
         const n = tries || 0;
+        const kind = kindIn
+            || ((position && position.anchor === "point") ? "pin" : null)
+            || ((position && Array.isArray(position.rects)
+                 && position.rects.length
+                 && position.rects.every((x: any) => x[2] - x[0] === 0 && x[3] - x[1] === 0))
+                ? "pin" : "text");
         try {
             const reader: any = (Zotero.Reader._readers || [])
                 .find((r: any) => r.itemID === itemID);
@@ -502,6 +550,13 @@ export const urlMethods = {
                 // bookmark navigation uses, rather than the reader's centring
                 // (asked 2026-07-31).
                 this._wvOutlineScrollToRect(pv, pageIndex, top);
+                if (kind === "pin") {
+                    // A point gets the PIN MARKER -- highlighting a zero-area
+                    // rect paints nothing at all.
+                    this._wvLinkRing("highlightAfterOpen: PIN page=" + pageIndex + " afterTries=" + n);
+                    try { this._wvReaderShowPin(reader, { pageIndex, rects }); } catch (e) {}
+                    return;
+                }
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
                 try { this._wvClearStalePin(pv); } catch (e) {}
                 this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0);
@@ -512,7 +567,7 @@ export const urlMethods = {
         if (n < 60) {
             const w: any = Zotero.getMainWindow();
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
-            st(() => this._wvHighlightAfterOpen(itemID, position, n + 1), 150);
+            st(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
         }
     },
 

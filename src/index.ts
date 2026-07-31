@@ -534,6 +534,17 @@ class WeaveroPlugin {
                 } else if (sel) {
                     loc.position = { type: "CssSelector", value: sel };
                 }
+                // `wvpos` — a PDF position (pageIndex + rects) that Zotero's
+                // own OpenExtension has no vocabulary for. Handing it through
+                // as `location.position` makes the reader's native navigate()
+                // scroll to it AND flash it via `_highlightPosition()`, exactly
+                // as an annotation link would. Wins over a bare `page` (which
+                // is emitted alongside so a plain Zotero still lands close).
+                const wvpos = u.searchParams.get("wvpos");
+                if (wvpos) {
+                    const dec = this._wvDecodeSelectionPos(wvpos);
+                    if (dec && dec.position) loc.position = dec.position;
+                }
                 const location = Object.keys(loc).length ? loc : null;
                 // Mirror Zotero's own zotero://open / zotero://open-pdf
                 // handler (ZoteroProtocolHandler `OpenExtension` →

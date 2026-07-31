@@ -1672,8 +1672,30 @@ class _ReaderMixin {
                     } catch (e) {}
                 }
                 if (pageIndex == null) pageIndex = 0;
-                MENU_LABEL = "Copy Link to This Page";
-                capturedLink = linkBase + "?page=" + (pageIndex + 1);
+                // TEXT SELECTED → a link that lands on the words and highlights
+                // them, not just the page. Zotero's own reader already does the
+                // work: `pdf-view.js` navigate() calls `_highlightPosition()`
+                // for any `location.position`, and a PDF position is just
+                // `{pageIndex, rects}`. What's missing is a WAY TO SAY IT in a
+                // URL -- `OpenExtension` only maps annotation/page/cfi/sel, and
+                // cfi/sel are EPUB/snapshot-only. So the position rides in a
+                // `wvpos` param (see `_wvBuildSelectionPosLink`).
+                //
+                // Self-contained by design: everything needed is IN the link,
+                // so it keeps working after whatever created it is deleted.
+                // Zotero drops the unknown param, so a plain install still
+                // lands on the right page.
+                const selNow = this._wvOutlineReadSelection(reader)
+                    || (reader._wvLastSelection || null);
+                const selLink = selNow ? this._wvBuildSelectionPosLink(linkBase, selNow) : null;
+                if (selLink) {
+                    MENU_LABEL = "Copy Link to Selected Text";
+                    capturedLink = selLink;
+                }
+                else {
+                    MENU_LABEL = "Copy Link to This Page";
+                    capturedLink = linkBase + "?page=" + (pageIndex + 1);
+                }
             }
             else if (reader.type === "epub" || reader.type === "snapshot") {
                 // DOM-based readers: params.position describes the

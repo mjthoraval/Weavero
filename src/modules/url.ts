@@ -292,6 +292,74 @@ export const urlMethods = {
         } catch (e) { return null; }
     },
 
+    /* ---- PDF selection links -------------------------------------------
+     *
+     *  A PDF position (`{pageIndex, rects}`) has no representation in
+     *  `zotero://open`: `OpenExtension` maps only annotation / page / cfi /
+     *  sel, and the latter two are EPUB / snapshot selectors. Yet the reader
+     *  itself handles positions fully -- `pdf-view.js` navigate() scrolls to
+     *  `location.position` and calls `_highlightPosition()` on it. So only the
+     *  URL vocabulary is missing, and `wvpos` supplies it.
+     *
+     *  Design constraints this satisfies:
+     *    • SELF-CONTAINED -- the position travels inside the link, so it does
+     *      not break when a bookmark/outline entry that produced it is deleted,
+     *      renamed, or never existed on the reader's machine.
+     *    • DEGRADES -- `page` is always emitted alongside, and Zotero ignores
+     *      unknown query params, so a plain install still opens the right page.
+     *      (Weavero's own link handler in index.ts reads `wvpos`.)
+     *    • Carries the selected TEXT as a fallback for a future resolver: rects
+     *      are exact but tied to this exact file, text survives re-pagination.
+     */
+
+    /** Encode `{position, text}` into a `wvpos` payload: compact JSON, base64,
+     *  URL-safe. Coordinates are rounded to 2dp -- sub-point precision is
+     *  meaningless for a highlight and costs link length. */
+    _wvEncodeSelectionPos(sel: any): string | null {
+        try {
+            const p = sel && sel.position;
+            if (!p || !Array.isArray(p.rects) || !p.rects.length) return null;
+            const r2 = (n: any) => Math.round(Number(n) * 100) / 100;
+            const payload: any = {
+                p: p.pageIndex || 0,
+                r: p.rects.map((r: any) => [r2(r[0]), r2(r[1]), r2(r[2]), r2(r[3])]),
+            };
+            const t = String((sel.text || "")).replace(/\s+/g, " ").trim();
+            if (t) payload.t = t.slice(0, 400);
+            const json = JSON.stringify(payload);
+            const b64 = btoa(unescape(encodeURIComponent(json)));
+            return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        } catch (e) { return null; }
+    },
+
+    /** Inverse of `_wvEncodeSelectionPos`. Returns `{position, text}` or null. */
+    _wvDecodeSelectionPos(raw: string): any {
+        try {
+            if (!raw) return null;
+            let b64 = String(raw).replace(/-/g, "+").replace(/_/g, "/");
+            while (b64.length % 4) b64 += "=";
+            const json = decodeURIComponent(escape(atob(b64)));
+            const o = JSON.parse(json);
+            if (!o || !Array.isArray(o.r) || !o.r.length) return null;
+            return {
+                position: { pageIndex: Number(o.p) || 0, rects: o.r },
+                text: typeof o.t === "string" ? o.t : "",
+            };
+        } catch (e) { return null; }
+    },
+
+    /** Full selection link: `<base>?page=<N>&wvpos=<payload>`. `page` first so
+     *  a plain Zotero (which ignores `wvpos`) still lands on the right page. */
+    _wvBuildSelectionPosLink(linkBase: string, sel: any): string | null {
+        try {
+            const enc = this._wvEncodeSelectionPos(sel);
+            if (!enc) return null;
+            const pageIndex = (sel.position && Number.isInteger(sel.position.pageIndex))
+                ? sel.position.pageIndex : 0;
+            return linkBase + "?page=" + (pageIndex + 1) + "&wvpos=" + enc;
+        } catch (e) { return null; }
+    },
+
     /** `zotero://open/…` link for an item, or null when no openable
      *  file applies:
      *    stored file attachment → …/items/<key>

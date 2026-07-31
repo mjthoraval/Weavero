@@ -188,8 +188,8 @@ export const urlMethods = {
     _currentCollectionScope(win?) {
         try {
             const zp = (win || Zotero.getMainWindow())?.ZoteroPane;
-            if (!zp || typeof zp.getSelectedCollection !== "function") return null;
-            const col = zp.getSelectedCollection();
+            if (!zp) return null;
+            const col = this._wvSelectedCollection(win);
             if (!col || !col.key) return null;
             return {
                 scope: this._zoteroLibPrefix(col.libraryID) + "/collections/" + col.key,

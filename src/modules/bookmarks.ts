@@ -1887,8 +1887,7 @@ class _BookmarksMixin {
             if (!collection) {
                 const win = Zotero.getMainWindow();
                 const zp = win && win.ZoteroPane;
-                collection = (zp && typeof zp.getSelectedCollection === "function")
-                    ? zp.getSelectedCollection() : null;
+                collection = this._wvSelectedCollection(win);
             }
             if (!collection || !collection.key) return;
             if (this._bmAddCollectionSync(collection)) await this._bmPersist();
@@ -4015,14 +4014,13 @@ class _BookmarksMixin {
                     if (stale) stale.remove();
                     const zp = win.ZoteroPane;
                     if (!zp) return;
-                    const col = (typeof zp.getSelectedCollection === "function")
-                        ? zp.getSelectedCollection() : null;
+                    const col = this._wvSelectedCollection(win);
                     if (col && col.key) {
                         const bookmarked = this._bmHasCollection(col.libraryID, col.key);
                         mkEntry(bookmarked ? "Remove Collection Bookmark" : "Bookmark Collection",
                             () => {
                                 try {
-                                    const c = zp.getSelectedCollection();
+                                    const c = this._wvSelectedCollection(win);
                                     if (!c || !c.key) return;
                                     if (this._bmHasCollection(c.libraryID, c.key)) {
                                         const ex = this._bmFlatten().find((b: any) =>

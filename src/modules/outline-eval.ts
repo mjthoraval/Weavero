@@ -274,7 +274,7 @@ class _OutlineEvalMixin {
         if (!win) return null;
         const Tabs = win.Zotero_Tabs;
         const lib = libraryID != null ? libraryID
-            : ((win.ZoteroPane && win.ZoteroPane.getSelectedLibraryID && win.ZoteroPane.getSelectedLibraryID()) || Zotero.Libraries.userLibraryID);
+            : (this._wvSelectedLibraryID(win) || Zotero.Libraries.userLibraryID);
         await this._wvOeInit();
         const items = await Zotero.Items.getAll(lib);
         const pdfs = items.filter((it: any) => it.isPDFAttachment && it.isPDFAttachment());

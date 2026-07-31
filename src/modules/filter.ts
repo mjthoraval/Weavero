@@ -6649,9 +6649,7 @@ class _FilterMixin {
         // libraries while the panel is closed picks up automatically
         // on next open.
         const win = doc.defaultView;
-        const activeLibraryID = (win && win.ZoteroPane
-            && win.ZoteroPane.getSelectedLibraryID
-            && win.ZoteroPane.getSelectedLibraryID())
+        const activeLibraryID = this._wvSelectedLibraryID(win)
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
         const isGroupLibrary = activeLibraryID
             !== Zotero.Libraries.userLibraryID;
@@ -9302,9 +9300,7 @@ class _FilterMixin {
         });
 
         const win = doc.defaultView;
-        const libraryID = (win && win.ZoteroPane
-            && win.ZoteroPane.getSelectedLibraryID
-            && win.ZoteroPane.getSelectedLibraryID())
+        const libraryID = this._wvSelectedLibraryID(win)
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
 
         // Use cached tags if we already fetched during this popup
@@ -9532,9 +9528,7 @@ class _FilterMixin {
         });
 
         const win = doc.defaultView;
-        const libraryID = (win && win.ZoteroPane
-            && win.ZoteroPane.getSelectedLibraryID
-            && win.ZoteroPane.getSelectedLibraryID())
+        const libraryID = this._wvSelectedLibraryID(win)
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
 
         if (this._cachedAnnotationAuthors) {
@@ -9756,9 +9750,7 @@ class _FilterMixin {
         section.appendChild(opts);
 
         const win = doc.defaultView;
-        const libraryID = (win && win.ZoteroPane
-            && win.ZoteroPane.getSelectedLibraryID
-            && win.ZoteroPane.getSelectedLibraryID())
+        const libraryID = this._wvSelectedLibraryID(win)
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
         let cols = [];
         try {
@@ -9853,9 +9845,7 @@ class _FilterMixin {
         section.appendChild(opts);
 
         const win = doc.defaultView;
-        const libraryID = (win && win.ZoteroPane
-            && win.ZoteroPane.getSelectedLibraryID
-            && win.ZoteroPane.getSelectedLibraryID())
+        const libraryID = this._wvSelectedLibraryID(win)
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
         let searches = [];
         try {
@@ -10140,9 +10130,7 @@ class _FilterMixin {
         });
 
         const win = doc.defaultView;
-        const libraryID = (win && win.ZoteroPane
-            && win.ZoteroPane.getSelectedLibraryID
-            && win.ZoteroPane.getSelectedLibraryID())
+        const libraryID = this._wvSelectedLibraryID(win)
             || (Zotero.Libraries && Zotero.Libraries.userLibraryID);
 
         // Render the scope row immediately even while user list is
@@ -10580,8 +10568,7 @@ class _FilterMixin {
         // items in B belong to A's collections). Detect the switch
         // and reset both filters + the saved-search results cache.
         try {
-            const curLib = win.ZoteroPane && win.ZoteroPane.getSelectedLibraryID
-                ? win.ZoteroPane.getSelectedLibraryID() : null;
+            const curLib = this._wvSelectedLibraryID(win);
             if (this._lastLibraryID !== undefined
                 && this._lastLibraryID !== curLib
                 && this._filterState) {

@@ -14120,9 +14120,22 @@ class _ReaderPanelsMixin {
                 // API becomes a separate visual group / separator). The
                 // pin-position entry plus the PDF-only page entry sit
                 // together as "Add Bookmark to …" siblings.
-                const bmItems: any[] = [
-                    { label: LABEL, onCommand: () => this._wvReaderAddCurrentBookmark(reader, idoc, click, activeScope) },
-                ];
+                // A pin is only meaningful INSIDE the sheet: outside it there
+                // are no PDF coordinates to anchor to, yet the entry was being
+                // offered in the margin and would happily create a bookmark
+                // pointing off-page (found 2026-07-31 while adding the matching
+                // "Copy Link to This Position"). Offer it only over a page; the
+                // page-level entry below still covers the margin.
+                const bmItems: any[] = [];
+                let overPage = true;
+                try {
+                    if ((reader._type || "pdf") === "pdf") {
+                        overPage = !!this._wvClickPointToPdf(reader, event);
+                    }
+                } catch (_) {}
+                if (overPage) {
+                    bmItems.push({ label: LABEL, onCommand: () => this._wvReaderAddCurrentBookmark(reader, idoc, click, activeScope) });
+                }
 
                 // "Add Bookmark to This Page" — PDF-only sibling of the
                 // pin-position entry. Same record shape as the thumbnails
@@ -14226,7 +14239,12 @@ class _ReaderPanelsMixin {
                 }
 
                 append(...bmItems);
-                this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
+                // Only stamp the pin glyph when the pin entry was actually
+                // offered -- otherwise the stamper hunts a menuitem that isn't
+                // there.
+                if (overPage) {
+                    this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
+                }
                 if (LABEL_PAGE && pageAddFn) {
                     this._wvReaderStampPageAnchorSubmenu(reader, LABEL_PAGE, piCapturedForMenu + 1, pageAddFn);
                 }

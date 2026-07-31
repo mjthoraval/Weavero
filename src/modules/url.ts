@@ -446,34 +446,19 @@ export const urlMethods = {
             const cy = pick(event && event.clientY, event && event.y, p0.clientY, p0.y);
             if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
             const pages = app.pdfViewer._pages || [];
-            // Nearest page as a FALLBACK. Requiring the click to land inside a
-            // page rect meant a right-click in the margin -- the grey area
-            // around the sheet -- matched nothing, so the entry silently
-            // vanished there (reported 2026-07-31). A margin click still has an
-            // obvious intent: the nearest page, clamped to its edge.
-            let best: any = null, bestDist = Infinity;
+            // STRICTLY inside a page. A point outside the sheet has no PDF
+            // coordinates, so a pin there is meaningless -- clamping a margin
+            // click to the page edge (tried briefly) just invents a position
+            // the user never indicated. Outside a page, callers get null and
+            // omit the entry; the page-level link remains available.
             for (let i = 0; i < pages.length; i++) {
                 const pageView = pages[i];
                 if (!pageView || !pageView.div || !pageView.viewport) continue;
                 const r = pageView.div.getBoundingClientRect();
-                const inside = cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
-                // Distance from the point to the rect (0 when inside).
-                const dx = Math.max(r.left - cx, 0, cx - r.right);
-                const dy = Math.max(r.top - cy, 0, cy - r.bottom);
-                const dist = Math.hypot(dx, dy);
-                if (inside) { best = { i, r }; bestDist = 0; break; }
-                if (dist < bestDist) { bestDist = dist; best = { i, r }; }
-            }
-            if (best) {
-                const pageView = pages[best.i];
-                const r = best.r;
-                // Clamp into the page so a margin click maps to its edge rather
-                // than to coordinates outside the sheet.
-                const px = Math.min(Math.max(cx, r.left), r.right) - r.left;
-                const py = Math.min(Math.max(cy, r.top), r.bottom) - r.top;
-                const pt = pageView.viewport.convertToPdfPoint(px, py);
+                if (cx < r.left || cx > r.right || cy < r.top || cy > r.bottom) continue;
+                const pt = pageView.viewport.convertToPdfPoint(cx - r.left, cy - r.top);
                 if (!pt) return null;
-                return { pageIndex: best.i, x: pt[0], y: pt[1] };
+                return { pageIndex: i, x: pt[0], y: pt[1] };
             }
         } catch (e) {}
         return null;

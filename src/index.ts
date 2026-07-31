@@ -541,6 +541,9 @@ class WeaveroPlugin {
                 // as an annotation link would. Wins over a bare `page` (which
                 // is emitted alongside so a plain Zotero still lands close).
                 const wvpos = u.searchParams.get("wvpos");
+                this._wvLinkRing("handleZoteroURI: open branch, wvpos="
+                    + (wvpos ? "yes(" + wvpos.length + ")" : "NO")
+                    + " page=" + String(page));
                 let wvHighlight: any = null;
                 if (wvpos) {
                     const dec = this._wvDecodeSelectionPos(wvpos);
@@ -582,7 +585,10 @@ class WeaveroPlugin {
                 // given, and a chrome-built position reads as empty there, so
                 // the link landed on the words with no highlight.
                 if (wvHighlight) {
-                    try { this._wvHighlightAfterOpen(item.id, wvHighlight); } catch (e) {}
+                    this._wvLinkRing("handleZoteroURI: scheduling highlight item=" + item.id);
+                    try { this._wvHighlightAfterOpen(item.id, wvHighlight); } catch (e) {
+                        this._wvLinkRing("handleZoteroURI: schedule threw " + e);
+                    }
                 }
                 if (openTrashed) {
                     this._showLinkWarning("The linked file's attachment is in the Trash (key "

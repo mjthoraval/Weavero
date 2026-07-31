@@ -348,6 +348,19 @@ export const urlMethods = {
         } catch (e) { return null; }
     },
 
+    /** Capped ring for the wvpos link path, baked into the BUILD so a failing
+     *  click is already recorded rather than needing to be reproduced live
+     *  (the lesson from the sidebar-oscillation hunt). Read with
+     *  `Zotero._wvLinkLog.join("\n")`. */
+    _wvLinkRing(m: string) {
+        try {
+            const Z: any = Zotero as any;
+            if (!Z._wvLinkLog) Z._wvLinkLog = [];
+            Z._wvLinkLog.push(new Date().toISOString().slice(11, 23) + " " + m);
+            if (Z._wvLinkLog.length > 200) Z._wvLinkLog.shift();
+        } catch (e) {}
+    },
+
     /** Paint the `wvpos` highlight after a link has opened the document.
      *
      *  The reader DOES navigate to `location.position`, and its own
@@ -367,6 +380,9 @@ export const urlMethods = {
         try {
             const reader: any = (Zotero.Reader._readers || [])
                 .find((r: any) => r.itemID === itemID);
+            if (!n) this._wvLinkRing("highlightAfterOpen: enter item=" + itemID
+                + " readers=" + (Zotero.Reader._readers || []).length
+                + " matched=" + !!reader);
             const ir = reader && reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             const rects = position && position.rects;
@@ -383,7 +399,13 @@ export const urlMethods = {
                     && app.pdfViewer._pages[pageIndex];
                 built = !!(pageView && pageView.div && pageView.viewport);
             } catch (e) {}
+            if (n === 10 || n === 30) {
+                this._wvLinkRing("highlightAfterOpen: still waiting n=" + n
+                    + " reader=" + !!reader + " pv=" + !!pv + " built=" + built);
+            }
             if (built && Array.isArray(rects) && rects.length) {
+                this._wvLinkRing("highlightAfterOpen: PAINT page=" + pageIndex
+                    + " rects=" + rects.length + " afterTries=" + n);
                 // TOPMOST rect drives the scroll: PDF y grows upward, so the
                 // visually highest line is the one with the largest y1.
                 let top = rects[0];
@@ -398,6 +420,7 @@ export const urlMethods = {
                 return;
             }
         } catch (e) {}
+        if (n >= 60) this._wvLinkRing("highlightAfterOpen: GAVE UP after 60 tries");
         if (n < 60) {
             const w: any = Zotero.getMainWindow();
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;

@@ -434,10 +434,16 @@ export const urlMethods = {
             const app = win && (win.PDFViewerApplication
                 || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
             if (!app || !app.pdfViewer) return null;
-            const cx = event && (event.clientX != null ? event.clientX
-                : (event.params && event.params.clientX));
-            const cy = event && (event.clientY != null ? event.clientY
-                : (event.params && event.params.clientY));
+            // COORDINATE SOURCE: the reader's view context menu carries the
+            // click as `x` / `y` (see createViewContextMenu in the reader's
+            // context-menu.js -- `x: params.x, y: params.y`), NOT clientX /
+            // clientY. Reading only the DOM-event names made this return null
+            // every time, so the entry never appeared (2026-07-31). Accept all
+            // three shapes.
+            const pick = (...vals: any[]) => vals.find((v) => Number.isFinite(v));
+            const p0 = (event && event.params) || {};
+            const cx = pick(event && event.clientX, event && event.x, p0.clientX, p0.x);
+            const cy = pick(event && event.clientY, event && event.y, p0.clientY, p0.y);
             if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
             const pages = app.pdfViewer._pages || [];
             for (let i = 0; i < pages.length; i++) {

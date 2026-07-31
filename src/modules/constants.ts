@@ -966,7 +966,15 @@ export const PLUGIN_CSS = [
     // chip inside a taller box.
     ".wv-qs-scope-btn {",
     "  display: inline-flex; align-items: center; justify-content: center;",
-    "  align-self: stretch;",
+    // `align-self: center`, NOT `stretch`. Stretch only stretches when the
+    // cross size is `auto`; this button resolves to a definite 28px height,
+    // so per spec stretch degrades to `flex-start` and pinned the button to
+    // the top of the 40px #search-wrapper while every sibling (textbox,
+    // native funnel) is centred by the wrapper's own `align-items: center`
+    // -- a 6px rise that read as a misplaced icon (GitHub #26). Centring
+    // gives the same 28px height the stretch was reaching for, in line with
+    // its neighbours.
+    "  align-self: center;",
     "  font: inherit; font-size: 9px; line-height: 1;",
     "  color: inherit; cursor: pointer;",
     // Left margin is 3 px larger than right so the button sits a

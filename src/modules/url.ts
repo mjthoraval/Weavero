@@ -365,21 +365,40 @@ export const urlMethods = {
     _wvHighlightAfterOpen(itemID: number, position: any, tries?: number) {
         const n = tries || 0;
         try {
-            const reader: any = Zotero.Reader.getByTabID
-                ? (Zotero.Reader._readers || []).find((r: any) => r.itemID === itemID)
-                : null;
+            const reader: any = (Zotero.Reader._readers || [])
+                .find((r: any) => r.itemID === itemID);
             const ir = reader && reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
-            const ready = !!(pv && pv._iframeWindow && Array.isArray(position && position.rects));
-            if (ready) {
+            const rects = position && position.rects;
+            const pageIndex = (position && position.pageIndex) || 0;
+            // Wait for the target page to be BUILT -- both the scroll (which
+            // reads the page viewport) and the highlight need real layout.
+            let built = false;
+            try {
+                const app = pv && pv._iframeWindow
+                    && (pv._iframeWindow.PDFViewerApplication
+                        || (pv._iframeWindow.wrappedJSObject
+                            && pv._iframeWindow.wrappedJSObject.PDFViewerApplication));
+                const pageView = app && app.pdfViewer && app.pdfViewer._pages
+                    && app.pdfViewer._pages[pageIndex];
+                built = !!(pageView && pageView.div && pageView.viewport);
+            } catch (e) {}
+            if (built && Array.isArray(rects) && rects.length) {
+                // TOPMOST rect drives the scroll: PDF y grows upward, so the
+                // visually highest line is the one with the largest y1.
+                let top = rects[0];
+                for (const r of rects) if (r && r[3] > top[3]) top = r;
+                // The QUARTER rule -- the same landing every outline and
+                // bookmark navigation uses, rather than the reader's centring
+                // (asked 2026-07-31).
+                this._wvOutlineScrollToRect(pv, pageIndex, top);
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
                 try { this._wvClearStalePin(pv); } catch (e) {}
-                this._wvOutlineHighlightInPlace(pv, position.pageIndex || 0,
-                    position.rects, gen, 0);
+                this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0);
                 return;
             }
         } catch (e) {}
-        if (n < 40) {
+        if (n < 60) {
             const w: any = Zotero.getMainWindow();
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
             st(() => this._wvHighlightAfterOpen(itemID, position, n + 1), 150);

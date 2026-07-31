@@ -545,7 +545,13 @@ class WeaveroPlugin {
                 if (wvpos) {
                     const dec = this._wvDecodeSelectionPos(wvpos);
                     if (dec && dec.position) {
-                        loc.position = dec.position;
+                        // DELIBERATELY not `loc.position`. Handing the position
+                        // to the reader makes it centre the target AND run its
+                        // own _highlightPosition() with our chrome-built object
+                        // -- which paints nothing and, running after ours,
+                        // wipes the good highlight. Let it open on `page` only;
+                        // Weavero then does the scroll (quarter rule) and the
+                        // highlight itself, from the view's own compartment.
                         wvHighlight = dec.position;
                     }
                 }

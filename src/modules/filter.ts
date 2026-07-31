@@ -848,6 +848,22 @@ class _FilterMixin {
      *  could return everything in the world and the rows still
      *  wouldn't surface, because `_refresh` cross-checks each row
      *  against the search-result set computed pre-build. Idempotent. */
+    /** True for a NON-item row in the items tree — a library header, a spacer,
+     *  or anything else structural that grouped views interleave into `_rows`.
+     *
+     *  Zotero 10.0-beta.22 added `itemTreeRow.isObjectRow` (upstream
+     *  `85a33e158`, "Don't treat library header and spacer rows as items") as
+     *  the supported test, and it covers structural row types added later —
+     *  which the hard-coded `type` strings never will. Those strings still
+     *  exist, so they stay as the Zotero 9 / pre-beta.22 fallback. */
+    _wvIsStructuralRow(row: any): boolean {
+        try {
+            if (!row) return false;
+            if (typeof row.isObjectRow === "boolean") return !row.isObjectRow;
+            return row.type === "library-header" || row.type === "spacer";
+        } catch (e) { return false; }
+    }
+
     _patchRefreshForReveals() {
         try {
             const win = Zotero.getMainWindow();
@@ -1082,8 +1098,7 @@ class _FilterMixin {
                                 // verbatim and out of seenIds (whose ids are
                                 // itemIDs — a Library id could also collide
                                 // with a real item's id).
-                                if (row.type === "library-header"
-                                    || row.type === "spacer"
+                                if (this._wvIsStructuralRow(row)
                                     || typeof row.ref.isRegularItem !== "function") {
                                     kept.push(row);
                                     continue;
@@ -11190,7 +11205,10 @@ class _FilterMixin {
             // misalign keep[]). No-op on builds without such rows — every
             // current item-tree row's ref has `isRegularItem`.
             const sref = row.ref;
-            if (row.type === "library-header"
+            // Note this site never tested "spacer" explicitly -- spacers were
+            // kept only because their ref lacks `isRegularItem`. The
+            // `isObjectRow` test now covers them directly.
+            if (this._wvIsStructuralRow(row)
                 || typeof sref.isRegularItem !== "function") {
                 pushKeep(j);
                 continue;

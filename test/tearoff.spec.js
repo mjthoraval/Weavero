@@ -235,6 +235,13 @@ describe("Weavero — reader tear-off / merge-back lifecycle", function () {
         expect(tab, "merged tab never appeared").to.exist;
         // CLASS ADOPTION: the re-homed instance must be a real ReaderTab so
         // every `instanceof ReaderTab` filter in reader.js sees it.
+        // WAIT for it rather than asserting the instant the tab appears —
+        // re-homing can land a beat after `mainTabFor` first resolves, which
+        // flaked this assertion once in ~6 runs (observed 2026-07-31,
+        // "expected 'ReaderWindow' to equal 'ReaderTab'"). The contract is
+        // that adoption happens on merge-back, not that it is synchronous
+        // with tab creation.
+        await waitFor(() => S.constructor.name === "ReaderTab", 5000);
         expect(S.constructor.name).to.equal("ReaderTab");
         expect(Zotero.Reader.getByTabID(tab.id)).to.equal(S);
         // Native activity semantics govern it: selected -> active.

@@ -548,17 +548,27 @@ export const urlMethods = {
                             + " scrollTop=" + Math.round(cont.scrollTop));
                     } catch (e) { this._wvLinkRing("pin geom err: " + e); }
                 }, 420);
-                // Survival check: a render finishing just after us drops the
-                // marker, and the failure is silent.
-                st(() => {
+                // RE-PLACE after layout settles, unconditionally.
+                //
+                // On a link that OPENS the document (vs one already in a tab),
+                // pdf.js lays pages out with estimated heights and then
+                // REFLOWS once they are all measured. The pin is positioned
+                // absolutely from pageView.div.offsetTop at placement time, so
+                // the reflow moves the page and strands the marker at the old
+                // offset -- measured as a client top of 24088 against a 962px
+                // viewport, i.e. document-space coordinates that the container
+                // scroll no longer applies to. Re-placing recomputes them
+                // against the settled layout; it also covers the older case of
+                // a late render simply dropping the element (2026-08-01).
+                const replace = (tag: string) => {
                     try {
-                        const pdoc = pv._iframeWindow && pv._iframeWindow.document;
-                        if (pdoc && !pdoc.querySelector(".wv-reader-pin")) {
-                            this._wvLinkRing("pin vanished -- replacing");
-                            this._wvReaderShowPin(reader, { pageIndex, rects });
-                        }
+                        this._wvOutlineScrollToRect(pv, pageIndex, top);
+                        this._wvReaderShowPin(reader, { pageIndex, rects }, undefined, { persist: true });
+                        this._wvLinkRing("pin re-placed (" + tag + ")");
                     } catch (e) {}
-                }, 500);
+                };
+                st(() => replace("settle-600"), 600);
+                st(() => replace("settle-1400"), 1400);
                 return;
             }
         } catch (e) {}

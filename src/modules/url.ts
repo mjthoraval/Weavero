@@ -504,6 +504,32 @@ export const urlMethods = {
             if (rendered) {
                 this._wvReaderShowPin(reader, { pageIndex, rects });
                 this._wvLinkRing("pin placed (renderingState=3, tries=" + n + ")");
+                // GEOMETRY, not just existence. The pin can be in the DOM and
+                // still unseen -- scrolled out of view, zero-sized, or hidden.
+                // Measured a beat later so layout has settled (2026-08-01).
+                st(() => {
+                    try {
+                        const iw: any = pv._iframeWindow;
+                        const pdoc: any = iw && iw.document;
+                        const el: any = pdoc && pdoc.querySelector(".wv-reader-pin");
+                        const cont: any = pdoc && pdoc.getElementById("viewerContainer");
+                        if (!el || !cont) { this._wvLinkRing("pin geom: element gone"); return; }
+                        const pr = el.getBoundingClientRect();
+                        const cr = cont.getBoundingClientRect();
+                        const cs = iw.getComputedStyle(el);
+                        const onScreen = pr.bottom > cr.top && pr.top < cr.bottom
+                            && pr.right > cr.left && pr.left < cr.right;
+                        const verdict = !onScreen ? "OFF-SCREEN"
+                            : (pr.width === 0 || pr.height === 0) ? "ZERO-SIZED"
+                            : (cs.opacity === "0" || cs.display === "none") ? "HIDDEN" : "VISIBLE";
+                        this._wvLinkRing("pin geom: " + verdict
+                            + " pin[t=" + Math.round(pr.top) + ",l=" + Math.round(pr.left)
+                            + ",w=" + Math.round(pr.width) + ",h=" + Math.round(pr.height) + "]"
+                            + " viewer[t=" + Math.round(cr.top) + ",b=" + Math.round(cr.bottom) + "]"
+                            + " opacity=" + cs.opacity
+                            + " scrollTop=" + Math.round(cont.scrollTop));
+                    } catch (e) { this._wvLinkRing("pin geom err: " + e); }
+                }, 420);
                 // Survival check: a render finishing just after us drops the
                 // marker, and the failure is silent.
                 st(() => {

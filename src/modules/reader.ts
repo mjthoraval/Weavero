@@ -12203,11 +12203,23 @@ class _ReaderMixin {
                 }
             });
         };
+        // The observe() init MUST be cloned into the iframe compartment: a
+        // chrome-side literal reads as EMPTY across the Xray boundary, and
+        // observe() throws "One of 'childList', 'attributes', 'characterData'
+        // must not be false". Because _ensureBadgeOverlay appends the overlay
+        // BEFORE calling here, that throw left a working overlay behind with a
+        // DEAD reposition observer -- and made the FIRST overlay caller on a
+        // document fail entirely, which is how link-pins on freshly-opened
+        // PDFs ended up in the page-fallback host (ring-traced 2026-08-01;
+        // same fix as the pin's own offset observer in reader-panels.ts).
+        const Cu: any = (Components as any).utils;
+        const obsInit = Cu ? Cu.cloneInto({ attributes: true, attributeFilter: ["style"] }, win)
+            : { attributes: true, attributeFilter: ["style"] };
         const obs = new win.MutationObserver(reposition);
-        obs.observe(pdfViewer, { attributes: true, attributeFilter: ["style"] });
+        obs.observe(pdfViewer, obsInit);
         const pageObs = new win.MutationObserver(reposition);
         for (const page of pdfViewer.querySelectorAll(".page")) {
-            pageObs.observe(page, { attributes: true, attributeFilter: ["style"] });
+            pageObs.observe(page, obsInit);
         }
         this._badgeRepositionObservers.set(idoc, { obs, pageObs, overlay });
     }

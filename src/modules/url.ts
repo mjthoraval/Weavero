@@ -539,6 +539,22 @@ export const urlMethods = {
                 // observed as `built=false` for the full poll (2026-07-31).
                 // Drive the page in first; the build then follows and the
                 // quarter-rule scroll below refines the landing.
+                // SELECT THE TAB FIRST. On the first click the reader is still
+                // opening and its tab may not be selected -- pdf.js renders
+                // nothing in a background tab, so the page never becomes built
+                // and the poll expired, making the link "work only on the
+                // second click" (reported 2026-08-01). The second click found
+                // the tab already open and selected, which is why it worked.
+                if (!built && n < 20) {
+                    try {
+                        const rw: any = reader._window;
+                        const tabs: any = rw && rw.Zotero_Tabs;
+                        if (tabs && reader.tabID && tabs.selectedID !== reader.tabID) {
+                            if (n === 0) this._wvLinkRing("highlightAfterOpen: selecting tab " + reader.tabID);
+                            tabs.select(reader.tabID);
+                        }
+                    } catch (e) {}
+                }
                 if (!built && app && app.pdfViewer) {
                     if (n === 0 || n === 12 || n === 30) {
                         this._wvLinkRing("highlightAfterOpen: forcing page " + (pageIndex + 1) + " in (n=" + n + ")");

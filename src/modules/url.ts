@@ -477,6 +477,54 @@ export const urlMethods = {
         return null;
     },
 
+    /** Place the pin once the target page has actually RENDERED, then confirm
+     *  it survived.
+     *
+     *  A fixed delay was a guess, and the log showed why it fails: `built` only
+     *  means the page has a div and a viewport, so the pin could be placed at
+     *  `renderingState: 0`, and the render triggered by our own scroll then
+     *  wiped it (a marker lives in the page's layer). The highlight path never
+     *  hit this because `_wvOutlineHighlightInPlace` already waits for
+     *  `renderingState === 3`.
+     *
+     *  So: wait for state 3, place, then re-check once -- if a late render
+     *  still took it, place it again. 2026-08-01. */
+    _wvPlacePinWhenRendered(reader: any, pv: any, pageIndex: number, rects: any[], tries?: number) {
+        const n = tries || 0;
+        const w: any = Zotero.getMainWindow();
+        const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+        try {
+            const app = pv && pv._iframeWindow
+                && (pv._iframeWindow.PDFViewerApplication
+                    || (pv._iframeWindow.wrappedJSObject
+                        && pv._iframeWindow.wrappedJSObject.PDFViewerApplication));
+            const pgv = app && app.pdfViewer && app.pdfViewer._pages
+                && app.pdfViewer._pages[pageIndex];
+            const rendered = !!(pgv && pgv.div && pgv.viewport && pgv.renderingState === 3);
+            if (rendered) {
+                this._wvReaderShowPin(reader, { pageIndex, rects });
+                this._wvLinkRing("pin placed (renderingState=3, tries=" + n + ")");
+                // Survival check: a render finishing just after us drops the
+                // marker, and the failure is silent.
+                st(() => {
+                    try {
+                        const pdoc = pv._iframeWindow && pv._iframeWindow.document;
+                        if (pdoc && !pdoc.querySelector(".wv-reader-pin")) {
+                            this._wvLinkRing("pin vanished -- replacing");
+                            this._wvReaderShowPin(reader, { pageIndex, rects });
+                        }
+                    } catch (e) {}
+                }, 500);
+                return;
+            }
+        } catch (e) {}
+        if (n < 40) {
+            st(() => this._wvPlacePinWhenRendered(reader, pv, pageIndex, rects, n + 1), 150);
+        } else {
+            this._wvLinkRing("pin: page never reached renderingState 3");
+        }
+    },
+
     /** Capped ring for the wvpos link path, baked into the BUILD so a failing
      *  click is already recorded rather than needing to be reproduced live
      *  (the lesson from the sidebar-oscillation hunt). Read with
@@ -575,9 +623,36 @@ export const urlMethods = {
                     }
                 }
             } catch (e) {}
-            if (n === 10 || n === 30) {
-                this._wvLinkRing("highlightAfterOpen: still waiting n=" + n
-                    + " reader=" + !!reader + " pv=" + !!pv + " built=" + built);
+            // Full state on the rounds that matter, so a failing first click
+            // says WHICH sub-condition is false instead of just "built=false".
+            if (n === 0 || n === 3 || n === 10 || n === 25 || n === 50) {
+                let d: any = { n, reader: !!reader, pv: !!pv, built };
+                try {
+                    const rw: any = reader && reader._window;
+                    const tabs: any = rw && rw.Zotero_Tabs;
+                    d.tabID = reader && reader.tabID;
+                    d.selectedTab = tabs && tabs.selectedID;
+                    d.tabIsSelected = !!(tabs && reader && tabs.selectedID === reader.tabID);
+                    d.viewType = reader && reader._type;
+                    d.hasIframeWin = !!(pv && pv._iframeWindow);
+                    const app2 = pv && pv._iframeWindow
+                        && (pv._iframeWindow.PDFViewerApplication
+                            || (pv._iframeWindow.wrappedJSObject
+                                && pv._iframeWindow.wrappedJSObject.PDFViewerApplication));
+                    d.hasApp = !!app2;
+                    d.hasPdfViewer = !!(app2 && app2.pdfViewer);
+                    d.pagesLen = (app2 && app2.pdfViewer && app2.pdfViewer._pages)
+                        ? app2.pdfViewer._pages.length : -1;
+                    d.wantPage = pageIndex;
+                    const pgv = app2 && app2.pdfViewer && app2.pdfViewer._pages
+                        && app2.pdfViewer._pages[pageIndex];
+                    d.pageViewExists = !!pgv;
+                    d.pageHasDiv = !!(pgv && pgv.div);
+                    d.pageHasViewport = !!(pgv && pgv.viewport);
+                    d.renderingState = pgv && pgv.renderingState;
+                    d.currentPage = app2 && app2.pdfViewer && app2.pdfViewer.currentPageNumber;
+                } catch (e) { d.probeErr = String(e); }
+                this._wvLinkRing("state " + JSON.stringify(d));
             }
             if (built && Array.isArray(rects) && rects.length) {
                 this._wvLinkRing("highlightAfterOpen: PAINT page=" + pageIndex
@@ -600,11 +675,7 @@ export const urlMethods = {
                     // tick (observed: the PIN branch ran, no element survived).
                     // `_wvOutlineNavPageTop` defers its page marker by 260ms for
                     // the same reason.
-                    const w2: any = Zotero.getMainWindow();
-                    const st2: any = (w2 && w2.setTimeout) ? w2.setTimeout.bind(w2) : setTimeout;
-                    st2(() => {
-                        try { this._wvReaderShowPin(reader, { pageIndex, rects }); } catch (e) {}
-                    }, 320);
+                    this._wvPlacePinWhenRendered(reader, pv, pageIndex, rects, 0);
                     return;
                 }
                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);

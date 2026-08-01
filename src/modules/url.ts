@@ -502,6 +502,16 @@ export const urlMethods = {
                 && app.pdfViewer._pages[pageIndex];
             const rendered = !!(pgv && pgv.div && pgv.viewport && pgv.renderingState === 3);
             if (rendered) {
+                // RE-SCROLL, then place. The quarter-rule scroll in
+                // _wvHighlightAfterOpen runs before the page has rendered, and
+                // on a freshly-opened document the reader's own `page=`
+                // navigation lands afterwards and scrolls to the PAGE TOP,
+                // overriding it -- measured: the pin sat 1016px down a 962px
+                // viewport, i.e. just past the fold (2026-08-01). Redoing it
+                // here, with layout final, is what actually decides the landing.
+                let top = rects[0];
+                for (const rr of rects) if (rr && rr[3] > top[3]) top = rr;
+                try { this._wvOutlineScrollToRect(pv, pageIndex, top); } catch (e) {}
                 this._wvReaderShowPin(reader, { pageIndex, rects });
                 this._wvLinkRing("pin placed (renderingState=3, tries=" + n + ")");
                 // GEOMETRY, not just existence. The pin can be in the DOM and

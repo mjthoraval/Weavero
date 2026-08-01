@@ -512,8 +512,16 @@ export const urlMethods = {
                 let top = rects[0];
                 for (const rr of rects) if (rr && rr[3] > top[3]) top = rr;
                 try { this._wvOutlineScrollToRect(pv, pageIndex, top); } catch (e) {}
-                this._wvReaderShowPin(reader, { pageIndex, rects });
+                // HOLD it. The default marker self-fades 2.2s after placement,
+                // but a link opens a document that is still settling -- the
+                // reader's own navigation lands after ours -- so the fade can
+                // expire before the view even arrives, leaving the right spot
+                // with no pin on it (reported 2026-08-01). Place it persistent
+                // and clear it on OUR clock, timed from when the view is
+                // actually there.
+                this._wvReaderShowPin(reader, { pageIndex, rects }, undefined, { persist: true });
                 this._wvLinkRing("pin placed (renderingState=3, tries=" + n + ")");
+                st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 6000);
                 // GEOMETRY, not just existence. The pin can be in the DOM and
                 // still unseen -- scrolled out of view, zero-sized, or hidden.
                 // Measured a beat later so layout has settled (2026-08-01).

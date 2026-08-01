@@ -15098,18 +15098,13 @@ class _ReaderPanelsMixin {
                 // Anchored to the page, no offset variable is involved at all, so
                 // CSS re-evaluates the position on zoom by itself -- nothing to
                 // refresh, nothing to throttle.
-                // NEUTRALISE the inherited offsets. The comment above is right
-                // that a page-anchored pin needs no page offset -- but it relied
-                // on `var(--page-offset-top, 0px)` FALLING BACK to 0, and CSS
-                // variables INHERIT: the region editor sets --page-offset-top on
-                // an ancestor container, so a pin inside `.page` inherits the
-                // page's own offset and adds it on top of an offset the parent
-                // already provides. Measured on a freshly-opened document: pin
-                // at 47462 within #viewer where the page sits at 23223, i.e.
-                // 2 x 23223 + 1016 -- the page counted twice. Declaring them
-                // here makes the pin independent of whatever an ancestor set
-                // (2026-08-01).
-                + "--page-offset-top:0px;--page-offset-left:0px;"
+                // (A dev.23 attempt declared --page-offset-top:0px here to fight
+                // a suspected INHERITED value. Wrong on both counts: the value
+                // was never inherited but set directly on the pin by
+                // `applyPageOffsets` below -- which runs after this cssText and
+                // overrides it -- and zeroing it unconditionally would have
+                // broken the overlay-hosted case, where the offset is REQUIRED.
+                // The host-aware rule lives in `applyPageOffsets`.)
                 + "top:calc(var(--page-offset-top,0px) + " + uTop + "px * var(--scale-factor,1));"
                 + "left:calc(var(--page-offset-left,0px) + " + uLeft + "px * var(--scale-factor,1));"
                 // Render at FINAL size/opacity immediately. There used to be a
@@ -15143,8 +15138,18 @@ class _ReaderPanelsMixin {
             // never inside `.page` -- PDF.js rebuilds a page's children on zoom
             // re-render, which simply DELETED the pin mid-zoom.
             let pinHost: any = null;
-            try { pinHost = this._ensureBadgeOverlay(doc); } catch (_) {}
+            try { pinHost = this._ensureBadgeOverlay(doc); }
+            catch (e) {
+                // Do NOT swallow this silently: on a freshly-opened document the
+                // pin is the FIRST overlay caller (badges create it long before
+                // on an already-open tab), so a throw in overlay setup is
+                // exactly what sends us down the fallback -- and it was
+                // invisible (2026-08-01).
+                try { (this as any)._wvLinkRing("showPin: overlay setup threw " + e); } catch (_) {}
+            }
+            const hostIsOverlay = !!pinHost;
             (pinHost || pageView.div).appendChild(pin);
+            try { (this as any)._wvLinkRing("showPin host=" + (hostIsOverlay ? "overlay" : "page-fallback")); } catch (_) {}
 
             // Living in the overlay means the page's own offset has to be folded
             // in, and it MOVES on zoom (pages are centre-aligned, so offsetLeft
@@ -15160,8 +15165,17 @@ class _ReaderPanelsMixin {
                 const applyPageOffsets = () => {
                     if (!pin.isConnected) { try { pin._wvOffObs && pin._wvOffObs.disconnect(); } catch (_) {} return; }
                     try {
-                        pin.style.setProperty("--page-offset-top", pgDiv.offsetTop + "px");
-                        pin.style.setProperty("--page-offset-left", pgDiv.offsetLeft + "px");
+                        // HOST-AWARE. The page offset belongs in these vars ONLY
+                        // when the pin lives in the overlay (a sibling of the
+                        // pages). When overlay setup fails and the pin falls
+                        // back INTO `.page`, the parent already supplies that
+                        // offset -- folding it in again put the pin exactly one
+                        // page-offset too low (fresh-open probe: inlineVar
+                        // 23223px inside a page at 23223, double-counted;
+                        // 2026-08-01). This setter runs after the cssText, so
+                        // it, not any declaration there, must carry the rule.
+                        pin.style.setProperty("--page-offset-top", (hostIsOverlay ? pgDiv.offsetTop : 0) + "px");
+                        pin.style.setProperty("--page-offset-left", (hostIsOverlay ? pgDiv.offsetLeft : 0) + "px");
                     } catch (_) {}
                 };
                 applyPageOffsets();

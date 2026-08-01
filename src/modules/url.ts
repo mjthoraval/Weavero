@@ -575,31 +575,50 @@ export const urlMethods = {
                 // inside the scrolling container), so the watcher was pure
                 // complexity on the path.
                 st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 2200);
-                // Name the host so the parent difference is visible.
-                st(() => {
+                // Probe the pin's RESOLVED style, twice (layout can shift late).
+                // Questions this must answer after the dev.23 override failed to
+                // cure the fresh-open case:
+                //   1. Is the inline `--page-offset-top:0px` actually ON the
+                //      element (inlineVar), and what does the var RESOLVE to
+                //      (computedVar)? If inlineVar is empty, the override never
+                //      made it into the style attribute. If inlineVar is 0px but
+                //      computedVar isn't, something re-set the style after us.
+                //   2. Is the parent the RIGHT page (parentPageNum vs wantPage)?
+                //      pdf.js recycles page divs while loading -- appending into
+                //      a div that later becomes another page would land the pin
+                //      at the right in-page offset on the wrong sheet.
+                //   3. deltaVsPage: pin rect top minus the PARENT page's rect
+                //      top, in client px -- the in-page landing, independent of
+                //      scroll. Right page + sane delta + still invisible would
+                //      point at paint, not placement.
+                const probe = (tag: string) => {
                     try {
                         const iw: any = pv._iframeWindow;
                         const pdoc: any = iw && iw.document;
                         const el: any = pdoc && pdoc.querySelector(".wv-reader-pin");
-                        if (!el) { this._wvLinkRing("pin host: element gone"); return; }
+                        if (!el) { this._wvLinkRing("pin " + tag + ": element gone"); return; }
                         const par: any = el.parentElement;
                         const desc = (x: any) => x ? ((x.tagName || "?") + "#" + (x.id || "") + "." + String(x.className || "").split(" ")[0]) : "(none)";
                         const cont: any = pdoc.getElementById("viewerContainer");
-                        this._wvLinkRing("pin host: parent=" + desc(par)
-                            + " grandparent=" + desc(par && par.parentElement)
+                        const cs = iw.getComputedStyle(el);
+                        const pr = el.getBoundingClientRect();
+                        const parR = par ? par.getBoundingClientRect() : null;
+                        this._wvLinkRing("pin " + tag + ": parent=" + desc(par)
+                            + " parentPageNum=" + (par && par.getAttribute ? par.getAttribute("data-page-number") : "?")
+                            + " wantPage=" + (pageIndex + 1)
                             + " insideViewerContainer=" + !!(cont && par && cont.contains(el))
-                            + " inlineTop=" + (el.style && el.style.top)
-                            + " inlineLeft=" + (el.style && el.style.left)
-                            + " position=" + iw.getComputedStyle(el).position
-                            + " pageDivOffsetTop=" + (() => {
-                                try {
-                                    const a2 = iw.PDFViewerApplication || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication);
-                                    const p2 = a2 && a2.pdfViewer && a2.pdfViewer._pages && a2.pdfViewer._pages[pageIndex];
-                                    return p2 && p2.div ? p2.div.offsetTop : "n/a";
-                                } catch (e) { return "err"; }
-                            })());
-                    } catch (e) { this._wvLinkRing("pin host err: " + e); }
-                }, 260);
+                            + " inlineVar=" + JSON.stringify(el.style ? el.style.getPropertyValue("--page-offset-top") : null)
+                            + " computedVar=" + JSON.stringify(cs.getPropertyValue("--page-offset-top"))
+                            + " computedTop=" + cs.top
+                            + " pinRectT=" + Math.round(pr.top)
+                            + " pageRectT=" + (parR ? Math.round(parR.top) : "?")
+                            + " deltaVsPage=" + (parR ? Math.round(pr.top - parR.top) : "?")
+                            + " scaleFactor=" + JSON.stringify(par ? iw.getComputedStyle(par).getPropertyValue("--scale-factor") : null)
+                            + " scrollTop=" + (cont ? Math.round(cont.scrollTop) : "?"));
+                    } catch (e) { this._wvLinkRing("pin " + tag + " err: " + e); }
+                };
+                st(() => probe("probe260"), 260);
+                st(() => probe("probe1200"), 1200);
                 return;
             }
         } catch (e) {}

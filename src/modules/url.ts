@@ -521,7 +521,10 @@ export const urlMethods = {
                 // actually there.
                 this._wvReaderShowPin(reader, { pageIndex, rects }, undefined, { persist: true });
                 this._wvLinkRing("pin placed (renderingState=3, tries=" + n + ")");
-                st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 6000);
+                // Cleared 2200ms after the pin STOPS MOVING (see the watcher
+                // below), matching _wvReaderShowPin's own startFade(2200)
+                // convention -- an earlier flat 6s made link pins linger about
+                // three times longer than every other marker in the plugin.
                 // GEOMETRY, not just existence. The pin can be in the DOM and
                 // still unseen -- scrolled out of view, zero-sized, or hidden.
                 // Measured a beat later so layout has settled (2026-08-01).
@@ -560,15 +563,48 @@ export const urlMethods = {
                 // scroll no longer applies to. Re-placing recomputes them
                 // against the settled layout; it also covers the older case of
                 // a late render simply dropping the element (2026-08-01).
-                const replace = (tag: string) => {
+                // WATCH the layout instead of guessing at it. Fixed 600/1400ms
+                // re-places were simultaneously too slow for a document that
+                // settles at once and too short for one that doesn't. This
+                // samples the page's own offsetTop every 120ms and re-places
+                // only when it MOVES, so the pin corrects itself the instant
+                // pdf.js reflows -- and keeps watching (up to ~12s) for files
+                // that load slowly, rather than giving up on a timer.
+                const offsetOf = () => {
                     try {
-                        this._wvOutlineScrollToRect(pv, pageIndex, top);
-                        this._wvReaderShowPin(reader, { pageIndex, rects }, undefined, { persist: true });
-                        this._wvLinkRing("pin re-placed (" + tag + ")");
-                    } catch (e) {}
+                        const a2 = pv._iframeWindow
+                            && (pv._iframeWindow.PDFViewerApplication
+                                || (pv._iframeWindow.wrappedJSObject
+                                    && pv._iframeWindow.wrappedJSObject.PDFViewerApplication));
+                        const p2 = a2 && a2.pdfViewer && a2.pdfViewer._pages
+                            && a2.pdfViewer._pages[pageIndex];
+                        return (p2 && p2.div) ? p2.div.offsetTop : null;
+                    } catch (e) { return null; }
                 };
-                st(() => replace("settle-600"), 600);
-                st(() => replace("settle-1400"), 1400);
+                let lastOffset = offsetOf();
+                let stable = 0, ticks = 0;
+                const watch = () => {
+                    ticks++;
+                    const now = offsetOf();
+                    if (now !== null && now !== lastOffset) {
+                        // The page moved under us -- our coordinates are stale.
+                        lastOffset = now;
+                        stable = 0;
+                        try {
+                            this._wvOutlineScrollToRect(pv, pageIndex, top);
+                            this._wvReaderShowPin(reader, { pageIndex, rects }, undefined, { persist: true });
+                            this._wvLinkRing("pin re-placed (reflow at tick " + ticks + ")");
+                        } catch (e) {}
+                    } else {
+                        stable++;
+                    }
+                    // Stop once the layout has held still for ~600ms, but keep
+                    // watching far longer if it hasn't settled yet.
+                    if (stable < 5 && ticks < 100) { st(watch, 120); return; }
+                    // Settled (or gave up): now start the normal display clock.
+                    st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 2200);
+                };
+                st(watch, 120);
                 return;
             }
         } catch (e) {}

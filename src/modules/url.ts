@@ -525,32 +525,7 @@ export const urlMethods = {
                 // below), matching _wvReaderShowPin's own startFade(2200)
                 // convention -- an earlier flat 6s made link pins linger about
                 // three times longer than every other marker in the plugin.
-                // GEOMETRY, not just existence. The pin can be in the DOM and
-                // still unseen -- scrolled out of view, zero-sized, or hidden.
-                // Measured a beat later so layout has settled (2026-08-01).
-                st(() => {
-                    try {
-                        const iw: any = pv._iframeWindow;
-                        const pdoc: any = iw && iw.document;
-                        const el: any = pdoc && pdoc.querySelector(".wv-reader-pin");
-                        const cont: any = pdoc && pdoc.getElementById("viewerContainer");
-                        if (!el || !cont) { this._wvLinkRing("pin geom: element gone"); return; }
-                        const pr = el.getBoundingClientRect();
-                        const cr = cont.getBoundingClientRect();
-                        const cs = iw.getComputedStyle(el);
-                        const onScreen = pr.bottom > cr.top && pr.top < cr.bottom
-                            && pr.right > cr.left && pr.left < cr.right;
-                        const verdict = !onScreen ? "OFF-SCREEN"
-                            : (pr.width === 0 || pr.height === 0) ? "ZERO-SIZED"
-                            : (cs.opacity === "0" || cs.display === "none") ? "HIDDEN" : "VISIBLE";
-                        this._wvLinkRing("pin geom: " + verdict
-                            + " pin[t=" + Math.round(pr.top) + ",l=" + Math.round(pr.left)
-                            + ",w=" + Math.round(pr.width) + ",h=" + Math.round(pr.height) + "]"
-                            + " viewer[t=" + Math.round(cr.top) + ",b=" + Math.round(cr.bottom) + "]"
-                            + " opacity=" + cs.opacity
-                            + " scrollTop=" + Math.round(cont.scrollTop));
-                    } catch (e) { this._wvLinkRing("pin geom err: " + e); }
-                }, 420);
+
                 // RE-PLACE after layout settles, unconditionally.
                 //
                 // On a link that OPENS the document (vs one already in a tab),
@@ -575,54 +550,16 @@ export const urlMethods = {
                 // inside the scrolling container), so the watcher was pure
                 // complexity on the path.
                 st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 2200);
-                // Probe the pin's RESOLVED style, twice (layout can shift late).
-                // Questions this must answer after the dev.23 override failed to
-                // cure the fresh-open case:
-                //   1. Is the inline `--page-offset-top:0px` actually ON the
-                //      element (inlineVar), and what does the var RESOLVE to
-                //      (computedVar)? If inlineVar is empty, the override never
-                //      made it into the style attribute. If inlineVar is 0px but
-                //      computedVar isn't, something re-set the style after us.
-                //   2. Is the parent the RIGHT page (parentPageNum vs wantPage)?
-                //      pdf.js recycles page divs while loading -- appending into
-                //      a div that later becomes another page would land the pin
-                //      at the right in-page offset on the wrong sheet.
-                //   3. deltaVsPage: pin rect top minus the PARENT page's rect
-                //      top, in client px -- the in-page landing, independent of
-                //      scroll. Right page + sane delta + still invisible would
-                //      point at paint, not placement.
-                const probe = (tag: string) => {
-                    try {
-                        const iw: any = pv._iframeWindow;
-                        const pdoc: any = iw && iw.document;
-                        const el: any = pdoc && pdoc.querySelector(".wv-reader-pin");
-                        if (!el) { this._wvLinkRing("pin " + tag + ": element gone"); return; }
-                        const par: any = el.parentElement;
-                        const desc = (x: any) => x ? ((x.tagName || "?") + "#" + (x.id || "") + "." + String(x.className || "").split(" ")[0]) : "(none)";
-                        const cont: any = pdoc.getElementById("viewerContainer");
-                        const cs = iw.getComputedStyle(el);
-                        const pr = el.getBoundingClientRect();
-                        const parR = par ? par.getBoundingClientRect() : null;
-                        this._wvLinkRing("pin " + tag + ": parent=" + desc(par)
-                            + " parentPageNum=" + (par && par.getAttribute ? par.getAttribute("data-page-number") : "?")
-                            + " wantPage=" + (pageIndex + 1)
-                            + " insideViewerContainer=" + !!(cont && par && cont.contains(el))
-                            + " inlineVar=" + JSON.stringify(el.style ? el.style.getPropertyValue("--page-offset-top") : null)
-                            + " computedVar=" + JSON.stringify(cs.getPropertyValue("--page-offset-top"))
-                            + " computedTop=" + cs.top
-                            + " pinRectT=" + Math.round(pr.top)
-                            + " pageRectT=" + (parR ? Math.round(parR.top) : "?")
-                            + " deltaVsPage=" + (parR ? Math.round(pr.top - parR.top) : "?")
-                            + " scaleFactor=" + JSON.stringify(par ? iw.getComputedStyle(par).getPropertyValue("--scale-factor") : null)
-                            + " scrollTop=" + (cont ? Math.round(cont.scrollTop) : "?"));
-                    } catch (e) { this._wvLinkRing("pin " + tag + " err: " + e); }
-                };
-                st(() => probe("probe260"), 260);
-                st(() => probe("probe1200"), 1200);
+
                 return;
             }
         } catch (e) {}
-        if (n < 40) {
+        // ~18s of patience. 6s proved too tight in practice: a page that has
+        // to render from scratch (heavy PDF, slow machine, or a window Gecko
+        // is throttling because it lacks focus) can exceed it, and giving up
+        // is unrecoverable -- the pin never appears at all. Idle polls are
+        // near-free; the ring records a give-up either way (2026-08-01).
+        if (n < 120) {
             st(() => this._wvPlacePinWhenRendered(reader, pv, pageIndex, rects, n + 1), 150);
         } else {
             this._wvLinkRing("pin: page never reached renderingState 3");
@@ -691,25 +628,8 @@ export const urlMethods = {
                 // observed as `built=false` for the full poll (2026-07-31).
                 // Drive the page in first; the build then follows and the
                 // quarter-rule scroll below refines the landing.
-                // SELECT THE TAB FIRST. On the first click the reader is still
-                // opening and its tab may not be selected -- pdf.js renders
-                // nothing in a background tab, so the page never becomes built
-                // and the poll expired, making the link "work only on the
-                // second click" (reported 2026-08-01). The second click found
-                // the tab already open and selected, which is why it worked.
-                if (!built && n < 20) {
-                    try {
-                        const rw: any = reader._window;
-                        const tabs: any = rw && rw.Zotero_Tabs;
-                        if (tabs && reader.tabID && tabs.selectedID !== reader.tabID) {
-                            if (n === 0) this._wvLinkRing("highlightAfterOpen: selecting tab " + reader.tabID);
-                            tabs.select(reader.tabID);
-                        }
-                    } catch (e) {}
-                }
                 if (!built && app && app.pdfViewer) {
                     if (n === 0 || n === 12 || n === 30) {
-                        this._wvLinkRing("highlightAfterOpen: forcing page " + (pageIndex + 1) + " in (n=" + n + ")");
                         // A PRIMITIVE assignment, not scrollPageIntoView({...}):
                         // an options object built in chrome reads as empty
                         // across the Xray boundary, so the call no-ops WITHOUT
@@ -727,37 +647,7 @@ export const urlMethods = {
                     }
                 }
             } catch (e) {}
-            // Full state on the rounds that matter, so a failing first click
-            // says WHICH sub-condition is false instead of just "built=false".
-            if (n === 0 || n === 3 || n === 10 || n === 25 || n === 50) {
-                let d: any = { n, reader: !!reader, pv: !!pv, built };
-                try {
-                    const rw: any = reader && reader._window;
-                    const tabs: any = rw && rw.Zotero_Tabs;
-                    d.tabID = reader && reader.tabID;
-                    d.selectedTab = tabs && tabs.selectedID;
-                    d.tabIsSelected = !!(tabs && reader && tabs.selectedID === reader.tabID);
-                    d.viewType = reader && reader._type;
-                    d.hasIframeWin = !!(pv && pv._iframeWindow);
-                    const app2 = pv && pv._iframeWindow
-                        && (pv._iframeWindow.PDFViewerApplication
-                            || (pv._iframeWindow.wrappedJSObject
-                                && pv._iframeWindow.wrappedJSObject.PDFViewerApplication));
-                    d.hasApp = !!app2;
-                    d.hasPdfViewer = !!(app2 && app2.pdfViewer);
-                    d.pagesLen = (app2 && app2.pdfViewer && app2.pdfViewer._pages)
-                        ? app2.pdfViewer._pages.length : -1;
-                    d.wantPage = pageIndex;
-                    const pgv = app2 && app2.pdfViewer && app2.pdfViewer._pages
-                        && app2.pdfViewer._pages[pageIndex];
-                    d.pageViewExists = !!pgv;
-                    d.pageHasDiv = !!(pgv && pgv.div);
-                    d.pageHasViewport = !!(pgv && pgv.viewport);
-                    d.renderingState = pgv && pgv.renderingState;
-                    d.currentPage = app2 && app2.pdfViewer && app2.pdfViewer.currentPageNumber;
-                } catch (e) { d.probeErr = String(e); }
-                this._wvLinkRing("state " + JSON.stringify(d));
-            }
+
             if (built && Array.isArray(rects) && rects.length) {
                 this._wvLinkRing("highlightAfterOpen: PAINT page=" + pageIndex
                     + " rects=" + rects.length + " afterTries=" + n);

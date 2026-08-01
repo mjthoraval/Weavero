@@ -563,48 +563,43 @@ export const urlMethods = {
                 // scroll no longer applies to. Re-placing recomputes them
                 // against the settled layout; it also covers the older case of
                 // a late render simply dropping the element (2026-08-01).
-                // WATCH the layout instead of guessing at it. Fixed 600/1400ms
-                // re-places were simultaneously too slow for a document that
-                // settles at once and too short for one that doesn't. This
-                // samples the page's own offsetTop every 120ms and re-places
-                // only when it MOVES, so the pin corrects itself the instant
-                // pdf.js reflows -- and keeps watching (up to ~12s) for files
-                // that load slowly, rather than giving up on a timer.
-                const offsetOf = () => {
+                // Clear on the plugin's usual marker convention
+                // (_wvReaderShowPin's own startFade(2200)).
+                //
+                // NO reflow watcher here: dev.20/21 re-placed the pin whenever
+                // the page's offsetTop moved, on the theory that a fresh open
+                // reflowed underneath it. The trace disproved that -- the
+                // watcher never fired once, and the page never moved. The real
+                // difference is the pin's PARENT on a freshly-opened document
+                // (its rect comes back in document coords, i.e. it is not
+                // inside the scrolling container), so the watcher was pure
+                // complexity on the path.
+                st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 2200);
+                // Name the host so the parent difference is visible.
+                st(() => {
                     try {
-                        const a2 = pv._iframeWindow
-                            && (pv._iframeWindow.PDFViewerApplication
-                                || (pv._iframeWindow.wrappedJSObject
-                                    && pv._iframeWindow.wrappedJSObject.PDFViewerApplication));
-                        const p2 = a2 && a2.pdfViewer && a2.pdfViewer._pages
-                            && a2.pdfViewer._pages[pageIndex];
-                        return (p2 && p2.div) ? p2.div.offsetTop : null;
-                    } catch (e) { return null; }
-                };
-                let lastOffset = offsetOf();
-                let stable = 0, ticks = 0;
-                const watch = () => {
-                    ticks++;
-                    const now = offsetOf();
-                    if (now !== null && now !== lastOffset) {
-                        // The page moved under us -- our coordinates are stale.
-                        lastOffset = now;
-                        stable = 0;
-                        try {
-                            this._wvOutlineScrollToRect(pv, pageIndex, top);
-                            this._wvReaderShowPin(reader, { pageIndex, rects }, undefined, { persist: true });
-                            this._wvLinkRing("pin re-placed (reflow at tick " + ticks + ")");
-                        } catch (e) {}
-                    } else {
-                        stable++;
-                    }
-                    // Stop once the layout has held still for ~600ms, but keep
-                    // watching far longer if it hasn't settled yet.
-                    if (stable < 5 && ticks < 100) { st(watch, 120); return; }
-                    // Settled (or gave up): now start the normal display clock.
-                    st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 2200);
-                };
-                st(watch, 120);
+                        const iw: any = pv._iframeWindow;
+                        const pdoc: any = iw && iw.document;
+                        const el: any = pdoc && pdoc.querySelector(".wv-reader-pin");
+                        if (!el) { this._wvLinkRing("pin host: element gone"); return; }
+                        const par: any = el.parentElement;
+                        const desc = (x: any) => x ? ((x.tagName || "?") + "#" + (x.id || "") + "." + String(x.className || "").split(" ")[0]) : "(none)";
+                        const cont: any = pdoc.getElementById("viewerContainer");
+                        this._wvLinkRing("pin host: parent=" + desc(par)
+                            + " grandparent=" + desc(par && par.parentElement)
+                            + " insideViewerContainer=" + !!(cont && par && cont.contains(el))
+                            + " inlineTop=" + (el.style && el.style.top)
+                            + " inlineLeft=" + (el.style && el.style.left)
+                            + " position=" + iw.getComputedStyle(el).position
+                            + " pageDivOffsetTop=" + (() => {
+                                try {
+                                    const a2 = iw.PDFViewerApplication || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication);
+                                    const p2 = a2 && a2.pdfViewer && a2.pdfViewer._pages && a2.pdfViewer._pages[pageIndex];
+                                    return p2 && p2.div ? p2.div.offsetTop : "n/a";
+                                } catch (e) { return "err"; }
+                            })());
+                    } catch (e) { this._wvLinkRing("pin host err: " + e); }
+                }, 260);
                 return;
             }
         } catch (e) {}

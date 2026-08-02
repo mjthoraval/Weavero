@@ -649,6 +649,39 @@ export const urlMethods = {
             const pv = ir && (ir._primaryView || ir._lastView);
             const rects = position && position.rects;
             const pageIndex = (position && position.pageIndex) || 0;
+            // READING MODE arrival. The PDF view is hidden there -- its pages
+            // may never render, and the base-view highlight/pin would paint
+            // into a view the user cannot see, so a link opening into an
+            // RM-restored reader silently did nothing (review bug,
+            // 2026-08-02). Route through the RM navigation instead: it maps
+            // the PDF-space position into the reflow, lands it by the same
+            // quarter rule, and shows the spotlight highlight (text) or the
+            // RM pin marker (point).
+            try {
+                if (reader && this._wvReadingModeActive(reader)) {
+                    const sdtv = this._wvOutlineRmView(reader);
+                    if (sdtv) {
+                        this._wvLinkRing("highlightAfterOpen: RM route page="
+                            + pageIndex + " kind=" + kind);
+                        const idoc = reader._iframeWindow && reader._iframeWindow.document;
+                        const node: any = { title: "", position: { pageIndex, rects } };
+                        if (kind === "pin") node.position.anchor = "point";
+                        Promise.resolve(this._wvOutlineRmNavigate(reader, idoc, node)).catch(() => {});
+                        return;
+                    }
+                    // RM is on but the SDT view isn't built yet (the reader is
+                    // still opening) -- keep polling, same budget as the base
+                    // path.
+                    if (n < 120) {
+                        const w0: any = Zotero.getMainWindow();
+                        const st0: any = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+                        st0(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
+                    } else {
+                        this._wvLinkRing("highlightAfterOpen: RM view never became ready");
+                    }
+                    return;
+                }
+            } catch (e) {}
             // Wait for the target page to be BUILT -- both the scroll (which
             // reads the page viewport) and the highlight need real layout.
             let built = false;
@@ -722,6 +755,36 @@ export const urlMethods = {
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
             st(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
         }
+    },
+
+    /** The CURRENT text selection as `{position, text}` in PDF space, for
+     *  link building -- Reading-Mode-aware.
+     *
+     *  In RM the selection lives in the SDT overlay, so the PDF-side reader
+     *  returns null -- and the old `_wvLastSelection` fallback then served a
+     *  selection made BEFORE entering RM, producing a link to the wrong text
+     *  (review bug, 2026-08-02). Here RM selections are mapped back through
+     *  `sdtv.toSelector()` (the same mapping the RM add-from-selection flow
+     *  uses, so the stored position works in the base view too), and the
+     *  stale fallback is never consulted while RM is active. */
+    _wvReadSelectionForLink(reader: any): any {
+        try {
+            if (this._wvReadingModeActive(reader)) {
+                const sdtv = this._wvOutlineRmView(reader);
+                const iwin = sdtv && (Components as any).utils.waiveXrays(sdtv._iframeWindow);
+                const selObj = iwin && iwin.getSelection && iwin.getSelection();
+                if (!selObj || selObj.isCollapsed || !selObj.rangeCount) return null;
+                const pos: any = sdtv.toSelector(selObj.getRangeAt(0));
+                if (!pos || !Number.isInteger(pos.pageIndex)
+                    || !Array.isArray(pos.rects) || !pos.rects.length) return null;
+                return {
+                    position: { pageIndex: pos.pageIndex,
+                                rects: pos.rects.map((r: number[]) => [r[0], r[1], r[2], r[3]]) },
+                    text: String(selObj.toString() || ""),
+                };
+            }
+            return this._wvOutlineReadSelection(reader) || (reader._wvLastSelection || null);
+        } catch (e) { return null; }
     },
 
     /** The 16-char context around a SHORT selection, read from the page's own

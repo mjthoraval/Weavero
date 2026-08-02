@@ -1692,8 +1692,9 @@ class _ReaderMixin {
                 // so it keeps working after whatever created it is deleted.
                 // Zotero drops the unknown param, so a plain install still
                 // lands on the right page.
-                const selNow = this._wvOutlineReadSelection(reader)
-                    || (reader._wvLastSelection || null);
+                // RM-aware: maps a Reading Mode selection back to PDF space,
+                // and never serves the stale pre-RM `_wvLastSelection` there.
+                const selNow = this._wvReadSelectionForLink(reader);
                 const selLink = selNow ? this._wvBuildSelectionPosLink(linkBase, selNow) : null;
                 if (selLink) {
                     MENU_LABEL = "Copy Link to Selected Text";

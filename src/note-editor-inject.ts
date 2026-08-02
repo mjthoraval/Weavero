@@ -24,7 +24,7 @@ import { Plugin, PluginKey } from "prosemirror-state";
     // re-evals the bundle into an already-injected page when the page's
     // __wvNoteInjectV is older (re-eval is safe: install() dedups via the
     // __wvLinkify spec marker).
-    const INJECT_V = 2;
+    const INJECT_V = 4;
 
     /** Zotero's bundled note-editor has a latent bug (present in 10.0-beta):
      *  the colour plugins' view wrappers do `destroy(){ pluginState.destroy() }`
@@ -59,6 +59,81 @@ import { Plugin, PluginKey } from "prosemirror-state";
         return shimmed;
     }
 
+    /** Harden every LIVE plugin view's destroy() so no single broken one can
+     *  abort ProseMirror's teardown loop (which also aborts recreation and
+     *  strands the editor).
+     *
+     *  The state-level shim above cannot reach these: drag.js's plugin has no
+     *  state field at all -- its plugin VIEW (the Drag instance) carries the
+     *  broken destroy directly. Verified on a clean 10.0-beta.22 profile
+     *  (2026-08-02): destroy() reads `this.editorView`, which the class never
+     *  assigns (the constructor stores `this.view`), so the FIRST reconfigure
+     *  throws there and Weavero+BN only survived because that aborted pass
+     *  happened to consume drag's view, letting the second pass through --
+     *  ordering luck, not design.
+     *
+     *  Drag-shaped views (a `handlers` array of {name, handler} plus a `view`
+     *  with a dom) get a CORRECT destroy -- upstream's, even de-borked, would
+     *  not remove the listeners (its forEach destructures (element, index)) --
+     *  so repeated reconfigures stop leaking mousemove handlers on the editor
+     *  dom. Everything else keeps its own destroy inside a try/catch. */
+    function hardenPluginViewDestroys(view: any): number {
+        let hardened = 0;
+        try {
+            for (const pv of (view.pluginViews || [])) {
+                try {
+                    if (!pv || typeof pv.destroy !== "function" || pv.__wvDestroyHardened) continue;
+                    const dragShaped = Array.isArray(pv.handlers)
+                        && pv.handlers.length && pv.handlers[0]
+                        && typeof pv.handlers[0].handler === "function"
+                        && pv.view && pv.view.dom;
+                    if (dragShaped) {
+                        pv.destroy = function () {
+                            try {
+                                this.handlers.forEach((h: any) => {
+                                    try { this.view.dom.removeEventListener(h.name, h.handler); } catch (e) {}
+                                });
+                            } catch (e) {}
+                        };
+                    } else {
+                        const orig = pv.destroy;
+                        pv.destroy = function () {
+                            try { orig.call(this); } catch (e) {}
+                        };
+                    }
+                    pv.__wvDestroyHardened = true;
+                    hardened++;
+                } catch (e) { /* next view */ }
+            }
+        } catch (e) { /* view shape unexpected */ }
+        return hardened;
+    }
+
+    /** One-shot hardening DECAYS: every reconfigure destroys and RECREATES
+     *  the plugin views, so freshly-made ones (including a fresh broken Drag)
+     *  are unprotected again -- measured live: hardenedViews 0 right after an
+     *  install had hardened 15 (2026-08-02). The only airtight point is
+     *  `view.updateState` itself: a PUBLIC API name (safe against the
+     *  bundle's minification) that every injector -- ours, Better Notes',
+     *  anyone's -- must call to reconfigure. Wrap it once per view and harden
+     *  BEFORE each pass (so teardown of the current views cannot abort) and
+     *  AFTER it (so the recreated views are protected for the next caller). */
+    function wrapUpdateStateForHardening(view: any): boolean {
+        try {
+            if (!view || view.__wvUpdateStateWrapped) return false;
+            const orig = view.updateState;
+            if (typeof orig !== "function") return false;
+            view.updateState = function (state: any) {
+                try { hardenPluginViewDestroys(this); } catch (e) {}
+                const r = orig.call(this, state);
+                try { hardenPluginViewDestroys(this); } catch (e) {}
+                return r;
+            };
+            view.__wvUpdateStateWrapped = true;
+            return true;
+        } catch (e) { return false; }
+    }
+
     function expectedPluginViewCount(view: any): number {
         let n = 0;
         try { for (const p of (view.directPlugins || [])) { if (p && p.spec && p.spec.view) n++; } } catch (e) {}
@@ -77,15 +152,19 @@ import { Plugin, PluginKey } from "prosemirror-state";
             const ci: any = (window as any)._currentEditorInstance;
             const view: any = ci && ci._editorCore && ci._editorCore.view;
             if (!view) return "no-view";
+            shimPluginStateDestroys(view);
+            hardenPluginViewDestroys(view);
+            wrapUpdateStateForHardening(view);
             const have = view.pluginViews ? view.pluginViews.length : -1;
             const want = expectedPluginViewCount(view);
             if (have < 0 || have >= want) return "healthy:" + have + "/" + want;
-            const shimmed = shimPluginStateDestroys(view);
+            const shimmed = 0, hardened = 0;   // already applied above
             view.updateState(view.state.reconfigure({
                 plugins: view.state.plugins.slice(),
             }));
             const now = view.pluginViews ? view.pluginViews.length : -1;
-            return "healed:" + have + "->" + now + "/" + want + " (shimmed " + shimmed + ")";
+            return "healed:" + have + "->" + now + "/" + want
+                + " (shimmed " + shimmed + ", hardened " + hardened + ")";
         } catch (e: any) {
             return "heal-err: " + (e && e.message);
         }
@@ -163,11 +242,15 @@ import { Plugin, PluginKey } from "prosemirror-state";
         const ci: any = (window as any)._currentEditorInstance;
         const view: any = ci && ci._editorCore && ci._editorCore.view;
         if (!view) return "no-view";
+        // Idempotent protections run on EVERY sweep call -- even when the
+        // linkify plugin is already installed -- because recreated plugin
+        // views lose their hardening and a re-opened editor needs the
+        // updateState wrap again.
+        shimPluginStateDestroys(view);
+        hardenPluginViewDestroys(view);
+        wrapUpdateStateForHardening(view);
         const has = () => view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify);
         if (has()) return "already";
-        // Make the destroy pass of OUR reconfigure (and any later one) safe
-        // BEFORE touching the plugin set -- see shimPluginStateDestroys.
-        shimPluginStateDestroys(view);
         try {
             view.updateState(view.state.reconfigure({
                 plugins: view.state.plugins.concat(makePlugin()),

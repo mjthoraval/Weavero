@@ -255,7 +255,7 @@ class _NoteEditorMixin {
                     // script (plugin was updated while the editor stayed open)
                     // -- the page-side installer dedups, so re-eval is safe.
                     const pageV = wj && Number(wj.__wvNoteInjectV || 0);
-                    if (wj && typeof wj.__wvInstallNoteLinkify === "function" && pageV >= 2) {
+                    if (wj && typeof wj.__wvInstallNoteLinkify === "function" && pageV >= 4) {
                         const r = String(wj.__wvInstallNoteLinkify());
                         // Repaint after a fresh install so decorations appear
                         // immediately (not only on the next edit).

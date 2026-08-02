@@ -1698,6 +1698,26 @@ class _ReaderMixin {
                 if (selLink) {
                     MENU_LABEL = "Copy Link to Selected Text";
                     capturedLink = selLink;
+                    // SHORT selections get TextQuoteSelector-style context
+                    // (tp/ts) so the text fallback can pick the right
+                    // occurrence of a common phrase. The page text is fetched
+                    // async, so enrich in the background and swap the captured
+                    // link when ready -- onCommand reads `capturedLink` at
+                    // click time, and a menu stays open far longer than the
+                    // fetch. A fast click just copies the context-less link,
+                    // which is still fully valid.
+                    const selText = String(selNow.text || "").replace(/\s+/g, " ").trim();
+                    if (selText && selText.length < 60) {
+                        Promise.resolve(this._wvSelectionContext(reader, selNow.position, selText))
+                            .then((ctx: any) => {
+                                if (!ctx) return;
+                                const enriched = this._wvBuildSelectionPosLink(linkBase, {
+                                    position: selNow.position, text: selNow.text,
+                                    prefix: ctx.prefix, suffix: ctx.suffix,
+                                });
+                                if (enriched) capturedLink = enriched;
+                            }).catch(() => {});
+                    }
                 }
                 else {
                     MENU_LABEL = "Copy Link to This Page";

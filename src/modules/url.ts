@@ -328,8 +328,39 @@ export const urlMethods = {
                 p: p.pageIndex || 0,
                 r: p.rects.map((r: any) => [r2(r[0]), r2(r[1]), r2(r[2]), r2(r[3])]),
             };
+            // Format version. Bump on any breaking change to the payload;
+            // the decoder stays tolerant of every version it has ever read.
+            payload.v = 1;
+            // TEXT FALLBACK, role-based (designed with the user 2026-08-02;
+            // W3C TextQuoteSelector semantics for the context fields):
+            //   short  (< 60)   -> full `t` + 16-char `tp`/`ts` context, which
+            //                      disambiguates WHICH occurrence of a common
+            //                      phrase was meant ("Figure 3" x20).
+            //   medium (60-400) -> full `t` alone; a quote this long is unique
+            //                      in a document and its end is start+length.
+            //   long   (> 400)  -> `t` = FIRST 200 + `tt` = LAST 200. Same 400
+            //                      budget as the old head-only cap, but the
+            //                      tail lets a resolver recover the EXACT span
+            //                      (end = tail match + 200) instead of only the
+            //                      first 400 chars. A 200-char tail is unique,
+            //                      so the interior-occurrence failure that
+            //                      killed using `ts` as end anchor cannot
+            //                      happen. `tt` present == "t is truncated".
             const t = String((sel.text || "")).replace(/\s+/g, " ").trim();
-            if (t) payload.t = t.slice(0, 400);
+            if (t) {
+                if (t.length > 400) {
+                    payload.t = t.slice(0, 200);
+                    payload.tt = t.slice(-200);
+                } else {
+                    payload.t = t;
+                    if (t.length < 60) {
+                        const tp = String(sel.prefix || "").replace(/\s+/g, " ").slice(-16);
+                        const ts = String(sel.suffix || "").replace(/\s+/g, " ").slice(0, 16);
+                        if (tp) payload.tp = tp;
+                        if (ts) payload.ts = ts;
+                    }
+                }
+            }
             // KIND. A pin is a POINT, stored as a zero-area rect
             // (`rects: [[x,y,x,y]]`, `anchor: "point"`). Encoding it like a text
             // selection would decode fine and then paint a zero-area highlight
@@ -356,7 +387,14 @@ export const urlMethods = {
             const degenerate = o.r.every((x: any) => x[2] - x[0] === 0 && x[3] - x[1] === 0);
             return {
                 position: { pageIndex: Number(o.p) || 0, rects: o.r },
+                version: Number(o.v) || 0,
                 text: typeof o.t === "string" ? o.t : "",
+                // Present only when `text` is the truncated HEAD of a long
+                // selection: the last 200 chars, for exact-span recovery.
+                textTail: typeof o.tt === "string" ? o.tt : "",
+                // TextQuoteSelector-style context (short selections only).
+                prefix: typeof o.tp === "string" ? o.tp : "",
+                suffix: typeof o.ts === "string" ? o.ts : "",
                 kind: (o.k === "pin" || degenerate) ? "pin" : "text",
             };
         } catch (e) { return null; }
@@ -684,6 +722,39 @@ export const urlMethods = {
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
             st(() => this._wvHighlightAfterOpen(itemID, position, n + 1, kind), 150);
         }
+    },
+
+    /** The 16-char context around a SHORT selection, read from the page's own
+     *  text layer: `{prefix, suffix}` or null. Both the page text and the
+     *  selection are whitespace-normalised the same way before matching, since
+     *  the text layer breaks lines where the selection string does not. Any
+     *  failure (page not rendered, text not found, selection spanning pages)
+     *  returns null and the link is simply built without context -- the fields
+     *  are an enhancement, never a requirement. */
+    async _wvSelectionContext(reader: any, position: any, text: string): Promise<any> {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const iw: any = pv && pv._iframeWindow;
+            const app = iw && (iw.PDFViewerApplication
+                || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication));
+            const pageView = app && app.pdfViewer && app.pdfViewer._pages
+                && app.pdfViewer._pages[(position && position.pageIndex) || 0];
+            if (!pageView || !pageView.pdfPage) return null;
+            const tc = await pageView.pdfPage.getTextContent();
+            if (!tc || !tc.items) return null;
+            let pageText = "";
+            for (const it of tc.items) pageText += (it.str || "") + " ";
+            pageText = pageText.replace(/\s+/g, " ");
+            const needle = String(text || "").replace(/\s+/g, " ").trim();
+            if (!needle) return null;
+            const i = pageText.indexOf(needle);
+            if (i < 0) return null;
+            return {
+                prefix: pageText.slice(Math.max(0, i - 16), i),
+                suffix: pageText.slice(i + needle.length, i + needle.length + 16),
+            };
+        } catch (e) { return null; }
     },
 
     /** Full selection link: `<base>?page=<N>&wvpos=<payload>`. `page` first so

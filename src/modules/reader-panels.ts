@@ -280,10 +280,11 @@ const RP_POPUP_CSS = [
     ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
     ".wv-rf-dateinput[data-open]{border-color:var(--color-accent,#5e6ad2);}",
-    // A bound that is actively filtering: accent border (answer to "did my
-    // typed date get used?"); tooltip carries the resolved date.
-    ".wv-rf-dateinput[data-applied]{border-color:var(--color-accent,#5e6ad2);",
-    "  box-shadow:0 0 0 1px var(--color-accent,#5e6ad2) inset;}",
+    // A bound that is actively filtering: BACKGROUND tint (same language as
+    // selected chips), NOT a ring -- an accent border read as a focus ring
+    // and two applied bounds looked like two focus rings (user question
+    // 2026-08-03). Tooltip carries the resolved date.
+    ".wv-rf-dateinput[data-applied]{background:var(--fill-quarternary,rgba(94,106,210,.18));}",
     ".wv-rf-dateinput[data-invalid]{border-color:#d34a4a;box-shadow:0 0 0 1px #d34a4a inset;}",
     // Keyboard-focus ring for popup controls (Tab cycling needs a visible
     // cursor); the popup container itself never shows one.
@@ -9241,6 +9242,26 @@ class _ReaderPanelsMixin {
         const today = new Date();
         let viewY = selM ? +selM[1] : today.getFullYear();
         let viewMo = selM ? +selM[2] - 1 : today.getMonth();
+        const go = (delta: number) => {
+            viewMo += delta;
+            while (viewMo < 0) { viewMo += 12; viewY--; }
+            while (viewMo > 11) { viewMo -= 12; viewY++; }
+            render();
+        };
+        // Mouse wheel pages through months (user call 2026-08-03). Deltas
+        // accumulate so trackpad micro-scrolls don't fly through months;
+        // preventDefault keeps the popup/sidebar from scrolling underneath.
+        let wheelAcc = 0;
+        root.addEventListener("wheel", (e: any) => {
+            try {
+                e.preventDefault(); e.stopPropagation();
+                wheelAcc += e.deltaY || 0;
+                if (Math.abs(wheelAcc) >= 40) {
+                    go(wheelAcc > 0 ? 1 : -1);
+                    wheelAcc = 0;
+                }
+            } catch (_) {}
+        }, { passive: false });
         let firstDay = 1;   // Monday fallback
         try { firstDay = (new (Intl as any).Locale(Zotero.locale)).getWeekInfo().firstDay % 7; } catch (_) {}
         const iso = (y: number, m: number, d: number) =>
@@ -9255,10 +9276,7 @@ class _ReaderPanelsMixin {
                 b.textContent = label;
                 b.addEventListener("click", (e: any) => {
                     e.stopPropagation();
-                    viewMo += delta;
-                    if (viewMo < 0) { viewMo = 11; viewY--; }
-                    if (viewMo > 11) { viewMo = 0; viewY++; }
-                    render();
+                    go(delta);
                 });
                 return b;
             };

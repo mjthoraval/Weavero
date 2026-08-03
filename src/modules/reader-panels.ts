@@ -745,6 +745,11 @@ function wvGapLineStartOffset(lines: any[], rect: number[]): number | null {
 // Bump when the PIN anchoring rule changes: keys minted by an older rule are
 // then recomputed even though the bookmark never moved (see _wvBmSortIndexStale).
 const RP_SORTINDEX_ALGO = 8;
+
+// Wire version for the annotation-manager render wrapper (annotations-tab
+// sort). BUMP on any change to the content-side wrapper -- a reload must
+// unhook the stale closure and re-hook.
+const WV_ANNSORT_WIRE_V = 2;
 // Flag lines that sit OUT OF BAND in the PDF's content stream -- running heads,
 // footers, marginalia. Zotero's sortIndex keys on a character's index in that
 // stream, which for body text tracks reading order but for page furniture does
@@ -1530,6 +1535,7 @@ class _ReaderPanelsMixin {
             this._wvReaderEnsureBookmarksTab(reader, idoc);
             this._wvReaderEnsureOutlinePanel(reader, idoc);
             this._wvEnsureSpringDragEnd(reader, idoc);
+            this._wvAnnSortEnsure(reader, idoc);
             if (didRewire) {
                 // Restore whichever of OUR panels the user had active before the
                 // teardown, so a hot update doesn't bounce them to the native
@@ -1547,6 +1553,253 @@ class _ReaderPanelsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvProcessReaderPanels err: " + e);
         }
+    }
+
+    // ---- Annotations-tab sort (position / date added / date modified) -----
+    //
+    // The native sidebar renders `options.onRender([...this._annotations])`
+    // verbatim -- ARRAY ORDER is display order -- and every manager mutator
+    // funnels through `render()`. So one wrapper on `render` (an own property
+    // of the manager instance) re-imposes our order after every mutation,
+    // without touching the annotation OBJECTS: `sortIndex` is what edits save
+    // back, so it must never be rewritten (feasibility verified 2026-08-02:
+    // reorder+render moved the sidebar DOM 1:1; restoring the sortIndex sort
+    // restored it exactly).
+    //
+    // `dateAdded` is NOT serialized reader-side (only `dateModified` is), so
+    // chrome computes a rank map {annotationKey -> number} from the Zotero
+    // items for BOTH date fields and pushes it into the iframe as
+    // `__wvAnnRank`; the content wrapper just sorts by rank with sortIndex as
+    // tie-break. Direction is baked into the rank's sign. Annotations with no
+    // rank (created since the last push, or external/embedded ones with no
+    // Zotero item) sort to the end until the next sweep refreshes the map.
+
+    _wvAnnSort(): any {
+        try {
+            const raw = String(Zotero.Prefs.get("weavero.readerAnnSort") || "");
+            const parts = raw.split("|");
+            if (parts[0] === "dateAdded" || parts[0] === "dateModified") {
+                return { field: parts[0], dir: parts[1] === "asc" ? "asc" : "desc" };
+            }
+        } catch (e) {}
+        return { field: "position", dir: "asc" };
+    }
+
+    _wvAnnSetSort(field: string, dir?: string) {
+        try {
+            if (field !== "dateAdded" && field !== "dateModified") {
+                Zotero.Prefs.set("weavero.readerAnnSort", "");
+            } else {
+                // Dates default to newest-first; re-picking the active field
+                // toggles direction (same feel as the bookmarks sort).
+                const cur = this._wvAnnSort();
+                const d = dir || (cur.field === field
+                    ? (cur.dir === "desc" ? "asc" : "desc") : "desc");
+                Zotero.Prefs.set("weavero.readerAnnSort", field + "|" + d);
+            }
+        } catch (e) {}
+        // Apply everywhere a sidebar is open.
+        try {
+            for (const r of (Zotero.Reader._readers || [])) {
+                try {
+                    const idoc = r._iframeWindow && r._iframeWindow.document;
+                    if (idoc) this._wvAnnSortEnsure(r, idoc);
+                } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    /** Install the content-side render wrapper (idempotent, versioned). */
+    _wvAnnSortWire(reader: any): boolean {
+        try {
+            const ir = reader && reader._internalReader;
+            const amRaw = ir && ir._annotationManager;
+            if (!amRaw) return false;
+            const am: any = (Components as any).utils.waiveXrays(amRaw);
+            if (am.__wvAnnSortWireV === WV_ANNSORT_WIRE_V) return true;
+            const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+            if (!iw || typeof iw.eval !== "function") return false;
+            iw.__wvAM = amRaw;
+            iw.eval("(function(){" +
+                "var m = window.__wvAM; delete window.__wvAM;" +
+                "if (m.__wvOrigRender) { m.render = m.__wvOrigRender; }" +
+                "m.__wvOrigRender = m.render;" +
+                "m.render = function () {" +
+                "  try {" +
+                // ALWAYS sort: with no rank map every rank is equal and the
+                // sortIndex tie-break IS native order -- which also restores
+                // position mode after a date sort (the array keeps its last
+                // arrangement otherwise; wire v2, 2026-08-03).
+                "    var rk = window.__wvAnnRank || {};" +
+                "    var arr = m._annotations;" +
+                "    var dec = arr.map(function (a, i) {" +
+                "      var r = rk[a.id]; if (r == null) r = Infinity;" +
+                "      return [r, a.sortIndex, i, a];" +
+                "    });" +
+                "    dec.sort(function (x, y) {" +
+                "      if (x[0] !== y[0]) return x[0] - y[0];" +
+                "      if (x[1] !== y[1]) return x[1] > y[1] ? 1 : -1;" +
+                "      return x[2] - y[2];" +
+                "    });" +
+                "    for (var i = 0; i < arr.length; i++) arr[i] = dec[i][3];" +
+                "  } catch (e) {}" +
+                "  return m.__wvOrigRender();" +
+                "};" +
+                "m.__wvAnnSortWireV = " + WV_ANNSORT_WIRE_V + ";" +
+                "})()");
+            return am.__wvAnnSortWireV === WV_ANNSORT_WIRE_V;
+        } catch (e) { return false; }
+    }
+
+    /** Compute and push the rank map for the current mode, then re-render. */
+    _wvAnnPushRanks(reader: any) {
+        try {
+            const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+            if (!iw) return;
+            const cur = this._wvAnnSort();
+            if (cur.field === "position") {
+                iw.__wvAnnRank = null;
+            } else {
+                const att = this._wvReaderAtt(reader);
+                const attItem: any = att && att.att;
+                const rank: any = {};
+                const anns: any[] = (attItem && typeof attItem.getAnnotations === "function")
+                    ? attItem.getAnnotations() : [];
+                for (const a of anns) {
+                    try {
+                        const d = cur.field === "dateAdded" ? a.dateAdded : a.dateModified;
+                        const dt: any = Zotero.Date.sqlToDate(d, true);
+                        if (!dt) continue;   // sqlToDate returns false on a bad string
+                        const t = dt.getTime();
+                        rank[a.key] = cur.dir === "asc" ? t : -t;
+                    } catch (e) {}
+                }
+                iw.__wvAnnRank = (Components as any).utils.cloneInto(rank, reader._iframeWindow);
+            }
+            const ir = reader && reader._internalReader;
+            const amRaw = ir && ir._annotationManager;
+            if (amRaw) { try { (Components as any).utils.waiveXrays(amRaw).render(); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    /** Per-sweep ensure: wire the wrapper, refresh ranks, and keep the sort
+     *  button mounted next to the sidebar search box -- visible only while the
+     *  NATIVE annotations tab is active (our bookmarks/outline panels have
+     *  their own controls). */
+    _wvAnnSortEnsure(reader: any, idoc: any) {
+        try {
+            this._wvAnnSortWire(reader);
+            this._wvAnnPushRanks(reader);
+            (idoc as any)._wvAnnSortReader = reader;
+            let btn: any = idoc.querySelector(".wv-ann-sortbtn");
+            const sb = idoc.querySelector("#sidebarContainer .search-box");
+            // Mounting needs the native search box (gone while our bookmarks/
+            // outline panels are active), but VISIBILITY must update even
+            // without it -- early-returning here left the button showing on
+            // top of the bookmarks tab (measured 2026-08-03).
+            if (!btn && (!sb || !sb.parentElement)) return;
+            if (!btn) {
+                btn = idoc.createElementNS(NS_HTML_RP, "button");
+                btn.className = "wv-ann-sortbtn";
+                btn.setAttribute("style",
+                    "display:none;align-items:center;gap:3px;flex:0 0 auto;"
+                    + "background:transparent;border:none;border-radius:4px;"
+                    + "padding:2px 4px;margin-inline-start:4px;cursor:pointer;"
+                    + "color:inherit;-moz-window-dragging:no-drag;");
+                btn.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    // Live plugin at event time -- the button outlives reloads.
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const rd = (idoc as any)._wvAnnSortReader;
+                    if (P && rd) P._wvShowAnnSortMenu(rd, idoc, btn);
+                });
+                (sb as any).parentElement.insertBefore(btn, (sb as any).nextSibling);
+            }
+            // Refresh visibility when the user switches sidebar tabs.
+            const tb = idoc.querySelector("#sidebarContainer .sidebar-toolbar");
+            if (tb && !(tb as any).__wvAnnSortVisWired) {
+                (tb as any).__wvAnnSortVisWired = true;
+                tb.addEventListener("click", () => {
+                    const w: any = idoc.defaultView;
+                    ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(() => {
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const rd = (idoc as any)._wvAnnSortReader;
+                        if (P && rd) { try { P._wvAnnSortEnsure(rd, idoc); } catch (e) {} }
+                    }, 80);
+                }, true);
+            }
+            const annActive = (() => {
+                const b = idoc.getElementById("viewAnnotations");
+                return !!(b && b.classList.contains("active"));
+            })();
+            const sc = idoc.getElementById("sidebarContainer");
+            const oursActive = !!(sc && (sc.classList.contains(RP_BM_TAB_ON)
+                || sc.classList.contains(RP_OUTLINE_TAB_ON)));
+            btn.style.display = (annActive && !oursActive) ? "inline-flex" : "none";
+            const cur = this._wvAnnSort();
+            const on = cur.field !== "position";
+            btn.innerHTML = RP_SORT_SVG + (on
+                ? '<span class="wv-bm-sort-label">'
+                    + (cur.field === "dateAdded" ? "Added" : "Modified") + " "
+                    + (cur.dir === "asc" ? "\u2191" : "\u2193") + "</span>"
+                : "");
+            btn.style.color = on ? "var(--accent-orange, #cc8400)" : "inherit";
+            btn.setAttribute("title", on
+                ? ("Annotations sorted by "
+                    + (cur.field === "dateAdded" ? "date added" : "date modified")
+                    + " (" + (cur.dir === "asc" ? "oldest first" : "newest first")
+                    + "). Click to change.")
+                : "Sort annotations");
+        } catch (e) {}
+    }
+
+    _wvShowAnnSortMenu(reader: any, idoc: any, anchor: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const cur = this._wvAnnSort();
+            const item = (label: string, field: string) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.textContent = cur.field === field ? "\u2713" : "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label + (cur.field === field
+                    ? "  " + (cur.dir === "asc" ? "\u2191" : "\u2193") : "");
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => { close(); this._wvAnnSetSort(field); });
+                menu.appendChild(it);
+            };
+            item("Position (default)", "position");
+            item("Date Added", "dateAdded");
+            item("Date Modified", "dateModified");
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left - 60) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
+        } catch (e) {}
+    }
+
+    /** Disable/teardown: restore native order and remove the button. */
+    _wvAnnSortTeardown(reader: any, idoc: any) {
+        try { const b = idoc && idoc.querySelector(".wv-ann-sortbtn"); if (b) b.remove(); } catch (e) {}
+        try {
+            const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+            const ir = reader && reader._internalReader;
+            const amRaw = ir && ir._annotationManager;
+            if (iw && amRaw) {
+                iw.__wvAnnRank = null;
+                iw.__wvAM = amRaw;
+                iw.eval("(function(){var m = window.__wvAM; delete window.__wvAM;"
+                    + "if (m.__wvOrigRender) { m.render = m.__wvOrigRender;"
+                    + " delete m.__wvOrigRender; delete m.__wvAnnSortWireV; }"
+                    + " m.render();})()");
+            }
+        } catch (e) {}
     }
 
     /** Tear down this reader doc's injected panel surfaces so the ensure calls
@@ -1590,6 +1843,7 @@ class _ReaderPanelsMixin {
     _wvReaderTeardownPanels(reader: any, idoc: any) {
         try {
             this._wvReaderRewirePanels(reader, idoc);
+            try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
             try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
             try { this._wvReaderHideBmHoverCard(idoc); } catch (_) {}
             try { const st = idoc.getElementById(RP_STYLE_ID); if (st) st.remove(); } catch (_) {}

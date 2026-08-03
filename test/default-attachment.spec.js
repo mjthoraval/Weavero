@@ -452,52 +452,113 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(wv._wvIsDefaultChild(att)).to.equal(true);
         });
 
-        // The import is strictly ONE-SHOT: the guard exists so a pick the user
-        // deliberately cleared in Weavero is not resurrected from the legacy
-        // pref on every restart. The cost is that picks made with the old
-        // plugin AFTER Weavero's first start are not transferred — which is
-        // why the README documents resetting the guard to re-run it. Both
-        // halves are asserted here, since the README promises the second.
-        it("runs once — a second call is a no-op while the guard is set", async () => {
+        // Detection ASKS, it does not act. Importing writes tags and queues
+        // items for sync — not something to do uninvited, when the user may
+        // only have been trying that plugin, or may prefer to keep using it.
+        it("detects legacy data without importing or spending the guard", async () => {
             await wv._wvClearDefaultChild(att);
-            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
-            Zotero.Prefs.set("weavero.defaultChildMigrated", true);
-            const r = await wv._wvMigrateDefaultAttachmentPlugin();
-            expect(r.ran).to.equal(false);
-            expect(wv._wvIsDefaultChild(att)).to.equal(false);
-        });
-
-        // ...but an EMPTY run must not spend the guard, or a user who installs
-        // Weavero before the old plugin never gets their picks: the one-time
-        // import would already have been "used up" on a run with nothing to do.
-        it("does not spend the guard when there was nothing to import", async () => {
-            Zotero.Prefs.clear(PREF, true);
             Zotero.Prefs.clear("weavero.defaultChildMigrated");
-            const first = await wv._wvMigrateDefaultAttachmentPlugin();
-            expect(first.ran).to.equal(true);
-            expect(first.found).to.equal(0);
-            expect(Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(undefined);
-
-            // The old plugin shows up later — its picks must still import.
-            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.clear("weavero.defaultChildLegacyPending");
             Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
-            const later = await wv._wvMigrateDefaultAttachmentPlugin();
-            expect(later.ran).to.equal(true);
-            expect(later.migrated).to.equal(1);
-            expect(wv._wvIsDefaultChild(att)).to.equal(true);
-            // ...and NOW the guard is spent, so a cleared pick stays cleared.
-            expect(!!Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(true);
-            await wv._wvClearDefaultChild(att);
+            const r = await wv._wvMigrateDefaultAttachmentPlugin();
+            expect(r.found).to.equal(1);
+            expect(r.migrated).to.equal(0);
+            expect(wv._wvIsDefaultChild(att), "nothing imported yet").to.equal(false);
+            expect(Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(undefined);
+            expect(Number(Zotero.Prefs.get("weavero.defaultChildLegacyPending"))).to.equal(1);
         });
 
-        it("re-runs after the guard is reset, as the README instructs", async () => {
-            await wv._wvClearDefaultChild(att);
-            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+        // An EMPTY run must not spend the guard, or someone who installs
+        // Weavero before the other plugin never gets asked at all.
+        it("does not spend the guard when there is nothing to find", async () => {
+            Zotero.Prefs.clear(PREF, true);
             Zotero.Prefs.clear("weavero.defaultChildMigrated");
             const r = await wv._wvMigrateDefaultAttachmentPlugin();
             expect(r.ran).to.equal(true);
+            expect(r.found).to.equal(0);
+            expect(Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(undefined);
+        });
+
+        it("stops asking once answered", async () => {
+            Zotero.Prefs.clear("weavero.defaultChildMigrated");
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            expect((await wv._wvMigrateDefaultAttachmentPlugin()).found).to.equal(1);
+            await wv._wvApplyLegacyChoice("skip");
+            expect(!!Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(true);
+            expect(Zotero.Prefs.get("weavero.defaultChildLegacyPending")).to.equal(undefined);
+            expect((await wv._wvMigrateDefaultAttachmentPlugin()).ran).to.equal(false);
+        });
+
+        // ---- the three answers -------------------------------------
+
+        it("'import' converts the picks into Weavero tags", async () => {
+            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            const r = await wv._wvApplyLegacyChoice("import");
             expect(r.migrated).to.equal(1);
             expect(wv._wvIsDefaultChild(att)).to.equal(true);
+            await wv._wvClearDefaultChild(att);
+        });
+
+        it("'skip' imports nothing — for someone who was only trying it", async () => {
+            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            const r = await wv._wvApplyLegacyChoice("skip");
+            expect(r.migrated).to.equal(0);
+            expect(wv._wvIsDefaultChild(att)).to.equal(false);
+        });
+
+        it("'other' switches Weavero's feature off and imports nothing", async () => {
+            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.clear("weavero.enableDefaultChild");
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            try {
+                const r = await wv._wvApplyLegacyChoice("other");
+                expect(r.migrated).to.equal(0);
+                expect(wv._wvDefaultChildEnabled(), "feature off").to.equal(false);
+                expect(wv._wvIsDefaultChild(att), "nothing imported").to.equal(false);
+            }
+            finally {
+                Zotero.Prefs.clear("weavero.enableDefaultChild");
+            }
+        });
+
+        // "Keep using the other plugin" means "not now", NOT "never". Someone
+        // who changes their mind must still be offered the import, or choosing
+        // that option once would silently forfeit it forever.
+        it("'other' leaves the offer open for when the user changes their mind", async () => {
+            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.clear("weavero.defaultChildMigrated");
+            Zotero.Prefs.clear("weavero.enableDefaultChild");
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            try {
+                await wv._wvApplyLegacyChoice("other");
+                expect(Zotero.Prefs.get("weavero.defaultChildMigrated"),
+                    "guard NOT spent").to.equal(undefined);
+                // While off, detection stays quiet — no recurring prompt.
+                expect((await wv._wvMigrateDefaultAttachmentPlugin()).ran).to.equal(false);
+                // Turn it back on: the offer returns.
+                Zotero.Prefs.clear("weavero.enableDefaultChild");
+                const back = await wv._wvMigrateDefaultAttachmentPlugin();
+                expect(back.ran).to.equal(true);
+                expect(back.found).to.equal(1);
+            }
+            finally {
+                Zotero.Prefs.clear("weavero.enableDefaultChild");
+                Zotero.Prefs.clear("weavero.defaultChildLegacyPending");
+            }
+        });
+
+        // The guarantee the whole coexistence story rests on.
+        it("leaves the legacy pref byte-identical whichever answer is given", async () => {
+            const map = JSON.stringify({ [parent.id]: att.id });
+            for (const choice of ["import", "skip", "other"]) {
+                Zotero.Prefs.set(PREF, map, true);
+                await wv._wvClearDefaultChild(att);
+                await wv._wvApplyLegacyChoice(choice);
+                expect(Zotero.Prefs.get(PREF, true), choice).to.equal(map);
+                Zotero.Prefs.clear("weavero.enableDefaultChild");
+            }
             await wv._wvClearDefaultChild(att);
         });
 
@@ -567,52 +628,66 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(r.unresolved).to.have.length(0);
         });
 
-        // The notice is what stops the takeover being silent, so it is queued
-        // by the migration itself rather than by whoever happens to call it.
-        it("queues a one-time notice when it actually imported something", async () => {
-            Zotero.Prefs.clear("weavero.defaultChildMigrationNotice");
-            Zotero.Prefs.clear("weavero.defaultChildMigrated");
-            await wv._wvClearDefaultChild(att);
-            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
-            const r = await wv._wvMigrateDefaultAttachmentPlugin();
-            expect(r.migrated).to.equal(1);
-            expect(Number(Zotero.Prefs.get("weavero.defaultChildMigrationNotice"))).to.equal(1);
-            await wv._wvClearDefaultChild(att);
-        });
-
-        it("queues no notice when nothing was imported", async () => {
-            Zotero.Prefs.clear("weavero.defaultChildMigrationNotice");
+        it("queues the question only when legacy data exists", async () => {
+            Zotero.Prefs.clear("weavero.defaultChildLegacyPending");
             Zotero.Prefs.clear("weavero.defaultChildMigrated");
             Zotero.Prefs.clear(PREF, true);
             await wv._wvMigrateDefaultAttachmentPlugin();
-            expect(Zotero.Prefs.get("weavero.defaultChildMigrationNotice")).to.equal(undefined);
+            expect(Zotero.Prefs.get("weavero.defaultChildLegacyPending")).to.equal(undefined);
         });
 
-        // Sticky by design: an auto-closing startup toast is trivially missed,
-        // so the pref is cleared only by a real dismissal.
-        it("shows a sticky notice and clears the pref only on dismiss", async () => {
+        // A decision must not be answerable by a stray click, and ignoring it
+        // must not silently choose anything — so the prompt renders buttons,
+        // its body is inert, and the pending flag survives until one is used.
+        it("prompts with buttons and stays pending until one is clicked", async () => {
             const win = Zotero.getMainWindow();
             const doc = win.document;
-            Zotero.Prefs.set("weavero.defaultChildMigrationNotice", 3);
+            Zotero.Prefs.clear("weavero.defaultChildMigrated");
+            Zotero.Prefs.clear(PREF, true);
+            // The enableDefaultChild watcher can raise a prompt of its own
+            // when an earlier spec touches that pref — real behaviour, but it
+            // would leave a stale element here and _wvShowLegacyPrompt
+            // deliberately refuses to stack a second one. Start from a clean
+            // slate so this asserts the prompt IT builds.
+            const prior = doc.getElementById("wv-defatt-notice");
+            if (prior) prior.remove();
+            Zotero.Prefs.set("weavero.defaultChildLegacyPending", 2);
             try {
-                await wv._wvShowMigrationNotice(win);
+                await wv._wvShowLegacyPrompt(win);
                 const el = doc.getElementById("wv-defatt-notice");
-                expect(el, "notice rendered").to.not.equal(null);
-                expect(el.textContent).to.contain("3");
-                // still pending until acknowledged
-                expect(Number(Zotero.Prefs.get("weavero.defaultChildMigrationNotice")))
-                    .to.equal(3);
+                expect(el, "prompt rendered").to.not.equal(null);
+                expect(el.textContent).to.contain("2");
+                const buttons = el.querySelectorAll("button");
+                expect(buttons.length, "at least import + don't import")
+                    .to.be.at.least(2);
+
+                // clicking the BODY must not answer it
                 el.click();
-                expect(doc.getElementById("wv-defatt-notice"), "removed on click")
+                expect(doc.getElementById("wv-defatt-notice"), "body click inert")
+                    .to.not.equal(null);
+                expect(Number(Zotero.Prefs.get("weavero.defaultChildLegacyPending")))
+                    .to.equal(2);
+
+                buttons[1].click();                     // "Don't import"
+                expect(doc.getElementById("wv-defatt-notice"), "closed on answer")
                     .to.equal(null);
-                expect(Zotero.Prefs.get("weavero.defaultChildMigrationNotice"))
+                expect(Zotero.Prefs.get("weavero.defaultChildLegacyPending"))
                     .to.equal(undefined);
+                expect(!!Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(true);
             }
             finally {
                 const stale = doc.getElementById("wv-defatt-notice");
                 if (stale) stale.remove();
-                Zotero.Prefs.clear("weavero.defaultChildMigrationNotice");
+                Zotero.Prefs.clear("weavero.defaultChildLegacyPending");
             }
+        });
+
+        it("offers the third option only when that plugin is actually running", () => {
+            const win = Zotero.getMainWindow();
+            const doc = win.document;
+            const had = !!doc.getElementById("defaultattachment-set-default-menuitem");
+            expect(wv._wvRivalDefaultPluginActive(win)).to.equal(had);
+            expect(wv._wvRivalDefaultPluginActive(null)).to.equal(false);
         });
     });
 

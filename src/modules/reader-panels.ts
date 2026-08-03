@@ -9248,14 +9248,23 @@ class _ReaderPanelsMixin {
             while (viewMo > 11) { viewMo -= 12; viewY++; }
             render();
         };
-        // Mouse wheel pages through months (user call 2026-08-03). Deltas
-        // accumulate so trackpad micro-scrolls don't fly through months;
-        // preventDefault keeps the popup/sidebar from scrolling underneath.
+        // Mouse wheel pages through months (user call 2026-08-03).
+        // deltaMode matters: Firefox/Windows mice report LINES (deltaMode 1,
+        // +-3 per notch) -- a pixel-calibrated accumulator needed ~14 notches
+        // per month ("does not react quickly", 2026-08-03). Line/page deltas
+        // step one month per event (one notch = one month); only pixel-mode
+        // trackpad deltas accumulate. preventDefault keeps the popup/sidebar
+        // from scrolling underneath.
         let wheelAcc = 0;
         root.addEventListener("wheel", (e: any) => {
             try {
                 e.preventDefault(); e.stopPropagation();
-                wheelAcc += e.deltaY || 0;
+                if (!e.deltaY) return;
+                if (e.deltaMode !== 0) {
+                    go(e.deltaY > 0 ? 1 : -1);
+                    return;
+                }
+                wheelAcc += e.deltaY;
                 if (Math.abs(wheelAcc) >= 40) {
                     go(wheelAcc > 0 ? 1 : -1);
                     wheelAcc = 0;

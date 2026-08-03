@@ -1295,6 +1295,17 @@ const RP_BM_CSS = [
     // on one line.
     ".wv-bm-reader-sortbtn{position:relative;width:auto;gap:2px;padding:0 5px 0 3px;white-space:nowrap;}",
     ".wv-bm-sort-label{font-size:11px;font-weight:600;line-height:1;display:inline-flex;align-items:center;gap:3px;}",
+    // Annotations-tab sort button (sits in the sidebar toolbar's .end group,
+    // beside the search magnifier). The SVG MUST be sized here: it ships with
+    // a viewBox only, so an unstyled host renders it at ~8x4px -- present,
+    // "visible", and unseeable (measured 2026-08-03; the geometry lesson
+    // again). Sized to match the native 28px toolbar buttons.
+    ".wv-ann-sortbtn{align-items:center;justify-content:center;gap:3px;" +
+        "min-width:28px;height:28px;box-sizing:border-box;padding:0 5px;" +
+        "background:transparent;border:none;border-radius:6px;cursor:pointer;" +
+        "color:inherit;-moz-window-dragging:no-drag;}",
+    ".wv-ann-sortbtn svg{width:16px;height:16px;display:block;flex:0 0 auto;}",
+    ".wv-ann-sortbtn:hover{background:var(--fill-quinary, rgba(127,127,127,0.12));}",
     ".wv-bm-sort-dir{font-size:10px;line-height:1;}",
     // Menu section heading + a divider between the field group and the
     // direction group (option B: fields on top, Ascending/Descending below).
@@ -1701,11 +1712,7 @@ class _ReaderPanelsMixin {
             if (!btn) {
                 btn = idoc.createElementNS(NS_HTML_RP, "button");
                 btn.className = "wv-ann-sortbtn";
-                btn.setAttribute("style",
-                    "display:none;align-items:center;gap:3px;flex:0 0 auto;"
-                    + "background:transparent;border:none;border-radius:4px;"
-                    + "padding:2px 4px;margin-inline-start:4px;cursor:pointer;"
-                    + "color:inherit;-moz-window-dragging:no-drag;");
+                btn.setAttribute("style", "display:none;");
                 btn.addEventListener("click", (e: any) => {
                     e.stopPropagation();
                     // Live plugin at event time -- the button outlives reloads.

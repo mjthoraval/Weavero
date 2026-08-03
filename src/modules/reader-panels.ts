@@ -269,6 +269,11 @@ const RP_POPUP_CSS = [
     // last text glyphs and the date; a tags row leaves 5.4px. -1px equalises
     // -- an earlier -5px guess based on box slack overshot badly (0.4px).
     ".annotation .preview:has(button.tags) + .wv-ann-date{margin-top:-1px;}",
+    // Date-range custom inputs row in the filter popup.
+    ".wv-rf-daterange{display:flex;gap:5px;align-items:center;padding:2px 10px 6px;font-size:11px;opacity:.9;}",
+    ".wv-rf-daterange input{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
+    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
+    ".wv-rf-datechip-gap{flex:0 0 8px;}",
     // Sort bar between the sidebar toolbar and the annotations list.
     ".wv-ann-sortbar{display:flex;gap:4px;align-items:center;padding:3px 8px;",
     "  border-bottom:1px solid var(--color-panedivider,rgba(127,127,127,.3));flex:0 0 auto;}",
@@ -7427,6 +7432,13 @@ class _ReaderPanelsMixin {
                 hasRelated: null as (boolean | null),
                 hasLink: null as (boolean | null),
                 hasTag: null as (boolean | null),
+                // Date-range dimension (2026-08-03): which date it reads,
+                // the active preset (null = off), and the custom bounds
+                // (YYYY-MM-DD local, either may be null for open-ended).
+                dateField: "dateAdded" as string,
+                datePreset: null as (string | null),   // today | 7d | 30d | custom
+                dateFrom: null as (string | null),
+                dateTo: null as (string | null),
             };
             this._wvReaderFilters.set(reader, st);
         }
@@ -7457,6 +7469,7 @@ class _ReaderPanelsMixin {
             || st.colorsExcl.length || st.tagsExcl.length
             || st.addedByExcl.length || st.modifiedBy.length || st.modifiedByExcl.length
             || st.hasComment !== null || st.hasRelated !== null || st.hasLink !== null || st.hasTag !== null
+            || st.datePreset != null
             // "Hide Annotations in the Reader" counts as an active filter.
             || this._wvReaderAnnotationsHidden(reader));
     }
@@ -8091,6 +8104,7 @@ class _ReaderPanelsMixin {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
             st.addedByExcl = []; st.modifiedBy = []; st.modifiedByExcl = [];
             st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
+            st.datePreset = null; st.dateFrom = null; st.dateTo = null; st.dateField = "dateAdded";
             // The hide-annotations toggle counts as a filter — clear it too.
             if (this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
             // Also clear the native include channel (colour/tag/author).
@@ -8394,6 +8408,69 @@ class _ReaderPanelsMixin {
             }, true);
         }
 
+        // ---- Date range (2026-08-03): preset chips + custom from/to inputs,
+        //      applying to Date Added or Date Modified (chip pair picks which).
+        addHead("Date");
+        const applyDate = async () => {
+            await this._wvApplyReaderFilter(reader);
+            this._wvRenderReaderFilterPopup(reader, idoc, popup);
+            this._wvReaderEnsureFilterButton(reader, idoc);
+        };
+        const mkTextChip = (label: string, selected: boolean, title2: string, onClick: () => void) => {
+            const btn = mk("button", "wv-filter-opt");
+            btn.type = "button";
+            btn.title = title2;
+            if (selected) btn.dataset.selected = "true";
+            const sp = mk("span"); sp.textContent = label; btn.appendChild(sp);
+            btn.addEventListener("click", (e: any) => { e.stopPropagation(); onClick(); });
+            return btn;
+        };
+        addRow((opts: any) => {
+            // Which date the range reads.
+            opts.appendChild(mkTextChip("Added", st.dateField !== "dateModified",
+                "Range applies to Date Added",
+                () => { st.dateField = "dateAdded"; applyDate(); }));
+            opts.appendChild(mkTextChip("Modified", st.dateField === "dateModified",
+                "Range applies to Date Modified",
+                () => { st.dateField = "dateModified"; applyDate(); }));
+            const gap = mk("span", "wv-rf-datechip-gap");
+            opts.appendChild(gap);
+            // Presets — radio-style, re-click clears.
+            const preset = (label: string, key: string, title2: string) =>
+                mkTextChip(label, st.datePreset === key, title2,
+                    () => { st.datePreset = st.datePreset === key ? null : key; applyDate(); });
+            opts.appendChild(preset("Today", "today", "Only annotations from today"));
+            opts.appendChild(preset("7 days", "7d", "Only annotations from the last 7 days"));
+            opts.appendChild(preset("30 days", "30d", "Only annotations from the last 30 days"));
+            opts.appendChild(preset("Custom", "custom", "Custom date range"));
+        }, true);
+        if (st.datePreset === "custom") {
+            const rangeRow = mk("div", "wv-rf-daterange");
+            const mkDateInput = (val: string | null, aria: string, onChange: (v: string | null) => void) => {
+                const inp: any = mk("input");
+                inp.type = "date";
+                if (val) inp.value = val;
+                inp.setAttribute("aria-label", aria);
+                // Apply WITHOUT re-rendering the popup -- a rebuild mid-edit
+                // would replace the input and close the native picker.
+                inp.addEventListener("change", async (e: any) => {
+                    e.stopPropagation();
+                    onChange(inp.value || null);
+                    await this._wvApplyReaderFilter(reader);
+                    this._wvReaderEnsureFilterButton(reader, idoc);
+                });
+                inp.addEventListener("click", (e: any) => e.stopPropagation());
+                return inp;
+            };
+            const lbFrom = mk("span"); lbFrom.textContent = "from";
+            const lbTo = mk("span"); lbTo.textContent = "to";
+            rangeRow.appendChild(lbFrom);
+            rangeRow.appendChild(mkDateInput(st.dateFrom, "Range start", (v) => { st.dateFrom = v; }));
+            rangeRow.appendChild(lbTo);
+            rangeRow.appendChild(mkDateInput(st.dateTo, "Range end", (v) => { st.dateTo = v; }));
+            stack.appendChild(rangeRow);
+        }
+
         // ---- Bottom hint (same as the library filter).
         const bottom = mk("div", "wv-filter-bottom-controls");
         const hint = mk("span", "wv-filter-bottom-hint");
@@ -8572,6 +8649,29 @@ class _ReaderPanelsMixin {
 
     /** Plugin-layer match (dimensions the native filter lacks + all excludes).
      *  An annotation is hidden (removed from the reader) when this returns false. */
+    /** Resolve the date-range filter to [from, to] in epoch ms (null = open
+     *  end). Computed at match time so "Today" stays correct across midnight. */
+    _wvRfDateRange(st: any): { from: number | null, to: number | null } {
+        try {
+            if (!st || !st.datePreset) return { from: null, to: null };
+            const now = new Date();
+            const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+            if (st.datePreset === "today") return { from: midnight, to: null };
+            if (st.datePreset === "7d") return { from: now.getTime() - 7 * 86400000, to: null };
+            if (st.datePreset === "30d") return { from: now.getTime() - 30 * 86400000, to: null };
+            if (st.datePreset === "custom") {
+                let from: number | null = null, to: number | null = null;
+                // Parse as LOCAL dates: from = start of day, to = end of day.
+                const m1 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(st.dateFrom || "");
+                if (m1) from = new Date(+m1[1], +m1[2] - 1, +m1[3]).getTime();
+                const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(st.dateTo || "");
+                if (m2) to = new Date(+m2[1], +m2[2] - 1, +m2[3]).getTime() + 86400000 - 1;
+                return { from, to };
+            }
+        } catch (_) {}
+        return { from: null, to: null };
+    }
+
     _wvReaderPluginMatch(st: any, a: any) {
         try {
             const ty = a.annotationType;
@@ -8609,6 +8709,17 @@ class _ReaderPanelsMixin {
                 const mn = a.lastModifiedByUserID != null ? this._wvUserName(a.lastModifiedByUserID) : null;
                 if (st.modifiedBy.length && (mn == null || st.modifiedBy.indexOf(mn) < 0)) return false;
                 if (mn != null && st.modifiedByExcl.indexOf(mn) >= 0) return false;
+            }
+            if (st.datePreset) {
+                const range = this._wvRfDateRange(st);
+                if (range.from != null || range.to != null) {
+                    const raw = st.dateField === "dateModified" ? a.dateModified : a.dateAdded;
+                    const dt: any = Zotero.Date.sqlToDate(raw, true);
+                    if (!dt) return false;
+                    const t = dt.getTime();
+                    if (range.from != null && t < range.from) return false;
+                    if (range.to != null && t > range.to) return false;
+                }
             }
             return true;
         } catch (_) { return true; }

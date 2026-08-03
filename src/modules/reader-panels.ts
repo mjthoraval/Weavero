@@ -280,15 +280,17 @@ const RP_POPUP_CSS = [
     ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;}",
     ".wv-rf-datenum{width:44px;font-size:11px;padding:1px 2px 1px 6px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
-    // Segmented unit toggle: all options visible, active half highlighted --
-    // deliberately unlike the include/exclude filter chips.
-    ".wv-rf-unitseg{display:inline-flex;border:1px solid var(--color-panedivider,rgba(127,127,127,.35));",
-    "  border-radius:4px;overflow:hidden;}",
-    ".wv-rf-unitopt{font-size:11px;padding:2px 7px;background:transparent;border:none;cursor:pointer;",
-    "  color:inherit;opacity:.6;white-space:nowrap;}",
-    ".wv-rf-unitopt:not(:first-child){border-left:1px solid var(--color-panedivider,rgba(127,127,127,.25));}",
-    ".wv-rf-unitopt:hover{opacity:.85;}",
-    ".wv-rf-unitopt.wv-on{background:var(--fill-quarternary,rgba(127,127,127,.18));opacity:1;font-weight:600;}",
+    // Compact unit dropdown (Weavero-own -- no ContentSelectDropdown in
+    // Zotero's chrome, so a native <select> popup would never open).
+    ".wv-rf-unitbtn{font-size:11px;padding:2px 7px;background:transparent;color:inherit;cursor:pointer;",
+    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;white-space:nowrap;}",
+    ".wv-rf-unitbtn:hover{background:var(--fill-quinary,rgba(127,127,127,.12));}",
+    ".wv-rf-unitmenu{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;",
+    "  border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);",
+    "  padding:3px;min-width:90px;font-size:11px;}",
+    ".wv-rf-unititem{padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap;}",
+    ".wv-rf-unititem:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
+    ".wv-rf-unititem.wv-on{font-weight:600;}",
     ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
     "  border:none;cursor:pointer;opacity:.6;}",
     ".wv-rf-dateclear:hover{opacity:1;}",
@@ -8524,22 +8526,46 @@ class _ReaderPanelsMixin {
                     }
                 });
                 opts.appendChild(num);
-                // Unit toggle as a SEGMENTED control (both options visible,
-                // active half highlighted) -- a plain chip read like the
-                // include/exclude filter chips (user call 2026-08-03).
-                const seg = mk("span", "wv-rf-unitseg");
-                for (const [lbl, u] of [["min", "m"], ["hours", "h"], ["days", "d"], ["years", "y"]] as any) {
-                    const b = mk("button", "wv-rf-unitopt" + (st[uKey] === u ? " wv-on" : ""));
-                    b.type = "button";
-                    b.textContent = lbl;
-                    b.title = "Count the window in " + lbl;
-                    b.addEventListener("click", (e: any) => {
-                        e.stopPropagation();
-                        if (st[uKey] !== u) { st[uKey] = u; applyDate(); }
-                    });
-                    seg.appendChild(b);
-                }
-                opts.appendChild(seg);
+                // Unit as a compact Weavero-own DROPDOWN (user call
+                // 2026-08-03; a segmented control before that, plain chips
+                // before that). Native <select> is NOT an option: Zotero's
+                // chrome has no ContentSelectDropdown, so its popup would
+                // never open -- same platform gap as the date picker.
+                const ub = mk("button", "wv-rf-unitbtn");
+                ub.type = "button";
+                ub.textContent = unitWord + " ▾";
+                ub.title = "Unit of the window";
+                ub.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    const old = popup.querySelector(".wv-rf-unitmenu");
+                    if (old) { old.remove(); return; }
+                    const menu = mk("div", "wv-rf-unitmenu");
+                    for (const [lbl, u] of [["minutes", "m"], ["hours", "h"], ["days", "d"], ["years", "y"]] as any) {
+                        const it = mk("div", "wv-rf-unititem" + (st[uKey] === u ? " wv-on" : ""));
+                        it.textContent = lbl;
+                        it.addEventListener("click", (e2: any) => {
+                            e2.stopPropagation();
+                            menu.remove();
+                            if (st[uKey] !== u) { st[uKey] = u; applyDate(); }
+                        });
+                        menu.appendChild(it);
+                    }
+                    popup.appendChild(menu);
+                    const br = ub.getBoundingClientRect();
+                    const pr = popup.getBoundingClientRect();
+                    menu.style.left = Math.max(4, br.left - pr.left) + "px";
+                    menu.style.top = (br.bottom - pr.top + 2) + "px";
+                    // One-shot outside-dismiss (capture so it wins the race).
+                    const closer = (ev: any) => {
+                        try {
+                            if (menu.contains(ev.target) || ev.target === ub) return;
+                            menu.remove();
+                        } catch (_) {}
+                        idoc.removeEventListener("pointerdown", closer, true);
+                    };
+                    idoc.addEventListener("pointerdown", closer, true);
+                });
+                opts.appendChild(ub);
                 opts.appendChild(mkTextChip("Custom", st[pKey] === "custom" && !st[nKey], st[pKey] === "custom" && !!st[nKey],
                     "Custom " + label.toLowerCase() + " date range — Alt+click to exclude",
                     (alt: boolean) => {

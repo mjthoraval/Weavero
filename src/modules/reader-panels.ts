@@ -261,6 +261,9 @@ const RP_POPUP_CSS = [
     "#viewAnnotations.wv-ann-sort-on{position:relative;}",
     "#viewAnnotations.wv-ann-sort-on::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
+    // Date stamp on sidebar annotation cards while a date sort is active.
+    ".wv-ann-date{margin-inline-start:auto;padding:0 4px;font-size:11px;opacity:.65;",
+    "  white-space:nowrap;align-self:center;}",
 ].join("");
 
 // ---- Feature B: Bookmarks sidebar tab ----------------------------------
@@ -1592,20 +1595,25 @@ class _ReaderPanelsMixin {
             if (parts[0] === "dateAdded" || parts[0] === "dateModified") {
                 return { field: parts[0], dir: parts[1] === "asc" ? "asc" : "desc" };
             }
+            if (parts[0] === "position" && parts[1] === "desc") {
+                return { field: "position", dir: "desc" };
+            }
         } catch (e) {}
         return { field: "position", dir: "asc" };
     }
 
     _wvAnnSetSort(field: string, dir?: string) {
         try {
+            // Explicit dir wins (the menu's Ascending/Descending rows);
+            // re-picking the active field keeps its direction; switching
+            // fields takes that field's default (position asc, dates desc).
+            const cur = this._wvAnnSort();
+            const d = dir || (cur.field === field ? cur.dir
+                : (field === "position" ? "asc" : "desc"));
             if (field !== "dateAdded" && field !== "dateModified") {
-                Zotero.Prefs.set("weavero.readerAnnSort", "");
+                // Empty pref = the position|asc default.
+                Zotero.Prefs.set("weavero.readerAnnSort", d === "desc" ? "position|desc" : "");
             } else {
-                // Dates default to newest-first; re-picking the active field
-                // toggles direction (same feel as the bookmarks sort).
-                const cur = this._wvAnnSort();
-                const d = dir || (cur.field === field
-                    ? (cur.dir === "desc" ? "asc" : "desc") : "desc");
                 Zotero.Prefs.set("weavero.readerAnnSort", field + "|" + d);
             }
         } catch (e) {}
@@ -1667,29 +1675,83 @@ class _ReaderPanelsMixin {
         try {
             const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
             if (!iw) return;
+            const idoc: any = reader._iframeWindow && reader._iframeWindow.document;
             const cur = this._wvAnnSort();
-            if (cur.field === "position") {
+            if (cur.field === "position" && cur.dir !== "desc") {
                 iw.__wvAnnRank = null;
+                if (idoc) idoc._wvAnnDates = null;
             } else {
                 const att = this._wvReaderAtt(reader);
                 const attItem: any = att && att.att;
                 const rank: any = {};
+                const dates: any = {};
                 const anns: any[] = (attItem && typeof attItem.getAnnotations === "function")
                     ? attItem.getAnnotations() : [];
-                for (const a of anns) {
-                    try {
-                        const d = cur.field === "dateAdded" ? a.dateAdded : a.dateModified;
-                        const dt: any = Zotero.Date.sqlToDate(d, true);
-                        if (!dt) continue;   // sqlToDate returns false on a bad string
-                        const t = dt.getTime();
-                        rank[a.key] = cur.dir === "asc" ? t : -t;
-                    } catch (e) {}
+                if (cur.field === "position") {
+                    // position|desc: reverse document order. annotationSortIndex
+                    // is the same string the reader's own sort keys on.
+                    const sorted = anns.slice().sort((a, b) => {
+                        const x = String(a.annotationSortIndex || "");
+                        const y = String(b.annotationSortIndex || "");
+                        return x < y ? -1 : x > y ? 1 : 0;
+                    });
+                    for (let i = 0; i < sorted.length; i++) rank[sorted[i].key] = -i;
+                } else {
+                    for (const a of anns) {
+                        try {
+                            const d = cur.field === "dateAdded" ? a.dateAdded : a.dateModified;
+                            const dt: any = Zotero.Date.sqlToDate(d, true);
+                            if (!dt) continue;   // sqlToDate returns false on a bad string
+                            const t = dt.getTime();
+                            rank[a.key] = cur.dir === "asc" ? t : -t;
+                            dates[a.key] = { s: dt.toLocaleDateString(), f: dt.toLocaleString() };
+                        } catch (e) {}
+                    }
                 }
                 iw.__wvAnnRank = (Components as any).utils.cloneInto(rank, reader._iframeWindow);
+                if (idoc) idoc._wvAnnDates = cur.field === "position" ? null : dates;
             }
             const ir = reader && reader._internalReader;
             const amRaw = ir && ir._annotationManager;
             if (amRaw) { try { (Components as any).utils.waiveXrays(amRaw).render(); } catch (e) {} }
+            // Stamp now for the cards already in the DOM; the mutation
+            // observer (see _wvAnnSortEnsure) re-stamps after React repaints.
+            try { if (idoc) this._wvAnnStampDates(reader, idoc); } catch (e) {}
+        } catch (e) {}
+    }
+
+    /** Stamp the active sort field's date onto each sidebar annotation card
+     *  (user call 2026-08-03: "when sorting by date, I should be able to see
+     *  that date easily"). Mutation-quiet: only writes when the value really
+     *  changes, so the observer that re-invokes it after React re-renders
+     *  settles instead of looping. */
+    _wvAnnStampDates(reader: any, idoc: any) {
+        try {
+            if (!idoc) return;
+            const cur = this._wvAnnSort();
+            const on = cur.field !== "position";
+            const map: any = idoc._wvAnnDates || {};
+            for (const card of idoc.querySelectorAll("#annotationsView .annotation")) {
+                try {
+                    let el: any = card.querySelector(".wv-ann-date");
+                    if (!on) { if (el) el.remove(); continue; }
+                    const key = card.getAttribute("data-sidebar-annotation-id");
+                    const d = key ? map[key] : null;
+                    if (!el) {
+                        const header = card.querySelector("header");
+                        if (!header) continue;
+                        el = idoc.createElementNS(NS_HTML_RP, "div");
+                        el.className = "wv-ann-date";
+                        const end = header.querySelector(".end");
+                        if (end) header.insertBefore(el, end);
+                        else header.appendChild(el);
+                    }
+                    const txt = d ? d.s : "";
+                    if (el.textContent !== txt) el.textContent = txt;
+                    const full = d ? d.f : "";
+                    if (el.getAttribute("title") !== full) el.setAttribute("title", full);
+                } catch (e) {}
+            }
         } catch (e) {}
     }
 
@@ -1710,6 +1772,34 @@ class _ReaderPanelsMixin {
             const va: any = idoc.getElementById("viewAnnotations");
             if (!va) return;
             try { va.classList.toggle("wv-ann-sort-on", this._wvAnnSort().field !== "position"); } catch (e) {}
+            // Re-stamp card dates after every React re-render of the sidebar
+            // (scroll, edits, filtering all rebuild cards without our code in
+            // the loop). Stamping is mutation-quiet, so this settles.
+            try {
+                if ((idoc as any).__wvAnnDateObsV !== 1) {
+                    try { (idoc as any).__wvAnnDateObs && (idoc as any).__wvAnnDateObs.disconnect(); } catch (e) {}
+                    const cw: any = idoc.defaultView;
+                    const sc = idoc.getElementById("sidebarContainer");
+                    if (cw && cw.MutationObserver && sc) {
+                        const obs = new cw.MutationObserver(() => {
+                            try {
+                                const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (!P) return;
+                                if ((idoc as any).__wvAnnDateT) cw.clearTimeout((idoc as any).__wvAnnDateT);
+                                (idoc as any).__wvAnnDateT = cw.setTimeout(() => {
+                                    try { P._wvAnnStampDates((idoc as any)._wvAnnSortReader, idoc); } catch (e) {}
+                                }, 60);
+                            } catch (e) {}
+                        });
+                        // cloneInto REQUIRED: a plain options object reads as
+                        // {} across the Xray (dev.26 badge-observer lesson).
+                        obs.observe(sc, (Components as any).utils.cloneInto({ childList: true, subtree: true }, cw));
+                        (idoc as any).__wvAnnDateObs = obs;
+                        (idoc as any).__wvAnnDateObsV = 1;
+                    }
+                }
+                this._wvAnnStampDates(reader, idoc);
+            } catch (e) {}
             // DOCUMENT-level capture, not a listener on the button: it fires
             // ahead of every other handler and matches clicks landing on any
             // child. Also records every right-click's target + coords into
@@ -1720,13 +1810,29 @@ class _ReaderPanelsMixin {
             // the user's real click (2026-08-03, ringed) landed 15px below
             // the icon. Search box excluded so its native copy/paste menu
             // survives; other tab buttons excluded (they mean "switch tab").
-            if ((idoc as any).__wvAnnSortCtxWired === 2) return;
+            //
+            // WHY auxclick AND contextmenu (2026-08-03, event-chain traced):
+            // the reader's own FocusManager._handlePointerDown calls
+            // event.preventDefault() on EVERY pointerdown whose target isn't
+            // in its exemption list (inputs, .annotation, .thumbnails-view,
+            // .outline-view, ...) -- reader src/common/focus-manager.js. The
+            // sidebar toolbar is NOT exempt, and on Firefox a cancelled
+            // pointerdown suppresses the derived mousedown/mouseup AND the
+            // contextmenu event entirely. auxclick still fires (pointer-era,
+            // not a compat mouse event), so it is the reliable trigger here;
+            // contextmenu is kept for exempt targets and in case upstream
+            // drops the preventDefault (dedup guard prevents double-open).
+            if ((idoc as any).__wvAnnSortCtxWired === 3) return;
             {
                 const prevH = (idoc as any).__wvAnnSortCtxH;
-                if (prevH) { try { idoc.removeEventListener("contextmenu", prevH, true); } catch (e) {} }
+                if (prevH) {
+                    try { idoc.removeEventListener("contextmenu", prevH, true); } catch (e) {}
+                    try { idoc.removeEventListener("auxclick", prevH, true); } catch (e) {}
+                }
             }
             const h = (e: any) => {
                 try {
+                    if (e.type === "auxclick" && e.button !== 2) return;
                     const Z: any = Zotero as any;
                     if (!Z._wvCtxLog) Z._wvCtxLog = [];
                     const t: any = e.target;
@@ -1747,19 +1853,35 @@ class _ReaderPanelsMixin {
                         }
                     }
                     Z._wvCtxLog.push(new Date().toISOString().slice(11, 19)
-                        + " ctxmenu target=" + d + " at=" + e.clientX + "," + e.clientY
+                        + " " + e.type + " target=" + d + " at=" + e.clientX + "," + e.clientY
                         + " annActive=" + annActive + " hit=" + hit
                         + " trusted=" + !!e.isTrusted);
                     if (Z._wvCtxLog.length > 40) Z._wvCtxLog.shift();
                     if (!hit) return;
                     e.preventDefault(); e.stopPropagation();
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    // TOGGLE: a second right-click on the header closes the
+                    // menu (user call 2026-08-03). The menu's dismiss wiring
+                    // deliberately ignores right-button pointerdowns on the
+                    // strip so the menu is still open when this runs.
+                    const openM = idoc.getElementById(RP_BM_CTX_ID);
+                    if (openM && openM.getAttribute("data-wv-annsort") === "1") {
+                        (idoc as any).__wvAnnSortMenuTs = Date.now();
+                        try { if (P) P._wvCloseReaderBmContextMenu(idoc); } catch (err2) {}
+                        return;
+                    }
+                    // Dedup: if contextmenu and auxclick BOTH fire for one
+                    // physical click, open once.
+                    const now = Date.now();
+                    if (now - ((idoc as any).__wvAnnSortMenuTs || 0) < 400) return;
+                    (idoc as any).__wvAnnSortMenuTs = now;
                     const rd = (idoc as any)._wvAnnSortReader;
                     if (P && rd && vaBtn) P._wvShowAnnSortMenu(rd, idoc, vaBtn);
                 } catch (err) {}
             };
             idoc.addEventListener("contextmenu", h, true);
-            (idoc as any).__wvAnnSortCtxWired = 2;
+            idoc.addEventListener("auxclick", h, true);
+            (idoc as any).__wvAnnSortCtxWired = 3;
             (idoc as any).__wvAnnSortCtxH = h;
         } catch (e) {}
     }
@@ -1769,31 +1891,54 @@ class _ReaderPanelsMixin {
             this._wvCloseReaderBmContextMenu(idoc);
             const menu = idoc.createElementNS(NS_HTML_RP, "div");
             menu.id = RP_BM_CTX_ID;
+            // Marks this as the ann-sort menu so the header right-click
+            // handler can toggle-close it.
+            menu.setAttribute("data-wv-annsort", "1");
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
             const cur = this._wvAnnSort();
-            const item = (label: string, field: string) => {
+            const row = (label: string, ticked: boolean, onPick: () => void) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
                 const ic = idoc.createElementNS(NS_HTML_RP, "span");
                 ic.className = "wv-ctx-ic";
-                ic.textContent = cur.field === field ? "\u2713" : "";
+                ic.textContent = ticked ? "\u2713" : "";
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                // No direction arrow on Position -- direction is meaningless
-                // for document order and the stray arrow read as a bug.
-                lb.textContent = label + (cur.field === field && field !== "position"
-                    ? "  " + (cur.dir === "asc" ? "\u2191" : "\u2193") : "");
+                lb.textContent = label;
                 it.appendChild(ic); it.appendChild(lb);
-                it.addEventListener("click", () => { close(); this._wvAnnSetSort(field); });
+                it.addEventListener("click", () => { close(); onPick(); });
                 menu.appendChild(it);
             };
-            item("Position (default)", "position");
-            item("Date Added", "dateAdded");
-            item("Date Modified", "dateModified");
+            row("Position (default)", cur.field === "position", () => this._wvAnnSetSort("position"));
+            row("Date Added", cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded"));
+            row("Date Modified", cur.field === "dateModified", () => this._wvAnnSetSort("dateModified"));
+            const sep = idoc.createElementNS(NS_HTML_RP, "div");
+            sep.className = "wv-ctx-sep";
+            menu.appendChild(sep);
+            // Direction rows apply to whichever field is active (user call
+            // 2026-08-03: both orders must be pickable, not just toggled).
+            row("Ascending", cur.dir === "asc", () => this._wvAnnSetSort(cur.field, "asc"));
+            row("Descending", cur.dir === "desc", () => this._wvAnnSetSort(cur.field, "desc"));
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
             menu.style.top = (r.bottom + 2) + "px";
-            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
+            // Custom dismiss, NOT _wvOutlineWireMenuDismiss (same storage slot
+            // so _wvCloseReaderBmContextMenu still cleans it up): everything
+            // dismisses EXCEPT right-button pointerdowns on the header strip,
+            // which must survive to the ctx/aux handler for the toggle-close.
+            const onDown = (ev: any) => {
+                try {
+                    if (ev.target && menu.contains && menu.contains(ev.target)) return;
+                    if (ev.button === 2 && ev.target && ev.target.closest
+                        && ev.target.closest(".sidebar-toolbar")) return;
+                    close();
+                } catch (_) {}
+            };
+            const onKey = (ev: any) => { if (ev.key === "Escape") close(); };
+            const { docs, wins } = this._wvReaderReachableDocs(reader, idoc);
+            for (const d of docs) { try { d.addEventListener("pointerdown", onDown, true); } catch (_) {} }
+            for (const w of wins) { try { w.addEventListener("keydown", onKey, true); } catch (_) {} }
+            this._wvReaderBmCtxDismiss = { docs, wins, onDown, onKey };
         } catch (e) {}
     }
 
@@ -1810,8 +1955,15 @@ class _ReaderPanelsMixin {
             }
             if (idoc && (idoc as any).__wvAnnSortCtxH) {
                 idoc.removeEventListener("contextmenu", (idoc as any).__wvAnnSortCtxH, true);
+                idoc.removeEventListener("auxclick", (idoc as any).__wvAnnSortCtxH, true);
                 delete (idoc as any).__wvAnnSortCtxH;
                 delete (idoc as any).__wvAnnSortCtxWired;
+            }
+            if (idoc) {
+                try { (idoc as any).__wvAnnDateObs && (idoc as any).__wvAnnDateObs.disconnect(); } catch (e) {}
+                delete (idoc as any).__wvAnnDateObs;
+                delete (idoc as any).__wvAnnDateObsV;
+                for (const el of idoc.querySelectorAll(".wv-ann-date")) { try { el.remove(); } catch (e) {} }
             }
         } catch (e) {}
         try {

@@ -275,6 +275,10 @@ const RP_POPUP_CSS = [
     ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
     ".wv-rf-dateinput[data-open]{border-color:var(--color-accent,#5e6ad2);}",
+    // A bound that is actively filtering: accent border (answer to "did my
+    // typed date get used?"); tooltip carries the resolved date.
+    ".wv-rf-dateinput[data-applied]{border-color:var(--color-accent,#5e6ad2);",
+    "  box-shadow:0 0 0 1px var(--color-accent,#5e6ad2) inset;}",
     // Date rows: label left, preset chips packed RIGHT so the plain label
     // reads apart from the clickable chips (user call 2026-08-03).
     ".wv-rf-daterow{display:flex;align-items:center;gap:6px;}",
@@ -2093,6 +2097,17 @@ class _ReaderPanelsMixin {
                 delete (idoc as any).__wvAnnDateObs;
                 delete (idoc as any).__wvAnnDateObsV;
                 for (const el of idoc.querySelectorAll(".wv-ann-date, .wv-ann-sortbar")) { try { el.remove(); } catch (e) {} }
+                // Lift the chrome-side native date-picker veto (wired by the
+                // filter popup's date inputs).
+                try {
+                    const cwTop: any = idoc.defaultView && (idoc.defaultView as any).browsingContext
+                        && (idoc.defaultView as any).browsingContext.topChromeWindow;
+                    if (cwTop && cwTop.__wvDatePickerVetoed) {
+                        const panel = cwTop.document.getElementById("DateTimePickerPanel");
+                        if (panel) panel.removeEventListener("popupshowing", cwTop.__wvDatePickerVetoed);
+                        delete cwTop.__wvDatePickerVetoed;
+                    }
+                } catch (e) {}
             }
         } catch (e) {}
         try {
@@ -8609,20 +8624,30 @@ class _ReaderPanelsMixin {
                         return !!(ot && ot.closest && ot.closest("button.datetime-calendar-button"));
                     } catch (_) { return false; }
                 };
-                // POINTERDOWN is the event that launches the native picker
-                // (verified 2026-08-03: intercepting only mousedown/click let
-                // the broken native panel open alongside ours). Cancelling
-                // pointerdown also suppresses the derived mouse events, so
-                // this is the one place our calendar can open from.
+                // Open OUR calendar from pointerdown on the shadow button.
+                // Suppressing the NATIVE picker from here is IMPOSSIBLE: the
+                // datetimebox is a UA widget whose listeners run in the
+                // system event group, which content-group stopPropagation/
+                // preventDefault cannot reach (verified 2026-08-03 -- both
+                // calendars opened despite host-capture cancellation). The
+                // native panel is instead vetoed chrome-side: a popupshowing
+                // preventDefault on DateTimePickerPanel in the top chrome
+                // window (nothing else uses that panel; Zotero core has no
+                // date inputs). Wired once per chrome window below.
                 inp.addEventListener("pointerdown", (e: any) => {
-                    if (onCalBtn(e)) {
-                        e.preventDefault(); e.stopPropagation();
-                        openCal(which, key, inp);
+                    if (onCalBtn(e)) { e.stopPropagation(); openCal(which, key, inp); }
+                }, true);
+                try {
+                    const cwTop: any = (idoc.defaultView as any).browsingContext.topChromeWindow;
+                    if (cwTop && !cwTop.__wvDatePickerVetoed) {
+                        const panel = cwTop.document.getElementById("DateTimePickerPanel");
+                        if (panel) {
+                            const veto = (ev: any) => { try { ev.preventDefault(); } catch (_) {} };
+                            panel.addEventListener("popupshowing", veto);
+                            cwTop.__wvDatePickerVetoed = veto;
+                        }
                     }
-                }, true);
-                inp.addEventListener("mousedown", (e: any) => {
-                    if (onCalBtn(e)) { e.preventDefault(); e.stopPropagation(); }
-                }, true);
+                } catch (_) {}
                 inp.addEventListener("click", (e: any) => {
                     if (onCalBtn(e)) { e.preventDefault(); }
                     e.stopPropagation();
@@ -8635,14 +8660,66 @@ class _ReaderPanelsMixin {
                         e.stopPropagation();
                     }
                 });
-                // Typed commit: apply WITHOUT re-rendering the popup so focus
-                // stays in the segments mid-edit.
-                inp.addEventListener("change", async (e: any) => {
-                    e.stopPropagation();
-                    st[key] = inp.value || null;
-                    await this._wvApplyReaderFilter(reader);
-                    this._wvReaderEnsureFilterButton(reader, idoc);
-                });
+                // PARTIAL dates: input.value stays "" until every segment is
+                // filled, so year-only entry never commits natively. The
+                // typed digits sit in each shadow segment's value attribute
+                // (chrome can read them) -- resolve year-only / year+month to
+                // the bound's side of the period: from -> start, to -> end.
+                const segRead = () => {
+                    try {
+                        const sr: any = inp.openOrClosedShadowRoot;
+                        const g = (id: string) => {
+                            const f = sr && sr.querySelector('[data-l10n-id="datetime-' + id + '"]');
+                            const v = f && f.getAttribute("value");
+                            return v ? parseInt(v, 10) : null;
+                        };
+                        return { d: g("day"), m: g("month"), y: g("year") };
+                    } catch (_) { return { d: null, m: null, y: null }; }
+                };
+                const resolveTyped = (): string | null => {
+                    if (inp.value) return inp.value;   // complete date wins
+                    const s = segRead();
+                    if (!s.y || s.y < 1000) return null;
+                    const isFrom = which === "from";
+                    const m = s.m || (isFrom ? 1 : 12);
+                    const d = (s.m && s.d) ? s.d
+                        : isFrom ? 1 : new Date(s.y, m, 0).getDate();
+                    return s.y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+                };
+                // Applied-state feedback (user ask: "how do I know the date
+                // was used?"): accent border + tooltip with the resolved
+                // bound whenever a value is actively filtering.
+                const reflect = () => {
+                    if (st[key]) {
+                        inp.dataset.applied = "true";
+                        const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(st[key]);
+                        inp.title = "Filtering " + lbl + " "
+                            + (m2 ? new Date(+m2[1], +m2[2] - 1, +m2[3]).toLocaleDateString() : st[key]);
+                    }
+                    else {
+                        delete inp.dataset.applied;
+                        inp.title = "";
+                    }
+                };
+                reflect();
+                let typeT: any = null;
+                const onTyped = () => {
+                    const cw2: any = idoc.defaultView;
+                    if (typeT) cw2.clearTimeout(typeT);
+                    typeT = cw2.setTimeout(async () => {
+                        try {
+                            const v = resolveTyped();
+                            if (v === st[key]) return;
+                            st[key] = v;
+                            reflect();
+                            await this._wvApplyReaderFilter(reader);
+                            this._wvReaderEnsureFilterButton(reader, idoc);
+                        } catch (_) {}
+                    }, 350);
+                };
+                inp.addEventListener("input", (e: any) => { e.stopPropagation(); onTyped(); });
+                inp.addEventListener("keyup", (e: any) => { e.stopPropagation(); onTyped(); });
+                inp.addEventListener("change", (e: any) => { e.stopPropagation(); onTyped(); });
                 rangeRow.appendChild(inp);
                 const x = mk("button", "wv-rf-dateclear");
                 x.type = "button";

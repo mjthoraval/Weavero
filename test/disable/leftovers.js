@@ -126,6 +126,41 @@ try {
 	}
 } catch (e) { W("getChildItems check error: " + e); }
 
+// 4b. Default-child surfaces: Zotero.Item.prototype.getBestAttachment, the
+//     items-menu listeners, and the plugin-lifecycle observer. All three sit
+//     on objects that outlive the plugin, so nothing removes them implicitly.
+try {
+	const proto = Zotero.Item.prototype;
+	if (proto._wvDefaultAttWired) {
+		// Not automatically a failure: if ANOTHER plugin wrapped over us,
+		// Weavero deliberately declines to restore, because doing so would
+		// delete that plugin's patch. Our wrapper stays but is inert.
+		if (proto.getBestAttachment === proto._wvDefaultAttFn) {
+			F("getBestAttachment still Weavero-wrapped and outermost");
+		}
+		else {
+			W("getBestAttachment wrapper retained: another plugin wrapped over "
+				+ "Weavero, so unwinding would clobber theirs (expected, inert)");
+		}
+	}
+	else {
+		if (proto._wvOrigGetBestAttachment) F("getBestAttachment original still stored on prototype");
+		if (proto._wvDefaultAttFn) F("getBestAttachment wrapper ref still on prototype");
+	}
+} catch (e) { W("getBestAttachment check error: " + e); }
+try {
+	if (Zotero._wvDefAttPluginObserver) F("plugin-lifecycle observer still registered on Zotero");
+} catch (e) {}
+try {
+	for (const w of Zotero.getMainWindows()) {
+		const menu = w.document.getElementById("zotero-itemmenu");
+		if (!menu) continue;
+		if (menu._wvDefChildMenuHandlers) F("items-menu default-child listeners still attached");
+		if (menu._wvDefChildMenuWired) F("items-menu default-child wire stamp still set");
+		if (w.document.getElementById("wv-itemmenu-open-by-default")) F("default-child menu item still in DOM");
+	}
+} catch (e) { W("items-menu default-child check error: " + e); }
+
 // 5. Pref pane unregistered.
 try {
 	const ours = Zotero.PreferencePanes.pluginPanes.filter(p => p.pluginID === "weavero@mjthoraval");

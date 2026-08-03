@@ -425,9 +425,10 @@ describe("Weavero — default child (attachments, notes, links)", () => {
         // The fix is a Zotero.Plugins observer that re-asserts on any other
         // plugin's startup; this locks it in place.
         it("registers a plugin-lifecycle observer to survive later installs", () => {
-            expect(Zotero._wvDefAttPluginObserver).to.be.an("object");
-            expect(Zotero._wvDefAttPluginObserver.startup).to.be.a("function");
-            expect(Zotero._wvDefAttPluginObserverVer).to.be.a("number");
+            const Z = /** @type {any} */ (Zotero);
+            expect(Z._wvDefAttPluginObserver).to.be.an("object");
+            expect(Z._wvDefAttPluginObserver.startup).to.be.a("function");
+            expect(Z._wvDefAttPluginObserverVer).to.be.a("number");
         });
 
         it("re-asserts when another plugin starts up", async () => {
@@ -441,7 +442,8 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             try {
                 expect(proto.getBestAttachment).to.not.equal(proto._wvDefaultAttFn);
                 // What Zotero.Plugins would call for a foreign plugin.
-                await Zotero._wvDefAttPluginObserver.startup({ id: "someone-else@example.com" });
+                const Z = /** @type {any} */ (Zotero);
+                await Z._wvDefAttPluginObserver.startup({ id: "someone-else@example.com" });
                 expect(proto.getBestAttachment).to.equal(proto._wvDefaultAttFn);
             }
             finally {
@@ -454,7 +456,8 @@ describe("Weavero — default child (attachments, notes, links)", () => {
         it("ignores its OWN startup (no self-triggered rewire loop)", async () => {
             const proto = /** @type {any} */ (Zotero.Item.prototype);
             const before = proto.getBestAttachment;
-            await Zotero._wvDefAttPluginObserver.startup({ id: "weavero@mjthoraval" });
+            const Z = /** @type {any} */ (Zotero);
+            await Z._wvDefAttPluginObserver.startup({ id: "weavero@mjthoraval" });
             expect(proto.getBestAttachment).to.equal(before);
         });
 

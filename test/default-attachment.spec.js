@@ -396,7 +396,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
     // reached Weavero first. These tests own that guarantee.
     describe("legacy purge", () => {
         const PREF = "extensions.zotero.defaultattachment.mappings";
-        let parent, att, saved;
+        let parent, att, att2, saved;
 
         before(async () => {
             const lib = Zotero.Libraries.userLibraryID;
@@ -414,6 +414,16 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             att.attachmentContentType = "application/pdf";
             att.setField("title", "WV-TEST legacy att");
             await att.saveTx();
+
+            // A sibling, so the "user already chose something else" case can
+            // be exercised.
+            att2 = new Zotero.Item("attachment");
+            att2.libraryID = lib;
+            att2.parentID = parent.id;
+            att2.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            att2.attachmentContentType = "application/pdf";
+            att2.setField("title", "WV-TEST legacy att 2");
+            await att2.saveTx();
         });
 
         after(async () => {
@@ -421,7 +431,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
                 if (saved === undefined) Zotero.Prefs.clear(PREF, true);
                 else Zotero.Prefs.set(PREF, saved, true);
             } catch (e) { /* leave as-is */ }
-            for (const it of [att, parent]) {
+            for (const it of [att2, att, parent]) {
                 try { if (it) await it.eraseTx(); } catch (e) { /* already gone */ }
             }
         });
@@ -494,6 +504,35 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             const r = await wv._wvClearLegacyDefaultAttachments();
             expect(r.cleared).to.equal(false);
             expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+        });
+
+        // An explicit Weavero choice must never be replaced by the legacy
+        // plugin's older, unsynced one. _wvSetDefaultChild clears siblings, so
+        // importing over an existing choice would silently swap it -- and the
+        // purge would then delete the only copy of what was replaced.
+        it("never overwrites an existing Weavero choice for the same parent", async () => {
+            await wv._wvSetDefaultChild(att2);                       // user's choice
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);  // legacy
+            const r = await wv._wvImportLegacyMappings();
+            expect(r.migrated).to.equal(0);
+            expect(r.superseded).to.equal(1);
+            expect(wv._wvIsDefaultChild(att2), "user's pick kept").to.equal(true);
+            expect(wv._wvIsDefaultChild(att), "legacy pick not applied").to.equal(false);
+            expect(wv._wvGetDefaultChild(parent).id).to.equal(att2.id);
+        });
+
+        // ...but a superseded entry must still count as accounted for, or the
+        // purge would refuse forever on any item where the user changed their
+        // mind after migrating.
+        it("counts a superseded entry as accounted for, so the purge still completes", async () => {
+            await wv._wvSetDefaultChild(att2);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.cleared).to.equal(true);
+            expect(r.superseded).to.equal(1);
+            expect(r.unresolved).to.have.length(0);
+            expect(wv._wvIsDefaultChild(att2), "user's pick survives the purge").to.equal(true);
+            await wv._wvClearDefaultChild(att2);
         });
 
         // Skipping the import while the feature is off must NOT burn the

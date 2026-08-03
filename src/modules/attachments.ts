@@ -90,6 +90,24 @@ export const OPEN_BY_DEFAULT_TAG = "▶️ Weavero Default";
  *  hideable via the tag selector's Display Automatic toggle). */
 const TAG_TYPE_AUTOMATIC = 1;
 
+/** Save options for every marker write.
+ *
+ *  Date Modified is the USER's record of when they last edited an item. Which
+ *  child Weavero opens is not such an edit, so marking one must not touch it —
+ *  otherwise a sweep of choices silently rewrites the column, scrambling any
+ *  Date Modified sort and any "modified since" workflow the user relies on.
+ *
+ *  `skipDateModifiedUpdate` leaves the column UNWRITTEN on an existing item
+ *  (item.js `_saveData`: the column is only pushed when the flag is absent),
+ *  rather than writing back the old value — so there is no rounding or
+ *  timezone drift either.
+ *
+ *  Deliberately NOT paired with `skipSyncedUpdate`: that is a separate option
+ *  (dataObject.js `_saveData`), so `synced` is still cleared and the marker
+ *  still propagates to the user's other devices — which is the entire reason
+ *  this feature stores its state in the library rather than in a JSON file. */
+const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
+
 /** Wiring version stamp — BUMP whenever a wrapper below changes.
  *
  *  Both markers live on objects that OUTLIVE the plugin (Zotero.Item
@@ -200,14 +218,14 @@ class _AttachmentsMixin {
                     if (sib.id === child.id) continue;
                     if (this._wvIsDefaultChild(sib)) {
                         sib.removeTag(OPEN_BY_DEFAULT_TAG);
-                        await sib.saveTx();
+                        await sib.saveTx(MARKER_SAVE_OPTS);
                     }
                 }
             }
 
             if (!this._wvIsDefaultChild(child)) {
                 child.addTag(OPEN_BY_DEFAULT_TAG, TAG_TYPE_AUTOMATIC);
-                await child.saveTx();
+                await child.saveTx(MARKER_SAVE_OPTS);
             }
             return true;
         } catch (e) {
@@ -221,7 +239,7 @@ class _AttachmentsMixin {
         try {
             if (!child || !this._wvIsDefaultChild(child)) return false;
             child.removeTag(OPEN_BY_DEFAULT_TAG);
-            await child.saveTx();
+            await child.saveTx(MARKER_SAVE_OPTS);
             return true;
         } catch (e) {
             Zotero.debug("[Weavero] _wvClearDefaultChild err: " + e);

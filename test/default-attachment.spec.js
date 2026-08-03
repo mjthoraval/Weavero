@@ -457,7 +457,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(wv._wvIsDefaultChild(att)).to.equal(true);
         });
 
-        it("clears only after every pick carries the Weavero marker", async () => {
+        it("imports then clears when every pick is resolvable", async () => {
             Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
             const r = await wv._wvClearLegacyDefaultAttachments();
             expect(r.cleared).to.equal(true);
@@ -481,24 +481,32 @@ describe("Weavero — default child (attachments, notes, links)", () => {
         // The dangerous case: an entry that CANNOT become a mark. Its
         // attachment may come back (restored from the trash), and the pref is
         // the only record, so nothing may be deleted.
-        it("REFUSES to clear when an entry cannot be imported", async () => {
+        // The purge is CONFIRMED, not guarded: once called it always clears.
+        // The safety lives in _wvPlanLegacyPurge, which the caller shows the
+        // user first — so the plan must classify every entry correctly, and
+        // must write nothing.
+        it("plans a dangling entry as unsalvageable, writing nothing", () => {
             Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: 999999999 }), true);
-            const r = await wv._wvClearLegacyDefaultAttachments();
-            expect(r.cleared).to.equal(false);
-            expect(r.unresolved.length).to.be.above(0);
-            // The proof that matters: the data is still there.
-            expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+            const plan = wv._wvPlanLegacyPurge();
+            expect(plan.total).to.equal(1);
+            expect(plan.willImport).to.equal(0);
+            expect(plan.unresolved.map(u => u.reason)).to.eql(["missing"]);
+            expect(plan.markable).to.equal(0);
+            expect(plan.unsalvageable).to.equal(1);
+            // read-only: the pref is untouched
             expect(wv._wvLegacyDefaultAttachmentCount()).to.equal(1);
         });
 
-        it("REFUSES to clear when the entry's attachment is trashed", async () => {
+        it("plans a trashed entry as MARKABLE — the pick can still be saved", async () => {
+            await wv._wvClearDefaultChild(att);
             Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
             att.deleted = true;
             await att.saveTx();
             try {
-                const r = await wv._wvClearLegacyDefaultAttachments();
-                expect(r.cleared).to.equal(false);
-                expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+                const plan = wv._wvPlanLegacyPurge();
+                expect(plan.unresolved.map(u => u.reason)).to.eql(["trashed"]);
+                expect(plan.markable).to.equal(1);
+                expect(plan.unsalvageable).to.equal(0);
             }
             finally {
                 att.deleted = false;
@@ -506,30 +514,69 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             }
         });
 
-        // The mapping says parent2 -> att, but att belongs to parent. That is
-        // what a re-parented pick looks like: it can no longer be honoured, and
-        // their pref is the only record of it, so nothing may be deleted.
-        //
-        // Note this state is TRANSIENT in the wild — their own wrapper prunes
-        // such an entry the next time it evaluates that item (verified live
-        // 2026-08-03), so a purge that refuses now can succeed later.
-        it("REFUSES to clear when the entry's attachment moved to another item", async () => {
-            await wv._wvClearDefaultChild(att);
-            await wv._wvClearDefaultChild(att2);
-            Zotero.Prefs.set(PREF, JSON.stringify({ [parent2.id]: att.id }), true);
-            const r = await wv._wvClearLegacyDefaultAttachments();
-            expect(r.cleared).to.equal(false);
-            expect(r.unresolved.map(u => u.reason)).to.include("reparented");
+        it("plans an unparsable pref as unsalvageable", () => {
+            Zotero.Prefs.set(PREF, "{not json", true);
+            const plan = wv._wvPlanLegacyPurge();
+            expect(plan.unresolved.map(u => u.reason)).to.eql(["unparsable"]);
+            expect(plan.unsalvageable).to.equal(1);
             expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
-            // and nothing was marked off the back of a mapping we could not trust
-            expect(wv._wvIsDefaultChild(att)).to.equal(false);
         });
 
-        it("refuses on an unparsable pref rather than discarding it", async () => {
-            Zotero.Prefs.set(PREF, "{not json", true);
+        // Option "Clear anyway": everything goes, including what could not be
+        // imported. The user was told, so this is consent, not data loss.
+        it("clears everything when not asked to mark, reporting what was lost", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: 999999999 }), true);
             const r = await wv._wvClearLegacyDefaultAttachments();
-            expect(r.cleared).to.equal(false);
-            expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+            expect(r.cleared).to.equal(true);
+            expect(r.lost).to.equal(1);
+            expect(r.forceMarked).to.equal(0);
+            expect(Zotero.Prefs.get(PREF, true)).to.equal(undefined);
+        });
+
+        // Option "Mark them, then clear": a trashed attachment gets the marker
+        // anyway, so restoring it restores the default.
+        it("rescues a trashed pick by marking it, then clears", async () => {
+            await wv._wvClearDefaultChild(att);
+            await wv._wvClearDefaultChild(att2);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            att.deleted = true;
+            await att.saveTx();
+            try {
+                const r = await wv._wvClearLegacyDefaultAttachments({ markUnresolved: true });
+                expect(r.cleared).to.equal(true);
+                expect(r.forceMarked).to.equal(1);
+                expect(r.lost).to.equal(0);
+                expect(wv._wvIsDefaultChild(att), "marked despite being trashed").to.equal(true);
+                expect(Zotero.Prefs.get(PREF, true)).to.equal(undefined);
+            }
+            finally {
+                att.deleted = false;
+                await att.saveTx();
+                // Restored: the rescued mark now actually resolves.
+                expect(wv._wvGetDefaultChild(parent).id).to.equal(att.id);
+                await wv._wvClearDefaultChild(att);
+            }
+        });
+
+        it("cannot rescue a permanently deleted attachment — counts it lost", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: 999999999 }), true);
+            const r = await wv._wvClearLegacyDefaultAttachments({ markUnresolved: true });
+            expect(r.cleared).to.equal(true);
+            expect(r.forceMarked).to.equal(0);
+            expect(r.lost).to.equal(1);
+        });
+
+        // The supersede rule applies to the rescue pass too, or a rescue could
+        // overwrite a deliberate choice on the attachment's new parent.
+        it("does not let a rescue overwrite an existing Weavero choice", async () => {
+            await wv._wvSetDefaultChild(att2);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent2.id]: att.id }), true);
+            const r = await wv._wvClearLegacyDefaultAttachments({ markUnresolved: true });
+            expect(r.cleared).to.equal(true);
+            expect(r.forceMarked).to.equal(0);
+            expect(wv._wvIsDefaultChild(att2), "user's pick kept").to.equal(true);
+            expect(wv._wvIsDefaultChild(att), "rescue declined").to.equal(false);
+            await wv._wvClearDefaultChild(att2);
         });
 
         // An explicit Weavero choice must never be replaced by the legacy
@@ -547,12 +594,13 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(wv._wvGetDefaultChild(parent).id).to.equal(att2.id);
         });
 
-        // ...but a superseded entry must still count as accounted for, or the
-        // purge would refuse forever on any item where the user changed their
-        // mind after migrating.
-        it("counts a superseded entry as accounted for, so the purge still completes", async () => {
+        // ...and a superseded entry is reported as such, so the confirmation
+        // can say "you already chose something else here" rather than making
+        // it look like a loss.
+        it("reports a superseded entry, and the user's pick survives the purge", async () => {
             await wv._wvSetDefaultChild(att2);
             Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            expect(wv._wvPlanLegacyPurge().superseded).to.equal(1);
             const r = await wv._wvClearLegacyDefaultAttachments();
             expect(r.cleared).to.equal(true);
             expect(r.superseded).to.equal(1);

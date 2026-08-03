@@ -290,6 +290,26 @@ class _AttachmentsMixin {
         }
     }
 
+    /** Does `child`'s PARENT already carry a Weavero default on any sibling?
+     *
+     *  Deliberately NOT routed through `_wvGetDefaultChild`, which is gated by
+     *  the master switch: the migration and the purge must see the library's
+     *  real state even while the feature is switched off, or a purge run with
+     *  the feature off would conclude "no Weavero choice here" and overwrite
+     *  one. Reads through the ungated `_wvIsDefaultChild` instead. */
+    _wvParentHasDefault(child: any): boolean {
+        try {
+            const parent = child && child.parentID ? Zotero.Items.get(child.parentID) : null;
+            if (!parent) return false;
+            for (const c of this._wvOpenableChildren(parent)) {
+                if (this._wvIsDefaultChild(c)) return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    }
+
     /** True when `child` is a FILE attachment — i.e. something callers of
      *  `getBestAttachment` can safely treat as a file. Notes and linked URLs
      *  are excluded: they are openable, but not files. */
@@ -704,7 +724,10 @@ class _AttachmentsMixin {
      *  of the user's choice. `skipped` counts them plus entries that were
      *  already marked (harmless). */
     async _wvImportLegacyMappings(): Promise<any> {
-        const out: any = { found: 0, migrated: 0, skipped: 0, alreadyMarked: 0, unresolved: [] };
+        const out: any = {
+            found: 0, migrated: 0, skipped: 0,
+            alreadyMarked: 0, superseded: 0, unresolved: [],
+        };
         let raw: any = null;
         try {
             // `true` = global pref name, matching how that plugin writes it.
@@ -741,6 +764,19 @@ class _AttachmentsMixin {
                 if (this._wvIsDefaultChild(att)) {
                     out.skipped++;
                     out.alreadyMarked++;
+                    continue;
+                }
+                // The user already has a DIFFERENT Weavero choice for this
+                // parent. Never overwrite it: the legacy value is older and
+                // unsynced, and _wvSetDefaultChild clears siblings, so
+                // importing would silently replace a deliberate choice — and
+                // the purge would then delete the only copy of what was
+                // replaced. An explicit Weavero pick supersedes the legacy
+                // one; that is not lost information, it was overridden on
+                // purpose.
+                if (this._wvParentHasDefault(att)) {
+                    out.skipped++;
+                    out.superseded++;
                     continue;
                 }
                 await this._wvSetDefaultChild(att);
@@ -801,7 +837,7 @@ class _AttachmentsMixin {
      *  Returns {cleared, total, imported, unresolved[]} — `cleared:false` with
      *  a populated `unresolved` means nothing was deleted. */
     async _wvClearLegacyDefaultAttachments(): Promise<any> {
-        const res: any = { cleared: false, total: 0, imported: 0, unresolved: [] };
+        const res: any = { cleared: false, total: 0, imported: 0, superseded: 0, unresolved: [] };
         try {
             res.total = this._wvLegacyDefaultAttachmentCount();
             if (!res.total) return res;
@@ -822,6 +858,15 @@ class _AttachmentsMixin {
                     try {
                         const att = Zotero.Items.get(attID);
                         ok = !!att && this._wvIsDefaultChild(att);
+                        // SUPERSEDED counts as accounted-for: the user has an
+                        // explicit Weavero choice for this parent, so the
+                        // legacy value was overridden on purpose rather than
+                        // missed. Without this the purge would refuse forever
+                        // on any item where the user changed their mind.
+                        if (!ok && att && this._wvParentHasDefault(att)) {
+                            ok = true;
+                            res.superseded++;
+                        }
                     } catch (e) { ok = false; }
                     if (!ok && !res.unresolved.some((u: any) => String(u.attID) === String(attID))) {
                         res.unresolved.push({ parentID, attID, reason: "unverified" });

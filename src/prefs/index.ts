@@ -196,9 +196,17 @@
                         Promise.resolve(lp._wvClearLegacyDefaultAttachments()).then((r: any) => {
                             if (!status) return;
                             if (r && r.cleared) {
+                                // Report both outcomes: what was imported, and
+                                // what was skipped because the user already had
+                                // a different Weavero choice for that item.
+                                const notes = [];
+                                if (r.imported) notes.push(r.imported + " imported");
+                                if (r.superseded) {
+                                    notes.push(r.superseded + " already set in Weavero");
+                                }
                                 status.textContent = "Cleared " + r.total + " pick"
                                     + (r.total === 1 ? "" : "s")
-                                    + (r.imported ? " (" + r.imported + " imported first)" : "");
+                                    + (notes.length ? " (" + notes.join(", ") + ")" : "");
                                 clearBtn.disabled = true;
                             }
                             else if (r && r.unresolved && r.unresolved.length) {

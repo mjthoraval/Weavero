@@ -27,7 +27,16 @@ import { Plugin, PluginKey } from "prosemirror-state";
     const INJECT_V = 4;
 
     /** Zotero's bundled note-editor has a latent bug (present in 10.0-beta):
-     *  the colour plugins' view wrappers do `destroy(){ pluginState.destroy() }`
+     *  REPORTED UPSTREAM and FIXED (2026-08-03): zotero-dev thread
+     *  https://groups.google.com/g/zotero-dev/c/Gaq4fS93M8U ->
+     *  zotero/note-editor 67a760d7 ("Fix plugin view teardown", + regression
+     *  tests in e43f3583). These shims stay until a Zotero beta ships the
+     *  submodule bump, then become inert: the fixed classes have working
+     *  destroys, so the has-update-but-no-destroy and broken-drag-shape
+     *  detections below simply stop matching. Safe to remove once the
+     *  minimum supported Zotero bundles the fix.
+     *  The bug: the colour plugins' view wrappers do
+     *  `destroy(){ pluginState.destroy() }`
      *  but the HighlightColor pluginState class defines NO destroy method.
      *  Vanilla never notices -- plugin views are only destroyed when the
      *  plugin SET changes, which never happens without injectors. But with

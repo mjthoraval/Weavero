@@ -265,6 +265,14 @@ const RP_POPUP_CSS = [
     // while a date sort is active (header would collide with other features).
     ".wv-ann-date{display:block;text-align:end;padding:1px 8px 3px;font-size:11px;",
     "  opacity:.65;white-space:nowrap;}",
+    // Sort bar between the sidebar toolbar and the annotations list.
+    ".wv-ann-sortbar{display:flex;gap:4px;align-items:center;padding:3px 8px;",
+    "  border-bottom:1px solid var(--color-panedivider,rgba(127,127,127,.3));flex:0 0 auto;}",
+    ".wv-ann-sortchip{font-size:11px;padding:2px 8px;border-radius:9px;border:1px solid transparent;",
+    "  background:transparent;color:inherit;cursor:pointer;white-space:nowrap;}",
+    ".wv-ann-sortchip:hover{background:var(--fill-quinary,rgba(127,127,127,.12));}",
+    ".wv-ann-sortchip.wv-on{background:var(--fill-quarternary,rgba(127,127,127,.18));",
+    "  border-color:var(--color-panedivider,rgba(127,127,127,.3));font-weight:600;}",
 ].join("");
 
 // ---- Feature B: Bookmarks sidebar tab ----------------------------------
@@ -1770,6 +1778,63 @@ class _ReaderPanelsMixin {
         } catch (e) {}
     }
 
+    /** One-click sort bar between the sidebar toolbar and the annotations
+     *  list, shown while a non-default sort is active in the Annotations view
+     *  (user call 2026-08-03). Clicking the active chip toggles direction;
+     *  clicking Position returns to the default and the bar goes away.
+     *  Mutation-quiet: rebuilt only when the field|dir signature changes. */
+    _wvAnnSortBarEnsure(reader: any, idoc: any) {
+        try {
+            if (!idoc) return;
+            const sc = idoc.getElementById("sidebarContainer");
+            let bar: any = sc && sc.querySelector(".wv-ann-sortbar");
+            const cur = this._wvAnnSort();
+            const va: any = idoc.getElementById("viewAnnotations");
+            const annActive = !!(va && va.classList.contains("active"));
+            if (!sc || !annActive || cur.field === "position") {
+                if (bar) bar.remove();
+                return;
+            }
+            if (!bar) {
+                bar = idoc.createElementNS(NS_HTML_RP, "div");
+                bar.className = "wv-ann-sortbar";
+                const tb = sc.querySelector(".sidebar-toolbar");
+                if (tb && tb.nextSibling) sc.insertBefore(bar, tb.nextSibling);
+                else sc.appendChild(bar);
+            }
+            const sig = cur.field + "|" + cur.dir;
+            if (bar.getAttribute("data-wv-sig") === sig) return;
+            bar.setAttribute("data-wv-sig", sig);
+            while (bar.firstChild) bar.removeChild(bar.firstChild);
+            const chip = (label: string, field: string) => {
+                const c = idoc.createElementNS(NS_HTML_RP, "button");
+                c.className = "wv-ann-sortchip" + (cur.field === field ? " wv-on" : "");
+                c.textContent = label + (cur.field === field
+                    ? " " + (cur.dir === "asc" ? "↑" : "↓") : "");
+                c.addEventListener("click", (ev: any) => {
+                    try {
+                        ev.preventDefault(); ev.stopPropagation();
+                        // Live plugin at event time -- closures go stale
+                        // across plugin reloads.
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
+                        const c2 = P._wvAnnSort();
+                        if (c2.field === field) {
+                            P._wvAnnSetSort(field, c2.dir === "asc" ? "desc" : "asc");
+                        }
+                        else {
+                            P._wvAnnSetSort(field);
+                        }
+                    } catch (e) {}
+                });
+                bar.appendChild(c);
+            };
+            chip("Position", "position");
+            chip("Date Added", "dateAdded");
+            chip("Date Modified", "dateModified");
+        } catch (e) {}
+    }
+
     /** Per-sweep ensure: wire the wrapper, refresh ranks, and wire the sort
      *  entry point -- a RIGHT-CLICK on the annotations tab icon
      *  (#viewAnnotations). A toolbar button was tried first (dev.32-34) and
@@ -1791,7 +1856,7 @@ class _ReaderPanelsMixin {
             // (scroll, edits, filtering all rebuild cards without our code in
             // the loop). Stamping is mutation-quiet, so this settles.
             try {
-                if ((idoc as any).__wvAnnDateObsV !== 1) {
+                if ((idoc as any).__wvAnnDateObsV !== 2) {
                     try { (idoc as any).__wvAnnDateObs && (idoc as any).__wvAnnDateObs.disconnect(); } catch (e) {}
                     const cw: any = idoc.defaultView;
                     const sc = idoc.getElementById("sidebarContainer");
@@ -1802,18 +1867,26 @@ class _ReaderPanelsMixin {
                                 if (!P) return;
                                 if ((idoc as any).__wvAnnDateT) cw.clearTimeout((idoc as any).__wvAnnDateT);
                                 (idoc as any).__wvAnnDateT = cw.setTimeout(() => {
-                                    try { P._wvAnnStampDates((idoc as any)._wvAnnSortReader, idoc); } catch (e) {}
+                                    try {
+                                        const rd = (idoc as any)._wvAnnSortReader;
+                                        P._wvAnnStampDates(rd, idoc);
+                                        P._wvAnnSortBarEnsure(rd, idoc);
+                                    } catch (e) {}
                                 }, 60);
                             } catch (e) {}
                         });
                         // cloneInto REQUIRED: a plain options object reads as
                         // {} across the Xray (dev.26 badge-observer lesson).
-                        obs.observe(sc, (Components as any).utils.cloneInto({ childList: true, subtree: true }, cw));
+                        // class attribute watched so the bar follows sidebar
+                        // VIEW switches (.active moves between tab buttons).
+                        obs.observe(sc, (Components as any).utils.cloneInto(
+                            { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] }, cw));
                         (idoc as any).__wvAnnDateObs = obs;
-                        (idoc as any).__wvAnnDateObsV = 1;
+                        (idoc as any).__wvAnnDateObsV = 2;
                     }
                 }
                 this._wvAnnStampDates(reader, idoc);
+                this._wvAnnSortBarEnsure(reader, idoc);
             } catch (e) {}
             // DOCUMENT-level capture, not a listener on the button: it fires
             // ahead of every other handler and matches clicks landing on any
@@ -1923,16 +1996,11 @@ class _ReaderPanelsMixin {
                 it.addEventListener("click", () => { close(); onPick(); });
                 menu.appendChild(it);
             };
+            // Direction lives in the sort BAR (one click on the active chip
+            // toggles it) -- the menu stays fields-only (user call 2026-08-03).
             row("Position (default)", cur.field === "position", () => this._wvAnnSetSort("position"));
             row("Date Added", cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded"));
             row("Date Modified", cur.field === "dateModified", () => this._wvAnnSetSort("dateModified"));
-            const sep = idoc.createElementNS(NS_HTML_RP, "div");
-            sep.className = "wv-ctx-sep";
-            menu.appendChild(sep);
-            // Direction rows apply to whichever field is active (user call
-            // 2026-08-03: both orders must be pickable, not just toggled).
-            row("Ascending", cur.dir === "asc", () => this._wvAnnSetSort(cur.field, "asc"));
-            row("Descending", cur.dir === "desc", () => this._wvAnnSetSort(cur.field, "desc"));
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -1978,7 +2046,7 @@ class _ReaderPanelsMixin {
                 try { (idoc as any).__wvAnnDateObs && (idoc as any).__wvAnnDateObs.disconnect(); } catch (e) {}
                 delete (idoc as any).__wvAnnDateObs;
                 delete (idoc as any).__wvAnnDateObsV;
-                for (const el of idoc.querySelectorAll(".wv-ann-date")) { try { el.remove(); } catch (e) {} }
+                for (const el of idoc.querySelectorAll(".wv-ann-date, .wv-ann-sortbar")) { try { el.remove(); } catch (e) {} }
             }
         } catch (e) {}
         try {

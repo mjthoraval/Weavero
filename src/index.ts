@@ -28,6 +28,7 @@ import { readerPanelsMethods } from "./modules/reader-panels";
 import { tabGroupsMethods } from "./modules/tab-groups";
 import { sessionsMethods } from "./modules/sessions";
 import { outlineEvalMethods } from "./modules/outline-eval";
+import { attachmentsMethods } from "./modules/attachments";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -183,34 +184,69 @@ class WeaveroPlugin {
             .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
         if (!arr.length) return;
         Zotero.debug("[Weavero] link warning — " + arr.join(" | "));
+        this._wvToast("Weavero — broken link", arr, {
+            id: "wv-link-toast",
+            accent: "amber",
+            autoCloseMs: 11000,
+        });
+    }
+
+    /** Self-contained DOM toast in a main window.
+     *
+     *  Exists because the obvious alternatives do not work here:
+     *  `Zotero.ProgressWindow` renders BLANK, and `Services.prompt.alert` is
+     *  suppressed whenever DevTools is attached — which includes the dev MCP
+     *  bridge, so an alert-based notice would be invisible during testing and
+     *  look "fixed" when it was never shown.
+     *
+     *  opts: { id, accent: "amber"|"info", autoCloseMs, win, onDismiss,
+     *  actions }.
+     *
+     *  Omitting `autoCloseMs` makes the toast STICKY — it stays until clicked.
+     *  That is the right default for a one-shot notice: an auto-closing toast
+     *  fired during startup is trivially missed, which defeats the point.
+     *
+     *  `onDismiss` runs only on a real dismissal (click), never on the
+     *  auto-close path, so a caller can use it to record acknowledgement.
+     *
+     *  `actions` — [{label, onClick}] — turns the toast into a DECISION. When
+     *  present, clicking the body no longer dismisses: a toast that asks a
+     *  question must not be answerable by a stray click, and the caller can
+     *  leave its state pending so the question returns next start. Each action
+     *  removes the toast, then runs its handler. */
+    _wvToast(title, messages, opts) {
+        const o = opts || {};
+        const arr = (Array.isArray(messages) ? messages : [messages])
+            .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
         try {
-            const win = Zotero.getMainWindow();
+            const win = o.win || Zotero.getMainWindow();
             const doc = win && win.document;
-            if (!doc) return;
-            // Self-contained DOM toast injected into the main window —
-            // avoids `Zotero.ProgressWindow` / `Services.prompt.alert`
-            // (the former renders blank and the latter is suppressed
-            // when DevTools is attached, e.g. the dev MCP bridge). Amber
-            // colours read on both the light and dark Zotero themes.
+            if (!doc) return null;
             const HTMLNS = "http://www.w3.org/1999/xhtml";
-            const old = doc.getElementById("wv-link-toast");
+            const id = o.id || "wv-toast";
+            const old = doc.getElementById(id);
             if (old) { try { old.remove(); } catch (e) {} }
             // Force the HTML namespace — the main window's root element
             // is a XUL `<window>`, so a bare `createElement("div")` can
             // come out as a non-rendering XUL element on some builds.
             const box: any = doc.createElementNS(HTMLNS, "div");
-            box.id = "wv-link-toast";
+            box.id = id;
+            // Both palettes read on the light AND dark Zotero themes.
+            const palette = o.accent === "info"
+                ? ["#12385c", "#d6ecff", "#1d5c94"]
+                : ["#5a3d00", "#ffe9b3", "#8a6500"];
             box.style.cssText = [
                 "position:fixed", "bottom:14px", "right:14px", "z-index:2147483647",
                 "max-width:420px", "padding:11px 13px", "border-radius:7px",
-                "background:#5a3d00", "color:#ffe9b3", "border:1px solid #8a6500",
+                "background:" + palette[0], "color:" + palette[1],
+                "border:1px solid " + palette[2],
                 "box-shadow:0 4px 18px rgba(0,0,0,.45)",
                 "font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
                 "cursor:pointer", "user-select:text",
             ].join(";");
             const head: any = doc.createElementNS(HTMLNS, "div");
             head.style.cssText = "font-weight:600;margin-bottom:3px";
-            head.textContent = "Weavero — broken link";
+            head.textContent = title;
             box.appendChild(head);
             for (const m of arr) {
                 const line: any = doc.createElementNS(HTMLNS, "div");
@@ -218,13 +254,49 @@ class WeaveroPlugin {
                 line.textContent = m;
                 box.appendChild(line);
             }
-            box.title = "Click to dismiss";
-            box.addEventListener("click", () => { try { box.remove(); } catch (e) {} });
+            const actions = Array.isArray(o.actions) ? o.actions.filter(Boolean) : [];
+            if (actions.length) {
+                // A decision, not a notice: the body is inert so a stray click
+                // cannot answer the question.
+                const row: any = doc.createElementNS(HTMLNS, "div");
+                row.style.cssText = "margin-top:9px;display:flex;gap:6px;flex-wrap:wrap";
+                for (const act of actions) {
+                    const b: any = doc.createElementNS(HTMLNS, "button");
+                    b.textContent = act.label;
+                    b.style.cssText = [
+                        "padding:4px 9px", "border-radius:4px", "cursor:pointer",
+                        "border:1px solid " + palette[2],
+                        "background:rgba(255,255,255,.10)", "color:" + palette[1],
+                        "font:12px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+                    ].join(";");
+                    b.addEventListener("click", (ev: any) => {
+                        try { ev.stopPropagation(); } catch (e) {}
+                        try { box.remove(); } catch (e) {}
+                        try { if (typeof act.onClick === "function") act.onClick(); }
+                        catch (e) { Zotero.debug("[Weavero] toast action err: " + e); }
+                    });
+                    row.appendChild(b);
+                }
+                box.appendChild(row);
+                box.style.cursor = "default";
+            }
+            else {
+                box.title = "Click to dismiss";
+                box.addEventListener("click", () => {
+                    try { box.remove(); } catch (e) {}
+                    try { if (typeof o.onDismiss === "function") o.onDismiss(); }
+                    catch (e) { Zotero.debug("[Weavero] toast onDismiss err: " + e); }
+                });
+            }
             (doc.documentElement || doc).appendChild(box);
-            try { win.setTimeout(() => { try { box.remove(); } catch (e) {} }, 11000); }
-            catch (e) {}
+            if (o.autoCloseMs) {
+                try { win.setTimeout(() => { try { box.remove(); } catch (e) {} }, o.autoCloseMs); }
+                catch (e) {}
+            }
+            return box;
         } catch (e) {
-            Zotero.debug("[Weavero] _showLinkWarning err: " + e);
+            Zotero.debug("[Weavero] _wvToast err: " + e);
+            return null;
         }
     }
 
@@ -2017,6 +2089,9 @@ class WeaveroPlugin {
                 "enableOutlineTextHighlight",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
+                // Default attachment/note to open — ON, but INERT until the user
+                // marks a child, so it changes nothing on its own.
+                "enableDefaultChild",
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",
@@ -4427,6 +4502,34 @@ class WeaveroPlugin {
                     }, d);
                 }
             } catch (e) {}
+
+            // Default-child override: patches Zotero.Item.prototype
+            // .getBestAttachment (version-stamped, so per-window calls are
+            // free and a reload re-wires cleanly). Notes and link attachments
+            // are handled cooperatively from reader.ts's existing viewItems
+            // wrapper. See modules/attachments.ts.
+            try { (this as any)._wvWireDefaultAttachment(); } catch (e) {}
+            try { (this as any)._wvWireDefaultChildMenu(_window); } catch (e) {}
+            // A pending "we imported your picks" notice. This is the path that
+            // covers a COLD start, where the import ran before any window
+            // existed. The pref is only cleared once the user dismisses the
+            // toast, so it reappears until actually acknowledged.
+            try { (this as any)._wvShowLegacyPrompt(_window); } catch (e) {}
+            // Re-assert the getBestAttachment override after other plugins
+            // have had time to load: PikaPei/zotero-default-attachment patches
+            // the same method, and the LAST wrapper wins. Idempotent - a no-op
+            // whenever we are already outermost.
+            try {
+                const wref: any = _window;
+                for (const d of [3000, 10000]) {
+                    wref.setTimeout(() => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (lp && !lp._wvDestroyed) lp._wvWireDefaultAttachment();
+                        } catch (e) {}
+                    }, d);
+                }
+            } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }
@@ -4623,6 +4726,20 @@ class WeaveroPlugin {
             (this as any)._wvBgRestoreHoldUntil = 0;
             (this as any)._wvBgRestoreTargetWin = null;
             (this as any)._wvBgUserChosenWin = null;
+        } catch (e) {}
+        // Default-child teardown. All three surfaces live on objects that
+        // OUTLIVE the plugin — the Zotero global, Zotero.Item.prototype and
+        // each window's zotero-itemmenu — so none of them go away on their
+        // own. Order matters: drop the observer FIRST, or unwiring the
+        // prototype could be undone by an observer callback firing mid-
+        // teardown. See modules/attachments.ts.
+        try { (this as any)._wvUnwirePluginObserver(); } catch (e) {}
+        try { (this as any)._wvUnwireDefaultChildPrefWatch(); } catch (e) {}
+        try { (this as any)._wvUnwireDefaultAttachment(); } catch (e) {}
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                (this as any)._wvUnwireDefaultChildMenu(w);
+            }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
         //    reader-window state (`_wvWT`), and any save it triggers after
@@ -5286,6 +5403,10 @@ Object.defineProperties(
     WeaveroPlugin.prototype,
     outlineEvalMethods,
 );
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    attachmentsMethods,
+);
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================
 // The shim awaits `Zotero.initializationPromise` before calling
@@ -5311,6 +5432,41 @@ Zotero.Weavero = {
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
+                // Default-child overrides. Wired HERE as well as in
+                // onMainWindowLoad because a plugin RELOAD does not re-fire
+                // onMainWindowLoad for an already-open window, which would
+                // leave the overrides uninstalled. Version-stamped, so both
+                // paths running is free. The per-window viewItems hook must
+                // be applied to windows that are ALREADY open at reload time.
+                // See modules/attachments.ts.
+                try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
+                // Keep that wrapper outermost when a COMPETING plugin is
+                // installed/enabled later: startup wiring only sees plugins
+                // already loaded. See modules/attachments.ts.
+                try { _Weavero._wvWirePluginObserver(); } catch (e) {}
+                // Re-offer the legacy import if the user turns the feature
+                // back on after choosing to stay with the other plugin.
+                try { _Weavero._wvWireDefaultChildPrefWatch(); } catch (e) {}
+                // One-shot import of picks from PikaPei/zotero-default-attachment
+                // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
+                // startup must not block on it.
+                // Raise the resulting notice once the import settles, for a
+                // window that is ALREADY open (a reload, or a plugin enabled
+                // mid-session). A cold start has no window yet — that case is
+                // covered from onMainWindowLoad.
+                try {
+                    _Weavero._wvMigrateDefaultAttachmentPlugin().then(() => {
+                        const w = Zotero.getMainWindow();
+                        if (w) _Weavero._wvShowLegacyPrompt(w);
+                    }).catch(() => {});
+                } catch (e) {}
+                // Per-window UI must ALSO be wired for windows already open at
+                // reload time: onMainWindowLoad does not re-fire for them.
+                try {
+                    for (const w of Zotero.getMainWindows()) {
+                        _Weavero._wvWireDefaultChildMenu(w);
+                    }
+                } catch (e) {}
                 _Weavero.init().catch(e =>
                     Zotero.debug("[Weavero] init error: " + e)
                 );

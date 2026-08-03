@@ -40,13 +40,20 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (90 tests, 6 spec files):
+Current in-Zotero coverage (155 tests, 7 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
   reconcile), `links.spec.js` and `normalize.spec.js` (verify the plugin
   methods correctly delegate to `src/lib/*` in the real runtime),
-  `popups.spec.js` (the four popup-panel contracts).
+  `popups.spec.js` (the four popup-panel contracts),
+  `default-attachment.spec.js` (the default-child feature: the marker
+  tag's three anti-search-leak naming rules, mark/move/clear with
+  Date Modified left untouched but `synced` still cleared, notes and
+  linked URLs falling through `getBestAttachment`, the versioned
+  re-assert that keeps Weavero outermost over a competing wrapper, and
+  the one-shot legacy import, which never overwrites an existing Weavero
+  choice and never touches PikaPei's own data).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `tearoff.spec.js` (reader tear-off ↔ merge-back lifecycle:
   no-reload swap with tab-identity carry, Firefox focusing rules,
@@ -177,6 +184,7 @@ native machinery.
 | After installing a dev build | Level 3 probe of the changed feature | — |
 | Touched tabs/windows/reader lifecycle | Levels 1 + 3 | tear-off/merge hand pass |
 | Touched popups | `popups.spec.js` | popup hand pass |
+| Touched the default-child feature or its marker tag | `default-attachment.spec.js` | context-menu hand pass (label + glyph) |
 | Touched install/startup/shutdown wiring | — | Level 4 disable/re-enable protocol |
 | Touched sessions/persistence | — | Level 4 restart protocol |
 | Touched drag/drop or focus behavior | — | Level 4 gesture matrix |
@@ -247,8 +255,13 @@ In rough priority order:
    with Weavero alone in the temp profile, so CI never exercises
    coexistence. Plan: a separate spec (own CI job, so the core suite
    stays hermetic) whose `before()` installs pinned companion XPIs via
-   `AddonManager` (Annotation Markdown first — Weavero has interop code
-   for it — then Better Notes), and asserts the interop invariants:
+   `AddonManager`. **Default Attachment** (PikaPei) is the best first
+   candidate: a 41 KB XPI, no network or UI dependencies, and it patches
+   a method Weavero also patches — exactly the class of conflict CI
+   cannot currently see. Testing it by hand already caught a real bug
+   (a rival loading later took the outermost slot). Then Annotation
+   Markdown — Weavero has interop code for it — then Better Notes.
+   Asserts the interop invariants:
    preview rendering yielded to AM, Weavero links injected inside AM
    previews, no duplicate rendering, no errors on the shared surfaces.
    (Pattern: the perf protocol's configuration matrix, automated.)
@@ -275,6 +288,27 @@ hand verification of each interop feature with both plugins enabled,
 and (c) continuous daily use alongside the "verified to coexist" list
 below. Automating a compatibility tier is on the roadmap above (#6).
 
+The Default Attachment interop was verified by **installing the real
+plugin and driving its own UI** — creating a pick through its "Set
+Default" menu item, then asserting Weavero's import and precedence
+against the data it actually wrote. That is the method to prefer
+whenever a companion writes state Weavero reads: it caught both an
+assumption that held (their pref name and JSON shape) and two claims that
+did not — wrapper order after a later install, and migration silently
+overwriting an existing Weavero choice. A purge feature built on top of
+this was later removed as disproportionate: a permanent setting for a
+one-off chore. Weavero now only ever ADDS its own tags, and the README
+documents removing the other plugin's data by hand.
+
+**A companion's state can change under you.** That plugin prunes its own
+stale mappings whenever its wrapper evaluates an affected item, so its
+pref shrinks as the user browses (verified live 2026-08-03: a dangling
+mapping became `{}` after one `getBestAttachment` call). A probe that
+counts a companion's records before and after an unrelated step can
+therefore see different totals with nothing wrong — chase such a gap to
+ground truth before treating it as a Weavero bug, and never assert a
+companion's data is stable across steps without re-reading it.
+
 ### Built-in interop (referenced in Weavero's code)
 
 | Plugin | Interop |
@@ -284,13 +318,18 @@ below. Automating a compatibility tier is on the roadmap above (#6).
 | **Better BibTeX** | Weavero's link machinery recognizes BBT's registered export-translator IDs (citekey-based flows) |
 | **PMCID Fetcher** | Weavero deliberately ships **no** DOI/PMID/PMCID columns (PMCID Fetcher provides them); Weavero's *Has PMID / Has PMCID* filters read the same Extra-field convention |
 | **Actions & Tags** | Weavero began life as an Actions & Tags action script and remains compatible with it |
+| **Default Attachment** (`PikaPei`, v1.0.0) | Both patch `Zotero.Item.prototype.getBestAttachment`. Weavero imports that plugin's stored picks on first start (its pref is left intact so the user can go back), and re-asserts its own wrapper over theirs — via a `Zotero.Plugins` observer, so a rival installed or enabled *after* Weavero still ends up underneath. Weavero's pick wins; with no Weavero pick theirs is still honoured. Its opt-in Weavero NEVER deletes their data — removing it is a manual step documented in the README. **Usability trap (hit live 2026-08-03):** with both enabled the items menu shows *two* near-identical entries — their **“Set Default”** and Weavero's **“▶️ Set as Default”**. Using theirs writes only their pref, so no `▶️ wv-defatt` tag appears and the choice does not sync. The leading glyph is what tells them apart; when testing this feature, check which entry was clicked before treating a non-effect as a bug |
 
 ### Verified to coexist
 
 Run continuously or repeatedly alongside Weavero during development on
 Zotero 10 beta: **Better Notes**, **Better BibTeX**, **Actions & Tags**,
 **PMCID Fetcher**, **Zotero Focused Mode**, and the **MCP Bridge**
-development plugin. **Tab Enhance** has been evaluated side-by-side and
+development plugin. **Default Attachment** (PikaPei v1.0.0) is kept
+installed and enabled in the source-build sandbox as a standing
+coexistence fixture — it is the only companion that patches a method
+Weavero also patches, so it is the one that catches wrapper-order
+regressions. **Tab Enhance** has been evaluated side-by-side and
 is safe alongside Weavero (overlapping tab features simply coexist).
 Tab-management plugins that restyle the same tab bar (e.g. **GroupTag**,
 **Tree Style Tabs**) work but duplicate Weavero's tab-group features —

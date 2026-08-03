@@ -9060,6 +9060,14 @@ class _ReaderMixin {
             ZP.viewItems = async function (items: any[], event: any, options: any = {}) {
                 try {
                     const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    // Default-child override (modules/attachments.ts) runs FIRST.
+                    // It lives here, not in its own viewItems wrapper, because
+                    // this wrapper re-wires from a cached pristine original and
+                    // would discard any wrapper stacked on top of it.
+                    if (lp && lp._wvTryOpenDefaultChild
+                        && await lp._wvTryOpenDefaultChild(ZP, items, event, options)) {
+                        return;
+                    }
                     const tabsInReaderWin = !!(lp && lp._getCompactTitleBarReader && lp._getCompactTitleBarReader());
                     if (lp && tabsInReaderWin && items && items.length > 1) {
                         // Resolve the effective openInWindow the way viewAttachment does:

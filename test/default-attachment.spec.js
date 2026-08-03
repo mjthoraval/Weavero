@@ -331,6 +331,63 @@ describe("Weavero — default child (attachments, notes, links)", () => {
         });
     });
 
+    // ---- suppressing the rival's duplicate menu entry --------------
+
+    // With both plugins enabled the items menu carried two near-identical
+    // actions — their "Set Default" and Weavero's "▶️ Set as Default" — and
+    // clicking theirs wrote only their pref, so no marker tag appeared and
+    // the choice did not sync. A user hit exactly that on 2026-08-03 and
+    // reported the feature as broken.
+    //
+    // The temp test profile has no rival plugin, so these drive the
+    // mechanism against stand-in elements carrying their v1.0.0 ids. That
+    // also pins the ids: if they ever change, this fails rather than the
+    // suppression silently becoming a no-op.
+    describe("rival menu suppression", () => {
+        const IDS = ["defaultattachment-set-default-menuitem",
+                     "defaultattachment-separator"];
+        let doc, made = [];
+
+        before(() => {
+            doc = Zotero.getMainWindow().document;
+            const menu = doc.getElementById("zotero-itemmenu");
+            for (const id of IDS) {
+                if (doc.getElementById(id)) continue;      // real plugin present
+                const el = doc.createXULElement("menuitem");
+                el.id = id;
+                menu.appendChild(el);
+                made.push(el);
+            }
+        });
+        after(() => {
+            for (const el of made) {
+                try { el.remove(); } catch (e) { /* already gone */ }
+            }
+            made = [];
+        });
+
+        it("hides both their menu item and their separator", () => {
+            for (const id of IDS) doc.getElementById(id).hidden = false;
+            wv._wvHideRivalDefaultMenu(doc, true);
+            for (const id of IDS) {
+                expect(doc.getElementById(id).hidden, id).to.equal(true);
+            }
+        });
+
+        it("restores them — so disabling Weavero does not leave the user with neither", () => {
+            wv._wvHideRivalDefaultMenu(doc, true);
+            wv._wvHideRivalDefaultMenu(doc, false);
+            for (const id of IDS) {
+                expect(doc.getElementById(id).hidden, id).to.equal(false);
+            }
+        });
+
+        it("is a no-op when the rival is not installed", () => {
+            expect(() => wv._wvHideRivalDefaultMenu(doc, true)).to.not.throw();
+            expect(() => wv._wvHideRivalDefaultMenu(null, true)).to.not.throw();
+        });
+    });
+
     // ---- migration from PikaPei/zotero-default-attachment ----------
 
     // That plugin's ENTIRE state is one pref holding {parentID: attachmentID}

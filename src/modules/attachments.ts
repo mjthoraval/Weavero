@@ -146,7 +146,7 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 4;
+const WIRE_VERSION = 5;
 
 class _AttachmentsMixin {
     [k: string]: any;
@@ -154,6 +154,22 @@ class _AttachmentsMixin {
     /** The marker tag, exposed so other bundles/tests don't hardcode it. */
     get _wvOpenByDefaultTag(): string {
         return OPEN_BY_DEFAULT_TAG;
+    }
+
+    /** Just the marker's EMOJI — the part Zotero renders in the items list.
+     *
+     *  Extracted from the tag with the SAME function the items list uses
+     *  (`Zotero.Tags.extractEmojiForItemsList`), so anything showing the glyph
+     *  in the UI shows exactly what the row shows. Falls back to "" rather
+     *  than a hardcoded glyph: if the extraction ever stops matching, callers
+     *  degrade to plain text instead of displaying a symbol the items list
+     *  does NOT show, which would be worse than no symbol at all. */
+    get _wvOpenByDefaultEmoji(): string {
+        try {
+            return Zotero.Tags.extractEmojiForItemsList(OPEN_BY_DEFAULT_TAG) || "";
+        } catch (e) {
+            return "";
+        }
     }
 
     /** Is this child marked as the one to open? Cheap + synchronous, so it is
@@ -573,10 +589,20 @@ class _AttachmentsMixin {
 
                     // ACTION label (not a checkbox): the entry states what the
                     // click will DO, which reads better than a state label.
+                    //
+                    // The label carries the SAME emoji the marker tag puts in
+                    // the items list, so the menu entry and the row marker are
+                    // visibly the same thing. DERIVED from the tag rather than
+                    // written out, so the two can never drift apart — this is
+                    // the only place the glyph appears outside the tag itself.
                     const marked = lp._wvIsDefaultChild(child);
+                    const glyph = lp._wvOpenByDefaultEmoji;
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ID;
-                    mi.setAttribute("label", marked ? "Clear Default" : "Set as Default");
+                    mi.setAttribute(
+                        "label",
+                        (glyph ? glyph + " " : "") + (marked ? "Clear Default" : "Set as Default")
+                    );
                     mi.addEventListener("command", () => {
                         try {
                             // Re-resolve at click time: the selection can change

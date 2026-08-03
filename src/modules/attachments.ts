@@ -17,8 +17,15 @@
 // purpose: the choice is only useful if it FOLLOWS THE USER ACROSS DEVICES,
 // and those JSON stores are local and unsynced. So it lives in the library:
 //
-//     an AUTOMATIC (type 1) tag — a single emoji — on the CHOSEN CHILD,
-//     which Zotero also renders in the items list (see the tag constant)
+//     an AUTOMATIC (type 1) tag on the CHOSEN CHILD, led by an emoji that
+//     Zotero also renders in the items list (see the tag constant)
+//
+// COEXISTENCE: PikaPei/zotero-default-attachment patches the same
+// getBestAttachment, and whoever wraps LAST wins. Load order is not ours to
+// control, so we re-assert: if another wrapper appears on top of ours we
+// wrap again over it, keeping it as our fallback. Weavero's pick wins; with
+// no Weavero pick the other plugin still gets its say. See
+// _wvWireDefaultAttachment.
 //
 // Chosen over the alternatives (all checked against a live Zotero 10 first):
 //   • Extra field — synced, but a crowded shared namespace (Citation Key,
@@ -59,20 +66,24 @@
 
 declare const Zotero: any;
 
-/** The marker tag: a SINGLE EMOJI.
+/** The marker tag: an EMOJI followed by a self-describing name.
  *
- *  Zotero renders the first emoji sequence of a tag name in the items list
- *  (`Zotero.Tags.extractEmojiForItemsList`), so a bare emoji gives the
- *  chosen child a visible marker with NO setup and NO colored-tag slot
- *  consumed (only 9 exist, and this user already spends 6).
+ *  Zotero renders the FIRST emoji sequence of a tag name in the items list
+ *  (`Zotero.Tags.extractEmojiForItemsList`), so the leading emoji gives the
+ *  chosen child a visible marker there — with no setup and without spending
+ *  one of the nine colored-tag slots (six are already in use here).
  *
- *  Trade-off accepted deliberately: a bare emoji is terse in the tag
- *  selector, giving no hint of its meaning. Change this one constant to
- *  e.g. "▶️ Default" if a readable name is wanted later — but note
- *  that renaming ORPHANS every already-marked child, since the tag IS the
- *  storage. ▶️ was picked to read as "this is what opens", and avoids
- *  the emoji already in use in this library (⭐, ‼️). */
-export const OPEN_BY_DEFAULT_TAG = "▶️";
+ *  The text after the emoji never reaches the items list; it exists for the
+ *  TAG SELECTOR and any tag export, where a bare emoji would be a mystery.
+ *  It states both the meaning and the owner, so a user meeting this tag in
+ *  a synced library knows what created it and why.
+ *
+ *  U+25B6 U+FE0F reads as "this is what opens", and avoids the emoji already
+ *  in use in this library (U+2B50, U+203C U+FE0F).
+ *
+ *  WARNING: the tag IS the storage. Changing this constant orphans every
+ *  already-marked child — cheap now, expensive after release. */
+export const OPEN_BY_DEFAULT_TAG = "▶️ Weavero: Open by Default";
 
 /** Zotero tag types: 0 = manual (user-typed), 1 = automatic (machine-added,
  *  hideable via the tag selector's Display Automatic toggle). */
@@ -244,10 +255,26 @@ class _AttachmentsMixin {
         try {
             const proto: any = Zotero.Item && Zotero.Item.prototype;
             if (!proto) return;
-            if (proto._wvDefaultAttWired === WIRE_VERSION) return;   // already current
-            // A stamp from an OLDER build means a stale wrapper is installed
-            // (the marker outlives the plugin) — peel it off before rewiring.
-            if (proto._wvDefaultAttWired) this._wvUnwireDefaultAttachment();
+
+            // Two reasons to (re)wire, checked together:
+            //  • our stamp is stale  -> an older build's wrapper is installed
+            //  • we are NOT outermost -> ANOTHER plugin wrapped over us after
+            //    we loaded. PikaPei/zotero-default-attachment patches this very
+            //    method, and whoever wraps LAST decides the winner. Plugin load
+            //    order is not ours to control, so instead we re-assert: wrap
+            //    whatever is on top now, keeping it as our fallback. Weavero's
+            //    pick wins; with no Weavero pick, the other plugin still gets
+            //    its say.
+            const current = proto.getBestAttachment;
+            if (typeof current !== "function") return;
+            const weAreOutermost = current === proto._wvDefaultAttFn;
+            if (proto._wvDefaultAttWired === WIRE_VERSION && weAreOutermost) return;
+
+            // Only peel our own wrapper off when it is still the top one;
+            // unwiring from underneath a foreign wrapper would break ITS chain.
+            if (proto._wvDefaultAttWired && weAreOutermost) {
+                this._wvUnwireDefaultAttachment();
+            }
             const orig = proto.getBestAttachment;
             if (typeof orig !== "function") return;
 
@@ -265,6 +292,9 @@ class _AttachmentsMixin {
                 }
                 return orig.apply(this, args);
             };
+            // Remember OUR function so a later "are we still outermost?"
+            // check can tell our wrapper from a foreign one.
+            proto._wvDefaultAttFn = proto.getBestAttachment;
             proto._wvDefaultAttWired = WIRE_VERSION;
             Zotero.debug("[Weavero] default-child override installed (v" + WIRE_VERSION + ")");
         } catch (e) {
@@ -281,6 +311,7 @@ class _AttachmentsMixin {
                 proto.getBestAttachment = proto._wvOrigGetBestAttachment;
             }
             delete proto._wvOrigGetBestAttachment;
+            delete proto._wvDefaultAttFn;
             delete proto._wvDefaultAttWired;
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwireDefaultAttachment err: " + e);

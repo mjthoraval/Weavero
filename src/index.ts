@@ -4416,6 +4416,21 @@ class WeaveroPlugin {
             // wrapper. See modules/attachments.ts.
             try { (this as any)._wvWireDefaultAttachment(); } catch (e) {}
             try { (this as any)._wvWireDefaultChildMenu(_window); } catch (e) {}
+            // Re-assert the getBestAttachment override after other plugins
+            // have had time to load: PikaPei/zotero-default-attachment patches
+            // the same method, and the LAST wrapper wins. Idempotent - a no-op
+            // whenever we are already outermost.
+            try {
+                const wref: any = _window;
+                for (const d of [3000, 10000]) {
+                    wref.setTimeout(() => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (lp && !lp._wvDestroyed) lp._wvWireDefaultAttachment();
+                        } catch (e) {}
+                    }, d);
+                }
+            } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }

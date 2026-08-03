@@ -1710,19 +1710,37 @@ class _ReaderPanelsMixin {
             const va: any = idoc.getElementById("viewAnnotations");
             if (!va) return;
             try { va.classList.toggle("wv-ann-sort-on", this._wvAnnSort().field !== "position"); } catch (e) {}
-            if (va.__wvAnnSortCtxWired) return;
+            // DOCUMENT-level capture, not a listener on the button: it fires
+            // ahead of every other handler and matches clicks landing on any
+            // child of the icon. Also records every right-click's target into
+            // a small ring (Zotero._wvCtxLog) so "nothing happened" is
+            // diagnosable from one click instead of another guess
+            // (2026-08-03: a synthetic dispatch opened the menu while a real
+            // right-click did nothing).
+            if ((idoc as any).__wvAnnSortCtxWired) return;
             const h = (e: any) => {
                 try {
+                    const Z: any = Zotero as any;
+                    if (!Z._wvCtxLog) Z._wvCtxLog = [];
+                    const t: any = e.target;
+                    const d = t ? ((t.tagName || "?") + "#" + (t.id || "")
+                        + "." + String(t.className || "").split(" ")[0]) : "?";
+                    const hit = !!(t && t.closest && t.closest("#viewAnnotations"));
+                    Z._wvCtxLog.push(new Date().toISOString().slice(11, 19)
+                        + " ctxmenu target=" + d + " hitAnnTab=" + hit
+                        + " trusted=" + !!e.isTrusted);
+                    if (Z._wvCtxLog.length > 40) Z._wvCtxLog.shift();
+                    if (!hit) return;
                     e.preventDefault(); e.stopPropagation();
-                    // Live plugin at event time -- the element outlives reloads.
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const rd = (idoc as any)._wvAnnSortReader;
-                    if (P && rd) P._wvShowAnnSortMenu(rd, idoc, va);
+                    const anchor = idoc.getElementById("viewAnnotations");
+                    if (P && rd && anchor) P._wvShowAnnSortMenu(rd, idoc, anchor);
                 } catch (err) {}
             };
-            va.addEventListener("contextmenu", h);
-            va.__wvAnnSortCtxWired = true;
-            va.__wvAnnSortCtxH = h;
+            idoc.addEventListener("contextmenu", h, true);
+            (idoc as any).__wvAnnSortCtxWired = true;
+            (idoc as any).__wvAnnSortCtxH = h;
         } catch (e) {}
     }
 
@@ -1769,6 +1787,11 @@ class _ReaderPanelsMixin {
                 va.removeEventListener("contextmenu", va.__wvAnnSortCtxH);
                 delete va.__wvAnnSortCtxH;
                 delete va.__wvAnnSortCtxWired;
+            }
+            if (idoc && (idoc as any).__wvAnnSortCtxH) {
+                idoc.removeEventListener("contextmenu", (idoc as any).__wvAnnSortCtxH, true);
+                delete (idoc as any).__wvAnnSortCtxH;
+                delete (idoc as any).__wvAnnSortCtxWired;
             }
         } catch (e) {}
         try {

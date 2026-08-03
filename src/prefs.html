@@ -681,11 +681,13 @@
       <html:button type="button" id="wv-clear-legacy-defatt">Clear stored data from Default Attachment (PikaPei)</html:button>
       <html:span id="wv-clear-legacy-defatt-status" class="wv-desc" style="margin-inline-start:.75em"></html:span>
     </hbox>
-    <html:p class="wv-desc">Imports anything still outstanding, then removes only that plugin’s
-      stored picks (a single preference). If any pick cannot be imported — its attachment was
-      deleted, trashed or moved to another item — nothing is deleted at all, since that
-      preference is the only record of it. Your Weavero defaults are tags on the attachments and
-      are not affected, and the plugin itself is not disabled.</html:p>
+    <html:p class="wv-desc">Shows exactly what will happen and asks before doing anything. It
+      imports anything still outstanding, then removes only that plugin’s stored picks (a single
+      preference). Picks it cannot import — attachment trashed, moved to another item, or deleted
+      — are listed first; where the attachment still exists you can choose to mark it in Weavero
+      so the pick survives (a trashed one starts working again once restored). That preference is
+      the only copy, so the deletion cannot be undone. Your Weavero defaults are tags on the
+      attachments and are not affected, and the plugin itself is not disabled.</html:p>
   </groupbox>
 
   <!-- ============================ External viewer -->

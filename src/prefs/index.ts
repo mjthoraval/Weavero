@@ -189,33 +189,113 @@
                     try {
                         const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!lp) return;
+
+                        // Plan first — read-only — so the confirmation can state
+                        // exactly what will happen, INCLUDING what will be lost.
+                        // The delete itself is unconditional once approved; the
+                        // dialog is the only thing standing between the user and
+                        // an irreversible clear of another plugin's only copy.
+                        const plan = lp._wvPlanLegacyPurge();
+                        if (!plan.total && !plan.unresolved.length) {
+                            if (status) status.textContent = "Nothing stored";
+                            clearBtn.disabled = true;
+                            return;
+                        }
+                        const REASONS: any = {
+                            missing: "attachment no longer exists",
+                            trashed: "attachment is in the trash",
+                            reparented: "attachment moved to another item",
+                            unparsable: "stored data cannot be read",
+                            error: "could not be read",
+                        };
+                        const lines = [];
+                        lines.push(plan.total + " stored pick" + (plan.total === 1 ? "" : "s")
+                            + " from Default Attachment (PikaPei):");
+                        lines.push("");
+                        if (plan.willImport) {
+                            lines.push("  • " + plan.willImport + " will be imported into Weavero");
+                        }
+                        if (plan.alreadyMarked) {
+                            lines.push("  • " + plan.alreadyMarked + " already set in Weavero");
+                        }
+                        if (plan.superseded) {
+                            lines.push("  • " + plan.superseded
+                                + " superseded — you already chose a different attachment");
+                        }
+                        if (plan.unresolved.length) {
+                            // Group by reason so a long list stays readable.
+                            const byReason: any = {};
+                            for (const u of plan.unresolved) {
+                                byReason[u.reason] = (byReason[u.reason] || 0) + 1;
+                            }
+                            for (const r of Object.keys(byReason)) {
+                                lines.push("  • " + byReason[r] + " cannot be imported ("
+                                    + (REASONS[r] || r) + ")");
+                            }
+                        }
+                        lines.push("");
+                        if (plan.markable) {
+                            lines.push(plan.markable + " of those can still be marked in Weavero "
+                                + "so the pick survives — a trashed attachment starts working "
+                                + "again once restored.");
+                        }
+                        if (plan.unsalvageable) {
+                            lines.push(plan.unsalvageable + " cannot be saved at all and will be "
+                                + "lost whichever option you choose.");
+                        }
+                        lines.push("");
+                        lines.push("That plugin’s stored picks are the only copy. "
+                            + "This cannot be undone.");
+
+                        const win: any = doc.defaultView;
+                        const ps: any = Services.prompt;
+                        const TITLE = "Clear Default Attachment (PikaPei) data";
+                        let markFirst = false;
+                        if (plan.markable) {
+                            // Three ways out. The SAFEST clear is button 0 (the
+                            // default), Cancel is button 1 (where Escape lands),
+                            // and the lossy option is deliberately last so it
+                            // cannot be chosen by reflex.
+                            const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
+                                + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_IS_STRING
+                                + ps.BUTTON_POS_2 * ps.BUTTON_TITLE_IS_STRING;
+                            const choice = ps.confirmEx(
+                                win, TITLE, lines.join("\n"), flags,
+                                "Mark them, then clear",   // 0
+                                "Cancel",                  // 1
+                                "Clear anyway",            // 2
+                                null, { value: false },
+                            );
+                            if (choice === 1) {
+                                if (status) status.textContent = "Cancelled — nothing deleted";
+                                return;
+                            }
+                            markFirst = (choice === 0);
+                        }
+                        else {
+                            // Nothing rescuable — a third button would be a lie.
+                            const ok = ps.confirm(win, TITLE, lines.join("\n"));
+                            if (!ok) {
+                                if (status) status.textContent = "Cancelled — nothing deleted";
+                                return;
+                            }
+                        }
+
                         clearBtn.disabled = true;
-                        if (status) status.textContent = "Checking…";
-                        // Async now: it re-imports and verifies before deleting,
-                        // and REFUSES if anything could not be accounted for.
-                        Promise.resolve(lp._wvClearLegacyDefaultAttachments()).then((r: any) => {
+                        if (status) status.textContent = "Working…";
+                        Promise.resolve(
+                            lp._wvClearLegacyDefaultAttachments({ markUnresolved: markFirst }),
+                        ).then((r: any) => {
                             if (!status) return;
                             if (r && r.cleared) {
-                                // Report both outcomes: what was imported, and
-                                // what was skipped because the user already had
-                                // a different Weavero choice for that item.
                                 const notes = [];
                                 if (r.imported) notes.push(r.imported + " imported");
-                                if (r.superseded) {
-                                    notes.push(r.superseded + " already set in Weavero");
-                                }
+                                if (r.forceMarked) notes.push(r.forceMarked + " marked");
+                                if (r.superseded) notes.push(r.superseded + " already set in Weavero");
+                                if (r.lost) notes.push(r.lost + " lost");
                                 status.textContent = "Cleared " + r.total + " pick"
                                     + (r.total === 1 ? "" : "s")
                                     + (notes.length ? " (" + notes.join(", ") + ")" : "");
-                                clearBtn.disabled = true;
-                            }
-                            else if (r && r.unresolved && r.unresolved.length) {
-                                // Nothing was deleted — say so plainly, and leave
-                                // the button live so a retry works after a fix
-                                // (e.g. restoring the attachment from the trash).
-                                status.textContent = "Kept — " + r.unresolved.length + " of "
-                                    + r.total + " could not be imported";
-                                clearBtn.disabled = false;
                             }
                             else {
                                 status.textContent = "Nothing stored";

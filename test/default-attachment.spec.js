@@ -419,6 +419,45 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(proto.getBestAttachment).to.equal(proto._wvDefaultAttFn);
         });
 
+        // A competitor installed or enabled AFTER Weavero started wraps on top
+        // of us and wins -- startup wiring only sees plugins already loaded.
+        // Observed live on 2026-08-03 with PikaPei's Default Attachment v1.0.0.
+        // The fix is a Zotero.Plugins observer that re-asserts on any other
+        // plugin's startup; this locks it in place.
+        it("registers a plugin-lifecycle observer to survive later installs", () => {
+            expect(Zotero._wvDefAttPluginObserver).to.be.an("object");
+            expect(Zotero._wvDefAttPluginObserver.startup).to.be.a("function");
+            expect(Zotero._wvDefAttPluginObserverVer).to.be.a("number");
+        });
+
+        it("re-asserts when another plugin starts up", async () => {
+            const proto = /** @type {any} */ (Zotero.Item.prototype);
+            const pristine = proto._wvOrigGetBestAttachment;
+            const theirs = proto.getBestAttachment;
+            // Simulate a competitor patching after us.
+            proto.getBestAttachment = async function (...a) {
+                return theirs.apply(this, a);
+            };
+            try {
+                expect(proto.getBestAttachment).to.not.equal(proto._wvDefaultAttFn);
+                // What Zotero.Plugins would call for a foreign plugin.
+                await Zotero._wvDefAttPluginObserver.startup({ id: "someone-else@example.com" });
+                expect(proto.getBestAttachment).to.equal(proto._wvDefaultAttFn);
+            }
+            finally {
+                wv._wvUnwireDefaultAttachment();
+                proto.getBestAttachment = typeof pristine === "function" ? pristine : theirs;
+                wv._wvWireDefaultAttachment();
+            }
+        });
+
+        it("ignores its OWN startup (no self-triggered rewire loop)", async () => {
+            const proto = /** @type {any} */ (Zotero.Item.prototype);
+            const before = proto.getBestAttachment;
+            await Zotero._wvDefAttPluginObserver.startup({ id: "weavero@mjthoraval" });
+            expect(proto.getBestAttachment).to.equal(before);
+        });
+
         // PikaPei/zotero-default-attachment patches the same method and load
         // order is not ours to control, so Weavero re-asserts on top and keeps
         // the other wrapper as its fallback.

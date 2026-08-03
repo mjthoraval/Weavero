@@ -1708,14 +1708,15 @@ class _ReaderPanelsMixin {
                             rank[a.key] = cur.dir === "asc" ? t : -t;
                             // Same-day annotations show time only (user call
                             // 2026-08-03: sorting within today needs a short
-                            // form); older ones show date + time. Tooltip
-                            // carries the full form either way.
+                            // form); older ones use toLocaleString() -- the
+                            // SAME format Zotero's own Date Added/Modified
+                            // columns render (itemTree.jsx/itemBox.js), comma
+                            // included. Tooltip carries the full form always.
                             const sameDay = dt.getFullYear() === today.getFullYear()
                                 && dt.getMonth() === today.getMonth()
                                 && dt.getDate() === today.getDate();
-                            const timeS = dt.toLocaleTimeString();
                             dates[a.key] = {
-                                s: sameDay ? timeS : dt.toLocaleDateString() + " " + timeS,
+                                s: sameDay ? dt.toLocaleTimeString() : dt.toLocaleString(),
                                 f: dt.toLocaleString(),
                             };
                         } catch (e) {}

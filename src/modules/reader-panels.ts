@@ -261,9 +261,10 @@ const RP_POPUP_CSS = [
     "#viewAnnotations.wv-ann-sort-on{position:relative;}",
     "#viewAnnotations.wv-ann-sort-on::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
-    // Date stamp on sidebar annotation cards while a date sort is active.
-    ".wv-ann-date{margin-inline-start:auto;padding:0 4px;font-size:11px;opacity:.65;",
-    "  white-space:nowrap;align-self:center;}",
+    // Date stamp: its own row at the bottom of each sidebar annotation card
+    // while a date sort is active (header would collide with other features).
+    ".wv-ann-date{display:block;text-align:end;padding:1px 8px 3px;font-size:11px;",
+    "  opacity:.65;white-space:nowrap;}",
 ].join("");
 
 // ---- Feature B: Bookmarks sidebar tab ----------------------------------
@@ -1697,6 +1698,7 @@ class _ReaderPanelsMixin {
                     });
                     for (let i = 0; i < sorted.length; i++) rank[sorted[i].key] = -i;
                 } else {
+                    const today = new Date();
                     for (const a of anns) {
                         try {
                             const d = cur.field === "dateAdded" ? a.dateAdded : a.dateModified;
@@ -1704,7 +1706,18 @@ class _ReaderPanelsMixin {
                             if (!dt) continue;   // sqlToDate returns false on a bad string
                             const t = dt.getTime();
                             rank[a.key] = cur.dir === "asc" ? t : -t;
-                            dates[a.key] = { s: dt.toLocaleDateString(), f: dt.toLocaleString() };
+                            // Same-day annotations show time only (user call
+                            // 2026-08-03: sorting within today needs a short
+                            // form); older ones show date + time. Tooltip
+                            // carries the full form either way.
+                            const sameDay = dt.getFullYear() === today.getFullYear()
+                                && dt.getMonth() === today.getMonth()
+                                && dt.getDate() === today.getDate();
+                            const timeS = dt.toLocaleTimeString();
+                            dates[a.key] = {
+                                s: sameDay ? timeS : dt.toLocaleDateString() + " " + timeS,
+                                f: dt.toLocaleString(),
+                            };
                         } catch (e) {}
                     }
                 }
@@ -1737,14 +1750,15 @@ class _ReaderPanelsMixin {
                     if (!on) { if (el) el.remove(); continue; }
                     const key = card.getAttribute("data-sidebar-annotation-id");
                     const d = key ? map[key] : null;
+                    // Own row at the BOTTOM of the card, not in the header --
+                    // the header hosts other Zotero/plugin controls and a
+                    // stamp there collides (user call 2026-08-03). Relocate
+                    // any stamp an older build left in the header.
+                    if (el && el.parentElement !== card) { el.remove(); el = null; }
                     if (!el) {
-                        const header = card.querySelector("header");
-                        if (!header) continue;
                         el = idoc.createElementNS(NS_HTML_RP, "div");
                         el.className = "wv-ann-date";
-                        const end = header.querySelector(".end");
-                        if (end) header.insertBefore(el, end);
-                        else header.appendChild(el);
+                        card.appendChild(el);
                     }
                     const txt = d ? d.s : "";
                     if (el.textContent !== txt) el.textContent = txt;

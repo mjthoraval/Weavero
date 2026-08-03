@@ -164,6 +164,46 @@
             if (idx !== -1) gi = idx;
             gb._wvGroup = gi;
         }
+        // "Clear stored data from zotero-default-attachment" (Extras -> Migration).
+        // All of that plugin's state is one pref, so the purge is a single call
+        // into modules/attachments.ts. Resolve the live plugin at CLICK time —
+        // the prefs pane outlives plugin reloads.
+        try {
+            const clearBtn: any = doc.getElementById("wv-clear-legacy-defatt");
+            const status: any = doc.getElementById("wv-clear-legacy-defatt-status");
+            if (clearBtn) {
+                const refresh = () => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        const n = lp ? lp._wvLegacyDefaultAttachmentCount() : 0;
+                        clearBtn.disabled = !n;
+                        if (status) {
+                            status.textContent = n
+                                ? n + " stored pick" + (n === 1 ? "" : "s")
+                                : "Nothing stored";
+                        }
+                    } catch (e) {}
+                };
+                refresh();
+                clearBtn.addEventListener("command", () => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!lp) return;
+                        const n = lp._wvClearLegacyDefaultAttachments();
+                        if (status) {
+                            status.textContent = "Cleared " + n + " pick" + (n === 1 ? "" : "s");
+                        }
+                        clearBtn.disabled = true;
+                    } catch (e) {
+                        Zotero.debug("[Weavero] clear-legacy-defatt err: " + e);
+                    }
+                });
+                clearBtn.addEventListener("click", () => clearBtn.dispatchEvent(
+                    new (doc.defaultView as any).Event("command", { bubbles: true }),
+                ));
+            }
+        } catch (e) { Zotero.debug("[Weavero] clear-legacy-defatt wiring err: " + e); }
+
         // Click a tab -> scroll its target groupbox to the top.
         tabs.forEach((t) => {
             t.addEventListener("click", () => {

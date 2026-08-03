@@ -435,6 +435,48 @@ class _AttachmentsMixin {
         return result;
     }
 
+    /** How many legacy picks the old plugin still stores (0 when none/absent).
+     *  Cheap and read-only — safe to call from a prefs pane to decide whether
+     *  to offer the purge at all. */
+    _wvLegacyDefaultAttachmentCount(): number {
+        try {
+            const raw: any = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
+            if (!raw) return 0;
+            const m = JSON.parse(String(raw));
+            if (!m || typeof m !== "object" || Array.isArray(m)) return 0;
+            return Object.keys(m).length;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /** Purge PikaPei/zotero-default-attachment's stored picks.
+     *
+     *  All of that plugin's state is ONE pref — the JSON map described in
+     *  `_wvMigrateDefaultAttachmentPlugin` — so clearing it removes every
+     *  legacy default in a single call. Nothing else of theirs persists: no
+     *  tags, no item fields, no files.
+     *
+     *  Explicit user action ONLY. Migration deliberately leaves the pref
+     *  intact so the user can roll back to that plugin; this is the opt-in
+     *  tidy-up for when they are sure they are done with it.
+     *
+     *  NOTE: it does not touch Weavero's own marks — those already live as
+     *  tags on the children — and it does not uninstall or disable the other
+     *  plugin. If that plugin is still enabled it will simply have no picks,
+     *  and can create new ones again. Returns how many were removed. */
+    _wvClearLegacyDefaultAttachments(): number {
+        const n = this._wvLegacyDefaultAttachmentCount();
+        try {
+            Zotero.Prefs.clear("extensions.zotero.defaultattachment.mappings", true);
+            Zotero.debug("[Weavero] cleared " + n + " legacy default-attachment mapping(s)");
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvClearLegacyDefaultAttachments err: " + e);
+            return 0;
+        }
+        return n;
+    }
+
     // ---- UI: the items-list context menu ---------------------------------
 
     /** Add "Open by Default" to a window's items-tree context menu.

@@ -650,6 +650,21 @@
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
       <html:p class="wv-desc">Filter the installed-plugins list as you type; Ctrl+F focuses the box.</html:p>
     </vbox>
+    <!-- Outside the enableVisualExtras master on purpose: this is a one-off
+         migration tidy-up, not a visual extra, and must stay reachable even
+         when visual extras are switched off. -->
+    <label><html:h3>Migration</html:h3></label>
+    <html:p class="wv-desc" style="margin-inline-start:0">Default attachments picked with the
+      <html:b>zotero-default-attachment</html:b> plugin are imported automatically the first time
+      Weavero starts, and its own data is left untouched so you can go back to it. Once you are
+      sure you are done with that plugin, you can clear the picks it still stores.</html:p>
+    <hbox align="center">
+      <html:button type="button" id="wv-clear-legacy-defatt">Clear stored data from zotero-default-attachment</html:button>
+      <html:span id="wv-clear-legacy-defatt-status" class="wv-desc" style="margin-inline-start:.75em"></html:span>
+    </hbox>
+    <html:p class="wv-desc">Removes only that plugin’s stored picks (a single preference).
+      Your Weavero defaults are tags on the attachments and are not affected, and the plugin
+      itself is not disabled.</html:p>
   </groupbox>
 
   <!-- ============================ External viewer -->

@@ -299,9 +299,12 @@ const RP_POPUP_CSS = [
     ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
     "  border:none;cursor:pointer;opacity:.6;}",
     ".wv-rf-dateclear:hover{opacity:1;}",
-    ".wv-rf-calhost{padding:0 10px 6px;}",
-    ".wv-rf-cal{border:1px solid var(--color-panedivider,rgba(127,127,127,.3));border-radius:6px;",
-    "  padding:6px;display:inline-block;}",
+    // Calendar popover anchored under its own input (header names the
+    // dimension + bound so the target date is unambiguous).
+    ".wv-rf-calpop{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;",
+    "  border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:6px;}",
+    ".wv-rf-calpop-head{font-size:10px;font-weight:600;opacity:.7;padding:0 2px 4px;text-transform:capitalize;}",
+    ".wv-rf-cal{display:inline-block;}",
     ".wv-rf-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}",
     ".wv-rf-cal-title{font-size:11px;font-weight:600;}",
     ".wv-rf-cal-nav{font-size:13px;line-height:1;padding:1px 7px;background:transparent;color:inherit;",
@@ -8598,18 +8601,41 @@ class _ReaderPanelsMixin {
             // UA-shadow button via originalTarget (chrome pierces the shadow)
             // and divert them to the Weavero calendar.
             const rangeRow = mk("div", "wv-rf-daterange");
-            const calHost = mk("div", "wv-rf-calhost");
             let calFor: string | null = null;
+            // The calendar is a POPOVER anchored under its own input with a
+            // header naming dimension+bound -- a shared spot below the row
+            // left it ambiguous which date a calendar edited (user call
+            // 2026-08-03).
             const openCal = (which: string, key: string, inp: any) => {
-                while (calHost.firstChild) calHost.removeChild(calHost.firstChild);
+                const old = popup.querySelector(".wv-rf-calpop");
                 for (const i of rangeRow.querySelectorAll(".wv-rf-dateinput")) i.removeAttribute("data-open");
+                if (old) old.remove();
                 if (calFor === which) { calFor = null; return; }
                 calFor = which;
-                if (inp) inp.dataset.open = "true";   // marks WHICH field the calendar edits
-                calHost.appendChild(this._wvRfMiniCal(idoc, st[key], async (isoV: string) => {
+                inp.dataset.open = "true";
+                const pop = mk("div", "wv-rf-calpop");
+                const head = mk("div", "wv-rf-calpop-head");
+                head.textContent = label + " — " + which;
+                pop.appendChild(head);
+                pop.appendChild(this._wvRfMiniCal(idoc, st[key], async (isoV: string) => {
                     st[key] = isoV;
+                    calFor = null;
                     await applyDate();
                 }));
+                popup.appendChild(pop);
+                const br = inp.getBoundingClientRect(), pr = popup.getBoundingClientRect();
+                pop.style.left = Math.max(4, Math.min(br.left - pr.left, pr.width - 200)) + "px";
+                pop.style.top = (br.bottom - pr.top + 3) + "px";
+                const closer = (ev: any) => {
+                    try {
+                        if (pop.contains(ev.target) || ev.target === inp) return;
+                        pop.remove();
+                        inp.removeAttribute("data-open");
+                        calFor = null;
+                    } catch (_) {}
+                    idoc.removeEventListener("pointerdown", closer, true);
+                };
+                idoc.addEventListener("pointerdown", closer, true);
             };
             const mkDateField = (which: string, lbl: string, key: string) => {
                 const lb = mk("span"); lb.textContent = lbl;
@@ -8735,7 +8761,6 @@ class _ReaderPanelsMixin {
             mkDateField("from", "from", fKey);
             mkDateField("to", "to", tKey);
             stack.appendChild(rangeRow);
-            stack.appendChild(calHost);
         };
         dateDim("Added", "dateAddedMode", "dateAddedN", "dateAddedUnit", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");
         dateDim("Modified", "dateModMode", "dateModN", "dateModUnit", "dateModFrom", "dateModTo", "dateModNeg");

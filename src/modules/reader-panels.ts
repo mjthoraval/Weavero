@@ -284,6 +284,8 @@ const RP_POPUP_CSS = [
     // typed date get used?"); tooltip carries the resolved date.
     ".wv-rf-dateinput[data-applied]{border-color:var(--color-accent,#5e6ad2);",
     "  box-shadow:0 0 0 1px var(--color-accent,#5e6ad2) inset;}",
+    ".wv-rf-dateinput[data-invalid]{border-color:#d34a4a;box-shadow:0 0 0 1px #d34a4a inset;}",
+    ".wv-rf-cal-day.wv-off{opacity:.25;cursor:default;}",
     // Date rows: label left, preset chips packed RIGHT so the plain label
     // reads apart from the clickable chips (user call 2026-08-03).
     ".wv-rf-daterow{display:flex;align-items:center;gap:6px;}",
@@ -8638,7 +8640,11 @@ class _ReaderPanelsMixin {
                     st[key] = isoV;
                     calFor = null;
                     await applyDate();
-                }));
+                },
+                // Conflict-free pair: 'to' can't go before 'from' and vice
+                // versa (user call 2026-08-03).
+                which === "to" ? st[fKey] : null,
+                which === "from" ? st[tKey] : null));
                 popup.appendChild(pop);
                 const br = inp.getBoundingClientRect(), pr = popup.getBoundingClientRect();
                 pop.style.left = Math.max(4, Math.min(br.left - pr.left, pr.width - 200)) + "px";
@@ -8732,7 +8738,16 @@ class _ReaderPanelsMixin {
                 // Applied-state feedback (user ask: "how do I know the date
                 // was used?"): accent border + tooltip with the resolved
                 // bound whenever a value is actively filtering.
-                const reflect = () => {
+                const reflect = (invalid?: boolean) => {
+                    if (invalid) {
+                        inp.dataset.invalid = "true";
+                        delete inp.dataset.applied;
+                        inp.title = which === "from"
+                            ? "Not applied — after the 'to' date"
+                            : "Not applied — before the 'from' date";
+                        return;
+                    }
+                    delete inp.dataset.invalid;
                     if (st[key]) {
                         inp.dataset.applied = "true";
                         const m2 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(st[key]);
@@ -8752,7 +8767,19 @@ class _ReaderPanelsMixin {
                     typeT = cw2.setTimeout(async () => {
                         try {
                             const v = resolveTyped();
-                            if (v === st[key]) return;
+                            // Typed CONFLICT (from after to / to before from):
+                            // don't apply it -- red border + tooltip instead.
+                            const other = which === "from" ? st[tKey] : st[fKey];
+                            if (v && other && (which === "from" ? v > other : v < other)) {
+                                if (st[key] != null) {
+                                    st[key] = null;
+                                    await this._wvApplyReaderFilter(reader);
+                                    this._wvReaderEnsureFilterButton(reader, idoc);
+                                }
+                                reflect(true);
+                                return;
+                            }
+                            if (v === st[key]) { reflect(); return; }
                             st[key] = v;
                             reflect();
                             await this._wvApplyReaderFilter(reader);
@@ -9012,8 +9039,10 @@ class _ReaderPanelsMixin {
      *  the window) -- a native input[type=date] opens a calendar that can
      *  never commit (verified 2026-08-03). Locale-aware: weekday initials
      *  and first-day-of-week follow the app locale.
-     *  selIso: current "YYYY-MM-DD" or null; onPick(iso) on day click. */
-    _wvRfMiniCal(idoc: any, selIso: string | null, onPick: (iso: string) => void) {
+     *  selIso: current "YYYY-MM-DD" or null; onPick(iso) on day click.
+     *  minIso/maxIso (optional) DISABLE days outside [min, max] -- used to
+     *  keep a from/to pair conflict-free (ISO strings compare correctly). */
+    _wvRfMiniCal(idoc: any, selIso: string | null, onPick: (iso: string) => void, minIso?: string | null, maxIso?: string | null) {
         const NS = NS_HTML_RP;
         const mk = (tag: string, cls?: string) => {
             const el = idoc.createElementNS(NS, tag);
@@ -9073,10 +9102,17 @@ class _ReaderPanelsMixin {
                 const cellIso = iso(dt.getFullYear(), dt.getMonth(), dt.getDate());
                 if (cellIso === selIso) cell.dataset.selected = "true";
                 if (cellIso === todayIso) cell.dataset.today = "true";
-                cell.addEventListener("click", (e: any) => {
-                    e.stopPropagation();
-                    try { onPick(cellIso); } catch (_) {}
-                });
+                if ((minIso && cellIso < minIso) || (maxIso && cellIso > maxIso)) {
+                    cell.classList.add("wv-off");
+                    cell.disabled = true;
+                    cell.title = "Would conflict with the other bound";
+                }
+                else {
+                    cell.addEventListener("click", (e: any) => {
+                        e.stopPropagation();
+                        try { onPick(cellIso); } catch (_) {}
+                    });
+                }
                 grid.appendChild(cell);
             };
             // Adjacent months' days fill the leading/trailing cells, dimmed

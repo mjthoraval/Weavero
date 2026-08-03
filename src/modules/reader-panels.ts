@@ -277,7 +277,9 @@ const RP_POPUP_CSS = [
     // Date rows: label left, preset chips packed RIGHT so the plain label
     // reads apart from the clickable chips (user call 2026-08-03).
     ".wv-rf-daterow{display:flex;align-items:center;gap:6px;}",
-    ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;}",
+    ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;}",
+    ".wv-rf-datenum{width:44px;font-size:11px;padding:1px 2px 1px 6px;background:transparent;color:inherit;",
+    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
     ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
     "  border:none;cursor:pointer;opacity:.6;}",
     ".wv-rf-dateclear:hover{opacity:1;}",
@@ -7456,15 +7458,21 @@ class _ReaderPanelsMixin {
                 hasLink: null as (boolean | null),
                 hasTag: null as (boolean | null),
                 // TWO independent date-range dimensions (2026-08-03) --
-                // Added and Modified each get a preset (null = off;
-                // today | 7d | 30d | custom) and custom bounds (YYYY-MM-DD
-                // local, either end open). Both apply together (AND) so
-                // "added last 30 days AND modified today" is expressible.
-                dateAddedPreset: null as (string | null),
+                // Added and Modified each get a mode (null = off; "last" =
+                // rolling window of N hours/days; "custom" = absolute bounds,
+                // YYYY-MM-DD local, either end open). Both apply together
+                // (AND) so "added last 30 days AND modified last 2 hours" is
+                // expressible. Four fixed presets were tried first and
+                // rejected as clutter (user call): N is free.
+                dateAddedMode: null as (string | null),
+                dateAddedN: 1,
+                dateAddedUnit: "d" as string,   // "h" | "d"
                 dateAddedFrom: null as (string | null),
                 dateAddedTo: null as (string | null),
                 dateAddedNeg: false,   // Alt+click: show only OUTSIDE the range
-                dateModPreset: null as (string | null),
+                dateModMode: null as (string | null),
+                dateModN: 1,
+                dateModUnit: "d" as string,
                 dateModFrom: null as (string | null),
                 dateModTo: null as (string | null),
                 dateModNeg: false,
@@ -7498,7 +7506,7 @@ class _ReaderPanelsMixin {
             || st.colorsExcl.length || st.tagsExcl.length
             || st.addedByExcl.length || st.modifiedBy.length || st.modifiedByExcl.length
             || st.hasComment !== null || st.hasRelated !== null || st.hasLink !== null || st.hasTag !== null
-            || st.dateAddedPreset != null || st.dateModPreset != null
+            || st.dateAddedMode != null || st.dateModMode != null
             // "Hide Annotations in the Reader" counts as an active filter.
             || this._wvReaderAnnotationsHidden(reader));
     }
@@ -8133,8 +8141,8 @@ class _ReaderPanelsMixin {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
             st.addedByExcl = []; st.modifiedBy = []; st.modifiedByExcl = [];
             st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
-            st.dateAddedPreset = null; st.dateAddedFrom = null; st.dateAddedTo = null; st.dateAddedNeg = false;
-            st.dateModPreset = null; st.dateModFrom = null; st.dateModTo = null; st.dateModNeg = false;
+            st.dateAddedMode = null; st.dateAddedFrom = null; st.dateAddedTo = null; st.dateAddedNeg = false;
+            st.dateModMode = null; st.dateModFrom = null; st.dateModTo = null; st.dateModNeg = false;
             // The hide-annotations toggle counts as a filter — clear it too.
             if (this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
             // Also clear the native include channel (colour/tag/author).
@@ -8459,23 +8467,53 @@ class _ReaderPanelsMixin {
         };
         // One dimension = one labeled chip line (+ its own custom row and
         // calendar when the Custom preset is on). pKey/fKey/tKey index st.
-        const dateDim = (label: string, pKey: string, fKey: string, tKey: string, nKey: string) => {
+        const dateDim = (label: string, pKey: string, nnKey: string, uKey: string, fKey: string, tKey: string, nKey: string) => {
             addRow((opts: any) => {
-                // Plain click = only IN the range; Alt+click = only OUTSIDE
-                // it (exclude, red); re-click in the same mode clears.
-                const preset = (lbl: string, key: string, title2: string) =>
-                    mkTextChip(lbl, st[pKey] === key && !st[nKey], st[pKey] === key && !!st[nKey],
-                        title2 + " — Alt+click to exclude",
-                        (alt: boolean) => {
-                            if (st[pKey] === key && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
-                            else { st[pKey] = key; st[nKey] = alt; }
-                            applyDate();
-                        });
-                opts.appendChild(preset("1 hour", "1h", label + " in the last hour"));
-                opts.appendChild(preset("Today", "today", label + " today"));
-                opts.appendChild(preset("7 days", "7d", label + " in the last 7 days"));
-                opts.appendChild(preset("30 days", "30d", label + " in the last 30 days"));
-                opts.appendChild(preset("Custom", "custom", "Custom " + label.toLowerCase() + " date range"));
+                // Rolling window: [Last] [N] [hours|days]. The Last chip
+                // arms/disarms the dimension (plain click = only IN the
+                // window; Alt+click = only OUTSIDE, red); N and the unit are
+                // free -- fixed presets were rejected as clutter.
+                opts.appendChild(mkTextChip("Last", st[pKey] === "last" && !st[nKey], st[pKey] === "last" && !!st[nKey],
+                    label + " within the last N " + (st[uKey] === "h" ? "hours" : "days") + " — Alt+click to exclude",
+                    (alt: boolean) => {
+                        if (st[pKey] === "last" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
+                        else { st[pKey] = "last"; st[nKey] = alt; }
+                        applyDate();
+                    }));
+                const num: any = mk("input", "wv-rf-datenum");
+                num.type = "number";
+                num.min = "1"; num.max = "999";
+                num.value = String(st[nnKey] || 1);
+                num.setAttribute("aria-label", label + " window size");
+                let numT: any = null;
+                num.addEventListener("input", (e: any) => {
+                    e.stopPropagation();
+                    const v = Math.max(1, Math.floor(Number(num.value) || 1));
+                    st[nnKey] = v;
+                    // Debounced apply, no popup re-render (keeps focus/caret).
+                    const cw2: any = idoc.defaultView;
+                    if (numT) cw2.clearTimeout(numT);
+                    numT = cw2.setTimeout(async () => {
+                        try {
+                            if (st[pKey] === "last") {
+                                await this._wvApplyReaderFilter(reader);
+                                this._wvReaderEnsureFilterButton(reader, idoc);
+                            }
+                        } catch (_) {}
+                    }, 300);
+                });
+                num.addEventListener("click", (e: any) => e.stopPropagation());
+                opts.appendChild(num);
+                opts.appendChild(mkTextChip(st[uKey] === "h" ? "hours" : "days", false, false,
+                    "Switch between hours and days",
+                    () => { st[uKey] = st[uKey] === "h" ? "d" : "h"; applyDate(); }));
+                opts.appendChild(mkTextChip("Custom", st[pKey] === "custom" && !st[nKey], st[pKey] === "custom" && !!st[nKey],
+                    "Custom " + label.toLowerCase() + " date range — Alt+click to exclude",
+                    (alt: boolean) => {
+                        if (st[pKey] === "custom" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
+                        else { st[pKey] = "custom"; st[nKey] = alt; }
+                        applyDate();
+                    }));
             }, true, label, "wv-rf-daterow");
             if (st[pKey] !== "custom") return;
             // Native input[type=date] for TYPED entry (segmented, localized,
@@ -8544,8 +8582,8 @@ class _ReaderPanelsMixin {
             stack.appendChild(rangeRow);
             stack.appendChild(calHost);
         };
-        dateDim("Added", "dateAddedPreset", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");
-        dateDim("Modified", "dateModPreset", "dateModFrom", "dateModTo", "dateModNeg");
+        dateDim("Added", "dateAddedMode", "dateAddedN", "dateAddedUnit", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");
+        dateDim("Modified", "dateModMode", "dateModN", "dateModUnit", "dateModFrom", "dateModTo", "dateModNeg");
 
         // ---- Bottom hint (same as the library filter).
         const bottom = mk("div", "wv-filter-bottom-controls");
@@ -8726,18 +8764,16 @@ class _ReaderPanelsMixin {
     /** Plugin-layer match (dimensions the native filter lacks + all excludes).
      *  An annotation is hidden (removed from the reader) when this returns false. */
     /** Resolve one date-range dimension to [from, to] in epoch ms (null =
-     *  open end). Computed at match time so "Today" stays correct across
-     *  midnight. */
-    _wvRfDateRange(preset: string | null, fromIso: string | null, toIso: string | null): { from: number | null, to: number | null } {
+     *  open end). Computed at match time so rolling windows stay correct. */
+    _wvRfDateRange(mode: string | null, n: number, unit: string, fromIso: string | null, toIso: string | null): { from: number | null, to: number | null } {
         try {
-            if (!preset) return { from: null, to: null };
-            const now = new Date();
-            const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-            if (preset === "1h") return { from: now.getTime() - 3600000, to: null };
-            if (preset === "today") return { from: midnight, to: null };
-            if (preset === "7d") return { from: now.getTime() - 7 * 86400000, to: null };
-            if (preset === "30d") return { from: now.getTime() - 30 * 86400000, to: null };
-            if (preset === "custom") {
+            if (!mode) return { from: null, to: null };
+            if (mode === "last") {
+                const count = Math.max(1, Math.floor(Number(n) || 1));
+                const ms = unit === "h" ? 3600000 : 86400000;
+                return { from: Date.now() - count * ms, to: null };
+            }
+            if (mode === "custom") {
                 let from: number | null = null, to: number | null = null;
                 // Parse as LOCAL dates: from = start of day, to = end of day.
                 const m1 = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fromIso || "");
@@ -8753,9 +8789,9 @@ class _ReaderPanelsMixin {
     /** True when the annotation's date passes one range dimension.
      *  neg (Alt+click exclude) inverts: pass = OUTSIDE the range; an
      *  unparsable date is never "in range", so it passes when negated. */
-    _wvRfDateDimPass(preset: string | null, fromIso: string | null, toIso: string | null, neg: boolean, raw: any): boolean {
-        if (!preset) return true;
-        const range = this._wvRfDateRange(preset, fromIso, toIso);
+    _wvRfDateDimPass(mode: string | null, n: number, unit: string, fromIso: string | null, toIso: string | null, neg: boolean, raw: any): boolean {
+        if (!mode) return true;
+        const range = this._wvRfDateRange(mode, n, unit, fromIso, toIso);
         if (range.from == null && range.to == null) return true;
         let inRange = false;
         const dt: any = Zotero.Date.sqlToDate(raw, true);
@@ -8884,8 +8920,8 @@ class _ReaderPanelsMixin {
                 if (st.modifiedBy.length && (mn == null || st.modifiedBy.indexOf(mn) < 0)) return false;
                 if (mn != null && st.modifiedByExcl.indexOf(mn) >= 0) return false;
             }
-            if (!this._wvRfDateDimPass(st.dateAddedPreset, st.dateAddedFrom, st.dateAddedTo, !!st.dateAddedNeg, a.dateAdded)) return false;
-            if (!this._wvRfDateDimPass(st.dateModPreset, st.dateModFrom, st.dateModTo, !!st.dateModNeg, a.dateModified)) return false;
+            if (!this._wvRfDateDimPass(st.dateAddedMode, st.dateAddedN, st.dateAddedUnit, st.dateAddedFrom, st.dateAddedTo, !!st.dateAddedNeg, a.dateAdded)) return false;
+            if (!this._wvRfDateDimPass(st.dateModMode, st.dateModN, st.dateModUnit, st.dateModFrom, st.dateModTo, !!st.dateModNeg, a.dateModified)) return false;
             return true;
         } catch (_) { return true; }
     }

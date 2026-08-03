@@ -75,15 +75,16 @@ declare const Zotero: any;
  *
  *  The text after the emoji never reaches the items list; it exists for the
  *  TAG SELECTOR and any tag export, where a bare emoji would be a mystery.
- *  It states both the meaning and the owner, so a user meeting this tag in
- *  a synced library knows what created it and why.
+ *  Kept SHORT while still naming the owner, so a user meeting this tag in a
+ *  synced library can tell what created it without it dominating the tag
+ *  list.
  *
  *  U+25B6 U+FE0F reads as "this is what opens", and avoids the emoji already
  *  in use in this library (U+2B50, U+203C U+FE0F).
  *
  *  WARNING: the tag IS the storage. Changing this constant orphans every
  *  already-marked child — cheap now, expensive after release. */
-export const OPEN_BY_DEFAULT_TAG = "▶️ Weavero: Open by Default";
+export const OPEN_BY_DEFAULT_TAG = "▶️ Weavero Default";
 
 /** Zotero tag types: 0 = manual (user-typed), 1 = automatic (machine-added,
  *  hideable via the tag selector's Display Automatic toggle). */

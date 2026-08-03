@@ -1712,12 +1712,19 @@ class _ReaderPanelsMixin {
             try { va.classList.toggle("wv-ann-sort-on", this._wvAnnSort().field !== "position"); } catch (e) {}
             // DOCUMENT-level capture, not a listener on the button: it fires
             // ahead of every other handler and matches clicks landing on any
-            // child of the icon. Also records every right-click's target into
+            // child. Also records every right-click's target + coords into
             // a small ring (Zotero._wvCtxLog) so "nothing happened" is
-            // diagnosable from one click instead of another guess
-            // (2026-08-03: a synthetic dispatch opened the menu while a real
-            // right-click did nothing).
-            if ((idoc as any).__wvAnnSortCtxWired) return;
+            // diagnosable from one click instead of another guess.
+            // The "annotation tab header" is the WHOLE .sidebar-toolbar strip
+            // while the Annotations tab is active, not just the 28x28 icon --
+            // the user's real click (2026-08-03, ringed) landed 15px below
+            // the icon. Search box excluded so its native copy/paste menu
+            // survives; other tab buttons excluded (they mean "switch tab").
+            if ((idoc as any).__wvAnnSortCtxWired === 2) return;
+            {
+                const prevH = (idoc as any).__wvAnnSortCtxH;
+                if (prevH) { try { idoc.removeEventListener("contextmenu", prevH, true); } catch (e) {} }
+            }
             const h = (e: any) => {
                 try {
                     const Z: any = Zotero as any;
@@ -1725,21 +1732,34 @@ class _ReaderPanelsMixin {
                     const t: any = e.target;
                     const d = t ? ((t.tagName || "?") + "#" + (t.id || "")
                         + "." + String(t.className || "").split(" ")[0]) : "?";
-                    const hit = !!(t && t.closest && t.closest("#viewAnnotations"));
+                    const vaBtn: any = idoc.getElementById("viewAnnotations");
+                    const annActive = !!(vaBtn && vaBtn.classList.contains("active"));
+                    let hit = false;
+                    if (t && t.closest) {
+                        if (t.closest("#viewAnnotations")) {
+                            hit = true;
+                        }
+                        else if (annActive && t.closest(".sidebar-toolbar")
+                            && !t.closest(".search-box") && !t.closest("input")
+                            && !t.closest(".toolbar-button")
+                            && !t.closest(".wv-bm-sidebar-actions")) {
+                            hit = true;
+                        }
+                    }
                     Z._wvCtxLog.push(new Date().toISOString().slice(11, 19)
-                        + " ctxmenu target=" + d + " hitAnnTab=" + hit
+                        + " ctxmenu target=" + d + " at=" + e.clientX + "," + e.clientY
+                        + " annActive=" + annActive + " hit=" + hit
                         + " trusted=" + !!e.isTrusted);
                     if (Z._wvCtxLog.length > 40) Z._wvCtxLog.shift();
                     if (!hit) return;
                     e.preventDefault(); e.stopPropagation();
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const rd = (idoc as any)._wvAnnSortReader;
-                    const anchor = idoc.getElementById("viewAnnotations");
-                    if (P && rd && anchor) P._wvShowAnnSortMenu(rd, idoc, anchor);
+                    if (P && rd && vaBtn) P._wvShowAnnSortMenu(rd, idoc, vaBtn);
                 } catch (err) {}
             };
             idoc.addEventListener("contextmenu", h, true);
-            (idoc as any).__wvAnnSortCtxWired = true;
+            (idoc as any).__wvAnnSortCtxWired = 2;
             (idoc as any).__wvAnnSortCtxH = h;
         } catch (e) {}
     }

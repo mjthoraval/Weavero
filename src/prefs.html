@@ -670,24 +670,10 @@
       survives without Weavero. Search <html:b>wv-defatt</html:b> (or the &#9654;&#65039; glyph) to
       list every marked item; the tag carries no ordinary words on purpose, so it never turns up in
       unrelated searches. Turning this off stops the override but keeps your picks.</html:p>
-
-    <label><html:h3>Migration</html:h3></label>
-    <html:p class="wv-desc" style="margin-inline-start:0">Default attachments picked with
-      <html:b>Default Attachment</html:b> by <html:b>PikaPei</html:b>
-      (github.com/PikaPei/zotero-default-attachment) are imported automatically the first time
-      Weavero starts, and that plugin’s own data is left untouched so you can go back to it. Once
-      you are sure you are done with it, you can clear the picks it still stores.</html:p>
-    <hbox align="center">
-      <html:button type="button" id="wv-clear-legacy-defatt">Clear stored data from Default Attachment (PikaPei)</html:button>
-      <html:span id="wv-clear-legacy-defatt-status" class="wv-desc" style="margin-inline-start:.75em"></html:span>
-    </hbox>
-    <html:p class="wv-desc">Shows exactly what will happen and asks before doing anything. It
-      imports anything still outstanding, then removes only that plugin’s stored picks (a single
-      preference). Picks it cannot import — attachment trashed, moved to another item, or deleted
-      — are listed first; where the attachment still exists you can choose to mark it in Weavero
-      so the pick survives (a trashed one starts working again once restored). That preference is
-      the only copy, so the deletion cannot be undone. Your Weavero defaults are tags on the
-      attachments and are not affected, and the plugin itself is not disabled.</html:p>
+    <html:p class="wv-desc">Coming from <html:b>Default Attachment</html:b> by <html:b>PikaPei</html:b>?
+      Your picks are imported automatically the first time Weavero starts, and that plugin’s own
+      data is left untouched — see the README for how to remove it by hand once you are done
+      with it.</html:p>
   </groupbox>
 
   <!-- ============================ External viewer -->

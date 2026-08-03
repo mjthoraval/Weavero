@@ -230,8 +230,8 @@ class _AttachmentsMixin {
      *  safe from `popupshowing` handlers (which cannot await).
      *
      *  Deliberately NOT gated by the master switch — this reports what the
-     *  LIBRARY says, which the migration and purge still need while the
-     *  feature is off. The gate lives in `_wvGetDefaultChild`. */
+     *  LIBRARY says, which the migration still needs while the feature is
+     *  off. The gate lives in `_wvGetDefaultChild`. */
     _wvIsDefaultChild(child: any): boolean {
         try {
             if (!child || typeof child.getTags !== "function") return false;
@@ -293,10 +293,10 @@ class _AttachmentsMixin {
     /** Does `child`'s PARENT already carry a Weavero default on any sibling?
      *
      *  Deliberately NOT routed through `_wvGetDefaultChild`, which is gated by
-     *  the master switch: the migration and the purge must see the library's
-     *  real state even while the feature is switched off, or a purge run with
-     *  the feature off would conclude "no Weavero choice here" and overwrite
-     *  one. Reads through the ungated `_wvIsDefaultChild` instead. */
+     *  the master switch: the migration must see the library's real state even
+     *  while the feature is switched off, or an import run with the feature
+     *  off would conclude "no Weavero choice here" and overwrite one. Reads
+     *  through the ungated `_wvIsDefaultChild` instead. */
     _wvParentHasDefault(child: any): boolean {
         try {
             const parent = child && child.parentID ? Zotero.Items.get(child.parentID) : null;
@@ -701,6 +701,15 @@ class _AttachmentsMixin {
             result.ran = true;
             Object.assign(result, await this._wvImportLegacyMappings());
             Zotero.Prefs.set("weavero.defaultChildMigrated", true);
+            if (result.migrated) {
+                // Queue the user-facing notice. Stored as a PREF, not shown
+                // here: startup can run before any main window exists, so the
+                // toast has to be raised from window load. The pref also
+                // survives a restart, so a notice the user never saw comes
+                // back rather than being lost — the whole point is that
+                // someone running both plugins realises this happened.
+                Zotero.Prefs.set("weavero.defaultChildMigrationNotice", result.migrated);
+            }
             if (result.found) {
                 Zotero.debug("[Weavero] default-attachment migration: "
                     + result.migrated + " migrated, " + result.skipped + " skipped of "
@@ -712,17 +721,71 @@ class _AttachmentsMixin {
         return result;
     }
 
+    /** Raise the one-time "we imported your picks" notice, if one is pending.
+     *
+     *  Called from window load (and from startup for windows already open),
+     *  because the migration itself can run before any main window exists.
+     *
+     *  STICKY and acknowledgement-backed: the pref is cleared only when the
+     *  user actually dismisses the toast, so an unseen notice reappears next
+     *  start instead of evaporating. A silent takeover is the failure mode
+     *  here — someone running both plugins would otherwise find their picks
+     *  answered by Weavero, and the other plugin's "Set Default" entry gone,
+     *  with nothing explaining either. */
+    async _wvShowMigrationNotice(win: any): Promise<void> {
+        try {
+            const n = Number(Zotero.Prefs.get("weavero.defaultChildMigrationNotice") || 0);
+            if (!n) return;
+            const doc = win && win.document;
+            if (!doc || doc.getElementById("wv-defatt-notice")) return;
+
+            // Wording depends on whether the other plugin is still around.
+            // Guarded: the notice must render even if this lookup fails.
+            let rivalInstalled = false;
+            try {
+                const ids: string[] = await Zotero.Plugins.getAllPluginIDs();
+                rivalInstalled = !!ids && ids.indexOf("default-attachment@zotero-plugin") !== -1;
+            } catch (e) { /* fall back to the neutral wording */ }
+
+            const lines = [
+                "Imported " + n + " default attachment" + (n === 1 ? "" : "s")
+                    + " from Default Attachment (PikaPei).",
+                "Weavero now decides which attachment opens, and stores each choice as the tag "
+                    + OPEN_BY_DEFAULT_TAG + " so it syncs to your other devices.",
+            ];
+            if (rivalInstalled) {
+                lines.push("That plugin's own “Set Default” menu entry is hidden while this "
+                    + "feature is on, so there is only one way to set a default.");
+            }
+            lines.push("Its stored data was left untouched — the README explains how to "
+                + "remove it by hand.");
+            lines.push("Click to dismiss.");
+
+            this._wvToast("Weavero — default attachments imported", lines, {
+                id: "wv-defatt-notice",
+                accent: "info",
+                win,
+                onDismiss: () => {
+                    try { Zotero.Prefs.clear("weavero.defaultChildMigrationNotice"); }
+                    catch (e) {}
+                },
+            });
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvShowMigrationNotice err: " + e);
+        }
+    }
+
     /** Read the legacy pref and mark every entry it can, WITHOUT touching the
-     *  run-once guard. Split out from the migration so the purge can re-run it
-     *  immediately before deleting anything (see
-     *  `_wvClearLegacyDefaultAttachments`) — the migration only runs once, so
-     *  without this a purge could delete picks that were never imported.
+     *  run-once guard. Kept separate from `_wvMigrateDefaultAttachmentPlugin`
+     *  so the import itself stays callable and testable independently of the
+     *  guard that decides *when* it runs.
      *
      *  Reports `unresolved` — entries that could NOT be turned into a Weavero
-     *  mark, with the reason. These are the dangerous ones: their attachment
-     *  is gone, trashed, or re-parented, so the legacy pref is the ONLY record
-     *  of the user's choice. `skipped` counts them plus entries that were
-     *  already marked (harmless). */
+     *  mark, with the reason: their attachment is gone, trashed, or
+     *  re-parented. Weavero leaves the legacy pref alone in every case, so
+     *  those picks simply stay where they are; the README explains removing
+     *  that data by hand. `skipped` counts them plus entries that were already
+     *  marked or superseded (both harmless). */
     async _wvImportLegacyMappings(): Promise<any> {
         const out: any = {
             found: 0, migrated: 0, skipped: 0,
@@ -738,8 +801,8 @@ class _AttachmentsMixin {
         let mappings: any = null;
         try { mappings = JSON.parse(String(raw)); } catch (e) {
             Zotero.debug("[Weavero] default-attachment migration: unparsable pref");
-            // An unparsable pref is unresolved by definition: we cannot prove
-            // anything was imported, so a purge must refuse.
+            // An unparsable pref is unresolved by definition: nothing in it
+            // can be trusted, so nothing is imported from it.
             out.unresolved.push({ parentID: null, attID: null, reason: "unparsable" });
             return out;
         }
@@ -769,11 +832,9 @@ class _AttachmentsMixin {
                 // The user already has a DIFFERENT Weavero choice for this
                 // parent. Never overwrite it: the legacy value is older and
                 // unsynced, and _wvSetDefaultChild clears siblings, so
-                // importing would silently replace a deliberate choice — and
-                // the purge would then delete the only copy of what was
-                // replaced. An explicit Weavero pick supersedes the legacy
-                // one; that is not lost information, it was overridden on
-                // purpose.
+                // importing would silently replace a deliberate choice. An
+                // explicit Weavero pick supersedes the legacy one; that is not
+                // lost information, it was overridden on purpose.
                 if (this._wvParentHasDefault(att)) {
                     out.skipped++;
                     out.superseded++;
@@ -788,180 +849,6 @@ class _AttachmentsMixin {
             }
         }
         return out;
-    }
-
-    /** How many legacy picks the old plugin still stores (0 when none/absent).
-     *  Cheap and read-only — safe to call from a prefs pane to decide whether
-     *  to offer the purge at all. */
-    _wvLegacyDefaultAttachmentCount(): number {
-        try {
-            const raw: any = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
-            if (!raw) return 0;
-            const m = JSON.parse(String(raw));
-            if (!m || typeof m !== "object" || Array.isArray(m)) return 0;
-            return Object.keys(m).length;
-        } catch (e) {
-            return 0;
-        }
-    }
-
-    /** Purge PikaPei/zotero-default-attachment's stored picks.
-     *
-     *  All of that plugin's state is ONE pref — the JSON map described in
-     *  `_wvMigrateDefaultAttachmentPlugin` — so clearing it removes every
-     *  legacy default in a single call. Nothing else of theirs persists: no
-     *  tags, no item fields, no files.
-     *
-     *  Explicit user action ONLY. Migration deliberately leaves the pref
-     *  intact so the user can roll back to that plugin; this is the opt-in
-     *  tidy-up for when they are sure they are done with it.
-     *
-     *  NOTE: it does not touch Weavero's own marks — those already live as
-     *  tags on the children — and it does not uninstall or disable the other
-     *  plugin. If that plugin is still enabled it will simply have no picks,
-     *  and can create new ones again.
-     *
-     *  IRREVERSIBLE: the pref is the ONLY record of those choices — local ids,
-     *  nothing synced, no second copy. So this is CONFIRMED, NOT GUARDED: the
-     *  caller is expected to show `_wvPlanLegacyPurge()` to the user first and
-     *  only call this once they have approved it. Once called, it imports
-     *  everything it can and then clears the pref UNCONDITIONALLY, including
-     *  entries it could not import.
-     *
-     *  That is a deliberate reversal of the earlier design, which refused
-     *  wholesale if any single entry could not be accounted for. Refusing
-     *  produced a dead end: an entry whose attachment had been permanently
-     *  deleted could never be imported, and the rival's own self-pruning only
-     *  runs while that plugin is still enabled — so a user who had already
-     *  disabled it was left with a button that could never succeed and no way
-     *  to say "yes, I know, drop it". Consent at the dialog replaces the
-     *  guard.
-     *
-     *  Returns {cleared, total, imported, superseded, unresolved[]} so the
-     *  caller can report what actually happened, including what was lost. */
-    async _wvClearLegacyDefaultAttachments(opts?: any): Promise<any> {
-        const res: any = {
-            cleared: false, total: 0, imported: 0, superseded: 0,
-            unresolved: [], forceMarked: 0, lost: 0,
-        };
-        const PREF = "extensions.zotero.defaultattachment.mappings";
-        try {
-            let raw: any = null;
-            try { raw = Zotero.Prefs.get(PREF, true); } catch (e) { /* absent */ }
-            if (!raw) return res;                     // nothing stored — no-op
-            res.total = this._wvLegacyDefaultAttachmentCount();
-
-            // Import everything importable first, so nothing recoverable is
-            // thrown away just because the user approved the delete.
-            const imp = await this._wvImportLegacyMappings();
-            res.imported = imp.migrated;
-            res.superseded = imp.superseded;
-            res.unresolved = imp.unresolved.slice();
-
-            // OPTIONAL rescue pass. Tags the attachments behind entries that
-            // could not be imported normally, so the pick survives the delete:
-            // a trashed one starts working again when restored, a re-parented
-            // one becomes the default of the item it now lives under. Skips
-            // any whose (new) parent already has a Weavero choice — the
-            // supersede rule applies here too, or a rescue could overwrite a
-            // deliberate pick. A permanently deleted attachment cannot be
-            // rescued and is counted as lost.
-            if (opts && opts.markUnresolved) {
-                for (const u of res.unresolved) {
-                    try {
-                        const att = u.attID ? Zotero.Items.get(u.attID) : null;
-                        if (!att) { res.lost++; continue; }
-                        if (this._wvIsDefaultChild(att)) continue;
-                        if (this._wvParentHasDefault(att)) { res.superseded++; continue; }
-                        att.addTag(OPEN_BY_DEFAULT_TAG, TAG_TYPE_AUTOMATIC);
-                        await att.saveTx(MARKER_SAVE_OPTS);
-                        u.rescued = true;
-                        res.forceMarked++;
-                    } catch (e) {
-                        res.lost++;
-                        Zotero.debug("[Weavero] rescue-mark err: " + e);
-                    }
-                }
-            }
-            else {
-                res.lost = res.unresolved.length;
-            }
-
-            Zotero.Prefs.clear(PREF, true);
-            res.cleared = true;
-            Zotero.debug("[Weavero] cleared " + res.total + " legacy mapping(s): "
-                + res.imported + " imported, " + res.superseded + " superseded, "
-                + res.forceMarked + " rescued, " + res.lost + " lost");
-        } catch (e) {
-            Zotero.debug("[Weavero] _wvClearLegacyDefaultAttachments err: " + e);
-        }
-        return res;
-    }
-
-    /** Classify what a purge WOULD do, writing nothing.
-     *
-     *  Read-only by design: this is what the confirmation dialog is built
-     *  from, so it must be safe to call without committing to anything. Each
-     *  entry lands in exactly one bucket — `willImport`, `alreadyMarked`,
-     *  `superseded`, or `unresolved` (with the reason, which is what the user
-     *  needs in order to judge what they are about to lose). */
-    _wvPlanLegacyPurge(): any {
-        const plan: any = {
-            total: 0, willImport: 0, alreadyMarked: 0, superseded: 0,
-            unresolved: [], markable: 0, unsalvageable: 0,
-        };
-        try {
-            let raw: any = null;
-            try {
-                raw = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
-            } catch (e) { /* absent */ }
-            if (!raw) return plan;
-
-            let mappings: any = null;
-            try { mappings = JSON.parse(String(raw)); }
-            catch (e) {
-                plan.unresolved.push({
-                    parentID: null, attID: null, reason: "unparsable", markable: false,
-                });
-                plan.unsalvageable++;
-                return plan;
-            }
-            if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return plan;
-
-            for (const parentID of Object.keys(mappings)) {
-                plan.total++;
-                const attID = mappings[parentID];
-                try {
-                    const att = Zotero.Items.get(attID);
-                    let reason = "";
-                    if (!att) reason = "missing";
-                    else if (att.deleted) reason = "trashed";
-                    else if (String(att.parentID) !== String(parentID)) reason = "reparented";
-                    if (reason) {
-                        // MARKABLE = the attachment still exists, so the pick
-                        // can be preserved by tagging it anyway even though it
-                        // cannot be honoured right now. A trashed one starts
-                        // working again the moment it is restored; a
-                        // re-parented one becomes the default of the item it
-                        // now lives under. Only a permanently deleted
-                        // attachment is beyond saving.
-                        const markable = reason !== "missing";
-                        plan.unresolved.push({ parentID, attID, reason, markable });
-                        if (markable) plan.markable++;
-                        else plan.unsalvageable++;
-                        continue;
-                    }
-                    if (this._wvIsDefaultChild(att)) { plan.alreadyMarked++; continue; }
-                    if (this._wvParentHasDefault(att)) { plan.superseded++; continue; }
-                    plan.willImport++;
-                } catch (e) {
-                    plan.unresolved.push({ parentID, attID, reason: "error" });
-                }
-            }
-        } catch (e) {
-            Zotero.debug("[Weavero] _wvPlanLegacyPurge err: " + e);
-        }
-        return plan;
     }
 
     // ---- UI: the items-list context menu ---------------------------------

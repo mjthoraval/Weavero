@@ -184,34 +184,61 @@ class WeaveroPlugin {
             .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
         if (!arr.length) return;
         Zotero.debug("[Weavero] link warning — " + arr.join(" | "));
+        this._wvToast("Weavero — broken link", arr, {
+            id: "wv-link-toast",
+            accent: "amber",
+            autoCloseMs: 11000,
+        });
+    }
+
+    /** Self-contained DOM toast in a main window.
+     *
+     *  Exists because the obvious alternatives do not work here:
+     *  `Zotero.ProgressWindow` renders BLANK, and `Services.prompt.alert` is
+     *  suppressed whenever DevTools is attached — which includes the dev MCP
+     *  bridge, so an alert-based notice would be invisible during testing and
+     *  look "fixed" when it was never shown.
+     *
+     *  opts: { id, accent: "amber"|"info", autoCloseMs, win, onDismiss }.
+     *  Omitting `autoCloseMs` makes the toast STICKY — it stays until clicked.
+     *  That is the right default for a one-shot notice: an auto-closing toast
+     *  fired during startup is trivially missed, which defeats the point.
+     *
+     *  `onDismiss` runs only on a real dismissal (click), never on the
+     *  auto-close path, so a caller can use it to record acknowledgement. */
+    _wvToast(title, messages, opts) {
+        const o = opts || {};
+        const arr = (Array.isArray(messages) ? messages : [messages])
+            .map((m) => (m == null ? "" : String(m).trim())).filter(Boolean);
         try {
-            const win = Zotero.getMainWindow();
+            const win = o.win || Zotero.getMainWindow();
             const doc = win && win.document;
-            if (!doc) return;
-            // Self-contained DOM toast injected into the main window —
-            // avoids `Zotero.ProgressWindow` / `Services.prompt.alert`
-            // (the former renders blank and the latter is suppressed
-            // when DevTools is attached, e.g. the dev MCP bridge). Amber
-            // colours read on both the light and dark Zotero themes.
+            if (!doc) return null;
             const HTMLNS = "http://www.w3.org/1999/xhtml";
-            const old = doc.getElementById("wv-link-toast");
+            const id = o.id || "wv-toast";
+            const old = doc.getElementById(id);
             if (old) { try { old.remove(); } catch (e) {} }
             // Force the HTML namespace — the main window's root element
             // is a XUL `<window>`, so a bare `createElement("div")` can
             // come out as a non-rendering XUL element on some builds.
             const box: any = doc.createElementNS(HTMLNS, "div");
-            box.id = "wv-link-toast";
+            box.id = id;
+            // Both palettes read on the light AND dark Zotero themes.
+            const palette = o.accent === "info"
+                ? ["#12385c", "#d6ecff", "#1d5c94"]
+                : ["#5a3d00", "#ffe9b3", "#8a6500"];
             box.style.cssText = [
                 "position:fixed", "bottom:14px", "right:14px", "z-index:2147483647",
                 "max-width:420px", "padding:11px 13px", "border-radius:7px",
-                "background:#5a3d00", "color:#ffe9b3", "border:1px solid #8a6500",
+                "background:" + palette[0], "color:" + palette[1],
+                "border:1px solid " + palette[2],
                 "box-shadow:0 4px 18px rgba(0,0,0,.45)",
                 "font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
                 "cursor:pointer", "user-select:text",
             ].join(";");
             const head: any = doc.createElementNS(HTMLNS, "div");
             head.style.cssText = "font-weight:600;margin-bottom:3px";
-            head.textContent = "Weavero — broken link";
+            head.textContent = title;
             box.appendChild(head);
             for (const m of arr) {
                 const line: any = doc.createElementNS(HTMLNS, "div");
@@ -220,12 +247,20 @@ class WeaveroPlugin {
                 box.appendChild(line);
             }
             box.title = "Click to dismiss";
-            box.addEventListener("click", () => { try { box.remove(); } catch (e) {} });
+            box.addEventListener("click", () => {
+                try { box.remove(); } catch (e) {}
+                try { if (typeof o.onDismiss === "function") o.onDismiss(); }
+                catch (e) { Zotero.debug("[Weavero] toast onDismiss err: " + e); }
+            });
             (doc.documentElement || doc).appendChild(box);
-            try { win.setTimeout(() => { try { box.remove(); } catch (e) {} }, 11000); }
-            catch (e) {}
+            if (o.autoCloseMs) {
+                try { win.setTimeout(() => { try { box.remove(); } catch (e) {} }, o.autoCloseMs); }
+                catch (e) {}
+            }
+            return box;
         } catch (e) {
-            Zotero.debug("[Weavero] _showLinkWarning err: " + e);
+            Zotero.debug("[Weavero] _wvToast err: " + e);
+            return null;
         }
     }
 
@@ -4419,6 +4454,11 @@ class WeaveroPlugin {
             // wrapper. See modules/attachments.ts.
             try { (this as any)._wvWireDefaultAttachment(); } catch (e) {}
             try { (this as any)._wvWireDefaultChildMenu(_window); } catch (e) {}
+            // A pending "we imported your picks" notice. This is the path that
+            // covers a COLD start, where the import ran before any window
+            // existed. The pref is only cleared once the user dismisses the
+            // toast, so it reappears until actually acknowledged.
+            try { (this as any)._wvShowMigrationNotice(_window); } catch (e) {}
             // Re-assert the getBestAttachment override after other plugins
             // have had time to load: PikaPei/zotero-default-attachment patches
             // the same method, and the LAST wrapper wins. Idempotent - a no-op
@@ -5350,8 +5390,15 @@ Zotero.Weavero = {
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.
+                // Raise the resulting notice once the import settles, for a
+                // window that is ALREADY open (a reload, or a plugin enabled
+                // mid-session). A cold start has no window yet — that case is
+                // covered from onMainWindowLoad.
                 try {
-                    _Weavero._wvMigrateDefaultAttachmentPlugin().catch(() => {});
+                    _Weavero._wvMigrateDefaultAttachmentPlugin().then(() => {
+                        const w = Zotero.getMainWindow();
+                        if (w) _Weavero._wvShowMigrationNotice(w);
+                    }).catch(() => {});
                 } catch (e) {}
                 // Per-window UI must ALSO be wired for windows already open at
                 // reload time: onMainWindowLoad does not re-fire for them.

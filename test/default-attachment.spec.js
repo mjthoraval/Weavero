@@ -204,6 +204,54 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             }
         });
 
+        // -- master switch --------------------------------------------
+
+        // Read at CALL time, so a toggle takes effect with no reload and no
+        // re-wiring — the wrapper stays installed and simply stops
+        // overriding, which keeps the competitor-coexistence chain intact.
+        describe("master switch", () => {
+            const PREF = "weavero.enableDefaultChild";
+            after(async () => {
+                Zotero.Prefs.clear(PREF);
+                await wv._wvClearDefaultChild(fileAtt);
+            });
+
+            it("defaults ON when the pref was never set", () => {
+                Zotero.Prefs.clear(PREF);
+                expect(wv._wvDefaultChildEnabled()).to.equal(true);
+            });
+
+            it("stops resolving a default when switched off", async () => {
+                await wv._wvSetDefaultChild(fileAtt);
+                Zotero.Prefs.set(PREF, false);
+                expect(wv._wvGetDefaultChild(parent)).to.equal(null);
+                // ...and getBestAttachment falls back to Zotero's own choice.
+                const best = await parent.getBestAttachment();
+                expect(best ? best.id : null).to.not.equal(note.id);
+            });
+
+            it("keeps the marker tag while off — off means stop, not forget", () => {
+                Zotero.Prefs.set(PREF, false);
+                expect(wv._wvIsDefaultChild(fileAtt)).to.equal(true);
+            });
+
+            it("restores the pick when switched back on, with no re-wiring", async () => {
+                Zotero.Prefs.set(PREF, false);
+                expect(wv._wvGetDefaultChild(parent)).to.equal(null);
+                Zotero.Prefs.set(PREF, true);
+                expect(wv._wvGetDefaultChild(parent).id).to.equal(fileAtt.id);
+                const best = await parent.getBestAttachment();
+                expect(best && best.id).to.equal(fileAtt.id);
+            });
+
+            it("declines the open helper while off", async () => {
+                const zp = Zotero.getMainWindow().ZoteroPane;
+                Zotero.Prefs.set(PREF, false);
+                expect(await wv._wvTryOpenDefaultChild(zp, [parent], null, {}))
+                    .to.equal(false);
+            });
+        });
+
         // -- Date Modified / sync ------------------------------------
 
         it("does NOT change Date Modified on set, move, or clear", async () => {
@@ -389,6 +437,27 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             const r = await wv._wvClearLegacyDefaultAttachments();
             expect(r.cleared).to.equal(false);
             expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+        });
+
+        // Skipping the import while the feature is off must NOT burn the
+        // run-once guard, or enabling it later would silently lose the picks.
+        it("does not burn the run-once guard while the feature is off", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            Zotero.Prefs.clear("weavero.defaultChildMigrated");
+            Zotero.Prefs.set("weavero.enableDefaultChild", false);
+            try {
+                const r = await wv._wvMigrateDefaultAttachmentPlugin();
+                expect(r.ran).to.equal(false);
+                expect(Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(undefined);
+            }
+            finally {
+                Zotero.Prefs.clear("weavero.enableDefaultChild");
+            }
+            // Enabling it later still imports.
+            const r2 = await wv._wvMigrateDefaultAttachmentPlugin();
+            expect(r2.ran).to.equal(true);
+            expect(wv._wvIsDefaultChild(att)).to.equal(true);
+            await wv._wvClearDefaultChild(att);
         });
 
         it("does nothing (and reports nothing) when the pref is absent", async () => {

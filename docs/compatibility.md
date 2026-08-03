@@ -54,6 +54,10 @@ depend on v10-only row classes), but unconfirmed — check before relying.
 | Bookmarks — collections-pane dropdown (items / collections / searches / URLs) | Untested | Yes | bookmarks module; local JSON store. |
 | Bookmarks — reader sidebar tab (positions / pages / selected text) | Untested | Yes | reader-panels + bookmarks; uses the reader sidebar-tab API. |
 | Reader annotation filter (funnel) | Untested | Yes | reader-panels module; drives `reader.setFilter({hiddenIDs})`. |
+| Reader annotation sorting (position / date added / date modified) | Untested | Yes (verified 2026-08-03, dev.75) | reader-panels; right-click the Annotations tab header; content-side render wrapper + chrome rank maps; toggle in Settings → Sort & Filters. |
+| Reader filter date ranges (Added / Modified, rolling Last-N + custom calendar) | Untested | Yes (verified 2026-08-03, dev.66) | reader-panels; typed entry incl. year-only, arrows, Tab; Weavero-own calendar — Zotero's Gecko build ships no working native date picker or content `<select>`. |
+| Copy Link to Selected Text / This Position (`wvpos`) | Untested | Yes (verified dev.26) | url module; self-contained payload, links degrade to plain page-open without Weavero. |
+| Default attachment / child to open | Untested | Yes (verified 2026-08-03, dev.78 merge; developed on the Zotero 10 source build) | attachments module; synced automatic-tag marker `▶️ wv-defatt`; wraps `getBestAttachment` outermost; coexists with PikaPei/zotero-default-attachment (read-only, optional import). |
 | Interlinked navigation (Ctrl/Shift+click internal links) | Untested | Yes | reader module; built on zotero/reader `PDFView` hit-test. |
 | Pinned tabs (Firefox-style) | Untested | Yes | tabs module. |
 | Tab groups | Untested | Yes | tab-groups module. |

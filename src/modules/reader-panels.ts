@@ -269,11 +269,31 @@ const RP_POPUP_CSS = [
     // last text glyphs and the date; a tags row leaves 5.4px. -1px equalises
     // -- an earlier -5px guess based on box slack overshot badly (0.4px).
     ".annotation .preview:has(button.tags) + .wv-ann-date{margin-top:-1px;}",
-    // Date-range custom inputs row in the filter popup.
-    ".wv-rf-daterange{display:flex;gap:5px;align-items:center;padding:2px 10px 6px;font-size:11px;opacity:.9;}",
-    ".wv-rf-daterange input{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
-    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
+    // Date-range custom row + Weavero mini calendar in the filter popup.
+    ".wv-rf-daterange{display:flex;gap:5px;align-items:center;padding:2px 10px 4px;font-size:11px;opacity:.9;}",
     ".wv-rf-datechip-gap{flex:0 0 8px;}",
+    ".wv-rf-datebtn{font-size:11px;padding:2px 8px;background:transparent;color:inherit;cursor:pointer;",
+    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;}",
+    ".wv-rf-datebtn:hover,.wv-rf-datebtn[data-open]{background:var(--fill-quinary,rgba(127,127,127,.12));}",
+    ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
+    "  border:none;cursor:pointer;opacity:.6;}",
+    ".wv-rf-dateclear:hover{opacity:1;}",
+    ".wv-rf-calhost{padding:0 10px 6px;}",
+    ".wv-rf-cal{border:1px solid var(--color-panedivider,rgba(127,127,127,.3));border-radius:6px;",
+    "  padding:6px;display:inline-block;}",
+    ".wv-rf-cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}",
+    ".wv-rf-cal-title{font-size:11px;font-weight:600;}",
+    ".wv-rf-cal-nav{font-size:13px;line-height:1;padding:1px 7px;background:transparent;color:inherit;",
+    "  border:none;border-radius:4px;cursor:pointer;}",
+    ".wv-rf-cal-nav:hover{background:var(--fill-quinary,rgba(127,127,127,.12));}",
+    ".wv-rf-cal-grid{display:grid;grid-template-columns:repeat(7,22px);gap:1px;}",
+    ".wv-rf-cal-wd{font-size:9px;opacity:.55;text-align:center;padding:1px 0;}",
+    ".wv-rf-cal-pad{}",
+    ".wv-rf-cal-day{font-size:10px;padding:2px 0;text-align:center;background:transparent;color:inherit;",
+    "  border:none;border-radius:4px;cursor:pointer;}",
+    ".wv-rf-cal-day:hover{background:var(--fill-quinary,rgba(127,127,127,.15));}",
+    ".wv-rf-cal-day[data-today]{outline:1px solid var(--color-panedivider,rgba(127,127,127,.5));}",
+    ".wv-rf-cal-day[data-selected]{background:var(--color-accent,#5e6ad2);color:#fff;}",
     // Sort bar between the sidebar toolbar and the annotations list.
     ".wv-ann-sortbar{display:flex;gap:4px;align-items:center;padding:3px 8px;",
     "  border-bottom:1px solid var(--color-panedivider,rgba(127,127,127,.3));flex:0 0 auto;}",
@@ -8445,30 +8465,56 @@ class _ReaderPanelsMixin {
             opts.appendChild(preset("Custom", "custom", "Custom date range"));
         }, true);
         if (st.datePreset === "custom") {
+            // Weavero-own date buttons + mini calendar -- input[type=date]'s
+            // native picker CANNOT work in Zotero (see _wvRfMiniCal).
             const rangeRow = mk("div", "wv-rf-daterange");
-            const mkDateInput = (val: string | null, aria: string, onChange: (v: string | null) => void) => {
-                const inp: any = mk("input");
-                inp.type = "date";
-                if (val) inp.value = val;
-                inp.setAttribute("aria-label", aria);
-                // Apply WITHOUT re-rendering the popup -- a rebuild mid-edit
-                // would replace the input and close the native picker.
-                inp.addEventListener("change", async (e: any) => {
-                    e.stopPropagation();
-                    onChange(inp.value || null);
-                    await this._wvApplyReaderFilter(reader);
-                    this._wvReaderEnsureFilterButton(reader, idoc);
-                });
-                inp.addEventListener("click", (e: any) => e.stopPropagation());
-                return inp;
+            const calHost = mk("div", "wv-rf-calhost");
+            let calFor: string | null = null;
+            const fmtIso = (v: string | null) => {
+                const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || "");
+                return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString() : "—";
             };
-            const lbFrom = mk("span"); lbFrom.textContent = "from";
-            const lbTo = mk("span"); lbTo.textContent = "to";
-            rangeRow.appendChild(lbFrom);
-            rangeRow.appendChild(mkDateInput(st.dateFrom, "Range start", (v) => { st.dateFrom = v; }));
-            rangeRow.appendChild(lbTo);
-            rangeRow.appendChild(mkDateInput(st.dateTo, "Range end", (v) => { st.dateTo = v; }));
+            const openCal = (which: string, btn: any) => {
+                while (calHost.firstChild) calHost.removeChild(calHost.firstChild);
+                if (calFor === which) { calFor = null; return; }
+                calFor = which;
+                const cur = which === "from" ? st.dateFrom : st.dateTo;
+                calHost.appendChild(this._wvRfMiniCal(idoc, cur, async (isoV: string) => {
+                    if (which === "from") st.dateFrom = isoV; else st.dateTo = isoV;
+                    await this._wvApplyReaderFilter(reader);
+                    this._wvRenderReaderFilterPopup(reader, idoc, popup);
+                    this._wvReaderEnsureFilterButton(reader, idoc);
+                }));
+                btn.dataset.open = "true";
+            };
+            const mkDateBtn = (which: string, label: string, get: () => string | null, clear: () => void) => {
+                const lb = mk("span"); lb.textContent = label;
+                rangeRow.appendChild(lb);
+                const b = mk("button", "wv-rf-datebtn");
+                b.type = "button";
+                b.textContent = fmtIso(get());
+                b.title = "Pick a date";
+                b.addEventListener("click", (e: any) => { e.stopPropagation(); openCal(which, b); });
+                rangeRow.appendChild(b);
+                if (get()) {
+                    const x = mk("button", "wv-rf-dateclear");
+                    x.type = "button";
+                    x.textContent = "×";
+                    x.title = "Clear " + label;
+                    x.addEventListener("click", async (e: any) => {
+                        e.stopPropagation();
+                        clear();
+                        await this._wvApplyReaderFilter(reader);
+                        this._wvRenderReaderFilterPopup(reader, idoc, popup);
+                        this._wvReaderEnsureFilterButton(reader, idoc);
+                    });
+                    rangeRow.appendChild(x);
+                }
+            };
+            mkDateBtn("from", "from", () => st.dateFrom, () => { st.dateFrom = null; });
+            mkDateBtn("to", "to", () => st.dateTo, () => { st.dateTo = null; });
             stack.appendChild(rangeRow);
+            stack.appendChild(calHost);
         }
 
         // ---- Bottom hint (same as the library filter).
@@ -8670,6 +8716,85 @@ class _ReaderPanelsMixin {
             }
         } catch (_) {}
         return { from: null, to: null };
+    }
+
+    /** Compact month-grid calendar for the date-range filter. Weavero-OWN
+     *  widget because Zotero's Gecko build ships WITHOUT the toolkit date
+     *  picker (chrome://global/content/datepicker.xhtml etc. absent from
+     *  omni; only a stale non-functional DateTimePickerPanel husk exists in
+     *  the window) -- a native input[type=date] opens a calendar that can
+     *  never commit (verified 2026-08-03). Locale-aware: weekday initials
+     *  and first-day-of-week follow the app locale.
+     *  selIso: current "YYYY-MM-DD" or null; onPick(iso) on day click. */
+    _wvRfMiniCal(idoc: any, selIso: string | null, onPick: (iso: string) => void) {
+        const NS = NS_HTML_RP;
+        const mk = (tag: string, cls?: string) => {
+            const el = idoc.createElementNS(NS, tag);
+            if (cls) el.className = cls;
+            return el;
+        };
+        const root = mk("div", "wv-rf-cal");
+        const selM = /^(\d{4})-(\d{2})-(\d{2})$/.exec(selIso || "");
+        const today = new Date();
+        let viewY = selM ? +selM[1] : today.getFullYear();
+        let viewMo = selM ? +selM[2] - 1 : today.getMonth();
+        let firstDay = 1;   // Monday fallback
+        try { firstDay = (new (Intl as any).Locale(Zotero.locale)).getWeekInfo().firstDay % 7; } catch (_) {}
+        const iso = (y: number, m: number, d: number) =>
+            y + "-" + String(m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+        const todayIso = iso(today.getFullYear(), today.getMonth(), today.getDate());
+        const render = () => {
+            while (root.firstChild) root.removeChild(root.firstChild);
+            const head = mk("div", "wv-rf-cal-head");
+            const nav = (label: string, delta: number) => {
+                const b = mk("button", "wv-rf-cal-nav");
+                b.type = "button";
+                b.textContent = label;
+                b.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    viewMo += delta;
+                    if (viewMo < 0) { viewMo = 11; viewY--; }
+                    if (viewMo > 11) { viewMo = 0; viewY++; }
+                    render();
+                });
+                return b;
+            };
+            head.appendChild(nav("‹", -1));
+            const title = mk("span", "wv-rf-cal-title");
+            title.textContent = new Date(viewY, viewMo, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+            head.appendChild(title);
+            head.appendChild(nav("›", 1));
+            root.appendChild(head);
+            const grid = mk("div", "wv-rf-cal-grid");
+            for (let i = 0; i < 7; i++) {
+                const wd = mk("span", "wv-rf-cal-wd");
+                // Weekday initials in locale order starting from firstDay.
+                // 2024-01-07 was a Sunday; +day offsets give stable labels.
+                wd.textContent = new Date(2024, 0, 7 + ((firstDay + i) % 7))
+                    .toLocaleDateString(undefined, { weekday: "narrow" });
+                grid.appendChild(wd);
+            }
+            const first = new Date(viewY, viewMo, 1);
+            const lead = (first.getDay() - firstDay + 7) % 7;
+            const daysIn = new Date(viewY, viewMo + 1, 0).getDate();
+            for (let i = 0; i < lead; i++) grid.appendChild(mk("span", "wv-rf-cal-pad"));
+            for (let d = 1; d <= daysIn; d++) {
+                const cell = mk("button", "wv-rf-cal-day");
+                cell.type = "button";
+                cell.textContent = String(d);
+                const cellIso = iso(viewY, viewMo, d);
+                if (cellIso === selIso) cell.dataset.selected = "true";
+                if (cellIso === todayIso) cell.dataset.today = "true";
+                cell.addEventListener("click", (e: any) => {
+                    e.stopPropagation();
+                    try { onPick(cellIso); } catch (_) {}
+                });
+                grid.appendChild(cell);
+            }
+            root.appendChild(grid);
+        };
+        render();
+        return root;
     }
 
     _wvReaderPluginMatch(st: any, a: any) {

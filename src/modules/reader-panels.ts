@@ -29,7 +29,12 @@ declare const Components: any;
 declare const Services: any;
 
 const RP_FILTER_BTN_CLASS = "wv-reader-filter-btn";
-const RP_FILTER_POPUP_ID = "wv-reader-filter-popup";
+// "-v2" (2026-08-03): pre-teardown-fix builds leaked orphaned dismiss
+// listeners across plugin reloads that remove the popup by the OLD id on
+// every pointerdown ("filter disappears when I click Custom"). A new id
+// makes those orphans no-ops in live sessions; the teardown below now
+// closes the popup on shutdown so new builds stop leaking them.
+const RP_FILTER_POPUP_ID = "wv-reader-filter-popup-v2";
 const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
@@ -2172,6 +2177,10 @@ class _ReaderPanelsMixin {
             try { this._wvAnnSortTeardown(reader, idoc); } catch (_) {}
             try { (idoc as any)._wvRewireRestore = null; } catch (_) {}
             try { this._wvReaderHideBmHoverCard(idoc); } catch (_) {}
+            // Close the filter popup INCLUDING its dismiss listeners -- a
+            // reload that skipped this orphaned them, and orphans close every
+            // future popup on any pointerdown (traced 2026-08-03).
+            try { this._wvCloseReaderFilterPopup(idoc); } catch (_) {}
             try { const st = idoc.getElementById(RP_STYLE_ID); if (st) st.remove(); } catch (_) {}
             // Restore annotations the reader FILTER removed (unset/setAnnotations
             // channel). Without this, disabling the plugin with a filter active
@@ -7952,10 +7961,13 @@ class _ReaderPanelsMixin {
     _wvOpenReaderFilterPopup(reader: any, idoc: any, anchorBtn: any) {
         try {
             this._wvEnsureReaderPanelStyles(idoc);
-            // Remove any leftover popup before creating a fresh one — protects
-            // against stale stylings (e.g. visibility:hidden) inherited from a
-            // previous render lingering when a caller bypasses the toggle path.
-            try { const old = idoc.getElementById(RP_FILTER_POPUP_ID); if (old) old.remove(); } catch (_) {}
+            // FULL close (element AND dismiss listeners) before a fresh open.
+            // A bare element.remove() here orphaned the previous dismiss set:
+            // its onDown closed over the now-detached popup, so
+            // `popup.contains(target)` was false for EVERY click and the
+            // orphan closed each new popup instantly ("filter disappears when
+            // I click Custom", stack-traced 2026-08-03).
+            try { this._wvCloseReaderFilterPopup(idoc); } catch (_) {}
 
             // Measure the sidebar BEFORE creating + appending the popup
             // so we can set the popup's final width inline ahead of the
@@ -8003,7 +8015,11 @@ class _ReaderPanelsMixin {
             const onDown = (e: any) => {
                 try {
                     const t = e.target;
-                    if (t && popup.contains && popup.contains(t)) return;
+                    // Resolve the LIVE popup by id at event time -- a closure
+                    // over the element goes stale if this listener is ever
+                    // orphaned, and a stale guard closes every future popup.
+                    const cur = idoc.getElementById(RP_FILTER_POPUP_ID);
+                    if (cur && t && cur.contains && cur.contains(t)) return;
                     if (anchorBtn && (anchorBtn === t || (anchorBtn.contains && anchorBtn.contains(t)))) return;
                     this._wvCloseReaderFilterPopup(idoc);
                 } catch (_) {}

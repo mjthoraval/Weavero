@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (156 tests, 7 spec files):
+Current in-Zotero coverage (155 tests, 7 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -52,8 +52,8 @@ Current in-Zotero coverage (156 tests, 7 spec files):
   Date Modified left untouched but `synced` still cleared, notes and
   linked URLs falling through `getBestAttachment`, the versioned
   re-assert that keeps Weavero outermost over a competing wrapper, and
-  the legacy purge refusing to delete PikaPei's pref unless every pick
-  it holds provably reached Weavero first).
+  the one-shot legacy import, which never overwrites an existing Weavero
+  choice and never touches PikaPei's own data).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `tearoff.spec.js` (reader tear-off ↔ merge-back lifecycle:
   no-reload swap with tab-identity carry, Firefox focusing rules,
@@ -290,12 +290,15 @@ below. Automating a compatibility tier is on the roadmap above (#6).
 
 The Default Attachment interop was verified by **installing the real
 plugin and driving its own UI** — creating a pick through its "Set
-Default" menu item, then asserting Weavero's import, precedence and
-purge against the data it actually wrote. That is the method to prefer
+Default" menu item, then asserting Weavero's import and precedence
+against the data it actually wrote. That is the method to prefer
 whenever a companion writes state Weavero reads: it caught both an
 assumption that held (their pref name and JSON shape) and two claims that
 did not — wrapper order after a later install, and migration silently
-overwriting an existing Weavero choice.
+overwriting an existing Weavero choice. A purge feature built on top of
+this was later removed as disproportionate: a permanent setting for a
+one-off chore. Weavero now only ever ADDS its own tags, and the README
+documents removing the other plugin's data by hand.
 
 **A companion's state can change under you.** That plugin prunes its own
 stale mappings whenever its wrapper evaluates an affected item, so its
@@ -315,7 +318,7 @@ companion's data is stable across steps without re-reading it.
 | **Better BibTeX** | Weavero's link machinery recognizes BBT's registered export-translator IDs (citekey-based flows) |
 | **PMCID Fetcher** | Weavero deliberately ships **no** DOI/PMID/PMCID columns (PMCID Fetcher provides them); Weavero's *Has PMID / Has PMCID* filters read the same Extra-field convention |
 | **Actions & Tags** | Weavero began life as an Actions & Tags action script and remains compatible with it |
-| **Default Attachment** (`PikaPei`, v1.0.0) | Both patch `Zotero.Item.prototype.getBestAttachment`. Weavero imports that plugin's stored picks on first start (its pref is left intact so the user can go back), and re-asserts its own wrapper over theirs — via a `Zotero.Plugins` observer, so a rival installed or enabled *after* Weavero still ends up underneath. Weavero's pick wins; with no Weavero pick theirs is still honoured. Its opt-in purge refuses to delete their pref unless every pick provably reached Weavero first. **Usability trap (hit live 2026-08-03):** with both enabled the items menu shows *two* near-identical entries — their **“Set Default”** and Weavero's **“▶️ Set as Default”**. Using theirs writes only their pref, so no `▶️ wv-defatt` tag appears and the choice does not sync. The leading glyph is what tells them apart; when testing this feature, check which entry was clicked before treating a non-effect as a bug |
+| **Default Attachment** (`PikaPei`, v1.0.0) | Both patch `Zotero.Item.prototype.getBestAttachment`. Weavero imports that plugin's stored picks on first start (its pref is left intact so the user can go back), and re-asserts its own wrapper over theirs — via a `Zotero.Plugins` observer, so a rival installed or enabled *after* Weavero still ends up underneath. Weavero's pick wins; with no Weavero pick theirs is still honoured. Its opt-in Weavero NEVER deletes their data — removing it is a manual step documented in the README. **Usability trap (hit live 2026-08-03):** with both enabled the items menu shows *two* near-identical entries — their **“Set Default”** and Weavero's **“▶️ Set as Default”**. Using theirs writes only their pref, so no `▶️ wv-defatt` tag appears and the choice does not sync. The leading glyph is what tells them apart; when testing this feature, check which entry was clicked before treating a non-effect as a bug |
 
 ### Verified to coexist
 

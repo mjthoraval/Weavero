@@ -178,12 +178,19 @@ The leading `▶️` is rendered by Zotero in the items list, so a marked child 
 
 ### Coming from *Default Attachment* (PikaPei)
 
-[PikaPei/zotero-default-attachment](https://github.com/PikaPei/zotero-default-attachment) does the PDF-only version of this. Weavero takes over from it automatically:
+[PikaPei/zotero-default-attachment](https://github.com/PikaPei/zotero-default-attachment) does the PDF-only version of this. If Weavero finds picks saved by it, **it asks what you want to do** — it never imports them behind your back, because importing writes tags to your library and queues those items to sync:
 
-- **Your picks are imported** the first time Weavero starts. A choice you have already made in Weavero is never overwritten.
-- **That plugin's data is left untouched**, so you can go back to it at any time.
-- While Weavero's feature is on, that plugin's duplicate **"Set Default"** entry is hidden, so the menu offers one action rather than two that behave differently.
-- Weavero tells you once, with a notice you dismiss, when it has imported anything.
+| Choice | What happens |
+|---|---|
+| **Import into Weavero** | Its picks become `▶️ wv-defatt` tags. A choice you have already made in Weavero is never overwritten. |
+| **Don't import** | Nothing is imported — for when you were only trying that plugin. |
+| **Keep using Default Attachment** | Weavero's feature switches off and that plugin carries on exactly as before. |
+
+The third option appears only when that plugin is actually running. The question stays until you answer it: closing the window or ignoring it brings it back next start, rather than quietly deciding for you.
+
+**Weavero never writes to that plugin's data — on any path.** Its preference is read-only to Weavero, so nothing you do here can damage it, and *Keep using Default Attachment* always leaves you exactly where you started. Changed your mind? Turn Weavero's feature back on in *Settings → Weavero → Extras* and the offer to import returns.
+
+While Weavero's feature is on, that plugin's duplicate **"Set Default"** entry is hidden, so the menu offers one action rather than two that behave differently. Switch Weavero's feature off and its entry comes straight back.
 
 **Removing that plugin's leftover data (optional, manual).** All of its state is a single preference, so there is nothing to uninstall beyond the plugin itself:
 
@@ -193,7 +200,7 @@ The leading `▶️` is rendered by Zotero in the items list, so a marked child 
 
 That preference is the plugin's **only** copy of those choices — it is not synced and has no backup — so this cannot be undone. Your Weavero defaults are tags on the attachments and are not affected.
 
-**Re-running the import.** It runs once, the first time it finds anything to import — so installing Weavero *before* the other plugin is fine, its picks are still collected when they appear. What it does not do is import again afterwards, which is deliberate: a choice you cleared in Weavero would otherwise come back from the old plugin's data on every restart. If you kept making picks with that plugin after the import, reset `extensions.zotero.weavero.defaultChildMigrated` in the same Config Editor and restart to collect them.
+**Being asked again.** You are asked once, the first time Weavero finds anything — so installing Weavero *before* the other plugin is fine, its picks are still noticed when they appear. Once you have answered *Import* or *Don't import*, Weavero stops asking; that is deliberate, since a choice you cleared in Weavero would otherwise come back from the old plugin's data on every restart. (*Keep using Default Attachment* is not a final answer — the offer returns whenever you re-enable the feature.) If you kept making picks with that plugin afterwards, reset `extensions.zotero.weavero.defaultChildMigrated` in the same Config Editor to be asked once more.
 
 </details>
 

@@ -4628,10 +4628,19 @@ class WeaveroPlugin {
             (this as any)._wvBgRestoreTargetWin = null;
             (this as any)._wvBgUserChosenWin = null;
         } catch (e) {}
-        // Drop the plugin-lifecycle observer that keeps our getBestAttachment
-        // wrapper outermost. It lives on `Zotero` (which outlives us), so
-        // leaving it would stack one per reload. See modules/attachments.ts.
+        // Default-child teardown. All three surfaces live on objects that
+        // OUTLIVE the plugin — the Zotero global, Zotero.Item.prototype and
+        // each window's zotero-itemmenu — so none of them go away on their
+        // own. Order matters: drop the observer FIRST, or unwiring the
+        // prototype could be undone by an observer callback firing mid-
+        // teardown. See modules/attachments.ts.
         try { (this as any)._wvUnwirePluginObserver(); } catch (e) {}
+        try { (this as any)._wvUnwireDefaultAttachment(); } catch (e) {}
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                (this as any)._wvUnwireDefaultChildMenu(w);
+            }
+        } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
         //    reader-window state (`_wvWT`), and any save it triggers after
         //    that would capture an emptied world and clobber windows.json

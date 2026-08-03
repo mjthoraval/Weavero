@@ -371,6 +371,18 @@ class _AttachmentsMixin {
         try {
             const proto: any = Zotero.Item && Zotero.Item.prototype;
             if (!proto || !proto._wvDefaultAttWired) return;
+            // Unwind ONLY when our wrapper is the outermost one. If another
+            // plugin wrapped over us, restoring our stashed original would
+            // silently delete THEIR patch — the same trap PikaPei's own
+            // unpatch declines ("modified by another plugin after us,
+            // skipping restore"). Ours then stays in the chain but is inert:
+            // it resolves the live plugin at call time and falls straight
+            // through once `_wvDestroyed` is set (or the global is gone).
+            if (proto.getBestAttachment !== proto._wvDefaultAttFn) {
+                Zotero.debug("[Weavero] getBestAttachment wrapped by another plugin "
+                    + "after us — leaving the chain intact");
+                return;
+            }
             if (typeof proto._wvOrigGetBestAttachment === "function") {
                 proto.getBestAttachment = proto._wvOrigGetBestAttachment;
             }
@@ -379,6 +391,38 @@ class _AttachmentsMixin {
             delete proto._wvDefaultAttWired;
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwireDefaultAttachment err: " + e);
+        }
+    }
+
+    /** Remove the items-menu entry and its listeners from `win`.
+     *
+     *  The listeners sit on `zotero-itemmenu`, a XUL element that OUTLIVES
+     *  the plugin, so without this a disable leaves them attached: they would
+     *  keep firing for a dead instance and re-adding the menu item. The
+     *  wiring already stores its handler refs for exactly this reason (that
+     *  is what makes a reload able to peel the previous build); teardown uses
+     *  the same refs. */
+    _wvUnwireDefaultChildMenu(win: any): void {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            const menu: any = doc.getElementById("zotero-itemmenu");
+            if (!menu) return;
+            if (menu._wvDefChildMenuHandlers) {
+                try {
+                    menu.removeEventListener("popupshowing",
+                        menu._wvDefChildMenuHandlers.onShowing);
+                    menu.removeEventListener("popuphidden",
+                        menu._wvDefChildMenuHandlers.onHidden);
+                } catch (e) {}
+            }
+            delete menu._wvDefChildMenuHandlers;
+            delete menu._wvDefChildMenuWired;
+            // A popup left open at disable time can still hold our entry.
+            const stale = doc.getElementById("wv-itemmenu-open-by-default");
+            if (stale) stale.remove();
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvUnwireDefaultChildMenu err: " + e);
         }
     }
 

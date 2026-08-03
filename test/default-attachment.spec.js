@@ -467,6 +467,29 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(wv._wvIsDefaultChild(att)).to.equal(false);
         });
 
+        // ...but an EMPTY run must not spend the guard, or a user who installs
+        // Weavero before the old plugin never gets their picks: the one-time
+        // import would already have been "used up" on a run with nothing to do.
+        it("does not spend the guard when there was nothing to import", async () => {
+            Zotero.Prefs.clear(PREF, true);
+            Zotero.Prefs.clear("weavero.defaultChildMigrated");
+            const first = await wv._wvMigrateDefaultAttachmentPlugin();
+            expect(first.ran).to.equal(true);
+            expect(first.found).to.equal(0);
+            expect(Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(undefined);
+
+            // The old plugin shows up later — its picks must still import.
+            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            const later = await wv._wvMigrateDefaultAttachmentPlugin();
+            expect(later.ran).to.equal(true);
+            expect(later.migrated).to.equal(1);
+            expect(wv._wvIsDefaultChild(att)).to.equal(true);
+            // ...and NOW the guard is spent, so a cleared pick stays cleared.
+            expect(!!Zotero.Prefs.get("weavero.defaultChildMigrated")).to.equal(true);
+            await wv._wvClearDefaultChild(att);
+        });
+
         it("re-runs after the guard is reset, as the README instructs", async () => {
             await wv._wvClearDefaultChild(att);
             Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);

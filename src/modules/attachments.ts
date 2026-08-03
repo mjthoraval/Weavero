@@ -700,7 +700,22 @@ class _AttachmentsMixin {
             if (Zotero.Prefs.get("weavero.defaultChildMigrated")) return result;
             result.ran = true;
             Object.assign(result, await this._wvImportLegacyMappings());
-            Zotero.Prefs.set("weavero.defaultChildMigrated", true);
+            // Burn the run-once guard ONLY if there was actually something to
+            // import. Setting it unconditionally meant a user who installs
+            // Weavero BEFORE the old plugin never got their picks: the guard
+            // was already spent on an empty run, so the later data was never
+            // looked at (verified 2026-08-03 — the follow-up run reported
+            // ran:false with a valid pick sitting in their pref).
+            //
+            // Safe, not a trade-off: the guard exists to stop a pick the user
+            // deliberately CLEARED in Weavero being resurrected from the
+            // legacy pref on the next start. That can only happen to an entry
+            // capable of producing a mark — i.e. one this run saw — so any
+            // such entry still leaves the guard set. With nothing found, the
+            // cost of re-checking is one pref read per startup.
+            if (result.found) {
+                Zotero.Prefs.set("weavero.defaultChildMigrated", true);
+            }
             if (result.migrated) {
                 // Queue the user-facing notice. Stored as a PREF, not shown
                 // here: startup can run before any main window exists, so the

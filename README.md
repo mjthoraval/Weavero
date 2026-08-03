@@ -193,7 +193,7 @@ The leading `▶️` is rendered by Zotero in the items list, so a marked child 
 
 That preference is the plugin's **only** copy of those choices — it is not synced and has no backup — so this cannot be undone. Your Weavero defaults are tags on the attachments and are not affected.
 
-**Re-running the import.** It runs once. If you kept using the old plugin *after* installing Weavero, those later picks were never transferred; reset `extensions.zotero.weavero.defaultChildMigrated` in the same Config Editor and restart to import them.
+**Re-running the import.** It runs once, the first time it finds anything to import — so installing Weavero *before* the other plugin is fine, its picks are still collected when they appear. What it does not do is import again afterwards, which is deliberate: a choice you cleared in Weavero would otherwise come back from the old plugin's data on every restart. If you kept making picks with that plugin after the import, reset `extensions.zotero.weavero.defaultChildMigrated` in the same Config Editor and restart to collect them.
 
 </details>
 

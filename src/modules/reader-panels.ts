@@ -274,6 +274,7 @@ const RP_POPUP_CSS = [
     ".wv-rf-datechip-gap{flex:0 0 8px;}",
     ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
+    ".wv-rf-dateinput[data-open]{border-color:var(--color-accent,#5e6ad2);}",
     // Date rows: label left, preset chips packed RIGHT so the plain label
     // reads apart from the clickable chips (user call 2026-08-03).
     ".wv-rf-daterow{display:flex;align-items:center;gap:6px;}",
@@ -8584,10 +8585,12 @@ class _ReaderPanelsMixin {
             const rangeRow = mk("div", "wv-rf-daterange");
             const calHost = mk("div", "wv-rf-calhost");
             let calFor: string | null = null;
-            const openCal = (which: string, key: string) => {
+            const openCal = (which: string, key: string, inp: any) => {
                 while (calHost.firstChild) calHost.removeChild(calHost.firstChild);
+                for (const i of rangeRow.querySelectorAll(".wv-rf-dateinput")) i.removeAttribute("data-open");
                 if (calFor === which) { calFor = null; return; }
                 calFor = which;
+                if (inp) inp.dataset.open = "true";   // marks WHICH field the calendar edits
                 calHost.appendChild(this._wvRfMiniCal(idoc, st[key], async (isoV: string) => {
                     st[key] = isoV;
                     await applyDate();
@@ -8606,11 +8609,19 @@ class _ReaderPanelsMixin {
                         return !!(ot && ot.closest && ot.closest("button.datetime-calendar-button"));
                     } catch (_) { return false; }
                 };
-                inp.addEventListener("mousedown", (e: any) => {
+                // POINTERDOWN is the event that launches the native picker
+                // (verified 2026-08-03: intercepting only mousedown/click let
+                // the broken native panel open alongside ours). Cancelling
+                // pointerdown also suppresses the derived mouse events, so
+                // this is the one place our calendar can open from.
+                inp.addEventListener("pointerdown", (e: any) => {
                     if (onCalBtn(e)) {
                         e.preventDefault(); e.stopPropagation();
-                        openCal(which, key);
+                        openCal(which, key, inp);
                     }
+                }, true);
+                inp.addEventListener("mousedown", (e: any) => {
+                    if (onCalBtn(e)) { e.preventDefault(); e.stopPropagation(); }
                 }, true);
                 inp.addEventListener("click", (e: any) => {
                     if (onCalBtn(e)) { e.preventDefault(); }

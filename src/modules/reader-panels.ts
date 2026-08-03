@@ -280,6 +280,15 @@ const RP_POPUP_CSS = [
     ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;}",
     ".wv-rf-datenum{width:44px;font-size:11px;padding:1px 2px 1px 6px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
+    // Segmented unit toggle: all options visible, active half highlighted --
+    // deliberately unlike the include/exclude filter chips.
+    ".wv-rf-unitseg{display:inline-flex;border:1px solid var(--color-panedivider,rgba(127,127,127,.35));",
+    "  border-radius:4px;overflow:hidden;}",
+    ".wv-rf-unitopt{font-size:11px;padding:2px 7px;background:transparent;border:none;cursor:pointer;",
+    "  color:inherit;opacity:.6;white-space:nowrap;}",
+    ".wv-rf-unitopt:not(:first-child){border-left:1px solid var(--color-panedivider,rgba(127,127,127,.25));}",
+    ".wv-rf-unitopt:hover{opacity:.85;}",
+    ".wv-rf-unitopt.wv-on{background:var(--fill-quarternary,rgba(127,127,127,.18));opacity:1;font-weight:600;}",
     ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
     "  border:none;cursor:pointer;opacity:.6;}",
     ".wv-rf-dateclear:hover{opacity:1;}",
@@ -8473,8 +8482,9 @@ class _ReaderPanelsMixin {
                 // arms/disarms the dimension (plain click = only IN the
                 // window; Alt+click = only OUTSIDE, red); N and the unit are
                 // free -- fixed presets were rejected as clutter.
+                const unitWord = st[uKey] === "m" ? "minutes" : st[uKey] === "h" ? "hours" : st[uKey] === "y" ? "years" : "days";
                 opts.appendChild(mkTextChip("Last", st[pKey] === "last" && !st[nKey], st[pKey] === "last" && !!st[nKey],
-                    label + " within the last N " + (st[uKey] === "h" ? "hours" : "days") + " — Alt+click to exclude",
+                    label + " within the last N " + unitWord + " — Alt+click to exclude",
                     (alt: boolean) => {
                         if (st[pKey] === "last" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
                         else { st[pKey] = "last"; st[nKey] = alt; }
@@ -8503,10 +8513,33 @@ class _ReaderPanelsMixin {
                     }, 300);
                 });
                 num.addEventListener("click", (e: any) => e.stopPropagation());
+                // The reader's window-capture keydown preventDefaults Ctrl+A
+                // (its select-all-annotations shortcut) BEFORE the input's
+                // native select-all can act -- but the event still reaches
+                // the input, so re-implement select-all manually.
+                num.addEventListener("keydown", (e: any) => {
+                    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
+                        try { num.select(); } catch (_) {}
+                        e.stopPropagation();
+                    }
+                });
                 opts.appendChild(num);
-                opts.appendChild(mkTextChip(st[uKey] === "h" ? "hours" : "days", false, false,
-                    "Switch between hours and days",
-                    () => { st[uKey] = st[uKey] === "h" ? "d" : "h"; applyDate(); }));
+                // Unit toggle as a SEGMENTED control (both options visible,
+                // active half highlighted) -- a plain chip read like the
+                // include/exclude filter chips (user call 2026-08-03).
+                const seg = mk("span", "wv-rf-unitseg");
+                for (const [lbl, u] of [["min", "m"], ["hours", "h"], ["days", "d"], ["years", "y"]] as any) {
+                    const b = mk("button", "wv-rf-unitopt" + (st[uKey] === u ? " wv-on" : ""));
+                    b.type = "button";
+                    b.textContent = lbl;
+                    b.title = "Count the window in " + lbl;
+                    b.addEventListener("click", (e: any) => {
+                        e.stopPropagation();
+                        if (st[uKey] !== u) { st[uKey] = u; applyDate(); }
+                    });
+                    seg.appendChild(b);
+                }
+                opts.appendChild(seg);
                 opts.appendChild(mkTextChip("Custom", st[pKey] === "custom" && !st[nKey], st[pKey] === "custom" && !!st[nKey],
                     "Custom " + label.toLowerCase() + " date range — Alt+click to exclude",
                     (alt: boolean) => {
@@ -8557,6 +8590,14 @@ class _ReaderPanelsMixin {
                     if (onCalBtn(e)) { e.preventDefault(); }
                     e.stopPropagation();
                 }, true);
+                // Same Ctrl+A repair as the number input (reader's capture
+                // handler preventDefaults it before the native select-all).
+                inp.addEventListener("keydown", (e: any) => {
+                    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
+                        try { inp.select(); } catch (_) {}
+                        e.stopPropagation();
+                    }
+                });
                 // Typed commit: apply WITHOUT re-rendering the popup so focus
                 // stays in the segments mid-edit.
                 inp.addEventListener("change", async (e: any) => {
@@ -8770,7 +8811,12 @@ class _ReaderPanelsMixin {
             if (!mode) return { from: null, to: null };
             if (mode === "last") {
                 const count = Math.max(1, Math.floor(Number(n) || 1));
-                const ms = unit === "h" ? 3600000 : 86400000;
+                // Rolling windows; a year = 365.25 days (mean, keeps multi-
+                // year windows from drifting a day per leap cycle).
+                const ms = unit === "m" ? 60000
+                    : unit === "h" ? 3600000
+                    : unit === "y" ? 31557600000
+                    : 86400000;
                 return { from: Date.now() - count * ms, to: null };
             }
             if (mode === "custom") {

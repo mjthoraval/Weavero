@@ -66,25 +66,47 @@
 
 declare const Zotero: any;
 
-/** The marker tag: an EMOJI followed by a self-describing name.
+/** The marker tag: an EMOJI plus a single HYPHEN-JOINED slug.
  *
  *  Zotero renders the FIRST emoji sequence of a tag name in the items list
  *  (`Zotero.Tags.extractEmojiForItemsList`), so the leading emoji gives the
  *  chosen child a visible marker there — with no setup and without spending
- *  one of the nine colored-tag slots (six are already in use here).
+ *  one of the nine colored-tag slots (six are already in use here). The slug
+ *  never reaches the items list; it exists for the TAG SELECTOR and tag
+ *  exports, where a bare glyph would be a mystery.
  *
- *  The text after the emoji never reaches the items list; it exists for the
- *  TAG SELECTOR and any tag export, where a bare emoji would be a mystery.
- *  Kept SHORT while still naming the owner, so a user meeting this tag in a
- *  synced library can tell what created it without it dominating the tag
- *  list.
+ *  TWO NAMING RULES, both paid for by measured search leaks. Quick search is
+ *  SUBSTRING-based AND splits the box on whitespace into independent AND-ed
+ *  conditions (search.js `addCondition`, the `/^quicksearch/` branch), so:
+ *
+ *  1. NO "Weavero" IN THE TAG. It made every marked child match a genuine
+ *     search for the user's own notes ABOUT Weavero — noise exactly where it
+ *     hurts. It also made the bare two-word query "Weavero Default" match,
+ *     since both words were substrings of the tag.
+ *
+ *  2. ONE TOKEN, HYPHEN-JOINED — never spaces. The splitter breaks on
+ *     whitespace only, so a hyphenated slug stays a single condition and
+ *     typing it matches nothing else in the library: strict-name-only, which
+ *     is the point. A spaced name ("▶️ Weavero Default") did the opposite —
+ *     it matched any item merely carrying both words ANYWHERE, even as two
+ *     unrelated tags on an UNMARKED item.
+ *
+ *  Underscores are NOT a substitute for a hyphen here: `_` is a live SQL
+ *  LIKE wildcard (Zotero passes search terms into LIKE with no ESCAPE
+ *  clause), so an underscored name both over-matches and breaks the quoted
+ *  phrase search.
+ *
+ *  RESIDUAL, accepted: "default" is still a substring of this slug, so a
+ *  one-word search for it in All Fields & Tags mode finds marked children.
+ *  That is the deliberate price of a readable tag selector; the leaks that
+ *  actually mattered (rule 1 and 2) are closed.
  *
  *  U+25B6 U+FE0F reads as "this is what opens", and avoids the emoji already
  *  in use in this library (U+2B50, U+203C U+FE0F).
  *
  *  WARNING: the tag IS the storage. Changing this constant orphans every
  *  already-marked child — cheap now, expensive after release. */
-export const OPEN_BY_DEFAULT_TAG = "▶️ Weavero Default";
+export const OPEN_BY_DEFAULT_TAG = "▶️ wv-open-by-default";
 
 /** Zotero tag types: 0 = manual (user-typed), 1 = automatic (machine-added,
  *  hideable via the tag selector's Display Automatic toggle). */

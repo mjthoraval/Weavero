@@ -28,6 +28,7 @@ import { readerPanelsMethods } from "./modules/reader-panels";
 import { tabGroupsMethods } from "./modules/tab-groups";
 import { sessionsMethods } from "./modules/sessions";
 import { outlineEvalMethods } from "./modules/outline-eval";
+import { attachmentsMethods } from "./modules/attachments";
 
 // Captured by the IIFE bundle's closure; the class methods read
 // `_rootURI` to build absolute URIs for resources inside the XPI
@@ -4407,6 +4408,12 @@ class WeaveroPlugin {
                     }, d);
                 }
             } catch (e) {}
+
+            // Default-attachment override: patches Zotero.Item.prototype
+            // .getBestAttachment ONCE (idempotent marker), so calling it per
+            // window is free. Lives here rather than in a startup hook so it
+            // is re-asserted after a plugin reload. See modules/attachments.ts.
+            try { (this as any)._wvWireDefaultAttachment(); } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }
@@ -5266,6 +5273,10 @@ Object.defineProperties(
     WeaveroPlugin.prototype,
     outlineEvalMethods,
 );
+Object.defineProperties(
+    WeaveroPlugin.prototype,
+    attachmentsMethods,
+);
 
 // === Lifecycle hooks (called by bootstrap.js shim) ==========================
 // The shim awaits `Zotero.initializationPromise` before calling
@@ -5291,6 +5302,12 @@ Zotero.Weavero = {
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
+                // Default-attachment override. Wired HERE as well as in
+                // onMainWindowLoad because a plugin RELOAD does not re-fire
+                // onMainWindowLoad for an already-open window, which would
+                // leave the override uninstalled. Idempotent, so both paths
+                // running is free. See modules/attachments.ts.
+                try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
                 _Weavero.init().catch(e =>
                     Zotero.debug("[Weavero] init error: " + e)
                 );

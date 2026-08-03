@@ -274,6 +274,10 @@ const RP_POPUP_CSS = [
     ".wv-rf-datechip-gap{flex:0 0 8px;}",
     ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
+    // Date rows: label left, preset chips packed RIGHT so the plain label
+    // reads apart from the clickable chips (user call 2026-08-03).
+    ".wv-rf-daterow{display:flex;align-items:center;gap:6px;}",
+    ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;}",
     ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
     "  border:none;cursor:pointer;opacity:.6;}",
     ".wv-rf-dateclear:hover{opacity:1;}",
@@ -8461,7 +8465,7 @@ class _ReaderPanelsMixin {
                 opts.appendChild(preset("7 days", "7d", label + " in the last 7 days"));
                 opts.appendChild(preset("30 days", "30d", label + " in the last 30 days"));
                 opts.appendChild(preset("Custom", "custom", "Custom " + label.toLowerCase() + " date range"));
-            }, true, label);
+            }, true, label, "wv-rf-daterow");
             if (st[pKey] !== "custom") return;
             // Native input[type=date] for TYPED entry (segmented, localized,
             // validated -- that part of the widget works fine in Zotero). Its

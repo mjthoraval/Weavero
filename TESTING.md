@@ -40,13 +40,18 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (90 tests, 6 spec files):
+Current in-Zotero coverage (133 tests, 7 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
   reconcile), `links.spec.js` and `normalize.spec.js` (verify the plugin
   methods correctly delegate to `src/lib/*` in the real runtime),
-  `popups.spec.js` (the four popup-panel contracts).
+  `popups.spec.js` (the four popup-panel contracts),
+  `default-attachment.spec.js` (the default-child feature: the marker
+  tag's three anti-search-leak naming rules, mark/move/clear with
+  Date Modified left untouched but `synced` still cleared, notes and
+  linked URLs falling through `getBestAttachment`, and the versioned
+  re-assert that keeps Weavero outermost over a competing wrapper).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `tearoff.spec.js` (reader tear-off ↔ merge-back lifecycle:
   no-reload swap with tab-identity carry, Firefox focusing rules,
@@ -177,6 +182,7 @@ native machinery.
 | After installing a dev build | Level 3 probe of the changed feature | — |
 | Touched tabs/windows/reader lifecycle | Levels 1 + 3 | tear-off/merge hand pass |
 | Touched popups | `popups.spec.js` | popup hand pass |
+| Touched the default-child feature or its marker tag | `default-attachment.spec.js` | context-menu hand pass (label + glyph) |
 | Touched install/startup/shutdown wiring | — | Level 4 disable/re-enable protocol |
 | Touched sessions/persistence | — | Level 4 restart protocol |
 | Touched drag/drop or focus behavior | — | Level 4 gesture matrix |

@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (133 tests, 7 spec files):
+Current in-Zotero coverage (141 tests, 7 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -50,8 +50,10 @@ Current in-Zotero coverage (133 tests, 7 spec files):
   `default-attachment.spec.js` (the default-child feature: the marker
   tag's three anti-search-leak naming rules, mark/move/clear with
   Date Modified left untouched but `synced` still cleared, notes and
-  linked URLs falling through `getBestAttachment`, and the versioned
-  re-assert that keeps Weavero outermost over a competing wrapper).
+  linked URLs falling through `getBestAttachment`, the versioned
+  re-assert that keeps Weavero outermost over a competing wrapper, and
+  the legacy purge refusing to delete PikaPei's pref unless every pick
+  it holds provably reached Weavero first).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `tearoff.spec.js` (reader tear-off ↔ merge-back lifecycle:
   no-reload swap with tab-identity carry, Firefox focusing rules,

@@ -283,6 +283,123 @@ describe("Weavero — default child (attachments, notes, links)", () => {
         });
     });
 
+    // ---- migration from PikaPei/zotero-default-attachment ----------
+
+    // That plugin's ENTIRE state is one pref holding {parentID: attachmentID}
+    // with LOCAL numeric ids — nothing synced, no second copy. Clearing it is
+    // therefore irreversible, which is why the purge must prove every pick
+    // reached Weavero first. These tests own that guarantee.
+    describe("legacy purge", () => {
+        const PREF = "extensions.zotero.defaultattachment.mappings";
+        let parent, att, saved;
+
+        before(async () => {
+            const lib = Zotero.Libraries.userLibraryID;
+            try { saved = Zotero.Prefs.get(PREF, true); } catch (e) { saved = undefined; }
+
+            parent = new Zotero.Item("journalArticle");
+            parent.libraryID = lib;
+            parent.setField("title", "WV-TEST legacy parent");
+            await parent.saveTx();
+
+            att = new Zotero.Item("attachment");
+            att.libraryID = lib;
+            att.parentID = parent.id;
+            att.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            att.attachmentContentType = "application/pdf";
+            att.setField("title", "WV-TEST legacy att");
+            await att.saveTx();
+        });
+
+        after(async () => {
+            try {
+                if (saved === undefined) Zotero.Prefs.clear(PREF, true);
+                else Zotero.Prefs.set(PREF, saved, true);
+            } catch (e) { /* leave as-is */ }
+            for (const it of [att, parent]) {
+                try { if (it) await it.eraseTx(); } catch (e) { /* already gone */ }
+            }
+        });
+
+        it("counts what the old plugin stores", () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            expect(wv._wvLegacyDefaultAttachmentCount()).to.equal(1);
+        });
+
+        it("imports a valid entry as a Weavero mark", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            await wv._wvClearDefaultChild(att);
+            const r = await wv._wvImportLegacyMappings();
+            expect(r.migrated).to.equal(1);
+            expect(r.unresolved).to.have.length(0);
+            expect(wv._wvIsDefaultChild(att)).to.equal(true);
+        });
+
+        it("clears only after every pick carries the Weavero marker", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.cleared).to.equal(true);
+            expect(r.unresolved).to.have.length(0);
+            expect(Zotero.Prefs.get(PREF, true)).to.equal(undefined);
+        });
+
+        // Migration runs ONCE, so a pick made by the old plugin after Weavero
+        // first started was never imported. The purge must import it rather
+        // than delete it.
+        it("imports a pick migration never saw, instead of deleting it", async () => {
+            await wv._wvClearDefaultChild(att);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            Zotero.Prefs.set("weavero.defaultChildMigrated", true);   // migration already done
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.imported).to.equal(1);
+            expect(r.cleared).to.equal(true);
+            expect(wv._wvIsDefaultChild(att)).to.equal(true);
+        });
+
+        // The dangerous case: an entry that CANNOT become a mark. Its
+        // attachment may come back (restored from the trash), and the pref is
+        // the only record, so nothing may be deleted.
+        it("REFUSES to clear when an entry cannot be imported", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: 999999999 }), true);
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.cleared).to.equal(false);
+            expect(r.unresolved.length).to.be.above(0);
+            // The proof that matters: the data is still there.
+            expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+            expect(wv._wvLegacyDefaultAttachmentCount()).to.equal(1);
+        });
+
+        it("REFUSES to clear when the entry's attachment is trashed", async () => {
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent.id]: att.id }), true);
+            att.deleted = true;
+            await att.saveTx();
+            try {
+                const r = await wv._wvClearLegacyDefaultAttachments();
+                expect(r.cleared).to.equal(false);
+                expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+            }
+            finally {
+                att.deleted = false;
+                await att.saveTx();
+            }
+        });
+
+        it("refuses on an unparsable pref rather than discarding it", async () => {
+            Zotero.Prefs.set(PREF, "{not json", true);
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.cleared).to.equal(false);
+            expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+        });
+
+        it("does nothing (and reports nothing) when the pref is absent", async () => {
+            Zotero.Prefs.clear(PREF, true);
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.cleared).to.equal(false);
+            expect(r.total).to.equal(0);
+            expect(r.unresolved).to.have.length(0);
+        });
+    });
+
     // ---- 3. wiring + coexistence -----------------------------------
 
     describe("getBestAttachment wiring", () => {

@@ -301,7 +301,7 @@
 
   <html:div class="wv-nav" no-highlight="true">
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-links">Links and Relations</html:button>
-    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-filters">Filters</html:button>
+    <html:button type="button" class="wv-nav-tab" data-target="wv-sec-filters">Sort &amp; Filters</html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-bookmarks">Bookmarks</html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-tabswindows">Tabs and Windows</html:button>
     <html:button type="button" class="wv-nav-tab" data-target="wv-sec-extras">Extras</html:button>
@@ -467,17 +467,20 @@
     </vbox>
   </groupbox>
 
-  <!-- ============================ Filters -->
+  <!-- ============================ Sort and Filters -->
   <groupbox id="wv-sec-filters" class="wv-top">
     <html:div class="wv-tophead">
-      <html:h2>Filters</html:h2>
-      <checkbox aria-label="Enable filters" native="true"
+      <html:h2>Sort &amp; Filters</html:h2>
+      <checkbox aria-label="Enable sort and filters" native="true"
         preference="extensions.zotero.weavero.enableFilters"/>
     </html:div>
     <html:div class="wv-master-card">
-      <html:p class="wv-master-desc">Controls that hide, dim or scope the visible set — the items-tree filter pane (the toolbar &#9662; button) and the per-library / file-type filters in the tabs menu.</html:p>
+      <html:p class="wv-master-desc">Controls that order, hide, dim or scope the visible set — annotation sorting in the reader, the items-tree filter pane (the toolbar &#9662; button) and the per-library / file-type filters in the tabs menu.</html:p>
     </html:div>
     <vbox class="wv-children" data-master="enableFilters">
+      <checkbox label="Annotation sorting in the reader" native="true"
+        preference="extensions.zotero.weavero.enableAnnSort"/>
+      <html:p class="wv-desc">Sort the reader&#8217;s Annotations sidebar by position, date added or date modified &#8212; right-click the Annotations tab header for the menu; a one-click sort bar and per-card date stamps appear while a date sort is active.</html:p>
       <checkbox label="Items-tree filter pane" native="true"
         preference="extensions.zotero.weavero.enableItemsTreeFilter"/>
       <html:p class="wv-desc">The toolbar &#9662; button next to the search box, plus the filter popup (colour/type/file-type, tags, authors, collections, saved searches).</html:p>

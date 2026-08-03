@@ -1251,6 +1251,13 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    _getEnableAnnSort() {
+        if (!this._getEnableFilters()) return false;
+        try {
+            const v = Zotero.Prefs.get("weavero.enableAnnSort");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
     _getEnableReadStatusFilter() {
         if (!this._getEnableItemsTreeFilter()) return false;
         try {
@@ -2426,12 +2433,13 @@ class WeaveroPlugin {
             "enableOpenRelatedSubmenu",
             "enableRelatedColumn",
             "enableLibrariesHighlight",
-            // Filters (master + 4 children)
+            // Sort and Filters (master + 5 children)
             "enableFilters",
             "enableItemsTreeFilter",
             "enableSelectionTarget",
             "enableTabsLibraryFilter",
             "enableTabsFileTypeFilter",
+            "enableAnnSort",
             // Visual extras (no master, flat children)
             "enableAnnotationsCountColumn",
             "enableGroupLibraryGlyph",
@@ -3505,6 +3513,18 @@ class WeaveroPlugin {
                     }
                     if (data === "extensions.zotero.weavero.enableItemsList") {
                         this._applySurfacePref("itemsList");
+                    }
+                    if (data === "extensions.zotero.weavero.enableAnnSort"
+                        || data === "extensions.zotero.weavero.enableFilters") {
+                        // Annotation sort follows its own toggle AND the
+                        // section master; the ensure pass self-gates (tears
+                        // down when disabled, rewires when re-enabled).
+                        try {
+                            for (const r of (Zotero.Reader._readers || [])) {
+                                const d = r._iframeWindow && r._iframeWindow.document;
+                                if (d) (this as any)._wvAnnSortEnsure(r, d);
+                            }
+                        } catch (e) {}
                     }
                     if (data === "extensions.zotero.weavero.enableRightPane") {
                         this._applySurfacePref("rightPane");

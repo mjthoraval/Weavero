@@ -1910,6 +1910,15 @@ class _ReaderPanelsMixin {
      *  nothing and right-click-for-options matches the reader tab header. */
     _wvAnnSortEnsure(reader: any, idoc: any) {
         try {
+            // Feature toggle (Settings -> Sort and Filters). Teardown only
+            // when something is actually wired, so a disabled sweep doesn't
+            // re-render the sidebar every pass.
+            if (!(this as any)._getEnableAnnSort()) {
+                if ((idoc as any).__wvAnnSortCtxWired || (idoc as any).__wvAnnDateObsV) {
+                    this._wvAnnSortTeardown(reader, idoc);
+                }
+                return;
+            }
             this._wvAnnSortWire(reader);
             this._wvAnnPushRanks(reader);
             (idoc as any)._wvAnnSortReader = reader;

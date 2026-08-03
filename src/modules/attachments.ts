@@ -146,7 +146,7 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 5;
+const WIRE_VERSION = 6;
 
 class _AttachmentsMixin {
     [k: string]: any;
@@ -169,6 +169,42 @@ class _AttachmentsMixin {
             return Zotero.Tags.extractEmojiForItemsList(OPEN_BY_DEFAULT_TAG) || "";
         } catch (e) {
             return "";
+        }
+    }
+
+    /** Append to the persistent trace ring for the default-child path.
+     *
+     *  The ring lives on the ZOTERO GLOBAL, not on the plugin instance. An
+     *  instance-scoped tracer dies on every plugin reload — which is exactly
+     *  when an intermittent report gets lost, so by the time someone asks
+     *  "what happened?" there is nothing to read. Baked into the build and
+     *  capped, so it can stay on indefinitely at negligible cost.
+     *
+     *  Deliberately NOT wired into the hot `getBestAttachment` path for every
+     *  call: only decisions that could plausibly explain "it did nothing" are
+     *  recorded, so the ring stays readable instead of drowning in noise.
+     *
+     *  Read it with `_wvDefAttTraceDump()`. */
+    _wvDefAttTrace(ev: string, data?: any): void {
+        try {
+            const g: any = Zotero;
+            const ring = g._wvDefAttLog || (g._wvDefAttLog = []);
+            const row: any = { t: new Date().toISOString().slice(11, 23), ev };
+            if (data) {
+                for (const k of Object.keys(data)) row[k] = data[k];
+            }
+            ring.push(row);
+            if (ring.length > 400) ring.splice(0, ring.length - 400);
+        } catch (e) { /* tracing must never break the feature */ }
+    }
+
+    /** Read the trace ring (most recent `n` entries, or all). */
+    _wvDefAttTraceDump(n?: number): any[] {
+        try {
+            const ring: any[] = (Zotero as any)._wvDefAttLog || [];
+            return n ? ring.slice(-n) : ring.slice();
+        } catch (e) {
+            return [];
         }
     }
 
@@ -282,7 +318,10 @@ class _AttachmentsMixin {
             if (!child) return false;
             const isAtt = typeof child.isAttachment === "function" && child.isAttachment();
             const isNote = typeof child.isNote === "function" && child.isNote();
-            if (!isAtt && !isNote) return false;
+            if (!isAtt && !isNote) {
+                this._wvDefAttTrace("set:reject", { key: child.key, why: "notOpenable" });
+                return false;
+            }
 
             const parent = child.parentID ? Zotero.Items.get(child.parentID) : null;
             if (parent) {
@@ -299,8 +338,13 @@ class _AttachmentsMixin {
                 child.addTag(OPEN_BY_DEFAULT_TAG, TAG_TYPE_AUTOMATIC);
                 await child.saveTx(MARKER_SAVE_OPTS);
             }
+            this._wvDefAttTrace("set:ok", {
+                key: child.key, verified: this._wvIsDefaultChild(child),
+                parent: parent && parent.key,
+            });
             return true;
         } catch (e) {
+            this._wvDefAttTrace("set:err", { key: child && child.key, e: String(e) });
             Zotero.debug("[Weavero] _wvSetDefaultChild err: " + e);
             return false;
         }
@@ -421,6 +465,45 @@ class _AttachmentsMixin {
         }
     }
 
+    /** Hide (or restore) the rival plugin's duplicate items-menu entry.
+     *
+     *  PikaPei's Default Attachment adds its own "Set Default" entry. With
+     *  both plugins enabled the menu shows two near-identical actions, and
+     *  clicking theirs writes only THEIR pref — so no Weavero marker tag
+     *  appears and the choice does not sync. A real user hit exactly that on
+     *  2026-08-03 and reported the feature as broken.
+     *
+     *  Weavero's entry supersedes theirs (it covers notes and linked URLs
+     *  too, and every selection that shows theirs also shows ours), so while
+     *  Weavero's feature is ON we hide theirs. Element ids read from their
+     *  v1.0.0 bundle: `${addonRef}-set-default-menuitem` / `-separator` with
+     *  addonRef "defaultattachment".
+     *
+     *  TIMING: they set `hidden` themselves on EVERY popupshowing, so a hide
+     *  from inside our own popupshowing handler only sticks if our listener
+     *  happens to run after theirs — load-order dependent, the same trap as
+     *  the getBestAttachment wrapper. Calling this from a MICROTASK instead
+     *  runs it after every synchronous popupshowing listener has finished,
+     *  but still before the popup paints, so it wins regardless of order and
+     *  without a visible flicker.
+     *
+     *  Nothing needs to restore this on teardown in the normal case: once we
+     *  stop hiding, their own popupshowing logic makes it visible again. The
+     *  explicit `hide=false` path exists so a disable takes effect
+     *  immediately rather than on the next right-click. */
+    _wvHideRivalDefaultMenu(doc: any, hide: boolean): void {
+        try {
+            if (!doc) return;
+            for (const id of ["defaultattachment-set-default-menuitem",
+                              "defaultattachment-separator"]) {
+                const el: any = doc.getElementById(id);
+                if (el) el.hidden = !!hide;
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvHideRivalDefaultMenu err: " + e);
+        }
+    }
+
     /** Remove the items-menu entry and its listeners from `win`.
      *
      *  The listeners sit on `zotero-itemmenu`, a XUL element that OUTLIVES
@@ -448,6 +531,9 @@ class _AttachmentsMixin {
             // A popup left open at disable time can still hold our entry.
             const stale = doc.getElementById("wv-itemmenu-open-by-default");
             if (stale) stale.remove();
+            // Give the rival plugin its entry back immediately, rather than
+            // leaving it hidden until its own next popupshowing restores it.
+            this._wvHideRivalDefaultMenu(doc, false);
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwireDefaultChildMenu err: " + e);
         }
@@ -476,6 +562,10 @@ class _AttachmentsMixin {
             if (!item || typeof item.isRegularItem !== "function" || !item.isRegularItem()) return false;
             const chosen = this._wvGetDefaultChild(item);
             if (!chosen) return false;
+            this._wvDefAttTrace("open:default", {
+                parent: item.key, chosen: chosen.key,
+                kind: (typeof chosen.isNote === "function" && chosen.isNote()) ? "note" : "attachment",
+            });
 
             if (typeof chosen.isNote === "function" && chosen.isNote()) {
                 // The ONLY correct way to open a note tab — a bare
@@ -794,16 +884,43 @@ class _AttachmentsMixin {
                     // Master switch: no entry at all when the feature is off,
                     // rather than an entry that marks something Weavero will
                     // then ignore.
-                    if (!lp._wvDefaultChildEnabled()) return;
+                    if (!lp._wvDefaultChildEnabled()) {
+                        lp._wvDefAttTrace("menu:skip", { why: "featureOff" });
+                        return;
+                    }
+                    // Our entry supersedes the rival plugin's duplicate, so
+                    // suppress theirs while this feature is on. Microtask, so
+                    // it lands after THEIR popupshowing handler regardless of
+                    // listener order. See _wvHideRivalDefaultMenu.
+                    Promise.resolve().then(() => {
+                        try {
+                            const p: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (!p || p._wvDestroyed || !p._wvDefaultChildEnabled()) return;
+                            p._wvHideRivalDefaultMenu(doc, true);
+                        } catch (e) { /* never break the menu */ }
+                    });
 
                     const zp: any = win.ZoteroPane;
                     const sel: any[] = (zp && zp.getSelectedItems && zp.getSelectedItems()) || [];
-                    if (sel.length !== 1) return;
+                    if (sel.length !== 1) {
+                        lp._wvDefAttTrace("menu:skip", { why: "selection", n: sel.length });
+                        return;
+                    }
                     const child = sel[0];
-                    if (!child || !child.parentID) return;         // must be a CHILD
+                    if (!child || !child.parentID) {               // must be a CHILD
+                        lp._wvDefAttTrace("menu:skip", {
+                            why: "notAChild",
+                            key: child && child.key,
+                            type: child && Zotero.ItemTypes.getName(child.itemTypeID),
+                        });
+                        return;
+                    }
                     const isAtt = typeof child.isAttachment === "function" && child.isAttachment();
                     const isNote = typeof child.isNote === "function" && child.isNote();
-                    if (!isAtt && !isNote) return;
+                    if (!isAtt && !isNote) {
+                        lp._wvDefAttTrace("menu:skip", { why: "notOpenable", key: child.key });
+                        return;
+                    }
 
                     // ACTION label (not a checkbox): the entry states what the
                     // click will DO, which reads better than a state label.
@@ -826,12 +943,29 @@ class _AttachmentsMixin {
                             // Re-resolve at click time: the selection can change
                             // between popupshowing and the command firing.
                             const p: any = Zotero.Weavero && Zotero.Weavero.plugin;
-                            if (p) p._wvToggleDefaultChild(child);
+                            p && p._wvDefAttTrace("menu:command", {
+                                key: child.key, wasMarked: marked, live: !!p,
+                            });
+                            if (!p) return;
+                            p._wvToggleDefaultChild(child).then((now: boolean) => {
+                                p._wvDefAttTrace("menu:command:done", {
+                                    key: child.key, nowMarked: now,
+                                    verified: p._wvIsDefaultChild(child),
+                                });
+                            }).catch((e: any) => {
+                                p._wvDefAttTrace("menu:command:err", { e: String(e) });
+                            });
                         } catch (e) {
+                            const p: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                            p && p._wvDefAttTrace("menu:command:throw", { e: String(e) });
                             Zotero.debug("[Weavero] open-by-default command err: " + e);
                         }
                     });
                     menu.appendChild(mi);
+                    lp._wvDefAttTrace("menu:added", {
+                        key: child.key, marked, label: mi.getAttribute("label"),
+                        kind: isNote ? "note" : "attachment",
+                    });
                 } catch (e) {
                     Zotero.debug("[Weavero] open-by-default popupshowing err: " + e);
                 }

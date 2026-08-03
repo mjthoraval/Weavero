@@ -4409,10 +4409,11 @@ class WeaveroPlugin {
                 }
             } catch (e) {}
 
-            // Default-attachment override: patches Zotero.Item.prototype
-            // .getBestAttachment ONCE (idempotent marker), so calling it per
-            // window is free. Lives here rather than in a startup hook so it
-            // is re-asserted after a plugin reload. See modules/attachments.ts.
+            // Default-child override: patches Zotero.Item.prototype
+            // .getBestAttachment (version-stamped, so per-window calls are
+            // free and a reload re-wires cleanly). Notes and link attachments
+            // are handled cooperatively from reader.ts's existing viewItems
+            // wrapper. See modules/attachments.ts.
             try { (this as any)._wvWireDefaultAttachment(); } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
@@ -5302,11 +5303,13 @@ Zotero.Weavero = {
                 // Boot-only machinery (session verify-and-repair) keys off this.
                 _Weavero._wvStartupReason = reason;
                 Zotero.Weavero.plugin = _Weavero;
-                // Default-attachment override. Wired HERE as well as in
+                // Default-child overrides. Wired HERE as well as in
                 // onMainWindowLoad because a plugin RELOAD does not re-fire
                 // onMainWindowLoad for an already-open window, which would
-                // leave the override uninstalled. Idempotent, so both paths
-                // running is free. See modules/attachments.ts.
+                // leave the overrides uninstalled. Version-stamped, so both
+                // paths running is free. The per-window viewItems hook must
+                // be applied to windows that are ALREADY open at reload time.
+                // See modules/attachments.ts.
                 try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
                 _Weavero.init().catch(e =>
                     Zotero.debug("[Weavero] init error: " + e)

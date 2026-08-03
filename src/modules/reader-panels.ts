@@ -321,6 +321,7 @@ const RP_POPUP_CSS = [
     ".wv-rf-cal-day{font-size:10px;padding:2px 0;text-align:center;background:transparent;color:inherit;",
     "  border:none;border-radius:4px;cursor:pointer;}",
     ".wv-rf-cal-day:hover{background:var(--fill-quinary,rgba(127,127,127,.15));}",
+    ".wv-rf-cal-day.wv-dim{opacity:.4;}",
     ".wv-rf-cal-day[data-today]{outline:1px solid var(--color-panedivider,rgba(127,127,127,.5));}",
     ".wv-rf-cal-day[data-selected]{background:var(--color-accent,#5e6ad2);color:#fff;}",
     // Sort bar between the sidebar toolbar and the annotations list.
@@ -9063,12 +9064,13 @@ class _ReaderPanelsMixin {
             const first = new Date(viewY, viewMo, 1);
             const lead = (first.getDay() - firstDay + 7) % 7;
             const daysIn = new Date(viewY, viewMo + 1, 0).getDate();
-            for (let i = 0; i < lead; i++) grid.appendChild(mk("span", "wv-rf-cal-pad"));
-            for (let d = 1; d <= daysIn; d++) {
-                const cell = mk("button", "wv-rf-cal-day");
+            const dayCell = (y: number, mo: number, d: number, dim: boolean) => {
+                // Normalize adjacent-month overflow (mo may be -1 or 12).
+                const dt = new Date(y, mo, d);
+                const cell = mk("button", "wv-rf-cal-day" + (dim ? " wv-dim" : ""));
                 cell.type = "button";
-                cell.textContent = String(d);
-                const cellIso = iso(viewY, viewMo, d);
+                cell.textContent = String(dt.getDate());
+                const cellIso = iso(dt.getFullYear(), dt.getMonth(), dt.getDate());
                 if (cellIso === selIso) cell.dataset.selected = "true";
                 if (cellIso === todayIso) cell.dataset.today = "true";
                 cell.addEventListener("click", (e: any) => {
@@ -9076,7 +9078,14 @@ class _ReaderPanelsMixin {
                     try { onPick(cellIso); } catch (_) {}
                 });
                 grid.appendChild(cell);
-            }
+            };
+            // Adjacent months' days fill the leading/trailing cells, dimmed
+            // but clickable -- matches the native calendar convention.
+            const daysInPrev = new Date(viewY, viewMo, 0).getDate();
+            for (let i = 0; i < lead; i++) dayCell(viewY, viewMo - 1, daysInPrev - lead + 1 + i, true);
+            for (let d = 1; d <= daysIn; d++) dayCell(viewY, viewMo, d, false);
+            const trail = (7 - ((lead + daysIn) % 7)) % 7;
+            for (let i = 1; i <= trail; i++) dayCell(viewY, viewMo + 1, i, true);
             root.appendChild(grid);
         };
         render();

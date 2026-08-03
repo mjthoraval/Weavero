@@ -7463,9 +7463,11 @@ class _ReaderPanelsMixin {
                 dateAddedPreset: null as (string | null),
                 dateAddedFrom: null as (string | null),
                 dateAddedTo: null as (string | null),
+                dateAddedNeg: false,   // Alt+click: show only OUTSIDE the range
                 dateModPreset: null as (string | null),
                 dateModFrom: null as (string | null),
                 dateModTo: null as (string | null),
+                dateModNeg: false,
             };
             this._wvReaderFilters.set(reader, st);
         }
@@ -8131,8 +8133,8 @@ class _ReaderPanelsMixin {
             st.types = []; st.typesExcl = []; st.colorsExcl = []; st.tagsExcl = [];
             st.addedByExcl = []; st.modifiedBy = []; st.modifiedByExcl = [];
             st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
-            st.dateAddedPreset = null; st.dateAddedFrom = null; st.dateAddedTo = null;
-            st.dateModPreset = null; st.dateModFrom = null; st.dateModTo = null;
+            st.dateAddedPreset = null; st.dateAddedFrom = null; st.dateAddedTo = null; st.dateAddedNeg = false;
+            st.dateModPreset = null; st.dateModFrom = null; st.dateModTo = null; st.dateModNeg = false;
             // The hide-annotations toggle counts as a filter — clear it too.
             if (this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
             // Also clear the native include channel (colour/tag/author).
@@ -8445,22 +8447,30 @@ class _ReaderPanelsMixin {
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             this._wvReaderEnsureFilterButton(reader, idoc);
         };
-        const mkTextChip = (label: string, selected: boolean, title2: string, onClick: () => void) => {
+        const mkTextChip = (label: string, selected: boolean, excluded: boolean, title2: string, onClick: (alt: boolean) => void) => {
             const btn = mk("button", "wv-filter-opt");
             btn.type = "button";
             btn.title = title2;
             if (selected) btn.dataset.selected = "true";
+            if (excluded) btn.dataset.excluded = "true";
             const sp = mk("span"); sp.textContent = label; btn.appendChild(sp);
-            btn.addEventListener("click", (e: any) => { e.stopPropagation(); onClick(); });
+            btn.addEventListener("click", (e: any) => { e.stopPropagation(); onClick(!!e.altKey); });
             return btn;
         };
         // One dimension = one labeled chip line (+ its own custom row and
         // calendar when the Custom preset is on). pKey/fKey/tKey index st.
-        const dateDim = (label: string, pKey: string, fKey: string, tKey: string) => {
+        const dateDim = (label: string, pKey: string, fKey: string, tKey: string, nKey: string) => {
             addRow((opts: any) => {
+                // Plain click = only IN the range; Alt+click = only OUTSIDE
+                // it (exclude, red); re-click in the same mode clears.
                 const preset = (lbl: string, key: string, title2: string) =>
-                    mkTextChip(lbl, st[pKey] === key, title2,
-                        () => { st[pKey] = st[pKey] === key ? null : key; applyDate(); });
+                    mkTextChip(lbl, st[pKey] === key && !st[nKey], st[pKey] === key && !!st[nKey],
+                        title2 + " — Alt+click to exclude",
+                        (alt: boolean) => {
+                            if (st[pKey] === key && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
+                            else { st[pKey] = key; st[nKey] = alt; }
+                            applyDate();
+                        });
                 opts.appendChild(preset("Today", "today", label + " today"));
                 opts.appendChild(preset("7 days", "7d", label + " in the last 7 days"));
                 opts.appendChild(preset("30 days", "30d", label + " in the last 30 days"));
@@ -8533,8 +8543,8 @@ class _ReaderPanelsMixin {
             stack.appendChild(rangeRow);
             stack.appendChild(calHost);
         };
-        dateDim("Added", "dateAddedPreset", "dateAddedFrom", "dateAddedTo");
-        dateDim("Modified", "dateModPreset", "dateModFrom", "dateModTo");
+        dateDim("Added", "dateAddedPreset", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");
+        dateDim("Modified", "dateModPreset", "dateModFrom", "dateModTo", "dateModNeg");
 
         // ---- Bottom hint (same as the library filter).
         const bottom = mk("div", "wv-filter-bottom-controls");
@@ -8738,17 +8748,21 @@ class _ReaderPanelsMixin {
         return { from: null, to: null };
     }
 
-    /** True when the annotation's date passes one range dimension. */
-    _wvRfDateDimPass(preset: string | null, fromIso: string | null, toIso: string | null, raw: any): boolean {
+    /** True when the annotation's date passes one range dimension.
+     *  neg (Alt+click exclude) inverts: pass = OUTSIDE the range; an
+     *  unparsable date is never "in range", so it passes when negated. */
+    _wvRfDateDimPass(preset: string | null, fromIso: string | null, toIso: string | null, neg: boolean, raw: any): boolean {
         if (!preset) return true;
         const range = this._wvRfDateRange(preset, fromIso, toIso);
         if (range.from == null && range.to == null) return true;
+        let inRange = false;
         const dt: any = Zotero.Date.sqlToDate(raw, true);
-        if (!dt) return false;
-        const t = dt.getTime();
-        if (range.from != null && t < range.from) return false;
-        if (range.to != null && t > range.to) return false;
-        return true;
+        if (dt) {
+            const t = dt.getTime();
+            inRange = (range.from == null || t >= range.from)
+                && (range.to == null || t <= range.to);
+        }
+        return neg ? !inRange : inRange;
     }
 
     /** Compact month-grid calendar for the date-range filter. Weavero-OWN
@@ -8868,8 +8882,8 @@ class _ReaderPanelsMixin {
                 if (st.modifiedBy.length && (mn == null || st.modifiedBy.indexOf(mn) < 0)) return false;
                 if (mn != null && st.modifiedByExcl.indexOf(mn) >= 0) return false;
             }
-            if (!this._wvRfDateDimPass(st.dateAddedPreset, st.dateAddedFrom, st.dateAddedTo, a.dateAdded)) return false;
-            if (!this._wvRfDateDimPass(st.dateModPreset, st.dateModFrom, st.dateModTo, a.dateModified)) return false;
+            if (!this._wvRfDateDimPass(st.dateAddedPreset, st.dateAddedFrom, st.dateAddedTo, !!st.dateAddedNeg, a.dateAdded)) return false;
+            if (!this._wvRfDateDimPass(st.dateModPreset, st.dateModFrom, st.dateModTo, !!st.dateModNeg, a.dateModified)) return false;
             return true;
         } catch (_) { return true; }
     }

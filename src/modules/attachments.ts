@@ -447,46 +447,11 @@ class _AttachmentsMixin {
      *  user can still roll back to that plugin. Note both plugins patch
      *  `getBestAttachment`, so they should not be left enabled together. */
     async _wvMigrateDefaultAttachmentPlugin(): Promise<any> {
-        const result = { ran: false, found: 0, migrated: 0, skipped: 0 };
+        const result: any = { ran: false, found: 0, migrated: 0, skipped: 0 };
         try {
             if (Zotero.Prefs.get("weavero.defaultChildMigrated")) return result;
             result.ran = true;
-
-            let raw: any = null;
-            try {
-                // `true` = global pref name, matching how that plugin writes it.
-                raw = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
-            } catch (e) { /* pref absent — nothing to migrate */ }
-
-            if (raw) {
-                let mappings: any = null;
-                try { mappings = JSON.parse(String(raw)); } catch (e) {
-                    Zotero.debug("[Weavero] default-attachment migration: unparsable pref");
-                }
-                if (mappings && typeof mappings === "object" && !Array.isArray(mappings)) {
-                    for (const parentID of Object.keys(mappings)) {
-                        result.found++;
-                        try {
-                            const attID = mappings[parentID];
-                            const att = Zotero.Items.get(attID);
-                            // Validate before writing: the ids are local and may
-                            // be stale (item deleted, merged, or re-parented).
-                            if (!att || att.deleted
-                                || String(att.parentID) !== String(parentID)) {
-                                result.skipped++;
-                                continue;
-                            }
-                            if (this._wvIsDefaultChild(att)) { result.skipped++; continue; }
-                            await this._wvSetDefaultChild(att);
-                            result.migrated++;
-                        } catch (e) {
-                            result.skipped++;
-                            Zotero.debug("[Weavero] migration entry err: " + e);
-                        }
-                    }
-                }
-            }
-
+            Object.assign(result, await this._wvImportLegacyMappings());
             Zotero.Prefs.set("weavero.defaultChildMigrated", true);
             if (result.found) {
                 Zotero.debug("[Weavero] default-attachment migration: "
@@ -497,6 +462,68 @@ class _AttachmentsMixin {
             Zotero.debug("[Weavero] _wvMigrateDefaultAttachmentPlugin err: " + e);
         }
         return result;
+    }
+
+    /** Read the legacy pref and mark every entry it can, WITHOUT touching the
+     *  run-once guard. Split out from the migration so the purge can re-run it
+     *  immediately before deleting anything (see
+     *  `_wvClearLegacyDefaultAttachments`) — the migration only runs once, so
+     *  without this a purge could delete picks that were never imported.
+     *
+     *  Reports `unresolved` — entries that could NOT be turned into a Weavero
+     *  mark, with the reason. These are the dangerous ones: their attachment
+     *  is gone, trashed, or re-parented, so the legacy pref is the ONLY record
+     *  of the user's choice. `skipped` counts them plus entries that were
+     *  already marked (harmless). */
+    async _wvImportLegacyMappings(): Promise<any> {
+        const out: any = { found: 0, migrated: 0, skipped: 0, alreadyMarked: 0, unresolved: [] };
+        let raw: any = null;
+        try {
+            // `true` = global pref name, matching how that plugin writes it.
+            raw = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
+        } catch (e) { /* pref absent — nothing to migrate */ }
+        if (!raw) return out;
+
+        let mappings: any = null;
+        try { mappings = JSON.parse(String(raw)); } catch (e) {
+            Zotero.debug("[Weavero] default-attachment migration: unparsable pref");
+            // An unparsable pref is unresolved by definition: we cannot prove
+            // anything was imported, so a purge must refuse.
+            out.unresolved.push({ parentID: null, attID: null, reason: "unparsable" });
+            return out;
+        }
+        if (!mappings || typeof mappings !== "object" || Array.isArray(mappings)) return out;
+
+        for (const parentID of Object.keys(mappings)) {
+            out.found++;
+            const attID = mappings[parentID];
+            try {
+                const att = Zotero.Items.get(attID);
+                // Validate before writing: the ids are LOCAL and may be stale
+                // (item deleted, merged, or re-parented).
+                let reason = "";
+                if (!att) reason = "missing";
+                else if (att.deleted) reason = "trashed";
+                else if (String(att.parentID) !== String(parentID)) reason = "reparented";
+                if (reason) {
+                    out.skipped++;
+                    out.unresolved.push({ parentID, attID, reason });
+                    continue;
+                }
+                if (this._wvIsDefaultChild(att)) {
+                    out.skipped++;
+                    out.alreadyMarked++;
+                    continue;
+                }
+                await this._wvSetDefaultChild(att);
+                out.migrated++;
+            } catch (e) {
+                out.skipped++;
+                out.unresolved.push({ parentID, attID, reason: "error" });
+                Zotero.debug("[Weavero] migration entry err: " + e);
+            }
+        }
+        return out;
     }
 
     /** How many legacy picks the old plugin still stores (0 when none/absent).
@@ -528,17 +555,66 @@ class _AttachmentsMixin {
      *  NOTE: it does not touch Weavero's own marks — those already live as
      *  tags on the children — and it does not uninstall or disable the other
      *  plugin. If that plugin is still enabled it will simply have no picks,
-     *  and can create new ones again. Returns how many were removed. */
-    _wvClearLegacyDefaultAttachments(): number {
-        const n = this._wvLegacyDefaultAttachmentCount();
+     *  and can create new ones again.
+     *
+     *  VERIFY BEFORE DELETING. The pref is the ONLY record of those choices —
+     *  local ids, nothing synced, no second copy — so clearing it is
+     *  irreversible. Two ways picks could still be un-imported at this point,
+     *  both real:
+     *
+     *    • migration runs ONCE, so any pick the old plugin made AFTER Weavero
+     *      first started was never seen by it;
+     *    • migration SKIPS entries whose attachment is missing, trashed or
+     *      re-parented — a trashed attachment can be restored, and then the
+     *      user would want that choice back.
+     *
+     *  So this re-imports first, then confirms every remaining entry now
+     *  carries the Weavero marker, and REFUSES to clear if even one does not.
+     *  Returns {cleared, total, imported, unresolved[]} — `cleared:false` with
+     *  a populated `unresolved` means nothing was deleted. */
+    async _wvClearLegacyDefaultAttachments(): Promise<any> {
+        const res: any = { cleared: false, total: 0, imported: 0, unresolved: [] };
         try {
+            res.total = this._wvLegacyDefaultAttachmentCount();
+            if (!res.total) return res;
+
+            // 1. Catch anything migration never saw (it runs once).
+            const imp = await this._wvImportLegacyMappings();
+            res.imported = imp.migrated;
+            res.unresolved = imp.unresolved.slice();
+
+            // 2. Independently re-verify EVERY entry against the live library,
+            //    rather than trusting the import's own bookkeeping.
+            const raw: any = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
+            const mappings = raw ? JSON.parse(String(raw)) : null;
+            if (mappings && typeof mappings === "object" && !Array.isArray(mappings)) {
+                for (const parentID of Object.keys(mappings)) {
+                    const attID = mappings[parentID];
+                    let ok = false;
+                    try {
+                        const att = Zotero.Items.get(attID);
+                        ok = !!att && this._wvIsDefaultChild(att);
+                    } catch (e) { ok = false; }
+                    if (!ok && !res.unresolved.some((u: any) => String(u.attID) === String(attID))) {
+                        res.unresolved.push({ parentID, attID, reason: "unverified" });
+                    }
+                }
+            }
+
+            // 3. All accounted for, or nothing goes.
+            if (res.unresolved.length) {
+                Zotero.debug("[Weavero] legacy purge REFUSED: "
+                    + res.unresolved.length + " of " + res.total + " not imported");
+                return res;
+            }
             Zotero.Prefs.clear("extensions.zotero.defaultattachment.mappings", true);
-            Zotero.debug("[Weavero] cleared " + n + " legacy default-attachment mapping(s)");
+            res.cleared = true;
+            Zotero.debug("[Weavero] cleared " + res.total + " legacy mapping(s) after verifying "
+                + "each one carries the Weavero marker");
         } catch (e) {
             Zotero.debug("[Weavero] _wvClearLegacyDefaultAttachments err: " + e);
-            return 0;
         }
-        return n;
+        return res;
     }
 
     // ---- UI: the items-list context menu ---------------------------------

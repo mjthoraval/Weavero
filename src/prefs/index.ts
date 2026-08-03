@@ -189,12 +189,36 @@
                     try {
                         const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!lp) return;
-                        const n = lp._wvClearLegacyDefaultAttachments();
-                        if (status) {
-                            status.textContent = "Cleared " + n + " pick" + (n === 1 ? "" : "s");
-                        }
                         clearBtn.disabled = true;
+                        if (status) status.textContent = "Checking…";
+                        // Async now: it re-imports and verifies before deleting,
+                        // and REFUSES if anything could not be accounted for.
+                        Promise.resolve(lp._wvClearLegacyDefaultAttachments()).then((r: any) => {
+                            if (!status) return;
+                            if (r && r.cleared) {
+                                status.textContent = "Cleared " + r.total + " pick"
+                                    + (r.total === 1 ? "" : "s")
+                                    + (r.imported ? " (" + r.imported + " imported first)" : "");
+                                clearBtn.disabled = true;
+                            }
+                            else if (r && r.unresolved && r.unresolved.length) {
+                                // Nothing was deleted — say so plainly, and leave
+                                // the button live so a retry works after a fix
+                                // (e.g. restoring the attachment from the trash).
+                                status.textContent = "Kept — " + r.unresolved.length + " of "
+                                    + r.total + " could not be imported";
+                                clearBtn.disabled = false;
+                            }
+                            else {
+                                status.textContent = "Nothing stored";
+                            }
+                        }).catch((e: any) => {
+                            if (status) status.textContent = "Failed — nothing deleted";
+                            clearBtn.disabled = false;
+                            Zotero.debug("[Weavero] clear-legacy-defatt err: " + e);
+                        });
                     } catch (e) {
+                        clearBtn.disabled = false;
                         Zotero.debug("[Weavero] clear-legacy-defatt err: " + e);
                     }
                 });

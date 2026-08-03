@@ -316,6 +316,86 @@ class _AttachmentsMixin {
             return false;   // fall through to normal opening
         }
     }
+
+    // ---- UI: the items-list context menu ---------------------------------
+
+    /** Add "Open by Default" to a window's items-tree context menu.
+     *
+     *  Unlike the viewItems case, a SEPARATE `popupshowing` listener is safe
+     *  here: listeners stack, and pane.ts's `_setupItemsMenuForWindow`
+     *  de-dups only the handler IT tracks, so ours is never torn off.
+     *
+     *  Entry appears only when exactly ONE openable CHILD (attachment or
+     *  note, with a parent) is selected — the only case where "default" is
+     *  meaningful. Rendered as a checkbox so the current state is visible,
+     *  and rebuilt on every open because the selection changes between
+     *  opens; removed on popuphidden so no stale node is left in the DOM. */
+    _wvWireDefaultChildMenu(win: any): void {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            const menu = doc.getElementById("zotero-itemmenu");
+            if (!menu) return;
+            if (menu._wvDefChildMenuWired === WIRE_VERSION) return;
+            // Peel an older build's listener before re-adding.
+            if (menu._wvDefChildMenuHandlers) {
+                try {
+                    menu.removeEventListener("popupshowing", menu._wvDefChildMenuHandlers.onShowing);
+                    menu.removeEventListener("popuphidden", menu._wvDefChildMenuHandlers.onHidden);
+                } catch (e) {}
+            }
+            const ID = "wv-itemmenu-open-by-default";
+
+            const onShowing = () => {
+                try {
+                    const old = doc.getElementById(ID);
+                    if (old) old.remove();
+                    // Resolve the live plugin at EVENT time — never close over it.
+                    const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                    if (!lp || lp._wvDestroyed) return;
+
+                    const zp: any = win.ZoteroPane;
+                    const sel: any[] = (zp && zp.getSelectedItems && zp.getSelectedItems()) || [];
+                    if (sel.length !== 1) return;
+                    const child = sel[0];
+                    if (!child || !child.parentID) return;         // must be a CHILD
+                    const isAtt = typeof child.isAttachment === "function" && child.isAttachment();
+                    const isNote = typeof child.isNote === "function" && child.isNote();
+                    if (!isAtt && !isNote) return;
+
+                    const marked = lp._wvIsDefaultChild(child);
+                    const mi = doc.createXULElement("menuitem");
+                    mi.id = ID;
+                    mi.setAttribute("type", "checkbox");
+                    mi.setAttribute("label", "Open by Default");
+                    if (marked) mi.setAttribute("checked", "true");
+                    mi.addEventListener("command", () => {
+                        try {
+                            // Re-resolve at click time: the selection can change
+                            // between popupshowing and the command firing.
+                            const p: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (p) p._wvToggleDefaultChild(child);
+                        } catch (e) {
+                            Zotero.debug("[Weavero] open-by-default command err: " + e);
+                        }
+                    });
+                    menu.appendChild(mi);
+                } catch (e) {
+                    Zotero.debug("[Weavero] open-by-default popupshowing err: " + e);
+                }
+            };
+            const onHidden = () => {
+                try { const el = doc.getElementById(ID); if (el) el.remove(); } catch (e) {}
+            };
+
+            menu.addEventListener("popupshowing", onShowing);
+            menu.addEventListener("popuphidden", onHidden);
+            menu._wvDefChildMenuHandlers = { onShowing, onHidden };
+            menu._wvDefChildMenuWired = WIRE_VERSION;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireDefaultChildMenu err: " + e);
+        }
+    }
 }
 
 const _attachmentsDescriptors = Object.getOwnPropertyDescriptors(_AttachmentsMixin.prototype);

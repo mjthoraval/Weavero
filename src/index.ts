@@ -4415,6 +4415,7 @@ class WeaveroPlugin {
             // are handled cooperatively from reader.ts's existing viewItems
             // wrapper. See modules/attachments.ts.
             try { (this as any)._wvWireDefaultAttachment(); } catch (e) {}
+            try { (this as any)._wvWireDefaultChildMenu(_window); } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }
@@ -5311,6 +5312,13 @@ Zotero.Weavero = {
                 // be applied to windows that are ALREADY open at reload time.
                 // See modules/attachments.ts.
                 try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
+                // Per-window UI must ALSO be wired for windows already open at
+                // reload time: onMainWindowLoad does not re-fire for them.
+                try {
+                    for (const w of Zotero.getMainWindows()) {
+                        _Weavero._wvWireDefaultChildMenu(w);
+                    }
+                } catch (e) {}
                 _Weavero.init().catch(e =>
                     Zotero.debug("[Weavero] init error: " + e)
                 );

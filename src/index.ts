@@ -4628,6 +4628,10 @@ class WeaveroPlugin {
             (this as any)._wvBgRestoreTargetWin = null;
             (this as any)._wvBgUserChosenWin = null;
         } catch (e) {}
+        // Drop the plugin-lifecycle observer that keeps our getBestAttachment
+        // wrapper outermost. It lives on `Zotero` (which outlives us), so
+        // leaving it would stack one per reload. See modules/attachments.ts.
+        try { (this as any)._wvUnwirePluginObserver(); } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles
         //    reader-window state (`_wvWT`), and any save it triggers after
         //    that would capture an emptied world and clobber windows.json
@@ -5327,6 +5331,10 @@ Zotero.Weavero = {
                 // be applied to windows that are ALREADY open at reload time.
                 // See modules/attachments.ts.
                 try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
+                // Keep that wrapper outermost when a COMPETING plugin is
+                // installed/enabled later: startup wiring only sees plugins
+                // already loaded. See modules/attachments.ts.
+                try { _Weavero._wvWirePluginObserver(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.

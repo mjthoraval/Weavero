@@ -424,6 +424,69 @@ class _AttachmentsMixin {
         }
     }
 
+    /** Re-assert our `getBestAttachment` wrapper whenever ANOTHER plugin
+     *  starts or stops.
+     *
+     *  Weavero's own startup re-assert only covers plugins that were already
+     *  loaded, and the 3s/10s timers only cover a window load. A competitor
+     *  installed, enabled or updated LATER simply wraps on top of us and wins.
+     *  Not hypothetical: verified 2026-08-03 against PikaPei's Default
+     *  Attachment v1.0.0 — installed into a running Zotero after Weavero, it
+     *  took the outermost slot and Weavero's pick stopped being honoured.
+     *
+     *  Zotero.Plugins notifies observers AFTER the other plugin's own
+     *  bootstrap method has run and been awaited (plugins.js, the observer
+     *  loop at the end of `_callMethod`), so by the time `startup` reaches us
+     *  their patch is already installed and our re-assert lands above it —
+     *  keeping theirs as our fallback rather than discarding it.
+     *
+     *  The observer is stored on `Zotero`, which outlives the plugin, so a
+     *  reload can peel the previous build's copy instead of stacking one per
+     *  reload. */
+    _wvWirePluginObserver(): void {
+        try {
+            const P: any = Zotero.Plugins;
+            if (!P || typeof P.addObserver !== "function") return;
+            const g: any = Zotero;
+            if (g._wvDefAttPluginObserver) {
+                if (g._wvDefAttPluginObserverVer === WIRE_VERSION) return;
+                try { P.removeObserver(g._wvDefAttPluginObserver); } catch (e) {}
+            }
+            const reassert = (params: any) => {
+                try {
+                    // Never react to ourselves: our own startup already wires.
+                    if (params && params.id === "weavero@mjthoraval") return;
+                    // Resolve the LIVE plugin — this observer outlives builds.
+                    const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                    if (lp && !lp._wvDestroyed) lp._wvWireDefaultAttachment();
+                } catch (e) {
+                    Zotero.debug("[Weavero] plugin-observer re-assert err: " + e);
+                }
+            };
+            const observer = { startup: reassert, shutdown: reassert };
+            P.addObserver(observer);
+            g._wvDefAttPluginObserver = observer;
+            g._wvDefAttPluginObserverVer = WIRE_VERSION;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWirePluginObserver err: " + e);
+        }
+    }
+
+    /** Drop the plugin-lifecycle observer (shutdown path). */
+    _wvUnwirePluginObserver(): void {
+        try {
+            const P: any = Zotero.Plugins;
+            const g: any = Zotero;
+            if (P && g._wvDefAttPluginObserver) {
+                P.removeObserver(g._wvDefAttPluginObserver);
+            }
+            delete g._wvDefAttPluginObserver;
+            delete g._wvDefAttPluginObserverVer;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvUnwirePluginObserver err: " + e);
+        }
+    }
+
     // ---- Migration from PikaPei/zotero-default-attachment -----------------
 
     /** Import default-attachment choices from the older

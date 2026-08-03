@@ -265,6 +265,10 @@ const RP_POPUP_CSS = [
     // while a date sort is active (header would collide with other features).
     ".wv-ann-date{display:block;text-align:end;padding:1px 8px 3px;font-size:11px;",
     "  opacity:.65;white-space:nowrap;}",
+    // The native tags button ends a card with ~5px more internal slack
+    // (paddings + line-height) than a text row does -- pull the date row up
+    // so tagged and untagged cards read with the same rhythm.
+    ".annotation .preview:has(button.tags) + .wv-ann-date{margin-top:-5px;}",
     // Sort bar between the sidebar toolbar and the annotations list.
     ".wv-ann-sortbar{display:flex;gap:4px;align-items:center;padding:3px 8px;",
     "  border-bottom:1px solid var(--color-panedivider,rgba(127,127,127,.3));flex:0 0 auto;}",

@@ -172,8 +172,30 @@ class _AttachmentsMixin {
         }
     }
 
+    /** Master switch for the feature (`weavero.enableDefaultChild`, ON).
+     *
+     *  Read at CALL time, never cached at wire time, so toggling it takes
+     *  effect immediately — no reload, no re-wiring. The wrapper stays
+     *  installed either way and simply stops overriding; that keeps the
+     *  competitor-coexistence chain intact across a toggle.
+     *
+     *  OFF means "stop overriding", NOT "forget the choices": the marker tags
+     *  stay on the children, so switching back on restores every pick. */
+    _wvDefaultChildEnabled(): boolean {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableDefaultChild");
+            return v === undefined ? true : !!v;
+        } catch (e) {
+            return true;
+        }
+    }
+
     /** Is this child marked as the one to open? Cheap + synchronous, so it is
-     *  safe from `popupshowing` handlers (which cannot await). */
+     *  safe from `popupshowing` handlers (which cannot await).
+     *
+     *  Deliberately NOT gated by the master switch — this reports what the
+     *  LIBRARY says, which the migration and purge still need while the
+     *  feature is off. The gate lives in `_wvGetDefaultChild`. */
     _wvIsDefaultChild(child: any): boolean {
         try {
             if (!child || typeof child.getTags !== "function") return false;
@@ -217,6 +239,11 @@ class _AttachmentsMixin {
      *  stable order wins: arbitrary but deterministic, never an error. */
     _wvGetDefaultChild(item: any): any {
         try {
+            // THE gate for the master switch. Every override path funnels
+            // through here — the getBestAttachment wrapper, the open helper,
+            // and the menu's state — so one check disables the behaviour
+            // everywhere without touching any wiring.
+            if (!this._wvDefaultChildEnabled()) return null;
             for (const c of this._wvOpenableChildren(item)) {
                 if (this._wvIsDefaultChild(c)) return c;
             }
@@ -556,6 +583,10 @@ class _AttachmentsMixin {
     async _wvMigrateDefaultAttachmentPlugin(): Promise<any> {
         const result: any = { ran: false, found: 0, migrated: 0, skipped: 0 };
         try {
+            // Feature off: skip WITHOUT setting the run-once guard, so the
+            // import still happens if the user enables it later. Setting the
+            // guard here would silently lose their PikaPei picks forever.
+            if (!this._wvDefaultChildEnabled()) return result;
             if (Zotero.Prefs.get("weavero.defaultChildMigrated")) return result;
             result.ran = true;
             Object.assign(result, await this._wvImportLegacyMappings());
@@ -760,6 +791,10 @@ class _AttachmentsMixin {
                     // Resolve the live plugin at EVENT time — never close over it.
                     const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
                     if (!lp || lp._wvDestroyed) return;
+                    // Master switch: no entry at all when the feature is off,
+                    // rather than an entry that marks something Weavero will
+                    // then ignore.
+                    if (!lp._wvDefaultChildEnabled()) return;
 
                     const zp: any = win.ZoteroPane;
                     const sel: any[] = (zp && zp.getSelectedItems && zp.getSelectedItems()) || [];

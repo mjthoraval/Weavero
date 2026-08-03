@@ -650,9 +650,27 @@
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
       <html:p class="wv-desc">Filter the installed-plugins list as you type; Ctrl+F focuses the box.</html:p>
     </vbox>
-    <!-- Outside the enableVisualExtras master on purpose: this is a one-off
-         migration tidy-up, not a visual extra, and must stay reachable even
-         when visual extras are switched off. -->
+  </groupbox>
+
+  <!-- ============================ Default attachment
+       Deliberately NOT gated by enableVisualExtras: that master is scoped to
+       "smaller informational displays", while this changes BEHAVIOUR (what
+       opens on double-click). Gating it there would mean switching off badges
+       silently changes what opens. Sits immediately before External viewer
+       because the two are halves of one topic — which attachment, and where
+       it opens; both act on the same getBestAttachment result. -->
+  <groupbox class="wv-subsec">
+    <label><html:h2>Default attachment</html:h2></label>
+    <checkbox label="Open a chosen attachment or note instead of Zotero&#8217;s default" native="true"
+      preference="extensions.zotero.weavero.enableDefaultChild"/>
+    <html:p class="wv-desc">Right-click any child of an item &#8212; attachment (PDF or not), linked
+      URL, or note &#8212; and pick <html:b>&#9654;&#65039; Set as Default</html:b> to open that one
+      instead of Zotero&#8217;s usual choice. The pick is stored as the tag
+      <html:b>&#9654;&#65039; wv-defatt</html:b> on that child, so it syncs to your other devices and
+      survives without Weavero. Search <html:b>wv-defatt</html:b> (or the &#9654;&#65039; glyph) to
+      list every marked item; the tag carries no ordinary words on purpose, so it never turns up in
+      unrelated searches. Turning this off stops the override but keeps your picks.</html:p>
+
     <label><html:h3>Migration</html:h3></label>
     <html:p class="wv-desc" style="margin-inline-start:0">Default attachments picked with
       <html:b>Default Attachment</html:b> by <html:b>PikaPei</html:b>

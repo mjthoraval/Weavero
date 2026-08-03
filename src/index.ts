@@ -2011,6 +2011,9 @@ class WeaveroPlugin {
                 "enableOutlineTextHighlight",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
+                // Default attachment/note to open — ON, but INERT until the user
+                // marks a child, so it changes nothing on its own.
+                "enableDefaultChild",
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",

@@ -17,7 +17,8 @@
 // purpose: the choice is only useful if it FOLLOWS THE USER ACROSS DEVICES,
 // and those JSON stores are local and unsynced. So it lives in the library:
 //
-//     an AUTOMATIC (type 1) tag `wv-open-by-default` on the CHOSEN CHILD
+//     an AUTOMATIC (type 1) tag — a single emoji — on the CHOSEN CHILD,
+//     which Zotero also renders in the items list (see the tag constant)
 //
 // Chosen over the alternatives (all checked against a live Zotero 10 first):
 //   • Extra field — synced, but a crowded shared namespace (Citation Key,
@@ -58,9 +59,20 @@
 
 declare const Zotero: any;
 
-/** The marker tag. Namespaced with the project's `wv-` prefix and named for
- *  the behaviour (not "attachment"), since a NOTE can be the chosen child. */
-export const OPEN_BY_DEFAULT_TAG = "wv-open-by-default";
+/** The marker tag: a SINGLE EMOJI.
+ *
+ *  Zotero renders the first emoji sequence of a tag name in the items list
+ *  (`Zotero.Tags.extractEmojiForItemsList`), so a bare emoji gives the
+ *  chosen child a visible marker with NO setup and NO colored-tag slot
+ *  consumed (only 9 exist, and this user already spends 6).
+ *
+ *  Trade-off accepted deliberately: a bare emoji is terse in the tag
+ *  selector, giving no hint of its meaning. Change this one constant to
+ *  e.g. "▶️ Default" if a readable name is wanted later — but note
+ *  that renaming ORPHANS every already-marked child, since the tag IS the
+ *  storage. ▶️ was picked to read as "this is what opens", and avoids
+ *  the emoji already in use in this library (⭐, ‼️). */
+export const OPEN_BY_DEFAULT_TAG = "▶️";
 
 /** Zotero tag types: 0 = manual (user-typed), 1 = automatic (machine-added,
  *  hideable via the tag selector's Display Automatic toggle). */
@@ -75,7 +87,7 @@ const TAG_TYPE_AUTOMATIC = 1;
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 3;
+const WIRE_VERSION = 4;
 
 class _AttachmentsMixin {
     [k: string]: any;
@@ -317,6 +329,81 @@ class _AttachmentsMixin {
         }
     }
 
+    // ---- Migration from PikaPei/zotero-default-attachment -----------------
+
+    /** Import default-attachment choices from the older
+     *  PikaPei/zotero-default-attachment plugin, so users switching to
+     *  Weavero keep their picks.
+     *
+     *  That plugin stores everything OUT OF BAND, in one pref:
+     *      extensions.zotero.defaultattachment.mappings
+     *      -> JSON  { "<parentItemID>": <attachmentItemID>, ... }
+     *  (verified against its src/modules/default-attachment.ts). Those are
+     *  LOCAL numeric item IDs, not sync keys, so the mapping is only
+     *  meaningful in the profile that wrote it — which is exactly why the
+     *  original author's approach doesn't survive a restore or another
+     *  machine, and why we convert it into a synced tag here.
+     *
+     *  Runs ONCE, guarded by `weavero.defaultChildMigrated`. Without that
+     *  guard every startup would resurrect choices the user has since
+     *  cleared, because the old pref is left untouched.
+     *
+     *  NON-DESTRUCTIVE: the old pref is deliberately NOT deleted, so the
+     *  user can still roll back to that plugin. Note both plugins patch
+     *  `getBestAttachment`, so they should not be left enabled together. */
+    async _wvMigrateDefaultAttachmentPlugin(): Promise<any> {
+        const result = { ran: false, found: 0, migrated: 0, skipped: 0 };
+        try {
+            if (Zotero.Prefs.get("weavero.defaultChildMigrated")) return result;
+            result.ran = true;
+
+            let raw: any = null;
+            try {
+                // `true` = global pref name, matching how that plugin writes it.
+                raw = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
+            } catch (e) { /* pref absent — nothing to migrate */ }
+
+            if (raw) {
+                let mappings: any = null;
+                try { mappings = JSON.parse(String(raw)); } catch (e) {
+                    Zotero.debug("[Weavero] default-attachment migration: unparsable pref");
+                }
+                if (mappings && typeof mappings === "object" && !Array.isArray(mappings)) {
+                    for (const parentID of Object.keys(mappings)) {
+                        result.found++;
+                        try {
+                            const attID = mappings[parentID];
+                            const att = Zotero.Items.get(attID);
+                            // Validate before writing: the ids are local and may
+                            // be stale (item deleted, merged, or re-parented).
+                            if (!att || att.deleted
+                                || String(att.parentID) !== String(parentID)) {
+                                result.skipped++;
+                                continue;
+                            }
+                            if (this._wvIsDefaultChild(att)) { result.skipped++; continue; }
+                            await this._wvSetDefaultChild(att);
+                            result.migrated++;
+                        } catch (e) {
+                            result.skipped++;
+                            Zotero.debug("[Weavero] migration entry err: " + e);
+                        }
+                    }
+                }
+            }
+
+            Zotero.Prefs.set("weavero.defaultChildMigrated", true);
+            if (result.found) {
+                Zotero.debug("[Weavero] default-attachment migration: "
+                    + result.migrated + " migrated, " + result.skipped + " skipped of "
+                    + result.found);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvMigrateDefaultAttachmentPlugin err: " + e);
+        }
+        return result;
+    }
+
     // ---- UI: the items-list context menu ---------------------------------
 
     /** Add "Open by Default" to a window's items-tree context menu.
@@ -363,12 +450,12 @@ class _AttachmentsMixin {
                     const isNote = typeof child.isNote === "function" && child.isNote();
                     if (!isAtt && !isNote) return;
 
+                    // ACTION label (not a checkbox): the entry states what the
+                    // click will DO, which reads better than a state label.
                     const marked = lp._wvIsDefaultChild(child);
                     const mi = doc.createXULElement("menuitem");
                     mi.id = ID;
-                    mi.setAttribute("type", "checkbox");
-                    mi.setAttribute("label", "Open by Default");
-                    if (marked) mi.setAttribute("checked", "true");
+                    mi.setAttribute("label", marked ? "Clear Default" : "Set as Default");
                     mi.addEventListener("command", () => {
                         try {
                             // Re-resolve at click time: the selection can change

@@ -5312,6 +5312,12 @@ Zotero.Weavero = {
                 // be applied to windows that are ALREADY open at reload time.
                 // See modules/attachments.ts.
                 try { _Weavero._wvWireDefaultAttachment(); } catch (e) {}
+                // One-shot import of picks from PikaPei/zotero-default-attachment
+                // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
+                // startup must not block on it.
+                try {
+                    _Weavero._wvMigrateDefaultAttachmentPlugin().catch(() => {});
+                } catch (e) {}
                 // Per-window UI must ALSO be wired for windows already open at
                 // reload time: onMainWindowLoad does not re-fire for them.
                 try {

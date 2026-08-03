@@ -8471,6 +8471,7 @@ class _ReaderPanelsMixin {
                             else { st[pKey] = key; st[nKey] = alt; }
                             applyDate();
                         });
+                opts.appendChild(preset("1 hour", "1h", label + " in the last hour"));
                 opts.appendChild(preset("Today", "today", label + " today"));
                 opts.appendChild(preset("7 days", "7d", label + " in the last 7 days"));
                 opts.appendChild(preset("30 days", "30d", label + " in the last 30 days"));
@@ -8732,6 +8733,7 @@ class _ReaderPanelsMixin {
             if (!preset) return { from: null, to: null };
             const now = new Date();
             const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+            if (preset === "1h") return { from: now.getTime() - 3600000, to: null };
             if (preset === "today") return { from: midnight, to: null };
             if (preset === "7d") return { from: now.getTime() - 7 * 86400000, to: null };
             if (preset === "30d") return { from: now.getTime() - 30 * 86400000, to: null };

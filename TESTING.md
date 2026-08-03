@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (144 tests, 7 spec files):
+Current in-Zotero coverage (156 tests, 7 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -293,8 +293,18 @@ plugin and driving its own UI** — creating a pick through its "Set
 Default" menu item, then asserting Weavero's import, precedence and
 purge against the data it actually wrote. That is the method to prefer
 whenever a companion writes state Weavero reads: it caught both an
-assumption that held (their pref name and JSON shape) and a claim that
-did not (wrapper order after a later install).
+assumption that held (their pref name and JSON shape) and two claims that
+did not — wrapper order after a later install, and migration silently
+overwriting an existing Weavero choice.
+
+**A companion's state can change under you.** That plugin prunes its own
+stale mappings whenever its wrapper evaluates an affected item, so its
+pref shrinks as the user browses (verified live 2026-08-03: a dangling
+mapping became `{}` after one `getBestAttachment` call). A probe that
+counts a companion's records before and after an unrelated step can
+therefore see different totals with nothing wrong — chase such a gap to
+ground truth before treating it as a Weavero bug, and never assert a
+companion's data is stable across steps without re-reading it.
 
 ### Built-in interop (referenced in Weavero's code)
 

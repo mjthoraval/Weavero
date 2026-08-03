@@ -396,7 +396,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
     // reached Weavero first. These tests own that guarantee.
     describe("legacy purge", () => {
         const PREF = "extensions.zotero.defaultattachment.mappings";
-        let parent, att, att2, saved;
+        let parent, parent2, att, att2, saved;
 
         before(async () => {
             const lib = Zotero.Libraries.userLibraryID;
@@ -424,6 +424,13 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             att2.attachmentContentType = "application/pdf";
             att2.setField("title", "WV-TEST legacy att 2");
             await att2.saveTx();
+
+            // A second item, so a mapping can point at an attachment that
+            // belongs to a DIFFERENT parent — what a re-parented pick looks like.
+            parent2 = new Zotero.Item("journalArticle");
+            parent2.libraryID = lib;
+            parent2.setField("title", "WV-TEST legacy parent 2");
+            await parent2.saveTx();
         });
 
         after(async () => {
@@ -431,7 +438,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
                 if (saved === undefined) Zotero.Prefs.clear(PREF, true);
                 else Zotero.Prefs.set(PREF, saved, true);
             } catch (e) { /* leave as-is */ }
-            for (const it of [att2, att, parent]) {
+            for (const it of [att2, att, parent2, parent]) {
                 try { if (it) await it.eraseTx(); } catch (e) { /* already gone */ }
             }
         });
@@ -497,6 +504,25 @@ describe("Weavero — default child (attachments, notes, links)", () => {
                 att.deleted = false;
                 await att.saveTx();
             }
+        });
+
+        // The mapping says parent2 -> att, but att belongs to parent. That is
+        // what a re-parented pick looks like: it can no longer be honoured, and
+        // their pref is the only record of it, so nothing may be deleted.
+        //
+        // Note this state is TRANSIENT in the wild — their own wrapper prunes
+        // such an entry the next time it evaluates that item (verified live
+        // 2026-08-03), so a purge that refuses now can succeed later.
+        it("REFUSES to clear when the entry's attachment moved to another item", async () => {
+            await wv._wvClearDefaultChild(att);
+            await wv._wvClearDefaultChild(att2);
+            Zotero.Prefs.set(PREF, JSON.stringify({ [parent2.id]: att.id }), true);
+            const r = await wv._wvClearLegacyDefaultAttachments();
+            expect(r.cleared).to.equal(false);
+            expect(r.unresolved.map(u => u.reason)).to.include("reparented");
+            expect(Zotero.Prefs.get(PREF, true)).to.be.a("string");
+            // and nothing was marked off the back of a mapping we could not trust
+            expect(wv._wvIsDefaultChild(att)).to.equal(false);
         });
 
         it("refuses on an unparsable pref rather than discarding it", async () => {

@@ -834,6 +834,14 @@ class _AttachmentsMixin {
      *
      *  So this re-imports first, then confirms every remaining entry now
      *  carries the Weavero marker, and REFUSES to clear if even one does not.
+     *
+     *  A refusal is not permanent, and should not be reported as one: THEIR
+     *  wrapper prunes its own stale mappings (`clearDefaultAttachment`) the
+     *  next time it evaluates an item whose attachment is missing, trashed or
+     *  re-parented. Verified live 2026-08-03 — pointing their pref at a
+     *  dangling id and calling getBestAttachment left it as `{}`. So the very
+     *  entries that block a purge tend to disappear on their own as the user
+     *  browses, and a later attempt succeeds with no action from them.
      *  Returns {cleared, total, imported, unresolved[]} — `cleared:false` with
      *  a populated `unresolved` means nothing was deleted. */
     async _wvClearLegacyDefaultAttachments(): Promise<any> {

@@ -8541,7 +8541,10 @@ class _ReaderPanelsMixin {
                     const v = Math.max(1, Math.floor(Number(num.value) || 1));
                     st[nnKey] = v;
                     // Debounced apply, no popup re-render (keeps focus/caret).
-                    const cw2: any = idoc.defaultView;
+                    // Chrome-window timer: content timers throttle unfocused.
+                    let cw2: any = null;
+                    try { cw2 = (idoc.defaultView as any).browsingContext.topChromeWindow; } catch (_) {}
+                    if (!cw2) cw2 = Zotero.getMainWindow();
                     if (numT) cw2.clearTimeout(numT);
                     numT = cw2.setTimeout(async () => {
                         try {
@@ -8703,11 +8706,50 @@ class _ReaderPanelsMixin {
                 }, true);
                 // Same Ctrl+A repair as the number input (reader's capture
                 // handler preventDefaults it before the native select-all).
+                // ArrowUp/Down step the FOCUSED segment (user call
+                // 2026-08-03) -- the widget's own spinbutton stepping is dead
+                // in Zotero (reader shortcuts eat the arrows), so the focused
+                // shadow segment is mutated directly: value attribute (what
+                // resolveTyped reads), textContent (what the user sees) and
+                // aria-valuetext, then the normal typed-apply path runs.
                 inp.addEventListener("keydown", (e: any) => {
                     if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
                         try { inp.select(); } catch (_) {}
                         e.stopPropagation();
+                        return;
                     }
+                    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+                    try {
+                        // The focused segment comes from focusin tracking --
+                        // sr.activeElement stays null for UA shadow roots
+                        // (measured), but focusin COMPOSES out of the shadow
+                        // with originalTarget intact.
+                        const f = (inp as any).__wvSeg;
+                        if (!f || !f.isConnected || !f.classList || !f.classList.contains("datetime-edit-field")) return;
+                        e.preventDefault(); e.stopPropagation();
+                        const min = parseInt(f.getAttribute("min") || "1", 10);
+                        const max = parseInt(f.getAttribute("max") || "9999", 10);
+                        const cur = parseInt(f.getAttribute("value") || "", 10);
+                        const delta = e.key === "ArrowUp" ? 1 : -1;
+                        const isYear = f.getAttribute("data-l10n-id") === "datetime-year";
+                        let next;
+                        if (isNaN(cur)) {
+                            next = isYear ? new Date().getFullYear()
+                                : (delta > 0 ? min : max);
+                        }
+                        else {
+                            next = cur + delta;
+                            if (isYear) next = Math.min(max, Math.max(min, next));
+                            else if (next > max) next = min;
+                            else if (next < min) next = max;
+                        }
+                        const digits = parseInt(f.getAttribute("mindigits") || "2", 10);
+                        const s2 = String(next).padStart(digits, "0");
+                        f.setAttribute("value", String(next));
+                        f.textContent = s2;
+                        f.setAttribute("aria-valuetext", s2);
+                        onTyped();
+                    } catch (_) {}
                 });
                 // PARTIAL dates: input.value stays "" until every segment is
                 // filled, so year-only entry never commits natively. The
@@ -8762,11 +8804,39 @@ class _ReaderPanelsMixin {
                 reflect();
                 let typeT: any = null;
                 const onTyped = () => {
-                    const cw2: any = idoc.defaultView;
+                    // CHROME window timer -- content-window timeouts are
+                    // THROTTLED while the iframe is unfocused, delaying the
+                    // apply by seconds (cost 5 diagnostic round-trips,
+                    // 2026-08-03: state updated fine, just late).
+                    let cw2: any = null;
+                    try { cw2 = (idoc.defaultView as any).browsingContext.topChromeWindow; } catch (_) {}
+                    if (!cw2) cw2 = Zotero.getMainWindow();
                     if (typeT) cw2.clearTimeout(typeT);
                     typeT = cw2.setTimeout(async () => {
                         try {
                             const v = resolveTyped();
+                            // Trace ring (Zotero._wvDateLog): what the typed
+                            // path resolved and why -- partial-date bugs were
+                            // burning round-trips to guesswork (2026-08-03).
+                            try {
+                                const Z: any = Zotero as any;
+                                if (!Z._wvDateLog) Z._wvDateLog = [];
+                                let segDump = "no-sr";
+                                try {
+                                    const sr2: any = inp.openOrClosedShadowRoot;
+                                    if (sr2) {
+                                        const gg = (id: string) => {
+                                            const f2 = sr2.querySelector('[data-l10n-id="datetime-' + id + '"]');
+                                            return f2 ? (f2.getAttribute("value") || "-") : "?";
+                                        };
+                                        segDump = gg("day") + "/" + gg("month") + "/" + gg("year");
+                                    }
+                                } catch (err2) { segDump = "err:" + err2; }
+                                Z._wvDateLog.push(new Date().toISOString().slice(11, 19)
+                                    + " " + which + " v=" + v + " inpValue=" + (inp.value || "-")
+                                    + " segs=" + segDump + " stWas=" + st[key]);
+                                if (Z._wvDateLog.length > 30) Z._wvDateLog.shift();
+                            } catch (err3) {}
                             // Typed CONFLICT (from after to / to before from):
                             // don't apply it -- red border + tooltip instead.
                             const other = which === "from" ? st[tKey] : st[fKey];
@@ -8790,6 +8860,18 @@ class _ReaderPanelsMixin {
                 inp.addEventListener("input", (e: any) => { e.stopPropagation(); onTyped(); });
                 inp.addEventListener("keyup", (e: any) => { e.stopPropagation(); onTyped(); });
                 inp.addEventListener("change", (e: any) => { e.stopPropagation(); onTyped(); });
+                // Track which shadow segment holds focus (for arrow stepping).
+                inp.addEventListener("focusin", (e: any) => {
+                    try {
+                        const ot: any = e.originalTarget;
+                        if (ot && ot.classList && ot.classList.contains("datetime-edit-field")) (inp as any).__wvSeg = ot;
+                    } catch (_) {}
+                });
+                inp.addEventListener("focusout", () => {
+                    // Cleared on leave so arrows can't step a field that no
+                    // longer holds focus; focusin re-arms on return.
+                    try { (inp as any).__wvSeg = null; } catch (_) {}
+                });
                 rangeRow.appendChild(inp);
                 const x = mk("button", "wv-rf-dateclear");
                 x.type = "button";

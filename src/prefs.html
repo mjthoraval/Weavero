@@ -654,17 +654,20 @@
          migration tidy-up, not a visual extra, and must stay reachable even
          when visual extras are switched off. -->
     <label><html:h3>Migration</html:h3></label>
-    <html:p class="wv-desc" style="margin-inline-start:0">Default attachments picked with the
-      <html:b>zotero-default-attachment</html:b> plugin are imported automatically the first time
-      Weavero starts, and its own data is left untouched so you can go back to it. Once you are
-      sure you are done with that plugin, you can clear the picks it still stores.</html:p>
+    <html:p class="wv-desc" style="margin-inline-start:0">Default attachments picked with
+      <html:b>Default Attachment</html:b> by <html:b>PikaPei</html:b>
+      (github.com/PikaPei/zotero-default-attachment) are imported automatically the first time
+      Weavero starts, and that plugin’s own data is left untouched so you can go back to it. Once
+      you are sure you are done with it, you can clear the picks it still stores.</html:p>
     <hbox align="center">
-      <html:button type="button" id="wv-clear-legacy-defatt">Clear stored data from zotero-default-attachment</html:button>
+      <html:button type="button" id="wv-clear-legacy-defatt">Clear stored data from Default Attachment (PikaPei)</html:button>
       <html:span id="wv-clear-legacy-defatt-status" class="wv-desc" style="margin-inline-start:.75em"></html:span>
     </hbox>
-    <html:p class="wv-desc">Removes only that plugin’s stored picks (a single preference).
-      Your Weavero defaults are tags on the attachments and are not affected, and the plugin
-      itself is not disabled.</html:p>
+    <html:p class="wv-desc">Imports anything still outstanding, then removes only that plugin’s
+      stored picks (a single preference). If any pick cannot be imported — its attachment was
+      deleted, trashed or moved to another item — nothing is deleted at all, since that
+      preference is the only record of it. Your Weavero defaults are tags on the attachments and
+      are not affected, and the plugin itself is not disabled.</html:p>
   </groupbox>
 
   <!-- ============================ External viewer -->

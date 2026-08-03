@@ -272,9 +272,8 @@ const RP_POPUP_CSS = [
     // Date-range custom row + Weavero mini calendar in the filter popup.
     ".wv-rf-daterange{display:flex;gap:5px;align-items:center;padding:2px 10px 4px;font-size:11px;opacity:.9;}",
     ".wv-rf-datechip-gap{flex:0 0 8px;}",
-    ".wv-rf-datebtn{font-size:11px;padding:2px 8px;background:transparent;color:inherit;cursor:pointer;",
-    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;}",
-    ".wv-rf-datebtn:hover,.wv-rf-datebtn[data-open]{background:var(--fill-quinary,rgba(127,127,127,.12));}",
+    ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
+    "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
     ".wv-rf-dateclear{font-size:12px;line-height:1;padding:0 3px;background:transparent;color:inherit;",
     "  border:none;cursor:pointer;opacity:.6;}",
     ".wv-rf-dateclear:hover{opacity:1;}",
@@ -8451,10 +8450,6 @@ class _ReaderPanelsMixin {
             btn.addEventListener("click", (e: any) => { e.stopPropagation(); onClick(); });
             return btn;
         };
-        const fmtIso = (v: string | null) => {
-            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || "");
-            return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString() : "—";
-        };
         // One dimension = one labeled chip line (+ its own custom row and
         // calendar when the Custom preset is on). pKey/fKey/tKey index st.
         const dateDim = (label: string, pKey: string, fKey: string, tKey: string) => {
@@ -8468,46 +8463,69 @@ class _ReaderPanelsMixin {
                 opts.appendChild(preset("Custom", "custom", "Custom " + label.toLowerCase() + " date range"));
             }, true, label);
             if (st[pKey] !== "custom") return;
-            // Weavero-own date buttons + mini calendar -- input[type=date]'s
-            // native picker CANNOT work in Zotero (see _wvRfMiniCal).
+            // Native input[type=date] for TYPED entry (segmented, localized,
+            // validated -- that part of the widget works fine in Zotero). Its
+            // calendar icon would open the broken native picker (see
+            // _wvRfMiniCal), so capture-phase listeners spot clicks on the
+            // UA-shadow button via originalTarget (chrome pierces the shadow)
+            // and divert them to the Weavero calendar.
             const rangeRow = mk("div", "wv-rf-daterange");
             const calHost = mk("div", "wv-rf-calhost");
             let calFor: string | null = null;
-            const openCal = (which: string, btn: any) => {
+            const openCal = (which: string, key: string) => {
                 while (calHost.firstChild) calHost.removeChild(calHost.firstChild);
                 if (calFor === which) { calFor = null; return; }
                 calFor = which;
-                const cur = which === "from" ? st[fKey] : st[tKey];
-                calHost.appendChild(this._wvRfMiniCal(idoc, cur, async (isoV: string) => {
-                    if (which === "from") st[fKey] = isoV; else st[tKey] = isoV;
+                calHost.appendChild(this._wvRfMiniCal(idoc, st[key], async (isoV: string) => {
+                    st[key] = isoV;
                     await applyDate();
                 }));
-                btn.dataset.open = "true";
             };
-            const mkDateBtn = (which: string, lbl: string, key: string) => {
+            const mkDateField = (which: string, lbl: string, key: string) => {
                 const lb = mk("span"); lb.textContent = lbl;
                 rangeRow.appendChild(lb);
-                const b = mk("button", "wv-rf-datebtn");
-                b.type = "button";
-                b.textContent = fmtIso(st[key]);
-                b.title = "Pick a date";
-                b.addEventListener("click", (e: any) => { e.stopPropagation(); openCal(which, b); });
-                rangeRow.appendChild(b);
-                if (st[key]) {
-                    const x = mk("button", "wv-rf-dateclear");
-                    x.type = "button";
-                    x.textContent = "×";
-                    x.title = "Clear " + lbl;
-                    x.addEventListener("click", async (e: any) => {
-                        e.stopPropagation();
-                        st[key] = null;
-                        await applyDate();
-                    });
-                    rangeRow.appendChild(x);
-                }
+                const inp: any = mk("input", "wv-rf-dateinput");
+                inp.type = "date";
+                if (st[key]) inp.value = st[key];
+                inp.setAttribute("aria-label", label + " range " + lbl);
+                const onCalBtn = (e: any) => {
+                    try {
+                        const ot: any = e.originalTarget;
+                        return !!(ot && ot.closest && ot.closest("button.datetime-calendar-button"));
+                    } catch (_) { return false; }
+                };
+                inp.addEventListener("mousedown", (e: any) => {
+                    if (onCalBtn(e)) {
+                        e.preventDefault(); e.stopPropagation();
+                        openCal(which, key);
+                    }
+                }, true);
+                inp.addEventListener("click", (e: any) => {
+                    if (onCalBtn(e)) { e.preventDefault(); }
+                    e.stopPropagation();
+                }, true);
+                // Typed commit: apply WITHOUT re-rendering the popup so focus
+                // stays in the segments mid-edit.
+                inp.addEventListener("change", async (e: any) => {
+                    e.stopPropagation();
+                    st[key] = inp.value || null;
+                    await this._wvApplyReaderFilter(reader);
+                    this._wvReaderEnsureFilterButton(reader, idoc);
+                });
+                rangeRow.appendChild(inp);
+                const x = mk("button", "wv-rf-dateclear");
+                x.type = "button";
+                x.textContent = "×";
+                x.title = "Clear " + lbl;
+                x.addEventListener("click", async (e: any) => {
+                    e.stopPropagation();
+                    st[key] = null;
+                    await applyDate();
+                });
+                rangeRow.appendChild(x);
             };
-            mkDateBtn("from", "from", fKey);
-            mkDateBtn("to", "to", tKey);
+            mkDateField("from", "from", fKey);
+            mkDateField("to", "to", tKey);
             stack.appendChild(rangeRow);
             stack.appendChild(calHost);
         };

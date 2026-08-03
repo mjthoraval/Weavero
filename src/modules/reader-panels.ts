@@ -8663,6 +8663,22 @@ class _ReaderPanelsMixin {
                 };
                 idoc.addEventListener("pointerdown", closer, true);
             };
+            // Focus mover shared by segment (arrow) and field (Tab) nav.
+            // Services.focus.setFocus is the ONE method that reaches UA-shadow
+            // segments from chrome (plain .focus() no-ops; verified live).
+            const focusEl = (el: any) => {
+                try {
+                    if (el.classList && el.classList.contains("wv-rf-dateinput")) {
+                        const s2: any = el.openOrClosedShadowRoot;
+                        const first = s2 && s2.querySelector(".datetime-edit-field");
+                        if (first) { el.__wvSeg = first; Services.focus.setFocus(first, 0); return; }
+                    }
+                    Services.focus.setFocus(el, 0);
+                } catch (_) {}
+            };
+            const popupFocusables = () =>
+                Array.from(popup.querySelectorAll("button, input"))
+                    .filter((el: any) => el.offsetWidth || el.offsetHeight);
             const mkDateField = (which: string, lbl: string, key: string) => {
                 const lb = mk("span"); lb.textContent = lbl;
                 rangeRow.appendChild(lb);
@@ -8716,6 +8732,40 @@ class _ReaderPanelsMixin {
                     if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "a") {
                         try { inp.select(); } catch (_) {}
                         e.stopPropagation();
+                        return;
+                    }
+                    // <-/-> move between this field's segments (native segment
+                    // nav is dead in Zotero; flow-through: stop at the ends).
+                    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                        try {
+                            const f = (inp as any).__wvSeg;
+                            if (!f || !f.isConnected) return;
+                            const sr2: any = inp.openOrClosedShadowRoot;
+                            const segs: any[] = sr2 ? Array.from(sr2.querySelectorAll(".datetime-edit-field")) : [];
+                            const i = segs.indexOf(f);
+                            if (i < 0) return;
+                            e.preventDefault(); e.stopPropagation();
+                            const j = e.key === "ArrowRight" ? i + 1 : i - 1;
+                            if (j < 0 || j >= segs.length) return;
+                            (inp as any).__wvSeg = segs[j];   // immediate; focusin confirms
+                            focusEl(segs[j]);
+                        } catch (_) {}
+                        return;
+                    }
+                    // Tab / Shift+Tab move between the from/to FIELDS (the
+                    // reader's window-level Tab management must not see this).
+                    if (e.key === "Tab") {
+                        e.preventDefault(); e.stopPropagation();
+                        try {
+                            const paired = e.shiftKey ? (inp as any)._wvPairPrev : (inp as any)._wvPairNext;
+                            if (paired && paired.isConnected) { focusEl(paired); return; }
+                            // Flow through: next/previous focusable in the popup.
+                            const list: any[] = popupFocusables();
+                            const i = list.indexOf(inp);
+                            if (i < 0) return;
+                            const j = e.shiftKey ? i - 1 : i + 1;
+                            if (j >= 0 && j < list.length) focusEl(list[j]);
+                        } catch (_) {}
                         return;
                     }
                     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
@@ -8883,9 +8933,11 @@ class _ReaderPanelsMixin {
                     await applyDate();
                 });
                 rangeRow.appendChild(x);
+                return inp;
             };
-            mkDateField("from", "from", fKey);
-            mkDateField("to", "to", tKey);
+            const fromInp: any = mkDateField("from", "from", fKey);
+            const toInp: any = mkDateField("to", "to", tKey);
+            if (fromInp && toInp) { fromInp._wvPairNext = toInp; toInp._wvPairPrev = fromInp; }
             stack.appendChild(rangeRow);
         };
         dateDim("Added", "dateAddedMode", "dateAddedN", "dateAddedUnit", "dateAddedFrom", "dateAddedTo", "dateAddedNeg");

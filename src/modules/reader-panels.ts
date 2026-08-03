@@ -256,6 +256,11 @@ const RP_POPUP_CSS = [
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active{position:relative;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
+    // Annotations tab icon: same blue dot while a non-default SORT is active
+    // (matches the filter buttons' active cue -- user call, 2026-08-03).
+    "#viewAnnotations.wv-ann-sort-on{position:relative;}",
+    "#viewAnnotations.wv-ann-sort-on::after{content:'';position:absolute;top:4px;right:4px;",
+    "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
 ].join("");
 
 // ---- Feature B: Bookmarks sidebar tab ----------------------------------
@@ -1300,13 +1305,7 @@ const RP_BM_CSS = [
     // a viewBox only, so an unstyled host renders it at ~8x4px -- present,
     // "visible", and unseeable (measured 2026-08-03; the geometry lesson
     // again). Sized to match the native 28px toolbar buttons.
-    ".wv-ann-sortbtn{align-items:center;justify-content:center;gap:3px;" +
-        "margin-left:auto;margin-right:2px;" +
-        "min-width:28px;height:28px;box-sizing:border-box;padding:0 5px;" +
-        "background:transparent;border:none;border-radius:6px;cursor:pointer;" +
-        "color:inherit;-moz-window-dragging:no-drag;}",
-    ".wv-ann-sortbtn svg{width:16px;height:16px;display:block;flex:0 0 auto;}",
-    ".wv-ann-sortbtn:hover{background:var(--fill-quinary, rgba(127,127,127,0.12));}",
+
     ".wv-bm-sort-dir{font-size:10px;line-height:1;}",
     // Menu section heading + a divider between the field group and the
     // direction group (option B: fields on top, Ascending/Descending below).
@@ -1694,80 +1693,36 @@ class _ReaderPanelsMixin {
         } catch (e) {}
     }
 
-    /** Per-sweep ensure: wire the wrapper, refresh ranks, and keep the sort
-     *  button mounted next to the sidebar search box -- visible only while the
-     *  NATIVE annotations tab is active (our bookmarks/outline panels have
-     *  their own controls). */
+    /** Per-sweep ensure: wire the wrapper, refresh ranks, and wire the sort
+     *  entry point -- a RIGHT-CLICK on the annotations tab icon
+     *  (#viewAnnotations). A toolbar button was tried first (dev.32-34) and
+     *  rejected: it stole width from the search bar, whose clean expansion is
+     *  the reason the project convention puts controls right of the search
+     *  button in the first place (user call, 2026-08-03). The tab icon costs
+     *  nothing and right-click-for-options matches the reader tab header. */
     _wvAnnSortEnsure(reader: any, idoc: any) {
         try {
             this._wvAnnSortWire(reader);
             this._wvAnnPushRanks(reader);
             (idoc as any)._wvAnnSortReader = reader;
-            let btn: any = idoc.querySelector(".wv-ann-sortbtn");
-            // Mount into the TOOLBAR ROW, just before the .end group. The
-            // first mount put it inside .end next to the search box -- but
-            // .end is display:block at 28px wide, so its children STACK and
-            // the button rendered on a second line under the magnifier
-            // (screenshot 2026-08-03). The toolbar itself is the flex row;
-            // margin-left:auto in the CSS hugs the button up against .end
-            // whatever the row's justify rule is.
-            const tb0 = idoc.querySelector("#sidebarContainer .sidebar-toolbar");
-            const end0 = tb0 && tb0.querySelector(":scope > .end");
-            if (!btn && (!tb0 || !end0)) return;
-            if (!btn) {
-                btn = idoc.createElementNS(NS_HTML_RP, "button");
-                btn.className = "wv-ann-sortbtn";
-                btn.setAttribute("style", "display:none;");
-                btn.addEventListener("click", (e: any) => {
-                    e.stopPropagation();
-                    // Live plugin at event time -- the button outlives reloads.
+            // Sweep away the button earlier dev builds mounted.
+            try { const b = idoc.querySelector(".wv-ann-sortbtn"); if (b) b.remove(); } catch (e) {}
+            const va: any = idoc.getElementById("viewAnnotations");
+            if (!va) return;
+            try { va.classList.toggle("wv-ann-sort-on", this._wvAnnSort().field !== "position"); } catch (e) {}
+            if (va.__wvAnnSortCtxWired) return;
+            const h = (e: any) => {
+                try {
+                    e.preventDefault(); e.stopPropagation();
+                    // Live plugin at event time -- the element outlives reloads.
                     const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     const rd = (idoc as any)._wvAnnSortReader;
-                    if (P && rd) P._wvShowAnnSortMenu(rd, idoc, btn);
-                });
-                (tb0 as any).insertBefore(btn, end0);
-            }
-            // Re-home a button mounted by the old inside-.end layout.
-            try {
-                if (btn.parentElement && btn.parentElement.classList.contains("end") && tb0 && end0) {
-                    tb0.insertBefore(btn, end0);
-                }
-            } catch (e) {}
-            // Refresh visibility when the user switches sidebar tabs.
-            const tb = idoc.querySelector("#sidebarContainer .sidebar-toolbar");
-            if (tb && !(tb as any).__wvAnnSortVisWired) {
-                (tb as any).__wvAnnSortVisWired = true;
-                tb.addEventListener("click", () => {
-                    const w: any = idoc.defaultView;
-                    ((w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout)(() => {
-                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                        const rd = (idoc as any)._wvAnnSortReader;
-                        if (P && rd) { try { P._wvAnnSortEnsure(rd, idoc); } catch (e) {} }
-                    }, 80);
-                }, true);
-            }
-            const annActive = (() => {
-                const b = idoc.getElementById("viewAnnotations");
-                return !!(b && b.classList.contains("active"));
-            })();
-            const sc = idoc.getElementById("sidebarContainer");
-            const oursActive = !!(sc && (sc.classList.contains(RP_BM_TAB_ON)
-                || sc.classList.contains(RP_OUTLINE_TAB_ON)));
-            btn.style.display = (annActive && !oursActive) ? "inline-flex" : "none";
-            const cur = this._wvAnnSort();
-            const on = cur.field !== "position";
-            btn.innerHTML = RP_SORT_SVG + (on
-                ? '<span class="wv-bm-sort-label">'
-                    + (cur.field === "dateAdded" ? "Added" : "Modified") + " "
-                    + (cur.dir === "asc" ? "\u2191" : "\u2193") + "</span>"
-                : "");
-            btn.style.color = on ? "var(--accent-orange, #cc8400)" : "inherit";
-            btn.setAttribute("title", on
-                ? ("Annotations sorted by "
-                    + (cur.field === "dateAdded" ? "date added" : "date modified")
-                    + " (" + (cur.dir === "asc" ? "oldest first" : "newest first")
-                    + "). Click to change.")
-                : "Sort annotations");
+                    if (P && rd) P._wvShowAnnSortMenu(rd, idoc, va);
+                } catch (err) {}
+            };
+            va.addEventListener("contextmenu", h);
+            va.__wvAnnSortCtxWired = true;
+            va.__wvAnnSortCtxH = h;
         } catch (e) {}
     }
 
@@ -1785,7 +1740,9 @@ class _ReaderPanelsMixin {
                 ic.className = "wv-ctx-ic";
                 ic.textContent = cur.field === field ? "\u2713" : "";
                 const lb = idoc.createElementNS(NS_HTML_RP, "span");
-                lb.textContent = label + (cur.field === field
+                // No direction arrow on Position -- direction is meaningless
+                // for document order and the stray arrow read as a bug.
+                lb.textContent = label + (cur.field === field && field !== "position"
                     ? "  " + (cur.dir === "asc" ? "\u2191" : "\u2193") : "");
                 it.appendChild(ic); it.appendChild(lb);
                 it.addEventListener("click", () => { close(); this._wvAnnSetSort(field); });
@@ -1796,7 +1753,7 @@ class _ReaderPanelsMixin {
             item("Date Modified", "dateModified");
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
-            menu.style.left = Math.max(6, r.left - 60) + "px";
+            menu.style.left = Math.max(6, r.left) + "px";
             menu.style.top = (r.bottom + 2) + "px";
             this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
         } catch (e) {}
@@ -1805,6 +1762,15 @@ class _ReaderPanelsMixin {
     /** Disable/teardown: restore native order and remove the button. */
     _wvAnnSortTeardown(reader: any, idoc: any) {
         try { const b = idoc && idoc.querySelector(".wv-ann-sortbtn"); if (b) b.remove(); } catch (e) {}
+        try {
+            const va: any = idoc && idoc.getElementById("viewAnnotations");
+            if (va) { try { va.classList.remove("wv-ann-sort-on"); } catch (e) {} }
+            if (va && va.__wvAnnSortCtxH) {
+                va.removeEventListener("contextmenu", va.__wvAnnSortCtxH);
+                delete va.__wvAnnSortCtxH;
+                delete va.__wvAnnSortCtxWired;
+            }
+        } catch (e) {}
         try {
             const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
             const ir = reader && reader._internalReader;

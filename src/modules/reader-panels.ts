@@ -1301,6 +1301,7 @@ const RP_BM_CSS = [
     // "visible", and unseeable (measured 2026-08-03; the geometry lesson
     // again). Sized to match the native 28px toolbar buttons.
     ".wv-ann-sortbtn{align-items:center;justify-content:center;gap:3px;" +
+        "margin-left:auto;margin-right:2px;" +
         "min-width:28px;height:28px;box-sizing:border-box;padding:0 5px;" +
         "background:transparent;border:none;border-radius:6px;cursor:pointer;" +
         "color:inherit;-moz-window-dragging:no-drag;}",
@@ -1703,12 +1704,16 @@ class _ReaderPanelsMixin {
             this._wvAnnPushRanks(reader);
             (idoc as any)._wvAnnSortReader = reader;
             let btn: any = idoc.querySelector(".wv-ann-sortbtn");
-            const sb = idoc.querySelector("#sidebarContainer .search-box");
-            // Mounting needs the native search box (gone while our bookmarks/
-            // outline panels are active), but VISIBILITY must update even
-            // without it -- early-returning here left the button showing on
-            // top of the bookmarks tab (measured 2026-08-03).
-            if (!btn && (!sb || !sb.parentElement)) return;
+            // Mount into the TOOLBAR ROW, just before the .end group. The
+            // first mount put it inside .end next to the search box -- but
+            // .end is display:block at 28px wide, so its children STACK and
+            // the button rendered on a second line under the magnifier
+            // (screenshot 2026-08-03). The toolbar itself is the flex row;
+            // margin-left:auto in the CSS hugs the button up against .end
+            // whatever the row's justify rule is.
+            const tb0 = idoc.querySelector("#sidebarContainer .sidebar-toolbar");
+            const end0 = tb0 && tb0.querySelector(":scope > .end");
+            if (!btn && (!tb0 || !end0)) return;
             if (!btn) {
                 btn = idoc.createElementNS(NS_HTML_RP, "button");
                 btn.className = "wv-ann-sortbtn";
@@ -1720,8 +1725,14 @@ class _ReaderPanelsMixin {
                     const rd = (idoc as any)._wvAnnSortReader;
                     if (P && rd) P._wvShowAnnSortMenu(rd, idoc, btn);
                 });
-                (sb as any).parentElement.insertBefore(btn, (sb as any).nextSibling);
+                (tb0 as any).insertBefore(btn, end0);
             }
+            // Re-home a button mounted by the old inside-.end layout.
+            try {
+                if (btn.parentElement && btn.parentElement.classList.contains("end") && tb0 && end0) {
+                    tb0.insertBefore(btn, end0);
+                }
+            } catch (e) {}
             // Refresh visibility when the user switches sidebar tabs.
             const tb = idoc.querySelector("#sidebarContainer .sidebar-toolbar");
             if (tb && !(tb as any).__wvAnnSortVisWired) {

@@ -2122,17 +2122,12 @@ class _ReaderPanelsMixin {
                 delete (idoc as any).__wvAnnDateObs;
                 delete (idoc as any).__wvAnnDateObsV;
                 for (const el of idoc.querySelectorAll(".wv-ann-date, .wv-ann-sortbar")) { try { el.remove(); } catch (e) {} }
-                // Lift the chrome-side native date-picker veto (wired by the
-                // filter popup's date inputs).
-                try {
-                    const cwTop: any = idoc.defaultView && (idoc.defaultView as any).browsingContext
-                        && (idoc.defaultView as any).browsingContext.topChromeWindow;
-                    if (cwTop && cwTop.__wvDatePickerVetoed) {
-                        const panel = cwTop.document.getElementById("DateTimePickerPanel");
-                        if (panel) panel.removeEventListener("popupshowing", cwTop.__wvDatePickerVetoed);
-                        delete cwTop.__wvDatePickerVetoed;
-                    }
-                } catch (e) {}
+                // NOTE: the chrome-side date-picker veto is NOT lifted here --
+                // it belongs to the FILTER feature (wired by the filter
+                // popup's date inputs) and is torn down in
+                // _wvReaderTeardownPanels. Lifting it from the sort teardown
+                // let the settings toggle for SORTING re-enable the broken
+                // native calendar for the filter (user call 2026-08-03).
             }
         } catch (e) {}
         try {
@@ -2198,6 +2193,18 @@ class _ReaderPanelsMixin {
             // reload that skipped this orphaned them, and orphans close every
             // future popup on any pointerdown (traced 2026-08-03).
             try { this._wvCloseReaderFilterPopup(idoc); } catch (_) {}
+            // Lift the chrome-side native date-picker veto (a FILTER-feature
+            // guard wired by the filter popup's date inputs; moved here from
+            // the ann-sort teardown so the sort toggle can't lift it).
+            try {
+                const cwTop: any = idoc.defaultView && (idoc.defaultView as any).browsingContext
+                    && (idoc.defaultView as any).browsingContext.topChromeWindow;
+                if (cwTop && cwTop.__wvDatePickerVetoed) {
+                    const panel = cwTop.document.getElementById("DateTimePickerPanel");
+                    if (panel) panel.removeEventListener("popupshowing", cwTop.__wvDatePickerVetoed);
+                    delete cwTop.__wvDatePickerVetoed;
+                }
+            } catch (e) {}
             try { const st = idoc.getElementById(RP_STYLE_ID); if (st) st.remove(); } catch (_) {}
             // Restore annotations the reader FILTER removed (unset/setAnnotations
             // channel). Without this, disabling the plugin with a filter active

@@ -199,13 +199,21 @@ class WeaveroPlugin {
      *  bridge, so an alert-based notice would be invisible during testing and
      *  look "fixed" when it was never shown.
      *
-     *  opts: { id, accent: "amber"|"info", autoCloseMs, win, onDismiss }.
+     *  opts: { id, accent: "amber"|"info", autoCloseMs, win, onDismiss,
+     *  actions }.
+     *
      *  Omitting `autoCloseMs` makes the toast STICKY — it stays until clicked.
      *  That is the right default for a one-shot notice: an auto-closing toast
      *  fired during startup is trivially missed, which defeats the point.
      *
      *  `onDismiss` runs only on a real dismissal (click), never on the
-     *  auto-close path, so a caller can use it to record acknowledgement. */
+     *  auto-close path, so a caller can use it to record acknowledgement.
+     *
+     *  `actions` — [{label, onClick}] — turns the toast into a DECISION. When
+     *  present, clicking the body no longer dismisses: a toast that asks a
+     *  question must not be answerable by a stray click, and the caller can
+     *  leave its state pending so the question returns next start. Each action
+     *  removes the toast, then runs its handler. */
     _wvToast(title, messages, opts) {
         const o = opts || {};
         const arr = (Array.isArray(messages) ? messages : [messages])
@@ -246,12 +254,40 @@ class WeaveroPlugin {
                 line.textContent = m;
                 box.appendChild(line);
             }
-            box.title = "Click to dismiss";
-            box.addEventListener("click", () => {
-                try { box.remove(); } catch (e) {}
-                try { if (typeof o.onDismiss === "function") o.onDismiss(); }
-                catch (e) { Zotero.debug("[Weavero] toast onDismiss err: " + e); }
-            });
+            const actions = Array.isArray(o.actions) ? o.actions.filter(Boolean) : [];
+            if (actions.length) {
+                // A decision, not a notice: the body is inert so a stray click
+                // cannot answer the question.
+                const row: any = doc.createElementNS(HTMLNS, "div");
+                row.style.cssText = "margin-top:9px;display:flex;gap:6px;flex-wrap:wrap";
+                for (const act of actions) {
+                    const b: any = doc.createElementNS(HTMLNS, "button");
+                    b.textContent = act.label;
+                    b.style.cssText = [
+                        "padding:4px 9px", "border-radius:4px", "cursor:pointer",
+                        "border:1px solid " + palette[2],
+                        "background:rgba(255,255,255,.10)", "color:" + palette[1],
+                        "font:12px/1.3 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+                    ].join(";");
+                    b.addEventListener("click", (ev: any) => {
+                        try { ev.stopPropagation(); } catch (e) {}
+                        try { box.remove(); } catch (e) {}
+                        try { if (typeof act.onClick === "function") act.onClick(); }
+                        catch (e) { Zotero.debug("[Weavero] toast action err: " + e); }
+                    });
+                    row.appendChild(b);
+                }
+                box.appendChild(row);
+                box.style.cursor = "default";
+            }
+            else {
+                box.title = "Click to dismiss";
+                box.addEventListener("click", () => {
+                    try { box.remove(); } catch (e) {}
+                    try { if (typeof o.onDismiss === "function") o.onDismiss(); }
+                    catch (e) { Zotero.debug("[Weavero] toast onDismiss err: " + e); }
+                });
+            }
             (doc.documentElement || doc).appendChild(box);
             if (o.autoCloseMs) {
                 try { win.setTimeout(() => { try { box.remove(); } catch (e) {} }, o.autoCloseMs); }
@@ -4458,7 +4494,7 @@ class WeaveroPlugin {
             // covers a COLD start, where the import ran before any window
             // existed. The pref is only cleared once the user dismisses the
             // toast, so it reappears until actually acknowledged.
-            try { (this as any)._wvShowMigrationNotice(_window); } catch (e) {}
+            try { (this as any)._wvShowLegacyPrompt(_window); } catch (e) {}
             // Re-assert the getBestAttachment override after other plugins
             // have had time to load: PikaPei/zotero-default-attachment patches
             // the same method, and the LAST wrapper wins. Idempotent - a no-op
@@ -4678,6 +4714,7 @@ class WeaveroPlugin {
         // prototype could be undone by an observer callback firing mid-
         // teardown. See modules/attachments.ts.
         try { (this as any)._wvUnwirePluginObserver(); } catch (e) {}
+        try { (this as any)._wvUnwireDefaultChildPrefWatch(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultAttachment(); } catch (e) {}
         try {
             for (const w of Zotero.getMainWindows()) {
@@ -5387,6 +5424,9 @@ Zotero.Weavero = {
                 // installed/enabled later: startup wiring only sees plugins
                 // already loaded. See modules/attachments.ts.
                 try { _Weavero._wvWirePluginObserver(); } catch (e) {}
+                // Re-offer the legacy import if the user turns the feature
+                // back on after choosing to stay with the other plugin.
+                try { _Weavero._wvWireDefaultChildPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.
@@ -5397,7 +5437,7 @@ Zotero.Weavero = {
                 try {
                     _Weavero._wvMigrateDefaultAttachmentPlugin().then(() => {
                         const w = Zotero.getMainWindow();
-                        if (w) _Weavero._wvShowMigrationNotice(w);
+                        if (w) _Weavero._wvShowLegacyPrompt(w);
                     }).catch(() => {});
                 } catch (e) {}
                 // Per-window UI must ALSO be wired for windows already open at

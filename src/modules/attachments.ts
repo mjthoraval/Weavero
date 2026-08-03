@@ -670,26 +670,27 @@ class _AttachmentsMixin {
 
     // ---- Migration from PikaPei/zotero-default-attachment -----------------
 
-    /** Import default-attachment choices from the older
-     *  PikaPei/zotero-default-attachment plugin, so users switching to
-     *  Weavero keep their picks.
+    /** Detect leftover data from the older PikaPei/zotero-default-attachment
+     *  plugin and QUEUE THE QUESTION of what to do with it. Nothing is
+     *  imported here — see `_wvApplyLegacyChoice`.
      *
      *  That plugin stores everything OUT OF BAND, in one pref:
      *      extensions.zotero.defaultattachment.mappings
      *      -> JSON  { "<parentItemID>": <attachmentItemID>, ... }
-     *  (verified against its src/modules/default-attachment.ts). Those are
-     *  LOCAL numeric item IDs, not sync keys, so the mapping is only
-     *  meaningful in the profile that wrote it — which is exactly why the
-     *  original author's approach doesn't survive a restore or another
-     *  machine, and why we convert it into a synced tag here.
+     *  (verified against its shipped bundle). Those are LOCAL numeric item
+     *  IDs, not sync keys, so the mapping is only meaningful in the profile
+     *  that wrote it — which is why it doesn't survive a restore or another
+     *  machine, and why importing converts it into a synced tag.
      *
-     *  Runs ONCE, guarded by `weavero.defaultChildMigrated`. Without that
-     *  guard every startup would resurrect choices the user has since
-     *  cleared, because the old pref is left untouched.
+     *  Runs ONCE per decision, guarded by `weavero.defaultChildMigrated`,
+     *  which is set only when the user ANSWERS. Without that guard an import
+     *  would resurrect choices the user has since cleared, because the old
+     *  pref is never touched.
      *
-     *  NON-DESTRUCTIVE: the old pref is deliberately NOT deleted, so the
-     *  user can still roll back to that plugin. Note both plugins patch
-     *  `getBestAttachment`, so they should not be left enabled together. */
+     *  WEAVERO NEVER WRITES TO THAT PLUGIN'S DATA — not here, not on import,
+     *  not on any path. Its pref is read-only to us, so choosing to keep
+     *  using that plugin always works: turn Weavero's feature off and it
+     *  behaves exactly as it did before Weavero was installed. */
     async _wvMigrateDefaultAttachmentPlugin(): Promise<any> {
         const result: any = { ran: false, found: 0, migrated: 0, skipped: 0 };
         try {
@@ -699,36 +700,21 @@ class _AttachmentsMixin {
             if (!this._wvDefaultChildEnabled()) return result;
             if (Zotero.Prefs.get("weavero.defaultChildMigrated")) return result;
             result.ran = true;
-            Object.assign(result, await this._wvImportLegacyMappings());
-            // Burn the run-once guard ONLY if there was actually something to
-            // import. Setting it unconditionally meant a user who installs
-            // Weavero BEFORE the old plugin never got their picks: the guard
-            // was already spent on an empty run, so the later data was never
-            // looked at (verified 2026-08-03 — the follow-up run reported
-            // ran:false with a valid pick sitting in their pref).
+            // ASK, don't act. Importing silently would be wrong in two very
+            // ordinary cases: the user may only have been TRYING that plugin
+            // and want none of it, or may prefer to keep using it — and an
+            // import writes tags to their library and queues those items for
+            // sync, which is not something to do on their behalf uninvited.
             //
-            // Safe, not a trade-off: the guard exists to stop a pick the user
-            // deliberately CLEARED in Weavero being resurrected from the
-            // legacy pref on the next start. That can only happen to an entry
-            // capable of producing a mark — i.e. one this run saw — so any
-            // such entry still leaves the guard set. With nothing found, the
-            // cost of re-checking is one pref read per startup.
-            if (result.found) {
-                Zotero.Prefs.set("weavero.defaultChildMigrated", true);
-            }
-            if (result.migrated) {
-                // Queue the user-facing notice. Stored as a PREF, not shown
-                // here: startup can run before any main window exists, so the
-                // toast has to be raised from window load. The pref also
-                // survives a restart, so a notice the user never saw comes
-                // back rather than being lost — the whole point is that
-                // someone running both plugins realises this happened.
-                Zotero.Prefs.set("weavero.defaultChildMigrationNotice", result.migrated);
-            }
-            if (result.found) {
-                Zotero.debug("[Weavero] default-attachment migration: "
-                    + result.migrated + " migrated, " + result.skipped + " skipped of "
-                    + result.found);
+            // So this run only COUNTS what is there and queues the question.
+            // Nothing is imported, and the run-once guard is not spent, until
+            // the user answers (see `_wvApplyLegacyChoice`).
+            const found = this._wvCountLegacyMappings();
+            result.found = found;
+            if (found) {
+                Zotero.Prefs.set("weavero.defaultChildLegacyPending", found);
+                Zotero.debug("[Weavero] legacy default-attachment data found: "
+                    + found + " pick(s) — awaiting the user's choice");
             }
         } catch (e) {
             Zotero.debug("[Weavero] _wvMigrateDefaultAttachmentPlugin err: " + e);
@@ -736,57 +722,207 @@ class _AttachmentsMixin {
         return result;
     }
 
-    /** Raise the one-time "we imported your picks" notice, if one is pending.
+    /** Re-offer the import the moment the feature is switched back ON.
+     *
+     *  Someone who first chose "keep using the other plugin" and later changes
+     *  their mind would otherwise have to restart before Weavero looked at the
+     *  legacy data again — and would have no idea that was required. Watching
+     *  the pref makes the offer appear as soon as they flip the switch.
+     *
+     *  Fires only when the pref becomes TRUE and no decision has been
+     *  recorded; detection itself returns early while the feature is off, so
+     *  toggling cannot produce a recurring prompt. */
+    _wvWireDefaultChildPrefWatch(): void {
+        try {
+            if ((this as any)._wvDefChildPrefObs) return;
+            (this as any)._wvDefChildPrefObs = Zotero.Prefs.registerObserver(
+                "weavero.enableDefaultChild",
+                () => {
+                    try {
+                        // Resolve live — this observer outlives builds.
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp || lp._wvDestroyed) return;
+                        if (!lp._wvDefaultChildEnabled()) return;
+                        if (Zotero.Prefs.get("weavero.defaultChildMigrated")) return;
+                        Promise.resolve(lp._wvMigrateDefaultAttachmentPlugin()).then(() => {
+                            const w = Zotero.getMainWindow();
+                            if (w) lp._wvShowLegacyPrompt(w);
+                        }).catch(() => {});
+                    } catch (e) {
+                        Zotero.debug("[Weavero] defaultChild pref watch err: " + e);
+                    }
+                },
+            );
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireDefaultChildPrefWatch err: " + e);
+        }
+    }
+
+    /** Drop the pref watcher (shutdown path). */
+    _wvUnwireDefaultChildPrefWatch(): void {
+        try {
+            const sym = (this as any)._wvDefChildPrefObs;
+            if (sym) Zotero.Prefs.unregisterObserver(sym);
+        } catch (e) { /* already gone */ }
+        try { delete (this as any)._wvDefChildPrefObs; } catch (e) {}
+    }
+
+    /** How many picks the old plugin stores. READ-ONLY, like every other
+     *  access Weavero makes to that pref. */
+    _wvCountLegacyMappings(): number {
+        try {
+            const raw: any = Zotero.Prefs.get("extensions.zotero.defaultattachment.mappings", true);
+            if (!raw) return 0;
+            const m = JSON.parse(String(raw));
+            if (!m || typeof m !== "object" || Array.isArray(m)) return 0;
+            return Object.keys(m).length;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    /** Is that plugin still RUNNING in this window?
+     *
+     *  Detected from the menu item it creates at startup rather than through
+     *  AddonManager: the element's presence proves the plugin actually
+     *  started, which is the thing that matters here — an installed-but-
+     *  disabled plugin should be treated as gone. */
+    _wvRivalDefaultPluginActive(win: any): boolean {
+        try {
+            const doc = win && win.document;
+            return !!(doc && doc.getElementById("defaultattachment-set-default-menuitem"));
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /** Record the user's answer about the old plugin's leftover data.
+     *
+     *  `choice`:
+     *    "import" — convert its picks into Weavero tags (its own data is
+     *               still left exactly as it was);
+     *    "skip"   — ignore them; the user was only trying that plugin;
+     *    "other"  — they prefer that plugin, so switch Weavero's feature OFF.
+     *               That restores their plugin completely: Weavero stops
+     *               overriding getBestAttachment, stops hiding its menu
+     *               entry, and never touched its data in the first place.
+     *
+     *  Every branch spends the run-once guard, so the question is asked once
+     *  and answered once. Weavero writes NOTHING to the other plugin's pref
+     *  in any branch. */
+    async _wvApplyLegacyChoice(choice: string): Promise<any> {
+        const res: any = { choice, migrated: 0, superseded: 0 };
+        try {
+            if (choice === "import") {
+                const imp = await this._wvImportLegacyMappings();
+                res.migrated = imp.migrated;
+                res.superseded = imp.superseded;
+            }
+            else if (choice === "other") {
+                // Hand the feature back. Existing Weavero marks are left in
+                // place: they are inert while the feature is off, and come
+                // back if the user changes their mind.
+                Zotero.Prefs.set("weavero.enableDefaultChild", false);
+            }
+            // "other" deliberately does NOT spend the run-once guard. It means
+            // "not now, I'm using the other plugin" — not "never". If the user
+            // later switches Weavero's feature back on, the offer to bring
+            // their picks across must still be there, otherwise choosing the
+            // other plugin once would silently forfeit the import forever.
+            // While the feature is off, detection returns early, so this
+            // cannot turn into a recurring prompt.
+            if (choice !== "other") {
+                Zotero.Prefs.set("weavero.defaultChildMigrated", true);
+            }
+            Zotero.Prefs.set("weavero.defaultChildLegacyChoice", String(choice));
+            Zotero.Prefs.clear("weavero.defaultChildLegacyPending");
+            Zotero.debug("[Weavero] legacy default-attachment choice: " + choice
+                + " (" + res.migrated + " imported)");
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvApplyLegacyChoice err: " + e);
+        }
+        return res;
+    }
+
+    /** Ask what to do with the old plugin's leftover data, if that question
+     *  is still pending.
      *
      *  Called from window load (and from startup for windows already open),
-     *  because the migration itself can run before any main window exists.
+     *  because detection runs before any main window may exist.
      *
-     *  STICKY and acknowledgement-backed: the pref is cleared only when the
-     *  user actually dismisses the toast, so an unseen notice reappears next
-     *  start instead of evaporating. A silent takeover is the failure mode
-     *  here — someone running both plugins would otherwise find their picks
-     *  answered by Weavero, and the other plugin's "Set Default" entry gone,
-     *  with nothing explaining either. */
-    async _wvShowMigrationNotice(win: any): Promise<void> {
+     *  A DECISION, not a notice, and deliberately so: importing writes tags
+     *  to the user's library and queues those items for sync. Doing that
+     *  uninvited is wrong when they may only have been TRYING that plugin, or
+     *  may prefer to keep using it.
+     *
+     *  STICKY and answer-backed: the pending pref is cleared only when an
+     *  option is chosen, so closing the window or ignoring it brings the
+     *  question back next start rather than silently defaulting to anything.
+     *
+     *  The third option only appears when that plugin is actually RUNNING —
+     *  offering "keep using it" for a plugin that is gone would be nonsense,
+     *  and the wording changes to match. */
+    async _wvShowLegacyPrompt(win: any): Promise<void> {
         try {
-            const n = Number(Zotero.Prefs.get("weavero.defaultChildMigrationNotice") || 0);
+            const n = Number(Zotero.Prefs.get("weavero.defaultChildLegacyPending") || 0);
             if (!n) return;
             const doc = win && win.document;
             if (!doc || doc.getElementById("wv-defatt-notice")) return;
 
-            // Wording depends on whether the other plugin is still around.
-            // Guarded: the notice must render even if this lookup fails.
-            let rivalInstalled = false;
-            try {
-                const ids: string[] = await Zotero.Plugins.getAllPluginIDs();
-                rivalInstalled = !!ids && ids.indexOf("default-attachment@zotero-plugin") !== -1;
-            } catch (e) { /* fall back to the neutral wording */ }
+            const active = this._wvRivalDefaultPluginActive(win);
+            const picks = n + " default attachment" + (n === 1 ? "" : "s");
+            const lines = active
+                ? ["Default Attachment (PikaPei) is running and has " + picks + " saved.",
+                   "Weavero can do the same job — for any attachment, linked URL or note, "
+                       + "not just PDFs — and stores each choice as a tag so it syncs.",
+                   "What would you like to do?"]
+                : ["Found " + picks + " left over from Default Attachment (PikaPei), "
+                       + "which is not running.",
+                   "Weavero can take those over and store each as a tag so it syncs, "
+                       + "or leave them alone.",
+                   "What would you like to do?"];
 
-            const lines = [
-                "Imported " + n + " default attachment" + (n === 1 ? "" : "s")
-                    + " from Default Attachment (PikaPei).",
-                "Weavero now decides which attachment opens, and stores each choice as the tag "
-                    + OPEN_BY_DEFAULT_TAG + " so it syncs to your other devices.",
+            const apply = (choice: string) => {
+                const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                if (!lp) return;
+                Promise.resolve(lp._wvApplyLegacyChoice(choice)).then((r: any) => {
+                    const msg = choice === "import"
+                        ? ["Imported " + r.migrated + " pick" + (r.migrated === 1 ? "" : "s")
+                            + " as the tag " + OPEN_BY_DEFAULT_TAG + ".",
+                           "Default Attachment's own data was left untouched — the README "
+                            + "explains removing it by hand."]
+                        : choice === "other"
+                            ? ["Weavero's default-attachment feature is now off.",
+                               "Default Attachment keeps working exactly as before; Weavero "
+                                + "never changed any of its data.",
+                               "You can turn Weavero's version back on in Settings → Weavero "
+                                + "→ Extras."]
+                            : ["Left Default Attachment's data alone.",
+                               "Set a default any time by right-clicking a child item."];
+                    lp._wvToast("Weavero — default attachments", msg,
+                        { id: "wv-defatt-notice", accent: "info", win, autoCloseMs: 15000 });
+                }).catch(() => {});
+            };
+
+            const actions: any[] = [
+                { label: "Import into Weavero", onClick: () => apply("import") },
+                { label: "Don’t import", onClick: () => apply("skip") },
             ];
-            if (rivalInstalled) {
-                lines.push("That plugin's own “Set Default” menu entry is hidden while this "
-                    + "feature is on, so there is only one way to set a default.");
+            if (active) {
+                actions.push({
+                    label: "Keep using Default Attachment",
+                    onClick: () => apply("other"),
+                });
             }
-            lines.push("Its stored data was left untouched — the README explains how to "
-                + "remove it by hand.");
-            lines.push("Click to dismiss.");
 
-            this._wvToast("Weavero — default attachments imported", lines, {
+            this._wvToast("Weavero — default attachments found", lines, {
                 id: "wv-defatt-notice",
                 accent: "info",
                 win,
-                onDismiss: () => {
-                    try { Zotero.Prefs.clear("weavero.defaultChildMigrationNotice"); }
-                    catch (e) {}
-                },
+                actions,
             });
         } catch (e) {
-            Zotero.debug("[Weavero] _wvShowMigrationNotice err: " + e);
+            Zotero.debug("[Weavero] _wvShowLegacyPrompt err: " + e);
         }
     }
 

@@ -32,6 +32,7 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 - **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has DOI/URL/Related/Links*, multi-select tag/publication/author/added-by/collection/search) with a removable chip bar; reader annotation filter; Selection Target tri-state; structured tabs menu with per-library and file-type filters.
 - **[Bookmarks](#bookmarks)** — library bookmarks (items / collections / searches / URLs) via a toolbar dropdown; document bookmarks (in-PDF positions, pages, selected text, annotations) in a reader-sidebar tab, foldered and draggable, with search + funnel filter and hover cards; auto-hide when empty.
 - **[Tabs and Windows](#tabs-and-windows)** — pinned tabs (Firefox-style, icon-only); named, colour-coded **tab groups** (collapse, drag-into, reopen, move between windows); **tab sessions** (save and switch whole workspaces); multi-select tabs; **move or tear-off a reader tab to another window with no reload** (scroll, zoom and selection preserved); **multi-tab reader windows** with their own tab strip and a Firefox-style **+** button; full drag-and-drop tab management in the "List all tabs" popup; reopen the last closed window/group; an item-details pane beside the reader in separate windows; and optional multiple main windows.
+- **[Default attachment](#default-attachment)** — choose which child an item opens: any attachment (PDF or not), a linked URL, or a child note. Stored as a tag, so the choice syncs and survives without the plugin.
 - **[Extras](#extras)** — items-tree columns (annotation, related, tag counts); *Added By* for annotations with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
 
 ## Features
@@ -151,6 +152,48 @@ Tab and window management on top of Zotero's tab bar. Each piece is individually
 <div align="center"><img src="docs/screenshots/09-tabs-and-windows.png" width="900" alt="Two Zotero windows: the main window's tab strip shows pinned tabs, colour-coded tab groups, and window controls moved into the strip (compact title bar); a second reader window in front has its own tab group and an item-details pane on the right"></div>
 
 The "List all tabs" dropdown's library grouping and file-type filter live under [Filters](#filters) — that's the tabs *menu*; this group is tab *management*.
+
+</details>
+
+<details id="default-attachment">
+<summary><b>Default attachment</b></summary>
+
+Zotero decides what a double-click opens with a fixed rule: PDFs first, then an attachment whose URL matches the item's, then the oldest. If your main paper sits next to a supplement, an accepted manuscript and a data file, that rule often picks the wrong one.
+
+**Right-click any child of an item → `▶️ Set as Default`.** The choice is *not* limited to PDFs — anything openable qualifies:
+
+- file attachments, **PDF and non-PDF** (EPUB, HTML snapshot, image, …)
+- **linked URLs**
+- **child notes**
+
+The same entry reads `▶️ Clear Default` once set, so one menu item does both. Turning the feature off in *Settings → Weavero → Extras → Default attachment* stops the override but keeps your picks.
+
+**How the choice is stored — and why it matters.** The pick is an automatic tag, `▶️ wv-defatt`, on the chosen child. That means it **syncs to your other devices**, it survives exporting, and it keeps working if you ever remove Weavero (the tag simply becomes an ordinary tag and Zotero returns to its own rule — nothing to repair). Deleting the child deletes the choice with it, so nothing is ever left dangling.
+
+The leading `▶️` is rendered by Zotero in the items list, so a marked child is visible at a glance without spending one of your nine colour-tag slots.
+
+**Finding every marked item:** search **`wv-defatt`**, or the **`▶️`** glyph. The slug deliberately contains no ordinary words — searching `default` or `attachment` will *not* drag your marked items into unrelated results, which is exactly what a readable name would have done (Zotero's quick search matches substrings and splits on spaces).
+
+> Only one child per item is ever marked: setting a new default clears the previous one. Marking is not treated as editing the item, so **Date Modified is left untouched** — a sweep of choices won't scramble a Date Modified sort.
+
+### Coming from *Default Attachment* (PikaPei)
+
+[PikaPei/zotero-default-attachment](https://github.com/PikaPei/zotero-default-attachment) does the PDF-only version of this. Weavero takes over from it automatically:
+
+- **Your picks are imported** the first time Weavero starts. A choice you have already made in Weavero is never overwritten.
+- **That plugin's data is left untouched**, so you can go back to it at any time.
+- While Weavero's feature is on, that plugin's duplicate **"Set Default"** entry is hidden, so the menu offers one action rather than two that behave differently.
+- Weavero tells you once, with a notice you dismiss, when it has imported anything.
+
+**Removing that plugin's leftover data (optional, manual).** All of its state is a single preference, so there is nothing to uninstall beyond the plugin itself:
+
+1. *Settings → Advanced → Config Editor* (this opens `about:config`).
+2. Search for `extensions.zotero.defaultattachment.mappings`.
+3. Delete / reset that preference.
+
+That preference is the plugin's **only** copy of those choices — it is not synced and has no backup — so this cannot be undone. Your Weavero defaults are tags on the attachments and are not affected.
+
+**Re-running the import.** It runs once. If you kept using the old plugin *after* installing Weavero, those later picks were never transferred; reset `extensions.zotero.weavero.defaultChildMigrated` in the same Config Editor and restart to import them.
 
 </details>
 

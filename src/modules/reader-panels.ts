@@ -285,6 +285,10 @@ const RP_POPUP_CSS = [
     ".wv-rf-dateinput[data-applied]{border-color:var(--color-accent,#5e6ad2);",
     "  box-shadow:0 0 0 1px var(--color-accent,#5e6ad2) inset;}",
     ".wv-rf-dateinput[data-invalid]{border-color:#d34a4a;box-shadow:0 0 0 1px #d34a4a inset;}",
+    // Keyboard-focus ring for popup controls (Tab cycling needs a visible
+    // cursor); the popup container itself never shows one.
+    "#" + RP_FILTER_POPUP_ID + " :is(button, input):focus-visible{outline:2px solid var(--color-accent,#5e6ad2);outline-offset:1px;}",
+    "#" + RP_FILTER_POPUP_ID + ":focus,#" + RP_FILTER_POPUP_ID + ":focus-visible{outline:none;}",
     ".wv-rf-cal-day.wv-off{opacity:.25;cursor:default;}",
     // Date rows: label left, preset chips packed RIGHT so the plain label
     // reads apart from the clickable chips (user call 2026-08-03).
@@ -7940,6 +7944,28 @@ class _ReaderPanelsMixin {
         this._wvOpenReaderFilterPopup(reader, idoc, anchorBtn);
     }
 
+    /** Focus a filter-popup control. Date inputs get their first shadow
+     *  segment (Services.focus is the one chrome path into UA shadows);
+     *  FLAG_BYKEY so :focus-visible rings show for keyboard moves. */
+    _wvRfFocusEl(el: any) {
+        try {
+            const FLAG = (Services.focus as any).FLAG_BYKEY || 0;
+            if (el.classList && el.classList.contains("wv-rf-dateinput")) {
+                const s2: any = el.openOrClosedShadowRoot;
+                const first = s2 && s2.querySelector(".datetime-edit-field");
+                if (first) { el.__wvSeg = first; Services.focus.setFocus(first, FLAG); return; }
+            }
+            Services.focus.setFocus(el, FLAG);
+        } catch (_) {}
+    }
+
+    _wvRfPopupFocusables(popup: any): any[] {
+        try {
+            return Array.from(popup.querySelectorAll("button, input"))
+                .filter((el: any) => el.offsetWidth || el.offsetHeight);
+        } catch (_) { return []; }
+    }
+
     _wvCloseReaderFilterPopup(idoc: any) {
         try {
             const p = idoc.getElementById(RP_FILTER_POPUP_ID);
@@ -7947,10 +7973,11 @@ class _ReaderPanelsMixin {
         } catch (_) {}
         if (this._wvReaderFilterDismiss) {
             try {
-                const { docs, wins, onDown, onKey, swallowLoneAlt } = this._wvReaderFilterDismiss;
+                const { docs, wins, onDown, onKey, swallowLoneAlt, onTab } = this._wvReaderFilterDismiss;
                 for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }
                 for (const w of (wins || [])) {
                     try { w.removeEventListener("keydown", onKey, true); } catch (_) {}
+                    if (onTab) { try { w.removeEventListener("keydown", onTab, true); } catch (_) {} }
                     if (swallowLoneAlt) {
                         try { w.removeEventListener("keydown", swallowLoneAlt, true); } catch (_) {}
                         try { w.removeEventListener("keyup", swallowLoneAlt, true); } catch (_) {}
@@ -7997,6 +8024,19 @@ class _ReaderPanelsMixin {
             }
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             (idoc.body || idoc.documentElement).appendChild(popup);
+            // POPUP-WIDE Tab cycling. The reader's focus-manager
+            // preventDefaults EVERY Tab at window capture and moves focus to
+            // its own groups, so native tabbing inside the popup is dead
+            // (user report 2026-08-03) -- the popup must move focus itself.
+            // The date inputs' own handler stops propagation first and keeps
+            // its pair-specific order; everything else cycles in DOM order,
+            // wrapping at the ends (standard dialog behaviour).
+            popup.setAttribute("tabindex", "-1");
+            // Tab handling lives in the dismiss wiring below (chrome-window
+            // capture -- the only phase that beats the reader's own Tab
+            // management). Seed focus into the popup so the FIRST Tab
+            // already cycles here.
+            try { Services.focus.setFocus(popup, 0); } catch (_) {}
 
             // Position under the anchor button. When we know the sidebar's
             // bounds, left-align the popup with it; otherwise fall back to
@@ -8096,7 +8136,38 @@ class _ReaderPanelsMixin {
                 try { w.addEventListener("keydown", swallowLoneAlt, true); } catch (_) {}
                 try { w.addEventListener("keyup", swallowLoneAlt, true); } catch (_) {}
             }
-            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt };
+            // Tab cycling for the whole popup, intercepted at the CHROME
+            // window's capture phase -- the one point that runs BEFORE the
+            // reader's own window-capture Tab handling (which tabToGroup()s
+            // focus out of the popup before any popup-level listener can even
+            // read focusedElement; ringed 2026-08-03). Registered on every
+            // dismiss window; the first to see the event handles + stops it.
+            const onTab = (ev: any) => {
+                try {
+                    if (ev.key !== "Tab") return;
+                    let el: any = ev.target;
+                    if (el && el.getRootNode && el.getRootNode().host) el = el.getRootNode().host;
+                    if (!el || !(el === popup || (popup.contains && popup.contains(el)))) return;
+                    ev.preventDefault(); ev.stopPropagation();
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P) return;
+                    // Date-input pair order first (from <-> to, skipping the
+                    // clear buttons -- the user-picked field order).
+                    const paired = ev.shiftKey ? el._wvPairPrev : el._wvPairNext;
+                    if (paired && paired.isConnected) { P._wvRfFocusEl(paired); return; }
+                    const list: any[] = P._wvRfPopupFocusables(popup);
+                    if (!list.length) return;
+                    let fe: any = null;
+                    try { fe = Services.focus.focusedElement; } catch (_) {}
+                    if (fe && fe.getRootNode && fe.getRootNode().host) fe = fe.getRootNode().host;
+                    const i = fe ? list.findIndex((x2: any) => x2 === fe || (x2.isSameNode && x2.isSameNode(fe))) : -1;
+                    const j = i < 0 ? (ev.shiftKey ? list.length - 1 : 0)
+                        : (i + (ev.shiftKey ? -1 : 1) + list.length) % list.length;
+                    P._wvRfFocusEl(list[j]);
+                } catch (_) {}
+            };
+            for (const w of wins) { try { w.addEventListener("keydown", onTab, true); } catch (_) {} }
+            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt, onTab };
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenReaderFilterPopup err: " + e);
         }
@@ -8663,22 +8734,8 @@ class _ReaderPanelsMixin {
                 };
                 idoc.addEventListener("pointerdown", closer, true);
             };
-            // Focus mover shared by segment (arrow) and field (Tab) nav.
-            // Services.focus.setFocus is the ONE method that reaches UA-shadow
-            // segments from chrome (plain .focus() no-ops; verified live).
-            const focusEl = (el: any) => {
-                try {
-                    if (el.classList && el.classList.contains("wv-rf-dateinput")) {
-                        const s2: any = el.openOrClosedShadowRoot;
-                        const first = s2 && s2.querySelector(".datetime-edit-field");
-                        if (first) { el.__wvSeg = first; Services.focus.setFocus(first, 0); return; }
-                    }
-                    Services.focus.setFocus(el, 0);
-                } catch (_) {}
-            };
-            const popupFocusables = () =>
-                Array.from(popup.querySelectorAll("button, input"))
-                    .filter((el: any) => el.offsetWidth || el.offsetHeight);
+            const focusEl = (el: any) => this._wvRfFocusEl(el);
+            const popupFocusables = () => this._wvRfPopupFocusables(popup);
             const mkDateField = (which: string, lbl: string, key: string) => {
                 const lb = mk("span"); lb.textContent = lbl;
                 rangeRow.appendChild(lb);
@@ -8734,15 +8791,28 @@ class _ReaderPanelsMixin {
                         e.stopPropagation();
                         return;
                     }
+                    // The segment a keystroke applies to: the LIVE focused
+                    // element wins (user report 2026-08-03: a stale __wvSeg
+                    // stepped the days while the year held focus); the
+                    // focusin tracker is only the fallback.
+                    const curSeg = () => {
+                        try {
+                            const fe: any = Services.focus.focusedElement;
+                            if (fe && fe.classList && fe.classList.contains("datetime-edit-field")
+                                && fe.getRootNode && fe.getRootNode().host === inp) return fe;
+                        } catch (_) {}
+                        const f0 = (inp as any).__wvSeg;
+                        return (f0 && f0.isConnected) ? f0 : null;
+                    };
                     // <-/-> move between this field's segments (native segment
                     // nav is dead in Zotero; flow-through: stop at the ends).
                     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
                         try {
-                            const f = (inp as any).__wvSeg;
-                            if (!f || !f.isConnected) return;
+                            const f = curSeg();
+                            if (!f) return;
                             const sr2: any = inp.openOrClosedShadowRoot;
                             const segs: any[] = sr2 ? Array.from(sr2.querySelectorAll(".datetime-edit-field")) : [];
-                            const i = segs.indexOf(f);
+                            const i = segs.findIndex((s3: any) => s3 === f || (s3.isSameNode && s3.isSameNode(f)));
                             if (i < 0) return;
                             e.preventDefault(); e.stopPropagation();
                             const j = e.key === "ArrowRight" ? i + 1 : i - 1;
@@ -8752,30 +8822,13 @@ class _ReaderPanelsMixin {
                         } catch (_) {}
                         return;
                     }
-                    // Tab / Shift+Tab move between the from/to FIELDS (the
-                    // reader's window-level Tab management must not see this).
-                    if (e.key === "Tab") {
-                        e.preventDefault(); e.stopPropagation();
-                        try {
-                            const paired = e.shiftKey ? (inp as any)._wvPairPrev : (inp as any)._wvPairNext;
-                            if (paired && paired.isConnected) { focusEl(paired); return; }
-                            // Flow through: next/previous focusable in the popup.
-                            const list: any[] = popupFocusables();
-                            const i = list.indexOf(inp);
-                            if (i < 0) return;
-                            const j = e.shiftKey ? i - 1 : i + 1;
-                            if (j >= 0 && j < list.length) focusEl(list[j]);
-                        } catch (_) {}
-                        return;
-                    }
+                    // (Tab is handled at the CHROME window's capture phase by
+                    // the popup-wide onTab in _wvOpenReaderFilterPopup, which
+                    // honours this input's _wvPairNext/_wvPairPrev refs.)
                     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
                     try {
-                        // The focused segment comes from focusin tracking --
-                        // sr.activeElement stays null for UA shadow roots
-                        // (measured), but focusin COMPOSES out of the shadow
-                        // with originalTarget intact.
-                        const f = (inp as any).__wvSeg;
-                        if (!f || !f.isConnected || !f.classList || !f.classList.contains("datetime-edit-field")) return;
+                        const f = curSeg();
+                        if (!f) return;
                         e.preventDefault(); e.stopPropagation();
                         const min = parseInt(f.getAttribute("min") || "1", 10);
                         const max = parseInt(f.getAttribute("max") || "9999", 10);

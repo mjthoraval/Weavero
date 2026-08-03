@@ -96,17 +96,24 @@ declare const Zotero: any;
  *  clause), so an underscored name both over-matches and breaks the quoted
  *  phrase search.
  *
- *  RESIDUAL, accepted: "default" is still a substring of this slug, so a
- *  one-word search for it in All Fields & Tags mode finds marked children.
- *  That is the deliberate price of a readable tag selector; the leaks that
- *  actually mattered (rule 1 and 2) are closed.
+ *  3. THE SLUG IS NOT AN ENGLISH WORD, deliberately. The obvious readable
+ *     slug ("wv-open-by-default") still leaked: substring matching means a
+ *     one-word search for "default" found every marked child. "defatt"
+ *     shares no substring with "default" — d-e-f-a-t-t vs d-e-f-a-u-l-t —
+ *     so no ordinary word search reaches it. Legibility in the tag selector
+ *     was traded away for this ON PURPOSE; do not "fix" it by spelling the
+ *     slug out, which silently reopens the leak.
+ *
+ *  Cost, accepted: the tag selector shows a cryptic slug. The meaning is
+ *  discoverable where users actually act — the item context menu ("Set as
+ *  Default" / "Clear Default") and the prefs pane.
  *
  *  U+25B6 U+FE0F reads as "this is what opens", and avoids the emoji already
  *  in use in this library (U+2B50, U+203C U+FE0F).
  *
  *  WARNING: the tag IS the storage. Changing this constant orphans every
  *  already-marked child — cheap now, expensive after release. */
-export const OPEN_BY_DEFAULT_TAG = "▶️ wv-open-by-default";
+export const OPEN_BY_DEFAULT_TAG = "▶️ wv-defatt";
 
 /** Zotero tag types: 0 = manual (user-typed), 1 = automatic (machine-added,
  *  hideable via the tag selector's Display Automatic toggle). */

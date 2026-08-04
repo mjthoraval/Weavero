@@ -10421,6 +10421,12 @@ class _FilterMixin {
         // OLD keep, so `getSelectedItems()` resolves to the genuine
         // current selection. After the rebuild those filtered indices
         // would point at different items (or past the new tail).
+        // Make sure Zotero's own pre-mutation capture point is mirrored before
+        // we read the selection (idempotent; cheap when already wired).
+        try {
+            const _w = Zotero.getMainWindow();
+            this._wvPatchCacheStateForSelection(_w && _w.ZoteroPane && _w.ZoteroPane.itemsView);
+        } catch (e) {}
         const prevSelectedIDs = this._captureSelectedItemIDs();
         try {
             this._applyItemsListFilterInner(opts);
@@ -10463,14 +10469,98 @@ class _FilterMixin {
      *  tree. Read THROUGH the live (pre-rebuild) `getRow` translation,
      *  so it returns the genuine selected items rather than whatever
      *  the raw indices map to. */
+    /** Item ids of the current selection, or `null` when they cannot be
+     *  resolved trustworthily — the caller must then leave the selection
+     *  alone rather than reconcile against a bogus list.
+     *
+     *  `getSelectedItems()` resolves selection INDICES (filtered space)
+     *  through `getRow`. While `keep` is stale -- `rp._rows.length` no
+     *  longer matches the watermark taken when it was built -- `getRow`
+     *  deliberately passes indices through untranslated, so those same
+     *  indices resolve against the RAW rows and hand back entirely
+     *  different items. Reconciling against that list finds none of the
+     *  "previous" ids in the new view and clears the selection outright.
+     *  Seen 2026-08-04: three journal articles selected, colored tag
+     *  applied (correctly, to those three), and the selection vanished --
+     *  the capture had returned three unrelated ids because Zotero's own
+     *  row-model update had just changed `_rows.length` mid-flight.
+     *  Zotero itself never has this problem: its `_cachedSelection` is a
+     *  list of OBJECTS and `_restoreSelection` maps them back through
+     *  `_rowMap` by id, never by index. */
     _captureSelectedItemIDs() {
         try {
             const win = Zotero.getMainWindow();
             const ZP = win && win.ZoteroPane;
             if (!ZP || typeof ZP.getSelectedItems !== "function") return [];
+            const iv: any = ZP.itemsView;
+            const rp: any = iv && (iv.rowProvider || iv);
+            // TIMING DISCIPLINE (2026-08-04). Prefer the identity snapshot
+            // taken at Zotero's own safe points over deriving ids here.
+            // `_wvNoteSafeSelection` records it from `itemTree._cacheState()`,
+            // which Zotero calls synchronously at the top of every
+            // row-mutating operation -- before `_rows` is touched, so the
+            // index->item mapping is coherent by construction. Deriving at
+            // reapply time is not safe: a reapply is often triggered BY a
+            // mutation already in flight.
+            const safe = this._wvSafeSelIDs;
+            if (safe && safe.ids && safe.ids.length
+                    && safe.selCount === (iv && iv.selection && iv.selection.count)) {
+                // Same number of rows selected as when the snapshot was taken
+                // => it still describes this selection. CONSUME IT: like
+                // Zotero's own `_cachedSelection`, the snapshot is only valid
+                // for the mutation it was taken for. Holding on to it would
+                // let a later user selection of the same SIZE be overwritten
+                // by these older ids.
+                this._wvSafeSelIDs = null;
+                return safe.ids.slice();
+            }
+            this._wvSafeSelIDs = null;
+            if (rp && rp._wvKeepRowsLen != null && rp._rows
+                    && rp._rows.length !== rp._wvKeepRowsLen) {
+                return null;   // stale mapping — any id we read would be a lie
+            }
             return ZP.getSelectedItems().map((it: any) => it.id);
         } catch (e) {
             return [];
+        }
+    }
+
+    /** Record the selection by identity at a moment the mapping is known
+     *  coherent. Called from the `_cacheState` wrap (Zotero's own pre-mutation
+     *  capture point) and after a completed reconcile, where the view was just
+     *  rebuilt. `selCount` stamps how many rows were selected then, so a later
+     *  capture can tell whether the snapshot still describes the selection. */
+    _wvNoteSafeSelection(ids: any[], selCount: number) {
+        try {
+            this._wvSafeSelIDs = { ids: (ids || []).slice(), selCount };
+        } catch (e) {}
+    }
+
+    /** Wrap `itemTree._cacheState()` so every safe capture Zotero takes is
+     *  mirrored into `_wvSafeSelIDs`. Zotero's `_cachedSelection` holds row
+     *  OBJECTS and is consumed (emptied) by `_restoreSelection`, so we keep
+     *  our own copy of the ids. Versioned + idempotent per itemsView. */
+    _wvPatchCacheStateForSelection(itemsView: any) {
+        try {
+            if (!itemsView || typeof itemsView._cacheState !== "function") return;
+            if (itemsView._wvCacheStateWired === 1) return;
+            const orig = itemsView._cacheState.bind(itemsView);
+            itemsView._cacheState = function () {
+                const r = orig();
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const cached = itemsView._cachedSelection || [];
+                    if (P && cached.length) {
+                        P._wvNoteSafeSelection(
+                            cached.map((o: any) => (o && (o.id != null ? o.id : o.treeViewID))),
+                            itemsView.selection ? itemsView.selection.count : cached.length);
+                    }
+                } catch (e) {}
+                return r;
+            };
+            itemsView._wvCacheStateWired = 1;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvPatchCacheStateForSelection err: " + e);
         }
     }
 
@@ -10488,6 +10578,12 @@ class _FilterMixin {
      *  kept only as a dimmed ancestor/context container is NOT a
      *  match, so selecting one and then filtering deselects it. */
     _reconcileSelectionAfterFilter(prevSelectedIDs) {
+        // `null` = the capture could not be trusted (stale keep mapping).
+        // Leaving the live selection untouched is always safer than
+        // reconciling against ids that were never really selected: the
+        // wrong ids match nothing in the new view, and the "nothing
+        // survived" branch below would clear a perfectly good selection.
+        if (prevSelectedIDs === null) return;
         const state = this._filterState;
         if (!state || !this._isFilterActive(state)) return;
         const win = Zotero.getMainWindow();
@@ -11354,6 +11450,17 @@ class _FilterMixin {
                 try { row = origGetRow(j); } catch (e) { continue; }
                 if (!row || !row.ref) continue;
                 if (!this._userOpenedIDs.has(row.ref.id)) continue;
+                // The container's OWN row must survive the filter first.
+                // Force-keeping children of a container that was itself
+                // filtered out strands them: they render at their original
+                // depth with no parent above, so a child attachment/note
+                // appears among the top-level rows (reported 2026-08-04 --
+                // "random child items displayed at the top level" under an
+                // Annotation Color + Item Type filter). `keepSet` grows as
+                // this loop runs, so a legitimately kept container that is
+                // itself a force-kept child still passes on the next
+                // iteration (rows are visited parent-before-child).
+                if (!keepSet.has(j)) continue;
                 const lvl = row.level || 0;
                 // User's rule for manual twisty-expand under an active
                 // Weavero filter: if the container HAS a matching child,
@@ -11619,6 +11726,12 @@ class _FilterMixin {
         // the MutationObserver fires on the tree DOM repaint that
         // follows and re-installs a fresh translation.
         const keepRowsLen = rp._rows.length;
+        // Published for `_captureSelectedItemIDs`: the same watermark the
+        // `stale()` guard below uses. While it disagrees with
+        // `rp._rows.length`, `getRow` passes indices through UNTRANSLATED,
+        // so resolving a (filtered-space) selection index yields the wrong
+        // item -- see the capture helper for what that cost.
+        rp._wvKeepRowsLen = keepRowsLen;
 
         dbg("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");
@@ -11763,6 +11876,39 @@ class _FilterMixin {
         // selection restoration sees a fresh filtered view. We swap
         // `runListeners` for a queue while the original runs, rebuild
         // keep synchronously, then flush.
+        // Track manual user opens / closes so the next keep rebuild
+        // force-keeps the children of containers the user just expanded.
+        // Without this, opening a non-matching container reveals its
+        // children for one frame and the reapply immediately drops them
+        // again because they don't satisfy the filter.
+        //
+        // Call BEFORE the original runs — the direction is inferred from
+        // the row's CURRENT state, which the original is about to flip.
+        // The same inference serves both the toggle and the multi-row
+        // paths: upstream `_expandRows` only toggles rows that are closed
+        // and `collapseRows` only rows that are open, so "was open" ==
+        // "this call is a collapse" in every case.
+        const noteUserToggle = function (realIdx) {
+            try {
+                const row = rp._rows[realIdx as number];
+                const wasOpen = row && row.isOpen;
+                const id = row && row.ref && row.ref.id;
+                if (id == null) return;
+                if (!self._userOpenedIDs) self._userOpenedIDs = new Set();
+                if (!self._userClosedIDs) self._userClosedIDs = new Set();
+                if (wasOpen) {
+                    // Collapsing → record so the cascade and
+                    // `_expandMatchParents` skip it on later reapplies.
+                    self._userOpenedIDs.delete(id);
+                    self._userClosedIDs.add(id);
+                } else {
+                    // Expanding → record so reapply force-keeps the
+                    // children even if they don't satisfy the filter.
+                    self._userOpenedIDs.add(id);
+                    self._userClosedIDs.delete(id);
+                }
+            } catch (e) {}
+        };
         const wrapToggle = function (origFn) {
             return function (filteredIdx, skipRowMapRefresh) {
                 if (this[SELF]) {
@@ -11773,38 +11919,7 @@ class _FilterMixin {
                 }
                 const realIdx = keep[filteredIdx];
                 if (realIdx === undefined) return;
-                // Track manual user opens / closes so the next keep
-                // rebuild force-keeps the children of containers the
-                // user just expanded. Without this, opening a non-
-                // matching container reveals its children for one
-                // frame and the reapply immediately drops them again
-                // because they don't satisfy the filter.
-                try {
-                    const row = rp._rows[realIdx as number];
-                    const wasOpen = row && row.isOpen;
-                    const id = row && row.ref && row.ref.id;
-                    if (id != null) {
-                        if (!self._userOpenedIDs) {
-                            self._userOpenedIDs = new Set();
-                        }
-                        if (!self._userClosedIDs) {
-                            self._userClosedIDs = new Set();
-                        }
-                        if (wasOpen) {
-                            // User is collapsing → record so the
-                            // cascade and `_expandMatchParents` skip
-                            // it on subsequent reapplies.
-                            self._userOpenedIDs.delete(id);
-                            self._userClosedIDs.add(id);
-                        } else {
-                            // User is expanding → record so reapply
-                            // force-keeps the children even if they
-                            // don't satisfy the filter.
-                            self._userOpenedIDs.add(id);
-                            self._userClosedIDs.delete(id);
-                        }
-                    }
-                } catch (e) {}
+                noteUserToggle(realIdx);
                 const wasFlag = this[SELF];
                 this[SELF] = true;
                 const queued = [];
@@ -11831,6 +11946,14 @@ class _FilterMixin {
                 if (stale()) return origFn.call(this, indices);
                 const real = (indices || []).map(i => keep[i])
                     .filter(x => x !== undefined);
+                // Same user-open bookkeeping as the single-row toggle.
+                // Without it the keyboard paths (multi-select ArrowRight /
+                // ArrowLeft -> itemTree.expandSelectedRows ->
+                // rowProvider.expandRows) opened the container but the
+                // immediate reapply dropped its non-matching children
+                // again -- an open twisty with nothing under it, while
+                // clicking the same twisty by hand worked (2026-08-04).
+                for (const realIdx of real) noteUserToggle(realIdx);
                 const wasFlag = this[SELF];
                 this[SELF] = true;
                 const queued = [];

@@ -388,9 +388,12 @@ const BM_EDITDLG_CSS = [
     ".wv-bm-editdlg-btn-primary:hover{filter:brightness(1.08);}",
     // Original-title row under the Title field — shown only when the title
     // differs from the bookmark's auto-generated original (hidden by default).
-    ".wv-bm-editdlg-origrow{display:none;align-items:center;justify-content:space-between;gap:8px;margin:-1px 0 1px;font-size:11px;}",
-    ".wv-bm-editdlg-origlabel{opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
-    ".wv-bm-editdlg-resetlink{flex:none;font:inherit;font-size:11px;padding:1px 6px;border:none;background:none;color:var(--color-accent,#4072e5);cursor:pointer;text-decoration:underline;border-radius:4px;}",
+    // Three stacked lines: caption, the default title itself, the reset
+    // action — a single crowded row read as one blur (user, 2026-08-04).
+    ".wv-bm-editdlg-origrow{display:none;margin:-1px 0 3px;font-size:11px;}",
+    ".wv-bm-editdlg-origcap{opacity:.55;margin-bottom:1px;}",
+    ".wv-bm-editdlg-origlabel{opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px;}",
+    ".wv-bm-editdlg-resetlink{display:inline-block;font:inherit;font-size:11px;padding:1px 0;border:none;background:none;color:var(--color-accent,#4072e5);cursor:pointer;text-decoration:underline;border-radius:4px;}",
     ".wv-bm-editdlg-resetlink:hover{filter:brightness(1.12);background:var(--fill-quinary,rgba(127,127,127,.1));text-decoration:none;}",
 ].join("");
 const BM_EDITDLG_STYLE_ID = "wv-bm-editdlg-style";
@@ -812,6 +815,17 @@ class _BookmarksMixin {
         if (entry.type !== "folder" && entry.label && entry.originalLabel == null) {
             entry.originalLabel = entry.label;
         }
+        // A text-selection bookmark OWNS its selected text in a dedicated
+        // field, exactly as an annotation item owns `annotationText` -- so
+        // every reader gets it synchronously and it is separate from the
+        // display `label` (which a rename overwrites). Weavero maintains it:
+        // stamped here at creation, refreshed by Edit Region (the only path
+        // that changes the geometry). At creation label == selection, so seed
+        // from it. (Design turn 2026-08-04: "why can't the selected text own
+        // its text?" -- it can.)
+        if (entry.type === "text" && entry.text == null && entry.label) {
+            entry.text = entry.label;
+        }
         doc[section].push(entry);
         await this._bmPersist();
         // First-bookmark-on-empty-doc transition: tell the reader-panels
@@ -951,8 +965,15 @@ class _BookmarksMixin {
                     } catch (_) {}
                     return null;
                 }
+                case "text":
+                    // A text bookmark OWNS its selected text (`bm.text`, kept
+                    // current by Edit Region), so THAT is its default name --
+                    // no live re-derivation, no stale snapshot. Legacy records
+                    // predating the field fall through to the originalLabel
+                    // snapshot below.
+                    return (bm.text != null && bm.text !== "") ? String(bm.text) : null;
                 default:
-                    return null;   // text (no live source — snapshot only)
+                    return null;
             }
         } catch (_) { return null; }
     }
@@ -1088,16 +1109,28 @@ class _BookmarksMixin {
     /** Reset a bookmark's display name back to the original (live source) name
      *  and clear its renamed flag, so it resumes tracking the source. Bookmark-
      *  record only — the Zotero item is untouched. */
-    async _bmReaderResetLabel(libraryID: number, itemKey: string, id: string) {
+    /** Reset a bookmark's label to its DEFAULT name. With `derivedLabel`, the
+     *  caller computed the default live (a TEXT bookmark's default is the text
+     *  its region CURRENTLY covers — recomputed like an annotation's name, so
+     *  after an Edit Region the reset realigns name and region rather than
+     *  restoring history; semantics + "Default Name" wording per user,
+     *  2026-08-04). Without it: the live source label (annotation/item/…) or
+     *  the stored capture-time label. */
+    async _bmReaderResetLabel(libraryID: number, itemKey: string, id: string, derivedLabel?: string) {
         await this._bmInit();
         const doc = this._bmReaderDoc(libraryID, itemKey);
         const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
         if (!loc || loc.entry.type === "folder") return;
-        const orig = this._bmReaderOriginalLabel(loc.entry);
+        const orig = (derivedLabel != null && derivedLabel !== "")
+            ? String(derivedLabel) : this._bmReaderOriginalLabel(loc.entry);
         if (!orig) return;
         loc.entry.label = orig;
         loc.entry.originalLabel = orig;
         loc.entry.renamed = false;
+        // Drop any region-history stamp from the short-lived
+        // restore-the-region experiment (dev.21) — the default-name model
+        // makes the region authoritative, so there is nothing to restore.
+        if (loc.entry.origPosition) delete loc.entry.origPosition;
         await this._bmPersist();
     }
 
@@ -2261,35 +2294,42 @@ class _BookmarksMixin {
             titleInput.value = String(opts.titleValue || "");
             box.appendChild(titleInput);
 
-            // Original-title row: shows the bookmark's auto-generated name plus a
-            // "Reset to original" link, visible whenever the Title field differs
-            // from it — i.e. the bookmark was renamed, or the user just edited the
-            // title. Lets you see and restore the original without leaving the
-            // dialog. Hidden when there's no original (some treerow types) or when
-            // the title already matches it.
+            // Default-title block: the bookmark's DEFAULT name (live-derived
+            // where possible — a text bookmark's default is the text its
+            // region currently covers) plus a "Reset to default" action.
+            // Visible whenever the Title field differs from the default.
+            // THREE LINES, not one row: the explanation, the default title
+            // itself, then the reset action — cramming all three into one
+            // line made the value indistinguishable from its caption and
+            // crowded the link (user, 2026-08-04). Wording follows the
+            // "Default Name" model adopted the same day.
             let origRow: any = null;
             const updateOrigRow = () => {
                 if (!origRow) return;
                 const changed = originalTitle != null
                     && (titleInput.value || "").trim() !== originalTitle;
-                origRow.style.display = changed ? "flex" : "none";
+                origRow.style.display = changed ? "block" : "none";
             };
             if (originalTitle != null) {
                 origRow = doc.createElementNS(NS_HTML, "div");
                 origRow.className = "wv-bm-editdlg-origrow";
-                const olbl = doc.createElementNS(NS_HTML, "span");
+                const ocap = doc.createElementNS(NS_HTML, "div");
+                ocap.className = "wv-bm-editdlg-origcap";
+                ocap.textContent = "Default title:";
+                const olbl = doc.createElementNS(NS_HTML, "div");
                 olbl.className = "wv-bm-editdlg-origlabel";
-                olbl.textContent = "Original: " + originalTitle;
+                olbl.textContent = originalTitle;
                 olbl.setAttribute("title", originalTitle);
                 const resetLink = doc.createElementNS(NS_HTML, "button");
                 resetLink.className = "wv-bm-editdlg-resetlink";
-                resetLink.textContent = "Reset to original";
+                resetLink.textContent = "Reset to default";
                 resetLink.addEventListener("click", (e: any) => {
                     e.preventDefault();
                     titleInput.value = originalTitle;
                     updateOrigRow();
                     try { titleInput.focus(); } catch (_) {}
                 });
+                origRow.appendChild(ocap);
                 origRow.appendChild(olbl);
                 origRow.appendChild(resetLink);
                 box.appendChild(origRow);
@@ -2451,10 +2491,17 @@ class _BookmarksMixin {
             let curComment = "";
             if (ann) { try { curComment = String(ann.annotationComment || ""); } catch (_) {} }
             else { curComment = String(entry.comment || ""); }
-            // The auto-generated original name (live-derived or stored snapshot),
-            // for the dialog's "Original: …" row + Reset link. Null when there's
-            // none to restore to.
-            const originalTitle = this._bmReaderOriginalLabel(entry);
+            // The DEFAULT name for the dialog's "Default title:" block + Reset
+            // link. A strategy can derive it LIVE (a reader text bookmark's
+            // default is the text its region currently covers); otherwise the
+            // live source label or stored snapshot. Null when there's none.
+            let originalTitle = this._bmReaderOriginalLabel(entry);
+            if (typeof strategy.deriveDefault === "function") {
+                try {
+                    const d = await strategy.deriveDefault();
+                    if (d) originalTitle = String(d);
+                } catch (_) {}
+            }
             this._bmShowEditDialog(win.document, win, {
                 titleValue: entry.label || entry.itemKey || entry.collectionKey || "",
                 originalTitle,
@@ -3992,15 +4039,17 @@ class _BookmarksMixin {
             add("Edit Bookmark…", () => {
                 this._bmEditBookmarkDialog(win, bm);
             }, BM_RENAME_ICON);
-            // "Reset to Original Name" — only when the current title actually
-            // differs from the bookmark's original. Gated on the label vs the
-            // (live-derived or stored) original rather than the `renamed` flag,
+            // "Reset to Default Name" — only when the current title actually
+            // differs from the bookmark's default. Gated on the label vs the
+            // (live-derived or stored) default rather than the `renamed` flag,
             // so previously-renamed bookmarks carrying a stale `renamed:false`
-            // still get the option. Mirrors the reader-side menu.
+            // still get the option. Mirrors the reader-side menu (wording
+            // unified 2026-08-04: every kind has a DEFAULT name derived from
+            // its source).
             {
                 const orig = this._bmReaderOriginalLabel(bm);
                 if (orig && orig !== bm.label) {
-                    add("Reset to Original Name", () => {
+                    add("Reset to Default Name", () => {
                         this._bmResetBookmarkName(bm.id).then(() => this._bmRenderPopupList(win));
                     }, BM_RESET_ICON);
                 }

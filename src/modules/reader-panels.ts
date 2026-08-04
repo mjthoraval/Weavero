@@ -5696,7 +5696,7 @@ class _ReaderPanelsMixin {
                 // the position-only dialog.
                 let nInput: any = null;
                 let nameRow: any = null;
-                let origText: any = null;      // the "Original: …" hint
+                let origText: any = null;      // the "Default name: …" hint
                 let resetBtn: any = null;
                 if (opts && opts.withName) {
                     nameRow = idoc.createElementNS(NS, "div");
@@ -5813,7 +5813,7 @@ class _ReaderPanelsMixin {
                 const syncOrig = () => {
                     if (!origText) return;
                     const a = autoName();
-                    origText.textContent = a ? ("Original name: " + a) : "";
+                    origText.textContent = a ? ("Default name: " + a) : "";
                     if (resetBtn) {
                         const same = String(nInput.value || "").trim() === a;
                         resetBtn.disabled = same;
@@ -6091,6 +6091,264 @@ class _ReaderPanelsMixin {
             const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
             const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
             if (!e) return;
+            return this._wvRegionEditorOpen(reader, idoc, e.resolvedPosition || e.position, {
+                editorId: ref.id,
+                noteWord: "title",
+                // Outline commit. With text: rename first, then stamp the
+                // position with that title as `regionTitle`, so the two stay
+                // in sync (no spurious "Re-detect from Title" afterward).
+                onCommit: (precise: any, text: string | null) => {
+                    let chain: Promise<any> = Promise.resolve();
+                    if (text) {
+                        chain = chain
+                            .then(() => this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text))
+                            .then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text));
+                    } else {
+                        chain = chain.then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise));
+                    }
+                    return chain.then(() => this._wvReaderRenderOutline(reader, idoc));
+                },
+            });
+        } catch (err) { Zotero.debug("[Weavero] _wvOutlineEditRegion err: " + err); }
+    }
+
+    /** The DEFAULT name for a local text bookmark: the text its region
+     *  CURRENTLY covers, re-read from the PDF text layer with the same
+     *  glyph-spacing cleanup titles get. Null when it cannot be computed
+     *  (non-PDF, no chars, no range) — the caller then falls back to the
+     *  stored capture-time label. */
+    async _wvBmRegionText(reader: any, bm: any): Promise<string | null> {
+        try {
+            // The bookmark OWNS its text -- prefer the stored field (kept
+            // current by Edit Region). Geometry re-derivation below is the
+            // fallback for legacy records predating the field.
+            if (bm && bm.text != null && bm.text !== "") return String(bm.text);
+            const pos = bm && bm.position;
+            // EPUB selector shape: the region IS a DOM range — its text comes
+            // straight off the resolved Range (no char-array machinery).
+            if (pos && pos.type === "FragmentSelector" && typeof pos.value === "string"
+                    && pos.value.indexOf("epubcfi(") === 0) {
+                const pvE = reader._internalReader
+                    && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                if (!pvE || typeof pvE.getRange !== "function") return null;
+                const pr = pvE.getRange(pos.value, true);
+                if (!pr) return null;
+                const range = (typeof pr.toRange === "function") ? pr.toRange() : pr;
+                let t = range ? String(range.toString()) : "";
+                t = t.replace(/\s+/g, " ").trim();
+                return t ? t.slice(0, 160) : null;
+            }
+            if (!pos || !Number.isInteger(pos.pageIndex)
+                    || !Array.isArray(pos.rects) || !pos.rects.length) return null;
+            const pd = await this._wvReaderGetPageData(reader, pos.pageIndex);
+            const chars = pd && pd.chars;
+            if (!Array.isArray(chars) || !chars.length) return null;
+            const range = wvCharRangeFromRects(chars, pos.rects);
+            if (!range) return null;
+            let text = wvTextForCharRange(chars, range.start, range.end);
+            if (text && this._wvLooksGlyphSpaced(text)) text = this._wvDeGlyphSpace(text);
+            return text ? String(text).slice(0, 160) : null;
+        } catch (_) { return null; }
+    }
+
+    /** "Edit Region…" for an EPUB text bookmark. The stored FragmentSelector
+     *  range-CFI resolves to a live DOM Range (pv.getRange), which makes the
+     *  EPUB editor SIMPLER than the PDF one: highlights are the Range's own
+     *  client rects, handle drags snap via caretPositionFromPoint, the new
+     *  region converts back with pv.getCFI (verified: exact round-trip), and
+     *  Save Region and Text reads the label straight off the Range. Overlay
+     *  lives in the epub iframe document in DOC coordinates, so it scrolls
+     *  with the text. (EPUB parity asked 2026-08-04.) */
+    _wvBmEditRegionEpub(reader: any, idoc: any, att: any, bm: any) {
+        try {
+            const pos = bm && bm.position;
+            if (!bm || bm.type !== "text" || !pos || pos.type !== "FragmentSelector"
+                    || typeof pos.value !== "string" || pos.value.indexOf("epubcfi(") !== 0) return;
+            const pv = reader._internalReader
+                && (reader._internalReader._primaryView || reader._internalReader._lastView);
+            if (!pv || typeof pv.getRange !== "function" || typeof pv.getCFI !== "function") return;
+            const iw = pv._iframeWindow;
+            const doc = iw && iw.document;
+            if (!doc || !doc.body) return;
+            const pr = pv.getRange(pos.value, true);
+            const seed = pr && ((typeof pr.toRange === "function") ? pr.toRange() : pr);
+            if (!seed || typeof seed.cloneRange !== "function") {
+                this._wvReaderPanelNote(idoc, "The bookmarked text could not be located."); return;
+            }
+            try { if (pv._wvRegionEditor) pv._wvRegionEditor.destroy(); } catch (_) {}
+            let range = seed.cloneRange();
+
+            const container = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            container.className = "wv-epub-region-editor";
+            container.style.cssText = "position:absolute;left:0;top:0;width:0;height:0;z-index:2147483645;";
+            doc.body.appendChild(container);
+
+            const mkDiv = (css: string) => {
+                const d: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                d.style.cssText = css; container.appendChild(d); return d;
+            };
+            const bar = mkDiv("position:absolute;display:flex;gap:6px;padding:4px 6px;"
+                + "background:rgba(40,40,40,.95);border:1px solid rgba(127,127,127,.5);"
+                + "border-radius:6px;pointer-events:auto;z-index:2;");
+            const mkBtn = (label: string, bg: string) => {
+                const b: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+                b.textContent = label;
+                b.style.cssText = "font:12px sans-serif;color:#fff;background:" + bg
+                    + ";border:none;border-radius:4px;padding:3px 8px;cursor:pointer;";
+                bar.appendChild(b); return b;
+            };
+            const saveBtn = mkBtn("Save Region", "#2e7d32");
+            const saveTextBtn = mkBtn("Save Region and Text", "#2e7d32");
+            const cancelBtn = mkBtn("Cancel", "#555");
+            const hls: any[] = [];
+            const handles: any = {};
+            const mkHandle = (which: string) => {
+                const h = mkDiv("position:absolute;width:14px;height:14px;border-radius:50%;"
+                    + "background:#4072e5;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);"
+                    + "cursor:grab;pointer-events:auto;z-index:3;transform:translate(-50%,-50%);");
+                handles[which] = h; return h;
+            };
+            mkHandle("start"); mkHandle("end");
+            const paint = () => {
+                for (const d of hls.splice(0)) { try { d.remove(); } catch (_) {} }
+                const rects = [...range.getClientRects()];
+                if (!rects.length) return;
+                for (const r of rects) {
+                    const d = mkDiv("position:absolute;background:rgba(64,114,229,.28);"
+                        + "border-radius:2px;pointer-events:none;");
+                    d.style.left = (r.left + iw.scrollX) + "px";
+                    d.style.top = (r.top + iw.scrollY) + "px";
+                    d.style.width = r.width + "px";
+                    d.style.height = r.height + "px";
+                    hls.push(d);
+                }
+                const first = rects[0], last = rects[rects.length - 1];
+                handles.start.style.left = (first.left + iw.scrollX) + "px";
+                handles.start.style.top = (first.top + first.height / 2 + iw.scrollY) + "px";
+                handles.end.style.left = (last.right + iw.scrollX) + "px";
+                handles.end.style.top = (last.top + last.height / 2 + iw.scrollY) + "px";
+                bar.style.left = Math.max(4, first.left + iw.scrollX) + "px";
+                bar.style.top = Math.max(4, first.top + iw.scrollY - 34) + "px";
+            };
+            const destroy = () => {
+                try { container.remove(); } catch (_) {}
+                try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
+                if (pv._wvRegionEditor && pv._wvRegionEditor._id === "bm:" + bm.id) pv._wvRegionEditor = null;
+            };
+            const commit = (withText?: boolean) => {
+                let cfiNew: any = null;
+                try { cfiNew = pv.getCFI(range); } catch (_) {}
+                // Read the range's CURRENT text always -> the bookmark's owned
+                // text, kept in step with the geometry (Save-and-Text also
+                // adopts it as the visible label).
+                const text = String(range.toString() || "").replace(/\s+/g, " ").trim();
+                destroy();
+                if (!cfiNew) return;
+                const updates: any = {
+                    position: Object.assign({}, pos, { value: cfiNew.toString() }),
+                };
+                if (text) updates.text = text.slice(0, 160);
+                if (withText && text) updates.label = text.slice(0, 160);
+                Promise.resolve(this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates))
+                    .then(() => {
+                        try {
+                            this._wvMarkBmFocus(reader, bm.id);
+                            this._wvReaderRenderBmList(reader, idoc);
+                            this._wvReaderShowEpubPin(reader, cfiNew.toString());
+                        } catch (_) {}
+                    }).catch(() => {});
+            };
+            const onKey = (ev: any) => {
+                if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
+                else if (ev.key === "Enter") { ev.preventDefault(); ev.stopPropagation(); commit(false); }
+            };
+            const wireHandle = (h: any, which: "start" | "end") => {
+                h.addEventListener("pointerdown", (e: any) => {
+                    try { e.preventDefault(); e.stopPropagation(); h.setPointerCapture(e.pointerId); } catch (_) {}
+                    const onMove = (me: any) => {
+                        try {
+                            const caret = doc.caretPositionFromPoint
+                                ? doc.caretPositionFromPoint(me.clientX, me.clientY) : null;
+                            if (!caret || !caret.offsetNode) return;
+                            const cand = range.cloneRange();
+                            if (which === "start") cand.setStart(caret.offsetNode, caret.offset);
+                            else cand.setEnd(caret.offsetNode, caret.offset);
+                            // Reject crossed or empty regions; keep the last good one.
+                            if (cand.collapsed || !String(cand.toString()).trim()) return;
+                            range = cand;
+                            paint();
+                        } catch (_) {}
+                    };
+                    const onUp = () => {
+                        try { h.removeEventListener("pointermove", onMove); } catch (_) {}
+                        try { h.removeEventListener("pointerup", onUp); } catch (_) {}
+                    };
+                    h.addEventListener("pointermove", onMove);
+                    h.addEventListener("pointerup", onUp);
+                }, true);
+            };
+            wireHandle(handles.start, "start");
+            wireHandle(handles.end, "end");
+            saveBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(false); });
+            saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
+            cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
+            doc.addEventListener("keydown", onKey, true);
+            pv._wvRegionEditor = { _id: "bm:" + bm.id, destroy };
+            paint();
+            // Bring the region into view (same 1/4 rule as navigation).
+            try {
+                const r0 = range.getClientRects()[0];
+                if (r0) iw.scrollTo(0, Math.max(0, r0.top + iw.scrollY - iw.innerHeight * 0.25));
+            } catch (_) {}
+            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the label. (Enter = Save Region, Esc = cancel.)");
+        } catch (err) { Zotero.debug("[Weavero] _wvBmEditRegionEpub err: " + err); }
+    }
+
+    /** "Edit Region…" for a TEXT bookmark: reshape the stored selection with
+     *  the same shared editor, saving back into the BOOKMARK store (user
+     *  request 2026-08-04 — previously the only route was Copy to Outline and
+     *  editing there). "Save Region and Text" also reloads the bookmark's
+     *  LABEL from the newly-covered glyphs, exactly how a fresh text bookmark
+     *  labels itself. PDF only (the editor snaps to the PDF text layer). The
+     *  location-sort key is left alone: `_wvBmSortIndexStale` fingerprints the
+     *  position and restamps the key on the next render. */
+    _wvBmEditRegion(reader: any, idoc: any, att: any, bm: any) {
+        try {
+            if (!bm || bm.type !== "text" || !bm.position
+                    || !Number.isInteger(bm.position.pageIndex)
+                    || !Array.isArray(bm.position.rects) || !bm.position.rects.length) return;
+            return this._wvRegionEditorOpen(reader, idoc, bm.position, {
+                editorId: "bm:" + bm.id,
+                noteWord: "label",
+                onCommit: (precise: any, labelText: string | null, regionText?: string | null) => {
+                    const updates: any = { position: precise };
+                    // The bookmark OWNS its text: refresh it to the region's
+                    // current text on every save, so the hover card / default
+                    // name track the selection (not a creation snapshot).
+                    if (regionText) updates.text = String(regionText).slice(0, 160);
+                    if (labelText) updates.label = labelText.slice(0, 160);
+                    return Promise.resolve(
+                        this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates))
+                        .then(() => {
+                            try {
+                                this._wvMarkBmFocus(reader, bm.id);
+                                this._wvReaderRenderBmList(reader, idoc);
+                            } catch (_) {}
+                        });
+                },
+            });
+        } catch (err) { Zotero.debug("[Weavero] _wvBmEditRegion err: " + err); }
+    }
+
+    /** The shared handle-drag region editor (text-snapping, like editing an
+     *  annotation highlight). Store-agnostic since 2026-08-04: the outline's
+     *  Edit Region and the text-bookmark Edit Region both open THIS, differing
+     *  only in `opts.onCommit` (where the new region — and, for
+     *  Save-Region-and-Text, the re-read text — is written back) and
+     *  `opts.editorId` (one editor at a time per view). `base` is the current
+     *  {pageIndex, rects} being reshaped. */
+    async _wvRegionEditorOpen(reader: any, idoc: any, base: any, opts: any) {
+        try {
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             const win = pv && pv._iframeWindow;
@@ -6098,7 +6356,6 @@ class _ReaderPanelsMixin {
             if (!app || !app.pdfViewer || !win || !win.document) {
                 this._wvReaderPanelNote(idoc, "Open the PDF view to edit the region."); return;
             }
-            const base = e.resolvedPosition || e.position;
             const pageIndex = (base && base.pageIndex) || 0;
             const pd = await this._wvReaderGetPageData(reader, pageIndex);
             const chars = pd && pd.chars;
@@ -6265,32 +6522,25 @@ class _ReaderPanelsMixin {
                 try { offObs && offObs.disconnect(); } catch (_) {}
                 try { container.remove(); } catch (_) {}
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
-                if (pv._wvRegionEditor && pv._wvRegionEditor._id === ref.id) pv._wvRegionEditor = null;
+                if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
             };
             const commit = (withText?: boolean) => {
                 const rects = wvRectsForCharRange(chars, start, end);
-                let text = withText ? wvTextForCharRange(chars, start, end) : "";
-                // "Save Region and Text" re-reads the raw text layer, which may be
-                // glyph-spaced ("1. I n t r o d u c t i o n"); clean it the same
-                // way titles are cleaned so this path can't reintroduce the
-                // spacing (asked 2026-07-22).
+                // Read the region's CURRENT text ALWAYS -- the caller stores it
+                // as the bookmark's owned text (kept in step with the geometry)
+                // regardless of whether the visible label is being reloaded.
+                // Same glyph-spacing cleanup titles get (raw text layer can be
+                // "1. I n t r o d u c t i o n"; asked 2026-07-22).
+                let text = wvTextForCharRange(chars, start, end) || "";
                 if (text && this._wvLooksGlyphSpaced(text)) text = this._wvDeGlyphSpace(text);
                 destroy();
                 if (!rects.length) return;
                 const precise = { pageIndex, rects };
-                let chain = Promise.resolve();
-                // With text: set the title from the region first, then stamp the
-                // position with that title as `regionTitle` so the two stay in
-                // sync (no spurious "Re-detect from Title" afterward).
-                if (withText && text) {
-                    chain = chain
-                        .then(() => this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text))
-                        .then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text));
-                } else {
-                    chain = chain.then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise));
-                }
-                chain
-                    .then(() => this._wvReaderRenderOutline(reader, idoc))
+                // Store write-back is the CALLER's business (outline vs
+                // bookmark store); the shared editor only re-flashes the new
+                // region afterwards. Param 2 = the label to adopt (only on
+                // Save-Region-and-Text); param 3 = the region text ALWAYS.
+                Promise.resolve(opts.onCommit(precise, (withText && text) ? text : null, text || null))
                     .then(() => { try { const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1); this._wvClearStalePin(pv); this._wvOutlineHighlightInPlace(pv, pageIndex, rects, gen, 0); } catch (_) {} })
                     .catch(() => {});
             };
@@ -6343,12 +6593,13 @@ class _ReaderPanelsMixin {
             cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
             doc.addEventListener("keydown", onKey, true);
 
-            pv._wvRegionEditor = { _id: ref.id, destroy };
+            pv._wvRegionEditor = { _id: opts.editorId, destroy };
             // Bring the region into view, then paint.
             try { this._wvOutlineScrollToRect(pv, pageIndex, wvRectsForCharRange(chars, start, end)[0] || base.rects[0]); } catch (_) {}
             rerender();
-            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the title. (Enter = Save Region, Esc = cancel.)");
-        } catch (err) { Zotero.debug("[Weavero] _wvOutlineEditRegion err: " + err); }
+            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the "
+                + (opts.noteWord || "title") + ". (Enter = Save Region, Esc = cancel.)");
+        } catch (err) { Zotero.debug("[Weavero] _wvRegionEditorOpen err: " + err); }
     }
 
     /** Reset a (curated) entry's name to its frozen original. */
@@ -10873,7 +11124,23 @@ class _ReaderPanelsMixin {
             try {
                 if (!reader._internalReader._state.sidebarOpen) reader._internalReader.toggleSidebar(true);
             } catch (_) {}
-            if (id) this._wvMarkBmFocus(reader, id);
+            if (id) {
+                this._wvMarkBmFocus(reader, id);
+                // The REAL selection, not just the focus ring: make the new
+                // row the pane's single selected row (blue fill) and the
+                // keyboard cursor/anchor — exactly what clicking it would do.
+                // The one-shot focus mark above still handles the
+                // scroll-into-view. (Reported 2026-08-04: the ring landed on
+                // the new row while an older row kept the blue selection —
+                // "this is not the real focus".)
+                try {
+                    const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
+                    sel.clear();
+                    sel.add(id);
+                    reader._wvBmSelAnchor = id;
+                    reader._wvBmActiveId = id;
+                } catch (_) {}
+            }
             // SetBmActive renders (consuming the focus mark) when turning the
             // pane on; when it is already on, render ourselves.
             if (!this._wvReaderBmActive(reader)) this._wvReaderSetBmActive(reader, idoc, true);
@@ -13683,7 +13950,20 @@ class _ReaderPanelsMixin {
                 text: "Text annotation", image: "Image annotation", ink: "Ink annotation",
             };
             if (bm.type === "position") { info.kind = "Location"; info.comment = String(bm.comment || "").trim(); }
-            else if (bm.type === "text") { info.kind = "Selected text"; info.text = bm.label || ""; info.comment = String(bm.comment || "").trim(); }
+            else if (bm.type === "text") {
+                info.kind = "Selected text";
+                // The body quote is the SELECTED TEXT, mirroring the annotation
+                // card (whose body is the annotation text, not the name). Using
+                // `bm.label` put the RENAMED name in the quote block, which read
+                // as if the selection itself had changed — misleading (user
+                // 2026-08-04). The custom title is already shown in the pane
+                // row + the header, exactly as for annotations, so the card
+                // needn't repeat it. `originalLabel` is the immutable selection
+                // captured at creation (survives rename); fall back to the
+                // label for pre-stamp bookmarks.
+                info.text = this._bmReaderOriginalLabel(bm) || bm.label || "";
+                info.comment = String(bm.comment || "").trim();
+            }
             else if (bm.type === "collection") {
                 info.kind = "Collection";
                 try { const c: any = bm.collectionKey && Zotero.Collections.getByLibraryAndKey(bm.libraryID, bm.collectionKey); if (c) info.text = c.name; } catch (_) {}
@@ -13804,7 +14084,24 @@ class _ReaderPanelsMixin {
             // bookmarks AND for annotations (info.color set), so the quote
             // block + coloured left bar render and the card mirrors the
             // reader Annotations tab's row.
-            if (info.text && (bm.type === "text" || info.color || info.text !== (bm.label || ""))) body.appendChild(mk("wv-hc-text", info.text));
+            if (info.text && (bm.type === "text" || info.color || info.text !== (bm.label || ""))) {
+                const textEl = mk("wv-hc-text", info.text);
+                body.appendChild(textEl);
+                // A text bookmark's body IS its selected text, and the DEFAULT
+                // (the text the region currently covers) is derived LIVE — a
+                // stored snapshot goes stale the moment Edit Region reshapes
+                // the selection (reported 2026-08-04: "the text selected is
+                // not updating the hover card"). Refine the sync value
+                // (`originalLabel`, the capture-time text) with the live
+                // region text once it resolves; guarded so a card dismissed
+                // meanwhile doesn't write into a detached node.
+                if (bm.type === "text") {
+                    Promise.resolve(this._wvBmRegionText(reader, bm)).then((live: any) => {
+                        try { if (live && textEl.isConnected && live !== textEl.textContent) textEl.textContent = live; }
+                        catch (_) {}
+                    }).catch(() => {});
+                }
+            }
             if (info.comment) body.appendChild(mk("wv-hc-comment", info.comment));
             if (info.tags && info.tags.length) {
                 const tg = mk("wv-hc-tags");
@@ -13883,7 +14180,24 @@ class _ReaderPanelsMixin {
             }
             // Meta (always visible, below the body/expand).
             const meta: string[] = [];
-            if (info.original) meta.push("Original: " + info.original);
+            // Show the default name ONLY when it adds something the card
+            // doesn't already display. For an annotation / collection / library
+            // bookmark the body IS the source text/name, so "Default: <same
+            // text>" just repeats it (user 2026-08-04). It earns its place
+            // only for a renamed TEXT bookmark, where the body shows the
+            // renamed label but the default is the original selected text --
+            // visible nowhere else. Also drop the generic placeholder default.
+            if (info.original) {
+                const norm = (s: string) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+                const nOrig = norm(info.original);
+                const nText = norm(info.text);
+                const nComment = norm(info.comment);
+                const redundant = !nOrig
+                    || nOrig === "bookmark"
+                    || (nText && (nText === nOrig || nText.startsWith(nOrig) || nOrig.startsWith(nText)))
+                    || (nComment && nComment === nOrig);
+                if (!redundant) meta.push("Default: " + info.original);
+            }
             if (info.itemCreated) meta.push("Created: " + info.itemCreated);
             if (info.created) meta.push("Bookmarked: " + info.created);
             for (const m of meta) card.appendChild(mk("wv-hc-meta", m));   // one per line
@@ -15112,7 +15426,15 @@ class _ReaderPanelsMixin {
             reRender: reRenderCb,
         } : {
             rename: (title: string) => { mark(); return this._bmReaderRename(att.libraryID, att.itemKey, entry.id, title); },
-            resetName: () => { mark(); return this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id); },
+            // Text bookmarks derive their default from the region's CURRENT
+            // text (the Default Name model); reset writes it back so the
+            // dialog's reset matches the row menu's.
+            resetName: async () => {
+                mark();
+                const t = await this._wvBmRegionText(reader, entry);
+                return this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id, t || undefined);
+            },
+            deriveDefault: () => this._wvBmRegionText(reader, entry),
             setUrl: (url: string) => { mark(); return this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { url }); },
             setComment: (comment: string) => { mark(); return this._bmReaderUpdatePosition(att.libraryID, att.itemKey, entry.id, { comment }); },
             reRender: reRenderCb,
@@ -15292,12 +15614,38 @@ class _ReaderPanelsMixin {
                         });
                     }
                     {
-                        // Gate on label-vs-original, not the `renamed` flag, so a
-                        // previously-renamed bookmark with a stale flag still gets
-                        // Reset (matches the collections-pane menu).
-                        const orig = this._bmReaderOriginalLabel(entry);
-                        if (orig && orig !== entry.label) {
-                            item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                        // "Reset to Default Name" — every bookmark kind has a
+                        // DEFAULT name derived from its source; the reset
+                        // realigns the label with it. Gate on label-vs-default,
+                        // not the `renamed` flag, so a stale flag still gets
+                        // Reset. A local TEXT bookmark's default is the text
+                        // its region CURRENTLY covers, recomputed at click time
+                        // (like an annotation's name follows its text; wording
+                        // + semantics per user, 2026-08-04) — that branch is
+                        // wired where the row set supports it.
+                        const pvR = reader._internalReader
+                            && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                        const isPdfV = !!(pvR && pvR._iframeWindow && pvR._iframeWindow.PDFViewerApplication);
+                        const pdfShape = entry.position && Number.isInteger(entry.position.pageIndex)
+                            && Array.isArray(entry.position.rects) && !!entry.position.rects.length;
+                        const cfiShape = entry.position && entry.position.type === "FragmentSelector"
+                            && typeof entry.position.value === "string"
+                            && entry.position.value.indexOf("epubcfi(") === 0;
+                        const isTextBm = entry.type === "text" && !entry.srcItemKey
+                            && ((pdfShape && isPdfV)
+                                || (cfiShape && pvR && typeof pvR.getRange === "function"));
+                        if (isTextBm) {
+                            item("Reset to Default Name", RP_REVERT_SVG, () => {
+                                Promise.resolve(this._wvBmRegionText(reader, entry))
+                                    .then((t: any) => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id, t || undefined))
+                                    .then(reRender).catch(() => {});
+                            });
+                        } else {
+                            const orig = this._bmReaderOriginalLabel(entry);
+                            if (orig && orig !== entry.label) {
+                                item("Reset to Default Name", RP_REVERT_SVG,
+                                    () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                            }
                         }
                     }
                     {
@@ -15313,6 +15661,32 @@ class _ReaderPanelsMixin {
                             item(texts.length > 1 ? ("Copy " + texts.length + " to Outline") : "Copy to Outline",
                                 this._wvReaderOutlineMenuIconURL(),
                                 () => this._wvBmCopyTextToOutline(reader, idoc, texts));
+                        }
+                    }
+                    {
+                        // "Edit Region…" — reshape the stored selection, saving
+                        // back into the BOOKMARK store (user request
+                        // 2026-08-04). Routed by the position's SHAPE: PDF
+                        // rects → the shared char-snapping editor; EPUB
+                        // range-CFI → the Range-based editor (parity asked the
+                        // same day).
+                        const pvM = reader._internalReader
+                            && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                        const isPdfView = !!(pvM && pvM._iframeWindow
+                            && pvM._iframeWindow.PDFViewerApplication);
+                        const posE = entry.position;
+                        const pdfRegion = isPdfView && posE
+                            && Number.isInteger(posE.pageIndex)
+                            && Array.isArray(posE.rects) && posE.rects.length;
+                        const cfiRegion = posE && posE.type === "FragmentSelector"
+                            && typeof posE.value === "string"
+                            && posE.value.indexOf("epubcfi(") === 0
+                            && pvM && typeof pvM.getRange === "function";
+                        if (entry.type === "text" && (pdfRegion || cfiRegion)) {
+                            item("Edit Region…", RP_TEXT_SVG,
+                                () => (pdfRegion
+                                    ? this._wvBmEditRegion(reader, idoc, att, entry)
+                                    : this._wvBmEditRegionEpub(reader, idoc, att, entry)));
                         }
                     }
                     item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
@@ -15344,12 +15718,38 @@ class _ReaderPanelsMixin {
                         this._wvReaderEditBookmarkDialog(reader, att, entry, reRender);
                     });
                     {
-                        // Gate on label-vs-original, not the `renamed` flag, so a
-                        // previously-renamed bookmark with a stale flag still gets
-                        // Reset (matches the collections-pane menu).
-                        const orig = this._bmReaderOriginalLabel(entry);
-                        if (orig && orig !== entry.label) {
-                            item("Reset to Original Name", RP_REVERT_SVG, () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                        // "Reset to Default Name" — every bookmark kind has a
+                        // DEFAULT name derived from its source; the reset
+                        // realigns the label with it. Gate on label-vs-default,
+                        // not the `renamed` flag, so a stale flag still gets
+                        // Reset. A local TEXT bookmark's default is the text
+                        // its region CURRENTLY covers, recomputed at click time
+                        // (like an annotation's name follows its text; wording
+                        // + semantics per user, 2026-08-04) — that branch is
+                        // wired where the row set supports it.
+                        const pvR = reader._internalReader
+                            && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                        const isPdfV = !!(pvR && pvR._iframeWindow && pvR._iframeWindow.PDFViewerApplication);
+                        const pdfShape = entry.position && Number.isInteger(entry.position.pageIndex)
+                            && Array.isArray(entry.position.rects) && !!entry.position.rects.length;
+                        const cfiShape = entry.position && entry.position.type === "FragmentSelector"
+                            && typeof entry.position.value === "string"
+                            && entry.position.value.indexOf("epubcfi(") === 0;
+                        const isTextBm = entry.type === "text" && !entry.srcItemKey
+                            && ((pdfShape && isPdfV)
+                                || (cfiShape && pvR && typeof pvR.getRange === "function"));
+                        if (isTextBm) {
+                            item("Reset to Default Name", RP_REVERT_SVG, () => {
+                                Promise.resolve(this._wvBmRegionText(reader, entry))
+                                    .then((t: any) => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id, t || undefined))
+                                    .then(reRender).catch(() => {});
+                            });
+                        } else {
+                            const orig = this._bmReaderOriginalLabel(entry);
+                            if (orig && orig !== entry.label) {
+                                item("Reset to Default Name", RP_REVERT_SVG,
+                                    () => this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id).then(reRender));
+                            }
                         }
                     }
                     item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));

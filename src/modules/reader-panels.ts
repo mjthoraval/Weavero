@@ -13473,11 +13473,12 @@ class _ReaderPanelsMixin {
                         ? (Components as any).utils.cloneInto([bm.itemKey], iwin)
                         : [bm.itemKey];
                     reader.setSelectedAnnotations(idsArr, true);
-                    try {
-                        const ir = reader._internalReader;
-                        const v = ir && (ir._primaryView || ir._lastView);
-                        if (v && v._openAnnotationPopup) v._openAnnotationPopup();
-                    } catch (_) {}
+                    // NO popup here, deliberately (user decision 2026-08-04,
+                    // matching the EPUB behaviour): a bookmark click SELECTS
+                    // the annotation; clicking the annotation itself in the
+                    // document is what opens the edit popup. An earlier
+                    // deferred-open attempt here was the misread inverse of
+                    // that request -- do not reintroduce it.
                 } catch (_) {}
             }
             else this._wvNavigateReaderLocation(reader, bm);
@@ -17000,12 +17001,98 @@ class _ReaderPanelsMixin {
         };
     }
 
+    /** EPUB pin marker at a CFI — the DOM-view counterpart of
+     *  `_wvReaderShowPin` (which is PDF-only: it draws in unscaled page units
+     *  on a pdf.js page). Resolves the CFI to a Range via the epub view's own
+     *  `getRange(cfi, mount=true)` and drops the same vector pin, anchored in
+     *  DOCUMENT coordinates so it scrolls with the text and is valid even
+     *  while the smooth-scroll navigation is still in flight. Display-only
+     *  (no drag — a CFI cannot be nudged by pixels the way PDF rects can);
+     *  same 2.2s fade as the PDF pin. Both gaps reported 2026-08-04: no pin
+     *  on add, no pin on row-click, in EPUBs. */
+    _wvReaderShowEpubPin(reader: any, cfi: string): boolean {
+        try {
+            if (!cfi || typeof cfi !== "string" || cfi.indexOf("epubcfi(") !== 0) return false;
+            if (this._wvReadingModeActive(reader)) return false;
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv || typeof pv.getRange !== "function") return false;   // not the EPUB view
+            const iwin = pv._iframeWindow;
+            const doc = iwin && iwin.document;
+            if (!doc || !doc.body) return false;
+            const pr: any = pv.getRange(cfi, true);
+            if (!pr) return false;
+            const range: any = (typeof pr.toRange === "function") ? pr.toRange() : pr;
+            if (!range || typeof range.getBoundingClientRect !== "function") return false;
+            const r = range.getBoundingClientRect();
+            if (!r || (r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0)) return false;
+            const docX = r.left + (r.width / 2) + iwin.scrollX;
+            const docY = r.top + iwin.scrollY;
+            try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
+            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            pin.className = "wv-reader-pin";
+            const PIN_H = 32;
+            pin.innerHTML = RP_PIN_TIP_SVG;
+            pin.style.cssText = "position:absolute;z-index:2147483646;pointer-events:none;"
+                + "left:" + docX + "px;top:" + docY + "px;height:" + PIN_H + "px;"
+                + "user-select:none;line-height:0;transform-origin:50% 100%;"
+                + "transform:translate(-50%,-100%) scale(1);opacity:1;"
+                + "transition:opacity .18s ease-out,transform .18s ease-out;";
+            doc.body.appendChild(pin);
+            const w: any = iwin;
+            w.setTimeout(() => {
+                try {
+                    pin.style.transition = "opacity .25s,transform .25s";
+                    pin.style.opacity = "0";
+                    pin.style.transform = "translate(-50%,-118%) scale(.6)";
+                } catch (_) {}
+            }, 2200);
+            w.setTimeout(() => { try { pin.remove(); } catch (_) {} }, 2520);
+            return true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderShowEpubPin err: " + e);
+            return false;
+        }
+    }
+
     async _wvReaderAddCurrentBookmark(reader: any, idoc: any, click?: any, scope?: string) {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             const rec: any = this._wvCaptureReaderLocation(reader);
             rec.type = "position";
+            // EPUB: make "this position" mean the CLICKED point, not the
+            // viewport top. _wvCaptureReaderLocation stores flow.startCFI
+            // (top of the current viewport), so the bookmark -- and its pin
+            // -- landed a screenful away from where the user right-clicked,
+            // with the pin drawn just above the visible edge ("nothing is
+            // working", 2026-08-04). The epub view resolves a precise CFI:
+            // caret at the click point -> collapsed Range -> getCFI.
+            // Falls back to the viewport-top CFI when the caret lookup
+            // fails (click on empty margin, snapshot view, no click).
+            try {
+                if ((reader._type || "pdf") !== "pdf" && click
+                        && typeof click.x === "number" && typeof click.y === "number") {
+                    const pvE = reader._internalReader
+                        && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                    if (pvE && typeof pvE.getCFI === "function" && pvE._iframe && pvE._iframeWindow) {
+                        const br = pvE._iframe.getBoundingClientRect();
+                        const idc: any = pvE._iframeWindow.document;
+                        const caret = idc.caretPositionFromPoint
+                            ? idc.caretPositionFromPoint(click.x - br.x, click.y - br.y) : null;
+                        if (caret && caret.offsetNode) {
+                            const rng = idc.createRange();
+                            rng.setStart(caret.offsetNode, caret.offset);
+                            rng.setEnd(caret.offsetNode, caret.offset);
+                            const cfi = pvE.getCFI(rng);
+                            if (cfi) {
+                                rec.location = rec.location || {};
+                                rec.location.cfi = cfi.toString();
+                            }
+                        }
+                    }
+                }
+            } catch (_) {}
             // Store a PRECISE position (the exact clicked point — text OR
             // whitespace) so the bookmark returns to that spot and drops the pin
             // there, not at the page top. (EPUB/snapshot use the CFI location.)
@@ -17040,13 +17127,27 @@ class _ReaderPanelsMixin {
             } else {
                 entry = await this._bmReaderAdd(att.libraryID, att.itemKey, rec);
             }
-            this._wvReaderRenderBmList(reader, idoc);
+            // Reveal like every other outside-the-pane add (annotation menu,
+            // selected text): ensure the tab, mark the new row for the
+            // one-shot focus highlight, render. Was a bare render, so the
+            // new bookmark never showed selected in the list (reported
+            // 2026-08-04). Works for the library scope too — lib rows carry
+            // the same data-wv-bm-id the focus pass queries.
+            if (entry && entry.id) this._wvReaderRevealBookmark(reader, entry.id);
+            else this._wvReaderRenderBmList(reader, idoc);
             // Show the pin overlay at the just-added spot so the user
             // sees it land — same temporary marker as clicking the row
             // (PDF-only; EPUB/snapshot have no rects-based overlay and
             // `_wvReaderShowPin` returns early there).
             if (entry && entry.type === "position" && entry.position) {
                 try { this._wvReaderShowPin(reader, entry.position, entry.id); } catch (_) {}
+            }
+            // EPUB: no rects-based position — the CFI is the anchor. Show the
+            // DOM pin there so the add is visible (reported 2026-08-04: "I do
+            // not see the pin being displayed" in an EPUB).
+            else if (entry && entry.type === "position" && !entry.position
+                    && entry.location && entry.location.cfi) {
+                try { this._wvReaderShowEpubPin(reader, entry.location.cfi); } catch (_) {}
             }
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderAddCurrentBookmark err: " + e);
@@ -17251,7 +17352,45 @@ class _ReaderPanelsMixin {
             if (bm.viewType === "pdf") {
                 reader.navigate({ pageIndex: loc.pageIndex || 0 });
             } else if (loc.cfi) {
-                reader.navigate({ pageNumber: loc.cfi });
+                // EPUB: land the CFI 1/4 from the top — the shared Weavero
+                // rule (asked 2026-08-04). The native default is block:'start'
+                // (target at the very top edge). `offsetBlock` shifts the
+                // scroll target down by N px, so viewH/4 = the 1/4 rule.
+                // Call the VIEW's navigate directly (args cloned into its
+                // compartment): the XPCOM reader.navigate takes no options.
+                let landed = false;
+                try {
+                    const pvE = reader._internalReader
+                        && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                    const iwE = pvE && pvE._iframeWindow;
+                    if (pvE && typeof pvE.navigate === "function"
+                            && typeof pvE.getRange === "function" && iwE) {
+                        const Cu2 = (Components as any).utils;
+                        const off = Math.round(((iwE.innerHeight || 800)) * 0.25);
+                        pvE.navigate(
+                            Cu2.cloneInto({ pageNumber: loc.cfi }, iwE),
+                            Cu2.cloneInto({ behavior: "smooth", block: "start", offsetBlock: off }, iwE));
+                        landed = true;
+                    }
+                } catch (_) {}
+                if (!landed) { try { reader.navigate({ pageNumber: loc.cfi }); } catch (_) {} }
+                // Position (pin) bookmark: show the pin at the CFI — anchored
+                // in document coordinates, so it is correct even while the
+                // smooth scroll is still in flight. Deferred a beat so
+                // getRange can mount the target section. (Both EPUB pin gaps
+                // reported 2026-08-04.)
+                if (bm.type === "position") {
+                    try {
+                        const rw: any = reader._iframeWindow;
+                        const show = () => {
+                            try {
+                                const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if (P2) P2._wvReaderShowEpubPin(reader, loc.cfi);
+                            } catch (_) {}
+                        };
+                        if (rw && rw.setTimeout) rw.setTimeout(show, 350); else show();
+                    } catch (_) {}
+                }
             } else if (typeof loc.scrollYPercent === "number") {
                 reader.navigate({ scrollYPercent: loc.scrollYPercent });
             }

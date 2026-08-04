@@ -7928,7 +7928,12 @@ class _FilterMixin {
         // Vertical 2-col suggestion list (hidden until trigger is
         // clicked).
         const box = doc.createElementNS(NS_HTML, "div");
-        box.className = "wv-filter-tag-list";
+        // `wv-itype-overlay`: the list floats OVER the later sections
+        // (absolute, anchored under the trigger row) instead of expanding
+        // inline. Inline expansion pushed the rest of the popup down, and
+        // hide-on-mousedown reflowed everything mid-click, so a click on a
+        // lower filter closed the list but never landed (2026-08-04).
+        box.className = "wv-filter-tag-list wv-itype-overlay";
         box.dataset.vertical = "true";
         box.dataset.columns = "2";
         box.style.display = "none";
@@ -8122,6 +8127,9 @@ class _FilterMixin {
         const showList = () => {
             if (listOpen) return;
             listOpen = true;
+            // Anchor the overlay just under the trigger row (offsets are
+            // relative to `opts`, which the overlay CSS makes positioned).
+            box.style.top = (triggerRow.offsetTop + triggerRow.offsetHeight + 3) + "px";
             box.style.display = "";
             if (!onDocMouseDown) {
                 onDocMouseDown = (e) => {
@@ -10347,6 +10355,32 @@ class _FilterMixin {
      *       count + row data.
      *
      *  On filter clear, restore the saved originals and re-invalidate. */
+    /** Retry a cascade-carrying apply that a guard bounced. Coalesced (one
+     *  pending timer), bounded (gives up ~3s after the LAST bounce), and
+     *  reload-proof: the callback resolves the live plugin and re-checks the
+     *  guards, re-arming while they still block. */
+    _wvScheduleCascadeRetry() {
+        try {
+            (this as any)._wvCascadeRetryUntil = Date.now() + 3000;
+            if ((this as any)._wvCascadeRetryTimer) return;   // already pending
+            const win = Zotero.getMainWindow();
+            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            (this as any)._wvCascadeRetryTimer = setT(() => {
+                const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!P || P !== this) return;                  // stale instance
+                (this as any)._wvCascadeRetryTimer = null;
+                if (Date.now() > (this as any)._wvCascadeRetryUntil) return;
+                if (this._filterApplying
+                    || ((this as any)._suppressTreeObserverUntil
+                        && Date.now() < (this as any)._suppressTreeObserverUntil)) {
+                    this._wvScheduleCascadeRetry();            // still blocked
+                    return;
+                }
+                try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+            }, 150);
+        } catch (e) {}
+    }
+
     _applyItemsListFilter(opts?) {
         // Toggle-in-progress: when the Show Non-Matching * toggle
         // handler is running its async `rp.refresh()`, Zotero's own
@@ -10359,6 +10393,13 @@ class _FilterMixin {
         // `_applyItemsListFilter()` is what rebuilds keep[] once.
         if ((this as any)._suppressTreeObserverUntil
             && Date.now() < (this as any)._suppressTreeObserverUntil) {
+            // A DELIBERATE apply (cascade) bounced here must not lose its
+            // cascade intent: dropping it leaves the filter itself correct
+            // (the observer reapply catches up, sans cascade) but the
+            // matching children stay collapsed -- two chips clicked in quick
+            // succession showed 2 closed book rows instead of the expanded
+            // annotations (2026-08-04). Park the intent and retry shortly.
+            if (opts && opts.cascade) this._wvScheduleCascadeRetry();
             return;
         }
         // Guard — `tree.invalidate()` re-renders rows, which fires the
@@ -10385,6 +10426,10 @@ class _FilterMixin {
             // rows during apply, the next observer fire (after
             // _filterApplying clears + the 80ms quiet) will catch
             // them.
+            //
+            // But a deliberate CASCADE apply must not be silently
+            // swallowed — same reasoning as the suppression guard above.
+            if (opts && opts.cascade) this._wvScheduleCascadeRetry();
             return;
         }
         // ---- Order-B fix (approach a, flickery — see work/TODO.md) ----

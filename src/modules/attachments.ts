@@ -251,6 +251,15 @@ class _AttachmentsMixin {
             }
             return false;
         } catch (e) {
+            // An item whose tags are not loaded THROWS here (upstream
+            // _requireData); swallowing it silently reads as "no override" --
+            // the exact "it did nothing" report the trace ring exists for.
+            // Rare (a freshly-fetched item in a never-browsed library), and
+            // this path is synchronous by design so it cannot await a load;
+            // but it must leave evidence.
+            if ((e as any) && (e as any).name === "UnloadedDataException") {
+                this._wvDefAttTrace("unloadedData", { key: child && child.key, what: "tags" });
+            }
             return false;
         }
     }
@@ -273,6 +282,11 @@ class _AttachmentsMixin {
                 out.push(c);
             }
         } catch (e) {
+            // Same evidence rule as `_wvIsDefaultChild`: unloaded childItems
+            // must not silently become "this item has no children".
+            if ((e as any) && (e as any).name === "UnloadedDataException") {
+                this._wvDefAttTrace("unloadedData", { key: item && item.key, what: "childItems" });
+            }
             Zotero.debug("[Weavero] _wvOpenableChildren err: " + e);
         }
         return out;
@@ -470,8 +484,23 @@ class _AttachmentsMixin {
             //    its say.
             const current = proto.getBestAttachment;
             if (typeof current !== "function") return;
+            // Registry of EVERY wrapper this module has ever installed (Set on
+            // the prototype, so it survives reloads). Needed because the rival
+            // plugin's unpatch restores whatever IT stashed as "the original"
+            // -- which, after one of our re-asserts, is a PREVIOUS Weavero
+            // wrapper. Comparing only against the most recent `_wvDefaultAttFn`
+            // misread that as a foreign wrapper and wrapped again, adding one
+            // live layer per disable->enable cycle of the other plugin (audit
+            // 2026-08-04). Any of our wrappers is functionally current (they
+            // close over nothing and live-resolve the plugin), so when the top
+            // is OURS-BUT-OLDER we simply adopt it instead of stacking.
+            const fns: Set<any> = proto._wvDefaultAttFns || (proto._wvDefaultAttFns = new Set());
+            const topIsOurs = current === proto._wvDefaultAttFn || fns.has(current);
+            if (proto._wvDefaultAttWired === WIRE_VERSION && topIsOurs) {
+                proto._wvDefaultAttFn = current;
+                return;
+            }
             const weAreOutermost = current === proto._wvDefaultAttFn;
-            if (proto._wvDefaultAttWired === WIRE_VERSION && weAreOutermost) return;
 
             // Only peel our own wrapper off when it is still the top one;
             // unwiring from underneath a foreign wrapper would break ITS chain.
@@ -496,8 +525,11 @@ class _AttachmentsMixin {
                 return orig.apply(this, args);
             };
             // Remember OUR function so a later "are we still outermost?"
-            // check can tell our wrapper from a foreign one.
+            // check can tell our wrapper from a foreign one — and register it
+            // in the persistent Set so even an OLDER one of ours is never
+            // mistaken for foreign (see the adoption branch above).
             proto._wvDefaultAttFn = proto.getBestAttachment;
+            fns.add(proto._wvDefaultAttFn);
 
             // The PLURAL is a separate upstream entry point, not a caller of
             // the singular -- upstream's getBestAttachment is the thin wrapper
@@ -519,7 +551,8 @@ class _AttachmentsMixin {
             // at ourselves, so a later unwire could never fully restore.
             const origPlural = proto.getBestAttachments;
             if (typeof origPlural === "function"
-                && origPlural !== proto._wvDefaultAttPluralFn) {
+                && origPlural !== proto._wvDefaultAttPluralFn
+                && !fns.has(origPlural)) {
                 proto._wvOrigGetBestAttachments = origPlural;
                 proto.getBestAttachments = async function (this: any, ...args: any[]) {
                     const list = await origPlural.apply(this, args);
@@ -543,6 +576,7 @@ class _AttachmentsMixin {
                     return list;
                 };
                 proto._wvDefaultAttPluralFn = proto.getBestAttachments;
+                fns.add(proto._wvDefaultAttPluralFn);
             }
             proto._wvDefaultAttWired = WIRE_VERSION;
             Zotero.debug("[Weavero] default-child override installed (v" + WIRE_VERSION + ")");
@@ -688,16 +722,30 @@ class _AttachmentsMixin {
                 kind: (typeof chosen.isNote === "function" && chosen.isNote()) ? "note" : "attachment",
             });
 
-            if (typeof chosen.isNote === "function" && chosen.isNote()) {
-                // The ONLY correct way to open a note tab — a bare
-                // Zotero_Tabs.add({type:"note"}) yields an editor-less shell.
-                await zp.openNote(chosen.id, { openInWindow: false });
-            }
-            else {
-                // Handles non-PDF files AND linked URLs.
-                await zp.viewAttachment(
-                    chosen.id, event, options && options.noLocateOnMissing, options,
-                );
+            // Once an open call has been ISSUED, this helper owns the outcome:
+            // a throw past this point may have already opened something (e.g.
+            // viewAttachment on a linked URL can fail after handing off to
+            // loadURI), and returning false there would make the caller run
+            // Zotero's normal open on top -- the user gets the chosen child
+            // AND the heuristic pick. Opening nothing extra beats opening two.
+            let issued = false;
+            try {
+                if (typeof chosen.isNote === "function" && chosen.isNote()) {
+                    // The ONLY correct way to open a note tab — a bare
+                    // Zotero_Tabs.add({type:"note"}) yields an editor-less shell.
+                    issued = true;
+                    await zp.openNote(chosen.id, { openInWindow: false });
+                }
+                else {
+                    // Handles non-PDF files AND linked URLs.
+                    issued = true;
+                    await zp.viewAttachment(
+                        chosen.id, event, options && options.noLocateOnMissing, options,
+                    );
+                }
+            } catch (e) {
+                Zotero.debug("[Weavero] _wvTryOpenDefaultChild open err: " + e);
+                return issued;   // issued -> claim handled; never double-open
             }
             return true;
         } catch (e) {
@@ -835,8 +883,22 @@ class _AttachmentsMixin {
      *  toggling cannot produce a recurring prompt. */
     _wvWireDefaultChildPrefWatch(): void {
         try {
-            if ((this as any)._wvDefChildPrefObs) return;
-            (this as any)._wvDefChildPrefObs = Zotero.Prefs.registerObserver(
+            // The observer HANDLE lives on the Zotero global, like every other
+            // long-lived hook in this module (`_wvDefAttPluginObserver`,
+            // `_wvDefaultAttWired`) -- the observer itself outlives the plugin
+            // instance, so an instance-scoped handle is lost with the instance
+            // whenever destroy() does not complete the unregister, leaving the
+            // observer unreachable forever and a second one stacking on the
+            // next wire (each stacked copy would run the migration + legacy
+            // prompt once per pref flip). Versioned so a new build re-wires.
+            const g: any = Zotero;
+            if (g._wvDefChildPrefObs) {
+                if (g._wvDefChildPrefObsVer === WIRE_VERSION) return;
+                try { Zotero.Prefs.unregisterObserver(g._wvDefChildPrefObs); } catch (e) {}
+                delete g._wvDefChildPrefObs;
+            }
+            g._wvDefChildPrefObsVer = WIRE_VERSION;
+            g._wvDefChildPrefObs = Zotero.Prefs.registerObserver(
                 "weavero.enableDefaultChild",
                 () => {
                     try {
@@ -861,11 +923,11 @@ class _AttachmentsMixin {
 
     /** Drop the pref watcher (shutdown path). */
     _wvUnwireDefaultChildPrefWatch(): void {
+        const g: any = Zotero;
         try {
-            const sym = (this as any)._wvDefChildPrefObs;
-            if (sym) Zotero.Prefs.unregisterObserver(sym);
+            if (g._wvDefChildPrefObs) Zotero.Prefs.unregisterObserver(g._wvDefChildPrefObs);
         } catch (e) { /* already gone */ }
-        try { delete (this as any)._wvDefChildPrefObs; } catch (e) {}
+        try { delete g._wvDefChildPrefObs; delete g._wvDefChildPrefObsVer; } catch (e) {}
     }
 
     /** How many picks the old plugin stores. READ-ONLY, like every other
@@ -1231,10 +1293,20 @@ class _AttachmentsMixin {
                                 key: child.key, wasMarked: marked, live: !!p,
                             });
                             if (!p) return;
-                            p._wvToggleDefaultChild(child).then((now: boolean) => {
+                            // Do what the LABEL promised, not a blind toggle.
+                            // The label is a snapshot from popupshowing; if the
+                            // marker changes while the menu is open (incoming
+                            // sync, a second window, the tag selector), a
+                            // toggle would invert the shown action -- "Set as
+                            // Default" would clear. Set/clear are idempotent,
+                            // so acting on the snapshot is always safe.
+                            const act = marked
+                                ? p._wvClearDefaultChild(child)
+                                : p._wvSetDefaultChild(child);
+                            act.then(() => {
                                 p._wvDefAttTrace("menu:command:done", {
-                                    key: child.key, nowMarked: now,
-                                    verified: p._wvIsDefaultChild(child),
+                                    key: child.key, did: marked ? "clear" : "set",
+                                    nowMarked: p._wvIsDefaultChild(child),
                                 });
                             }).catch((e: any) => {
                                 p._wvDefAttTrace("menu:command:err", { e: String(e) });

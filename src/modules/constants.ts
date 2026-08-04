@@ -1349,6 +1349,23 @@ export const PLUGIN_CSS = [
     "  grid-template-columns: 1fr 1fr;",
     "  column-gap: 4px; row-gap: 2px;",
     "}",
+    // Item Type list opens as an OVERLAY anchored under its trigger row,
+    // not as an inline block. Inline expansion pushed every later filter
+    // section down, and — worse — hiding on mousedown REFLOWED the popup
+    // between the user's press and release: the control they aimed at
+    // jumped up, mouseup landed on something else, and no click ever
+    // fired on the intended target ("the click does not land",
+    // 2026-08-04). Same background/border recipe as the popup itself.
+    ".wv-filter-itype-row .wv-filter-options { position: relative; }",
+    ".wv-filter-tag-list.wv-itype-overlay {",
+    "  position: absolute; left: 0; right: 0; z-index: 60;",
+    "  background-color: var(--material-sidepane);",
+    "  background-image: linear-gradient(var(--material-menu), var(--material-menu));",
+    "  border: 1px solid var(--material-panedivider, rgba(127,127,127,0.4));",
+    "  border-radius: 6px;",
+    "  box-shadow: 0 8px 22px rgba(0,0,0,0.4);",
+    "  padding: 4px;",
+    "}",
     // Thin vertical bar used to visually split related tile groups
     // inside the same `.wv-filter-options` row — currently used in
     // the Attachment File Type row to set the Item Note tile apart

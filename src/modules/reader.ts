@@ -1424,13 +1424,41 @@ class _ReaderMixin {
             // in ONE call: the reader's `append(...items)` pushes a
             // single item group, so they render as one section (with a
             // separator above, none inside) — the same layout as the
-            // items-list right-click menu. Order matches it too:
-            // Copy Select Link → Copy Open Link → Add Related….
+            // items-list right-click menu. Order: Add to Bookmarks first
+            // (add-actions lead, matching the view context menu's
+            // Bookmarks → Outline → Copy Link order — user request
+            // 2026-08-04), then Copy Select Link → Copy Open Link →
+            // Add Related… (that trio still matches the items-list menu).
             // The `createAnnotationContextMenu` event fires for both an
             // in-PDF right-click and the sidebar 3-dots ("more") button,
             // so this covers both reader surfaces, and (like the
             // items-list menu) it operates on every selected annotation.
             const items: any[] = [];
+            // "Add to Bookmarks" — bookmark the selected annotation(s) as
+            // item bookmarks, the same record the drop-on-tab flow creates
+            // (user request 2026-08-04: an add path that works while the
+            // Bookmarks tab is auto-hidden). Same closure rules: primitives
+            // only (tabID string + keys + lib), live-resolve at click time.
+            try {
+                if ((self as any)._getEnableReaderBookmarks && (self as any)._getEnableReaderBookmarks()) {
+                    const capturedTabID = String((reader && reader.tabID) || "");
+                    if (capturedTabID) {
+                        items.push({
+                            label: annKeys.length > 1
+                                ? "Add to Bookmarks  (" + annKeys.length + " annotations)"
+                                : "Add to Bookmarks",
+                            onCommand: () => {
+                                try {
+                                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
+                                    P._wvReaderBookmarkAnnotations(capturedTabID, capturedKeys.slice(), capturedLib);
+                                } catch (err) {
+                                    Zotero.debug("[Weavero] add-to-bookmarks onCommand err: " + err);
+                                }
+                            },
+                        });
+                    }
+                }
+            } catch (e) {}
             // "Copy Highlighted Text" / "Copy Underlined Text" (user
             // request 2026-07-16) — for annotations that carry text
             // (highlight / underline). Label follows the selection's
@@ -1551,31 +1579,6 @@ class _ReaderMixin {
                     }, 0);
                 },
             });
-            // "Add to Bookmarks" — bookmark the selected annotation(s) as
-            // item bookmarks, the same record the drop-on-tab flow creates
-            // (user request 2026-08-04: an add path that works while the
-            // Bookmarks tab is auto-hidden). Same closure rules: primitives
-            // only (tabID string + keys + lib), live-resolve at click time.
-            try {
-                if ((self as any)._getEnableReaderBookmarks && (self as any)._getEnableReaderBookmarks()) {
-                    const capturedTabID = String((reader && reader.tabID) || "");
-                    if (capturedTabID) {
-                        items.push({
-                            label: annKeys.length > 1
-                                ? "Add to Bookmarks  (" + annKeys.length + " annotations)"
-                                : "Add to Bookmarks",
-                            onCommand: () => {
-                                try {
-                                    const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
-                                    P._wvReaderBookmarkAnnotations(capturedTabID, capturedKeys.slice(), capturedLib);
-                                } catch (err) {
-                                    Zotero.debug("[Weavero] add-to-bookmarks onCommand err: " + err);
-                                }
-                            },
-                        });
-                    }
-                }
-            } catch (e) {}
             try { append(...items); }
             catch (e) { Zotero.debug("[Weavero] _contextHandler append err: " + e); }
         }

@@ -27,6 +27,7 @@ import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
     WV_FUNNEL_DATA_URI,
 } from "./constants";
+import { winOf } from "../lib/dom";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -6636,7 +6637,7 @@ class _ReaderMixin {
                     // rows (data-wv-library) as the main popup, so the same resolver
                     // handles them; the clone panel is the XUL tooltip anchor.
                     if (lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
-                    const w2 = panel.ownerGlobal;
+                    const w2 = winOf(panel);
                     if (w2) w2.setTimeout(() => { try { lp._wvTabsMenuFitListHeight && lp._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
                 }
                 this._wvWTRefreshFunnelState(win);
@@ -15105,7 +15106,7 @@ class _ReaderMixin {
             try {
                 const pid = srcPopup.parentElement && srcPopup.parentElement.id;
                 if (pid === "debug-output-menu") {
-                    srcPopup.dispatchEvent(new (srcPopup.ownerGlobal.Event)("popupshowing", { bubbles: false }));
+                    srcPopup.dispatchEvent(new (winOf(srcPopup).Event)("popupshowing", { bubbles: false }));
                 }
             } catch (e) {}
             const lastIsSep = () => popup.lastChild
@@ -15127,7 +15128,7 @@ class _ReaderMixin {
                         return;
                     }
                     if (!/(^|\s)(menuitem-iconic|menu-iconic)(\s|$)/.test(String(srcEl.className || ""))) return;
-                    const lsi = srcEl.ownerGlobal.getComputedStyle(srcEl).listStyleImage;
+                    const lsi = winOf(srcEl).getComputedStyle(srcEl).listStyleImage;
                     if (lsi && lsi !== "none") {
                         dstEl.classList.add(iconicCls);
                         dstEl.style.listStyleImage = lsi;

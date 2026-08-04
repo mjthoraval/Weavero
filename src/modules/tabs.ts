@@ -16,6 +16,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties (see modules/annotation.ts for the pattern).
 
+import { winOf } from "../lib/dom";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
@@ -177,7 +178,7 @@ class _TabsMixin {
                 if (lp && lp._wvWireTabsMenuRowDnD) lp._wvWireTabsMenuRowDnD(panel);
                 if (lp && lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
                 // Defer the height-fit until after the popup is positioned.
-                const w = panel.ownerGlobal;
+                const w = winOf(panel);
                 if (w) w.setTimeout(() => { try { const l2 = Zotero.Weavero && Zotero.Weavero.plugin; if (l2 && l2._wvTabsMenuFitListHeight) l2._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
             } catch (e) {}
         };
@@ -296,7 +297,7 @@ class _TabsMixin {
         const tabsList = panel._tabsList
             || panel.querySelector("#zotero-tabs-menu-list");
         if (!tabsList) return;
-        const win = panel.ownerGlobal;
+        const win = winOf(panel);
         const doc = panel.ownerDocument;
         const Zotero_Tabs = win && win.Zotero_Tabs;
         if (!Zotero_Tabs || !Array.isArray(Zotero_Tabs._tabs)) return;
@@ -636,7 +637,7 @@ class _TabsMixin {
             if (lp && lp._wvApplyTabsMenuRowFilters) lp._wvApplyTabsMenuRowFilters(panel);
             if (lp && lp._wvWireTabsMenuRowDnD) lp._wvWireTabsMenuRowDnD(panel);
                 if (lp && lp._wvEnsureTabsMenuTooltip) lp._wvEnsureTabsMenuTooltip(panel);
-            const w = panel.ownerGlobal;
+            const w = winOf(panel);
             if (w) w.setTimeout(() => { try { const l2 = Zotero.Weavero && Zotero.Weavero.plugin; if (l2 && l2._wvTabsMenuFitListHeight) l2._wvTabsMenuFitListHeight(panel); } catch (e) {} }, 0);
         } catch (e) {}
     }
@@ -719,7 +720,7 @@ class _TabsMixin {
     _wvResolvePopupDropTarget(panel: any, el: any, _drag: any) {
         try {
             if (!el || !el.closest) return null;
-            const panelWin = panel.ownerGlobal;
+            const panelWin = winOf(panel);
             // 1) Bottom "Tab Groups" saved-group row → join that group.
             const grpRow = el.closest(".wv-tgmenu-row");
             if (grpRow && (grpRow as any)._wvGroupId) {
@@ -985,7 +986,7 @@ class _TabsMixin {
             const self = this;
             const isStale = () => panel._wvRowDnDWiredBy !== self;   // a newer instance re-wired
             const doc = list.ownerDocument;
-            const panelWin = panel.ownerGlobal;
+            const panelWin = winOf(panel);
             const livePlugin = () => ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || self;
             // Clear ONLY the drop-into outline classes — keep the ghost so
             // dragover can REUSE + reposition it (removing + recreating it every
@@ -1526,7 +1527,7 @@ class _TabsMixin {
      *  Computed from the list's live top after the panel is positioned. */
     _wvTabsMenuFitListHeight(panel: any, attempt?: number) {
         try {
-            const win = panel.ownerGlobal;
+            const win = winOf(panel);
             const list = panel._tabsList || panel.querySelector("#zotero-tabs-menu-list") || panel.querySelector("#wv-wtl-list");
             if (!win || !list) return;
             const top = list.getBoundingClientRect().top;
@@ -2239,7 +2240,7 @@ class _TabsMixin {
      *  on the title-bar glyph right-click. */
     _wvWindowHeaderContext(targetWin: any, panel: any, e: any) {
         try {
-            const menuWin = (panel && panel.ownerGlobal) || targetWin;
+            const menuWin = winOf(panel) || targetWin;
             const doc = menuWin.document;
             const wt = targetWin.document && targetWin.document.documentElement
                 && targetWin.document.documentElement.getAttribute("windowtype");
@@ -11381,7 +11382,7 @@ class _TabsMixin {
     _wvEnsureTabsMenuTooltip(panel: any) {
         try {
             if (!panel) return;
-            const win = panel.ownerGlobal;
+            const win = winOf(panel);
             const doc = panel.ownerDocument;
             if (!win || !doc) return;
             if (!doc.getElementById("wv-tab-library-tooltip")) {
@@ -11978,7 +11979,7 @@ class _TabsMixin {
 
             const tabId = row.dataset && row.dataset.tabId;
             if (!tabId || tabId === "zotero-pane") return;
-            const win = row.ownerGlobal;
+            const win = winOf(row);
             const doc = row.ownerDocument;
             const Z_Tabs: any = win && (win as any).Zotero_Tabs;
             if (!Z_Tabs || !Array.isArray(Z_Tabs._tabs)) return;
@@ -12028,7 +12029,7 @@ class _TabsMixin {
 
             const tabId = row.dataset.tabId;
             if (!tabId || tabId === "zotero-pane") return;
-            const win = row.ownerGlobal;
+            const win = winOf(row);
             const doc = row.ownerDocument;
             const Zotero_Tabs = win && win.Zotero_Tabs;
             const tabData = Zotero_Tabs && Zotero_Tabs._tabs.find(

@@ -44,6 +44,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
+import { winOf } from "../lib/dom";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -8159,7 +8160,7 @@ class _FilterMixin {
         triggerPopup.addEventListener("popupshowing", (e) => {
             e.preventDefault();
             e.stopPropagation();
-            const iwin = doc.defaultView || doc.ownerGlobal;
+            const iwin = winOf(doc);
             iwin.setTimeout(() => {
                 if (listOpen) hideList();
                 else showList();
@@ -8775,7 +8776,7 @@ class _FilterMixin {
             if (anchor.contains(e.target)) return;
             close();
         };
-        const win = doc.defaultView || doc.ownerGlobal;
+        const win = winOf(doc);
         win.setTimeout(() => doc.addEventListener("mousedown", onDoc, true), 0);
     }
 

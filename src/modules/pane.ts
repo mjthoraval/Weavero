@@ -30,6 +30,7 @@ import {
     BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
 } from "./constants";
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
+import { winOf } from "../lib/dom";
 
 class _PaneMixin {
     [k: string]: any;
@@ -4165,7 +4166,7 @@ class _PaneMixin {
         const treeViewID = lib.treeViewID;
         if (!treeViewID) return;
 
-        const win = box.ownerGlobal;
+        const win = winOf(box);
         const escape = (s) => (win && win.CSS && win.CSS.escape)
             ? win.CSS.escape(s) : String(s).replace(/"/g, "\\\"");
         const targetRow = body.querySelector(

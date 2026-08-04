@@ -15372,6 +15372,37 @@ class _ReaderPanelsMixin {
     /** Bookmark the current text selection (label = the selected text). Stores
      *  the selection's position so clicking it later scrolls to AND highlights
      *  the text, the same way dragging a selection to a note does. */
+    /** Bookmark annotation(s) from the annotation context menu -- the same
+     *  `{type: "item"}` record the drop-on-tab flow creates, so navigation,
+     *  glyphs and labels match drops exactly. Deliberately does NOT activate
+     *  the Bookmarks tab (a menu add shouldn't steal the current view; the
+     *  tab pops in by itself when auto-hidden). tabID/keys/lib arrive as
+     *  primitives from the menu closure; everything resolves live here. */
+    async _wvReaderBookmarkAnnotations(tabID: string, keys: string[], lib: number) {
+        try {
+            const reader: any = Zotero.Reader.getByTabID(tabID);
+            if (!reader) return;
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            const added: string[] = [];
+            for (const key of (keys || [])) {
+                let label = "";
+                try {
+                    const it: any = Zotero.Items.getByLibraryAndKey(lib, key);
+                    label = it ? String(it.annotationText || it.annotationComment || "").trim() : "";
+                } catch (_) {}
+                label = (label || "Annotation").slice(0, 100);
+                const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
+                    { type: "item", libraryID: lib, itemKey: key, label }, { allowDuplicate: true });
+                if (e2 && e2.id) added.push(e2.id);
+            }
+            if (added.length) {
+                const idoc = reader._iframeWindow && reader._iframeWindow.document;
+                if (idoc) this._wvReaderRenderBmList(reader, idoc);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderBookmarkAnnotations err: " + e); }
+    }
+
     async _wvReaderAddSelectedText(reader: any) {
         try {
             const att = this._wvReaderAtt(reader); if (!att) return;

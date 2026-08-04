@@ -10512,6 +10512,11 @@ class _ReaderMixin {
                     iwin.addEventListener("load", resolve, { once: true });
                 });
             }
+            // A hot reload can land while the awaits above are in flight;
+            // finishing the wiring then installs an observer for a DEAD
+            // instance that nothing ever disconnects (the orphan-duel bug,
+            // issue #27). Bail if this instance is no longer the live one.
+            if (((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) !== this) return;
 
             // Inject scoped CSS into the iframe so URL spans are styled there too.
             this._injectReaderStyles(idoc);
@@ -10597,9 +10602,25 @@ class _ReaderMixin {
 
             let sidebarTimer = null;
             const scheduleSidebarScan = (delay) => {
+                // ORPHAN GUARD: if this closure belongs to a DEAD plugin
+                // instance (hot reload while _setupReaderObserver was mid-
+                // await wired an observer for it), acting on its STALE state
+                // duels the live instance -- e.g. its empty in-memory
+                // bookmark store auto-hid the tab the live instance kept
+                // remounting, ~5x/s ("blinking bookmarks tab", issue #27,
+                // root-caused live 2026-08-04). A stale closure must
+                // disconnect its own observer and do nothing else.
+                const live = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (live !== this) {
+                    try { observer.disconnect(); } catch (e) {}
+                    try { if (sidebarTimer) iwin.clearTimeout(sidebarTimer); } catch (e) {}
+                    return;
+                }
                 if (sidebarTimer) iwin.clearTimeout(sidebarTimer);
                 sidebarTimer = iwin.setTimeout(() => {
                     sidebarTimer = null;
+                    const live2 = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live2 !== this) { try { observer.disconnect(); } catch (e) {} return; }
                     // Trace any new .content elements before the scan.
                     try {
                         for (const c of idoc.querySelectorAll(".annotation-row .comment .content, .annotation .comment .content")) {

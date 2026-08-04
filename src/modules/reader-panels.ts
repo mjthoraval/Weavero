@@ -1799,9 +1799,27 @@ class _ReaderPanelsMixin {
                 iw.__wvAnnRank = (Components as any).utils.cloneInto(rank, reader._iframeWindow);
                 if (idoc) idoc._wvAnnDates = cur.field === "position" ? null : dates;
             }
-            const ir = reader && reader._internalReader;
-            const amRaw = ir && ir._annotationManager;
-            if (amRaw) { try { (Components as any).utils.waiveXrays(amRaw).render(); } catch (e) {} }
+            // RENDER ONLY ON CHANGE. This runs on every ensure pass, and the
+            // ensure pass runs from the sidebar mutation observer -- an
+            // unconditional render() re-renders the sidebar, which mutates
+            // the DOM, which fires the observer, which ensures again: a
+            // self-sustaining ~5/s loop that also wiped foreign toolbar
+            // children (the "blinking bookmarks tab", issue #27 family,
+            // reproduced live 2026-08-04). Signature = sort mode + the rank
+            // map itself; unchanged signature = no render, loop starved.
+            let sig = cur.field + "|" + cur.dir;
+            try {
+                const iw2: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+                const rk = iw2 && iw2.__wvAnnRank;
+                if (rk) { const ks = Object.keys(rk).sort(); sig += "#" + ks.map(k => k + ":" + rk[k]).join(","); }
+                else sig += "#null";
+            } catch (e) {}
+            if ((reader as any).__wvAnnRankSig !== sig) {
+                (reader as any).__wvAnnRankSig = sig;
+                const ir = reader && reader._internalReader;
+                const amRaw = ir && ir._annotationManager;
+                if (amRaw) { try { (Components as any).utils.waiveXrays(amRaw).render(); } catch (e) {} }
+            }
             // Stamp now for the cards already in the DOM; the mutation
             // observer (see _wvAnnSortEnsure) re-stamps after React repaints.
             try { if (idoc) this._wvAnnStampDates(reader, idoc); } catch (e) {}
@@ -15358,11 +15376,26 @@ class _ReaderPanelsMixin {
         try {
             const att = this._wvReaderAtt(reader); if (!att) return;
             let text = "", position: any = null;
+            // Selection-popup state first (exact annotation shape) -- but it
+            // is TRANSIENT: gone by the time a context menu opens on an
+            // existing selection. Fall back to the same robust read the
+            // Copy-Link entries use, so both features see the same
+            // selections (user report 2026-08-04: link entry offered,
+            // bookmark entry missing, for one and the same selection).
             try {
                 const sel = reader._internalReader._state.primaryViewSelectionPopup.annotation;
                 text = String(sel.text || "").trim();
                 if (sel.position) { try { position = JSON.parse(JSON.stringify(sel.position)); } catch (_) {} }
             } catch (_) {}
+            if (!text) {
+                try {
+                    const s2: any = (this as any)._wvReadSelectionForLink(reader);
+                    if (s2 && s2.text) {
+                        text = String(s2.text).trim();
+                        if (s2.position) { try { position = JSON.parse(JSON.stringify(s2.position)); } catch (_) {} }
+                    }
+                } catch (_) {}
+            }
             if (!text) return;
             const cap = this._wvCaptureReaderLocation(reader);
             await this._bmReaderAdd(att.libraryID, att.itemKey,
@@ -15382,6 +15415,15 @@ class _ReaderPanelsMixin {
             const idoc = iwin && iwin.document;
             let text = "";
             try { text = String(reader._internalReader._state.primaryViewSelectionPopup.annotation.text || "").trim(); } catch (_) {}
+            // Same robust fallback as the Copy-Link entries: the selection
+            // POPUP is transient, but the selection itself may still be live
+            // (user report 2026-08-04 -- link entry shown, bookmark missing).
+            if (!text) {
+                try {
+                    const s2: any = (this as any)._wvReadSelectionForLink(reader);
+                    if (s2 && s2.text) text = String(s2.text).trim();
+                } catch (_) {}
+            }
             const icon = this._wvReaderBmMenuIconURL();
             // With a text selection, offer to bookmark the selected text (which
             // also highlights it on click). Otherwise, bookmark the position.

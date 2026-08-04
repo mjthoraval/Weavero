@@ -1236,7 +1236,10 @@ class _BookmarksMixin {
             // ran before `_bmDoc` was loaded and skipped the empty-check,
             // showing the button regardless. Re-run it now that the
             // store is loaded so the auto-hide actually applies.
-            if (this._getAutoHideEmptyLibraryBookmarks()) {
+            // Liveness gate: this continuation runs after the async store
+            // read -- a reload mid-read would otherwise have the DEAD
+            // instance mounting UI here (issue #27 bug class).
+            if ((this as any)._wvLive() && this._getAutoHideEmptyLibraryBookmarks()) {
                 try {
                     const wins: any = Zotero.getMainWindows && Zotero.getMainWindows();
                     if (wins) for (const w of wins) {
@@ -2931,6 +2934,11 @@ class _BookmarksMixin {
     // ---- UI: toolbar button -----------------------------------------------
 
     _setupBookmarksToolbarButton(win?: any, _attempt?: number) {
+        // Liveness gate: the retry chain below (up to 40 x 250ms) holds
+        // `this`; a hot reload inside that window otherwise lets a DEAD
+        // instance create the button -- with a stale-store popup handler --
+        // which the live instance's presence-guard would then preserve.
+        if (!(this as any)._wvLive()) return;
         try {
             win = win || Zotero.getMainWindow();
             if (!win || win.closed) return;
@@ -2966,6 +2974,16 @@ class _BookmarksMixin {
                 }
                 return;
             }
+            // TRUE no-op when the button already exists: this method runs on
+            // every _bmPersist while auto-hide-when-empty is on, and the old
+            // unconditional teardown+rebuild made the toolbar button FLICKER
+            // on every store write -- with any repeated-persist path (e.g.
+            // the sortIndex backfill during renders) that became an unceasing
+            // blink with clicks landing on freshly-replaced nodes
+            // (issue #27, reproduced 2026-08-04: one reader-store add = two
+            // library-button rebuilds). The button carries no variable state
+            // (static icon, popup built on open), so presence == correct.
+            if (doc.getElementById(BM_BTN_ID)) return;
             this._teardownBookmarksToolbarButton(win);
             const addBtn = doc.getElementById("zotero-tb-collection-add");
             const btn = doc.createXULElement("toolbarbutton");
@@ -2979,7 +2997,10 @@ class _BookmarksMixin {
             btn.style.setProperty("fill", "currentColor");
             btn.style.setProperty("stroke", "currentColor");
             btn.addEventListener("command", () => {
-                try { this._openBookmarksPopup(btn); }
+                // Live-resolve (reload-proof wiring trap #2): wire-time
+                // `this` would open the popup from a dead instance's store.
+                const P: any = ((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) || this;
+                try { P._openBookmarksPopup(btn); }
                 catch (e) { Zotero.debug("[Weavero] open bookmarks popup err: " + e); }
             });
             // Drop target: drag items/collections from Zotero onto the icon

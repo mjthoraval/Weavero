@@ -1323,6 +1323,16 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch (e) { return true; }
     }
+    /** True while THIS object is the live plugin instance. Async wiring must
+     *  re-check after every await, and retry/timer continuations before
+     *  acting -- a hot reload mid-flight otherwise lets a DEAD instance wire
+     *  observers or mount UI bound to stale state (the issue #27 orphan
+     *  duel; see feedback_weavero_reload_proof_wiring trap #0). */
+    _wvLive() {
+        try { return !!((Zotero as any).Weavero && (Zotero as any).Weavero.plugin === this); }
+        catch (e) { return false; }
+    }
+
     _getEnableAnnSort() {
         if (!this._getEnableFilters()) return false;
         try {

@@ -1390,7 +1390,12 @@ class _TabGroupsMixin {
                             try { this._wvTabGroupStabilize(tgtWin); } catch (e) {}
                             try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
                         } else if (attempt < 10) {
-                            tgtWin.setTimeout(() => stampArrival(attempt + 1), 300);
+                            tgtWin.setTimeout(() => {
+                                // Liveness gate: a reload during the retry
+                                // window must not let a dead instance stamp
+                                // group state (issue #27 bug class).
+                                if (((Zotero as any).Weavero && (Zotero as any).Weavero.plugin) === this) stampArrival(attempt + 1);
+                            }, 300);
                         } else {
                             Zotero.debug("[Weavero] sendTabToWin(main): arrival never landed for item " + itemID);
                         }

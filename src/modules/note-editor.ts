@@ -230,6 +230,9 @@ class _NoteEditorMixin {
                 const resp = await fetch(root + "note-editor-inject.js");
                 (this as any)._wvNoteInjectCode = await resp.text();
             }
+            // Liveness gate after the await: a reload mid-fetch would have a
+            // DEAD instance inject its (older) bundle (issue #27 bug class).
+            if (!(this as any)._wvLive()) return;
             const iwin = iframe && iframe.contentWindow;
             if (!iwin) return;
             // One attempt = (inject if needed) + install. Cheap when already

@@ -7216,6 +7216,12 @@ class _ReaderPanelsMixin {
             const established = curated && node.resolvedPosition != null;
             const target = established ? node.resolvedPosition : node.position;
             if (!target) return;
+            // Back-button support (issue #28): every branch below jumps via
+            // the in-place primitives (scrollToRect / NavRaw / page-top),
+            // which bypass navigate()'s history tail. One push here covers
+            // them all; branches that end up in ir.navigate() push again and
+            // History.save's dedup + 2s rate limit absorb it.
+            this._wvReaderPushHistoryPoint(pv);
 
             // Explicit page anchors, user-set via "Set Target": align the page's
             // top/bottom to the view. A manual pin uses anchor "point" and falls
@@ -7356,6 +7362,50 @@ class _ReaderPanelsMixin {
     /** Fallback navigation to a raw position via the reader's own navigate
      *  (`internalReader.navigate`, which loads the page). The location must be
      *  cloned into the iframe compartment. */
+    /** Record a Weavero-initiated jump in the reader's Back history — the
+     *  exact tail the native `navigate()` runs, which is how annotation
+     *  clicks in the built-in sidebar get Back-button support (issue #28).
+     *  `_pushHistoryPoint` immediately suppresses the transient scroll-spy
+     *  saves, waits for the scroll to settle, then hard-saves the
+     *  DESTINATION — and History.save() shoves the previous current
+     *  location (where the user WAS) onto the back stack. Fire-and-forget,
+     *  not awaited, same as upstream; double-pushes from fallback branches
+     *  are deduped by History.save's tail check + 2s rate limit. */
+    _wvReaderPushHistoryPoint(pv: any) {
+        try {
+            if (!pv || typeof pv._pushHistoryPoint !== "function") return;
+            // Refresh the history's notion of "where we are" from the LIVE
+            // view first. The transient scroll-spy save is suspended while a
+            // previous _pushHistoryPoint waits for a scroll -- and a push
+            // whose jump turned out to be a no-scroll (already at the target)
+            // leaves it suspended until the NEXT scroll settles, freezing
+            // _currentLocation at a stale spot. Back then returns to the
+            // wrong place (observed: origin page 1, Back landed on page 5).
+            // Mirrors _handleViewAreaUpdate's dest shape; PDF views only
+            // (the in-place jump fast paths are PDF-only too); skipped when
+            // current already matches the live spot.
+            try {
+                const iwin = pv._iframeWindow;
+                const app = iwin && iwin.PDFViewerApplication;
+                const loc = app && app.pdfViewer && app.pdfViewer._location;
+                const hist = pv._history;
+                if (loc && hist && typeof hist.save === "function") {
+                    const cur: any = hist._currentLocation;
+                    const stale = !cur || !cur.dest
+                        || cur.dest[0] !== loc.pageNumber - 1
+                        || cur.dest[2] !== loc.left || cur.dest[3] !== loc.top;
+                    if (stale) {
+                        const Cu = (Components as any).utils;
+                        hist.save(Cu.cloneInto(
+                            { dest: [loc.pageNumber - 1, { name: "XYZ" }, loc.left, loc.top, null] },
+                            iwin), true);
+                    }
+                }
+            } catch (_) {}
+            pv._pushHistoryPoint();
+        } catch (_) {}
+    }
+
     _wvOutlineNavRaw(reader: any, pv: any, pos: any) {
         try {
             const ir = reader._internalReader;
@@ -13404,9 +13454,16 @@ class _ReaderPanelsMixin {
                         && (reader._internalReader._primaryView || reader._internalReader._lastView);
                     if (pvA) this._wvClearStalePin(pvA);   // annotation click supersedes a showing pin
                 } catch (_) {}
-                try {
-                    reader.navigate({ annotationID: bm.itemKey });
-                } catch (_) {}
+                // 1/4-from-top landing first (the shared Weavero rule); the
+                // native centring navigate only when the precise scroll isn't
+                // possible (non-PDF view, EPUB position, page not laid out).
+                let quarterLanded = false;
+                try { quarterLanded = this._wvReaderScrollToLocalAnnotation(reader, bm); } catch (_) {}
+                if (!quarterLanded) {
+                    try {
+                        reader.navigate({ annotationID: bm.itemKey });
+                    } catch (_) {}
+                }
                 // If the reader filter is hiding this annotation, flash it in
                 // briefly then let it fade -- confirms it exists yet is filtered.
                 try { this._wvReaderFlashHiddenAnnotation(reader, bm.itemKey); } catch (_) {}
@@ -16336,6 +16393,12 @@ class _ReaderPanelsMixin {
                                             try { pv._onManualNavigation(); } catch (_) {}
                                         }
                                         try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+                                        // The comment above promises "history" — deliver it.
+                                        // This is navigate()'s own tail; without it the Back
+                                        // button never learns about the jump (issue #28).
+                                        if (!(options && options.skipHistory)) {
+                                            plugin._wvReaderPushHistoryPoint(pv);
+                                        }
                                     } catch (_) {}
                                 };
                                 // Plain dest scroll (native-style centre on the bare point) —
@@ -17060,6 +17123,9 @@ class _ReaderPanelsMixin {
             try {
                 if (typeof pv._onManualNavigation === "function") { try { pv._onManualNavigation(); } catch (_) {} }
                 try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+                // Back-button support (issue #28): the in-place jump bypasses
+                // navigate(), so run its history tail ourselves.
+                this._wvReaderPushHistoryPoint(pv);
                 if (!this._wvOutlineScrollToRect(pv, pi, rects[0])) {
                     const cpos = (Components as any).utils.cloneInto({ pageIndex: pi, rects }, iwin);
                     const copts = (Components as any).utils.cloneInto({ block: "center" }, iwin);
@@ -17073,6 +17139,33 @@ class _ReaderPanelsMixin {
         } catch (_) { return false; }
     }
 
+    /** 1/4-from-top landing for a LOCAL annotation bookmark (the shared rule
+     *  every other Weavero jump uses). The native `navigate({annotationID})`
+     *  centres the target -- fine for Zotero's own sidebar, but a Weavero
+     *  bookmark row should land like Weavero's text/outline jumps (asked
+     *  2026-08-04, right after annotation bookmarks shipped). Returns false
+     *  for anything it cannot place precisely (non-PDF view, EPUB-shaped
+     *  position, missing annotation) so the caller can fall back to the
+     *  native navigate. Also records the jump in Back history. */
+    _wvReaderScrollToLocalAnnotation(reader: any, bm: any): boolean {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att || !bm || !bm.itemKey) return false;
+            const it: any = Zotero.Items.getByLibraryAndKey(att.libraryID, bm.itemKey);
+            if (!it || typeof it.isAnnotation !== "function" || !it.isAnnotation()) return false;
+            let pos: any = null;
+            try { pos = JSON.parse(it.annotationPosition || "null"); } catch (_) { return false; }
+            const pv = reader._internalReader
+                && (reader._internalReader._primaryView || reader._internalReader._lastView);
+            if (!pv || !pos || !Number.isInteger(pos.pageIndex)
+                    || !Array.isArray(pos.rects) || !pos.rects.length) return false;
+            this._wvReaderPushHistoryPoint(pv);
+            try { if (typeof pv._onManualNavigation === "function") pv._onManualNavigation(); } catch (_) {}
+            try { pv._lastNavigationTime = Date.now(); } catch (_) {}
+            return !!this._wvOutlineScrollToRect(pv, pos.pageIndex, pos.rects[0]);
+        } catch (_) { return false; }
+    }
+
     _wvNavigateReaderLocation(reader: any, bm: any) {
         try {
             // Any bookmark navigation supersedes a showing pin -- covers the
@@ -17082,6 +17175,12 @@ class _ReaderPanelsMixin {
                 const pv0 = reader._internalReader
                     && (reader._internalReader._primaryView || reader._internalReader._lastView);
                 if (pv0) this._wvClearStalePin(pv0);
+                // Back-button history for EVERY branch below (issue #28 --
+                // page top/bottom and position pins were missed by the first
+                // pass, reported 2026-08-04). Branches that end in the native
+                // reader.navigate push again; History.save's dedup + 2s rate
+                // limit absorb the double. No-op on non-PDF views.
+                if (pv0) this._wvReaderPushHistoryPoint(pv0);
             } catch (_) {}
             // Whole-page bookmark — scroll the named page to the top,
             // no pin marker (the bookmark isn't a precise spot). The

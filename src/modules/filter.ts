@@ -8131,6 +8131,10 @@ class _FilterMixin {
             // relative to `opts`, which the overlay CSS makes positioned).
             box.style.top = (triggerRow.offsetTop + triggerRow.offsetHeight + 3) + "px";
             box.style.display = "";
+            // Fresh open = top of the list. Remembering the previous scroll
+            // position made the MRU shortlist (the whole point of the top
+            // rows) invisible on reopen (user request 2026-08-04).
+            box.scrollTop = 0;
             if (!onDocMouseDown) {
                 onDocMouseDown = (e) => {
                     const t = e.target;

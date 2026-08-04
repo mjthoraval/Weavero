@@ -9767,9 +9767,13 @@ class _ReaderMixin {
                     // Scroll like navigate() but WITHOUT its native _highlightPosition
                     // call — that arms an uncancellable 2s timer that would later
                     // wipe our own (resettable) highlight on the next click. We own
-                    // the highlight below. Mirror navigate()'s manual-nav prep.
+                    // the highlight below. Mirror navigate()'s manual-nav prep —
+                    // AND its history tail (issue #28 audit, 2026-08-04): this is
+                    // the wvpos-link / interlink arrival navigator, and without
+                    // the push the Back button never learns about the jump.
                     try { if (typeof view._onManualNavigation === "function") view._onManualNavigation(); } catch (e) {}
                     try { view._lastNavigationTime = Date.now(); } catch (e) {}
+                    try { (this as any)._wvReaderPushHistoryPoint(view); } catch (e) {}
                     view.navigateToPosition(location.position);
                 } else if (typeof view.navigate === "function") {
                     await view.navigate(location);

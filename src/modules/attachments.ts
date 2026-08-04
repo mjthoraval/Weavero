@@ -146,7 +146,7 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 6;
+const WIRE_VERSION = 7;   // 7: getBestAttachments (plural) added to the wiring
 
 class _AttachmentsMixin {
     [k: string]: any;
@@ -234,7 +234,18 @@ class _AttachmentsMixin {
      *  off. The gate lives in `_wvGetDefaultChild`. */
     _wvIsDefaultChild(child: any): boolean {
         try {
-            if (!child || typeof child.getTags !== "function") return false;
+            // `hasTag` over `getTags`: upstream's getTags() deep-clones the
+            // whole tag array (JSON round-trip, item.js), and this runs for
+            // EVERY child on every resolution -- which the item pane triggers
+            // 2-3 times per selection change, plus once per row when the
+            // items-tree best-attachment cache is cold. hasTag() answers the
+            // same question with no serialization; the tag TYPE is not part
+            // of the check (a hand-typed marker counts too, deliberately).
+            if (!child) return false;
+            if (typeof child.hasTag === "function") {
+                return !!child.hasTag(OPEN_BY_DEFAULT_TAG);
+            }
+            if (typeof child.getTags !== "function") return false;
             for (const t of child.getTags() || []) {
                 if (t && t.tag === OPEN_BY_DEFAULT_TAG) return true;
             }
@@ -343,10 +354,30 @@ class _AttachmentsMixin {
                 return false;
             }
 
-            const parent = child.parentID ? Zotero.Items.get(child.parentID) : null;
+            // A marker is only meaningful on a CHILD: resolution walks a
+            // regular item's children, so a tag written to a top-level
+            // attachment/note could never be read back -- and the context
+            // menu (which requires a parent) would offer no way to clear it.
+            if (!child.parentID) {
+                this._wvDefAttTrace("set:reject", { key: child.key, why: "noParent" });
+                return false;
+            }
+            const parent = Zotero.Items.get(child.parentID);
             if (parent) {
-                for (const sib of this._wvOpenableChildren(parent)) {
-                    if (sib.id === child.id) continue;
+                // Sweep INCLUDING trashed siblings. `_wvOpenableChildren`
+                // skips the trash, so a marked attachment sitting in the
+                // trash survived the sweep and came back marked when
+                // restored -- two marked siblings, with the winner decided by
+                // `getAttachments()` order, which itself flips with the
+                // sortAttachmentsChronologically pref. The user's newest
+                // deliberate pick could lose to a resurrected one.
+                const sibIds = ([] as any[])
+                    .concat(parent.getAttachments ? (parent.getAttachments(true) || []) : [])
+                    .concat(parent.getNotes ? (parent.getNotes(true) || []) : []);
+                for (const sid of sibIds) {
+                    if (sid === child.id) continue;
+                    const sib = Zotero.Items.get(sid);
+                    if (!sib) continue;
                     if (this._wvIsDefaultChild(sib)) {
                         sib.removeTag(OPEN_BY_DEFAULT_TAG);
                         await sib.saveTx(MARKER_SAVE_OPTS);
@@ -358,6 +389,12 @@ class _AttachmentsMixin {
                 child.addTag(OPEN_BY_DEFAULT_TAG, TAG_TYPE_AUTOMATIC);
                 await child.saveTx(MARKER_SAVE_OPTS);
             }
+            // Zotero caches the parent's best-attachment state and only
+            // clears it on child add/remove/file change -- a tags-only save
+            // reaches none of those paths. Without this the items-tree
+            // attachment column keeps painting the OLD pick's type and
+            // file-exists dot until a restart.
+            try { if (parent && parent.clearBestAttachmentState) parent.clearBestAttachmentState(); } catch (e) {}
             this._wvDefAttTrace("set:ok", {
                 key: child.key, verified: this._wvIsDefaultChild(child),
                 parent: parent && parent.key,
@@ -376,6 +413,11 @@ class _AttachmentsMixin {
             if (!child || !this._wvIsDefaultChild(child)) return false;
             child.removeTag(OPEN_BY_DEFAULT_TAG);
             await child.saveTx(MARKER_SAVE_OPTS);
+            // Same stale-cache reason as in the setter.
+            try {
+                const parent = child.parentID ? Zotero.Items.get(child.parentID) : null;
+                if (parent && parent.clearBestAttachmentState) parent.clearBestAttachmentState();
+            } catch (e) {}
             return true;
         } catch (e) {
             Zotero.debug("[Weavero] _wvClearDefaultChild err: " + e);
@@ -383,14 +425,20 @@ class _AttachmentsMixin {
         }
     }
 
-    /** Toggle; returns the new state (true = now the default). */
+    /** Toggle; returns the LIVE new state (true = now the default).
+     *
+     *  Reports what actually happened, never what was intended: a write can
+     *  fail (a read-only group library throws "Cannot edit item in library"),
+     *  and returning an optimistic `true` made the caller record a marked
+     *  state that does not exist -- the trace ring showed
+     *  `nowMarked:true, verified:false` on the same line. */
     async _wvToggleDefaultChild(child: any): Promise<boolean> {
         if (this._wvIsDefaultChild(child)) {
             await this._wvClearDefaultChild(child);
-            return false;
+            return this._wvIsDefaultChild(child);
         }
         await this._wvSetDefaultChild(child);
-        return true;
+        return this._wvIsDefaultChild(child);
     }
 
     // ---- Hook 1: getBestAttachment (file attachments only) ----------------
@@ -450,6 +498,52 @@ class _AttachmentsMixin {
             // Remember OUR function so a later "are we still outermost?"
             // check can tell our wrapper from a foreign one.
             proto._wvDefaultAttFn = proto.getBestAttachment;
+
+            // The PLURAL is a separate upstream entry point, not a caller of
+            // the singular -- upstream's getBestAttachment is the thin wrapper
+            // over getBestAttachments(), so patching only the singular missed
+            // every direct caller of the plural: the locate menu's "View in
+            // Tab"/"View in Window" (locateMenu.js `_getFirstUsableItem`), its
+            // external-viewer path, and clicking a citation WITH A LOCATOR in
+            // a note (editorInstance.js). Those opened Zotero's heuristic pick
+            // while double-click opened the user's -- two buttons, two files.
+            //
+            // HOIST rather than replace: the contract is "all usable file
+            // attachments, best first", and callers legitimately walk the rest
+            // (the external-viewer path looks for the first NON-native one).
+            // Moving the pick to index 0 satisfies both.
+            // Skip when OUR plural wrapper is already installed: the re-assert
+            // path can reach here without an unwire (a foreign plugin wrapped
+            // only the singular), and wrapping our own wrapper would both
+            // stack a layer per re-assert and point _wvOrigGetBestAttachments
+            // at ourselves, so a later unwire could never fully restore.
+            const origPlural = proto.getBestAttachments;
+            if (typeof origPlural === "function"
+                && origPlural !== proto._wvDefaultAttPluralFn) {
+                proto._wvOrigGetBestAttachments = origPlural;
+                proto.getBestAttachments = async function (this: any, ...args: any[]) {
+                    const list = await origPlural.apply(this, args);
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (lp && !lp._wvDestroyed && Array.isArray(list) && list.length > 1) {
+                            const chosen = lp._wvGetDefaultChild(this);
+                            if (chosen && lp._wvIsFileAttachment(chosen)) {
+                                const i = list.findIndex((a: any) => a && a.id === chosen.id);
+                                if (i > 0) {
+                                    const copy = list.slice();
+                                    copy.splice(i, 1);
+                                    copy.unshift(list[i]);
+                                    return copy;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        Zotero.debug("[Weavero] getBestAttachments override err: " + e);
+                    }
+                    return list;
+                };
+                proto._wvDefaultAttPluralFn = proto.getBestAttachments;
+            }
             proto._wvDefaultAttWired = WIRE_VERSION;
             Zotero.debug("[Weavero] default-child override installed (v" + WIRE_VERSION + ")");
         } catch (e) {
@@ -477,8 +571,15 @@ class _AttachmentsMixin {
             if (typeof proto._wvOrigGetBestAttachment === "function") {
                 proto.getBestAttachment = proto._wvOrigGetBestAttachment;
             }
+            // Same rule for the plural: restore only if OUR wrapper is on top.
+            if (typeof proto._wvOrigGetBestAttachments === "function"
+                && proto.getBestAttachments === proto._wvDefaultAttPluralFn) {
+                proto.getBestAttachments = proto._wvOrigGetBestAttachments;
+            }
             delete proto._wvOrigGetBestAttachment;
+            delete proto._wvOrigGetBestAttachments;
             delete proto._wvDefaultAttFn;
+            delete proto._wvDefaultAttPluralFn;
             delete proto._wvDefaultAttWired;
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwireDefaultAttachment err: " + e);
@@ -831,7 +932,14 @@ class _AttachmentsMixin {
             // other plugin once would silently forfeit the import forever.
             // While the feature is off, detection returns early, so this
             // cannot turn into a recurring prompt.
-            if (choice !== "other") {
+            // Don't spend the run-once guard on an import that found picks
+            // but wrote none (every write failed — read-only library, DB
+            // error): the offer would never come back and the user would be
+            // told nothing went wrong. Their data is untouched in the other
+            // plugin's pref, so retrying later is safe and correct.
+            const importedNothing = choice === "import"
+                && res && res.found > 0 && res.migrated === 0;
+            if (choice !== "other" && !importedNothing) {
                 Zotero.Prefs.set("weavero.defaultChildMigrated", true);
             }
             Zotero.Prefs.set("weavero.defaultChildLegacyChoice", String(choice));
@@ -991,8 +1099,17 @@ class _AttachmentsMixin {
                     out.superseded++;
                     continue;
                 }
-                await this._wvSetDefaultChild(att);
-                out.migrated++;
+                // Honour the result: a failed write (read-only library, DB
+                // error) must not be reported to the user as an imported
+                // pick, and must not let the run-once guard be spent on a
+                // migration that imported nothing.
+                if (await this._wvSetDefaultChild(att)) {
+                    out.migrated++;
+                }
+                else {
+                    out.skipped++;
+                    out.unresolved.push({ parentID, attID, reason: "writeFailed" });
+                }
             } catch (e) {
                 out.skipped++;
                 out.unresolved.push({ parentID, attID, reason: "error" });
@@ -1078,6 +1195,16 @@ class _AttachmentsMixin {
                         lp._wvDefAttTrace("menu:skip", { why: "notOpenable", key: child.key });
                         return;
                     }
+                    // Read-only library (a group you cannot edit): writing the
+                    // marker throws "Cannot edit item in library", which the
+                    // setter swallows -- so the entry would appear and do
+                    // nothing at all. Don't offer what cannot work.
+                    try {
+                        if (typeof child.isEditable === "function" && !child.isEditable()) {
+                            lp._wvDefAttTrace("menu:skip", { why: "readOnly", key: child.key });
+                            return;
+                        }
+                    } catch (e) {}
 
                     // ACTION label (not a checkbox): the entry states what the
                     // click will DO, which reads better than a state label.

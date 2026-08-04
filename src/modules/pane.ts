@@ -127,6 +127,25 @@ class _PaneMixin {
                 return item;
             }
             if (!item.isRegularItem || !item.isRegularItem()) return null;
+            // Honour the user's chosen default child, exactly as the patched
+            // async `getBestAttachment` does. This is a SYNC replica of
+            // Zotero's heuristic used by ~13 call sites, several of which
+            // OPEN something ("Open in New Window", "Open in External
+            // Viewer", the reader strip, tab restore). Without this the
+            // feature was honoured on double-click but silently ignored by
+            // those paths, so a user with a default set got a different file
+            // depending on how they opened it (found by live testing
+            // 2026-08-04). Same contract as the async wrapper: only a real
+            // FILE attachment may be returned, so a chosen note or linked URL
+            // falls through to the heuristic below.
+            try {
+                const chosen = (this as any)._wvGetDefaultChild
+                    && (this as any)._wvGetDefaultChild(item);
+                if (chosen && !chosen.deleted
+                    && chosen.isFileAttachment && chosen.isFileAttachment()) {
+                    return chosen;
+                }
+            } catch (e) {}
             const ids = (item.getAttachments && item.getAttachments()) || [];
             if (!ids.length) return null;
             const parentURL = (item.getField && item.getField("url")) || "";

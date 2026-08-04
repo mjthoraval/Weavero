@@ -286,6 +286,81 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(await wv._wvSetDefaultChild(null)).to.equal(false);
         });
 
+        // A marker is only readable on a CHILD — resolution walks a regular
+        // item's children — and the context menu requires a parent, so a
+        // marker written to a top-level attachment could never be cleared
+        // through Weavero's UI. Found by audit 2026-08-04.
+        it("refuses to mark a STANDALONE attachment (unreadable, unclearable)", async () => {
+            const solo = new Zotero.Item("attachment");
+            solo.libraryID = Zotero.Libraries.userLibraryID;
+            solo.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            solo.attachmentContentType = "application/pdf";
+            solo.setField("title", "WV-TEST defatt standalone");
+            await solo.saveTx();
+            try {
+                expect(await wv._wvSetDefaultChild(solo)).to.equal(false);
+                expect(wv._wvIsDefaultChild(solo)).to.equal(false);
+            }
+            finally { await solo.eraseTx(); }
+        });
+
+        // The sweep that enforces "one marked child per parent" used to skip
+        // TRASHED siblings, so a marked child could come back from the trash
+        // alongside a newer pick — two markers, with the winner decided by
+        // getAttachments() order, which flips with an unrelated sort pref.
+        it("sweeps a TRASHED sibling's marker, so restoring it cannot double-mark", async () => {
+            await wv._wvSetDefaultChild(fileAtt);
+            fileAtt.deleted = true;
+            await fileAtt.saveTx();
+            try {
+                await wv._wvSetDefaultChild(note);       // sweep must reach the trashed one
+                expect(wv._wvIsDefaultChild(fileAtt)).to.equal(false);
+                expect(wv._wvIsDefaultChild(note)).to.equal(true);
+            }
+            finally {
+                fileAtt.deleted = false;
+                await fileAtt.saveTx();
+                await wv._wvClearDefaultChild(note);
+            }
+        });
+
+        // The toggle used to return `true` unconditionally, so a write that
+        // failed (read-only group library) was reported as success.
+        it("toggle reports the LIVE state, not the intent", async () => {
+            const on = await wv._wvToggleDefaultChild(fileAtt);
+            expect(on).to.equal(wv._wvIsDefaultChild(fileAtt));
+            expect(on).to.equal(true);
+            const off = await wv._wvToggleDefaultChild(fileAtt);
+            expect(off).to.equal(wv._wvIsDefaultChild(fileAtt));
+            expect(off).to.equal(false);
+        });
+
+        // Zotero caches the parent's best-attachment state and clears it only
+        // on child add/remove/file change — a tags-only save reaches none of
+        // those, so the items-tree attachment column kept painting the OLD
+        // pick until a restart.
+        it("invalidates the parent's cached best-attachment state on set", async function () {
+            if (typeof parent.getBestAttachmentState !== "function") this.skip();
+            const second = new Zotero.Item("attachment");
+            second.libraryID = Zotero.Libraries.userLibraryID;
+            second.parentID = parent.id;
+            second.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            second.attachmentContentType = "application/epub+zip";
+            second.setField("title", "WV-TEST defatt second file");
+            await second.saveTx();
+            try {
+                await wv._wvSetDefaultChild(fileAtt);
+                await parent.getBestAttachmentState();          // populate the cache
+                await wv._wvSetDefaultChild(second);            // switch the pick
+                const state = await parent.getBestAttachmentState();
+                expect(state && state.key).to.equal(second.key);
+            }
+            finally {
+                await wv._wvClearDefaultChild(second);
+                await second.eraseTx();
+            }
+        });
+
         // -- getBestAttachment override ------------------------------
 
         it("getBestAttachment returns the marked FILE attachment", async () => {
@@ -293,6 +368,65 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             const best = await parent.getBestAttachment();
             expect(best && best.id).to.equal(fileAtt.id);
             await wv._wvClearDefaultChild(fileAtt);
+        });
+
+        // A "Copy Open Link" bakes the chosen key into the URL, so getting
+        // this wrong is permanent and travels to whoever the link is sent to.
+        // `_openableAttachmentFor` (url.ts) is a third private replica of the
+        // ranking and used to ignore the marker entirely.
+        it("an Open link targets the chosen default, not the ranking", async function () {
+            if (typeof wv._buildOpenLink !== "function") this.skip();
+            const second = new Zotero.Item("attachment");
+            second.libraryID = Zotero.Libraries.userLibraryID;
+            second.parentID = parent.id;
+            second.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            second.attachmentContentType = "application/epub+zip";
+            second.setField("title", "WV-TEST defatt link target");
+            await second.saveTx();
+            try {
+                await wv._wvSetDefaultChild(second);
+                expect(wv._buildOpenLink(parent)).to.contain(second.key);
+                // A NOTE cannot be a zotero://open target — must fall through
+                // to a real file rather than producing a dead link.
+                await wv._wvSetDefaultChild(note);
+                const noteLink = wv._buildOpenLink(parent);
+                expect(noteLink).to.not.contain(note.key);
+                expect(noteLink).to.contain(fileAtt.key);
+            }
+            finally {
+                await wv._wvClearDefaultChild(note);
+                await second.eraseTx();
+            }
+        });
+
+        // The PLURAL is a separate upstream entry point, not a caller of the
+        // singular: patching only the singular left the locate menu's "View
+        // in Tab"/"View in Window", its external-viewer path and note
+        // citation-with-locator jumps opening Zotero's heuristic pick, so one
+        // item could open different files from different buttons. The pick is
+        // HOISTED, not substituted, because callers walk the rest of the list.
+        it("getBestAttachments (plural) hoists the pick to index 0, keeping the rest", async function () {
+            if (typeof parent.getBestAttachments !== "function") this.skip();
+            const second = new Zotero.Item("attachment");
+            second.libraryID = Zotero.Libraries.userLibraryID;
+            second.parentID = parent.id;
+            second.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            second.attachmentContentType = "application/epub+zip";
+            second.setField("title", "WV-TEST defatt plural second");
+            await second.saveTx();
+            try {
+                const before = await parent.getBestAttachments();
+                if (before.length < 2) this.skip();
+                await wv._wvSetDefaultChild(second);
+                const after = await parent.getBestAttachments();
+                expect(after[0] && after[0].id).to.equal(second.id);
+                expect(after.length).to.equal(before.length);
+                expect(after.map(a => a.id).sort()).to.deep.equal(before.map(a => a.id).sort());
+            }
+            finally {
+                await wv._wvClearDefaultChild(second);
+                await second.eraseTx();
+            }
         });
 
         // Callers of getBestAttachment expect a FILE. A marked note or linked

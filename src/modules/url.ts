@@ -281,6 +281,20 @@ export const urlMethods = {
     _openableAttachmentFor(item) {
         try {
             if (!item || !item.isRegularItem || !item.isRegularItem()) return null;
+            // The user's chosen default wins over the ranking below, exactly
+            // as it does for double-click. This one is the worst place to get
+            // wrong: the chosen key is BAKED INTO the link, so a "Copy Open
+            // Link" built from the heuristic keeps opening the other file
+            // forever -- for the user and for anyone they send it to (found
+            // 2026-08-04). Only a stored FILE attachment can be a link target
+            // (`zotero://open` requires one), so a chosen note or linked URL
+            // correctly falls through to the ranking.
+            try {
+                const chosen = this._wvGetDefaultChild && this._wvGetDefaultChild(item);
+                if (chosen && !chosen.deleted && this._isOpenableFileAttachment(chosen)) {
+                    return chosen;
+                }
+            } catch (e) {}
             const ids = (item.getAttachments && item.getAttachments()) || [];
             const rank = (t) => (t === "pdf" ? 0 : t === "epub" ? 1 : t === "snapshot" ? 2 : 3);
             let best = null, bestRank = 99;

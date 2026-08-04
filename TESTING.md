@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (161 tests, 10 spec files):
+Current in-Zotero coverage (170 tests, 12 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -53,7 +53,12 @@ Current in-Zotero coverage (161 tests, 10 spec files):
   linked URLs falling through `getBestAttachment`, the versioned
   re-assert that keeps Weavero outermost over a competing wrapper, and
   the one-shot legacy import, which never overwrites an existing Weavero
-  choice and never touches PikaPei's own data).
+  choice and never touches PikaPei's own data; plus the five edge cases
+  an adversarial audit turned up on 2026-08-04 — the PLURAL
+  `getBestAttachments` hoisting the pick without dropping the rest, the
+  sibling sweep reaching a TRASHED marker, a standalone attachment being
+  refused, the toggle reporting live state rather than intent, and the
+  parent's cached best-attachment state being invalidated).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `reader-filter.spec.js` (the reader annotation filter's
   hide/restore channel), `note-linkify.spec.js` (bare-URL decoration in

@@ -7313,7 +7313,7 @@ class _ReaderMixin {
                 for (const en of entries) { try { (this as any)._wvForgetTabGroupForItem(en.itemID); } catch (e) {} }
                 try { if (win._wvSelTabIDs && win._wvSelTabIDs.clear) win._wvSelTabIDs.clear(); } catch (e) {}
                 try { this._wvTabMultiSelSync(win); } catch (e) {}
-                try { Z_Tabs.close(tabIDs); } catch (e) {}
+                try { (this as any)._wvBlindAutomationTabClose(tabIDs); Z_Tabs.close(tabIDs); } catch (e) {}
                 this._wvOpenItemsInNewReaderWindow(entries.map((e: any) => ({ itemID: e.itemID, isNote: e.isNote, id: e.id })));
             };
 
@@ -7584,6 +7584,7 @@ class _ReaderMixin {
                                 if (owner) {
                                     const p: any = (Zotero as any).Weavero.plugin;
                                     try { p && p._wvSafeguardSourceSelectionBeforeClose(owner, dragTabId); } catch (e) {}
+                                    try { p && p._wvBlindAutomationTabClose(dragTabId); } catch (e) {}
                                     try { owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
                                 }
                             } catch (e) {}
@@ -7595,7 +7596,14 @@ class _ReaderMixin {
                             if (clientX != null) { try { this._wvWTReorderTab(win, landId, clientX); } catch (e) {} }
                         } else {
                             // Pre-commit swap failure → classic mount fallback.
-                            try { const owner = findOwner(); if (owner) owner.Zotero_Tabs.close(dragTabId); } catch (e) {}
+                            try {
+                                const owner = findOwner();
+                                if (owner) {
+                                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                    try { lp && lp._wvBlindAutomationTabClose(dragTabId); } catch (e2) {}
+                                    owner.Zotero_Tabs.close(dragTabId);
+                                }
+                            } catch (e) {}
                             try {
                                 let mid = await this._wvWTMountTab(win, itemID, { allowDuplicate: true, select: true });
                                 // Preserve the source tab's id across this (reload) fallback.
@@ -7672,6 +7680,7 @@ class _ReaderMixin {
                 } as any, ["tab"], "wv-wt-tabclose");
             } catch (e) {}
             try { const p: any = (Zotero as any).Weavero.plugin; p && p._wvSafeguardSourceSelectionBeforeClose(win, tabId); } catch (e) {}
+            try { const p: any = (Zotero as any).Weavero.plugin; p && p._wvBlindAutomationTabClose(tabId); } catch (e) {}
             try { win.Zotero_Tabs.close(tabId); } catch (e) {}
             setT(finish, 1200);   // fallback if the notify never arrives
         });
@@ -7707,6 +7716,7 @@ class _ReaderMixin {
             const setT = (targetWin && targetWin.setTimeout) ? targetWin.setTimeout.bind(targetWin) : setTimeout;
             const safeClose = (id: any) => {
                 try { const p: any = (Zotero as any).Weavero.plugin; p && p._wvSafeguardSourceSelectionBeforeClose(srcMainWin, id); } catch (e) {}
+                try { const p: any = (Zotero as any).Weavero.plugin; p && p._wvBlindAutomationTabClose(id); } catch (e) {}
                 try { srcMainWin.Zotero_Tabs.close(id); } catch (e) {}
             };
 
@@ -8894,7 +8904,12 @@ class _ReaderMixin {
         const mainWin: any = Zotero.getMainWindow();
         const Z_Tabs: any = mainWin && mainWin.Zotero_Tabs;
         const closeMainTab = (itemID: any) => {
-            try { if (Z_Tabs && Z_Tabs.getTabIDByItemID) { const tid = Z_Tabs.getTabIDByItemID(itemID); if (tid) Z_Tabs.close(tid); } } catch (e) {}
+            try {
+                if (Z_Tabs && Z_Tabs.getTabIDByItemID) {
+                    const tid = Z_Tabs.getTabIDByItemID(itemID);
+                    if (tid) { (this as any)._wvBlindAutomationTabClose(tid); Z_Tabs.close(tid); }
+                }
+            } catch (e) {}
         };
         for (const rec of records) {
             try {

@@ -347,7 +347,15 @@ class _OutlineEvalMixin {
                         const cls = this._wvOeClassifyTree(oc && oc.tree, (oc && oc.source) || "unknown", pages);
                         this._wvOeRoot.classifications[att.libraryID + ":" + att.key] = Object.assign({ at: new Date().toISOString() }, cls);
                     } catch (e) { Zotero.debug("[Weavero] _wvOeScanLibrary item err: " + e); }
-                    finally { if (tabID && tabID !== protectTab) { try { Tabs.close(tabID); } catch (_) {} } }
+                    finally {
+                        if (tabID && tabID !== protectTab) {
+                            // Blind automation (A&T): the scan opens/closes every
+                            // item in the library -- without this, a closeTab
+                            // action would tag them ALL.
+                            try { (this as any)._wvBlindAutomationTabClose(tabID); } catch (_) {}
+                            try { Tabs.close(tabID); } catch (_) {}
+                        }
+                    }
                     try { if (Tabs.selectedID !== protectTab) Tabs.select(protectTab); } catch (_) {}
                     if ((state.idx % 5) === 0) { try { await this._wvOePersist(); } catch (_) {} }
                     await sleep(150);

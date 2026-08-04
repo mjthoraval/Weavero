@@ -4496,6 +4496,32 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _wvSyncPinnedMirrors err: " + e); }
     }
 
+    /** Compat shim: blind Actions & Tags to a PROGRAMMATIC tab close. A&T's
+     *  closeTab automation (issue #29, "Add Read When Close Tab") maps the
+     *  notifier's close ids through its runtime `data.tabStatus` (tab id →
+     *  item id) and tags whatever it finds — it cannot tell a user closing a
+     *  document from Weavero re-homing one, because `Zotero_Tabs.close()`
+     *  carries no reason channel. Deleting the closing tab's entry from that
+     *  map makes A&T's handler skip it (its own path for tabs it never
+     *  tracked) while the close EVENT still reaches every other observer —
+     *  Zotero.Reader's uninit must see it, so suppressing the event itself
+     *  would leak reader instances. `data.tabStatus` is A&T internal, not
+     *  API: if a refactor renames it this silently no-ops and the worst case
+     *  is the automation tag coming back. Deliberately NOT applied to
+     *  "Save and Close group", filing into a parked group, or "Close
+     *  Group's tabs" — those are the user deliberately closing/parking
+     *  documents, so automation keeps seeing them. (2026-08-04) */
+    _wvBlindAutomationTabClose(tabIDs: any) {
+        try {
+            const at: any = (Zotero as any).ActionsTags;
+            const map = at && at.data && at.data.tabStatus;
+            if (!map || typeof map.delete !== "function") return;
+            for (const id of (Array.isArray(tabIDs) ? tabIDs : [tabIDs])) {
+                if (id) { try { map.delete(id); } catch (_) {} }
+            }
+        } catch (_) {}
+    }
+
     /** Dispatcher for moving a reader/note tab between main windows. A PDF
      *  reader is moved WITHOUT reloading — its live docshell is swapped into the
      *  target window (Firefox-style; see `_wvSwapMoveToMain`). Notes or any
@@ -4673,11 +4699,11 @@ class _TabsMixin {
             try { if (targetWin.focus) targetWin.focus(); } catch (e) {}
             donor = await Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true, openInBackground: background });
             if (await this._wvSwapWaitShell(donor, targetWin)) return donor;
-            try { if (donor && donor.tabID) targetWin.Zotero_Tabs.close(donor.tabID); } catch (er) {}
+            try { if (donor && donor.tabID) { this._wvBlindAutomationTabClose(donor.tabID); targetWin.Zotero_Tabs.close(donor.tabID); } } catch (er) {}
             return null;
         } catch (e) {
             Zotero.debug("[Weavero] _wvSwapOpenDonor err: " + e);
-            try { if (donor && donor.tabID) targetWin.Zotero_Tabs.close(donor.tabID); } catch (er) {}
+            try { if (donor && donor.tabID) { this._wvBlindAutomationTabClose(donor.tabID); targetWin.Zotero_Tabs.close(donor.tabID); } } catch (er) {}
             return null;
         }
     }
@@ -4854,7 +4880,7 @@ class _TabsMixin {
                 try { opts.detachSource(); } catch (e) {}
             } else {
                 this._wvSafeguardSourceSelectionBeforeClose(srcWin, payload.sourceTabId);
-                try { srcWin.Zotero_Tabs.close(payload.sourceTabId); } catch (e) {}
+                try { this._wvBlindAutomationTabClose(payload.sourceTabId); srcWin.Zotero_Tabs.close(payload.sourceTabId); } catch (e) {}
             }
             try { this._wvForgetTabGroupForItem(itemID); } catch (e) {}
 
@@ -5131,6 +5157,7 @@ class _TabsMixin {
             try {
                 const srcTabs: any = srcWin && (srcWin as any).Zotero_Tabs;
                 if (srcTabs && payload.sourceTabId && typeof srcTabs.close === "function") {
+                    this._wvBlindAutomationTabClose(payload.sourceTabId);
                     srcTabs.close(payload.sourceTabId);
                 }
             } catch (e) {}
@@ -5314,7 +5341,7 @@ class _TabsMixin {
                 for (const job of swapJobs) {
                     try { job.donor = await job.donorPromise; } catch (e) { job.donor = null; }
                     job.ready = job.donor ? await this._wvSwapWaitShell(job.donor, targetWin) : false;
-                    if (job.donor && !job.ready) { try { targetWin.Zotero_Tabs.close(job.donor.tabID); } catch (e) {} }
+                    if (job.donor && !job.ready) { try { this._wvBlindAutomationTabClose(job.donor.tabID); targetWin.Zotero_Tabs.close(job.donor.tabID); } catch (e) {} }
                 }
                 // PHASE 2 — commit the swaps SEQUENTIALLY (concurrent docshell
                 // surgery corrupts readers) while every tab stays HIDDEN: swap the
@@ -7143,6 +7170,7 @@ class _TabsMixin {
                 try { (this as any)._wvUnsuppressNativePaneRestore(win); } catch (e) {}
                 const tabs = win.Zotero_Tabs;
                 if (tabs && typeof tabs.closeAll === "function") {
+                    try { this._wvBlindAutomationTabClose((tabs._tabs || []).map((t: any) => t.id)); } catch (e) {}
                     try { tabs.closeAll(); } catch (e) {}     // clears native-restored tabs (keeps library)
                 }
                 if (group && group.tabs && group.tabs.length > 1) {
@@ -7269,6 +7297,7 @@ class _TabsMixin {
                             }
                             if (toClose.length) {
                                 try { lp._wvTrace && lp._wvTrace("dev-init purge: closing " + toClose.length + " late-mirrored tab(s)"); } catch (e) {}
+                                try { lp._wvBlindAutomationTabClose(toClose); } catch (e) {}
                                 for (const id of toClose) { try { Z.close(id); } catch (e) {} }
                             }
                         } catch (e) {}

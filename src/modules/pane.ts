@@ -1267,7 +1267,10 @@ class _PaneMixin {
                 find();
             });
             for (const e of entries) {
-                try { if (srcIsReader) this._wvWTCloseTab(srcWin, e.tabId); else srcWin.Zotero_Tabs.close(e.tabId); } catch (er) {}
+                try {
+                    if (srcIsReader) this._wvWTCloseTab(srcWin, e.tabId);
+                    else { (this as any)._wvBlindAutomationTabClose(e.tabId); srcWin.Zotero_Tabs.close(e.tabId); }
+                } catch (er) {}
             }
             if (createNewGroup && newWin) {
                 try {
@@ -1315,7 +1318,10 @@ class _PaneMixin {
             const win: any = await (this as any)._wvOpenItemsInOneReaderWindow(openables);
             // Close the source tabs (the MOVE).
             for (const id of closers) {
-                try { if (srcIsReader) (this as any)._wvWTCloseTab(srcWin, id); else srcWin.Zotero_Tabs.close(id); } catch (e) {}
+                try {
+                    if (srcIsReader) (this as any)._wvWTCloseTab(srcWin, id);
+                    else { (this as any)._wvBlindAutomationTabClose(id); srcWin.Zotero_Tabs.close(id); }
+                } catch (e) {}
             }
             if (createNewGroup && win && win._wvWT) {
                 try {

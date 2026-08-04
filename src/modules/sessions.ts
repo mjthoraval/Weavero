@@ -523,6 +523,7 @@ class _TabSessionsMixin {
                 const ids = Z._tabs
                     .filter((t: any) => t && t.id !== "zotero-pane" && t.type !== "library")
                     .map((t: any) => t.id);
+                try { (this as any)._wvBlindAutomationTabClose(ids); } catch (_) {}
                 for (const id of ids) { try { Z.close(id); } catch (_) {} }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvTabSessionTearDown (main) err: " + e); }

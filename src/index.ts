@@ -2710,6 +2710,12 @@ class WeaveroPlugin {
                         for (const t of ((Z && Z._tabs) || []).slice()) {
                             const iid = t && t.data && t.data.itemID;
                             if (iid != null && (gone.has(iid) || !Zotero.Items.get(iid))) {
+                                // Blind automation (A&T): tagging a just-deleted
+                                // item's tab close as "read" is never right.
+                                try {
+                                    const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                                    if (lp) lp._wvBlindAutomationTabClose(t.id);
+                                } catch (e) {}
                                 try { Z.close(t.id); } catch (e) {}
                             }
                         }

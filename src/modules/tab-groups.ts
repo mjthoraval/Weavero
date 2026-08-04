@@ -1355,7 +1355,7 @@ class _TabGroupsMixin {
                     } catch (e) { Zotero.debug("[Weavero] sendTabToWin(reader) mount err: " + e); }
                     // Close the source ONLY on success; otherwise the user keeps
                     // the original (no silent loss, no duplicate).
-                    if (mounted) { try { Z.close(tabID); } catch (e) {} }
+                    if (mounted) { try { (this as any)._wvBlindAutomationTabClose(tabID); Z.close(tabID); } catch (e) {} }
                     try { this._wvTabGroupApplyEverywhere(); } catch (e) {}
                 }, 180);
             } else {
@@ -1566,7 +1566,10 @@ class _TabGroupsMixin {
                     if (srcWin !== tgtWin) {
                         newId = null;
                         try { newId = await this._wvWTMountTab(tgtWin, itemID, { allowDuplicate: true, select: !noFocus, await: true }); } catch (e) {}
-                        try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
+                        try {
+                            if (srcIsReader) this._wvWTCloseTab(srcWin, tabId);
+                            else { (this as any)._wvBlindAutomationTabClose(tabId); srcWin.Zotero_Tabs.close(tabId); }
+                        } catch (e) {}
                     }
                     if (gid != null && newId != null) { try { this._wvReaderStampTabGroup(tgtWin, newId, gid); } catch (e) {} }
                     return;
@@ -1612,7 +1615,10 @@ class _TabGroupsMixin {
                         }
                     } catch (e) {}
                 }
-                try { if (srcIsReader) this._wvWTCloseTab(srcWin, tabId); else srcWin.Zotero_Tabs.close(tabId); } catch (e) {}
+                try {
+                    if (srcIsReader) this._wvWTCloseTab(srcWin, tabId);
+                    else { (this as any)._wvBlindAutomationTabClose(tabId); srcWin.Zotero_Tabs.close(tabId); }
+                } catch (e) {}
             } else if (srcIsReader) {
                 this._wvWTMoveTabToMain(srcWin, tabId, tgtWin, { noFocus });         // reader → main window
             } else {
@@ -4351,7 +4357,10 @@ class _TabGroupsMixin {
             // MOVE: close the open members in their home window first.
             Zotero.debug("[Weavero][move-group] closing " + open.length + " source tab(s) in " + (homeIsReader ? "reader" : "main") + " window");
             for (const o of open) {
-                try { if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID); else home.Zotero_Tabs.close(o.srcTabID); }
+                try {
+                    if (homeIsReader) this._wvWTCloseTab(home, o.srcTabID);
+                    else { (this as any)._wvBlindAutomationTabClose(o.srcTabID); home.Zotero_Tabs.close(o.srcTabID); }
+                }
                 catch (e) { Zotero.debug("[Weavero][move-group] close err tab=" + o.srcTabID + ": " + e); }
             }
             // Open them together in ONE new reader window (membership preserved →

@@ -5224,7 +5224,8 @@ class _ReaderPanelsMixin {
                 const en = d && d.entries ? d.entries.find((x: any) => x.id === res.stored.id) : null;
                 if (en) this._wvOutlineNavigate(reader, idoc, en, null);
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Added “" + title + "” → " + anchor + " of page " + (pageIndex + 1) + ".");
+            this._wvReaderPanelNote(idoc, "Added “" + title + "” → " + anchor + " of page "
+                + this._wvBmPageLabelFor(res.att, pageIndex) + ".");
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithAnchor err: " + e); }
     }
 
@@ -5241,7 +5242,8 @@ class _ReaderPanelsMixin {
                     .then((res: any) => {
                         if (!res || !res.stored) return;
                         this._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos);
-                        this._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page " + pageNum + ". Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page "
+                            + this._wvBmPageLabelFor(res.att, pageIndex) + ". Drag the pin to adjust.");
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithPin err: " + e); }
@@ -5301,23 +5303,27 @@ class _ReaderPanelsMixin {
      *  (the Bookmarks + menu mirrors the outline + menu; 2026-07-29). */
     _wvBmAddWithPin(reader: any, idoc: any) {
         try {
-            this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex: number, x: number, y: number, pageNum: number) => {
-                const name = this._bmPromptName(Zotero.getMainWindow(), "New Bookmark", "Page " + pageNum);
-                if (!name) return;   // cancelled after placing -> nothing created
+            this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex: number, x: number, y: number, _pageNum: number) => {
                 const att = this._wvReaderAtt(reader);
                 if (!att) return;
+                // The PRINTED page label, not the raw pageIndex+1 the arming
+                // callback hands over -- "Page 17" on printed page 573
+                // (2026-08-04). Same resolver as the row display.
+                const pageLabel = this._wvBmPageLabelFor(att, pageIndex);
+                const name = this._bmPromptName(Zotero.getMainWindow(), "New Bookmark", "Page " + pageLabel);
+                if (!name) return;   // cancelled after placing -> nothing created
                 const rec: any = {
                     type: "position", viewType: "pdf",
                     location: { pageIndex },
                     position: { pageIndex, rects: [[x, y, x, y]] },
-                    pageLabel: String(pageNum),
+                    pageLabel,
                     label: name,
                 };
                 Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
                     .then((stored: any) => {
                         try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
                         try { this._wvReaderShowPin(reader, rec.position, stored && stored.id); } catch (_) {}
-                        this._wvReaderPanelNote(idoc, "Bookmark pinned on page " + pageNum + ". Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, "Bookmark pinned on page " + pageLabel + ". Drag the pin to adjust.");
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvBmAddWithPin err: " + e); }
@@ -5333,7 +5339,7 @@ class _ReaderPanelsMixin {
                     type: "text", viewType: "pdf",
                     position: sel.position,
                     pageLabel: (sel.position && Number.isInteger(sel.position.pageIndex))
-                        ? String(sel.position.pageIndex + 1) : null,
+                        ? this._wvBmPageLabelFor(att, sel.position.pageIndex) : null,
                     label: (txt || "Selection").slice(0, 160),
                 };
                 Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
@@ -5441,7 +5447,8 @@ class _ReaderPanelsMixin {
                     .then(() => this._wvReaderRenderOutline(reader, idoc))
                     .then(() => {
                         this._wvOutlineShowEntryPin(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id, pos);
-                        this._wvReaderPanelNote(idoc, "Target pinned on page " + pageNum + ". Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, "Target pinned on page "
+                            + this._wvBmPageLabelFor(ref.att, pageIndex) + ". Drag the pin to adjust.");
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineBeginManualPin err: " + e); }
@@ -5667,7 +5674,8 @@ class _ReaderPanelsMixin {
                 const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
                 if (e) this._wvOutlineNavigate(reader, idoc, e, null);
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Position: " + anchor + " of page " + pageNum + ".");
+            this._wvReaderPanelNote(idoc, "Position: " + anchor + " of page "
+                + this._wvBmPageLabelFor(ref.att, pageIndex) + ".");
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPosition err: " + e); }
     }
 
@@ -5808,7 +5816,9 @@ class _ReaderPanelsMixin {
                     let p = parseInt(String(pInput.value), 10);
                     if (!Number.isInteger(p) || p < 1) p = initialPage;
                     if (pageCount) p = Math.min(p, pageCount);
-                    return "Page " + p + (botR.checked ? " (bottom)" : "");
+                    const lbl = (opts && typeof opts.pageLabelFor === "function")
+                        ? (opts.pageLabelFor(p - 1) || String(p)) : String(p);
+                    return "Page " + lbl + (botR.checked ? " (bottom)" : "");
                 };
                 const syncOrig = () => {
                     if (!origText) return;
@@ -14906,14 +14916,17 @@ class _ReaderPanelsMixin {
             if (section === "local" && target !== "library") {
                 const attL = this._wvReaderAtt(reader);
                 if (attL) {
-                    const pageNum = this._wvOutlineCurrentPageIndex(reader) + 1;
+                    const pageIdx = this._wvOutlineCurrentPageIndex(reader);
+                    // Printed page label (same resolver as the rows), not the
+                    // raw index+1 -- "Page 17" on printed 573 (2026-08-04).
+                    const pageLabelC = this._wvBmPageLabelFor(attL, pageIdx);
                     const addPage = (a: "top" | "bottom") => {
                         const rec: any = {
                             type: "page", viewType: "pdf",
-                            location: { pageIndex: pageNum - 1 },
-                            position: { pageIndex: pageNum - 1 },
-                            pageLabel: String(pageNum),
-                            label: "Page " + pageNum + (a === "bottom" ? " (bottom)" : ""),
+                            location: { pageIndex: pageIdx },
+                            position: { pageIndex: pageIdx },
+                            pageLabel: pageLabelC,
+                            label: "Page " + pageLabelC + (a === "bottom" ? " (bottom)" : ""),
                         };
                         if (a === "bottom") rec.anchor = "bottom";
                         Promise.resolve(this._bmReaderAdd(attL.libraryID, attL.itemKey, rec, { allowDuplicate: true }))
@@ -14935,7 +14948,7 @@ class _ReaderPanelsMixin {
                     if (!this._wvReadingModeActive(reader)) {
                         mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
                     }
-                    for (const c of this._wvPageAnchorChoices(pageNum, null, addPage)) mkItem(c.label, c.icon, c.fn);
+                    for (const c of this._wvPageAnchorChoices(pageLabelC, null, addPage)) mkItem(c.label, c.icon, c.fn);
                     const s = idoc.createElementNS(NS_HTML_RP, "div");
                     s.className = "wv-ctx-sep";
                     menu.appendChild(s);
@@ -15569,6 +15582,11 @@ class _ReaderPanelsMixin {
                                 const res = await this._wvOutlineEditPositionDialog(idoc, curIdx + 1, cur === "bottom", pageCount,
                                     { title: "Edit Bookmark", withName: true, name: entry.label || "",
                                       autoNameFromPosition: true,
+                                      // Default-name preview shows the PRINTED
+                                      // label for the typed page (the page
+                                      // FIELD stays 1-based physical -- that's
+                                      // the reader toolbar's own input space).
+                                      pageLabelFor: (pi: number) => this._wvBmPageLabelFor(att, pi),
                                       withComment: true, comment: entry.comment || "" });
                                 if (!res) return;
                                 const name = String(res.name || "");
@@ -15592,7 +15610,8 @@ class _ReaderPanelsMixin {
                                 // a rename -- unless it was emptied or set back
                                 // to the automatic one (the Reset button), which
                                 // means "go automatic again".
-                                const auto = "Page " + res.page + (res.bottom ? " (bottom)" : "");
+                                const auto = "Page " + this._wvBmPageLabelFor(att, res.page - 1)
+                                    + (res.bottom ? " (bottom)" : "");
                                 const touched = name !== prevLabel;
                                 const wantsAuto = touched && (!name || name === auto);
                                 if (wantsAuto) await this._bmReaderResetLabel(att.libraryID, att.itemKey, entry.id);
@@ -15649,27 +15668,13 @@ class _ReaderPanelsMixin {
                         }
                     }
                     {
-                        // "Copy to Outline" -- a text-selection bookmark carries
-                        // real rects, so it converts 1:1 into an outline entry
-                        // (title = label, region = the selection). Acts on the
-                        // whole multi-selection when the clicked row is part of
-                        // it; offered ONLY when every row in that set is a local
-                        // TEXT bookmark -- any other type (position pin, item,
-                        // folder, Elsewhere row) in the set hides it.
-                        const texts = this._wvBmCtxTextSelectionSet(reader, idoc, rowEl, entry);
-                        if (texts) {
-                            item(texts.length > 1 ? ("Copy " + texts.length + " to Outline") : "Copy to Outline",
-                                this._wvReaderOutlineMenuIconURL(),
-                                () => this._wvBmCopyTextToOutline(reader, idoc, texts));
-                        }
-                    }
-                    {
                         // "Edit Region…" — reshape the stored selection, saving
                         // back into the BOOKMARK store (user request
-                        // 2026-08-04). Routed by the position's SHAPE: PDF
-                        // rects → the shared char-snapping editor; EPUB
-                        // range-CFI → the Range-based editor (parity asked the
-                        // same day).
+                        // 2026-08-04). Grouped with the other bookmark-editing
+                        // actions (Edit Bookmark, Reset to Default Name) above.
+                        // Routed by the position's SHAPE: PDF rects → the shared
+                        // char-snapping editor; EPUB range-CFI → the Range-based
+                        // editor (parity asked the same day).
                         const pvM = reader._internalReader
                             && (reader._internalReader._primaryView || reader._internalReader._lastView);
                         const isPdfView = !!(pvM && pvM._iframeWindow
@@ -15687,6 +15692,26 @@ class _ReaderPanelsMixin {
                                 () => (pdfRegion
                                     ? this._wvBmEditRegion(reader, idoc, att, entry)
                                     : this._wvBmEditRegionEpub(reader, idoc, att, entry)));
+                        }
+                    }
+                    {
+                        // "Copy to Outline" — its OWN section (separators above
+                        // and below): it isn't a bookmark edit, it's a one-way
+                        // export/convert into the OUTLINE store, so sitting it
+                        // among the edit actions misread as one of them (user
+                        // 2026-08-04). A text-selection bookmark carries real
+                        // rects, so it converts 1:1 into an outline entry
+                        // (title = label, region = the selection). Acts on the
+                        // whole multi-selection when the clicked row is part of
+                        // it; offered ONLY when every row in that set is a local
+                        // TEXT bookmark.
+                        const texts = this._wvBmCtxTextSelectionSet(reader, idoc, rowEl, entry);
+                        if (texts) {
+                            sep();
+                            item(texts.length > 1 ? ("Copy " + texts.length + " to Outline") : "Copy to Outline",
+                                this._wvReaderOutlineMenuIconURL(),
+                                () => this._wvBmCopyTextToOutline(reader, idoc, texts));
+                            sep();
                         }
                     }
                     item("Delete Bookmark", RP_DELETE_SVG, () => this._bmReaderRemove(att.libraryID, att.itemKey, entry.id).then(reRender));
@@ -16140,7 +16165,7 @@ class _ReaderPanelsMixin {
                                 const doAdd = async (a: "top" | "bottom") => {
                                     let stored: any = null;
                                     try {
-                                        const pageLabel = String(piCaptured + 1);
+                                        const pageLabel = this._wvBmPageLabelFor(att, piCaptured);
                                         const rec: any = {
                                             type: "page",
                                             viewType: "pdf",
@@ -16188,7 +16213,8 @@ class _ReaderPanelsMixin {
                     this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
                 }
                 if (LABEL_PAGE && pageAddFn) {
-                    this._wvReaderStampPageAnchorSubmenu(reader, LABEL_PAGE, piCapturedForMenu + 1, pageAddFn);
+                    this._wvReaderStampPageAnchorSubmenu(reader, LABEL_PAGE,
+                        this._wvBmPageLabelFor(this._wvReaderAtt(reader), piCapturedForMenu), pageAddFn);
                 }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvReaderViewContextMenu err: " + e); }
@@ -16275,7 +16301,7 @@ class _ReaderPanelsMixin {
      *  menu's "Copy As" (asked 2026-07-29). Zotero renders the reader's context
      *  menu as a XUL popup, so `menu` + `menupopup` work here; the reader's own
      *  plugin API only takes flat rows, hence this popupshowing transform. */
-    _wvReaderStampPageAnchorSubmenu(reader: any, label: string, pageNum: number, onPick: (a: "top" | "bottom") => void) {
+    _wvReaderStampPageAnchorSubmenu(reader: any, label: string, pageNum: string | number, onPick: (a: "top" | "bottom") => void) {
         try {
             const win = reader._window;
             const ps = reader._popupset;
@@ -17296,10 +17322,9 @@ class _ReaderPanelsMixin {
                                 // Use the SAME page-label resolver the row /
                                 // hover-card / sync paths use, so a moved pin
                                 // stores a label that matches whatever the
-                                // bookmarks list will show. This is the
-                                // annotation-style label (same-page annotation
-                                // or pageIndex+1), NOT pv._pageLabels (which
-                                // would diverge from the annotations sidebar).
+                                // bookmarks list will show (same-page
+                                // annotation label → the PDF's printed label
+                                // → pageIndex+1).
                                 const probeBm: any = { type: "position", id: bmId,
                                     position: newPos, srcLibraryID: att.libraryID, srcItemKey: att.itemKey };
                                 const pageLabel = this._bmReaderPageLabel(probeBm)
@@ -17833,15 +17858,14 @@ class _ReaderPanelsMixin {
                     const att = plugin._wvReaderAtt(reader);
                     if (!att || att.libraryID == null || !att.itemKey) return;
 
-                    // Match the pin's label convention by using `pageIndex + 1`
-                    // directly — the display path (`_bmReaderPageLabel`)
-                    // explicitly ignores `pv._pageLabels` ("answers a different
-                    // question") and falls back to `pageIndex + 1` when no
-                    // annotation labels apply. Reading `pv._pageLabels` here
-                    // would store rich journal labels like "4839" that the
-                    // display path would never produce on its own, giving the
-                    // list an inconsistent two-number-spaces feel.
-                    const labelFor = (pi: number) => String(pi + 1);
+                    // Shared label resolver (same-page annotation label → the
+                    // PDF's printed label → pageIndex+1) so thumbnail-menu adds
+                    // agree with every other creation site and with the row
+                    // display. (This site used raw `pageIndex + 1` while the
+                    // display path skipped `pv._pageLabels` — both halves of
+                    // that convention were dropped 2026-08-04 when a pin on
+                    // printed page 573 came out as "Page 17".)
+                    const labelFor = (pi: number) => plugin._wvBmPageLabelFor(att, pi);
                     const single = pageIndexes.length === 1;
                     const items: any[] = [];
 

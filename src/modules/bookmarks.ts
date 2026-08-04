@@ -889,10 +889,11 @@ class _BookmarksMixin {
         const loc = this._bmLocate(id, doc.local) || this._bmLocate(id, doc.global);
         if (!loc || loc.entry.type !== "page") return;
         const e: any = loc.entry;
+        const pageLabel = this._wvBmPageLabelFor({ libraryID, itemKey }, d.pageIndex);
         if (Number.isInteger(d.pageIndex) && d.pageIndex >= 0) {
             e.position = Object.assign({}, e.position, { pageIndex: d.pageIndex });
             e.location = Object.assign({}, e.location, { pageIndex: d.pageIndex });
-            e.pageLabel = String(d.pageIndex + 1);
+            e.pageLabel = pageLabel;
         }
         if (d.anchor === "bottom") e.anchor = "bottom"; else delete e.anchor;
         if (d.comment !== undefined) {
@@ -902,7 +903,7 @@ class _BookmarksMixin {
         // follows the page even while a custom label is showing -- otherwise
         // "Reset to Original Name" on a moved bookmark restored the old page's
         // name (2026-07-29). The visible label only follows when not renamed.
-        const auto = "Page " + (d.pageIndex + 1) + (d.anchor === "bottom" ? " (bottom)" : "");
+        const auto = "Page " + pageLabel + (d.anchor === "bottom" ? " (bottom)" : "");
         e.originalLabel = auto;
         if (!e.renamed) e.label = auto;
         await this._bmPersist();
@@ -942,6 +943,19 @@ class _BookmarksMixin {
                     // open reader matches.
                     const live = this._bmReaderPageLabel(bm);
                     return live ? ("Page " + live) : null;
+                }
+                case "page": {
+                    // Same live resolver as "position" (+ the anchor suffix).
+                    // Without this case, sync never re-derived page-bookmark
+                    // names, so labels stamped from raw pageIndex+1 stayed
+                    // "Page 16" forever while the p.-column showed the printed
+                    // "572" (2026-08-04). `_bmReaderSetPageDetails` keeps
+                    // maintaining originalLabel on explicit position edits;
+                    // this covers every render in between.
+                    const live = this._bmReaderPageLabel(bm);
+                    return live
+                        ? ("Page " + live + (bm.anchor === "bottom" ? " (bottom)" : ""))
+                        : null;
                 }
                 case "treerow": {
                     // Re-derive the live tree-row name (saved-search / special-
@@ -1015,18 +1029,18 @@ class _BookmarksMixin {
                 }
             }
             // PIN / TEXT bookmark → match the ANNOTATIONS-SIDEBAR convention,
-            // which uses `annotationPageLabel` stored on each annotation (NOT
-            // the PDF's `_pageLabels` table). The two can disagree: a PDF may
-            // ship rich labels like "4843" while annotations were saved when
-            // those labels weren't loaded yet so they got `pageIndex + 1`
-            // ("5"). The user wants pin/text to read like an annotation, so:
+            // which uses `annotationPageLabel` stored on each annotation:
             //   1. Look up any annotation on the same pageIndex of this
-            //      attachment → use its annotationPageLabel.
-            //   2. No annotation on that page → fall back to pageIndex + 1
-            //      (what Zotero's annotation code uses as a last resort).
-            // We never reach for pv._pageLabels here — it answers a different
-            // question ("what does the PDF call this page?") that we don't
-            // want to expose, since it'd disagree with the annotation row.
+            //      attachment → use its annotationPageLabel (exact agreement
+            //      with the neighbouring sidebar row, even when that label
+            //      predates the PDF's label table and is index-style).
+            //   2. No annotation there → the PDF's printed label. This is
+            //      what an annotation CREATED on that page would get right
+            //      now: upstream derives a new annotation's pageLabel as
+            //      `_pageLabels[pageIndex] || pageIndex + 1` (reader
+            //      pdf-view.js ~910). Skipping this step is how a pin on
+            //      printed page 573 got named "Page 17" (2026-08-04).
+            //   3. Index + 1 — upstream's own last resort.
             if ((bm.type === "position" || bm.type === "page" || bm.type === "text")
                     && bm.position && Number.isInteger(bm.position.pageIndex)) {
                 const pageIndex = bm.position.pageIndex;
@@ -1067,15 +1081,49 @@ class _BookmarksMixin {
                         }
                     } catch (_) {}
                 }
-                // No same-page annotation. Use the index-based fallback (what
-                // Zotero itself uses when annotationPageLabel can't be derived
-                // from the PDF — keeps pin labels in the same "number space"
-                // as annotation labels).
+                // Step 2: the PDF's printed label, read from the live view of
+                // an open reader for this attachment (the label table isn't
+                // persisted anywhere Weavero can reach without a view).
+                try {
+                    if (att) {
+                        const readers: any[] = (Zotero as any).Reader && (Zotero as any).Reader._readers || [];
+                        for (const r of readers) {
+                            if (!r || r.itemID !== att.id) continue;
+                            const pv = r._internalReader
+                                && (r._internalReader._primaryView || r._internalReader._lastView);
+                            const labels = pv && pv._pageLabels;
+                            if (Array.isArray(labels) && labels[pageIndex]) {
+                                return String(labels[pageIndex]);
+                            }
+                            break;
+                        }
+                    }
+                } catch (_) {}
+                // Step 3 — with the stored capture-time label preferred over a
+                // raw recount when no reader is open to consult.
+                if (bm.pageLabel) return String(bm.pageLabel);
                 return String(pageIndex + 1);
             }
             if (bm.pageLabel) return String(bm.pageLabel);
             return "";
         } catch (_) { return ""; }
+    }
+
+    /** Page label for a page of an attachment, for NAMING new/updated
+     *  page-anchored bookmarks (and the menu rows that offer them): the same
+     *  chain as `_bmReaderPageLabel` (same-page annotation label → the PDF's
+     *  printed label → index + 1), via a probe record so creation sites can
+     *  never drift from what the list will display. `att` needs
+     *  `libraryID`/`itemKey`. */
+    _wvBmPageLabelFor(att: any, pageIndex: number): string {
+        try {
+            if (!att || !Number.isInteger(pageIndex) || pageIndex < 0) {
+                return String(((pageIndex as any) || 0) + 1);
+            }
+            const probe: any = { type: "page", position: { pageIndex },
+                srcLibraryID: att.libraryID, srcItemKey: att.itemKey };
+            return this._bmReaderPageLabel(probe) || String(pageIndex + 1);
+        } catch (_) { return String(pageIndex + 1); }
     }
 
     /** Keep `originalLabel` in sync with the live source for every bookmark of

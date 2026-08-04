@@ -7,6 +7,14 @@ Dev/test runs against Zotero 10-beta via the MCP bridge; the bridge can
 also attach to a running Zotero 9 instance, which is how the v9 rows below
 were checked. The coding rule behind the v9 rows: prefer `rowProvider || itemsView` style fallbacks and guard every v10-only API.
 
+**Zotero 11 (Firefox 153):** not a column here yet — the Windows Gecko pin
+is still 140, so nothing can be exercised on it locally. One forward-compat
+change has landed regardless (v0.18.1): Firefox 153 renames `ownerGlobal` to
+`documentGlobal`, so every use goes through `winOf()` in `src/lib/dom.ts`,
+which works identically on 9, 10 and 11. Two known items stay deferred until
+the pin moves: the `<search-textbox>` takeover (the filter funnel anchors to
+`zotero-tb-search`) and command events for `<checkbox>` in the prefs pane.
+
 ## Legend
 
 - **Yes** — works.
@@ -53,6 +61,8 @@ depend on v10-only row classes), but unconfirmed — check before relying.
 | Prefs pane | Untested | Yes | prefs/index.ts. |
 | Bookmarks — collections-pane dropdown (items / collections / searches / URLs) | Untested | Yes | bookmarks module; local JSON store. |
 | Bookmarks — reader sidebar tab (positions / pages / selected text) | Untested | Yes | reader-panels + bookmarks; uses the reader sidebar-tab API. |
+| Bookmarks — sorting (Manual / Name / Date added, per reader tab) | Untested | Yes (verified 2026-08-04, v0.18.1) | reader-panels + bookmarks; library popup and all reader sections; display-only, manual order preserved. |
+| Bookmarks — Add to Bookmarks in the annotation context menu | Untested | Yes (verified 2026-08-04, v0.18.1) | reader module; `createAnnotationContextMenu` plugin API; opens the pane focused on the new entry. |
 | Reader annotation filter (funnel) | Untested | Yes | reader-panels module; drives `reader.setFilter({hiddenIDs})`. |
 | Reader annotation sorting (position / date added / date modified) | Untested | Yes (verified 2026-08-03, dev.75) | reader-panels; right-click the Annotations tab header; content-side render wrapper + chrome rank maps; toggle in Settings → Sort & Filters. |
 | Reader filter date ranges (Added / Modified, rolling Last-N + custom calendar) | Untested | Yes (verified 2026-08-03, dev.66) | reader-panels; typed entry incl. year-only, arrows, Tab; Weavero-own calendar — Zotero's Gecko build ships no working native date picker or content `<select>`. |

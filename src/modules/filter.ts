@@ -1876,9 +1876,11 @@ class _FilterMixin {
                 // grey because the entire stroke ends up
                 // anti-aliased into sub-pixels. Matches Lucide /
                 // Obsidian defaults.
+                // No xmlns attr: innerHTML in a chrome doc namespaces <svg>
+                // automatically, and the sanitizer strips the attribute with a
+                // console warning PER RENDER (20-line floods, seen 2026-08-04).
                 chev.innerHTML =
                     '<svg viewBox="0 0 24 24" '
-                    + 'xmlns="http://www.w3.org/2000/svg" '
                     + 'fill="none" stroke="currentColor" '
                     + 'stroke-width="2" stroke-linecap="round" '
                     + 'stroke-linejoin="round">'

@@ -10806,6 +10806,31 @@ class _ReaderPanelsMixin {
         try { if (reader && id) reader._wvBmFocusId = id; } catch (_) {}
     }
 
+    /** After an add from OUTSIDE the bookmarks pane (annotation context menu,
+     *  selected-text entry), open the pane with the new entry focused — both
+     *  when the pane already existed and when it must be (re)created, e.g.
+     *  auto-hide had removed the tab until this very add (user request
+     *  2026-08-04). Also opens a collapsed sidebar (toggleSidebar(true),
+     *  upstream reader.js). */
+    _wvReaderRevealBookmark(reader: any, id: string) {
+        try {
+            const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
+            const idoc = iwin && iwin.document;
+            if (!idoc) return;
+            // Idempotent; covers the tab-just-created case without racing the
+            // _bmPersist auto-hide hook.
+            try { this._wvReaderEnsureBookmarksTab(reader, idoc); } catch (_) {}
+            try {
+                if (!reader._internalReader._state.sidebarOpen) reader._internalReader.toggleSidebar(true);
+            } catch (_) {}
+            if (id) this._wvMarkBmFocus(reader, id);
+            // SetBmActive renders (consuming the focus mark) when turning the
+            // pane on; when it is already on, render ourselves.
+            if (!this._wvReaderBmActive(reader)) this._wvReaderSetBmActive(reader, idoc, true);
+            else this._wvReaderRenderBmList(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderRevealBookmark err: " + e); }
+    }
+
     /** Consume a pending focus mark: highlight that row and scroll it into view.
      *  `block:"nearest"` so an already-visible row doesn't jump the list. */
     _wvReaderApplyPendingBmFocus(reader: any, idoc: any) {
@@ -15475,10 +15500,10 @@ class _ReaderPanelsMixin {
                     { type: "item", libraryID: lib, itemKey: key, label }, { allowDuplicate: true });
                 if (e2 && e2.id) added.push(e2.id);
             }
-            if (added.length) {
-                const idoc = reader._iframeWindow && reader._iframeWindow.document;
-                if (idoc) this._wvReaderRenderBmList(reader, idoc);
-            }
+            // Open the pane on the result (last id focused when several were
+            // picked — every new row is visible, the mark says where the batch
+            // ends).
+            if (added.length) this._wvReaderRevealBookmark(reader, added[added.length - 1]);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderBookmarkAnnotations err: " + e); }
     }
 
@@ -15508,10 +15533,9 @@ class _ReaderPanelsMixin {
             }
             if (!text) return;
             const cap = this._wvCaptureReaderLocation(reader);
-            await this._bmReaderAdd(att.libraryID, att.itemKey,
+            const e2 = await this._bmReaderAdd(att.libraryID, att.itemKey,
                 { type: "text", viewType: cap.viewType, location: cap.location, position, pageLabel: cap.pageLabel, label: text.slice(0, 160) });
-            const iwin = reader._iframeWindow || (reader._iframe && reader._iframe.contentWindow);
-            if (iwin && iwin.document) this._wvReaderRenderBmList(reader, iwin.document);
+            this._wvReaderRevealBookmark(reader, e2 && e2.id);
         } catch (e) { Zotero.debug("[Weavero] _wvReaderAddSelectedText err: " + e); }
     }
 

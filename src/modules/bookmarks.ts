@@ -256,6 +256,24 @@ const BM_POPUP_CSS = [
     ".wv-bm-iconbtn.wv-bm-lib-filter-active::after{content:'';position:absolute;top:3px;left:18px;width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);pointer-events:none;}",
     ".wv-bm-iconbtn:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
     ".wv-bm-iconbtn.wv-active{background:var(--fill-quarternary,rgba(128,128,128,.24));}",
+    // Sort button grows to fit its FIELD + triangle label when a sort is active.
+    ".wv-bm-lib-sortbtn{width:auto;min-width:28px;padding:0 5px;gap:3px;}",
+    ".wv-bm-sortlabel{font-size:10px;font-weight:600;color:var(--fill-secondary,#666);white-space:nowrap;}",
+    // The triangle is a direct asc/desc toggle (separate from the menu-opening
+    // rest of the button) -- pad it into a real hit target with its own hover.
+    ".wv-bm-sortdir{font-size:9px;color:var(--fill-secondary,#666);padding:4px 4px;margin:-4px -2px;border-radius:3px;cursor:pointer;}",
+    ".wv-bm-sortdir:hover{background:var(--fill-quinary,rgba(128,128,128,.16));}",
+    // Active state matches the reader's sort buttons: accent-blue icon +
+    // label + triangle with a bluish hover, not the generic grey wv-active
+    // tint (user asked for the same blue design, 2026-08-04). The
+    // `:hover img` rule below needs the extra-specific override or the
+    // generic grey-to-primary hover would win on the icon.
+    ".wv-bm-lib-sortbtn.wv-active{background:none;}",
+    ".wv-bm-lib-sortbtn.wv-active:hover{background:rgba(94,102,210,.18);}",
+    ".wv-bm-lib-sortbtn.wv-active img{fill:var(--color-accent,#5e6ad2);stroke:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-lib-sortbtn.wv-active:hover img{fill:var(--color-accent,#5e6ad2);stroke:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-lib-sortbtn.wv-active .wv-bm-sortlabel,.wv-bm-lib-sortbtn.wv-active .wv-bm-sortdir{color:var(--color-accent,#5e6ad2);}",
+    ".wv-bm-lib-sortbtn.wv-active .wv-bm-sortdir:hover{background:rgba(94,102,210,.30);}",
     "#" + BM_INNER_ID + " .wv-bm-funnel-spacer{margin-left:auto;}",
     "#" + BM_INNER_ID + " .wv-bm-search{display:flex;padding:0 6px 4px;position:relative;}",
     ".wv-bm-search-input{flex:1;padding:4px 24px 4px 8px;font-size:13px;border:1px solid rgba(127,127,127,.35);border-radius:4px;background:rgba(127,127,127,.06);color:inherit;}",
@@ -3231,6 +3249,52 @@ class _BookmarksMixin {
             if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
         });
 
+        // Sort button — same options as the reader's bookmark sections
+        // (Manual / Name / Date added + direction). The popup's state is the
+        // "library" pref itself; reader tabs keep their own per-tab sort and
+        // only seed from this pref when they first show the pane.
+        // Display-only: stored manual order is preserved. Active state
+        // mirrors the reader button: accent tint + a FIELD + triangle label.
+        const sortMode = this._wvReaderBmSortMode("library");
+        const sortDir = this._wvReaderBmSortDir("library");
+        const sortBtn = doc.createElementNS(NS_HTML, "button");
+        sortBtn.className = "wv-bm-iconbtn wv-bm-lib-sortbtn"
+            + (sortMode !== "manual" ? " wv-active" : "");
+        sortBtn.setAttribute("title", sortMode === "manual"
+            ? "Sort bookmarks"
+            : ("Sorted by " + this._wvReaderBmSortFieldLabel(sortMode) + " ("
+                + (sortDir === "asc" ? "ascending" : "descending")
+                + ") — click to change (manual order is preserved)"));
+        // Same img-with-data-URI approach as the funnel (inline SVG can
+        // collapse in XUL panels); same glyph as the reader's sort button.
+        const sortSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+            + '<path fill="context-fill" d="M2 3H14V5H2ZM2 7H10V9H2ZM2 11H6V13H2Z"/></svg>';
+        const sortImg = doc.createElementNS(NS_HTML, "img");
+        sortImg.setAttribute("src", "data:image/svg+xml;charset=utf-8," + encodeURIComponent(sortSvg));
+        sortImg.setAttribute("width", "20");
+        sortImg.setAttribute("height", "20");
+        sortBtn.appendChild(sortImg);
+        if (sortMode !== "manual") {
+            const lab = doc.createElementNS(NS_HTML, "span");
+            lab.className = "wv-bm-sortlabel";
+            lab.textContent = sortMode === "date" ? "Date" : "Name";
+            sortBtn.appendChild(lab);
+            // The triangle is a DIRECT direction toggle (separate from the
+            // menu-opening rest of the button) -- same split affordance as
+            // the reader sections' sort button.
+            const dirEl = doc.createElementNS(NS_HTML, "span");
+            dirEl.className = "wv-bm-sortdir";
+            dirEl.textContent = sortDir === "asc" ? "▲" : "▼";
+            dirEl.setAttribute("title", "Reverse sort order");
+            dirEl.addEventListener("click", (e: any) => {
+                e.stopPropagation();
+                this._bmApplyLibrarySort(win, undefined, sortDir === "asc" ? "desc" : "asc");
+            });
+            sortBtn.appendChild(dirEl);
+        }
+        sortBtn.addEventListener("click", () => this._bmShowSortMenu(win, sortBtn));
+        actions.appendChild(sortBtn);
+
         // Funnel button — toggles the filter input row below. Mirrors the
         // reader-sidebar bookmarks filter affordance; for the library list
         // the filter is text-only (label substring match), so the input is
@@ -3424,6 +3488,12 @@ class _BookmarksMixin {
             list.appendChild(empty);
             return;
         }
+        // Display-only sort (shared "library" pref, same semantics as the
+        // reader sections): a sorted view flattens folders; the stored
+        // manual order is untouched.
+        const sortMode = this._wvReaderBmSortMode("library");
+        const displayRoot = sortMode === "manual" ? root
+            : this._wvBmSortNodesForDisplay(null, root, sortMode, this._wvReaderBmSortDir("library"));
         const q = (this._bmLibFilterText || "").trim().toLowerCase();
         const chipsOn = this._bmLibChipsActive();
         if (q || chipsOn) {
@@ -3442,7 +3512,7 @@ class _BookmarksMixin {
                     any = true;
                 }
             };
-            walk(root);
+            walk(displayRoot);
             if (!any) {
                 const empty = doc.createElementNS(NS_HTML, "div");
                 empty.className = "wv-bm-search-empty";
@@ -3453,7 +3523,7 @@ class _BookmarksMixin {
             }
             return;
         }
-        this._bmRenderInto(doc, win, list, root, 0);
+        this._bmRenderInto(doc, win, list, displayRoot, 0);
     }
 
     /** Render ONE level of entries into a container. Children of folders
@@ -3594,6 +3664,10 @@ class _BookmarksMixin {
         });
         row.addEventListener("dragend", () => row.classList.remove("wv-bm-dragging"));
         row.addEventListener("dragover", (e: any) => {
+            // Reordering only makes sense in manual order -- while a display
+            // sort is active a drop position would be a lie (same rule as the
+            // reader's bookmark sections).
+            if (this._wvReaderBmSortMode("library") !== "manual") return;
             e.preventDefault();
             try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
             const mode = computeMode(e);
@@ -3604,6 +3678,7 @@ class _BookmarksMixin {
         });
         row.addEventListener("dragleave", clearDrop);
         row.addEventListener("drop", (e: any) => {
+            if (this._wvReaderBmSortMode("library") !== "manual") return;
             e.preventDefault();
             clearDrop();
             let draggedId = "";
@@ -3803,6 +3878,55 @@ class _BookmarksMixin {
             menu.openPopup(anchorBtn, "after_start", 0, 0, false, false);
         } catch (e) {
             Zotero.debug("[Weavero] _bmShowDropdownAddMenu err: " + e);
+        }
+    }
+
+    /** Set the popup's library sort and re-render it — used by both the
+     *  popup's sort menu and its direction-toggle triangle. Open reader tabs
+     *  are deliberately untouched: sort is per-tab there (their Global
+     *  sections own their state); the pref written here only seeds tabs that
+     *  haven't shown their bookmarks pane yet. */
+    _bmApplyLibrarySort(win: any, field?: string, dir?: "asc" | "desc") {
+        this._wvReaderSetBmSort("library", field, dir);
+        this._bmRenderPopupList(win);
+    }
+
+    /** Sort menu for the library popup — same field/direction layout as the
+     *  reader sections' sort menu (no Location: library bookmarks have no
+     *  in-document position). Acts on the "library" pref (the popup's own
+     *  state; reader tabs are per-tab and unaffected). */
+    _bmShowSortMenu(win: any, anchorBtn: any) {
+        try {
+            const doc: any = win.document;
+            doc.getElementById(BM_ROW_MENU_ID)?.remove();
+            const menu = doc.createXULElement("menupopup");
+            menu.id = BM_ROW_MENU_ID;
+            const curField = this._wvReaderBmSortMode("library");
+            const curDir = this._wvReaderBmSortDir("library");
+            const apply = (field?: string, dir?: "asc" | "desc") => this._bmApplyLibrarySort(win, field, dir);
+            const add = (label: string, checked: boolean, fn: any, disabled?: boolean) => {
+                const mi = doc.createXULElement("menuitem");
+                mi.setAttribute("label", label);
+                mi.setAttribute("type", "radio");
+                if (checked) mi.setAttribute("checked", "true");
+                if (disabled) mi.setAttribute("disabled", "true");
+                mi.addEventListener("command", fn);
+                menu.appendChild(mi);
+            };
+            add("Manual order", curField === "manual", () => apply("manual"));
+            add("Name", curField === "alpha", () => apply("alpha"));
+            add("Date added", curField === "date", () => apply("date"));
+            menu.appendChild(doc.createXULElement("menuseparator"));
+            const manual = curField === "manual";
+            add("Ascending", !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
+            add("Descending", !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
+            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            host.appendChild(menu);
+            menu.addEventListener("popuphidden",
+                () => { try { menu.remove(); } catch (e) {} }, { once: true });
+            menu.openPopup(anchorBtn, "after_start", 0, 0, false, false);
+        } catch (e) {
+            Zotero.debug("[Weavero] _bmShowSortMenu err: " + e);
         }
     }
 

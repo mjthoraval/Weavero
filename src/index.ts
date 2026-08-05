@@ -4766,6 +4766,7 @@ class WeaveroPlugin {
         // prototype could be undone by an observer callback firing mid-
         // teardown. See modules/attachments.ts.
         try { (this as any)._wvUnwirePluginObserver(); } catch (e) {}
+        try { (this as any)._wvUnwireReparentGuard(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultChildPrefWatch(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultAttachment(); } catch (e) {}
         try {

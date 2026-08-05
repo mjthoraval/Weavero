@@ -936,4 +936,105 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             }
         });
     });
+    // ---- 6. reparent guard (upstream zotero#3333 parity) -----------------
+    //
+    // The marker tag TRAVELS with a child moved to a different parent, which
+    // would silently make it the NEW parent's default. Upstream's relation
+    // design clears the pick on reparent, and Weavero matches it with a
+    // notifier-driven guard (_wvWireReparentGuard, 0.18.3-dev.17): a marked
+    // child observed with a parent other than the cached one is stripped.
+    // Four scenarios, each verified live 2026-08-06 before being locked here:
+    // plain reparent, merge (adopted pick stripped / master's kept), move to
+    // standalone and back (no silent resurrection), and move onto a parent
+    // that already has its own pick (exactly one marked child survives).
+
+    describe("reparent guard", () => {
+        function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+        async function waitCleared(item, timeout = 6000) {
+            const t0 = Date.now();
+            while (Date.now() - t0 < timeout) {
+                if (!wv._wvIsDefaultChild(Zotero.Items.get(item.id))) return true;
+                await sleep(200);
+            }
+            return !wv._wvIsDefaultChild(Zotero.Items.get(item.id));
+        }
+        async function mkParentWithNote(tag) {
+            const lib = Zotero.Libraries.userLibraryID;
+            const p = new Zotero.Item("journalArticle");
+            p.libraryID = lib;
+            p.setField("title", "WV-TEST reparent " + tag);
+            await p.saveTx();
+            const n = new Zotero.Item("note");
+            n.libraryID = lib;
+            n.parentID = p.id;
+            n.setNote("WV-TEST reparent child " + tag);
+            await n.saveTx();
+            return { p, n };
+        }
+        const junk = [];
+        after(async () => {
+            for (const it of junk.reverse()) {
+                try { if (Zotero.Items.get(it.id)) await it.eraseTx(); } catch (e) {}
+            }
+        });
+
+        it("clears the pick when its child moves to another parent", async function () {
+            this.timeout(20000);
+            const a = await mkParentWithNote("plain-A");
+            const b = await mkParentWithNote("plain-B");
+            junk.push(a.p, a.n, b.p, b.n);
+            expect(await wv._wvSetDefaultChild(a.n)).to.equal(true);
+            a.n.parentID = b.p.id;
+            await a.n.saveTx();
+            expect(await waitCleared(a.n), "marker must clear on reparent").to.equal(true);
+        });
+
+        it("merge: master keeps its pick, the adopted pick arrives stripped", async function () {
+            this.timeout(20000);
+            const a = await mkParentWithNote("merge-A");
+            const b = await mkParentWithNote("merge-B");
+            junk.push(a.p, a.n, b.p, b.n);
+            expect(await wv._wvSetDefaultChild(a.n)).to.equal(true);
+            expect(await wv._wvSetDefaultChild(b.n)).to.equal(true);
+            await Zotero.Items.merge(a.p, [b.p]);
+            expect(await waitCleared(b.n), "adopted pick must be stripped").to.equal(true);
+            expect(wv._wvIsDefaultChild(Zotero.Items.get(a.n.id)),
+                "master's own pick must survive the merge").to.equal(true);
+            const marked = a.p.getNotes(true)
+                .filter(id => wv._wvIsDefaultChild(Zotero.Items.get(id)));
+            expect(marked.length, "exactly one marked child after merge").to.equal(1);
+        });
+
+        it("move to standalone clears; moving back does not resurrect", async function () {
+            this.timeout(20000);
+            const a = await mkParentWithNote("standalone");
+            junk.push(a.p, a.n);
+            expect(await wv._wvSetDefaultChild(a.n)).to.equal(true);
+            a.n.parentID = false;
+            await a.n.saveTx();
+            expect(await waitCleared(a.n), "marker must clear on move-out").to.equal(true);
+            a.n.parentID = a.p.id;
+            await a.n.saveTx();
+            await sleep(1200);
+            expect(wv._wvIsDefaultChild(Zotero.Items.get(a.n.id)),
+                "returning must NOT silently restore the pick").to.equal(false);
+        });
+
+        it("moving a pick onto a parent with its own pick leaves exactly one", async function () {
+            this.timeout(20000);
+            const a = await mkParentWithNote("target");
+            const c = await mkParentWithNote("mover");
+            junk.push(a.p, a.n, c.p, c.n);
+            expect(await wv._wvSetDefaultChild(a.n)).to.equal(true);
+            expect(await wv._wvSetDefaultChild(c.n)).to.equal(true);
+            c.n.parentID = a.p.id;
+            await c.n.saveTx();
+            expect(await waitCleared(c.n), "arriving pick must be stripped").to.equal(true);
+            expect(wv._wvIsDefaultChild(Zotero.Items.get(a.n.id)),
+                "target's own pick must survive").to.equal(true);
+            const marked = a.p.getNotes(true)
+                .filter(id => wv._wvIsDefaultChild(Zotero.Items.get(id)));
+            expect(marked.length).to.equal(1);
+        });
+    });
 });

@@ -146,7 +146,7 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 7;   // 7: getBestAttachments (plural) added to the wiring
+const WIRE_VERSION = 8;   // 8: reparent guard; 7: getBestAttachments (plural)
 
 class _AttachmentsMixin {
     [k: string]: any;
@@ -409,6 +409,8 @@ class _AttachmentsMixin {
             // attachment column keeps painting the OLD pick's type and
             // file-exists dot until a restart.
             try { if (parent && parent.clearBestAttachmentState) parent.clearBestAttachmentState(); } catch (e) {}
+            // Reparent-guard cache: remember which parent this pick belongs to.
+            try { (Zotero as any)._wvDefattParentCache && (Zotero as any)._wvDefattParentCache.set(child.id, child.parentItemID || null); } catch (e) {}
             this._wvDefAttTrace("set:ok", {
                 key: child.key, verified: this._wvIsDefaultChild(child),
                 parent: parent && parent.key,
@@ -432,6 +434,7 @@ class _AttachmentsMixin {
                 const parent = child.parentID ? Zotero.Items.get(child.parentID) : null;
                 if (parent && parent.clearBestAttachmentState) parent.clearBestAttachmentState();
             } catch (e) {}
+            try { (Zotero as any)._wvDefattParentCache && (Zotero as any)._wvDefattParentCache.delete(child.id); } catch (e) {}
             return true;
         } catch (e) {
             Zotero.debug("[Weavero] _wvClearDefaultChild err: " + e);
@@ -580,6 +583,9 @@ class _AttachmentsMixin {
             }
             proto._wvDefaultAttWired = WIRE_VERSION;
             Zotero.debug("[Weavero] default-child override installed (v" + WIRE_VERSION + ")");
+            // Reparent guard rides the same wiring entry point (versioned
+            // internally, so re-asserts are no-ops).
+            try { this._wvWireReparentGuard(); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireDefaultAttachment err: " + e);
         }
@@ -815,6 +821,94 @@ class _AttachmentsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwirePluginObserver err: " + e);
         }
+    }
+
+    /** Reparent guard (2026-08-05, prompted by upstream PR zotero#3333's
+     *  review): the marker tag TRAVELS with an attachment/note moved to a
+     *  different parent, silently making it the NEW parent's default -- the
+     *  upstream relation design clears the pick on reparent, and that is the
+     *  right semantic: the choice belonged to the OLD parent. Detection needs
+     *  the old parent, which a modify notification doesn't carry, so a
+     *  session cache (attachment id -> parent id) is seeded from a tag scan
+     *  at wire time and maintained on every observation; a marked child whose
+     *  parent differs from the cached one gets its marker stripped. Covers
+     *  same-device moves AND synced moves from another device (the incoming
+     *  modify carries the new parent while the cache still holds the old).
+     *  Observer + cache live on the Zotero global (versioned) so reloads
+     *  peel the previous copy instead of stacking. */
+    _wvWireReparentGuard(): void {
+        try {
+            const g: any = Zotero;
+            if (g._wvDefattReparentObsID) {
+                if (g._wvDefattReparentObsVer === WIRE_VERSION) return;
+                try { Zotero.Notifier.unregisterObserver(g._wvDefattReparentObsID); } catch (e) {}
+            }
+            if (!g._wvDefattParentCache) g._wvDefattParentCache = new Map();
+            const cache: Map<number, number | null> = g._wvDefattParentCache;
+            // Seed: every currently-marked child across all libraries.
+            (async () => {
+                try {
+                    for (const lib of (Zotero.Libraries.getAll ? Zotero.Libraries.getAll() : [])) {
+                        try {
+                            const s: any = new Zotero.Search();
+                            s.libraryID = lib.libraryID;
+                            s.addCondition("tag", "is", OPEN_BY_DEFAULT_TAG);
+                            const ids: number[] = await s.search();
+                            for (const id of (ids || [])) {
+                                const it: any = Zotero.Items.get(id);
+                                if (it && !cache.has(id)) cache.set(id, it.parentItemID || null);
+                            }
+                        } catch (e) {}
+                    }
+                } catch (e) {}
+            })();
+            const obs = {
+                notify: (event: string, type: string, ids: any[]) => {
+                    try {
+                        if (type !== "item" || event !== "modify") return;
+                        // Resolve the LIVE plugin -- the observer outlives builds.
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp || lp._wvDestroyed) return;
+                        if (!lp._wvDefaultChildEnabled || !lp._wvDefaultChildEnabled()) return;
+                        for (const id of (ids || [])) {
+                            try {
+                                const it: any = Zotero.Items.get(id);
+                                if (!it) { cache.delete(id); continue; }
+                                const isChildish = (typeof it.isAttachment === "function" && it.isAttachment())
+                                    || (typeof it.isNote === "function" && it.isNote());
+                                if (!isChildish) continue;
+                                if (!lp._wvIsDefaultChild(it)) { cache.delete(id); continue; }
+                                const cur = it.parentItemID || null;
+                                const prev = cache.has(id) ? cache.get(id) : undefined;
+                                if (prev === undefined) { cache.set(id, cur); continue; }   // first sight
+                                if (prev !== cur) {
+                                    cache.delete(id);
+                                    lp._wvDefAttTrace && lp._wvDefAttTrace("reparent:clear",
+                                        { id, prevParent: prev, newParent: cur });
+                                    Promise.resolve(lp._wvClearDefaultChild(it)).catch(() => {});
+                                }
+                            } catch (e) {}
+                        }
+                    } catch (e) {}
+                },
+            };
+            g._wvDefattReparentObsID = Zotero.Notifier.registerObserver(obs, ["item"], "weavero-defatt-reparent");
+            g._wvDefattReparentObsVer = WIRE_VERSION;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvWireReparentGuard err: " + e);
+        }
+    }
+
+    /** Drop the reparent guard (shutdown path). */
+    _wvUnwireReparentGuard(): void {
+        try {
+            const g: any = Zotero;
+            if (g._wvDefattReparentObsID) {
+                try { Zotero.Notifier.unregisterObserver(g._wvDefattReparentObsID); } catch (e) {}
+            }
+            delete g._wvDefattReparentObsID;
+            delete g._wvDefattReparentObsVer;
+        } catch (e) {}
     }
 
     // ---- Migration from PikaPei/zotero-default-attachment -----------------

@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (170 tests, 12 spec files):
+Current in-Zotero coverage (177 tests, 13 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -58,7 +58,17 @@ Current in-Zotero coverage (170 tests, 12 spec files):
   `getBestAttachments` hoisting the pick without dropping the rest, the
   sibling sweep reaching a TRASHED marker, a standalone attachment being
   refused, the toggle reporting live state rather than intent, and the
-  parent's cached best-attachment state being invalidated).
+  parent's cached best-attachment state being invalidated; plus the four
+  REPARENT-GUARD scenarios adopted from upstream zotero#3333's semantics
+  on 2026-08-06 — plain reparent clears the pick, a merge strips the
+  adopted pick while the master's survives, moving a pick to standalone
+  clears it without silent resurrection on return, and moving a pick
+  onto a parent that has its own leaves exactly one marked child).
+- **UI-state invariant specs**: `ui-state-recovery.spec.js` (who-wins
+  contracts for stuck shared UI state, 2026-08-05: the drag-overlay
+  watchdog restores pointer-events with no dragend at all, the restore
+  sweep clears an orphaned suppression with no stash, and the boot
+  selection guard yields permanently to one user gesture).
 - **Integration specs** (drive the live app): `smoke.spec.js` (toolchain
   wiring), `reader-filter.spec.js` (the reader annotation filter's
   hide/restore channel), `note-linkify.spec.js` (bare-URL decoration in

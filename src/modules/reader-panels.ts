@@ -1535,7 +1535,14 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-eval-btn.wv-outline-eval-marked{opacity:1;}",
     // Content-type tagging: box/sidebar entries render with a framed-panel icon
     // and a muted italic label, so they read as asides rather than sections.
-    ".wv-outline-kind-ic{flex:0 0 auto;display:inline-flex;align-items:center;opacity:.7;margin-right:1px;}",
+    // Icons sit at the END of the row (after the label, before the page
+    // number): labels start at the same x on every row — parents included —
+    // and since labels WRAP (overflow-wrap:anywhere) rather than truncate,
+    // the fixed-width icon stays visible however long the title is. (Two
+    // earlier designs are retired: in-flow-before-label misaligned iconed
+    // rows; a left-gutter hang collided with the chevron on rows with
+    // children. User settled on end-of-line, 2026-08-05.)
+    ".wv-outline-kind-ic{flex:0 0 auto;display:inline-flex;align-items:center;align-self:center;opacity:.7;margin-inline-start:4px;}",
     ".wv-outline-kind-ic svg{width:12px;height:12px;}",
     ".wv-outline-row.wv-outline-kind-box .wv-outline-label{font-style:italic;opacity:.82;}",
     // The pane is programmatically focusable (tabindex=-1) so empty-area clicks
@@ -3856,7 +3863,10 @@ class _ReaderPanelsMixin {
             label.textContent = entry.title || "(untitled)";
             label.setAttribute("title", "Double-click to rename, right-click for more");
             row.appendChild(tw);
-            // Box/sidebar entries get a framed-panel icon before the label.
+            row.appendChild(label);
+            // Kind icons go AFTER the label (end of row, before the page
+            // number) so label alignment is universal — see the CSS comment.
+            // Box/sidebar entries get a framed-panel icon.
             if (entry.kind === "box") {
                 const kic = idoc.createElementNS(NS, "span");
                 kic.className = "wv-outline-kind-ic";
@@ -3881,7 +3891,6 @@ class _ReaderPanelsMixin {
                     row.appendChild(tic);
                 }
             }
-            row.appendChild(label);
             // Page number at the right (position entries only; URL entries have none).
             const pi = (!entry.url && entry.position && Number.isInteger(entry.position.pageIndex))
                 ? entry.position.pageIndex : null;

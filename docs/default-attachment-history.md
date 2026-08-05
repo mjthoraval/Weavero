@@ -223,3 +223,10 @@ doubly so for AI-written code, so here is the honest layering:
 
 The code is open source (AGPL-3.0); the development methodology is
 documented in detail at [Developing with AI](developing-with-ai).
+
+**Where is the code for this feature?** One module:
+[`src/modules/attachments.ts`](https://github.com/mjthoraval/Weavero/blob/main/src/modules/attachments.ts)
+— the marker tag, the resolution wraps, the reparent guard, the hoist and
+the ▷ marker, with the design invariants documented in its header comment.
+Its regression tests are
+[`test/default-attachment.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment.spec.js).

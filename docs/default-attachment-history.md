@@ -1,10 +1,16 @@
 # The default-attachment problem — history, prior art, and an audit
 
+**The problem.** When a Zotero item has several children — the paper and
+its supplement, a preprint and the published version, a PDF and an EPUB —
+Zotero decides *by itself* which one a double-click opens, with a fixed rule
+and no way to choose otherwise. The rule's preferences (oldest PDF first)
+are frequently wrong for exactly the libraries researchers actually have,
+and this has been a requested feature for over a decade.
 Weavero's [Default attachment](https://github.com/mjthoraval/Weavero#default-attachment)
-feature lets you choose which child an item opens — any attachment, a linked
-URL, or a note. This page records where that problem comes from, every public
-attempt to solve it, and a critical audit of the Actions & Tags script I
-shared myself before building the plugin feature. It exists for review:
+feature addresses it: you choose which child an item opens — any attachment,
+a linked URL, or a note. This page records where the problem comes from,
+every public attempt to solve it, and a critical audit of the Actions & Tags
+script I shared myself before building the plugin feature. It exists for review:
 Weavero is developed with an AI coding agent (Claude), working against a
 live Zotero with human judgment on every change — the full methodology is
 public at [Developing with AI](developing-with-ai) — and vetting works best
@@ -12,9 +18,10 @@ when the reasoning is public too.
 
 ## The one rule everything revolves around
 
-Zotero decides what a double-click opens with a single SQL ordering
-(`item.js`, `getBestAttachments` — the singular `getBestAttachment` uses the
-same ordering):
+This is **Zotero's default behaviour, without any plugin**: what a
+double-click opens is decided by a single SQL ordering (`item.js`,
+`getBestAttachments` — the singular `getBestAttachment` uses the same
+ordering):
 
 ```sql
 ORDER BY contentType='application/pdf' DESC, value=? DESC, dateAdded ASC

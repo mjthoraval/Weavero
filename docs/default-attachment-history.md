@@ -97,6 +97,17 @@ of the way. The migration cannot be written sooner because the native
 feature's final storage encoding is one of the things still unresolved
 upstream; once it ships, the conversion is mechanical.
 
+**What if I stop using the feature — what is left, and how do I clean it
+completely?** Turning the feature off in the settings (or removing Weavero)
+stops the override immediately; nothing else changes. The only thing ever
+left in your library is the `▶️ wv-defatt` tag on the children you chose —
+no fields, no relations, no hidden data. To remove even that: in the Tag
+Selector, enable *Display Automatic* so the tag shows, right-click it →
+*Delete Tag…* — one action removes it from every item in that library, and
+sync propagates the deletion to your other computers (repeat per group
+library, since tags are per-library). After that, your library is
+indistinguishable from one where the feature was never used.
+
 **To what extent is it safe to use?** A fair question for any plugin, and
 doubly so for AI-written code, so here is the honest layering:
 

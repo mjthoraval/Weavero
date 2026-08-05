@@ -3348,9 +3348,57 @@ class _ReaderMixin {
             Zotero.debug("[Weavero][drag-overlay] SHOW lockedReaders=" + lockedReaders
                 + " standaloneShown=" + standaloneShown
                 + " totalReaders=" + readers.length);
+            // The dragend that pairs with this show is NOT guaranteed: it
+            // never fires if the drag's source node is removed mid-drag (a
+            // strip re-render does exactly that). Arm the session watchdog
+            // so the hide runs regardless.
+            try { this._wvArmDragOverlayWatchdog(); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvShowReaderDragOverlays err: " + e);
         }
+    }
+
+    /** Watchdog for the drag overlays. `dragend` NEVER fires when the drag's
+     *  source node was removed mid-drag (Firefox behavior; a strip re-render
+     *  during the drag is enough), which left `pointer-events: none` stuck on
+     *  a reader window's <browser> -- "cannot scroll in the center pane"
+     *  (2026-08-05). The OS drag session is the ground truth: poll it, and
+     *  when it's gone run the (idempotent) hide no matter which handler
+     *  missed its cue. Live-resolves the plugin each tick so a mid-drag
+     *  reload can't strand the restore. */
+    _wvArmDragOverlayWatchdog() {
+        try {
+            if ((this as any)._wvDragOverlayWatchdogOn) return;
+            (this as any)._wvDragOverlayWatchdogOn = true;
+            const w0: any = Zotero.getMainWindow();
+            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const sessionActive = () => {
+                try {
+                    const ds: any = Cc["@mozilla.org/widget/dragservice;1"].getService(Ci.nsIDragService);
+                    let s: any = null;
+                    // Newer Gecko is per-widget (takes a window); FF140 accepts
+                    // both shapes (verified live 2026-08-05).
+                    try { s = ds.getCurrentSession(w0); } catch (e) { s = ds.getCurrentSession(); }
+                    return !!s;
+                } catch (e) { return false; }
+            };
+            let ticks = 0;
+            const tick = () => {
+                const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!lp) return;
+                ticks++;
+                if (!sessionActive() || ticks > 600) {   // 600 x 400 ms = 4 min hard cap
+                    lp._wvDragOverlayWatchdogOn = false;
+                    try { lp._wvHideReaderDragOverlays(); } catch (e) {}
+                    return;
+                }
+                setT(tick, 400);
+            };
+            // First check DELAYED -- the dragstart that armed us may not have
+            // opened the OS session yet, and an instant "no session" would
+            // tear the overlays down under a drag that's about to begin.
+            setT(tick, 400);
+        } catch (e) {}
     }
 
     /** Restore everything `_wvShowReaderDragOverlays` set. */
@@ -3374,6 +3422,13 @@ class _ReaderMixin {
                     try { rec.iframe.style.pointerEvents = rec.prev || ""; } catch (er) {}
                 }
                 (this as any)._wvReaderIframePEByInstance = null;
+            }
+            // Belt-and-braces: the stash maps live on the INSTANCE that ran
+            // show -- a plugin reload mid-drag orphans them. Weavero is the
+            // only writer of pointer-events on reader iframes, so clear any
+            // straggler unconditionally.
+            for (const r of ((Zotero as any).Reader && (Zotero as any).Reader._readers || [])) {
+                try { if (r._iframe && r._iframe.style.pointerEvents === "none") r._iframe.style.pointerEvents = ""; } catch (er) {}
             }
             // Standalone-window bits.
             const en = (Services as any).wm.getEnumerator(null);

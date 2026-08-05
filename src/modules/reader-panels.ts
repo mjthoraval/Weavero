@@ -1520,6 +1520,9 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-src-none .wv-outline-src-dot{background:#888;opacity:.6;}",
     ".wv-outline-src-caret{display:inline-flex;opacity:.6;}",
     ".wv-outline-src-caret svg{width:8px;height:8px;}",
+    // Selection-drop affordance: dashed accent ring while a reader text
+    // selection hovers over the panel.
+    ".wv-outline-reader-view.wv-outline-drop-sel{outline:2px dashed var(--color-accent,#5e6ad2);outline-offset:-3px;border-radius:6px;}",
     ".wv-outline-empty{padding:16px 12px;opacity:.6;font-size:12px;text-align:center;}",
     ".wv-outline-empty.wv-outline-empty-sub{padding-top:0;}",
     ".wv-outline-create-btn{margin:0 auto;padding:5px 12px;font-size:12px;border:1px solid var(--color-accent,#5e6ad2);background:transparent;color:var(--color-accent,#5e6ad2);border-radius:5px;cursor:pointer;}",
@@ -2398,6 +2401,61 @@ class _ReaderPanelsMixin {
                 view.appendChild(head);
                 view.appendChild(list);
                 content.appendChild(view);
+            }
+            // Drag-and-drop: dropping a READER TEXT SELECTION on the outline
+            // creates an entry from it (user request 2026-08-05) — title = the
+            // selected text, region = the selection's position; reading-order
+            // placement comes from _wvOutlineCreateEntry, so no drop-slot math.
+            // The reader packages a selection drag as an ephemeral highlight
+            // annotation on `zotero/annotation` (verified: reader pdf-view.js
+            // _handleDragStart → zotero reader.js onSetDataTransferAnnotations);
+            // internal row drags don't carry that type, so the two DnDs can't
+            // collide. Versioned wiring on the view (it outlives plugin
+            // reloads); LIVE plugin at event time. PDF positions only for now
+            // (pageIndex + rects — the outline's native region shape).
+            if ((view as any)._wvSelDropWired !== 1) {
+                (view as any)._wvSelDropWired = 1;
+                const hasAnn = (e: any) => {
+                    try { return Array.from(e.dataTransfer.types || []).indexOf("zotero/annotation") >= 0; }
+                    catch (_) { return false; }
+                };
+                view.addEventListener("dragover", (e: any) => {
+                    if (!hasAnn(e)) return;
+                    e.preventDefault();
+                    try { e.dataTransfer.dropEffect = "copy"; } catch (_) {}
+                    try { (view as any).classList.add("wv-outline-drop-sel"); } catch (_) {}
+                });
+                view.addEventListener("dragleave", (e: any) => {
+                    try {
+                        if (e.relatedTarget && (view as any).contains(e.relatedTarget)) return;
+                        (view as any).classList.remove("wv-outline-drop-sel");
+                    } catch (_) {}
+                });
+                view.addEventListener("drop", (e: any) => {
+                    try {
+                        if (!hasAnn(e)) return;
+                        e.preventDefault(); e.stopPropagation();
+                        try { (view as any).classList.remove("wv-outline-drop-sel"); } catch (_) {}
+                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!live) return;
+                        const anns = JSON.parse(e.dataTransfer.getData("zotero/annotation") || "[]");
+                        const ann = (Array.isArray(anns) ? anns : []).find((a: any) => a && a.position
+                            && Number.isInteger(a.position.pageIndex)
+                            && Array.isArray(a.position.rects) && a.position.rects.length);
+                        if (!ann) return;
+                        const title = String(ann.text || "").replace(/\s+/g, " ").trim().slice(0, 160) || "Selection";
+                        const pos = { pageIndex: ann.position.pageIndex, rects: ann.position.rects };
+                        Promise.resolve(live._wvOutlineCreateEntry(reader, idoc, title, pos))
+                            .then((res: any) => {
+                                if (!res || !res.stored) return;
+                                try {
+                                    live._wvReaderPanelNote(idoc, "Added “"
+                                        + title.slice(0, 40) + (title.length > 40 ? "…" : "")
+                                        + "” from the selection.");
+                                } catch (_) {}
+                            }).catch(() => {});
+                    } catch (er) { Zotero.debug("[Weavero] outline selection-drop err: " + er); }
+                });
             }
             // One capture-phase click listener per idoc: take over on the
             // Outline tab, release on any other native tab or our Bookmarks tab.
@@ -5593,6 +5651,17 @@ class _ReaderPanelsMixin {
             };
             const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
             reader._wvOutlineViewSource = null;
+            // REALLY select the new entry (blue selected row), not just a
+            // focus ring — the same contract the bookmark reveal follows
+            // (user, 2026-08-05). Set BEFORE the render so the row paints
+            // selected; covers every creation flow (right-click, selection
+            // drop, the + menus) since they all come through here.
+            try {
+                if (stored && stored.id != null) {
+                    reader._wvOutlineSel = new Set([String(stored.id)]);
+                    reader._wvOutlineSelAnchor = String(stored.id);
+                }
+            } catch (_) {}
             await this._wvReaderRenderOutline(reader, idoc);
             return { att, stored };
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineCreateEntry err: " + e); return null; }
@@ -5940,6 +6009,18 @@ class _ReaderPanelsMixin {
                 source: { title, position: pos, url: null, origin: "user" },
             };
             const stored = await this._wvOutlineInsertEntry(att.libraryID, att.itemKey, entry, gap);
+            // REALLY select the new entry (blue selected row, exclusive) --
+            // this path inserts directly rather than via _wvOutlineCreateEntry
+            // (which got the same contract earlier today), so it marked the
+            // row only wv-outline-active: the ring, while the blue selection
+            // stayed on the previous row (user report 2026-08-05). Set the
+            // MODEL before the render below so the row paints selected.
+            try {
+                if (stored && stored.id != null) {
+                    reader._wvOutlineSel = new Set([String(stored.id)]);
+                    reader._wvOutlineSelAnchor = String(stored.id);
+                }
+            } catch (_) {}
             // SHOW the result (user request 2026-07-21): open the sidebar on the
             // Outline tab, ON THE WEAVERO SOURCE, with the new row visible and
             // selected -- adding into a closed panel (or while the chip shows

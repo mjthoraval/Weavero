@@ -49,6 +49,20 @@ the function that applies them.
 
 ## Common questions
 
+**Is this the right solution for me?** A short decision guide, since the
+approaches on this page serve different people:
+
+- You work mainly in **desktop Zotero** and want to choose what opens
+  without touching your data → this feature is built for you.
+- **Mobile is your priority** → the data-editing script route serves you
+  better (see the mobile question below), with the costs the audit lists.
+- You want **no plugin at all** → the script route again, or wait for the
+  native feature — Zotero has agreed to it, though there is no release
+  date.
+- You already use **PikaPei's Default Attachment plugin** → Weavero offers
+  a one-time, read-only import of its picks (see the README); or simply
+  keep using it — the two coexist safely.
+
 **Does it change my items' data — the date, the URL, anything?** No.
 Weavero's feature changes **nothing** — not the date, not the URL, not any
 field of any item. The pick is an ordinary tag (`▶️ wv-defatt` — its design has its

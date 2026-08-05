@@ -160,13 +160,13 @@ The "List all tabs" dropdown's library grouping and file-type filter live under 
 
 Zotero decides what a double-click opens with a fixed rule: PDFs first, then an attachment whose URL matches the item's, then the oldest. If your main paper sits next to a supplement, an accepted manuscript and a data file, that rule often picks the wrong one.
 
-**Right-click any child of an item → `▶️ Set as Default`.** The choice is *not* limited to PDFs — anything openable qualifies:
+**Right-click any child of an item → `▶️ Set as Default Attachment`.** The choice is *not* limited to PDFs — anything openable qualifies:
 
 - file attachments, **PDF and non-PDF** (EPUB, HTML snapshot, image, …)
 - **linked URLs**
 - **child notes**
 
-The same entry reads `▶️ Clear Default` once set, so one menu item does both. Turning the feature off in *Settings → Weavero → Extras → Default attachment* stops the override but keeps your picks.
+The same entry reads `▶️ Clear Default Attachment` once set, so one menu item does both. (Zotero itself has a pending native *Primary Attachment* feature, [zotero/zotero#3333](https://github.com/zotero/zotero/pull/3333); Weavero deliberately keeps the distinct *Default* name so the plugin tool and the future native feature stay tellable apart — and migrating from one to the other reads unambiguously.) Turning the feature off in *Settings → Weavero → Extras → Default attachment* stops the override but keeps your picks.
 
 **How the choice is stored — and why it matters.** The pick is an automatic tag, `▶️ wv-defatt`, on the chosen child. That means it **syncs to your other devices**, it survives exporting, and it keeps working if you ever remove Weavero (the tag simply becomes an ordinary tag and Zotero returns to its own rule — nothing to repair). Deleting the child deletes the choice with it, so nothing is ever left dangling.
 

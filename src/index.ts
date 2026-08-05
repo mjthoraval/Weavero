@@ -2102,6 +2102,10 @@ class WeaveroPlugin {
                 // Default attachment/note to open — ON, but INERT until the user
                 // marks a child, so it changes nothing on its own.
                 "enableDefaultChild",
+                // Its display companions (2026-08-06): hoist the default /
+                // the automatic winner to the first attachments row, and the
+                // dimmed ▷ items-list marker on the automatic winner.
+                "defattSortFirstDefault", "defattSortFirstAuto", "defattMarkAuto",
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",
@@ -4315,6 +4319,9 @@ class WeaveroPlugin {
             // commandLineHandler routes those to ZoteroPane.loadURI, which
             // Weavero's own link surfaces bypass entirely.
             try { (this as any)._wvWireLoadURIHook(_window); } catch (e) {}
+            // ▷ auto-default marker: the ItemTree class is per-window, so a
+            // NEW window's renderer needs its own patch.
+            try { (this as any)._wvWireDefattMarker(); } catch (e) {}
             // Session-save hardening (see startup pass): base types for -loading tabs.
             try { (this as any)._wvPatchTabsGetState(_window); } catch (e) {}
             // Multi-main-window fix: ignore other windows' tab-select notifier

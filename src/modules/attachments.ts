@@ -146,7 +146,12 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 8;   // 8: reparent guard; 7: getBestAttachments (plural)
+const WIRE_VERSION = 9;   // 9: hoist + ▷ marker; 8: reparent guard; 7: plural
+
+// Reentrancy latch for the getAttachments hoist: the automatic-winner
+// computation itself calls getAttachments, and the wrap must serve THAT
+// call raw (sync, single-threaded, so a module flag suffices).
+let _wvHoistBusy = false;
 
 class _AttachmentsMixin {
     [k: string]: any;
@@ -584,8 +589,53 @@ class _AttachmentsMixin {
             proto._wvDefaultAttWired = WIRE_VERSION;
             Zotero.debug("[Weavero] default-child override installed (v" + WIRE_VERSION + ")");
             // Reparent guard rides the same wiring entry point (versioned
-            // internally, so re-asserts are no-ops).
+            // internally, so re-asserts are no-op).
             try { this._wvWireReparentGuard(); } catch (e) {}
+            // HOIST (upstream zotero#3333's getAttachments sort, user-approved
+            // 2026-08-06): the effective opener sorts FIRST in every consumer
+            // of getAttachments — the item pane's attachments section and the
+            // expanded items-tree children both follow it. Two prefs: the
+            // explicit default (defattSortFirstDefault) and, when no explicit
+            // pick applies, the AUTOMATIC winner (defattSortFirstAuto). Pure
+            // reorder — same ids, nothing added or dropped — so exports and
+            // other consumers see the same set.
+            try {
+                if (!proto._wvDefattGetAttsFn || proto.getAttachments !== proto._wvDefattGetAttsFn) {
+                    const origGetAtts = proto._wvDefattOrigGetAtts || proto.getAttachments;
+                    proto._wvDefattOrigGetAtts = origGetAtts;
+                    proto.getAttachments = function (includeTrashed: any) {
+                        const ids = origGetAtts.call(this, includeTrashed);
+                        try {
+                            if (_wvHoistBusy || !Array.isArray(ids) || ids.length < 2) return ids;
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || !lp._wvDefaultChildEnabled()) return ids;
+                            if (!this.isRegularItem || !this.isRegularItem()) return ids;
+                            _wvHoistBusy = true;
+                            let hoistID: any = null;
+                            try {
+                                if (Zotero.Prefs.get("weavero.defattSortFirstDefault") !== false) {
+                                    const chosen = lp._wvGetDefaultChild && lp._wvGetDefaultChild(this);
+                                    if (chosen && !chosen.deleted && ids.includes(chosen.id)) hoistID = chosen.id;
+                                }
+                                if (hoistID == null
+                                        && Zotero.Prefs.get("weavero.defattSortFirstAuto") !== false) {
+                                    const auto = lp._wvBestAttachmentHeuristicSync
+                                        && lp._wvBestAttachmentHeuristicSync(this);
+                                    if (auto && ids.includes(auto.id)) hoistID = auto.id;
+                                }
+                            } finally { _wvHoistBusy = false; }
+                            if (hoistID != null && ids[0] !== hoistID) {
+                                const rest = ids.filter((x: any) => x !== hoistID);
+                                return [hoistID, ...rest];
+                            }
+                        } catch (e) { _wvHoistBusy = false; }
+                        return ids;
+                    };
+                    proto._wvDefattGetAttsFn = proto.getAttachments;
+                }
+            } catch (e) { Zotero.debug("[Weavero] getAttachments hoist wire err: " + e); }
+            // ▷ MARKER (items list) — see _wvWireDefattMarker.
+            try { this._wvWireDefattMarker(); } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireDefaultAttachment err: " + e);
         }
@@ -621,6 +671,29 @@ class _AttachmentsMixin {
             delete proto._wvDefaultAttFn;
             delete proto._wvDefaultAttPluralFn;
             delete proto._wvDefaultAttWired;
+            // Hoist wrap: same top-of-chain rule.
+            if (typeof proto._wvDefattOrigGetAtts === "function"
+                && proto.getAttachments === proto._wvDefattGetAttsFn) {
+                proto.getAttachments = proto._wvDefattOrigGetAtts;
+            }
+            delete proto._wvDefattOrigGetAtts;
+            delete proto._wvDefattGetAttsFn;
+            // ▷ marker wrap on each window's ItemTree renderer prototype.
+            try {
+                const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [];
+                for (const win of wins) {
+                    try {
+                        const view: any = (win as any).ZoteroPane && (win as any).ZoteroPane.itemsView;
+                        let itp: any = view && Object.getPrototypeOf(view);
+                        while (itp && !Object.prototype.hasOwnProperty.call(itp, "_renderCell")) itp = Object.getPrototypeOf(itp);
+                        if (itp && typeof itp._wvDefattOrigRenderCell === "function"
+                            && itp._renderCell === itp._wvDefattRenderFn) {
+                            itp._renderCell = itp._wvDefattOrigRenderCell;
+                        }
+                        if (itp) { delete itp._wvDefattOrigRenderCell; delete itp._wvDefattRenderFn; }
+                    } catch (e) {}
+                }
+            } catch (e) {}
         } catch (e) {
             Zotero.debug("[Weavero] _wvUnwireDefaultAttachment err: " + e);
         }
@@ -897,6 +970,62 @@ class _AttachmentsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireReparentGuard err: " + e);
         }
+    }
+
+    /** ▷ MARKER (items list): the AUTOMATIC winner gets a dimmed hollow glyph
+     *  before its title, so the user can always see what Zotero would open if
+     *  the plugin's default were removed — the explicit pick already shows its
+     *  ▶️ tag emoji natively, and a row that is BOTH stays ▶️-only. The
+     *  ItemTree class is NOT on the Zotero global — itemTree.jsx loads into
+     *  each window's scope — so the `_renderCell`-owning prototype is found by
+     *  walking each window's live itemsView and patched per window (subclasses
+     *  and rebuilt views share it via the chain). Live plugin + pref resolved
+     *  per render; re-runnable (onMainWindowLoad calls it for new windows). */
+    _wvWireDefattMarker(): void {
+        try {
+            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const win of wins) {
+                try {
+                    const view: any = (win as any).ZoteroPane && (win as any).ZoteroPane.itemsView;
+                    if (!view) continue;
+                    let proto: any = Object.getPrototypeOf(view);
+                    while (proto && !Object.prototype.hasOwnProperty.call(proto, "_renderCell")) {
+                        proto = Object.getPrototypeOf(proto);
+                    }
+                    if (!proto) continue;
+                    if (proto._wvDefattRenderFn && proto._renderCell === proto._wvDefattRenderFn) continue;
+                    const origRender = proto._wvDefattOrigRenderCell || proto._renderCell;
+                    proto._wvDefattOrigRenderCell = origRender;
+                    proto._renderCell = function (index: any, data: any, column: any, isFirstColumn: any) {
+                        const cell = origRender.apply(this, arguments);
+                        try {
+                            if (!isFirstColumn) return cell;
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp || lp._wvDestroyed || !lp._wvDefaultChildEnabled()) return cell;
+                            if (Zotero.Prefs.get("weavero.defattMarkAuto") === false) return cell;
+                            const row: any = this.getRow && this.getRow(index);
+                            const it: any = row && row.ref;
+                            if (!it || !it.isAttachment || !it.isAttachment() || !it.parentItemID) return cell;
+                            if (lp._wvIsDefaultChild(it)) return cell;   // ▶️ already tells the story
+                            const parent: any = Zotero.Items.get(it.parentItemID);
+                            if (!parent) return cell;
+                            const auto = lp._wvBestAttachmentHeuristicSync(parent);
+                            if (!auto || auto.id !== it.id) return cell;
+                            const txt = cell.querySelector && cell.querySelector(".cell-text");
+                            if (!txt || cell.querySelector(".wv-defatt-auto-glyph")) return cell;
+                            const g = txt.ownerDocument.createElement("span");
+                            g.className = "wv-defatt-auto-glyph";
+                            g.textContent = "▷ ";
+                            g.style.cssText = "opacity:.5;";
+                            g.setAttribute("title", "Automatic default — what Zotero would open without a chosen default");
+                            txt.parentNode.insertBefore(g, txt);
+                        } catch (e) {}
+                        return cell;
+                    };
+                    proto._wvDefattRenderFn = proto._renderCell;
+                } catch (e) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvWireDefattMarker err: " + e); }
     }
 
     /** Drop the reparent guard (shutdown path). */
@@ -1376,7 +1505,13 @@ class _AttachmentsMixin {
                     mi.id = ID;
                     mi.setAttribute(
                         "label",
-                        (glyph ? glyph + " " : "") + (marked ? "Clear Default" : "Set as Default")
+                        // "Default Attachment" — deliberately DISTINCT from
+                        // upstream zotero#3333's pending "Primary Attachment":
+                        // "Default" signals a plugin tool and keeps the story
+                        // clean if users later migrate from Weavero's Default
+                        // Attachment to Zotero's native Primary Attachment
+                        // (user decision 2026-08-06, reversing same-day).
+                        (glyph ? glyph + " " : "") + (marked ? "Clear Default Attachment" : "Set as Default Attachment")
                     );
                     mi.addEventListener("command", () => {
                         try {

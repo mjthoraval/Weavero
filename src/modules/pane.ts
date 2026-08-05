@@ -119,7 +119,7 @@ class _PaneMixin {
         return null;
     }
 
-    _wvGetBestAttachmentSync(item: any): any {
+    _wvGetBestAttachmentSync(item: any, opts?: any): any {
         try {
             if (!item) return null;
             if (item.isAttachment && item.isAttachment()) {
@@ -127,6 +127,13 @@ class _PaneMixin {
                 return item;
             }
             if (!item.isRegularItem || !item.isRegularItem()) return null;
+            // opts.ignorePick: compute the AUTOMATIC winner — Zotero's own
+            // heuristic with the user's default-child override skipped. Used
+            // by the ▷ items-list marker and the hoist, both of which need
+            // "what would open without the plugin" (2026-08-06).
+            if (opts && opts.ignorePick) {
+                return this._wvBestAttachmentHeuristicSync(item);
+            }
             // Honour the user's chosen default child, exactly as the patched
             // async `getBestAttachment` does. This is a SYNC replica of
             // Zotero's heuristic used by ~13 call sites, several of which
@@ -146,6 +153,18 @@ class _PaneMixin {
                     return chosen;
                 }
             } catch (e) {}
+            return this._wvBestAttachmentHeuristicSync(item);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvGetBestAttachmentSync err: " + e);
+            return null;
+        }
+    }
+
+    /** The heuristic HALF of _wvGetBestAttachmentSync (PDF-first / URL-match /
+     *  oldest), with no default-child override — split out so the ▷ marker and
+     *  the hoist can ask for the pure automatic winner. */
+    _wvBestAttachmentHeuristicSync(item: any): any {
+        try {
             const ids = (item.getAttachments && item.getAttachments()) || [];
             if (!ids.length) return null;
             const parentURL = (item.getField && item.getField("url")) || "";
@@ -171,7 +190,7 @@ class _PaneMixin {
             });
             return cands[0].a;
         } catch (e) {
-            Zotero.debug("[Weavero] _wvGetBestAttachmentSync err: " + e);
+            Zotero.debug("[Weavero] _wvBestAttachmentHeuristicSync err: " + e);
             return null;
         }
     }

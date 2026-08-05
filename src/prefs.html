@@ -664,15 +664,28 @@
        it opens; both act on the same getBestAttachment result. -->
   <groupbox class="wv-subsec">
     <label><html:h2>Default attachment</html:h2></label>
-    <checkbox label="Open a chosen attachment or note instead of Zotero&#8217;s default" native="true"
+    <checkbox label="Open a chosen attachment or note instead of Zotero&#8217;s automatic choice" native="true"
       preference="extensions.zotero.weavero.enableDefaultChild"/>
     <html:p class="wv-desc">Right-click any child of an item &#8212; attachment (PDF or not), linked
-      URL, or note &#8212; and pick <html:b>&#9654;&#65039; Set as Default</html:b> to open that one
+      URL, or note &#8212; and pick <html:b>&#9654;&#65039; Set as Default Attachment</html:b> to open that one
       instead of Zotero&#8217;s usual choice. The pick is stored as the tag
       <html:b>&#9654;&#65039; wv-defatt</html:b> on that child, so it syncs to your other devices and
       survives without Weavero. Search <html:b>wv-defatt</html:b> (or the &#9654;&#65039; glyph) to
       list every marked item; the tag carries no ordinary words on purpose, so it never turns up in
       unrelated searches. Turning this off stops the override but keeps your picks.</html:p>
+    <vbox class="wv-dep">
+      <checkbox label="Show the default attachment first in the attachments list" native="true"
+        preference="extensions.zotero.weavero.defattSortFirstDefault"/>
+      <checkbox label="Show Zotero&#8217;s automatic choice first when no default is set" native="true"
+        preference="extensions.zotero.weavero.defattSortFirstAuto"/>
+      <checkbox label="Mark the automatic choice with a dimmed &#9655; in the items list" native="true"
+        preference="extensions.zotero.weavero.defattMarkAuto"/>
+      <html:p class="wv-desc">With the two options above, whatever opens on double-click sits in
+        the first row of an item&#8217;s attachments. The dimmed <html:b>&#9655;</html:b> always
+        shows Zotero&#8217;s own automatic choice &#8212; so you can see what would open if the
+        chosen default were removed &#8212; while a chosen default keeps its solid
+        <html:b>&#9654;&#65039;</html:b> marker.</html:p>
+    </vbox>
     <html:p class="wv-desc">Coming from <html:b>Default Attachment</html:b> by <html:b>PikaPei</html:b>?
       Your picks are imported automatically the first time Weavero starts, and that plugin’s own
       data is left untouched — see the README for how to remove it by hand once you are done

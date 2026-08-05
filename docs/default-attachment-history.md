@@ -161,6 +161,29 @@ mobile behaviour is the data-editing script route, because it changes what
 Zotero's own rule sees. If mobile is your priority, that is the honest
 recommendation — with the costs listed in the audit above.
 
+**Why choose a different solution from the one Zotero is building?** Not
+by preference — by necessity. The native design (#3333) stores the pick as
+a relation with a new predicate, and Zotero's sync server only accepts
+predicates on its allow-list; that server-side change is precisely what the
+native feature has been stalled on since 2023. A plugin using the same
+relation today would have its picks silently rejected at sync. Of the
+stores a plugin *can* use, each alternative fails worse: the Extra field
+pollutes visible metadata, hidden notes leak on the web library and iOS,
+and local prefs don't sync at all (the weakness of the earlier plugin
+approach). An ordinary tag is the one library-native store that syncs
+today, needs no server change, stays visible and deletable by hand, and
+survives without the plugin.
+
+**What happens when Zotero ships its native Primary Attachment feature?**
+Your picks convert; nothing is lost. The native feature will not read
+Weavero's tag (it reads its own relation), so the day it ships, Weavero
+will honor the native relation, offer a one-pass migration turning every
+`▶️ wv-defatt` tag into it — both identify the chosen child by its sync
+key, so the mapping is exact, group libraries included — and then step out
+of the way. The migration cannot be written sooner because the native
+feature's final storage encoding is one of the things still unresolved
+upstream; once it ships, the conversion is mechanical.
+
 **To what extent is it safe to use?** A fair question for any plugin, and
 doubly so for AI-written code, so here is the honest layering:
 

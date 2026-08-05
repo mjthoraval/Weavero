@@ -4,8 +4,9 @@
 its supplement, a preprint and the published version, a PDF and an EPUB —
 Zotero decides *by itself* which one a double-click opens, with a fixed rule
 and no way to choose otherwise. The rule's preferences (oldest PDF first)
-are frequently wrong for exactly the libraries researchers actually have,
-and this has been a requested feature for over a decade.
+can pick the wrong file — which child should open is a choice only the user
+can make — and letting the user decide has been a requested feature for
+over a decade.
 Weavero's [Default attachment](https://github.com/mjthoraval/Weavero#default-attachment)
 feature addresses it: you choose which child an item opens — any attachment,
 a linked URL, or a note. This page records where the problem comes from,
@@ -51,7 +52,15 @@ channel. Set a default on one computer
 and every synced computer running Weavero opens the same child; a computer
 without Weavero simply falls back to Zotero's normal rule until the plugin
 is installed there. The choice also survives whatever else preserves tags:
-group libraries, backup and restore, and exports that carry tags.
+backup and restore, and exports that carry tags.
+
+**Does it work in group libraries?** Yes — the tag syncs through the
+group like any tag — but with one caveat: the pick is honored only by
+group members who also run Weavero. A member without the plugin sees
+Zotero's normal rule (the tag itself is visible but inert for them).
+Setting or clearing a pick requires edit permission in the group;
+read-only members cannot set one, though they still benefit from picks
+others have set, if they run the plugin.
 
 **Does it work in the mobile apps?** The tag syncs to every device, but
 plugins cannot run in the mobile apps, so the pick is not *acted on* there —

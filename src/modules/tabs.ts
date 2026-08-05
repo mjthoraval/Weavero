@@ -8563,6 +8563,9 @@ class _TabsMixin {
      *  (the captured tab may only exist after the repair re-adds it). */
     _wvEnforceAnchorSelectionFromStore(tag: string) {
         try {
+            // A user gesture disarms ALL enforcement permanently (guard ticks
+            // AND the reconcile backstop) -- see _wvBootSelectionGuardStart.
+            if ((this as any)._wvBootUserActed) return;
             const doc0: any = (this as any)._wvBootWindowStoreDoc;
             const entry = doc0 && (doc0.windows || []).find((x: any) => x && x.kind === "main-anchor");
             const selSt = entry && (entry.tabs || []).find((t: any) => t && t.selected);
@@ -8592,19 +8595,42 @@ class _TabsMixin {
      *  whose reopen SELECTS, flashing a note tab for 1-2 s before the
      *  reconcile corrected it (2026-07-04). Re-assert the captured
      *  selection every 250 ms until the reconcile has run (15 s cap).
-     *  User clicks in this window are overridden — but the window is the
-     *  first ~3 s of boot, where clicks are vanishingly unlikely. */
+     *  A REAL user gesture in the anchor window disarms the guard (and the
+     *  reconcile backstop) PERMANENTLY -- the quit capture must never win a
+     *  fight against the user (same contract as the bg-restore focus
+     *  system: an unmarked activation is a user claim). The original "the
+     *  window is the first ~3 s of boot, clicks are vanishingly unlikely"
+     *  assumption broke on a big real library, where the reconcile lands
+     *  15-30 s in and the guard was yanking a freshly double-clicked
+     *  reader tab back to the library (reported 2026-08-05). */
     _wvBootSelectionGuardStart() {
         try {
             if ((this as any)._wvBootSelGuardOn) return;
             (this as any)._wvBootSelGuardOn = true;
             const w0: any = Zotero.getMainWindow();
             const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow) || w0;
+            const EVS = ["mousedown", "keydown", "wheel"];
+            const onUser = () => {
+                try {
+                    // Live-resolve: the plugin may have reloaded under this
+                    // listener; the latch must land on the CURRENT instance.
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvBootUserActed = true;
+                } catch (e) {}
+                unwire();
+            };
+            const unwire = () => {
+                try { for (const ev of EVS) anchor.removeEventListener(ev, onUser, true); } catch (e) {}
+            };
+            try { for (const ev of EVS) anchor.addEventListener(ev, onUser, true); } catch (e) {}
             let ticks = 0;
             const tick = () => {
                 ticks++;
-                if ((this as any)._wvAnchorReconciled || ticks > 60 || (this as any)._wvDestroyed) {
+                if ((this as any)._wvBootUserActed || (this as any)._wvAnchorReconciled
+                        || ticks > 60 || (this as any)._wvDestroyed) {
                     (this as any)._wvBootSelGuardOn = false;
+                    unwire();
                     return;
                 }
                 try { this._wvEnforceAnchorSelectionFromStore("guard"); } catch (e) {}

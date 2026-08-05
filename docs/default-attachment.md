@@ -1,3 +1,12 @@
+---
+layout: default
+title: "The default-attachment problem — history, prior art, and an audit"
+description: "Why Zotero opens the attachment it opens, how Weavero's Default attachment feature lets you choose, common questions (data safety, sync, groups, mobile, cleanup), the problem's full history, and a critical audit of the precursor script."
+redirect_from:
+  - /default-attachment-history
+  - /default-attachment-history.html
+---
+
 # The default-attachment problem — history, prior art, and an audit
 
 **The problem.** When a Zotero item has several children — the paper and
@@ -5,10 +14,15 @@ its supplement, a preprint and the published version, a PDF and an EPUB —
 Zotero decides *by itself* which one a double-click opens, with a fixed rule
 and no way to choose otherwise. The rule's preferences (oldest PDF first)
 can pick the wrong file, and letting the user decide has been a requested
-feature for over a decade.
+feature for over a decade. The Zotero developers have agreed it belongs in
+Zotero itself — the lead developer opened one of the two feature requests,
+and an implementation was approved in 2024, though it has not shipped (see
+the chronology below).
 Weavero's [Default attachment](https://github.com/mjthoraval/Weavero#default-attachment)
-feature addresses it: you choose which child an item opens — any attachment,
-a linked URL, or a note. This page records where the problem comes from,
+feature is therefore deliberately a **temporary fix**: it lets you choose
+which child an item opens — any attachment, a linked URL, or a note — until
+the native feature arrives, at which point your picks convert (see the
+questions below). This page records where the problem comes from,
 every public attempt to solve it, and a critical audit of the Actions & Tags
 script I shared myself before building the plugin feature. It exists for review:
 Weavero is developed with an AI coding agent (Claude), working against a

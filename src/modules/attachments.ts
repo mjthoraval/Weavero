@@ -112,8 +112,8 @@ declare const Zotero: any;
  *  in use in this library (U+2B50, U+203C U+FE0F).
  *
  *  LANDSCAPE — full dated chronology + the audit of MJT's precursor A&T
- *  script are PUBLIC: docs/default-attachment-history.md (published at
- *  mjthoraval.github.io/Weavero/default-attachment-history; private
+ *  script are PUBLIC: docs/default-attachment.md (published at
+ *  mjthoraval.github.io/Weavero/default-attachment; private
  *  posting plan stays in ../../work/defatt-history-and-audit.md). Code
  *  comments keep constraints, not history. The facts a maintainer of
  *  THIS file needs:

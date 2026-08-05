@@ -6,6 +6,7 @@ lang: en
 theme: jekyll-theme-cayman
 plugins:
   - jekyll-seo-tag
+  - jekyll-redirect-from
   - jekyll-sitemap
 exclude:
   - restart-testing.md

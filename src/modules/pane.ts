@@ -130,7 +130,7 @@ class _PaneMixin {
             // opts.ignorePick: compute the AUTOMATIC winner — Zotero's own
             // heuristic with the user's default-child override skipped. Used
             // by the ▷ items-list marker and the hoist, both of which need
-            // "what would open without the plugin" (2026-08-06).
+            // "what would open without the plugin" (2026-08-05).
             if (opts && opts.ignorePick) {
                 return this._wvBestAttachmentHeuristicSync(item);
             }

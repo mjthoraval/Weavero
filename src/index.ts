@@ -2102,7 +2102,7 @@ class WeaveroPlugin {
                 // Default attachment/note to open — ON, but INERT until the user
                 // marks a child, so it changes nothing on its own.
                 "enableDefaultChild",
-                // Its display companions (2026-08-06): hoist the default /
+                // Its display companions (2026-08-05): hoist the default /
                 // the automatic winner to the first attachments row, and the
                 // dimmed ▷ items-list marker on the automatic winner.
                 "defattSortFirstDefault", "defattSortFirstAuto", "defattMarkAuto",

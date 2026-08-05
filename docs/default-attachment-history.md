@@ -156,14 +156,14 @@ Its regression tests are
 | 2026‑04‑01 | [ErraticPattern's improved script](https://forums.zotero.org/discussion/comment/510211/#Comment_510211) (forum): refines crnkv's; also clears the URL from sibling PDFs (demotion) plus backdating | data-level |
 | 2026‑04‑02 | My Actions & Tags script ["Set Primary PDF Attachment"](https://github.com/windingwind/zotero-actions-tags/discussions/602) v1.0→v1.1, derived from the three above; handles locally-added PDFs without URLs. Audited below. | data-level |
 | 2026‑04‑28 | [PikaPei's Default Attachment plugin](https://github.com/PikaPei/zotero-default-attachment) v1.0.0 | plugin; local pref keyed by numeric itemIDs |
-| 2026‑07→08 | Weavero's feature: a synced automatic tag (`▶️ wv-defatt`) on the chosen child plus an open-time wrap of `getBestAttachment(s)`; edge-case audits 2026‑08‑04; reparent guard, first-row hoist and the ▷ automatic-choice marker 2026‑08‑05/06, several semantics adopted from #3333's review | synced tag + resolution wrap |
+| 2026‑07→08 | Weavero's feature: a synced automatic tag (`▶️ wv-defatt`) on the chosen child plus an open-time wrap of `getBestAttachment(s)`; edge-case audits 2026‑08‑04; reparent guard, first-row hoist and the ▷ automatic-choice marker 2026‑08‑05, several semantics adopted from #3333's review | synced tag + resolution wrap |
 
 Completeness: a GitHub sweep found no default/primary-attachment plugins
 beyond zotero-pdfkit and PikaPei's; the script lineage
 (crnkv → ErraticPattern → mine) and the two upstream issues are, to my
 knowledge, the complete set of public attempts. Corrections welcome.
 
-## Audit of my own Actions & Tags script (2026‑08‑06)
+## Audit of my own Actions & Tags script (5 August 2026)
 
 The script ([discussion #602](https://github.com/windingwind/zotero-actions-tags/discussions/602))
 works by *exploiting* the SQL above rather than overriding it: it rewrites

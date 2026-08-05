@@ -943,7 +943,7 @@ describe("Weavero — default child (attachments, notes, links)", () => {
     // design clears the pick on reparent, and Weavero matches it with a
     // notifier-driven guard (_wvWireReparentGuard, 0.18.3-dev.17): a marked
     // child observed with a parent other than the cached one is stripped.
-    // Four scenarios, each verified live 2026-08-06 before being locked here:
+    // Four scenarios, each verified live 2026-08-05 before being locked here:
     // plain reparent, merge (adopted pick stripped / master's kept), move to
     // standalone and back (no silent resurrection), and move onto a parent
     // that already has its own pick (exactly one marked child survives).

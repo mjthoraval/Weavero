@@ -60,7 +60,7 @@ Current in-Zotero coverage (177 tests, 13 spec files):
   refused, the toggle reporting live state rather than intent, and the
   parent's cached best-attachment state being invalidated; plus the four
   REPARENT-GUARD scenarios adopted from upstream zotero#3333's semantics
-  on 2026-08-06 — plain reparent clears the pick, a merge strips the
+  on 2026-08-05 — plain reparent clears the pick, a merge strips the
   adopted pick while the master's survives, moving a pick to standalone
   clears it without silent resurrection on return, and moving a pick
   onto a parent that has its own leaves exactly one marked child).

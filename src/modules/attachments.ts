@@ -616,7 +616,7 @@ class _AttachmentsMixin {
             // internally, so re-asserts are no-op).
             try { this._wvWireReparentGuard(); } catch (e) {}
             // HOIST (upstream zotero#3333's getAttachments sort, user-approved
-            // 2026-08-06): the effective opener sorts FIRST in every consumer
+            // 2026-08-05): the effective opener sorts FIRST in every consumer
             // of getAttachments — the item pane's attachments section and the
             // expanded items-tree children both follow it. Two prefs: the
             // explicit default (defattSortFirstDefault) and, when no explicit
@@ -1534,7 +1534,7 @@ class _AttachmentsMixin {
                         // "Default" signals a plugin tool and keeps the story
                         // clean if users later migrate from Weavero's Default
                         // Attachment to Zotero's native Primary Attachment
-                        // (user decision 2026-08-06, reversing same-day).
+                        // (user decision 2026-08-05, reversing same-day).
                         (glyph ? glyph + " " : "") + (marked ? "Clear Default Attachment" : "Set as Default Attachment")
                     );
                     mi.addEventListener("command", () => {

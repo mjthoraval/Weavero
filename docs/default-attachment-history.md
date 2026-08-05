@@ -4,9 +4,8 @@
 its supplement, a preprint and the published version, a PDF and an EPUB —
 Zotero decides *by itself* which one a double-click opens, with a fixed rule
 and no way to choose otherwise. The rule's preferences (oldest PDF first)
-can pick the wrong file — which child should open is a choice only the user
-can make — and letting the user decide has been a requested feature for
-over a decade.
+can pick the wrong file, and letting the user decide has been a requested
+feature for over a decade.
 Weavero's [Default attachment](https://github.com/mjthoraval/Weavero#default-attachment)
 feature addresses it: you choose which child an item opens — any attachment,
 a linked URL, or a note. This page records where the problem comes from,

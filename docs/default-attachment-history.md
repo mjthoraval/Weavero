@@ -39,8 +39,8 @@ the function that applies them.
 Weavero's feature changes **nothing** — not the date, not the URL, not any
 field of any item. The pick is an ordinary tag (`▶️ wv-defatt` — its design has its
 own question below) on the chosen child, and the plugin redirects Zotero's
-best-attachment resolution at open time. Remove the plugin and your library is byte-for-byte what it was: the
-tag remains as an inert, deletable tag, and Zotero's own rule returns. This
+best-attachment resolution at open time. Everything is reversible, down to removing the tag itself — see the
+stopping-the-feature question below. This
 is the deliberate opposite of the script lineage audited below, which achieves
 permanence precisely *by* editing the URL and date — the trade-off is
 the subject of the rest of this page.
@@ -117,8 +117,7 @@ doubly so for AI-written code, so here is the honest layering:
   your library data.
 - *What happens if it breaks.* Every hook is wrapped in defensive error
   handling, so a Weavero bug degrades to Zotero's normal behaviour rather
-  than breaking Zotero; disabling or removing the plugin restores stock
-  behaviour completely.
+  than breaking Zotero.
 - *How it is checked.* The upstream behaviour is read from Zotero's
   source, not assumed (the SQL above); features are audited edge case by
   edge case — this page is such an audit, published — and the resulting

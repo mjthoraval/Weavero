@@ -10,6 +10,22 @@ live Zotero with human judgment on every change — the full methodology is
 public at [Developing with AI](developing-with-ai) — and vetting works best
 when the reasoning is public too.
 
+## The one rule everything revolves around
+
+Zotero decides what a double-click opens with a single SQL ordering
+(`item.js`, `getBestAttachments` — the singular `getBestAttachment` uses the
+same ordering):
+
+```sql
+ORDER BY contentType='application/pdf' DESC, value=? DESC, dateAdded ASC
+-- value = the attachment's url field, compared to the PARENT item's url
+```
+
+Three keys, nothing else: **PDFs first**, then **URL matching the parent**,
+then **oldest**. Linked-URL attachments and trashed items are excluded.
+Every solution below either manipulates the data those keys read, or wraps
+the function that applies them.
+
 ## Common questions
 
 **Does it change my items' data — the date, the URL, anything?** No.
@@ -107,22 +123,6 @@ documented in detail at [Developing with AI](developing-with-ai).
 the ▷ marker, with the design invariants documented in its header comment.
 Its regression tests are
 [`test/default-attachment.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment.spec.js).
-
-## The one rule everything revolves around
-
-Zotero decides what a double-click opens with a single SQL ordering
-(`item.js`, `getBestAttachments` — the singular `getBestAttachment` uses the
-same ordering):
-
-```sql
-ORDER BY contentType='application/pdf' DESC, value=? DESC, dateAdded ASC
--- value = the attachment's url field, compared to the PARENT item's url
-```
-
-Three keys, nothing else: **PDFs first**, then **URL matching the parent**,
-then **oldest**. Linked-URL attachments and trashed items are excluded.
-Every solution below either manipulates the data those keys read, or wraps
-the function that applies them.
 
 ## Chronology of the problem and its solutions
 

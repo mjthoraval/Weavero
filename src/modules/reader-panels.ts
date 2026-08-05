@@ -2457,6 +2457,17 @@ class _ReaderPanelsMixin {
                     } catch (er) { Zotero.debug("[Weavero] outline selection-drop err: " + er); }
                 });
             }
+            // Re-park the native outline's tabstop if a React re-render
+            // resurrected it while the takeover is active (the parking in
+            // _wvReaderActivateOutlineTakeover runs only on tab switches;
+            // this ensure runs on every render).
+            try {
+                const scEl = idoc.getElementById("sidebarContainer");
+                if (scEl && scEl.classList.contains(RP_OUTLINE_TAB_ON)) {
+                    const nat = idoc.querySelector(".outline-view[data-tabstop]");
+                    if (nat) { nat.removeAttribute("data-tabstop"); nat.setAttribute("data-wv-parked-tabstop", "1"); }
+                }
+            } catch (_) {}
             // One capture-phase click listener per idoc: take over on the
             // Outline tab, release on any other native tab or our Bookmarks tab.
             // VERSIONED + stored-ref wiring on the persistent idoc (never a bare
@@ -2966,6 +2977,23 @@ class _ReaderPanelsMixin {
             try {
                 const ovEl = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
                 if (ovEl) { if (on) ovEl.setAttribute("data-tabstop", "1"); else ovEl.removeAttribute("data-tabstop"); }
+                // Same rule for the NATIVE outline wrapper the takeover hides:
+                // it kept its stop, so Shift+Tab's reverse walk landed on an
+                // unfocusable hidden group and froze — focus never left the
+                // row ("I cannot tab out of the outline", 2026-08-05; forward
+                // Tab worked because the next stop is the PDF iframe proxy).
+                // Park the stop while we're active; restore on release.
+                const nat = idoc.querySelector(".outline-view[data-tabstop], .outline-view[data-wv-parked-tabstop]");
+                if (nat) {
+                    if (on && nat.hasAttribute("data-tabstop")) {
+                        nat.removeAttribute("data-tabstop");
+                        nat.setAttribute("data-wv-parked-tabstop", "1");
+                    }
+                    else if (!on && nat.hasAttribute("data-wv-parked-tabstop")) {
+                        nat.setAttribute("data-tabstop", "1");
+                        nat.removeAttribute("data-wv-parked-tabstop");
+                    }
+                }
             } catch (_) {}
         } catch (_) {}
     }
@@ -4719,10 +4747,18 @@ class _ReaderPanelsMixin {
     /** Delete an outline entry (double-click / menu). Resolves + curates first. */
     async _wvOutlineDoDelete(reader: any, idoc: any, entry: any, index: number, curatedView: boolean) {
         try {
+            // Landing row (see _wvOutlineDeleteSelected — same focus contract).
+            let fromIndex = 0;
+            try {
+                const rowsBefore: any[] = [...idoc.querySelectorAll(".wv-outline-row")];
+                const i = rowsBefore.findIndex((r: any) => r._wvOl && r._wvOl.index === index);
+                if (i >= 0) fromIndex = i;
+            } catch (_) {}
             const ref = await this._wvOutlineResolveId(reader, entry, index, curatedView);
             if (!ref) return;
             await this._wvOutlineDeleteEntry(ref.att.libraryID, ref.att.itemKey, ref.id);
-            this._wvReaderRenderOutline(reader, idoc);
+            await this._wvReaderRenderOutline(reader, idoc);
+            this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
         } catch (_) {}
     }
 
@@ -5017,6 +5053,17 @@ class _ReaderPanelsMixin {
      *  stable under the mutations, indices are not. */
     async _wvOutlineDeleteSelected(reader: any, idoc: any, items: any[]) {
         try {
+            // Capture the FIRST deleted row's rendered position BEFORE the
+            // delete: the re-render destroys the focused element, and the key
+            // handler is focus-gated, so without a landing row every keyboard
+            // delete stranded navigation (user-diagnosed 2026-08-05).
+            let fromIndex = 0;
+            try {
+                const rowsBefore: any[] = [...idoc.querySelectorAll(".wv-outline-row")];
+                const idxs = items.map((it: any) => rowsBefore.findIndex((r: any) => r._wvOl && r._wvOl.index === it.index))
+                    .filter((i: number) => i >= 0);
+                if (idxs.length) fromIndex = Math.min(...idxs);
+            } catch (_) {}
             let att: any = null;
             const ids: string[] = [];
             for (const it of items) {
@@ -5026,8 +5073,32 @@ class _ReaderPanelsMixin {
             if (!att || !ids.length) return;
             for (const id of ids) await this._wvOutlineDeleteEntry(att.libraryID, att.itemKey, id);
             try { if (reader._wvOutlineSel) reader._wvOutlineSel.clear(); } catch (_) {}
-            this._wvReaderRenderOutline(reader, idoc);
+            await this._wvReaderRenderOutline(reader, idoc);
+            this._wvOutlineLandAfterDelete(reader, idoc, fromIndex);
         } catch (err) { Zotero.debug("[Weavero] _wvOutlineDeleteSelected err: " + err); }
+    }
+
+    /** After a delete re-render, land selection + keyboard focus on the row
+     *  that took the deleted row's place (clamped to the last row), so the
+     *  focus-gated key handler keeps working. Same view.focus() fallback the
+     *  panel's empty-area click uses when nothing is left. */
+    _wvOutlineLandAfterDelete(reader: any, idoc: any, fromIndex: number) {
+        try {
+            const rows: any[] = [...idoc.querySelectorAll(".wv-outline-row")];
+            if (!rows.length) {
+                const view: any = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+                try { view && view.focus(); } catch (_) {}
+                return;
+            }
+            const row: any = rows[Math.max(0, Math.min(fromIndex, rows.length - 1))];
+            const key = this._wvOutlineRowKey(row);
+            if (key != null) {
+                reader._wvOutlineSel = new Set([key]);
+                reader._wvOutlineSelAnchor = key;
+                for (const r of rows) r.classList.toggle("wv-outline-selected", r === row);
+            }
+            try { row.focus(); } catch (_) {}
+        } catch (_) {}
     }
 
     /** The reader's CURRENT text selection as {position, text}, or null when
@@ -7353,11 +7424,20 @@ class _ReaderPanelsMixin {
                 const evalBtn = idoc.createElementNS(NS, "button");
                 evalBtn.className = "wv-outline-head-btn wv-outline-eval-btn";
                 const setIcon = () => {
+                    // Target the LIVE button, not the captured node: a header
+                    // re-render can replace the button between opening the
+                    // verdict menu and clicking a choice, and updating the
+                    // captured (now detached) node made the icon look stuck
+                    // until the next render (user report 2026-08-05; traced
+                    // via _wvOeCase call logging — onDone ran, on a dead
+                    // node). At construction the query finds nothing (the new
+                    // button isn't appended yet) — fall back to the local.
+                    const b: any = idoc.querySelector(".wv-outline-eval-btn") || evalBtn;
                     const cur = P._wvOeCase ? P._wvOeCase(att.libraryID, att.itemKey) : null;
                     const v = cur && cur.verdict;
-                    evalBtn.textContent = v === "good" ? "👍" : v === "bad" ? "👎" : v === "scan" ? "🖼" : "🧪";
-                    evalBtn.setAttribute("title", "Eval (dev): " + (v ? String(v).toUpperCase() : "not marked") + " — click to mark");
-                    evalBtn.classList.toggle("wv-outline-eval-marked", !!v);
+                    b.textContent = v === "good" ? "👍" : v === "bad" ? "👎" : v === "scan" ? "🖼" : "🧪";
+                    b.setAttribute("title", "Eval (dev): " + (v ? String(v).toUpperCase() : "not marked") + " — click to mark");
+                    b.classList.toggle("wv-outline-eval-marked", !!v);
                 };
                 setIcon();
                 Promise.resolve(P._wvOeInit && P._wvOeInit()).then(setIcon).catch(() => {});
@@ -13265,9 +13345,46 @@ class _ReaderPanelsMixin {
                 if (!ok) return;
             } catch (_) {}
         }
+        // Landing row: same focus contract as the outline deletes — the
+        // re-render kills the focused row and the key handler's gate needs
+        // an active row (or in-view focus) to keep navigation alive.
+        let fromIndex = 0;
+        try {
+            const all: any[] = [...idoc.querySelectorAll(".wv-bm-reader-row")];
+            const idxs = rows.map((r: any) => all.indexOf(r)).filter((i: number) => i >= 0);
+            if (idxs.length) fromIndex = Math.min(...idxs);
+        } catch (_) {}
         for (const id of ids) { try { await this._bmReaderRemove(att.libraryID, att.itemKey, id); } catch (_) {} }
         try { if (reader._wvBmSel) reader._wvBmSel.clear(); } catch (_) {}
         this._wvReaderRenderBmList(reader, idoc);
+        this._wvBmLandAfterDelete(reader, idoc, fromIndex);
+    }
+
+    /** Bookmarks twin of _wvOutlineLandAfterDelete: select + activate + focus
+     *  the row that took the deleted row's place (clamped), so arrow keys and
+     *  Del keep working after a keyboard delete. */
+    _wvBmLandAfterDelete(reader: any, idoc: any, fromIndex: number) {
+        try {
+            const rows: any[] = [...idoc.querySelectorAll(".wv-bm-reader-row")];
+            if (!rows.length) {
+                const view: any = idoc.querySelector("." + RP_BM_VIEW_CLASS);
+                try { view && view.focus && view.focus(); } catch (_) {}
+                return;
+            }
+            const row: any = rows[Math.max(0, Math.min(fromIndex, rows.length - 1))];
+            const key = this._wvBmRowKey(row);
+            if (key != null) {
+                const sel: Set<string> = reader._wvBmSel || (reader._wvBmSel = new Set());
+                sel.clear(); sel.add(key);
+                reader._wvBmSelAnchor = key;
+                reader._wvBmActiveId = key;
+                for (const r of rows) {
+                    r.classList.toggle("wv-bm-reader-selected", r === row);
+                    r.classList.toggle("wv-bm-reader-active", r === row);
+                }
+                try { this._wvBmRefocusRow(reader, idoc, key); } catch (_) {}
+            }
+        } catch (_) {}
     }
 
     /** The set of TEXT-selection bookmarks a context-menu bulk action applies

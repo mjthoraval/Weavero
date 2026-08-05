@@ -16206,11 +16206,48 @@ class _ReaderPanelsMixin {
                 }
 
                 append(...bmItems);
+                // "Add This Position to Outline" — the outline twin of the
+                // pin-bookmark entry (user request 2026-08-05): same exact
+                // clicked point, but the result is an OUTLINE entry. Own
+                // append → its own separator group, keeping the standing
+                // bookmarks → outline → copy-links menu order. PDF-only,
+                // over a page, outline feature on.
+                let LABEL_OUTLINE: string | null = null;
+                if (overPage && reader._type === "pdf" && this._getEnableOutlineTakeover()) {
+                    const clickO = click;   // snapshot captured above (params are stale by command time)
+                    // Ellipsis: this entry opens a title prompt, and menu
+                    // convention marks further-input entries with "…" (the
+                    // pin-bookmark sibling creates immediately, so it has
+                    // none). Shipped bare in dev.7 (user caught it).
+                    LABEL_OUTLINE = "Add This Position to Outline…";
+                    append({ label: LABEL_OUTLINE, onCommand: () => {
+                        try {
+                            const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!live) return;
+                            const pt = live._wvClickPointToPdf(reader, { params: clickO ? {
+                                x: clickO.x, y: clickO.y, position: clickO.position } : {} });
+                            if (!pt) return;
+                            const title = live._wvOutlinePromptTitle();
+                            if (!title) return;
+                            const pos = { pageIndex: pt.pageIndex, rects: [[pt.x, pt.y, pt.x, pt.y]], anchor: "point" };
+                            Promise.resolve(live._wvOutlineCreateEntry(reader, idoc, title, pos))
+                                .then((res: any) => {
+                                    if (!res || !res.stored) return;
+                                    try { live._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos); } catch (_) {}
+                                    live._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page "
+                                        + live._wvBmPageLabelFor(res.att, pt.pageIndex) + ". Drag the pin to adjust.");
+                                }).catch(() => {});
+                        } catch (e) { Zotero.debug("[Weavero] add-position-to-outline err: " + e); }
+                    } });
+                }
                 // Only stamp the pin glyph when the pin entry was actually
                 // offered -- otherwise the stamper hunts a menuitem that isn't
                 // there.
                 if (overPage) {
                     this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
+                }
+                if (LABEL_OUTLINE) {
+                    this._wvReaderStampMenuIcon(reader, LABEL_OUTLINE, this._wvReaderOutlineMenuIconURL());
                 }
                 if (LABEL_PAGE && pageAddFn) {
                     this._wvReaderStampPageAnchorSubmenu(reader, LABEL_PAGE,

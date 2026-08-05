@@ -1873,6 +1873,18 @@ class _ReaderMixin {
                                 mi.setAttribute("image", iconURL);
                                 stamped = true;
                             }
+                            // "Copy Link to This Position" gets the same pin
+                            // glyph as "Add Bookmark to This Position" -- the
+                            // link IS a pin (user request 2026-08-05). Same
+                            // popup as MENU_LABEL, so one pass stamps both.
+                            if (MENU_LABEL_2) {
+                                const mi2 = popup && popup.querySelector
+                                    && popup.querySelector('menuitem[label="' + MENU_LABEL_2 + '"]');
+                                if (mi2) {
+                                    mi2.classList.add("menuitem-iconic");
+                                    mi2.setAttribute("image", (this as any)._wvReaderPinMenuIconURL());
+                                }
+                            }
                             // not ours — leave the listener for the next popup
                         } catch (e) { stamped = true; }   // on error, stop rather than retry
                         if (stamped) {

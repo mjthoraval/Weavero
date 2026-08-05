@@ -3418,6 +3418,19 @@ class WeaveroPlugin {
             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) (this as any)._wvWireReopenClosedShortcut(w);
         } catch (e) {}
+        // wvpos loadURI hook on already-open main windows — same trap: it was
+        // wired ONLY in onMainWindowLoad, so installing/updating Weavero into
+        // a running Zotero left external `Copy Link to This Position` clicks
+        // on the native page-only path (reported 2026-08-05: link landed at
+        // the top of the page; the link ring had no interception entry).
+        try {
+            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) (this as any)._wvWireLoadURIHook(w);
+        } catch (e) {}
+        // Stolen-focus fix for external links: wrap CommandLineIngester so a
+        // link whose target is already open focuses THAT window instead of
+        // flashing the last-active main window (2026-08-05).
+        try { (this as any)._wvWireCmdLineIngester(); } catch (e) {}
         // Session-save hardening: serialize transient `-loading` tab types as
         // their base type so a mid-load tab isn't dropped on the next restore.
         // Plus restore tracing (restoreState in/out, early closes) per window.
@@ -4734,6 +4747,9 @@ class WeaveroPlugin {
         // pinned styles / note wiring resurrect right after removal
         // (observed on plugin disable, 2026-07-03).
         (this as any)._wvDestroyed = true;
+        // Command-line ingester wrap lives on the Zotero global — restore it
+        // (a reload re-wires the fresh instance's version).
+        try { (this as any)._wvUnwireCmdLineIngester(); } catch (e) {}
         // Stop the background-restore observer NOW: its per-window hooks and
         // tick loop otherwise keep acting for this dead instance after a
         // reload mid-hold (user activations got hijacked).

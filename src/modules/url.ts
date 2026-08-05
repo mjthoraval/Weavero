@@ -66,6 +66,10 @@ export const URL_SCHEMES = [
 // wrapped closure -- a reload must unhook the stale copy and re-hook.
 export const WV_LOADURI_WIRE_V = 1;
 
+// Wire version for the Zotero.CommandLineIngester.ingest wrap (stolen-focus
+// fix). Same bump discipline as WV_LOADURI_WIRE_V.
+export const WV_CMDLINE_WIRE_V = 1;
+
 export const BBT_BIBTEX_TRANSLATOR_ID = "ca65189f-8815-4afe-8c8b-8c7c15f0edca";
 export const BBT_BIBLATEX_TRANSLATOR_ID = "f895aa0d-f28e-47fe-b247-2ea77c6ed583";
 
@@ -458,6 +462,9 @@ export const urlMethods = {
                 return orig.apply(this, [uri, ...rest]);
             };
             zp._wvLoadURIWired = WV_LOADURI_WIRE_V;
+            // Ring the successful wire — its ABSENCE in Zotero._wvLinkLog is
+            // what diagnosed the unwired-window case (2026-08-05).
+            try { this._wvLinkRing("loadURI hook wired (v" + WV_LOADURI_WIRE_V + ")"); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvWireLoadURIHook err: " + e); }
     },
 
@@ -469,6 +476,110 @@ export const urlMethods = {
                 zp.loadURI = zp._wvOrigLoadURI;
                 delete zp._wvOrigLoadURI;
                 delete zp._wvLoadURIWired;
+            }
+        } catch (e) {}
+    },
+
+    /** The window that already shows the document a `zotero://open` link
+     *  targets — a reader window, or whichever main window hosts its tab —
+     *  or null when the document isn't open anywhere (or the URL doesn't
+     *  name an item). Used by the CommandLineIngester wrap to focus the
+     *  RIGHT window on external link delivery. */
+    _wvLinkTargetWindow(spec: string): any {
+        try {
+            const m = String(spec).match(/^zotero:\/\/open\/(?:library|groups\/(\d+))\/items\/([A-Z0-9]{8})/i);
+            if (!m) return null;
+            let libraryID = Zotero.Libraries.userLibraryID;
+            if (m[1]) {
+                const g: any = Zotero.Groups.get(parseInt(m[1], 10));
+                if (!g) return null;
+                libraryID = g.libraryID;
+            }
+            const item: any = Zotero.Items.getByLibraryAndKey(libraryID, m[2].toUpperCase());
+            if (!item) return null;
+            // The link normally names an attachment; if it names a regular
+            // item, any of its attachments' readers counts as the target.
+            const ids = new Set<number>([item.id]);
+            try {
+                if (item.isRegularItem && item.isRegularItem()) {
+                    for (const aid of (item.getAttachments() || [])) ids.add(aid);
+                }
+            } catch (e) {}
+            for (const r of ((Zotero as any).Reader && (Zotero as any).Reader._readers || [])) {
+                try {
+                    if (!r || !ids.has(r.itemID)) continue;
+                    const w = r._window;   // main window for a ReaderTab, the
+                                           // standalone window for window readers
+                    if (w && !w.closed) return w;
+                } catch (e) {}
+            }
+            return null;
+        } catch (e) { return null; }
+    },
+
+    /** Fix the "stolen focus" on external links: `CommandLineIngester.ingest`
+     *  unconditionally does `mainWindow.focus()` before loadURI (upstream
+     *  commandLineHandler.js) -- so a link whose target lives in ANOTHER
+     *  window briefly raised the last-active main window (its tab bar
+     *  flashing over the target window read as a phantom tab, 2026-08-05).
+     *  Wrap ingest: when the linked document is already open somewhere,
+     *  focus ITS window and route the URL through loadURI WITHOUT the main
+     *  raise; anything else falls through to the original untouched.
+     *  Versioned re-wiring; live plugin resolution (reload-safe). */
+    _wvWireCmdLineIngester() {
+        try {
+            const CI: any = (Zotero as any).CommandLineIngester;
+            if (!CI || typeof CI.ingest !== "function") return;
+            if (CI._wvIngestWired === WV_CMDLINE_WIRE_V) return;
+            if (CI._wvOrigIngest) {
+                try { CI.ingest = CI._wvOrigIngest; } catch (e) {}
+                delete CI._wvOrigIngest;
+                delete CI._wvIngestWired;
+            }
+            const orig = CI.ingest;
+            CI._wvOrigIngest = orig;
+            CI.ingest = async function (...args: any[]) {
+                try {
+                    const plugin: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    if (plugin) {
+                        const { CommandLineOptions } = ChromeUtils.importESModule(
+                            "chrome://zotero/content/modules/commandLineOptions.mjs");
+                        const uri: any = CommandLineOptions.url;
+                        if (uri && uri.schemeIs && uri.schemeIs("zotero")) {
+                            const tw = plugin._wvLinkTargetWindow(uri.spec);
+                            if (tw) {
+                                plugin._wvLinkRing("cmdline: target open in “"
+                                    + String(tw.document && tw.document.title || "?").slice(0, 20)
+                                    + "” — focusing it, skipping the main-window raise");
+                                try { tw.focus(); } catch (e) {}
+                                const mw: any = Zotero.getMainWindow();
+                                if (mw && mw.ZoteroPane) {
+                                    try { mw.ZoteroPane.loadURI(uri.spec); } catch (e) {}
+                                }
+                                // Consume the URL so the original ingest can't
+                                // re-handle it (and re-raise the main window);
+                                // its file/CSL handling still runs below.
+                                CommandLineOptions.url = null;
+                            }
+                        }
+                    }
+                } catch (e) {}
+                return orig.apply(this, args);
+            };
+            CI._wvIngestWired = WV_CMDLINE_WIRE_V;
+            this._wvLinkRing("cmdline ingester wired (v" + WV_CMDLINE_WIRE_V + ")");
+        } catch (e) { Zotero.debug("[Weavero] _wvWireCmdLineIngester err: " + e); }
+    },
+
+    /** Restore the native ingest (shutdown). */
+    _wvUnwireCmdLineIngester() {
+        try {
+            const CI: any = (Zotero as any).CommandLineIngester;
+            if (CI && CI._wvOrigIngest) {
+                CI.ingest = CI._wvOrigIngest;
+                delete CI._wvOrigIngest;
+                delete CI._wvIngestWired;
             }
         } catch (e) {}
     },
@@ -541,8 +652,21 @@ export const urlMethods = {
      *
      *  So: wait for state 3, place, then re-check once -- if a late render
      *  still took it, place it again. 2026-08-01. */
-    _wvPlacePinWhenRendered(reader: any, pv: any, pageIndex: number, rects: any[], tries?: number) {
+    _wvPlacePinWhenRendered(reader: any, pv: any, pageIndex: number, rects: any[], tries?: number, seqIn?: number) {
         const n = tries || 0;
+        // Generation stamp: every NEW placement request (a fresh link click)
+        // invalidates all in-flight poll loops and clear timers from earlier
+        // clicks. Without it, N rapid clicks left N flat 2200 ms clears all
+        // racing the ONE current pin, so it vanished at whatever remainder the
+        // oldest timer happened to hold ("disappears at inconsistent times
+        // when clicked several times", 2026-08-05). Same convention as the
+        // highlight path's _wvHlSeq.
+        let seq: any = seqIn;
+        if (seq == null) {
+            (pv as any)._wvLinkPinSeq = ((pv as any)._wvLinkPinSeq || 0) + 1;
+            seq = (pv as any)._wvLinkPinSeq;
+        }
+        const live = () => (pv as any)._wvLinkPinSeq === seq;
         const w: any = Zotero.getMainWindow();
         const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
         try {
@@ -553,6 +677,10 @@ export const urlMethods = {
             const pgv = app && app.pdfViewer && app.pdfViewer._pages
                 && app.pdfViewer._pages[pageIndex];
             const rendered = !!(pgv && pgv.div && pgv.viewport && pgv.renderingState === 3);
+            if (rendered && !live()) {
+                this._wvLinkRing("pin: placement superseded by a newer click (seq " + seq + ")");
+                return;
+            }
             if (rendered) {
                 // RE-SCROLL, then place. The quarter-rule scroll in
                 // _wvHighlightAfterOpen runs before the page has rendered, and
@@ -601,7 +729,7 @@ export const urlMethods = {
                 // (its rect comes back in document coords, i.e. it is not
                 // inside the scrolling container), so the watcher was pure
                 // complexity on the path.
-                st(() => { try { this._wvClearStalePin(pv); } catch (e) {} }, 2200);
+                st(() => { try { if (live()) this._wvClearStalePin(pv); } catch (e) {} }, 2200);
 
                 return;
             }
@@ -612,7 +740,7 @@ export const urlMethods = {
         // is unrecoverable -- the pin never appears at all. Idle polls are
         // near-free; the ring records a give-up either way (2026-08-01).
         if (n < 120) {
-            st(() => this._wvPlacePinWhenRendered(reader, pv, pageIndex, rects, n + 1), 150);
+            st(() => { if (live()) this._wvPlacePinWhenRendered(reader, pv, pageIndex, rects, n + 1, seq); }, 150);
         } else {
             this._wvLinkRing("pin: page never reached renderingState 3");
         }

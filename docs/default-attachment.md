@@ -110,14 +110,15 @@ is softened by registering it as an *automatic* tag (hideable there), with
 the meaning discoverable where you act: the context menu and the settings.
 
 **What happens when Zotero ships its native Primary Attachment feature?**
-Your picks convert; nothing is lost. The native feature will not read
-Weavero's tag (it reads its own relation), so the day it ships, Weavero
-will honor the native relation, offer a one-pass migration turning every
-`▶️ wv-defatt` tag into it — both identify the chosen child by its sync
-key, so the mapping is exact, group libraries included — and then step out
-of the way. The migration cannot be written sooner because the native
-feature's final storage encoding is one of the things still unresolved
-upstream; once it ships, the conversion is mechanical.
+Nothing is lost, but the transfer is not automatic in today's plugin: the
+native feature will not read Weavero's tag (it reads its own relation), and
+the migration cannot be written in advance because the native feature's
+final storage encoding is one of the things still unresolved upstream. The
+feature is *designed* for that handover, though — the tag and the native
+relation both identify the chosen child by its sync key, so the mapping is
+exact, group libraries included. When the native feature ships, a plugin
+update will honor the native relation, offer a one-pass transfer of every
+`▶️ wv-defatt` tag into it, and then step out of the way.
 
 **What if I stop using the feature — what is left, and how do I clean it
 completely?** Turning the feature off in the settings (or removing Weavero)

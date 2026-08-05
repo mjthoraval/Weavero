@@ -10,6 +10,104 @@ live Zotero with human judgment on every change — the full methodology is
 public at [Developing with AI](developing-with-ai) — and vetting works best
 when the reasoning is public too.
 
+## Common questions
+
+**Does it change my items' data — the date, the URL, anything?** No.
+Weavero's feature changes **nothing** — not the date, not the URL, not any
+field of any item. The pick is an ordinary tag (`▶️ wv-defatt` — its design has its
+own question below) on the chosen child, and the plugin redirects Zotero's
+best-attachment resolution at open time. Remove the plugin and your library is byte-for-byte what it was: the
+tag remains as an inert, deletable tag, and Zotero's own rule returns. This
+is the deliberate opposite of the script lineage audited below, which achieves
+permanence precisely *by* editing the URL and date — the trade-off is
+the subject of the rest of this page.
+
+**Does it sync across computers?** Yes. The pick is a tag, and tags travel
+through ordinary Zotero sync — no extra service, no plugin-specific sync
+channel. Set a default on one computer
+and every synced computer running Weavero opens the same child; a computer
+without Weavero simply falls back to Zotero's normal rule until the plugin
+is installed there. The choice also survives whatever else preserves tags:
+group libraries, backup and restore, and exports that carry tags.
+
+**Does it work in the mobile apps?** The tag syncs to every device, but
+plugins cannot run in the mobile apps, so the pick is not *acted on* there —
+Zotero's normal rule applies on mobile. The only approach that changes
+mobile behaviour is the data-editing script route, because it changes what
+Zotero's own rule sees. If mobile is your priority, that is the honest
+recommendation — with the costs listed in the audit below.
+
+**Why choose a different solution from the one Zotero is building?** Not
+by preference — by necessity. The native design ([zotero#3333](https://github.com/zotero/zotero/pull/3333)) stores the pick as
+a relation with a new predicate, and Zotero's sync server only accepts
+predicates on its allow-list; that server-side change is precisely what the
+native feature has been stalled on since 2023. A plugin using the same
+relation today would have its picks silently rejected at sync. Of the
+stores a plugin *can* use, each alternative fails worse: the Extra field
+pollutes visible metadata, hidden notes leak on the web library and iOS,
+and local prefs don't sync at all (the weakness of the earlier plugin
+approach). An ordinary tag is the one library-native store that syncs
+today, needs no server change, stays visible and deletable by hand, and
+survives without the plugin.
+
+**Why an emoji tag, and why the cryptic name?** Both halves are doing a
+job. The `▶️` emoji is rendered by Zotero directly in the items list next
+to the child's title, so a marked child is visible at a glance without
+spending one of the nine coloured-tag slots — and the glyph reads as "this
+is what opens". The slug `wv-defatt` is deliberately not an English word:
+Zotero's quick search matches substrings and splits on spaces, so any
+readable name leaks — early candidates made every marked child surface in
+ordinary searches for "default" or for notes about the plugin itself.
+"defatt" shares no substring with "default", and the single hyphenated
+token stays one search condition, so searching it finds exactly the marked
+children and nothing else. The cost — a cryptic name in the Tag Selector —
+is softened by registering it as an *automatic* tag (hideable there), with
+the meaning discoverable where you act: the context menu and the settings.
+
+**What happens when Zotero ships its native Primary Attachment feature?**
+Your picks convert; nothing is lost. The native feature will not read
+Weavero's tag (it reads its own relation), so the day it ships, Weavero
+will honor the native relation, offer a one-pass migration turning every
+`▶️ wv-defatt` tag into it — both identify the chosen child by its sync
+key, so the mapping is exact, group libraries included — and then step out
+of the way. The migration cannot be written sooner because the native
+feature's final storage encoding is one of the things still unresolved
+upstream; once it ships, the conversion is mechanical.
+
+**To what extent is it safe to use?** A fair question for any plugin, and
+doubly so for AI-written code, so here is the honest layering:
+
+- *What it can touch.* For this feature: one tag. The plugin never edits
+  your items' fields, dates, or files; Weavero's other features keep their
+  state in their own JSON files inside the Zotero data directory, out of
+  your library data.
+- *What happens if it breaks.* Every hook is wrapped in defensive error
+  handling, so a Weavero bug degrades to Zotero's normal behaviour rather
+  than breaking Zotero; disabling or removing the plugin restores stock
+  behaviour completely.
+- *How it is checked.* The upstream behaviour is read from Zotero's
+  source, not assumed (the SQL above); features are audited edge case by
+  edge case — this page is such an audit, published — and the resulting
+  contracts (trash, merge, reparent, read-only libraries,
+  plural-vs-singular resolution, cache invalidation, …) are locked into an
+  automated test suite (177 tests at the time of writing) that runs before
+  every release: see
+  [TESTING.md](https://github.com/mjthoraval/Weavero/blob/main/TESTING.md).
+- *What remains true anyway.* It is one researcher's plugin in active
+  development: bugs exist, get reported on the
+  [issue tracker](https://github.com/mjthoraval/Weavero/issues), and get
+  fixed. Zotero's own backup practices apply, as with any plugin.
+
+The code is open source (AGPL-3.0); the development methodology is
+documented in detail at [Developing with AI](developing-with-ai).
+
+**Where is the code for this feature?** One module:
+[`src/modules/attachments.ts`](https://github.com/mjthoraval/Weavero/blob/main/src/modules/attachments.ts)
+— the marker tag, the resolution wraps, the reparent guard, the hoist and
+the ▷ marker, with the design invariants documented in its header comment.
+Its regression tests are
+[`test/default-attachment.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment.spec.js).
+
 ## The one rule everything revolves around
 
 Zotero decides what a double-click opens with a single SQL ordering
@@ -132,101 +230,3 @@ applies. What each side gives up is symmetrical — the script's edits are
 honored everywhere forever but falsify data; the tag touches nothing but
 needs the plugin present to act. The pending native feature (#3333) would
 eventually make every approach on this page unnecessary.
-
-## Common questions
-
-**Does it change my items' data — the date, the URL, anything?** No.
-Weavero's feature changes **nothing** — not the date, not the URL, not any
-field of any item. The pick is an ordinary tag (`▶️ wv-defatt` — its design has its
-own question below) on the chosen child, and the plugin redirects Zotero's
-best-attachment resolution at open time. Remove the plugin and your library is byte-for-byte what it was: the
-tag remains as an inert, deletable tag, and Zotero's own rule returns. This
-is the deliberate opposite of the script lineage above, which achieves
-permanence precisely *by* editing the URL and date — the trade-off table is
-this whole page.
-
-**Does it sync across computers?** Yes. The pick is a tag, and tags travel
-through ordinary Zotero sync — no extra service, no plugin-specific sync
-channel. Set a default on one computer
-and every synced computer running Weavero opens the same child; a computer
-without Weavero simply falls back to Zotero's normal rule until the plugin
-is installed there. The choice also survives whatever else preserves tags:
-group libraries, backup and restore, and exports that carry tags.
-
-**Does it work in the mobile apps?** The tag syncs to every device, but
-plugins cannot run in the mobile apps, so the pick is not *acted on* there —
-Zotero's normal rule applies on mobile. The only approach that changes
-mobile behaviour is the data-editing script route, because it changes what
-Zotero's own rule sees. If mobile is your priority, that is the honest
-recommendation — with the costs listed in the audit above.
-
-**Why choose a different solution from the one Zotero is building?** Not
-by preference — by necessity. The native design (#3333) stores the pick as
-a relation with a new predicate, and Zotero's sync server only accepts
-predicates on its allow-list; that server-side change is precisely what the
-native feature has been stalled on since 2023. A plugin using the same
-relation today would have its picks silently rejected at sync. Of the
-stores a plugin *can* use, each alternative fails worse: the Extra field
-pollutes visible metadata, hidden notes leak on the web library and iOS,
-and local prefs don't sync at all (the weakness of the earlier plugin
-approach). An ordinary tag is the one library-native store that syncs
-today, needs no server change, stays visible and deletable by hand, and
-survives without the plugin.
-
-**Why an emoji tag, and why the cryptic name?** Both halves are doing a
-job. The `▶️` emoji is rendered by Zotero directly in the items list next
-to the child's title, so a marked child is visible at a glance without
-spending one of the nine coloured-tag slots — and the glyph reads as "this
-is what opens". The slug `wv-defatt` is deliberately not an English word:
-Zotero's quick search matches substrings and splits on spaces, so any
-readable name leaks — early candidates made every marked child surface in
-ordinary searches for "default" or for notes about the plugin itself.
-"defatt" shares no substring with "default", and the single hyphenated
-token stays one search condition, so searching it finds exactly the marked
-children and nothing else. The cost — a cryptic name in the Tag Selector —
-is softened by registering it as an *automatic* tag (hideable there), with
-the meaning discoverable where you act: the context menu and the settings.
-
-**What happens when Zotero ships its native Primary Attachment feature?**
-Your picks convert; nothing is lost. The native feature will not read
-Weavero's tag (it reads its own relation), so the day it ships, Weavero
-will honor the native relation, offer a one-pass migration turning every
-`▶️ wv-defatt` tag into it — both identify the chosen child by its sync
-key, so the mapping is exact, group libraries included — and then step out
-of the way. The migration cannot be written sooner because the native
-feature's final storage encoding is one of the things still unresolved
-upstream; once it ships, the conversion is mechanical.
-
-**To what extent is it safe to use?** A fair question for any plugin, and
-doubly so for AI-written code, so here is the honest layering:
-
-- *What it can touch.* For this feature: one tag. The plugin never edits
-  your items' fields, dates, or files; Weavero's other features keep their
-  state in their own JSON files inside the Zotero data directory, out of
-  your library data.
-- *What happens if it breaks.* Every hook is wrapped in defensive error
-  handling, so a Weavero bug degrades to Zotero's normal behaviour rather
-  than breaking Zotero; disabling or removing the plugin restores stock
-  behaviour completely.
-- *How it is checked.* The upstream behaviour is read from Zotero's
-  source, not assumed (the SQL above); features are audited edge case by
-  edge case — this page is such an audit, published — and the resulting
-  contracts (trash, merge, reparent, read-only libraries,
-  plural-vs-singular resolution, cache invalidation, …) are locked into an
-  automated test suite (177 tests at the time of writing) that runs before
-  every release: see
-  [TESTING.md](https://github.com/mjthoraval/Weavero/blob/main/TESTING.md).
-- *What remains true anyway.* It is one researcher's plugin in active
-  development: bugs exist, get reported on the
-  [issue tracker](https://github.com/mjthoraval/Weavero/issues), and get
-  fixed. Zotero's own backup practices apply, as with any plugin.
-
-The code is open source (AGPL-3.0); the development methodology is
-documented in detail at [Developing with AI](developing-with-ai).
-
-**Where is the code for this feature?** One module:
-[`src/modules/attachments.ts`](https://github.com/mjthoraval/Weavero/blob/main/src/modules/attachments.ts)
-— the marker tag, the resolution wraps, the reparent guard, the hoist and
-the ▷ marker, with the design invariants documented in its header comment.
-Its regression tests are
-[`test/default-attachment.spec.js`](https://github.com/mjthoraval/Weavero/blob/main/test/default-attachment.spec.js).

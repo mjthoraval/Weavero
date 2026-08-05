@@ -169,17 +169,17 @@ Its regression tests are
 | When | What | Mechanism |
 |---|---|---|
 | ~2011 | Zotero forum asks ("how to set default PDF…") | — |
-| 2013‑07 | [zotero/zotero#355](https://github.com/zotero/zotero/issues/355) "Allow setting default item attachment", opened by aurimasv (then a Zotero developer, "getting burned by this myself") | — |
-| 2019‑07 | [zotero/zotero#1715](https://github.com/zotero/zotero/issues/1715) "Add ability to set primary attachment for an item" — opened by the lead developer himself | — |
+| July 2013 | [zotero/zotero#355](https://github.com/zotero/zotero/issues/355) "Allow setting default item attachment", opened by aurimasv (then a Zotero developer, "getting burned by this myself") | — |
+| July 2019 | [zotero/zotero#1715](https://github.com/zotero/zotero/issues/1715) "Add ability to set primary attachment for an item" — opened by the lead developer himself | — |
 | 2020–2023 | #355 accumulates the canonical use case: an arXiv preprint saved first keeps opening after the published PDF is attached, because the heuristic prefers the oldest PDF. Also floated there (2022, never built): drag-to-reorder attachments with "top one opens". | — |
-| 2023‑03 | [sharpevo/zotero-pdfkit](https://github.com/sharpevo/zotero-pdfkit) — earliest plugin workaround, cited in #355 as "a temporary solution" | plugin |
-| 2023‑08 | [zotero/zotero#3333](https://github.com/zotero/zotero/pull/3333) "option to set primary attachment" (fixes #355 and #1715): a relation on the parent item (`zotero:primaryAttachment` → attachment key). Approved in 2024 but stalled: the sync server must allow-list the new predicate, and the key-vs-URI encoding is unresolved. | relation on parent |
-| 2025‑01 | [crnkv's Action Scripts Collection](https://github.com/crnkv/Zotero-Action-Scripts-Collection) — first-generation Actions & Tags script ("Set This as Default PDF") | data-level |
-| 2026‑03‑24 | My own bug report, ["Newly added attachment PDF is set as Primary attachment"](https://forums.zotero.org/discussion/comment/510305): a connector-imported PDF steals primacy because its URL matches the parent's. The instability that motivated the script below — the same mechanism, encountered as a bug before being used as a tool. | — |
-| 2026‑04‑01 | [ErraticPattern's improved script](https://forums.zotero.org/discussion/comment/510211/#Comment_510211) (forum): refines crnkv's; also clears the URL from sibling PDFs (demotion) plus backdating | data-level |
-| 2026‑04‑02 | My Actions & Tags script ["Set Primary PDF Attachment"](https://github.com/windingwind/zotero-actions-tags/discussions/602) v1.0→v1.1, derived from the three above; handles locally-added PDFs without URLs. Audited below. | data-level |
-| 2026‑04‑28 | [PikaPei's Default Attachment plugin](https://github.com/PikaPei/zotero-default-attachment) v1.0.0 | plugin; local pref keyed by numeric itemIDs |
-| 2026‑07→08 | Weavero's feature: a synced automatic tag (`▶️ wv-defatt`) on the chosen child plus an open-time wrap of `getBestAttachment(s)`; edge-case audits 2026‑08‑04; reparent guard, first-row hoist and the ▷ automatic-choice marker 2026‑08‑05, several semantics adopted from #3333's review | synced tag + resolution wrap |
+| March 2023 | [sharpevo/zotero-pdfkit](https://github.com/sharpevo/zotero-pdfkit) — earliest plugin workaround, cited in #355 as "a temporary solution" | plugin |
+| August 2023 | [zotero/zotero#3333](https://github.com/zotero/zotero/pull/3333) "option to set primary attachment" (fixes #355 and #1715): a relation on the parent item (`zotero:primaryAttachment` → attachment key). Approved in 2024 but stalled: the sync server must allow-list the new predicate, and the key-vs-URI encoding is unresolved. | relation on parent |
+| January 2025 | [crnkv's Action Scripts Collection](https://github.com/crnkv/Zotero-Action-Scripts-Collection) — first-generation Actions & Tags script ("Set This as Default PDF") | data-level |
+| 24 March 2026 | My own bug report, ["Newly added attachment PDF is set as Primary attachment"](https://forums.zotero.org/discussion/comment/510305): a connector-imported PDF steals primacy because its URL matches the parent's. The instability that motivated the script below — the same mechanism, encountered as a bug before being used as a tool. | — |
+| 1 April 2026 | [ErraticPattern's improved script](https://forums.zotero.org/discussion/comment/510211/#Comment_510211) (forum): refines crnkv's; also clears the URL from sibling PDFs (demotion) plus backdating | data-level |
+| 2 April 2026 | My Actions & Tags script ["Set Primary PDF Attachment"](https://github.com/windingwind/zotero-actions-tags/discussions/602) v1.0→v1.1, derived from the three above; handles locally-added PDFs without URLs. Audited below. | data-level |
+| 28 April 2026 | [PikaPei's Default Attachment plugin](https://github.com/PikaPei/zotero-default-attachment) v1.0.0 | plugin; local pref keyed by numeric itemIDs |
+| July–August 2026 | Weavero's feature: a synced automatic tag (`▶️ wv-defatt`) on the chosen child plus an open-time wrap of `getBestAttachment(s)`; edge-case audits of 4 August 2026; reparent guard, first-row hoist and the ▷ automatic-choice marker 5 August 2026, several semantics adopted from #3333's review | synced tag + resolution wrap |
 
 Completeness: a GitHub sweep found no default/primary-attachment plugins
 beyond zotero-pdfkit and PikaPei's; the script lineage
@@ -270,3 +270,55 @@ applies. What each side gives up is symmetrical — the script's edits are
 honored everywhere forever but falsify data; the tag touches nothing but
 needs the plugin present to act. The pending native feature (#3333) would
 eventually make every approach on this page unnecessary.
+
+## Audit of the Weavero feature (5 August 2026)
+
+The same standard applied to the plugin's own solution.
+
+### Strengths
+
+- **No data mutation.** One tag; item fields, dates, and files untouched;
+  completely reversible (see the cleanup question above).
+- **Intent is recorded**, so the pick is *sticky*: a connector re-save whose
+  URL happens to match the parent cannot silently steal primacy, the exact
+  instability that motivated the script lineage.
+- **Broader than every alternative:** any openable child qualifies —
+  non-PDF attachments, linked URLs, child notes. The script route cannot
+  cross the contentType ceiling, and the planned native feature currently
+  gates to file attachments.
+- **Enforced invariants:** exactly one marked child per item (setting a new
+  pick clears the old, including in the trash); the pick is cleared when
+  its child is deleted, reparented, or merged away; trashed picks are
+  ignored; read-only libraries are refused cleanly; Date Modified is never
+  touched.
+- **Every open surface honors the pick** — double-click, the Locate menu,
+  the note editor, open-links, the reader — because the resolution function
+  itself is wrapped, not individual buttons.
+- **Visible:** the ▶️ marker on the chosen child, the dimmed ▷ on the
+  automatic alternative, and the first-row position make the state
+  inspectable at a glance.
+- **Contract-tested:** the invariants above are locked by the automated
+  suite, and this page publishes the reasoning.
+
+### Limitations
+
+- **The plugin must be running for the pick to act.** No effect in the
+  mobile apps, the web library, or an install without Weavero — those see
+  Zotero's normal rule. This is the exact mirror of the script route's
+  strength, and the price of touching nothing.
+- **It hooks Zotero internals.** A Zotero update can break the resolution
+  wrap until the plugin catches up; the failure mode is designed to be
+  fallback-to-normal rather than breakage, but the dependency is real.
+- **The marker is an ordinary tag, so it can be deleted like one.** That is
+  the cleanup mechanism working as intended — but it also means an
+  accidental tag deletion (or an aggressive tag-cleanup tool) silently
+  reverts the item to the automatic rule.
+- **A chosen note or linked URL is honored only where opening one makes
+  sense.** Callers that require a file (and Zotero has several) still
+  receive the best file attachment — by design, but it means non-file picks
+  are not honored absolutely everywhere.
+- **Interactions with other plugins that wrap the same function** are
+  managed (Weavero re-asserts its wrapper and keeps rivals as fallback),
+  but wrapper chains are inherently order-sensitive.
+- **Temporary by design:** when Zotero's native feature ships, a plugin
+  update and a one-pass transfer will be needed (see the question above).

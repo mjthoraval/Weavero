@@ -111,6 +111,30 @@ declare const Zotero: any;
  *  U+25B6 U+FE0F reads as "this is what opens", and avoids the emoji already
  *  in use in this library (U+2B50, U+203C U+FE0F).
  *
+ *  LANDSCAPE — full dated chronology + the audit of MJT's precursor A&T
+ *  script are PUBLIC: docs/default-attachment-history.md (published at
+ *  mjthoraval.github.io/Weavero/default-attachment-history; private
+ *  posting plan stays in ../../work/defatt-history-and-audit.md). Code
+ *  comments keep constraints, not history. The facts a maintainer of
+ *  THIS file needs:
+ *
+ *  - The native arbiter is ONE SQL ordering (item.js getBestAttachments):
+ *    `contentType='application/pdf' DESC, url=parentURL DESC, dateAdded
+ *    ASC`. Every prior solution manipulates or wraps exactly that.
+ *  - MJT's A&T script (2026-04, discussion #602) EXPLOITED it (URL +
+ *    dateAdded edits — plugin-free at open time, but destructive; the
+ *    audit's core finding is its unrecorded date mutations). This module
+ *    descends from that lineage and chose the opposite trade:
+ *    non-destructive tag + wrapper, graceful heuristic fallback without
+ *    the plugin, NO library field ever edited.
+ *  - UPSTREAM zotero#3333 ("Primary Attachment", stalled on sync-server
+ *    work) drove clear-on-reparent, the plural==singular invariant, and
+ *    the getAttachments hoist. Wording stays deliberately DISTINCT (our
+ *    "Default" vs their "Primary"); merge contingency in
+ *    work/upstream-collision-checklist.md.
+ *  - PikaPei's plugin stores LOCAL numeric-itemID prefs (no sync) — see
+ *    the migration section below; we import, never touch.
+ *
  *  WARNING: the tag IS the storage. Changing this constant orphans every
  *  already-marked child — cheap now, expensive after release. */
 export const OPEN_BY_DEFAULT_TAG = "▶️ wv-defatt";

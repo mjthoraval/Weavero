@@ -166,11 +166,13 @@ Zotero decides what a double-click opens with a fixed rule: PDFs first, then an 
 - **linked URLs**
 - **child notes**
 
-The same entry reads `▶️ Clear Default Attachment` once set, so one menu item does both. (Zotero itself has a pending native *Primary Attachment* feature, [zotero/zotero#3333](https://github.com/zotero/zotero/pull/3333); Weavero deliberately keeps the distinct *Default* name so the plugin tool and the future native feature stay tellable apart — and migrating from one to the other reads unambiguously.) Turning the feature off in *Settings → Weavero → Extras → Default attachment* stops the override but keeps your picks.
+The same entry reads `▶️ Clear Default Attachment` once set, so one menu item does both. (Zotero itself has a pending native *Primary Attachment* feature, [zotero/zotero#3333](https://github.com/zotero/zotero/pull/3333); Weavero deliberately keeps the distinct *Default* name so the plugin tool and the future native feature stay tellable apart — and migrating from one to the other reads unambiguously. The problem's full history — a decade of upstream issues, the script lineage this feature descends from, and a critical audit of my own precursor script — is documented for review at [default-attachment-history](https://mjthoraval.github.io/Weavero/default-attachment-history).) Turning the feature off in *Settings → Weavero → Extras → Default attachment* stops the override but keeps your picks.
 
 **How the choice is stored — and why it matters.** The pick is an automatic tag, `▶️ wv-defatt`, on the chosen child. That means it **syncs to your other devices**, it survives exporting, and it keeps working if you ever remove Weavero (the tag simply becomes an ordinary tag and Zotero returns to its own rule — nothing to repair). Deleting the child deletes the choice with it, so nothing is ever left dangling.
 
 The leading `▶️` is rendered by Zotero in the items list, so a marked child is visible at a glance without spending one of your nine colour-tag slots.
+
+**Seeing what opens.** The attachment that opens sits in the **first row** of an item's attachments (your chosen default, or Zotero's automatic pick when you haven't chosen), and the automatic pick carries a dimmed **▷** in the items list — so you can always see what would open if your chosen default were removed. All three behaviours have toggles in *Settings → Weavero → Extras → Default attachment* (on by default).
 
 **Finding every marked item:** search **`wv-defatt`**, or the **`▶️`** glyph. The slug deliberately contains no ordinary words — searching `default` or `attachment` will *not* drag your marked items into unrelated results, which is exactly what a readable name would have done (Zotero's quick search matches substrings and splits on spaces).
 

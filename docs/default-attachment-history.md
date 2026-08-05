@@ -137,10 +137,9 @@ eventually make every approach on this page unnecessary.
 
 **Does it change my items' data — the date, the URL, anything?** No.
 Weavero's feature changes **nothing** — not the date, not the URL, not any
-field of any item. The pick is an ordinary tag (`▶️ wv-defatt`, registered
-as an *automatic* tag so it can be hidden in the Tag Selector) on the chosen
-child, and the plugin redirects Zotero's best-attachment resolution at open
-time. Remove the plugin and your library is byte-for-byte what it was: the
+field of any item. The pick is an ordinary tag (`▶️ wv-defatt` — its design has its
+own question below) on the chosen child, and the plugin redirects Zotero's
+best-attachment resolution at open time. Remove the plugin and your library is byte-for-byte what it was: the
 tag remains as an inert, deletable tag, and Zotero's own rule returns. This
 is the deliberate opposite of the script lineage above, which achieves
 permanence precisely *by* editing the URL and date — the trade-off table is
@@ -148,7 +147,7 @@ this whole page.
 
 **Does it sync across computers?** Yes. The pick is a tag, and tags travel
 through ordinary Zotero sync — no extra service, no plugin-specific sync
-channel, nothing for a server to allow-list. Set a default on one computer
+channel. Set a default on one computer
 and every synced computer running Weavero opens the same child; a computer
 without Weavero simply falls back to Zotero's normal rule until the plugin
 is installed there. The choice also survives whatever else preserves tags:
@@ -173,6 +172,20 @@ and local prefs don't sync at all (the weakness of the earlier plugin
 approach). An ordinary tag is the one library-native store that syncs
 today, needs no server change, stays visible and deletable by hand, and
 survives without the plugin.
+
+**Why an emoji tag, and why the cryptic name?** Both halves are doing a
+job. The `▶️` emoji is rendered by Zotero directly in the items list next
+to the child's title, so a marked child is visible at a glance without
+spending one of the nine coloured-tag slots — and the glyph reads as "this
+is what opens". The slug `wv-defatt` is deliberately not an English word:
+Zotero's quick search matches substrings and splits on spaces, so any
+readable name leaks — early candidates made every marked child surface in
+ordinary searches for "default" or for notes about the plugin itself.
+"defatt" shares no substring with "default", and the single hyphenated
+token stays one search condition, so searching it finds exactly the marked
+children and nothing else. The cost — a cryptic name in the Tag Selector —
+is softened by registering it as an *automatic* tag (hideable there), with
+the meaning discoverable where you act: the context menu and the settings.
 
 **What happens when Zotero ships its native Primary Attachment feature?**
 Your picks convert; nothing is lost. The native feature will not read

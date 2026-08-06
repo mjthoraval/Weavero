@@ -92,6 +92,17 @@ function wvExtraHasId(item: any, re: RegExp): boolean {
 // per row per apply (regex over Extra each time). Evicted PER-ID by
 // _wvWireFilterCacheInvalidator (same module closure); the map dies with
 // the module on plugin reload, so no cross-instance staleness.
+// Per-apply resolved context for the getChildItems wrapper's hot path
+// (phase 2 of the filter perf work, 2026-08-06). That wrapper runs ONCE
+// PER OPENED CONTAINER — 7 024 calls in one measured attPDF apply — and
+// was re-reading a pref and calling Zotero.getMainWindow() (a window-
+// mediator lookup) on every call, twice when no quick search is active,
+// only to conclude "nothing to filter". Measured: 990ms of a 1598ms
+// build-mode pass1. An expansion pass resolves the state once, parks it
+// here, and clears it in its finally; outside an expansion the wrapper
+// keeps its original self-resolving path.
+let WV_GCI_CTX: { showCtxAtt: boolean, liveSM: boolean,
+    liveSIDs: any, liveParents: any } | null = null;
 const WV_FACETS: Map<number, { rs?: string, pmid?: boolean, pmcid?: boolean }> = new Map();
 function wvFacetEntry(id: number) {
     let e = WV_FACETS.get(id);
@@ -1689,7 +1700,15 @@ class _FilterMixin {
             const wrapper: any = function (opts: any) {
                 const items = orig.call(this, opts);
                 try {
-                    const showCtxAtt = !!Zotero.Prefs.get(
+                    // Hot path: an expansion pass parked the resolved
+                    // state in WV_GCI_CTX, so skip the pref read and the
+                    // window-mediator lookups entirely (2026-08-06).
+                    const ctx = WV_GCI_CTX;
+                    if (ctx) {
+                        if (ctx.showCtxAtt) return items;
+                        if (!ctx.liveSM || !ctx.liveSIDs) return items;
+                    }
+                    const showCtxAtt = ctx ? ctx.showCtxAtt : !!Zotero.Prefs.get(
                         "weavero.showContextAttachmentRows");
                     if (showCtxAtt) return items;
                     // Read the live search state from the items
@@ -1702,10 +1721,10 @@ class _FilterMixin {
                     // live `searchMode/searchItemIDs/searchParentIDs`
                     // are always the canonical truth, regardless of
                     // who triggered the call.
-                    let liveSM = false;
-                    let liveSIDs: any = null;
-                    let liveParents: any = null;
-                    try {
+                    let liveSM = ctx ? ctx.liveSM : false;
+                    let liveSIDs: any = ctx ? ctx.liveSIDs : null;
+                    let liveParents: any = ctx ? ctx.liveParents : null;
+                    if (!ctx) try {
                         const w = Zotero.getMainWindow();
                         const ivRp = w && w.ZoteroPane
                             && w.ZoteroPane.itemsView
@@ -1727,7 +1746,7 @@ class _FilterMixin {
                     // filter when the user types but the rowProvider
                     // hasn't yet been told (transient state during
                     // an in-flight setFilter).
-                    if (!liveSM) {
+                    if (!liveSM && !ctx) {
                         try {
                             const w = Zotero.getMainWindow();
                             const sb: any = w
@@ -11683,9 +11702,22 @@ class _FilterMixin {
                 try { return Zotero.Prefs.get("weavero.filterBuildMode") === true; }
                 catch (e) { return false; }
             })();
+        // Resolve the getChildItems hot-path state ONCE for whichever
+        // expansion pass runs below (see WV_GCI_CTX).
+        const _gciCtx = {
+            showCtxAtt: (() => {
+                try { return !!Zotero.Prefs.get("weavero.showContextAttachmentRows"); }
+                catch (e) { return false; }
+            })(),
+            liveSM: !!(rp.searchMode || rp._searchMode
+                || this._currentQuickSearchValue),
+            liveSIDs: rp.searchItemIDs || rp._searchItemIDs || null,
+            liveParents: rp.searchParentIDs || rp._searchParentIDs || null,
+        };
         if (_buildEligible) {
             const wasFlag = rp._wvFilterSelfCall;
             rp._wvFilterSelfCall = true;
+            WV_GCI_CTX = _gciCtx;
             try {
                 if (!this._filterOpenedIDs) this._filterOpenedIDs = new Set();
                 const newRows: any[] = [];
@@ -11738,11 +11770,12 @@ class _FilterMixin {
             } catch (e) {
                 Zotero.debug("[Weavero][filter] build-mode err (falling back next apply): " + e);
             }
-            finally { rp._wvFilterSelfCall = wasFlag; }
+            finally { rp._wvFilterSelfCall = wasFlag; WV_GCI_CTX = null; }
         }
         else if (cascade && !this._wvFilterParentLevelOnly(state)) {
             const wasFlag = rp._wvFilterSelfCall;
             rp._wvFilterSelfCall = true;
+            WV_GCI_CTX = _gciCtx;
             try {
                 let depth = 0;
                 const MAX_DEPTH = 8;
@@ -11809,6 +11842,7 @@ class _FilterMixin {
                 }
             } finally {
                 rp._wvFilterSelfCall = wasFlag;
+                WV_GCI_CTX = null;
             }
             dbg("[Weavero][filter] expanded; total rows now: "
                 + origGetRowCount());

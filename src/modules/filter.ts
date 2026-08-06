@@ -11663,7 +11663,84 @@ class _FilterMixin {
         // when it opens nothing) is skipped wholesale. Any child-level or
         // cross-level condition, global filter, or live quick search
         // keeps the cascade — multi-filter mixes stay correct.
-        if (cascade && !this._wvFilterParentLevelOnly(state)) {
+        // BUILD MODE (phase 1 of build-from-matches, 2026-08-06; spike GO
+        // at 219ms construction vs 3114ms cascade scan+splice for the same
+        // expansion state). Replaces ONLY the cascade's mechanism: instead
+        // of depth-scans + expandRows (per-row middle-of-array splices,
+        // O(n²) element movement), rebuild `_rows` append-only in ONE pass
+        // — same rows, same open flags, same order as the cascade would
+        // produce, so every downstream stage (keep pass, patches, toggles,
+        // chevrons, clear-restore) is untouched. Child rows are created
+        // with upstream's own recipe (_toggleOpenState's open branch:
+        // getChildItems opts + createRow + conditional child sort).
+        // Scope gates per the recorded strategy: pref, v10 rowProvider,
+        // no live quick search; everything else falls back to the cascade.
+        const _buildEligible = cascade
+            && !this._wvFilterParentLevelOnly(state)
+            && !!itemsView.rowProvider
+            && !this._currentQuickSearchValue
+            && (() => {
+                try { return Zotero.Prefs.get("weavero.filterBuildMode") === true; }
+                catch (e) { return false; }
+            })();
+        if (_buildEligible) {
+            const wasFlag = rp._wvFilterSelfCall;
+            rp._wvFilterSelfCall = true;
+            try {
+                if (!this._filterOpenedIDs) this._filterOpenedIDs = new Set();
+                const newRows: any[] = [];
+                const openDeep = (row: any) => {
+                    newRows.push(row);
+                    const item = row.ref;
+                    if (!item) return;
+                    let isC = false;
+                    try { isC = typeof row.isContainer === "function" && row.isContainer(); } catch (e) {}
+                    if (!isC) return;
+                    // Already-open containers keep their EXISTING child rows
+                    // (they follow in the original array and re-enter this
+                    // walk on their own iteration) — creating children here
+                    // would duplicate them.
+                    if (row.isOpen) return;
+                    if (this._userClosedIDs && this._userClosedIDs.has(item.id)) return;
+                    if (!hasPrimaryDescendant(item)) return;
+                    let childRefs: any[] = [];
+                    try {
+                        childRefs = row.getChildItems({
+                            searchMode: rp._searchMode,
+                            searchItemIDs: rp._searchItemIDs,
+                            includeTrashed: rp._includeTrashed,
+                            filterChildItems: rp.itemTree && rp.itemTree.props
+                                && rp.itemTree.props.filterChildItems,
+                        }) || [];
+                    } catch (e) { childRefs = []; }
+                    let childRows: any[] = [];
+                    try {
+                        childRows = childRefs.map((ref: any) =>
+                            rp.createRow(ref, (row.level || 0) + 1, false));
+                    } catch (e) { childRows = []; }
+                    try {
+                        if (rp._sortFields && rp.shouldSortChildren
+                            && rp.shouldSortChildren(row)) {
+                            childRows.sort((a: any, b: any) => rp._compareRows(a, b));
+                        }
+                    } catch (e) {}
+                    row.isOpen = true;
+                    if (item.id != null) this._filterOpenedIDs.add(item.id);
+                    for (const cr of childRows) openDeep(cr);
+                };
+                const base = rp._rows.slice();
+                for (const r of base) openDeep(r);
+                rp._rows = newRows;
+                try { rp.refreshRowMap(); } catch (e) {}
+                (_perf as any).buildMode = true;
+                dbg("[Weavero][filter] cascade-by-construction: "
+                    + base.length + " -> " + newRows.length + " rows");
+            } catch (e) {
+                Zotero.debug("[Weavero][filter] build-mode err (falling back next apply): " + e);
+            }
+            finally { rp._wvFilterSelfCall = wasFlag; }
+        }
+        else if (cascade && !this._wvFilterParentLevelOnly(state)) {
             const wasFlag = rp._wvFilterSelfCall;
             rp._wvFilterSelfCall = true;
             try {

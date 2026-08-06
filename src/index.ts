@@ -2125,6 +2125,10 @@ class WeaveroPlugin {
                 // the reader Bookmarks tab stay visible even when empty unless
                 // the user opts into hiding them.
                 "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks",
+                // Build-from-matches phase 1 (2026-08-06): cascade-by-
+                // construction behind a dev pref, default OFF until the
+                // soak on the real library passes (mode-diff hashes gate).
+                "filterBuildMode",
             ];
             for (const n of ON) branch.setBoolPref(P + n, true);
             for (const n of OFF) branch.setBoolPref(P + n, false);

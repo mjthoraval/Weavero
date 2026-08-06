@@ -278,6 +278,88 @@ describe("Weavero — items-tree filter", () => {
         });
     });
 
+    // ---- build-mode parity (phase 1, 2026-08-06) ------------------
+    //
+    // Cascade-by-construction (weavero.filterBuildMode) must produce
+    // EXACTLY the tree the cascade produces — same visible rows, same
+    // open containers. Verified 8/8 hash-identical on the real library
+    // (annColor, siblings variant, comboD, attPDF, EPUB, itemNote,
+    // PDF+yellow, multi-group OR; 2.2-3.8x faster). This spec pins the
+    // contract on suite fixtures.
+
+    describe("build-mode parity", () => {
+        it("cascade and build mode produce identical rows and open sets", async function () {
+            this.timeout(30000);
+            const win = Zotero.getMainWindow();
+            const iv = win.ZoteroPane && win.ZoteroPane.itemsView;
+            const rp = iv && (iv.rowProvider || iv);
+            if (!rp || !iv.rowProvider) this.skip();   // v10 machinery only
+            const lib = Zotero.Libraries.userLibraryID;
+            const p = new Zotero.Item("journalArticle");
+            p.libraryID = lib;
+            p.setField("title", "WV-TEST buildmode parent");
+            await p.saveTx();
+            const a = new Zotero.Item("attachment");
+            a.libraryID = lib; a.parentID = p.id;
+            a.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            a.attachmentContentType = "application/pdf";
+            a.setField("title", "WV-TEST buildmode pdf");
+            await a.saveTx();
+            const ann = new Zotero.Item("annotation");
+            /** @type {any} */ (ann).libraryID = lib;
+            ann.parentID = a.id;
+            const aa = /** @type {any} */ (ann);
+            aa.annotationType = "highlight";
+            aa.annotationText = "WV-TEST buildmode ann";
+            aa.annotationColor = "#ffd400";
+            aa.annotationSortIndex = "00001|000001|00000";
+            aa.annotationPosition = JSON.stringify({ pageIndex: 0, rects: [[0, 0, 9, 9]] });
+            await ann.saveTx();
+            const stateSnap = wv._filterState
+                ? JSON.parse(JSON.stringify(wv._filterState)) : null;
+            const snap = () => {
+                const ids = [], open = [];
+                for (let i = 0; i < rp.getRowCount(); i++) {
+                    const row = rp.getRow(i);
+                    if (!row || !row.ref) continue;
+                    ids.push(row.ref.id);
+                    if (row.isOpen) open.push(row.ref.id);
+                }
+                return JSON.stringify([ids.sort(), open.sort()]);
+            };
+            try {
+                await /** @type {any} */ (win.ZoteroPane.collectionsView).selectLibrary(lib);
+                await iv.waitForLoad();
+                wv._filterState = { groups: [{ annotationColor: ["#ffd400"] }],
+                    collections: [], savedSearches: [], activeGroupIndex: 0 };
+                const runs = {};
+                for (const mode of [false, true]) {
+                    Zotero.Prefs.set("weavero.filterBuildMode", mode);
+                    try { rp.collapseAllRows(); } catch (e) {}
+                    wv._applyItemsListFilterInner({ cascade: true });
+                    await Zotero.Promise.delay(400);
+                    runs[mode ? "build" : "cascade"] = snap();
+                    // clear between modes
+                    wv._filterState = { groups: [], collections: [], savedSearches: [] };
+                    wv._applyItemsListFilterInner({});
+                    await Zotero.Promise.delay(200);
+                    wv._filterState = { groups: [{ annotationColor: ["#ffd400"] }],
+                        collections: [], savedSearches: [], activeGroupIndex: 0 };
+                }
+                expect(runs.build, "build == cascade, rows and open sets")
+                    .to.equal(runs.cascade);
+                expect(runs.build).to.include(String(ann.id));
+            }
+            finally {
+                Zotero.Prefs.set("weavero.filterBuildMode", false);
+                wv._filterState = stateSnap
+                    || { groups: [], collections: [], savedSearches: [] };
+                try { wv._applyItemsListFilterInner({}); } catch (e) {}
+                try { await p.eraseTx(); } catch (e) {}
+            }
+        });
+    });
+
     // ---- native-search oracle parity (2026-08-06) -----------------
     //
     // User: "make advanced searches that match the behaviour of the

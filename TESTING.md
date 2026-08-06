@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (188 tests, 13 spec files):
+Current in-Zotero coverage (193 tests, 13 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -75,6 +75,16 @@ Current in-Zotero coverage (188 tests, 13 spec files):
   winner hoists only while `defattSortFirstAuto` allows it, and the
   master switch gates the hoist per call without unwiring; the
   DOM-rendered ▷ marker pref stays a live/manual check).
+- **Native-search oracle parity** (in `filter.spec.js`, 2026-08-06):
+  for every dimension Zotero's own search engine can express (item
+  type, has-URL via the isNotEmpty operator upstream added 2026-07-13,
+  attachment file type, annotation color), `Zotero.Search` and the
+  Weavero predicate must agree over shared fixtures — first verified
+  exactly on the real library (e.g. 15317=15317 item-type,
+  16043=16043 has-URL). A fifth spec pins the EXPRESSIVENESS gap
+  (native cross-level AND matches nothing where Weavero's group
+  semantics match) as a canary: if upstream makes it expressible,
+  the failure tells us to revisit.
 - **Filter perf-cache specs** (in `filter.spec.js`, 2026-08-05): the
   full-state signature rotates on any dimension or quick-search change
   (multi-filter safety), the parent-only cascade detector stays false

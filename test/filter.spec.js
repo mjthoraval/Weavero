@@ -278,6 +278,140 @@ describe("Weavero — items-tree filter", () => {
         });
     });
 
+    // ---- native-search oracle parity (2026-08-06) -----------------
+    //
+    // User: "make advanced searches that match the behaviour of the
+    // Weavero filters... a good benchmark to test against." For every
+    // dimension Zotero's own search engine can express, the Weavero
+    // predicate must agree with Zotero.Search over the same fixtures —
+    // verified first on the real library (itemType 15317=15317 exact;
+    // hasURL 16043=16043 with the isNotEmpty operator upstream added
+    // 2026-07-13, commit 24fe50cfd; annotation-color and PDF exact
+    // modulo descendants-of-trash, which tree rows exclude anyway).
+    // The last spec pins an EXPRESSIVENESS gap (native cross-level AND
+    // matches nothing) — if upstream ever makes that expressible, this
+    // failing is a feature: we want to know.
+
+    describe("native-search oracle parity", () => {
+        let A, B, attPDF, attHTML, ann, junk;
+        before(async function () {
+            this.timeout(30000);
+            const lib = Zotero.Libraries.userLibraryID;
+            junk = [];
+            async function mk(type, fields, parent) {
+                const it = new Zotero.Item(type);
+                it.libraryID = lib;
+                if (parent) it.parentID = parent.id;
+                for (const [k, v] of Object.entries(fields || {})) {
+                    if (k === "linkMode") it.attachmentLinkMode = v;
+                    else if (k === "contentType") it.attachmentContentType = v;
+                    else it.setField(k, v);
+                }
+                await it.saveTx();
+                junk.push(it);
+                return it;
+            }
+            A = await mk("journalArticle", { title: "WV-ORACLE article",
+                url: "https://example.com/wv-oracle" });
+            B = await mk("book", { title: "WV-ORACLE book" });
+            attPDF = await mk("attachment", { title: "WV-ORACLE pdf",
+                linkMode: Zotero.Attachments.LINK_MODE_IMPORTED_URL,
+                contentType: "application/pdf" }, A);
+            attHTML = await mk("attachment", { title: "WV-ORACLE html",
+                linkMode: Zotero.Attachments.LINK_MODE_IMPORTED_URL,
+                contentType: "text/html" }, B);
+            ann = new Zotero.Item("annotation");
+            /** @type {any} */ (ann).libraryID = lib;
+            ann.parentID = attPDF.id;
+            const a = /** @type {any} */ (ann);
+            a.annotationType = "highlight";
+            a.annotationText = "WV-ORACLE ann";
+            a.annotationColor = "#ffd400";
+            // Required plumbing (upstream test/content/support.js
+            // createAnnotation): save() rejects without sortIndex+position.
+            a.annotationSortIndex = "00001|000001|00000";
+            a.annotationPosition = JSON.stringify({
+                pageIndex: 0, rects: [[0, 0, 100, 100]] });
+            await ann.saveTx();
+            junk.push(ann);
+        });
+        after(async function () {
+            this.timeout(30000);
+            for (const it of (junk || []).reverse()) {
+                try { if (Zotero.Items.get(it.id)) await it.eraseTx(); } catch (e) {}
+            }
+        });
+        const fixtureIDs = () => new Set(junk.map((x) => x.id));
+        async function nativeHits(conds, joinMode) {
+            const s = new Zotero.Search();
+            /** @type {any} */ (s).libraryID = Zotero.Libraries.userLibraryID;
+            if (joinMode) s.addCondition("joinMode", joinMode, null);
+            for (const [c, op, v] of conds) s.addCondition(c, op, v);
+            const ids = await s.search();
+            const fx = fixtureIDs();
+            return new Set(ids.filter((id) => fx.has(id)));
+        }
+        const wvPrimary = (item, group) =>
+            wv._rowIsPrimary(item, { groups: [group], collections: [], savedSearches: [] });
+
+        it("itemType: native and Weavero agree on the fixtures", async function () {
+            this.timeout(20000);
+            const nat = await nativeHits([["itemType", "is", "journalArticle"]]);
+            expect(nat.has(A.id)).to.equal(true);
+            expect(nat.has(B.id)).to.equal(false);
+            const g = { itemType: ["journalArticle"] };
+            expect(wvPrimary(A, g)).to.equal(true);
+            expect(wvPrimary(B, g)).to.equal(false);
+        });
+
+        it("has-URL: native isNotEmpty (upstream 2026-07-13) agrees on regular items", async function () {
+            this.timeout(20000);
+            const nat = await nativeHits([["url", "isNotEmpty", null]]);
+            expect(nat.has(A.id), "article with URL matches").to.equal(true);
+            expect(nat.has(B.id), "book without URL does not").to.equal(false);
+            const g = { hasURL: true };
+            expect(wvPrimary(A, g)).to.equal(true);
+            expect(wvPrimary(B, g)).to.equal(false);
+        });
+
+        it("attachment file type: native fileTypeID agrees", async function () {
+            this.timeout(20000);
+            const pdfID = Zotero.FileTypes.getID("pdf");
+            const nat = await nativeHits([["fileTypeID", "is", pdfID]]);
+            expect(nat.has(attPDF.id)).to.equal(true);
+            expect(nat.has(attHTML.id)).to.equal(false);
+            const g = { attachmentFileType: ["attachmentPDF"] };
+            expect(wvPrimary(attPDF, g)).to.equal(true);
+            expect(wvPrimary(attHTML, g)).to.equal(false);
+        });
+
+        it("annotation color: native annotationColor agrees", async function () {
+            this.timeout(20000);
+            const nat = await nativeHits([["annotationColor", "is", "#ffd400"]]);
+            expect(nat.has(ann.id)).to.equal(true);
+            const g = { annotationColor: ["#ffd400"] };
+            expect(wvPrimary(Zotero.Items.get(ann.id), g)).to.equal(true);
+        });
+
+        it("EXPRESSIVENESS GAP: native cross-level AND matches nothing; Weavero's group does", async function () {
+            this.timeout(20000);
+            // Native ANDs both conditions on the SAME item, so "yellow
+            // annotations under journal articles" finds no fixture.
+            const nat = await nativeHits(
+                [["annotationColor", "is", "#ffd400"], ["itemType", "is", "journalArticle"]],
+                "all");
+            expect(nat.size, "native cross-level AND yields no fixture hits "
+                + "(if this fails, upstream made it expressible — investigate!)")
+                .to.equal(0);
+            // Weavero's group semantics: the annotation matches its
+            // dimension while the parent chain satisfies itemType — the
+            // annotation row IS primary under the combined group.
+            const g = { annotationColor: ["#ffd400"], itemType: ["journalArticle"] };
+            expect(wvPrimary(Zotero.Items.get(ann.id), g),
+                "Weavero cross-level group matches the annotation").to.equal(true);
+        });
+    });
+
     // ---- filter-apply perf caches (2026-08-05) --------------------
     //
     // Three fixes measured on the real library (baselines in the ring at

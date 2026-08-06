@@ -113,6 +113,22 @@ function wvEvictFacets(ids: any[]) {
 // `getAttachments().length > 0` counted it (caught 2026-08-06 by fixture
 // WVT-09 on the first sweep of the test collection). Facet-cached like
 // the other per-item derivations.
+// hasURL / hasDOI measured as the heaviest parent predicates in the
+// 2026-08-06 case-list sweep (~1s of pass2 = raw getField per row over
+// 42k items). Facet-cached like the rest; per-id evicted on item events.
+function wvItemFieldNonEmpty(item: any, field: string, key: string): boolean {
+    try {
+        const id = item && item.id;
+        if (id != null) {
+            const e: any = wvFacetEntry(id);
+            if (e[key] !== undefined) return e[key];
+        }
+        const out = !!(item.getField
+            && String(item.getField(field) || "").trim().length);
+        if (id != null) (wvFacetEntry(id) as any)[key] = out;
+        return out;
+    } catch (e) { return false; }
+}
 function wvItemHasFileAttachment(item: any): boolean {
     try {
         const id = item && item.id;
@@ -3126,11 +3142,7 @@ class _FilterMixin {
         }
         if (group.hasDOI != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const v = !!(item.getField
-                    && String(item.getField("DOI") || "").trim().length);
-                if (v !== group.hasDOI) return false;
-            }
+            if (isReg && wvItemFieldNonEmpty(item, "DOI", "doi") !== group.hasDOI) return false;
         }
         if (group.hasPMID != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
@@ -3142,11 +3154,7 @@ class _FilterMixin {
         }
         if (group.hasURL != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
-            if (isReg) {
-                const v = !!(item.getField
-                    && String(item.getField("url") || "").trim().length);
-                if (v !== group.hasURL) return false;
-            }
+            if (isReg && wvItemFieldNonEmpty(item, "url", "url") !== group.hasURL) return false;
         }
         if (group.hasAttachment != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
@@ -3980,8 +3988,7 @@ class _FilterMixin {
             if (v !== group.hasAbstract) return false;
         }
         if (group.hasDOI != null) {
-            const v = isReg && !!(root.getField
-                && String(root.getField("DOI") || "").trim().length);
+            const v = isReg && wvItemFieldNonEmpty(root, "DOI", "doi");
             if (v !== group.hasDOI) return false;
         }
         if (group.hasPMID != null) {
@@ -3991,8 +3998,7 @@ class _FilterMixin {
             if ((isReg && wvItemHasPubmedId(root, "PMCID", WV_PMCID_RE)) !== group.hasPMCID) return false;
         }
         if (group.hasURL != null) {
-            const v = isReg && !!(root.getField
-                && String(root.getField("url") || "").trim().length);
+            const v = isReg && wvItemFieldNonEmpty(root, "url", "url");
             if (v !== group.hasURL) return false;
         }
         if (group.hasAttachment != null) {
@@ -4304,9 +4310,7 @@ class _FilterMixin {
                 if (v === group.hasAbstract) return true;
             }
             if (group.hasDOI != null) {
-                const v = !!(item.getField
-                    && String(item.getField("DOI") || "").trim().length);
-                if (v === group.hasDOI) return true;
+                if (wvItemFieldNonEmpty(item, "DOI", "doi") === group.hasDOI) return true;
             }
             if (group.hasPMID != null) {
                 if (wvItemHasPubmedId(item, "PMID", WV_PMID_RE) === group.hasPMID) return true;
@@ -4315,9 +4319,7 @@ class _FilterMixin {
                 if (wvItemHasPubmedId(item, "PMCID", WV_PMCID_RE) === group.hasPMCID) return true;
             }
             if (group.hasURL != null) {
-                const v = !!(item.getField
-                    && String(item.getField("url") || "").trim().length);
-                if (v === group.hasURL) return true;
+                if (wvItemFieldNonEmpty(item, "url", "url") === group.hasURL) return true;
             }
             if (group.hasAttachment != null) {
                 const v = wvItemHasFileAttachment(item);

@@ -540,6 +540,18 @@ describe("Weavero — items-tree filter", () => {
                 await Zotero.Promise.delay(300);
                 expect(wv._wvReadStatusOf(Zotero.Items.get(it0.id)),
                     "facet follows removal").to.equal("");
+                // hasURL/hasDOI facets (joined 2026-08-06): same freshness.
+                const st = (gg) => ({ groups: [gg], collections: [], savedSearches: [] });
+                expect(wv._rowIsPrimary(Zotero.Items.get(it0.id), st({ hasURL: true })),
+                    "no URL yet").to.equal(false);
+                it0.setField("url", "https://example.com/facet");
+                it0.setField("DOI", "10.1234/facet");
+                await it0.saveTx();
+                await Zotero.Promise.delay(300);
+                expect(wv._rowIsPrimary(Zotero.Items.get(it0.id), st({ hasURL: true })),
+                    "URL facet follows the edit").to.equal(true);
+                expect(wv._rowIsPrimary(Zotero.Items.get(it0.id), st({ hasDOI: true })),
+                    "DOI facet follows the edit").to.equal(true);
             }
             finally { try { await it0.eraseTx(); } catch (e) {} }
         });

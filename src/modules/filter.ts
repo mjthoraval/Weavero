@@ -10936,6 +10936,101 @@ class _FilterMixin {
         }
     }
 
+    /** Serialized FULL filter context: every group and dimension, the
+     *  global collection/saved-search filters, quick-search value,
+     *  library, and view row. Signature-keyed caches (no-op skip +
+     *  verdict cache) stay correct with multiple simultaneous filters
+     *  precisely because ANY change anywhere rotates this string
+     *  (user constraint 2026-08-05). */
+    _wvFilterStateSig(win, itemsView) {
+        try {
+            const qs = this._currentQuickSearchValue || "";
+            const lib = this._wvSelectedLibraryID(win);
+            const ctr = itemsView && itemsView.collectionTreeRow;
+            const view = (ctr && (ctr.id != null ? ctr.id : ctr.type)) || "?";
+            return lib + "|" + view + "|" + qs + "|"
+                + JSON.stringify(this._filterState);
+        } catch (e) {
+            // Unique => never matches => caches disabled, never wrong.
+            return "err|" + Math.random();
+        }
+    }
+
+    /** True when every ACTIVE condition can only match at PARENT level —
+     *  then the cascade auto-expand scan is pointless (no strictly-deeper
+     *  primary match can exist). Conservative by construction: any
+     *  child-level or cross-level condition, tri-state set to false, an
+     *  excluding quick-search scope, global collection/saved-search
+     *  filters, or a live quick search all return false. */
+    _wvFilterParentLevelOnly(state) {
+        try {
+            if (!state) return false;
+            if (this._currentQuickSearchValue) return false;
+            if (state.collections && state.collections.length) return false;
+            if (state.savedSearches && state.savedSearches.length) return false;
+            const PARENT = new Set(["itemType", "itemTypeExclude",
+                "hasAbstract", "hasDOI", "hasPMID", "hasPMCID", "hasURL",
+                "hasAttachment", "publication", "publicationExclude",
+                "readStatus", "readStatusExclude", "inOtherLibrary"]);
+            for (const g of (state.groups || [])) {
+                if (!g || !this._isGroupActive(g)) continue;
+                for (const [k, v] of Object.entries(g)) {
+                    if (v == null) continue;
+                    if (Array.isArray(v) && !v.length) continue;
+                    if (k === "quickSearchScope") {
+                        const q = v as any;
+                        if (q && (q.annotation === false
+                            || q.attachment === false
+                            || q.parent === false)) return false;
+                        continue;
+                    }
+                    // Scope objects (hasTagScope etc.) only matter when
+                    // their owning condition is set — which itself fails
+                    // the PARENT test below.
+                    if (typeof v === "object" && !Array.isArray(v)) continue;
+                    if (!PARENT.has(k)) return false;
+                }
+            }
+            return true;
+        } catch (e) { return false; }
+    }
+
+    /** Null the signature-keyed caches on any data change that can move
+     *  a verdict: items, tags, collection membership, saved-search
+     *  definitions. Persistent-observer rules apply (live plugin resolved
+     *  at event time; survives reloads via the Zotero-global id). */
+    _wvWireFilterCacheInvalidator() {
+        try {
+            const g: any = Zotero;
+            if (g._wvFilterCacheObsID) return;
+            const obs = {
+                notify: () => {
+                    try {
+                        const lp: any = (Zotero as any).Weavero
+                            && (Zotero as any).Weavero.plugin;
+                        if (lp) {
+                            lp._wvVerdictCache = null;
+                            lp._wvLastApplySig = null;
+                        }
+                    } catch (e) {}
+                },
+            };
+            g._wvFilterCacheObsID = Zotero.Notifier.registerObserver(obs,
+                ["item", "item-tag", "tag", "collection", "collection-item", "search"],
+                "weavero-filter-cache", 90);
+        } catch (e) {}
+    }
+
+    _wvUnwireFilterCacheInvalidator() {
+        try {
+            const g: any = Zotero;
+            if (g._wvFilterCacheObsID) {
+                try { Zotero.Notifier.unregisterObserver(g._wvFilterCacheObsID); } catch (e) {}
+            }
+            delete g._wvFilterCacheObsID;
+        } catch (e) {}
+    }
+
     _applyItemsListFilterInner(opts?) {
         // Auto-expand cascade is opt-IN. The MutationObserver-fired
         // reapply must NOT cascade (it would re-open every parent the
@@ -11010,6 +11105,30 @@ class _FilterMixin {
         const rp: any = itemsView.rowProvider || itemsView;
         if (!rp) return;
         const isV9 = !itemsView.rowProvider;
+
+        // ---- Filter-apply phase timing (always on, ~µs overhead) ----
+        // Per-phase ms recorded at each boundary and pushed to the
+        // `Zotero._wvFilterPerf` ring (last 20 applies) on the ACTIVE
+        // path. Added chasing the 2026-08-05 "filters feel slow" report:
+        // the cost is O(raw rows) passes — 42k rows ≈ 1.5s on the real
+        // library — and this keeps the breakdown observable there
+        // without a debugger. Phases: setup (caches/helpers), pass1
+        // (cascade auto-expand), pass2 (keep[] build), gatePatch (scope
+        // gate + method patches), invalidate (re-render).
+        // `performance` is NOT a global in the plugin's privileged scope
+        // (dev.5 threw ReferenceError on every apply) — use the main
+        // window's clock, falling back to Date.now().
+        const _perfNow = () => {
+            try { return win.performance.now(); } catch (e) { return Date.now(); }
+        };
+        const _perfT0 = _perfNow();
+        let _perfLast = _perfT0;
+        const _perf: any = { at: new Date().toISOString().slice(11, 19) };
+        const _mark = (k: string) => {
+            const n = _perfNow();
+            _perf[k] = Math.round(n - _perfLast);
+            _perfLast = n;
+        };
 
         const state = this._filterState;
         const active = this._isFilterActive(state);
@@ -11133,6 +11252,32 @@ class _FilterMixin {
             // tree. Pure paint invalidate — doesn't add/remove rows —
             // so it can't loop through the MutationObserver.
             try { itemsView.tree.invalidate(); } catch (e) {}
+            return;
+        }
+
+        // ---- No-op skip (perf fix #1, 2026-08-05) ----
+        // Observer-triggered re-applies frequently arrive with NOTHING
+        // changed — measured as ~650ms x4 bursts after a single click.
+        // Skip them outright. NEVER skips: explicit cascade applies, any
+        // signature change (the sig serializes the ENTIRE multi-group
+        // state plus view/library/quick-search — multi-filter safe), a
+        // raw-row-count change (keep[] would be stale), or a missing
+        // getRow patch (an external itemsView rebuild dropped our
+        // translation). Data changes null the sig via the notifier
+        // invalidator (_wvWireFilterCacheInvalidator).
+        const _sig = this._wvFilterStateSig(win, itemsView);
+        // Whether our getRow patch was ALREADY installed when this apply
+        // began — used by the identical-keep invalidate skip below (a
+        // first activation must always re-render).
+        const _wasPatchedAtEntry = !!rp._wvOrigGetRow
+            && Object.prototype.hasOwnProperty.call(rp, "getRow");
+        if (!cascade
+            && this._wvLastApplySig === _sig
+            && this._wvLastApplyRawRows === rp._rows.length
+            && rp._wvOrigGetRow
+            && Object.prototype.hasOwnProperty.call(rp, "getRow")) {
+            (Zotero as any)._wvFilterPerfSkips
+                = ((Zotero as any)._wvFilterPerfSkips || 0) + 1;
             return;
         }
 
@@ -11268,7 +11413,24 @@ class _FilterMixin {
         // Pass 2's `_rowIsPrimary` checks. Without this, cascade
         // recomputes per-item primary verdicts that pass 2 then
         // recomputes again.
-        const isPrimaryCache = new Map();
+        // Perf fix #2 (2026-08-05): the verdict cache PERSISTS across
+        // applies, keyed by the full state signature. Twisty
+        // expand/collapse re-syncs and post-click observer applies reuse
+        // per-ITEM verdicts (rows change, items don't) instead of
+        // re-deriving all ~18k (~500-650ms/apply measured). Any state
+        // change rotates the sig; any item/tag/collection/search
+        // notifier event nulls the cache outright.
+        let _vc = this._wvVerdictCache;
+        if (!_vc || _vc.sig !== _sig) {
+            // `match` and `desc` ride the same signature: subtree verdicts
+            // (hasMatch / hasPrimaryDescendant) are pure functions of
+            // (state, data), so they share the cache's invalidation
+            // exactly — any state change rotates the sig, any data change
+            // nulls the whole object via the notifier invalidator.
+            _vc = this._wvVerdictCache
+                = { sig: _sig, map: new Map(), match: new Map(), desc: new Map() };
+        }
+        const isPrimaryCache = _vc.map;
         const isPrimary = (item) => {
             if (!item) return false;
             const id = item.id;
@@ -11279,7 +11441,10 @@ class _FilterMixin {
             if (id != null) isPrimaryCache.set(id, v);
             return v;
         };
-        const hasMatchCache = new Map();
+        // Persistent (sig-keyed) — see the _wvVerdictCache comment above.
+        // Cross-apply reuse matters most for the cascade: depth scans 2..8
+        // and back-to-back applies re-ask the same subtree questions.
+        const hasMatchCache = _vc.match;
         const hasMatch = (item) => {
             if (!item) return false;
             const id = item.id;
@@ -11331,17 +11496,23 @@ class _FilterMixin {
         // attachment to reveal its annotations; the user only asked
         // about the attachment level). Only when a deeper-level row
         // is primary should the container open.
+        // Cached in the sig-keyed store (2026-08-05): pass 1 asks this for
+        // every closed container on EVERY depth scan (up to 8), and it was
+        // the only subtree verdict recomputed each time.
+        const descCache = _vc.desc;
         const hasPrimaryDescendant = (item) => {
             if (!item) return false;
+            const dId = item.id;
+            if (dId != null && descCache.has(dId)) return descCache.get(dId);
+            let dv = false;
             if (item.isFileAttachment && item.isFileAttachment()) {
                 const anns = (typeof item.getAnnotations === "function")
                     ? (item.getAnnotations() || []) : [];
                 for (const ann of anns) {
-                    if (isPrimary(ann)) return true;
+                    if (isPrimary(ann)) { dv = true; break; }
                 }
-                return false;
             }
-            if (item.isRegularItem && item.isRegularItem()) {
+            else if (item.isRegularItem && item.isRegularItem()) {
                 const attIds = (typeof item.getAttachments === "function")
                     ? item.getAttachments() : [];
                 for (const aId of attIds) {
@@ -11350,18 +11521,22 @@ class _FilterMixin {
                     // primary" and "att has a primary annotation".
                     // Either way, the regular item must open so the
                     // attachment row becomes visible.
-                    if (att && hasMatch(att)) return true;
+                    if (att && hasMatch(att)) { dv = true; break; }
                 }
-                const noteIds = (typeof item.getNotes === "function")
-                    ? item.getNotes() : [];
-                for (const nId of noteIds) {
-                    const n = Zotero.Items.get(nId);
-                    if (n && isPrimary(n)) return true;
+                if (!dv) {
+                    const noteIds = (typeof item.getNotes === "function")
+                        ? item.getNotes() : [];
+                    for (const nId of noteIds) {
+                        const n = Zotero.Items.get(nId);
+                        if (n && isPrimary(n)) { dv = true; break; }
+                    }
                 }
             }
-            return false;
+            if (dId != null) descCache.set(dId, dv);
+            return dv;
         };
 
+        _mark("setup");
         // Pass 1 — auto-expand containers whose subtree contains a
         // STRICTLY DEEPER primary match (an attachment under a parent,
         // an annotation under an attachment, etc.). Walk FORWARDS so
@@ -11419,7 +11594,13 @@ class _FilterMixin {
             }
             return false;
         };
-        if (cascade) {
+        // Perf fix #3 (2026-08-05): when every active condition can only
+        // match at PARENT level, there is no strictly-deeper primary
+        // match anywhere, so the cascade scan (measured ~350-400ms even
+        // when it opens nothing) is skipped wholesale. Any child-level or
+        // cross-level condition, global filter, or live quick search
+        // keeps the cascade — multi-filter mixes stay correct.
+        if (cascade && !this._wvFilterParentLevelOnly(state)) {
             const wasFlag = rp._wvFilterSelfCall;
             rp._wvFilterSelfCall = true;
             try {
@@ -11493,6 +11674,7 @@ class _FilterMixin {
                 + origGetRowCount());
         }
 
+        _mark("pass1");
         // Pass 2 — collect indices to keep: primary matches + every
         // ancestor row that contains them (so the tree shape is
         // preserved). For item-scope-alone matches the entire subtree
@@ -11880,6 +12062,7 @@ class _FilterMixin {
                 }
             }
         }
+        _mark("pass2");
         // ---- Quick-search scope enforcement (final gate) ----
         // Whatever keep-rule above admitted a row, an active quick-
         // search scope must win: drop every kept row whose KIND the
@@ -11928,6 +12111,16 @@ class _FilterMixin {
         // rest of the apply logic (`getRow` patch etc.) consumes
         // this as the row-index translation table.
         const keep = [...keepSet].sort((a: number, b: number) => a - b);
+        // Cheap FNV-1a over the kept indices (plus lengths) — when the
+        // rebuild lands on an IDENTICAL answer, the final
+        // tree.invalidate() (~100-200ms of pure re-render) is skipped.
+        // Content changes without keep changes (rename etc.) repaint via
+        // Zotero's own notifier-driven invalidates, not ours.
+        let _keepHash = 0x811c9dc5 ^ keep.length ^ (rp._rows.length << 8);
+        for (let hi = 0; hi < keep.length; hi++) {
+            _keepHash = (_keepHash ^ (keep[hi] as number)) >>> 0;
+            _keepHash = Math.imul(_keepHash, 0x01000193) >>> 0;
+        }
         // IDs of every row that survives into the filtered view — used
         // below so the chevron's hidden tally counts only children that
         // are genuinely off-screen, not ones the cascade already shows.
@@ -12375,7 +12568,31 @@ class _FilterMixin {
             }
         }
 
-        try { itemsView.tree.invalidate(); } catch (e) {}
+        _mark("gatePatch");
+        // Identical keep + already-patched view => nothing visible can
+        // change; skip the re-render (perf, 2026-08-05). First
+        // activation always invalidates (the patch install itself
+        // changes what renders).
+        if (this._wvLastKeepHash === _keepHash && _wasPatchedAtEntry) {
+            _perf.invSkipped = true;
+        }
+        else {
+            try { itemsView.tree.invalidate(); } catch (e) {}
+        }
+        this._wvLastKeepHash = _keepHash;
+        _mark("invalidate");
+        try {
+            _perf.rows = (rp._rows && rp._rows.length) || 0;
+            _perf.total = Math.round(_perfNow() - _perfT0);
+            const ring = ((Zotero as any)._wvFilterPerf
+                = (Zotero as any)._wvFilterPerf || []);
+            ring.push(_perf);
+            if (ring.length > 20) ring.shift();
+        } catch (e) {}
+        // No-op-skip watermark: what a future non-cascade apply compares
+        // against (END-of-apply row count — that's what it will observe).
+        this._wvLastApplySig = _sig;
+        this._wvLastApplyRawRows = (rp._rows && rp._rows.length) || 0;
     }
 
     /** Debounce a re-apply of the items-list filter after the

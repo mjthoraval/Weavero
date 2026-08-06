@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (185 tests, 13 spec files):
+Current in-Zotero coverage (188 tests, 13 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -75,6 +75,12 @@ Current in-Zotero coverage (185 tests, 13 spec files):
   winner hoists only while `defattSortFirstAuto` allows it, and the
   master switch gates the hoist per call without unwiring; the
   DOM-rendered ▷ marker pref stays a live/manual check).
+- **Filter perf-cache specs** (in `filter.spec.js`, 2026-08-05): the
+  full-state signature rotates on any dimension or quick-search change
+  (multi-filter safety), the parent-only cascade detector stays false
+  whenever a child-level dimension is in the mix, and the notifier
+  invalidator nulls the cross-apply verdict cache and no-op signature
+  on item writes.
 - **Also-in-library filter specs** (in `filter.spec.js`, local-group
   fixture, 2026-08-05): the owl:sameAs URI parser (group / user /
   local-user forms, unknown group → null), the collector merging BOTH

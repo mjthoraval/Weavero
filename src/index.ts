@@ -3435,6 +3435,9 @@ class WeaveroPlugin {
         // link whose target is already open focuses THAT window instead of
         // flashing the last-active main window (2026-08-05).
         try { (this as any)._wvWireCmdLineIngester(); } catch (e) {}
+        // Filter perf caches (verdict cache + no-op-skip signature) must
+        // drop on any data change — see _wvWireFilterCacheInvalidator.
+        try { (this as any)._wvWireFilterCacheInvalidator(); } catch (e) {}
         // Session-save hardening: serialize transient `-loading` tab types as
         // their base type so a mid-load tab isn't dropped on the next restore.
         // Plus restore tracing (restoreState in/out, early closes) per window.
@@ -4774,6 +4777,7 @@ class WeaveroPlugin {
         // teardown. See modules/attachments.ts.
         try { (this as any)._wvUnwirePluginObserver(); } catch (e) {}
         try { (this as any)._wvUnwireReparentGuard(); } catch (e) {}
+        try { (this as any)._wvUnwireFilterCacheInvalidator(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultChildPrefWatch(); } catch (e) {}
         try { (this as any)._wvUnwireDefaultAttachment(); } catch (e) {}
         try {

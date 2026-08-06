@@ -278,6 +278,76 @@ describe("Weavero — items-tree filter", () => {
         });
     });
 
+    // ---- filter-apply perf caches (2026-08-05) --------------------
+    //
+    // Three fixes measured on the real library (baselines in the ring at
+    // Zotero._wvFilterPerf): no-op re-applies skipped via a full-state
+    // signature; per-item verdicts cached ACROSS applies keyed by that
+    // signature; cascade pass-1 skipped when only parent-level
+    // dimensions are active. The multi-filter constraint (user
+    // 2026-08-05: "keep the filter working even when multiple filters
+    // are selected") rests on the signature covering the ENTIRE state —
+    // these specs pin that.
+
+    describe("apply perf caches", () => {
+        it("signature covers every dimension, quick search, and view", () => {
+            const win = Zotero.getMainWindow();
+            const iv = win.ZoteroPane.itemsView;
+            const s0 = wv._wvFilterStateSig(win, iv);
+            expect(s0).to.be.a("string");
+            const g = wv._activeGroup();
+            if (!g) this.skip();
+            const prev = g.inOtherLibrary;
+            g.inOtherLibrary = true;
+            const s1 = wv._wvFilterStateSig(win, iv);
+            g.inOtherLibrary = prev === undefined ? null : prev;
+            expect(s1, "any dimension change must rotate the signature")
+                .to.not.equal(s0);
+            const qPrev = wv._currentQuickSearchValue;
+            wv._currentQuickSearchValue = "wv-sig-probe";
+            const s2 = wv._wvFilterStateSig(win, iv);
+            wv._currentQuickSearchValue = qPrev;
+            expect(s2, "quick search must rotate the signature").to.not.equal(s0);
+        });
+
+        it("parent-only detector: parent dims true, any child dim false", () => {
+            const g = wv._activeGroup();
+            if (!g) this.skip();
+            const snap = JSON.stringify(wv._filterState);
+            try {
+                g.hasURL = true;
+                g.inOtherLibrary = true;
+                expect(wv._wvFilterParentLevelOnly(wv._filterState)).to.equal(true);
+                g.annotationColor = ["#ffd400"];
+                expect(wv._wvFilterParentLevelOnly(wv._filterState),
+                    "a child-level dim in the MIX must keep the cascade")
+                    .to.equal(false);
+            }
+            finally {
+                const s = JSON.parse(snap);
+                Object.assign(g, s.groups[Math.max(0,
+                    Math.min(s.activeGroupIndex || 0, s.groups.length - 1))]);
+            }
+        });
+
+        it("data changes null the verdict cache and the no-op signature", async () => {
+            expect(/** @type {any} */ (Zotero)._wvFilterCacheObsID,
+                "invalidator registered").to.exist;
+            wv._wvVerdictCache = { sig: "probe", map: new Map() };
+            wv._wvLastApplySig = "probe";
+            const it0 = new Zotero.Item("journalArticle");
+            it0.libraryID = Zotero.Libraries.userLibraryID;
+            it0.setField("title", "WV-TEST cache invalidation");
+            await it0.saveTx();
+            try {
+                await Zotero.Promise.delay(300);
+                expect(wv._wvVerdictCache, "verdict cache nulled").to.equal(null);
+                expect(wv._wvLastApplySig, "no-op signature nulled").to.equal(null);
+            }
+            finally { await it0.eraseTx(); }
+        });
+    });
+
     // ---- "Also in library" (linked-item relations) ----------------
     //
     // The dimension is Zotero's owl:sameAs linked-item relation, merged

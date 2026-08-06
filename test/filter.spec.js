@@ -351,7 +351,10 @@ describe("Weavero — items-tree filter", () => {
                 expect(runs.build).to.include(String(ann.id));
             }
             finally {
-                Zotero.Prefs.set("weavero.filterBuildMode", false);
+                // CLEAR, not set-false: the pref defaults ON since
+                // 0.18.4-dev.18, so forcing false would leave the rest
+                // of the suite running the non-default path.
+                Zotero.Prefs.clear("weavero.filterBuildMode");
                 wv._filterState = stateSnap
                     || { groups: [], collections: [], savedSearches: [] };
                 try { wv._applyItemsListFilterInner({}); } catch (e) {}

@@ -2109,6 +2109,15 @@ class WeaveroPlugin {
                 // Bookmarks
                 "enableLibraryBookmarks", "enableReaderBookmarks",
                 "showLibraryBookmarksInReader",
+                // Build-from-matches (2026-08-06): filtered cascades build
+                // the row array in one append-only pass instead of
+                // scan-and-splice. Default ON after 32/32 configurations
+                // verified hash-identical to the old path on BOTH visible
+                // rows and open containers, plus the state-machine
+                // sequences (user-collapse, twisty, Show Non-Matching,
+                // clear-restore) and a live-quick-search fallback check.
+                // Turning this OFF restores the cascade path exactly.
+                "filterBuildMode",
             ];
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm",
@@ -2125,10 +2134,6 @@ class WeaveroPlugin {
                 // the reader Bookmarks tab stay visible even when empty unless
                 // the user opts into hiding them.
                 "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks",
-                // Build-from-matches phase 1 (2026-08-06): cascade-by-
-                // construction behind a dev pref, default OFF until the
-                // soak on the real library passes (mode-diff hashes gate).
-                "filterBuildMode",
             ];
             for (const n of ON) branch.setBoolPref(P + n, true);
             for (const n of OFF) branch.setBoolPref(P + n, false);

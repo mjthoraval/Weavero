@@ -2301,6 +2301,13 @@ class _FilterMixin {
             // while that plugin is active; stale saved state is harmless.
             readStatus: [],
             readStatusExclude: [],
+            // "In Multiple Libraries" tri-state (parent items only): items
+            // with a linked copy (owl:sameAs relation) in ANY other library
+            // — the same data the item pane's "Libraries and Collections"
+            // box shows. Deliberately a single toggle, not a per-library
+            // picker (user 2026-08-05: "I just want a simple toggle…
+            // the item pane of those items will tell the full story").
+            inOtherLibrary: null,
         };
     }
 
@@ -2345,6 +2352,7 @@ class _FilterMixin {
         if (group.publicationExclude && group.publicationExclude.length) return true;
         if (group.readStatus && group.readStatus.length) return true;
         if (group.readStatusExclude && group.readStatusExclude.length) return true;
+        if (group.inOtherLibrary != null) return true;
         // Quick-search scope only counts as active when at least
         // one kind is excluded — an all-on scope is the default
         // no-op and wouldn't justify installing our patches by
@@ -2433,7 +2441,7 @@ class _FilterMixin {
             parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
                 "hasPMID", "hasPMCID", "hasURL",
                 "hasAttachment", "publication", "publicationExclude",
-                "readStatus", "readStatusExclude"],
+                "readStatus", "readStatusExclude", "inOtherLibrary"],
         };
         const isSet = (g, f) => {
             const v = g[f];
@@ -3131,6 +3139,17 @@ class _FilterMixin {
                     && !wantedRS.includes(rs)) return false;
                 if (wantedRSX && wantedRSX.length
                     && wantedRSX.includes(rs)) return false;
+            }
+        }
+        // In Multiple Libraries — regular items only, via the precomputed
+        // linked-relations cache. A COLD cache passes rows through
+        // (degraded, never wrong-way filtering); the tile click kicks
+        // the async build + re-apply.
+        if (group.inOtherLibrary != null && this._wvLinkedLibCacheWarm()) {
+            const isReg = !!(item.isRegularItem && item.isRegularItem());
+            if (isReg) {
+                const v = this._wvItemInAnyOtherLib(item);
+                if (v !== group.inOtherLibrary) return false;
             }
         }
         const wantedTags = group.annotationTag;
@@ -3948,6 +3967,10 @@ class _FilterMixin {
             if (group.readStatusExclude && group.readStatusExclude.length
                 && group.readStatusExclude.includes(rs)) return false;
         }
+        if (group.inOtherLibrary != null && this._wvLinkedLibCacheWarm()) {
+            const v = isReg && this._wvItemInAnyOtherLib(root);
+            if (v !== group.inOtherLibrary) return false;
+        }
         if (group.itemType && group.itemType.length) {
             if (!isReg) return false;
             if (!group.itemType.includes(root.itemType)) return false;
@@ -4269,6 +4292,10 @@ class _FilterMixin {
                 if (group.readStatusExclude && group.readStatusExclude.length
                     && !group.readStatusExclude.includes(rs)) return true;
             }
+            if (group.inOtherLibrary != null && this._wvLinkedLibCacheWarm()) {
+                const v = this._wvItemInAnyOtherLib(item);
+                if (v === group.inOtherLibrary) return true;
+            }
         }
         // Has Annotations — file attachments only.
         if (group.hasAnnotations != null) {
@@ -4337,7 +4364,8 @@ class _FilterMixin {
                             && group.publicationExclude.length)
                         || (group.readStatus && group.readStatus.length)
                         || (group.readStatusExclude
-                            && group.readStatusExclude.length));
+                            && group.readStatusExclude.length)
+                        || group.inOtherLibrary != null);
                     const anyKindSpecific = annChipActive
                         || attChipActive || parChipActive;
                     if (!anyKindSpecific) return true;
@@ -4557,6 +4585,15 @@ class _FilterMixin {
             this._cachedAnnotationAuthors = null;
             this._cachedAddedByUsers = null;
             this._cachedPublications = null;
+            // Linked-libraries cache: refreshed in the BACKGROUND rather
+            // than nulled like the lists above. Nulling it made the In
+            // Multiple Libraries tile's first click apply a pass-through
+            // filter (no visible change) and pay a SECOND full apply once
+            // the rebuild landed — twice the ~1.5s big-library apply cost,
+            // felt as "very slow to react" (user report 2026-08-05).
+            // Stale-while-refresh keeps clicks instant; the swap re-applies
+            // only if membership actually changed.
+            try { this._wvRefreshLinkedLibCache(winOf(doc.documentElement)); } catch (e) {}
             this._tagSearchQuery = "";
             this._authorSearchQuery = "";
             this._itemTypeSearchQuery = "";
@@ -5478,6 +5515,15 @@ class _FilterMixin {
             if (group.readStatusExclude && group.readStatusExclude.length) {
                 bar.appendChild(this._buildReadStatusChip(doc, group, gi, true));
             }
+            if (group.inOtherLibrary != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "inOtherLibrary", "In Multiple Libraries"));
+                // An active condition with a COLD cache (e.g. right after a
+                // window re-wire) filters nothing; warm it and re-apply.
+                if (!this._wvLinkedLibCacheWarm()) {
+                    try { this._wvEnsureLinkedLibCache(winOf(bar), true); } catch (e) {}
+                }
+            }
         }
 
         // Trailing "+ Filter" — adds a chip to the LAST active group.
@@ -5968,6 +6014,172 @@ class _FilterMixin {
                 refreshAll();
             });
             opts.appendChild(btn);
+        }
+    }
+
+    // ---- "Also in library" (linked-item relations) -----------------------
+    // "Belongs to multiple libraries" = Zotero's linked-item relation
+    // (owl:sameAs) — the same data the item pane's "Libraries and
+    // Collections" box renders via getLinkedItem(). Zotero has no search
+    // over it (forums/129609, dstillman: "There isn't, sorry"), so the
+    // filter precomputes one Map<libraryID-string, Set<itemID>> per library
+    // view. The relation's storage side is an ACCESS heuristic, not
+    // provenance (dataObject.js _addLinkedObject prefers the personal
+    // library) — both directions are merged here, and the UI must say
+    // "also in", never "imported from". 2026-08-05.
+
+    /** zotero.org object URI -> { libraryID, key }, or null when the URI
+     *  doesn't parse or its library isn't available locally. */
+    _wvLinkedURITarget(uri) {
+        try {
+            const s = String(uri || "");
+            let m = /\/groups\/(\d+)\/(?:publications\/)?items\/([A-Z0-9]{8})/.exec(s);
+            if (m) {
+                const libID = Zotero.Groups.getLibraryIDFromGroupID(parseInt(m[1], 10));
+                return libID ? { libraryID: libID, key: m[2] } : null;
+            }
+            m = /\/users\/(?:\d+|local\/[^/]+)\/(?:publications\/)?items\/([A-Z0-9]{8})/.exec(s);
+            if (m) return { libraryID: Zotero.Libraries.userLibraryID, key: m[1] };
+        } catch (e) {}
+        return null;
+    }
+
+    /** Map<libraryID-string, Set<itemID>> of items in `libraryID` that have
+     *  a linked copy in each OTHER library. Both storage directions; a link
+     *  whose far item is missing or trashed doesn't count (matches the
+     *  native Libraries-and-Collections box). */
+    async _wvCollectLinkedLibraries(libraryID) {
+        const map = new Map();
+        if (libraryID == null) return map;
+        try {
+            const deleted = new Set<number>((await Zotero.DB.columnQueryAsync(
+                "SELECT itemID FROM deletedItems")) as any[]);
+            const add = (libKey, itemID) => {
+                let set = map.get(libKey);
+                if (!set) { set = new Set(); map.set(libKey, set); }
+                set.add(itemID);
+            };
+            const base = "SELECT ir.itemID, ir.object, i.libraryID AS lib "
+                + "FROM itemRelations ir "
+                + "JOIN relationPredicates rp ON rp.predicateID = ir.predicateID "
+                + "JOIN items i ON i.itemID = ir.itemID "
+                + "WHERE rp.predicate = 'owl:sameAs' AND i.libraryID ";
+            // Forward: relations stored ON this library's items.
+            const fwd = await Zotero.DB.queryAsync(base + "= ?", [libraryID]);
+            for (const row of (fwd || [])) {
+                if (deleted.has(row.itemID)) continue;
+                const t = this._wvLinkedURITarget(row.object);
+                if (!t || t.libraryID === libraryID) continue;
+                const farID = Zotero.Items.getIDFromLibraryAndKey(t.libraryID, t.key);
+                if (!farID || deleted.has(farID)) continue;
+                add(String(t.libraryID), row.itemID);
+            }
+            // Reverse: other libraries' items pointing INTO this library.
+            const rev = await Zotero.DB.queryAsync(base + "!= ?", [libraryID]);
+            for (const row of (rev || [])) {
+                if (deleted.has(row.itemID)) continue;
+                const t = this._wvLinkedURITarget(row.object);
+                if (!t || t.libraryID !== libraryID) continue;
+                const mineID = Zotero.Items.getIDFromLibraryAndKey(libraryID, t.key);
+                if (!mineID || deleted.has(mineID)) continue;
+                add(String(row.lib), mineID);
+            }
+        } catch (e) {
+            dbg("[Weavero][filter] _wvCollectLinkedLibraries err: " + e);
+        }
+        return map;
+    }
+
+    /** True when `_cachedLinkedLibraries` is usable as-is. Row predicates
+     *  are synchronous, so a cold cache means "don't filter on this
+     *  dimension yet" — never a half-answer. */
+    _wvLinkedLibCacheWarm() {
+        return !!(this._cachedLinkedLibraries && this._cachedLinkedLibraries.map);
+    }
+
+    _wvItemInAnyLinkedLib(item, libIDs) {
+        try {
+            const c = this._cachedLinkedLibraries;
+            if (!c || !c.map || !item) return false;
+            for (const id of libIDs) {
+                const set = c.map.get(String(id));
+                if (set && set.has(item.id)) return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    /** True when the cached map shows a linked copy in ANY other library —
+     *  the whole question the In Multiple Libraries tile asks. */
+    _wvItemInAnyOtherLib(item) {
+        try {
+            const c = this._cachedLinkedLibraries;
+            if (!c || !c.map || !item) return false;
+            for (const set of c.map.values()) {
+                if (set.has(item.id)) return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
+    /** Background refresh (popup open): rebuild the cache for the current
+     *  library while the STALE one keeps answering, then swap. Re-applies
+     *  the filter only when an In Multiple Libraries condition is active
+     *  AND membership actually changed — anything more eager re-pays the
+     *  full items-list apply (~1.5s on a large library) for nothing. */
+    async _wvRefreshLinkedLibCache(win) {
+        try {
+            const libraryID = this._wvSelectedLibraryID(win);
+            if (libraryID == null) return;
+            if (this._linkedLibBuildBusy) return;
+            this._linkedLibBuildBusy = true;
+            let map;
+            try { map = await this._wvCollectLinkedLibraries(libraryID); }
+            finally { this._linkedLibBuildBusy = false; }
+            const prev = this._cachedLinkedLibraries;
+            // Membership signature — set SIZES per library. A same-size
+            // swap of members slips through until the next refresh; fine
+            // for a UI cache.
+            const sig = (m) => [...m.entries()]
+                .map(([k, s]) => k + ":" + s.size).sort().join("|");
+            const changed = !(prev && prev.libraryID === libraryID
+                && prev.map && sig(prev.map) === sig(map));
+            this._cachedLinkedLibraries = { libraryID, map };
+            if (!changed) return;
+            const s = this._filterState;
+            const live = !!(s && s.groups
+                && s.groups.some((g) => g && g.inOtherLibrary != null));
+            if (live) {
+                try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+            }
+        } catch (e) {
+            dbg("[Weavero][filter] _wvRefreshLinkedLibCache err: " + e);
+        }
+    }
+
+    /** Build (or reuse) the cache for the window's selected library;
+     *  optionally re-apply the filter once fresh data lands. */
+    async _wvEnsureLinkedLibCache(win, reapply) {
+        try {
+            const libraryID = this._wvSelectedLibraryID(win);
+            if (libraryID == null) return null;
+            const c = this._cachedLinkedLibraries;
+            if (c && c.libraryID === libraryID && c.map) return c.map;
+            if (this._linkedLibBuildBusy) return null;
+            this._linkedLibBuildBusy = true;
+            try {
+                const map = await this._wvCollectLinkedLibraries(libraryID);
+                this._cachedLinkedLibraries = { libraryID, map };
+                if (reapply) {
+                    try { this._applyItemsListFilter({ cascade: true }); } catch (e) {}
+                    try { this._renderFilterBar(); } catch (e) {}
+                }
+                return map;
+            }
+            finally { this._linkedLibBuildBusy = false; }
+        } catch (e) {
+            dbg("[Weavero][filter] _wvEnsureLinkedLibCache err: " + e);
+            return null;
         }
     }
 
@@ -8880,7 +9092,7 @@ class _FilterMixin {
         // Zotero's `$item-pane-sections` palette entries so the
         // Has-* tiles read as the same surface as their right-pane
         // section header.
-        const buildBtn = (key, label, iconSrc, tip, color?) => {
+        const buildBtn = (key, label, iconSrc, tip, color?, afterChange?) => {
             const cur = g0 ? g0[key] : null;
             const btn = doc.createElementNS(NS_HTML, "button");
             btn.type = "button";
@@ -8911,6 +9123,7 @@ class _FilterMixin {
                     next = (g[key] === true) ? null : true;
                 }
                 g[key] = next;
+                if (afterChange) { try { afterChange(next); } catch (err) {} }
                 this._renderFilterBar();
                 this._applyItemsListFilter({ cascade: true });
                 refreshAll();
@@ -8950,6 +9163,42 @@ class _FilterMixin {
             + "attachment-level rows but have their own tile in "
             + "the Attachment group. Alt+click to exclude.",
             "var(--accent-green)");
+        // Two OVERLAPPING library buildings, back one dimmed (50%) with a
+        // hairline gap along the front's block outline — custom artwork,
+        // no upstream glyph exists for "in multiple libraries". NO chain
+        // link: at 16px a chain reads as Zotero's own Related glyph (user
+        // caught the confusion). User-picked design D3 of eight rendered
+        // candidates, 2026-08-05.
+        buildBtn("inOtherLibrary", "In Multiple Libraries",
+            "data:image/svg+xml;utf8,"
+            + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+            + "<defs><mask id='wvml'><rect width='16' height='16' fill='white'/>"
+            + "<path d='M5.5 8.1 L10.75 5.4 L16 8.1 V16 H5.5 Z'"
+            + " fill='black' stroke='black' stroke-width='1.4'/></mask></defs>"
+            + "<g fill='context-fill' fill-opacity='0.5' mask='url(%23wvml)'>"
+            + "<path d='M0 3.6 L4.75 1 L9.5 3.6 V4.5 H0 Z'/>"
+            + "<rect x='0.8' y='5.3' width='1.3' height='4.4'/>"
+            + "<rect x='4.1' y='5.3' width='1.3' height='4.4'/>"
+            + "<rect x='7.4' y='5.3' width='1.3' height='4.4'/>"
+            + "<rect x='0' y='10.5' width='9.5' height='1.2'/></g>"
+            + "<g fill='context-fill'>"
+            + "<path d='M5.5 8.1 L10.75 5.4 L16 8.1 V9 H5.5 Z'/>"
+            + "<rect x='6.4' y='9.8' width='1.4' height='4.9'/>"
+            + "<rect x='10.05' y='9.8' width='1.4' height='4.9'/>"
+            + "<rect x='13.7' y='9.8' width='1.4' height='4.9'/>"
+            + "<rect x='5.5' y='14.8' width='10.5' height='1.2'/></g></svg>",
+            "In Multiple Libraries — regular items that also belong to "
+            + "another library (a linked copy exists, e.g. dragged to or "
+            + "from a group). The item pane's Libraries and Collections "
+            + "section shows which ones. Alt+click to exclude.",
+            undefined,
+            // The predicate answers from an async-built cache; make sure
+            // it's warm (or being warmed) the moment the tile activates.
+            (next) => {
+                if (next != null && !this._wvLinkedLibCacheWarm()) {
+                    try { this._wvEnsureLinkedLibCache(winOf(section), true); } catch (e) {}
+                }
+            });
     }
 
     /** Row hosting two tiles in the Attachment group:

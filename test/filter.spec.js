@@ -277,4 +277,148 @@ describe("Weavero — items-tree filter", () => {
             expect(src).to.include("clearSelection");  // drop non-matches
         });
     });
+
+    // ---- "Also in library" (linked-item relations) ----------------
+    //
+    // The dimension is Zotero's owl:sameAs linked-item relation, merged
+    // across BOTH storage directions — which side holds the relation is an
+    // access heuristic (personal library preferred), not provenance, so a
+    // one-direction read would silently miss half the links. The collector
+    // also mirrors the native Libraries-and-Collections box's rule that a
+    // link whose far item is missing or trashed doesn't count. Verified
+    // live on the real profile 2026-08-05 (native getLinkedItem agreed on
+    // every sample, forward count == reverse count) and locked here with a
+    // local group fixture.
+
+    describe("also-in-library filter", () => {
+        let group, groupLibID, junk;
+        before(async function () {
+            this.timeout(30000);
+            if (typeof wv._wvCollectLinkedLibraries !== "function") this.skip();
+            // A local group library (upstream's own createGroup pattern —
+            // needs a current user in the users table).
+            let uid = Zotero.Users.getCurrentUserID();
+            if (!uid) {
+                await Zotero.Users.setCurrentUserID(1);
+                uid = 1;
+            }
+            if (!Zotero.Users.getName(uid)) {
+                await Zotero.Users.setName(uid, "WV Test User");
+            }
+            group = new Zotero.Group();
+            const G = /** @type {any} */ (group);
+            G.id = Zotero.Utilities.rand(100000, 900000);
+            G.name = "WV-TEST linked " + Zotero.Utilities.randomString(4);
+            G.description = "";
+            G.editable = true;
+            G.filesEditable = true;
+            G.version = Zotero.Utilities.rand(1000, 10000);
+            await group.saveTx();
+            groupLibID = group.libraryID;
+            junk = [];
+        });
+        after(async function () {
+            this.timeout(30000);
+            for (const it of (junk || []).reverse()) {
+                try { if (Zotero.Items.get(it.id)) await it.eraseTx(); } catch (e) {}
+            }
+            try { if (group) await Zotero.Groups.get(group.id).eraseTx(); } catch (e) {}
+        });
+        async function mkItem(libID, title) {
+            const it = new Zotero.Item("journalArticle");
+            it.libraryID = libID;
+            it.setField("title", title);
+            await it.saveTx();
+            junk.push(it);
+            return it;
+        }
+
+        it("parses group / user / local-user object URIs; unknown group is null", () => {
+            const uid = Zotero.Libraries.userLibraryID;
+            const g = wv._wvLinkedURITarget(
+                "http://zotero.org/groups/" + group.id + "/items/ABCD2345");
+            expect(g && g.libraryID).to.equal(groupLibID);
+            expect(g && g.key).to.equal("ABCD2345");
+            const u = wv._wvLinkedURITarget(
+                "http://zotero.org/users/12345/items/WXYZ6789");
+            expect(u && u.libraryID).to.equal(uid);
+            const l = wv._wvLinkedURITarget(
+                "http://zotero.org/users/local/aBc123/items/WXYZ6789");
+            expect(l && l.libraryID).to.equal(uid);
+            // Unknown group id -> not available locally -> null.
+            expect(wv._wvLinkedURITarget(
+                "http://zotero.org/groups/999999999/items/ABCD2345")).to.equal(null);
+            expect(wv._wvLinkedURITarget("not a uri")).to.equal(null);
+        });
+
+        it("collects BOTH storage directions and the mirror view agrees", async function () {
+            this.timeout(30000);
+            const uid = Zotero.Libraries.userLibraryID;
+            // FORWARD pair: relation stored on the user-library item.
+            const mineF = await mkItem(uid, "WV-TEST linked fwd");
+            const theirsF = await mkItem(groupLibID, "WV-TEST linked fwd (group)");
+            mineF.addRelation("owl:sameAs", Zotero.URI.getItemURI(theirsF));
+            await mineF.saveTx();
+            // REVERSE pair: relation stored on the group-library item.
+            const mineR = await mkItem(uid, "WV-TEST linked rev");
+            const theirsR = await mkItem(groupLibID, "WV-TEST linked rev (group)");
+            theirsR.addRelation("owl:sameAs", Zotero.URI.getItemURI(mineR));
+            await theirsR.saveTx();
+
+            const map = await wv._wvCollectLinkedLibraries(uid);
+            const set = map.get(String(groupLibID));
+            expect(set, "group appears in the user-library map").to.exist;
+            expect(set.has(mineF.id), "forward-stored link found").to.equal(true);
+            expect(set.has(mineR.id), "reverse-stored link found").to.equal(true);
+
+            // Mirror view: collecting FOR the group finds the same pairs
+            // under the user library's key.
+            const gmap = await wv._wvCollectLinkedLibraries(groupLibID);
+            const gset = gmap.get(String(uid));
+            expect(gset && gset.has(theirsF.id)).to.equal(true);
+            expect(gset && gset.has(theirsR.id)).to.equal(true);
+        });
+
+        it("a trashed far item stops counting (native-box parity)", async function () {
+            this.timeout(30000);
+            const uid = Zotero.Libraries.userLibraryID;
+            const mine = await mkItem(uid, "WV-TEST linked trash");
+            const theirs = await mkItem(groupLibID, "WV-TEST linked trash (group)");
+            mine.addRelation("owl:sameAs", Zotero.URI.getItemURI(theirs));
+            await mine.saveTx();
+            let map = await wv._wvCollectLinkedLibraries(uid);
+            expect(map.get(String(groupLibID)).has(mine.id)).to.equal(true);
+            theirs.deleted = true;
+            await theirs.saveTx();
+            map = await wv._wvCollectLinkedLibraries(uid);
+            const set = map.get(String(groupLibID));
+            expect(!set || !set.has(mine.id),
+                "trashed far item must not count").to.equal(true);
+        });
+
+        it("predicate helper answers from the cache, include and miss", async function () {
+            this.timeout(30000);
+            const uid = Zotero.Libraries.userLibraryID;
+            const mine = await mkItem(uid, "WV-TEST linked pred");
+            const theirs = await mkItem(groupLibID, "WV-TEST linked pred (group)");
+            mine.addRelation("owl:sameAs", Zotero.URI.getItemURI(theirs));
+            await mine.saveTx();
+            const map = await wv._wvCollectLinkedLibraries(uid);
+            wv._cachedLinkedLibraries = { libraryID: uid, map };
+            try {
+                expect(wv._wvLinkedLibCacheWarm()).to.equal(true);
+                expect(wv._wvItemInAnyLinkedLib(mine, [String(groupLibID)]))
+                    .to.equal(true);
+                expect(wv._wvItemInAnyLinkedLib(mine, ["999999"])).to.equal(false);
+                const other = await mkItem(uid, "WV-TEST unlinked");
+                expect(wv._wvItemInAnyLinkedLib(other, [String(groupLibID)]))
+                    .to.equal(false);
+                // The any-library form — what the In Multiple Libraries
+                // tile's predicate actually asks.
+                expect(wv._wvItemInAnyOtherLib(mine)).to.equal(true);
+                expect(wv._wvItemInAnyOtherLib(other)).to.equal(false);
+            }
+            finally { wv._cachedLinkedLibraries = null; }
+        });
+    });
 });

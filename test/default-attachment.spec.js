@@ -1037,4 +1037,224 @@ describe("Weavero — default child (attachments, notes, links)", () => {
             expect(marked.length).to.equal(1);
         });
     });
+
+    // ---- 7. teardown (shutdown leaves Zotero exactly as found) ------------
+    //
+    // The public page promises "remove the plugin and everything reverts".
+    // That promise rests on _wvUnwireDefaultAttachment + _wvUnwireReparentGuard
+    // (the onShutdown pair) restoring Zotero's own functions BY IDENTITY —
+    // not by equivalent behavior — across all five patch surfaces:
+    // getBestAttachment, getBestAttachments, the getAttachments hoist, each
+    // window's ItemTree _renderCell (▷ marker), and the reparent-guard
+    // notifier observer. Verified live on the real profile 2026-08-05 (a probe
+    // item's getAttachments order reverted to native after unwire, hoisted
+    // again after rewire) and locked here.
+
+    describe("teardown", () => {
+        it("unwire restores all patched functions by identity, drops every expando, and rewire brings the feature back", async function () {
+            this.timeout(20000);
+            const proto = /** @type {any} */ (Zotero.Item.prototype);
+            const Z = /** @type {any} */ (Zotero);
+            // Re-assert wiring so this spec is order-independent, then capture
+            // the stashed upstream originals — after unwire the stashes are
+            // deleted, so identity can only be checked against copies.
+            wv._wvWireDefaultAttachment();
+            const origBest = proto._wvOrigGetBestAttachment;
+            const origPlural = proto._wvOrigGetBestAttachments;
+            const origAtts = proto._wvDefattOrigGetAtts;
+            expect(origBest, "singular original stashed").to.be.a("function");
+            expect(origAtts, "getAttachments original stashed").to.be.a("function");
+            // ▷ marker: capture per-window renderer state before unwire.
+            const renderers = [];
+            for (const win of Zotero.getMainWindows()) {
+                const view = win.ZoteroPane && win.ZoteroPane.itemsView;
+                let itp = view && Object.getPrototypeOf(view);
+                while (itp && !Object.prototype.hasOwnProperty.call(itp, "_renderCell")) {
+                    itp = Object.getPrototypeOf(itp);
+                }
+                if (itp && itp._renderCell === itp._wvDefattRenderFn
+                        && typeof itp._wvDefattOrigRenderCell === "function") {
+                    renderers.push({ itp, orig: itp._wvDefattOrigRenderCell });
+                }
+            }
+
+            // Fixture: two file children, the NON-first one marked as default,
+            // so the hoist observably reorders getAttachments.
+            const lib = Zotero.Libraries.userLibraryID;
+            const p = new Zotero.Item("journalArticle");
+            p.libraryID = lib;
+            p.setField("title", "WV-TEST defatt teardown");
+            await p.saveTx();
+            const junk = [p];
+            try {
+                for (const t of ["teardown-1", "teardown-2"]) {
+                    const a = new Zotero.Item("attachment");
+                    a.libraryID = lib;
+                    a.parentID = p.id;
+                    a.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+                    a.attachmentContentType = "application/pdf";
+                    a.setField("title", "WV-TEST " + t);
+                    await a.saveTx();
+                    junk.push(a);
+                }
+                const nativeIDs = origAtts.call(p);
+                expect(nativeIDs.length).to.equal(2);
+                const pick = /** @type {any} */ (Zotero.Items.get(nativeIDs[1]));
+                expect(await wv._wvSetDefaultChild(pick)).to.equal(true);
+                expect(p.getAttachments()[0], "hoist active before unwire")
+                    .to.equal(pick.id);
+
+                wv._wvUnwireDefaultAttachment();
+                wv._wvUnwireReparentGuard();
+
+                expect(proto.getBestAttachment, "singular restored").to.equal(origBest);
+                expect(proto.getBestAttachments, "plural restored").to.equal(origPlural);
+                expect(proto.getAttachments, "hoist unwrapped").to.equal(origAtts);
+                for (const k of ["_wvDefaultAttFn", "_wvDefaultAttPluralFn",
+                    "_wvDefaultAttWired", "_wvOrigGetBestAttachment",
+                    "_wvOrigGetBestAttachments", "_wvDefattOrigGetAtts",
+                    "_wvDefattGetAttsFn"]) {
+                    expect(proto[k], k + " deleted").to.equal(undefined);
+                }
+                expect(Z._wvDefattReparentObsID, "notifier observer gone")
+                    .to.equal(undefined);
+                for (const r of renderers) {
+                    expect(r.itp._renderCell, "_renderCell restored").to.equal(r.orig);
+                    expect(r.itp._wvDefattRenderFn).to.equal(undefined);
+                    expect(r.itp._wvDefattOrigRenderCell).to.equal(undefined);
+                }
+                // Behavior follows identity: order back to native despite the
+                // still-present marker tag.
+                expect(p.getAttachments().join(","), "native order after unwire")
+                    .to.equal(nativeIDs.join(","));
+
+                // Rewire = the startup path; the feature must come back whole.
+                wv._wvWireDefaultAttachment();
+                expect(proto._wvDefaultAttWired).to.be.a("number");
+                expect(proto.getBestAttachment).to.equal(proto._wvDefaultAttFn);
+                expect(Z._wvDefattReparentObsID, "observer re-registered").to.exist;
+                expect(p.getAttachments()[0], "hoist active again")
+                    .to.equal(pick.id);
+            }
+            finally {
+                // Never leave the suite's shared prototype unwired.
+                try { wv._wvWireDefaultAttachment(); } catch (e) {}
+                for (const it of junk.reverse()) {
+                    try { if (Zotero.Items.get(it.id)) await it.eraseTx(); } catch (e) {}
+                }
+            }
+        });
+    });
+
+    // ---- 8. hoist pref gates (defattSortFirst*) ---------------------------
+    //
+    // The three 0.18.3 prefs are BEHAVIOR GATES read per getAttachments call
+    // (and per _renderCell for the ▷ marker) — toggling them must take effect
+    // immediately with no re-wiring, and turning the sort prefs off must NOT
+    // turn off the open override itself (they gate ordering only). Verified
+    // live on the real profile 2026-08-05 (probe item's order flipped
+    // native/hoisted as each pref toggled, ▷ glyphs 2→0→2 on defattMarkAuto);
+    // the DOM-rendered marker stays a live/manual check, the hoist gates are
+    // locked here.
+
+    describe("hoist pref gates", () => {
+        const P_DEF = "weavero.defattSortFirstDefault";
+        const P_AUTO = "weavero.defattSortFirstAuto";
+        const P_MASTER = "weavero.enableDefaultChild";
+        let p, atts, nativeIDs, junk;
+        before(async function () {
+            this.timeout(20000);
+            wv._wvWireDefaultAttachment();
+            const lib = Zotero.Libraries.userLibraryID;
+            p = new Zotero.Item("journalArticle");
+            p.libraryID = lib;
+            p.setField("title", "WV-TEST defatt hoist prefs");
+            await p.saveTx();
+            junk = [p];
+            atts = [];
+            for (const t of ["hoist-1", "hoist-2"]) {
+                const a = new Zotero.Item("attachment");
+                a.libraryID = lib;
+                a.parentID = p.id;
+                a.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+                a.attachmentContentType = "application/pdf";
+                a.setField("title", "WV-TEST " + t);
+                await a.saveTx();
+                atts.push(a);
+                junk.push(a);
+            }
+            nativeIDs = /** @type {any} */ (Zotero.Item.prototype)
+                ._wvDefattOrigGetAtts.call(p);
+            expect(nativeIDs.length).to.equal(2);
+        });
+        afterEach(() => {
+            Zotero.Prefs.clear(P_DEF);
+            Zotero.Prefs.clear(P_AUTO);
+            Zotero.Prefs.clear(P_MASTER);
+        });
+        after(async () => {
+            for (const it of (junk || []).reverse()) {
+                try { if (Zotero.Items.get(it.id)) await it.eraseTx(); } catch (e) {}
+            }
+        });
+
+        it("defattSortFirstDefault=false stops hoisting the pick — but NOT the open override", async function () {
+            this.timeout(20000);
+            const pick = /** @type {any} */ (Zotero.Items.get(nativeIDs[1]));
+            expect(await wv._wvSetDefaultChild(pick)).to.equal(true);
+            try {
+                expect(p.getAttachments()[0], "pick hoisted by default").to.equal(pick.id);
+                Zotero.Prefs.set(P_DEF, false);
+                Zotero.Prefs.set(P_AUTO, false); // isolate: no auto fallback hoist
+                expect(p.getAttachments().join(","), "native order with sort prefs off")
+                    .to.equal(nativeIDs.join(","));
+                // Ordering pref must not disable the pick itself.
+                const best = await p.getBestAttachment();
+                expect(best && best.id, "double-click still opens the pick").to.equal(pick.id);
+            }
+            finally { await wv._wvClearDefaultChild(pick); }
+        });
+
+        it("defattSortFirstAuto hoists the automatic winner; off restores native order", async function () {
+            this.timeout(20000);
+            // Make the NON-first native child the automatic winner via the
+            // URL tier (upstream: contentType DESC, url-match DESC, dateAdded ASC).
+            const winner = /** @type {any} */ (Zotero.Items.get(nativeIDs[1]));
+            p.setField("url", "https://example.com/wv-hoist");
+            await p.saveTx();
+            winner.setField("url", "https://example.com/wv-hoist");
+            await winner.saveTx();
+            try {
+                expect(p.getAttachments()[0], "auto winner hoisted").to.equal(winner.id);
+                Zotero.Prefs.set(P_AUTO, false);
+                expect(p.getAttachments().join(","), "native order with auto off")
+                    .to.equal(nativeIDs.join(","));
+            }
+            finally {
+                winner.setField("url", "");
+                await winner.saveTx();
+                p.setField("url", "");
+                await p.saveTx();
+            }
+        });
+
+        it("master switch off stops the hoist entirely, without unwiring", async function () {
+            this.timeout(20000);
+            const pick = /** @type {any} */ (Zotero.Items.get(nativeIDs[1]));
+            expect(await wv._wvSetDefaultChild(pick)).to.equal(true);
+            try {
+                expect(p.getAttachments()[0]).to.equal(pick.id);
+                Zotero.Prefs.set(P_MASTER, false);
+                expect(p.getAttachments().join(","), "native order with master off")
+                    .to.equal(nativeIDs.join(","));
+                const proto = /** @type {any} */ (Zotero.Item.prototype);
+                expect(proto.getAttachments, "still wired — gate, not teardown")
+                    .to.equal(proto._wvDefattGetAttsFn);
+                Zotero.Prefs.clear(P_MASTER);
+                expect(p.getAttachments()[0], "hoist back the moment the gate opens")
+                    .to.equal(pick.id);
+            }
+            finally { await wv._wvClearDefaultChild(pick); }
+        });
+    });
 });

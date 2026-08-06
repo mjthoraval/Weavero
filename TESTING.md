@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (177 tests, 13 spec files):
+Current in-Zotero coverage (181 tests, 13 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -63,7 +63,18 @@ Current in-Zotero coverage (177 tests, 13 spec files):
   on 2026-08-05 — plain reparent clears the pick, a merge strips the
   adopted pick while the master's survives, moving a pick to standalone
   clears it without silent resurrection on return, and moving a pick
-  onto a parent that has its own leaves exactly one marked child).
+  onto a parent that has its own leaves exactly one marked child; plus
+  the TEARDOWN contract, verified live on the real profile 2026-08-05
+  before being locked — unwire restores all five patch surfaces by
+  function identity with every expando deleted and the reparent
+  observer unregistered, a hoisted attachment order reverts to native,
+  and rewiring brings the whole feature back; plus the HOIST PREF GATES
+  (also live-verified 2026-08-05, including a full AddonManager
+  disable/re-enable round trip on the real profile) — the sort prefs
+  stop the hoist without disabling the open override, the automatic
+  winner hoists only while `defattSortFirstAuto` allows it, and the
+  master switch gates the hoist per call without unwiring; the
+  DOM-rendered ▷ marker pref stays a live/manual check).
 - **UI-state invariant specs**: `ui-state-recovery.spec.js` (who-wins
   contracts for stuck shared UI state, 2026-08-05: the drag-overlay
   watchdog restores pointer-events with no dragend at all, the restore

@@ -476,6 +476,48 @@ describe("Weavero — items-tree filter", () => {
             }
         });
 
+        it("hasAttachment means FILES: a linked-URL-only parent does not match", async function () {
+            this.timeout(20000);
+            // Fixture twin of WVT-09 in the live "Weavero Filter Tests"
+            // collection, which caught this on its first sweep (2026-08-06):
+            // getAttachments() counts linked-URL children, but the tile's
+            // tooltip promises attachment FILES.
+            const lib = Zotero.Libraries.userLibraryID;
+            const p = new Zotero.Item("journalArticle");
+            p.libraryID = lib;
+            p.setField("title", "WV-TEST linked-url-only parent");
+            await p.saveTx();
+            const u = new Zotero.Item("attachment");
+            u.libraryID = lib;
+            u.parentID = p.id;
+            u.attachmentLinkMode = Zotero.Attachments.LINK_MODE_LINKED_URL;
+            u.setField("title", "WV-TEST linked url");
+            u.setField("url", "https://example.com/wv-linked");
+            await u.saveTx();
+            try {
+                const st = (g) => ({ groups: [g], collections: [], savedSearches: [] });
+                await Zotero.Promise.delay(200);
+                expect(wv._rowIsPrimary(Zotero.Items.get(p.id), st({ hasAttachment: true })),
+                    "linked-URL child must NOT satisfy hasAttachment").to.equal(false);
+                expect(wv._rowIsPrimary(Zotero.Items.get(p.id), st({ hasAttachment: false })),
+                    "and MUST satisfy hasAttachment=false").to.equal(true);
+                // Add a real file child — flips both.
+                const f = new Zotero.Item("attachment");
+                f.libraryID = lib;
+                f.parentID = p.id;
+                f.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+                f.attachmentContentType = "application/pdf";
+                f.setField("title", "WV-TEST real file");
+                await f.saveTx();
+                await Zotero.Promise.delay(300);
+                expect(wv._rowIsPrimary(Zotero.Items.get(p.id), st({ hasAttachment: true })),
+                    "real file satisfies hasAttachment (facet evicted per-id)").to.equal(true);
+            }
+            finally {
+                try { await p.eraseTx(); } catch (e) {}
+            }
+        });
+
         it("per-item facets (read status, PMID) stay fresh across item edits", async function () {
             this.timeout(20000);
             const lib = Zotero.Libraries.userLibraryID;

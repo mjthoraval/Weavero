@@ -108,6 +108,28 @@ function wvEvictFacets(ids: any[]) {
         }
     } catch (e) { WV_FACETS.clear(); }
 }
+// "Has Attachment File" means FILES, as the tile's tooltip says — a
+// linked-URL child is an attachment item but not a file. The old
+// `getAttachments().length > 0` counted it (caught 2026-08-06 by fixture
+// WVT-09 on the first sweep of the test collection). Facet-cached like
+// the other per-item derivations.
+function wvItemHasFileAttachment(item: any): boolean {
+    try {
+        const id = item && item.id;
+        if (id != null) {
+            const e: any = wvFacetEntry(id);
+            if (e.hasFile !== undefined) return e.hasFile;
+        }
+        let out = false;
+        const ids = (item.getAttachments && item.getAttachments()) || [];
+        for (const aid of ids) {
+            const a: any = Zotero.Items.get(aid);
+            if (a && a.isFileAttachment && a.isFileAttachment()) { out = true; break; }
+        }
+        if (id != null) (wvFacetEntry(id) as any).hasFile = out;
+        return out;
+    } catch (e) { return false; }
+}
 function wvItemHasPubmedId(item: any, field: string, re: RegExp): boolean {
     try {
         const key = field === "PMID" ? "pmid" : "pmcid";
@@ -3129,8 +3151,7 @@ class _FilterMixin {
         if (group.hasAttachment != null) {
             const isReg = !!(item.isRegularItem && item.isRegularItem());
             if (isReg) {
-                const ids = (item.getAttachments && item.getAttachments()) || [];
-                const v = ids.length > 0;
+                const v = wvItemHasFileAttachment(item);
                 if (v !== group.hasAttachment) return false;
             }
         }
@@ -3975,9 +3996,7 @@ class _FilterMixin {
             if (v !== group.hasURL) return false;
         }
         if (group.hasAttachment != null) {
-            const ids = isReg && (root.getAttachments
-                && root.getAttachments()) || [];
-            const v = isReg && ids.length > 0;
+            const v = isReg && wvItemHasFileAttachment(root);
             if (v !== group.hasAttachment) return false;
         }
         if ((group.publication && group.publication.length)
@@ -4301,8 +4320,7 @@ class _FilterMixin {
                 if (v === group.hasURL) return true;
             }
             if (group.hasAttachment != null) {
-                const ids = (item.getAttachments && item.getAttachments()) || [];
-                const v = ids.length > 0;
+                const v = wvItemHasFileAttachment(item);
                 if (v === group.hasAttachment) return true;
             }
             if ((group.publication && group.publication.length)

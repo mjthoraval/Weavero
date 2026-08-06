@@ -86,11 +86,41 @@ function wvExtraHasId(item: any, re: RegExp): boolean {
 // PMID/PMCID are dedicated fields since Zotero 9 (see the acknowledgment
 // in pane.ts's identifier columns; forum 132715 + zotero/zotero#5831):
 // check the field first, then the legacy Extra line.
+// Derived-fields layer, filter side (2026-08-06): per-item facets that
+// are pure functions of the item's fields (read status, PMID/PMCID
+// presence) reside in this module-level map instead of being re-derived
+// per row per apply (regex over Extra each time). Evicted PER-ID by
+// _wvWireFilterCacheInvalidator (same module closure); the map dies with
+// the module on plugin reload, so no cross-instance staleness.
+const WV_FACETS: Map<number, { rs?: string, pmid?: boolean, pmcid?: boolean }> = new Map();
+function wvFacetEntry(id: number) {
+    let e = WV_FACETS.get(id);
+    if (!e) { e = {}; WV_FACETS.set(id, e); }
+    return e;
+}
+function wvEvictFacets(ids: any[]) {
+    try {
+        for (const raw of (ids || [])) {
+            const iid = typeof raw === "number"
+                ? raw
+                : parseInt(String(raw).split("-")[0], 10);
+            if (!isNaN(iid)) WV_FACETS.delete(iid);
+        }
+    } catch (e) { WV_FACETS.clear(); }
+}
 function wvItemHasPubmedId(item: any, field: string, re: RegExp): boolean {
     try {
+        const key = field === "PMID" ? "pmid" : "pmcid";
+        const id = item && item.id;
+        if (id != null) {
+            const e: any = wvFacetEntry(id);
+            if (e[key] !== undefined) return e[key];
+        }
         let v = "";
         try { v = String(item.getField(field) || ""); } catch (e) {}
-        return !!v.trim().length || wvExtraHasId(item, re);
+        const out = !!v.trim().length || wvExtraHasId(item, re);
+        if (id != null) (wvFacetEntry(id) as any)[key] = out;
+        return out;
     } catch (e) { return false; }
 }
 
@@ -5954,12 +5984,20 @@ class _FilterMixin {
     }
 
     /** An item's read status (the `Read_Status:` line of its extra field),
-     *  "" when unset. */
+     *  "" when unset. Cached in the module-level facet map (derived-fields
+     *  layer 2026-08-06) — was a regex over Extra per row per apply. */
     _wvReadStatusOf(item) {
         try {
+            const id = item && item.id;
+            if (id != null) {
+                const e = wvFacetEntry(id);
+                if (e.rs !== undefined) return e.rs;
+            }
             const extra = String((item.getField && item.getField("extra")) || "");
             const m = extra.match(/^Read_Status:\s*(.+)$/m);
-            return m ? m[1].trim() : "";
+            const out = m ? m[1].trim() : "";
+            if (id != null) wvFacetEntry(id).rs = out;
+            return out;
         } catch (e) { return ""; }
     }
 
@@ -11004,7 +11042,7 @@ class _FilterMixin {
             const g: any = Zotero;
             if (g._wvFilterCacheObsID) return;
             const obs = {
-                notify: () => {
+                notify: (_ev: string, type: string, ids: any[]) => {
                     try {
                         const lp: any = (Zotero as any).Weavero
                             && (Zotero as any).Weavero.plugin;
@@ -11012,7 +11050,12 @@ class _FilterMixin {
                             lp._wvVerdictCache = null;
                             lp._wvLastApplySig = null;
                         }
-                    } catch (e) {}
+                        // Per-item facets (read status, PMID/PMCID): evict
+                        // per id — same module closure owns the map.
+                        if (type === "item" || type === "item-tag") {
+                            wvEvictFacets(ids);
+                        }
+                    } catch (e) { try { WV_FACETS.clear(); } catch (e2) {} }
                 },
             };
             g._wvFilterCacheObsID = Zotero.Notifier.registerObserver(obs,

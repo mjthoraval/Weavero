@@ -40,7 +40,7 @@ throwaway temp profile** (`.scaffold/test/profile`), installs the build,
 and runs Mocha + Chai inside Zotero's privileged context — the same
 run-inside-the-app approach as upstream `zotero/zotero`'s own suite.
 
-Current in-Zotero coverage (193 tests, 13 spec files):
+Current in-Zotero coverage (197 tests, 13 spec files):
 
 - **Logic + adapter specs**: `filter.spec.js` (row-kind classification,
   path-aware matching, Zotero 9 fallbacks, dimming CSS, selection
@@ -64,6 +64,12 @@ Current in-Zotero coverage (193 tests, 13 spec files):
   adopted pick while the master's survives, moving a pick to standalone
   clears it without silent resurrection on return, and moving a pick
   onto a parent that has its own leaves exactly one marked child; plus
+  the DERIVED-FIELDS layer (2026-08-06) — the resident {pickID, autoID}
+  pair stays FRESH across mark/clear (value-freshness assertions, not
+  cache-emptiness: repaints legitimately re-prime evicted entries), the
+  hot paths (hoist, getBestAttachment wraps, marker paint) consume it
+  by source contract, and the per-id notifier observer is registered
+  while wired and torn down with the rest; plus
   the TEARDOWN contract, verified live on the real profile 2026-08-05
   before being locked — unwire restores all five patch surfaces by
   function identity with every expando deleted and the reparent
@@ -81,10 +87,13 @@ Current in-Zotero coverage (193 tests, 13 spec files):
   attachment file type, annotation color), `Zotero.Search` and the
   Weavero predicate must agree over shared fixtures — first verified
   exactly on the real library (e.g. 15317=15317 item-type,
-  16043=16043 has-URL). A fifth spec pins the EXPRESSIVENESS gap
-  (native cross-level AND matches nothing where Weavero's group
-  semantics match) as a canary: if upstream makes it expressible,
-  the failure tells us to revisit.
+  16043=16043 has-URL). A fifth spec pins the CROSS-LEVEL semantics:
+  plain AND is same-item (0 hits), while `resultLevel=item` — what the
+  advanced-search window sets, caught by the user 2026-08-06 — rolls
+  child conditions up to the top-level item and AGREES with Weavero
+  (318=318 journal-articles-with-yellow-annotations on the real
+  library). The one dimension native search genuinely cannot express
+  remains cross-library membership.
 - **Filter perf-cache specs** (in `filter.spec.js`, 2026-08-05): the
   full-state signature rotates on any dimension or quick-search change
   (multi-filter safety), the parent-only cascade detector stays false

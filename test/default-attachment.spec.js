@@ -1118,6 +1118,9 @@ describe("Weavero — default child (attachments, notes, links)", () => {
                 }
                 expect(Z._wvDefattReparentObsID, "notifier observer gone")
                     .to.equal(undefined);
+                expect(Z._wvDefattDerivedObsID, "derived-fields observer gone")
+                    .to.equal(undefined);
+                expect(wv._wvDerivedDefatt, "derived map nulled").to.equal(null);
                 for (const r of renderers) {
                     expect(r.itp._renderCell, "_renderCell restored").to.equal(r.orig);
                     expect(r.itp._wvDefattRenderFn).to.equal(undefined);
@@ -1143,6 +1146,80 @@ describe("Weavero — default child (attachments, notes, links)", () => {
                     try { if (Zotero.Items.get(it.id)) await it.eraseTx(); } catch (e) {}
                 }
             }
+        });
+    });
+
+    // ---- 9. derived-fields layer (2026-08-06) -----------------------------
+    //
+    // Zotero's own pattern applied to Weavero data: {pickID, autoID} per
+    // parent resides in RAM (`_wvDerivedDefatt`), consumed by the hottest
+    // paths (items-list _renderCell paint, getAttachments hoist,
+    // getBestAttachment wraps), invalidated PER-ID by a notifier observer.
+    // Assert VALUE FRESHNESS, not cache emptiness — eviction is instantly
+    // followed by re-derivation whenever a consumer repaints (observed
+    // live 2026-08-06: "evicted:false" probes were the repaint re-priming
+    // a correctly-evicted entry).
+
+    describe("derived fields layer", () => {
+        it("pick/auto pair stays fresh across mark and clear", async function () {
+            this.timeout(20000);
+            const lib = Zotero.Libraries.userLibraryID;
+            const p = new Zotero.Item("journalArticle");
+            p.libraryID = lib;
+            p.setField("title", "WV-TEST derived freshness");
+            await p.saveTx();
+            const c = new Zotero.Item("attachment");
+            c.libraryID = lib;
+            c.parentID = p.id;
+            c.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+            c.attachmentContentType = "application/pdf";
+            c.setField("title", "WV-TEST derived child");
+            await c.saveTx();
+            try {
+                const before = wv._wvDefattDerived(p);
+                expect(before.pickID, "no pick yet").to.equal(null);
+                expect(before.autoID, "sole PDF is the auto winner").to.equal(c.id);
+                await wv._wvSetDefaultChild(Zotero.Items.get(c.id));
+                await Zotero.Promise.delay(300);
+                expect(wv._wvDefattDerived(p).pickID,
+                    "derived pick follows the mark").to.equal(c.id);
+                await wv._wvClearDefaultChild(Zotero.Items.get(c.id));
+                await Zotero.Promise.delay(300);
+                expect(wv._wvDefattDerived(p).pickID,
+                    "derived pick follows the clear").to.equal(null);
+            }
+            finally {
+                try { await c.eraseTx(); } catch (e) {}
+                try { await p.eraseTx(); } catch (e) {}
+            }
+        });
+
+        it("the hot paths consume the layer (source contract)", () => {
+            const proto = /** @type {any} */ (Zotero.Item.prototype);
+            expect(String(proto.getAttachments),
+                "hoist reads derived").to.include("_wvDefattDerived");
+            expect(String(proto.getBestAttachment),
+                "singular wrap reads derived").to.include("_wvDefattDerived");
+            const win = Zotero.getMainWindow();
+            const view = win.ZoteroPane && win.ZoteroPane.itemsView;
+            let itp = view && Object.getPrototypeOf(view);
+            while (itp && !Object.prototype.hasOwnProperty.call(itp, "_renderCell")) {
+                itp = Object.getPrototypeOf(itp);
+            }
+            if (itp && itp._wvDefattRenderFn) {
+                expect(String(itp._wvDefattRenderFn),
+                    "marker paint reads derived").to.include("_wvDefattDerived");
+            }
+        });
+
+        it("observer registered while wired; map materializes on first derive", () => {
+            expect(/** @type {any} */ (Zotero)._wvDefattDerivedObsID).to.exist;
+            wv._wvDefattDerived({ id: -999999 });
+            // NOT `instanceof Map` — the plugin compartment's Map is a
+            // different constructor than the spec sandbox's.
+            expect(wv._wvDerivedDefatt
+                && wv._wvDerivedDefatt.has(-999999)).to.equal(true);
+            wv._wvDerivedDefatt.delete(-999999);
         });
     });
 

@@ -547,7 +547,10 @@ class _AttachmentsMixin {
                 try {
                     const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
                     if (lp && !lp._wvDestroyed) {
-                        const chosen = lp._wvGetDefaultChild(this);
+                        // Derived-fields layer: resident pickID, per-id
+                        // notifier invalidation (2026-08-06).
+                        const dp = lp._wvDefattDerived(this).pickID;
+                        const chosen = dp != null ? Zotero.Items.get(dp) : null;
                         if (chosen && lp._wvIsFileAttachment(chosen)) return chosen;
                     }
                 } catch (e) {
@@ -591,7 +594,8 @@ class _AttachmentsMixin {
                     try {
                         const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
                         if (lp && !lp._wvDestroyed && Array.isArray(list) && list.length > 1) {
-                            const chosen = lp._wvGetDefaultChild(this);
+                            const dp = lp._wvDefattDerived(this).pickID;
+                            const chosen = dp != null ? Zotero.Items.get(dp) : null;
                             if (chosen && lp._wvIsFileAttachment(chosen)) {
                                 const i = list.findIndex((a: any) => a && a.id === chosen.id);
                                 if (i > 0) {
@@ -615,6 +619,8 @@ class _AttachmentsMixin {
             // Reparent guard rides the same wiring entry point (versioned
             // internally, so re-asserts are no-op).
             try { this._wvWireReparentGuard(); } catch (e) {}
+            // Derived-fields invalidator too (idempotent).
+            try { this._wvWireDerivedInvalidator(); } catch (e) {}
             // HOIST (upstream zotero#3333's getAttachments sort, user-approved
             // 2026-08-05): the effective opener sorts FIRST in every consumer
             // of getAttachments — the item pane's attachments section and the
@@ -637,15 +643,18 @@ class _AttachmentsMixin {
                             _wvHoistBusy = true;
                             let hoistID: any = null;
                             try {
-                                if (Zotero.Prefs.get("weavero.defattSortFirstDefault") !== false) {
-                                    const chosen = lp._wvGetDefaultChild && lp._wvGetDefaultChild(this);
-                                    if (chosen && !chosen.deleted && ids.includes(chosen.id)) hoistID = chosen.id;
+                                // Derived-fields layer (2026-08-06): one
+                                // resident {pickID, autoID} per parent
+                                // replaces the per-call child walks.
+                                const d = lp._wvDefattDerived(this);
+                                if (Zotero.Prefs.get("weavero.defattSortFirstDefault") !== false
+                                        && d.pickID != null && ids.includes(d.pickID)) {
+                                    hoistID = d.pickID;
                                 }
                                 if (hoistID == null
-                                        && Zotero.Prefs.get("weavero.defattSortFirstAuto") !== false) {
-                                    const auto = lp._wvBestAttachmentHeuristicSync
-                                        && lp._wvBestAttachmentHeuristicSync(this);
-                                    if (auto && ids.includes(auto.id)) hoistID = auto.id;
+                                        && Zotero.Prefs.get("weavero.defattSortFirstAuto") !== false
+                                        && d.autoID != null && ids.includes(d.autoID)) {
+                                    hoistID = d.autoID;
                                 }
                             } finally { _wvHoistBusy = false; }
                             if (hoistID != null && ids[0] !== hoistID) {
@@ -663,6 +672,96 @@ class _AttachmentsMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _wvWireDefaultAttachment err: " + e);
         }
+    }
+
+    // ---- Derived-fields layer (2026-08-06) --------------------------------
+    // Zotero's own pattern applied to Weavero data: derive once into a
+    // per-item RAM entry, invalidate through the notifier — but PER-ID
+    // (the notifier says which items changed), not wholesale. First
+    // resident field: the default-attachment pair {pickID, autoID} per
+    // parent, because its consumers sit on the HOTTEST paths there are —
+    // the items-list _renderCell wrap (every row paint while scrolling)
+    // and the getAttachments hoist — and re-walked the children each call.
+
+    /** {pickID, autoID} for a parent item, lazily derived and cached in
+     *  `_wvDerivedDefatt`. pickID = the user's marked child (any openable
+     *  kind — consumers re-check file-ness where they need it); autoID =
+     *  the automatic heuristic winner among attachments. */
+    _wvDefattDerived(parent: any): { pickID: number | null, autoID: number | null } {
+        let m: Map<number, any> = this._wvDerivedDefatt;
+        if (!m) m = this._wvDerivedDefatt = new Map();
+        const id = parent && parent.id;
+        if (id == null) return { pickID: null, autoID: null };
+        const hit = m.get(id);
+        if (hit) return hit;
+        let pickID: number | null = null;
+        let autoID: number | null = null;
+        try {
+            const p = this._wvGetDefaultChild(parent);
+            pickID = p ? p.id : null;
+        } catch (e) {}
+        try {
+            const a = this._wvBestAttachmentHeuristicSync(parent);
+            autoID = a ? a.id : null;
+        } catch (e) {}
+        const v = { pickID, autoID };
+        m.set(id, v);
+        return v;
+    }
+
+    /** Per-ID eviction: an item event evicts that item's entry AND its
+     *  parent's (a child change moves the parent's derived pair). A
+     *  DELETED id can't be resolved to a parent anymore — clear the map
+     *  (rare, and correctness beats cleverness there). item-tag ids come
+     *  as "itemID-tagID" composites. */
+    _wvWireDerivedInvalidator(): void {
+        try {
+            const g: any = Zotero;
+            if (g._wvDefattDerivedObsID) return;
+            const obs = {
+                notify: (_ev: string, type: string, ids: any[]) => {
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        const m: Map<number, any> = lp && lp._wvDerivedDefatt;
+                        if (!m || !m.size) return;
+                        for (const raw of (ids || [])) {
+                            // Notifier ids arrive as numbers OR strings
+                            // (and "itemID-tagID" composites for item-tag)
+                            // — coerce uniformly, or string ids silently
+                            // skip eviction (caught live 2026-08-06).
+                            const iid = typeof raw === "number"
+                                ? raw
+                                : parseInt(String(raw).split("-")[0], 10);
+                            if (isNaN(iid)) continue;
+                            m.delete(iid);
+                            let it: any = null;
+                            try { it = Zotero.Items.get(iid); } catch (e) {}
+                            if (!it) { m.clear(); return; }
+                            const pid = it.parentItemID;
+                            if (pid) m.delete(pid);
+                        }
+                    } catch (e) {
+                        try {
+                            const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                            if (lp && lp._wvDerivedDefatt) lp._wvDerivedDefatt.clear();
+                        } catch (e2) {}
+                    }
+                },
+            };
+            g._wvDefattDerivedObsID = Zotero.Notifier.registerObserver(
+                obs, ["item", "item-tag"], "weavero-defatt-derived", 95);
+        } catch (e) {}
+    }
+
+    _wvUnwireDerivedInvalidator(): void {
+        try {
+            const g: any = Zotero;
+            if (g._wvDefattDerivedObsID) {
+                try { Zotero.Notifier.unregisterObserver(g._wvDefattDerivedObsID); } catch (e) {}
+            }
+            delete g._wvDefattDerivedObsID;
+            this._wvDerivedDefatt = null;
+        } catch (e) {}
     }
 
     /** Restore Zotero's own `getBestAttachment` (uninstall/test teardown). */
@@ -702,6 +801,8 @@ class _AttachmentsMixin {
             }
             delete proto._wvDefattOrigGetAtts;
             delete proto._wvDefattGetAttsFn;
+            // Derived-fields layer: observer + resident map go with us.
+            try { this._wvUnwireDerivedInvalidator(); } catch (e) {}
             // ▷ marker wrap on each window's ItemTree renderer prototype.
             try {
                 const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [];
@@ -1033,8 +1134,9 @@ class _AttachmentsMixin {
                             if (lp._wvIsDefaultChild(it)) return cell;   // ▶️ already tells the story
                             const parent: any = Zotero.Items.get(it.parentItemID);
                             if (!parent) return cell;
-                            const auto = lp._wvBestAttachmentHeuristicSync(parent);
-                            if (!auto || auto.id !== it.id) return cell;
+                            // Derived-fields layer: resident autoID beats a
+                            // child-walk per row PAINT (2026-08-06).
+                            if (lp._wvDefattDerived(parent).autoID !== it.id) return cell;
                             const txt = cell.querySelector && cell.querySelector(".cell-text");
                             if (!txt || cell.querySelector(".wv-defatt-auto-glyph")) return cell;
                             const g = txt.ownerDocument.createElement("span");

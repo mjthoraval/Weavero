@@ -393,19 +393,31 @@ describe("Weavero — items-tree filter", () => {
             expect(wvPrimary(Zotero.Items.get(ann.id), g)).to.equal(true);
         });
 
-        it("EXPRESSIVENESS GAP: native cross-level AND matches nothing; Weavero's group does", async function () {
+        it("cross-level: plain AND is same-item (0 hits); resultLevel rolls up and AGREES", async function () {
             this.timeout(20000);
-            // Native ANDs both conditions on the SAME item, so "yellow
-            // annotations under journal articles" finds no fixture.
-            const nat = await nativeHits(
+            // WITHOUT resultLevel, native ANDs both conditions on the SAME
+            // item — no fixture can satisfy both, so zero hits. This pins
+            // the default semantics (and originally masqueraded as an
+            // expressiveness gap until the user pointed at the advanced
+            // search window's "Find top-level items" mode, 2026-08-06).
+            const plain = await nativeHits(
                 [["annotationColor", "is", "#ffd400"], ["itemType", "is", "journalArticle"]],
                 "all");
-            expect(nat.size, "native cross-level AND yields no fixture hits "
-                + "(if this fails, upstream made it expressible — investigate!)")
-                .to.equal(0);
-            // Weavero's group semantics: the annotation matches its
-            // dimension while the parent chain satisfies itemType — the
-            // annotation row IS primary under the combined group.
+            expect(plain.size, "plain AND = same-item semantics").to.equal(0);
+            // WITH resultLevel=item (what the advanced-search window sets
+            // by default), child conditions map up to the top-level item —
+            // the cross-level combo IS expressible, and must agree with
+            // Weavero (verified 318=318 on the real library first).
+            const rolled = await nativeHits(
+                [["resultLevel", "item", null],
+                 ["annotationColor", "is", "#ffd400"],
+                 ["itemType", "is", "journalArticle"]],
+                "all");
+            expect(rolled.has(A.id),
+                "rolled-up cross-level combo finds the article").to.equal(true);
+            expect(rolled.has(B.id)).to.equal(false);
+            // Weavero's row-level view of the same combined group: the
+            // yellow annotation under the journal article is primary.
             const g = { annotationColor: ["#ffd400"], itemType: ["journalArticle"] };
             expect(wvPrimary(Zotero.Items.get(ann.id), g),
                 "Weavero cross-level group matches the annotation").to.equal(true);
@@ -462,6 +474,32 @@ describe("Weavero — items-tree filter", () => {
                 Object.assign(g, s.groups[Math.max(0,
                     Math.min(s.activeGroupIndex || 0, s.groups.length - 1))]);
             }
+        });
+
+        it("per-item facets (read status, PMID) stay fresh across item edits", async function () {
+            this.timeout(20000);
+            const lib = Zotero.Libraries.userLibraryID;
+            const it0 = new Zotero.Item("journalArticle");
+            it0.libraryID = lib;
+            it0.setField("title", "WV-TEST facets");
+            await it0.saveTx();
+            try {
+                expect(wv._wvReadStatusOf(it0), "unset facet").to.equal("");
+                it0.setField("extra", "Read_Status: Read\nPMID: 12345");
+                await it0.saveTx();
+                await Zotero.Promise.delay(300);
+                expect(wv._wvReadStatusOf(Zotero.Items.get(it0.id)),
+                    "facet follows the Extra edit").to.equal("Read");
+                expect(wv._rowIsPrimary(Zotero.Items.get(it0.id),
+                    { groups: [{ hasPMID: true }], collections: [], savedSearches: [] }),
+                    "PMID facet feeds the predicate").to.equal(true);
+                it0.setField("extra", "");
+                await it0.saveTx();
+                await Zotero.Promise.delay(300);
+                expect(wv._wvReadStatusOf(Zotero.Items.get(it0.id)),
+                    "facet follows removal").to.equal("");
+            }
+            finally { try { await it0.eraseTx(); } catch (e) {} }
         });
 
         it("data changes null the verdict cache and the no-op signature", async () => {

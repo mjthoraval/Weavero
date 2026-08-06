@@ -286,6 +286,15 @@ Build/test tooling is all `devDependencies` (nothing from npm ships in the XPI):
 - Zotero 7.0+ (declared `strict_min_version: 7.0`, `strict_max_version: 10.*`).
 - Tested on Zotero 10.0-beta. Some features rely on Zotero 10 APIs and may be unavailable or behave differently on Zotero 9.
 
+## Support
+
+Weavero is free and open source. If it saves you time, you can
+**[sponsor its development on GitHub](https://github.com/sponsors/mjthoraval)** —
+one-time or monthly, no platform fee, and two clicks if you already have a GitHub
+account.
+
+Every contribution helps with maintenance and new features — thank you.
+
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE) — same license as Zotero itself.

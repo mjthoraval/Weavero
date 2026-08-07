@@ -10954,11 +10954,31 @@ class _FilterMixin {
      *  match, so selecting one and then filtering deselects it. */
     _reconcileSelectionAfterFilter(prevSelectedIDs) {
         // `null` = the capture could not be trusted (stale keep mapping).
-        // Leaving the live selection untouched is always safer than
-        // reconciling against ids that were never really selected: the
-        // wrong ids match nothing in the new view, and the "nothing
-        // survived" branch below would clear a perfectly good selection.
-        if (prevSelectedIDs === null) return;
+        // We used to `return` here, reasoning that leaving the live
+        // selection untouched is "always safer". IT IS NOT (measured
+        // 2026-08-07, Zotero 10.0-beta.23): selection is held as ROW
+        // INDICES and this filter REMAPS what each index shows, so
+        // leaving them alone means they silently resolve to DIFFERENT
+        // items — indices [0,1,5] meant 60867/60862/60781 before the
+        // apply and 60867/60862/60773 after it, i.e. the user ends up
+        // with an item selected that they never picked, and the item
+        // pane shows the wrong thing. "Do nothing" is only neutral when
+        // indices keep their meaning.
+        //
+        // So when there is no trustworthy "before" snapshot we CLEAR the
+        // selection instead of leaving it.
+        //
+        // Re-resolving from the post-apply view was tried first and does
+        // NOT work (measured): a stale index often lands on a row that
+        // legitimately matches the filter — index 5 held the dropped book
+        // before the apply and a journal article after it — so "keep the
+        // indices whose row is a primary match" happily keeps an item the
+        // user never picked. Without a trusted before-state there is no
+        // way to tell "was selected" from "is merely sitting there now",
+        // so the only honest options are to clear or to fabricate. We
+        // clear: losing a selection is recoverable and visible; silently
+        // selecting the wrong items is neither.
+        const untrusted = prevSelectedIDs === null;
         const state = this._filterState;
         if (!state || !this._isFilterActive(state)) return;
         const win = Zotero.getMainWindow();
@@ -10980,9 +11000,13 @@ class _FilterMixin {
             catch (e) {}
             if (primary) idxById.set(row.ref.id, i);
         }
+        // `untrusted` => targetIdx stays empty => the selection is cleared
+        // below (see the reasoning at the top of this method).
         const targetIdx: number[] = [];
-        for (const id of (prevSelectedIDs || [])) {
-            if (idxById.has(id)) targetIdx.push(idxById.get(id) as number);
+        if (!untrusted) {
+            for (const id of (prevSelectedIDs || [])) {
+                if (idxById.has(id)) targetIdx.push(idxById.get(id) as number);
+            }
         }
         targetIdx.sort((a, b) => a - b);
         // No-op guard: if the current selection already equals the

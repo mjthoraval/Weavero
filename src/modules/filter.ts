@@ -389,6 +389,9 @@ class _FilterMixin {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             const rp = itemsView && itemsView.rowProvider;
             if (!rp || !rp._wvOrigGetRow) return;
+            // Same reasoning as the deactivation branch: the watermark
+            // only means something while the translation is installed.
+            delete rp._wvKeepRowsLen;
             delete rp.getRow;
             delete rp.getRowCount;
             delete rp._wvOrigGetRow;
@@ -10800,7 +10803,12 @@ class _FilterMixin {
         // we read the selection (idempotent; cheap when already wired).
         try {
             const _w = Zotero.getMainWindow();
-            this._wvPatchCacheStateForSelection(_w && _w.ZoteroPane && _w.ZoteroPane.itemsView);
+            const _iv2 = _w && _w.ZoteroPane && _w.ZoteroPane.itemsView;
+            this._wvPatchCacheStateForSelection(_iv2);
+            // Same idea one level earlier: capture on every genuine
+            // selection change, so the snapshot is fresh even when no
+            // row mutation has run since the last apply.
+            this._wvPatchSelectionChangeForCapture(_iv2);
         } catch (e) {}
         const prevSelectedIDs = this._captureSelectedItemIDs();
         try {
@@ -10881,12 +10889,17 @@ class _FilterMixin {
             if (safe && safe.ids && safe.ids.length
                     && safe.selCount === (iv && iv.selection && iv.selection.count)) {
                 // Same number of rows selected as when the snapshot was taken
-                // => it still describes this selection. CONSUME IT: like
-                // Zotero's own `_cachedSelection`, the snapshot is only valid
-                // for the mutation it was taken for. Holding on to it would
-                // let a later user selection of the same SIZE be overwritten
-                // by these older ids.
-                this._wvSafeSelIDs = null;
+                // => it still describes this selection.
+                //
+                // NOT consumed since 2026-08-07. It used to be nulled here,
+                // on the reasoning that a later user selection of the same
+                // SIZE could otherwise be answered with these older ids.
+                // `_wvPatchSelectionChangeForCapture` now re-records on every
+                // genuine selection change, so a same-size later selection
+                // overwrites the snapshot instead of inheriting it — and
+                // keeping it closes the window where two applies in a row
+                // left the second with nothing, forcing the lossy
+                // clear-the-selection path.
                 return safe.ids.slice();
             }
             this._wvSafeSelIDs = null;
@@ -10909,6 +10922,56 @@ class _FilterMixin {
         try {
             this._wvSafeSelIDs = { ids: (ids || []).slice(), selCount };
         } catch (e) {}
+    }
+
+    /** Wrap `itemsView._handleSelectionChange` so the safe snapshot is
+     *  refreshed on EVERY genuine selection change, not only at Zotero's
+     *  row-mutation capture points (2026-08-07).
+     *
+     *  Why: `_captureSelectedItemIDs` returns null when the keep mapping
+     *  is stale, and the reconcile then CLEARS the selection rather than
+     *  leave it pointing at the wrong items. That is safe but lossy, and
+     *  it was reachable whenever no `_cacheState()` had run since the
+     *  snapshot was last consumed — e.g. two applies in a row. Recording
+     *  here closes that window: the change arrives from the rendered
+     *  view, so the index->item mapping is coherent by construction,
+     *  which is exactly the condition the null path exists to detect.
+     *
+     *  Only fires for changes Zotero actually reports: our own reconcile
+     *  runs under `selectEventsSuppressed`, so it cannot feed itself.
+     *  Skipped above a size cap — resolving ids costs a getRow per row,
+     *  and a select-all would pay it on every keystroke; huge selections
+     *  keep the previous (derive-or-clear) behaviour. */
+    _wvPatchSelectionChangeForCapture(itemsView: any) {
+        try {
+            if (!itemsView
+                || typeof itemsView._handleSelectionChange !== "function") return;
+            if (itemsView._wvSelChangeWired === 1) return;
+            const orig = itemsView._handleSelectionChange.bind(itemsView);
+            const CAP = 500;
+            itemsView._handleSelectionChange = function (selection: any, debounce: any) {
+                try {
+                    const P: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    const rp: any = itemsView.rowProvider || itemsView;
+                    // Same coherence test the null path uses.
+                    const coherent = !(rp && rp._wvKeepRowsLen != null && rp._rows
+                        && rp._rows.length !== rp._wvKeepRowsLen);
+                    const count = itemsView.selection ? itemsView.selection.count : 0;
+                    if (P && coherent && count > 0 && count <= CAP) {
+                        const w = Zotero.getMainWindow();
+                        const ids = w && w.ZoteroPane
+                            ? w.ZoteroPane.getSelectedItems().map((it: any) => it.id)
+                            : [];
+                        if (ids.length) P._wvNoteSafeSelection(ids, count);
+                    }
+                } catch (e) {}
+                return orig(selection, debounce);
+            };
+            itemsView._wvSelChangeWired = 1;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvPatchSelectionChangeForCapture err: " + e);
+        }
     }
 
     /** Wrap `itemTree._cacheState()` so every safe capture Zotero takes is
@@ -11306,6 +11369,17 @@ class _FilterMixin {
             // renders on first visible children of quick-search-
             // hiding containers. Empty maps if no search either.
             this._wvComputeChevronMapsForQuickSearch(rp);
+            // The keep watermark describes a TRANSLATED view. With the
+            // patches gone `getRow` is Zotero's own again and indices
+            // mean what they say, so a leftover watermark would keep
+            // reporting a stale mapping forever (it is only ever
+            // compared against the LIVE `_rows.length`, which changes on
+            // every collapse/expand). That made `_captureSelectedItemIDs`
+            // return null permanently after the first filter of a
+            // session — harmless while the reconcile merely bailed, but
+            // since 2026-08-07 the untrusted path CLEARS the selection,
+            // so it became a visible "my selection keeps vanishing" bug.
+            delete rp._wvKeepRowsLen;
             if (rp._wvOrigGetRow) {
                 // getRow / getLevel / getRowCount / *expand* /
                 // *collapse* live on the prototype on v10 and on

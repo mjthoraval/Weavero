@@ -87,6 +87,23 @@
      * Any engine-vs-engine comparison must use the SAME field, gathered
      * the same way, with matched cache warmth.
      */
+    /* PAINT TIMING IS OPPORTUNISTIC, NOT GUARANTEED (measured 2026-08-07).
+     * Gecko suppresses painting for an OCCLUDED window, so MozAfterPaint
+     * never fires when Zotero sits behind other windows -- a clean
+     * unattended run produced paints:0 on all 39 cases, while a run with
+     * the user working in Zotero produced paints but timings polluted by
+     * their interaction. There is no automated way out of that: the
+     * window must be genuinely visible for paint to mean anything, and a
+     * visible window invites interference. So:
+     *   - `syncMs` + `ring.*` are the RELIABLE automated numbers,
+     *   - paint fields are a bonus when the window happens to be visible,
+     *   - `windowVisible` below records which situation applied, so a
+     *     null paint time is self-explaining rather than mysterious.
+     */
+    function windowVisible() {
+        try { return !win.document.hidden; } catch (e) { return null; }
+    }
+
     function paintRecorder() {
         const t0 = win.performance.now();
         let first = null, last = null, count = 0;
@@ -235,6 +252,16 @@
                 ran: this.results.length,
                 passed: this.results.filter(r => r.MATCH).length,
                 buildEngaged: this.results.filter(r => r.build && r.build.engaged).length,
+                // Paint data is only collected while the window is visible;
+                // occluded runs legitimately report none (see paintRecorder).
+                paintTiming: (() => {
+                    const withPaint = this.results.filter(r => r.build
+                        && r.build.lastPaintMs != null).length;
+                    const visible = this.results.filter(r => r.build
+                        && r.build.windowVisible).length;
+                    return withPaint + "/" + this.results.length
+                        + (visible ? "" : " (window occluded — paint suppressed by Gecko)");
+                })(),
                 failures: fails.map(f => ({
                     name: f.name,
                     cascade: f.cascade.rows + "/" + f.cascade.open,
@@ -314,6 +341,7 @@
                         firstPaintMs: painted.firstPaintMs,
                         lastPaintMs: painted.lastPaintMs,   // closest to user-perceived
                         paints: painted.paints,
+                        windowVisible: windowVisible(),     // why paints may be 0
                         quiet,
                         stableMs,
                     }, snapshot());

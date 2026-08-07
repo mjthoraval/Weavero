@@ -56,6 +56,34 @@ file, so they are repeated here:
    a key part of the feature.
 5. **Expect live churn** if you are using the library while it runs.
 
+
+## Reading the timings
+
+Four different clocks, reported separately because conflating them once
+produced a misleading engine comparison:
+
+| Field | Measures | Trust it for |
+|---|---|---|
+| `ring.setup/pass1/pass2/gatePatch/invalidate` | phases inside the inner apply | **diagnosing where time goes** — always available |
+| `syncMs` | wall-clock across the apply call | **the blocking cost** — always available |
+| `firstPaintMs` / `lastPaintMs` | Gecko `MozAfterPaint` — pixels on screen | **user-perceived completion**, but only when the window is visible |
+| `stableMs` | polling until the row count stops moving | settling behaviour only — carries ~600 ms of polling padding, **never quote it as user time** |
+
+`Zotero._wvMatrix.timings("build")` sorts cases by user-perceived time
+and shows the full split; `summary()` gives pass/fail.
+
+**Paint timing is opportunistic.** Gecko suppresses painting for an
+occluded window, so a clean unattended run (Zotero behind other windows)
+reports `paints: 0` on every case — that is correct behaviour, not a
+failure. A run with the window visible gets real paint numbers but risks
+your interaction polluting them. `windowVisible` is recorded per case and
+`summary().paintTiming` says which situation applied.
+
+**Comparing engines** (Weavero vs native): use `lastPaintMs` on both
+sides, with the window visible and matched cache warmth. Comparing
+`ring.total` against a wall-clock figure is what produced the bogus
+"~7x faster than native" claim on 2026-08-07.
+
 ## When to run it
 
 Per the standing rule: after **any** change touching filter apply,

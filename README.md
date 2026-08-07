@@ -296,7 +296,10 @@ continued development:
 - **[Buy me a coffee on Ko-fi](https://ko-fi.com/mjthoraval)** — a one-off tip,
   no account needed (card, Apple Pay, or Google Pay).
 
-Every contribution helps with maintenance and new features — thank you.
+Contributions go mostly toward the AI coding assistants (like Claude) I use to
+build and maintain Weavero, plus testing and keeping pace with new Zotero
+releases. You're never obligated — but if Weavero saves you time, anything you
+can spare helps keep it free and moving. Thank you.
 
 ## License
 

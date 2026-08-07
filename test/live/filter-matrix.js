@@ -415,23 +415,35 @@
         // raw DB count.
         "annotationType": () => [["resultLevel", "annotation", null],
             ["annotationType", "is", Zotero.Annotations.ANNOTATION_TYPE_HIGHLIGHT]],
+        // fileTypeID alone matches any attachment DECLARING a PDF content
+        // type, including linkMode 3 web links — 111 of them here, which
+        // looked like an irreducible semantic gap until
+        // attachmentStorageType turned out to express exactly the missing
+        // half. It maps to itemAttachments.linkMode and takes
+        // 'storedFile' | 'linkedFile' | 'webLink' (an integer throws, and
+        // the error message names the accepted values). With `isNot
+        // webLink` the two engines match EXACTLY: 18037 = 18037 across all
+        // 22019 attachments, 0 either side. 2026-08-07.
         "fileType PDF": () => [["resultLevel", "attachment", null],
-            ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")]],
+            ["joinMode", "all", null],
+            ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")],
+            ["attachmentStorageType", "isNot", "webLink"]],
     };
 
     /* KNOWN, INTENTIONAL DIVERGENCES from native. Recorded so they are not
      * re-investigated every run, and so a NEW disagreement stands out.
      * Each was traced to a deliberate Weavero semantic, not a defect. */
     const EXPECTED_DIVERGENCE = {
+        // ROWS are NOT listed here any more: the 111-row gap was my
+        // incomplete translation, not a semantic difference — see
+        // NATIVE_EQUIV above. Only genuinely irreducible differences
+        // belong in this table, or it hides real regressions.
         "fileType PDF": {
-            rows: "native fileTypeID matches any attachment DECLARING a PDF "
-                + "content type, including linkMode 3 (LINKED_URL) web links — "
-                + "111 of them here. Weavero's attachmentPDF means an "
-                + "attachment FILE, consistent with the hasAttachment fix of "
-                + "2026-08-06 (a linked URL is not a file).",
             sel: "Weavero restricts the selection to PRIMARY (matching) rows, "
                 + "so top-level items seeded before an attachment-level filter "
-                + "are deselected; native keeps any still-visible row selected.",
+                + "are deselected; native keeps any still-visible row selected. "
+                + "This is a display-layer policy, not a matching one — no "
+                + "search condition can reproduce it.",
         },
     };
 

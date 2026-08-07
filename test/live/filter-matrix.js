@@ -364,10 +364,18 @@
                     const sameRows = b.idsHash === nv.idsHash;
                     const sameOpen = b.openHash === nv.openHash;
                     const sameSel = b.selHash === nv.selHash;
+                    const known = EXPECTED_DIVERGENCE[r.name] || {};
+                    // An UNEXPLAINED disagreement is the thing to look at;
+                    // documented semantic differences are not failures.
+                    const unexplained = (!sameRows && !known.rows)
+                        || (!sameOpen && !known.open)
+                        || (!sameSel && !known.sel);
                     return {
                         name: r.name,
                         // EQUIVALENT only if all three user-visible states agree
                         EQUIVALENT: sameRows && sameOpen && sameSel,
+                        UNEXPLAINED: unexplained,
+                        knownDivergence: Object.keys(known).length ? known : undefined,
                         sameRows, sameOpen, sameSel,
                         weavero: b.rows + "/" + b.open + " sel:" + b.selCount,
                         native: nv.rows + "/" + nv.open + " sel:" + nv.selCount,
@@ -400,10 +408,31 @@
         "hasURL": () => [["resultLevel", "item", null], ["url", "isNotEmpty", null]],
         "annotationColor": () => [["resultLevel", "annotation", null],
             ["annotationColor", "is", "#ffd400"]],
+        // annotationType stores an INTEGER in itemAnnotations.type, so the
+        // condition needs the constant, not the name. Passing "highlight"
+        // matched 0 rows and looked like a Weavero defect until traced
+        // (2026-08-07); with the constant native returns 1658, exactly the
+        // raw DB count.
         "annotationType": () => [["resultLevel", "annotation", null],
-            ["annotationType", "is", "highlight"]],
+            ["annotationType", "is", Zotero.Annotations.ANNOTATION_TYPE_HIGHLIGHT]],
         "fileType PDF": () => [["resultLevel", "attachment", null],
             ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")]],
+    };
+
+    /* KNOWN, INTENTIONAL DIVERGENCES from native. Recorded so they are not
+     * re-investigated every run, and so a NEW disagreement stands out.
+     * Each was traced to a deliberate Weavero semantic, not a defect. */
+    const EXPECTED_DIVERGENCE = {
+        "fileType PDF": {
+            rows: "native fileTypeID matches any attachment DECLARING a PDF "
+                + "content type, including linkMode 3 (LINKED_URL) web links — "
+                + "111 of them here. Weavero's attachmentPDF means an "
+                + "attachment FILE, consistent with the hasAttachment fix of "
+                + "2026-08-06 (a linked URL is not a file).",
+            sel: "Weavero restricts the selection to PRIMARY (matching) rows, "
+                + "so top-level items seeded before an attachment-level filter "
+                + "are deselected; native keeps any still-visible row selected.",
+        },
     };
 
     async function runNative(name, seedIDs) {

@@ -288,10 +288,13 @@ Build/test tooling is all `devDependencies` (nothing from npm ships in the XPI):
 
 ## Support
 
-Weavero is free and open source. If it saves you time, you can
-**[sponsor its development on GitHub](https://github.com/sponsors/mjthoraval)** —
-one-time or monthly, no platform fee, and two clicks if you already have a GitHub
-account.
+Weavero is free and open source. If it saves you time, you can support its
+continued development:
+
+- **[Sponsor on GitHub](https://github.com/sponsors/mjthoraval)** — one-time or
+  monthly, no platform fee, and two clicks if you already have a GitHub account.
+- **[Buy me a coffee on Ko-fi](https://ko-fi.com/mjthoraval)** — a one-off tip,
+  no account needed (card, Apple Pay, or Google Pay).
 
 Every contribution helps with maintenance and new features — thank you.
 

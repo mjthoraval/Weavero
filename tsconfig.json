@@ -40,6 +40,7 @@
     "docs",
     // Paste-into-console scripts (top-level await/return) — not modules.
     "test/restart",
-    "test/disable"
+    "test/disable",
+    "test/live"
   ]
 }

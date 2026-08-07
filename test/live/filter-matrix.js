@@ -63,6 +63,65 @@
         return last;
     }
 
+    /* TIMING MODEL — three different clocks, reported separately because
+     * they answer different questions and conflating them produced a
+     * misleading "Weavero is ~7x faster than native" claim (2026-08-07):
+     *
+     *   ring.*      per-phase breakdown INSIDE _applyItemsListFilterInner
+     *               (setup / pass1 cascade / pass2 keep-build / gatePatch /
+     *               invalidate). Diagnoses WHERE time goes. Excludes the
+     *               outer guards, the selection reconcile, and all paint —
+     *               so it always UNDER-states what a user waits for.
+     *   syncMs      wall-clock across the _applyItemsListFilter() call:
+     *               the synchronous work, still before any pixels change.
+     *   lastPaintMs wall-clock from the call to the LAST MozAfterPaint —
+     *               Gecko's real "pixels reached the screen" event. This is
+     *               the closest proxy for what the user actually
+     *               experiences. firstPaintMs is when something first
+     *               visibly changed.
+     *   stableMs    when the row count stopped moving, measured by polling.
+     *               Includes ~600ms of polling padding by construction —
+     *               useful for settling behaviour, USELESS as a user-time
+     *               figure. Never quote it as one.
+     *
+     * Any engine-vs-engine comparison must use the SAME field, gathered
+     * the same way, with matched cache warmth.
+     */
+    function paintRecorder() {
+        const t0 = win.performance.now();
+        let first = null, last = null, count = 0;
+        const onPaint = () => {
+            const t = win.performance.now();
+            if (first === null) first = t;
+            last = t;
+            count++;
+        };
+        win.addEventListener("MozAfterPaint", onPaint);
+        return {
+            t0,
+            stop() {
+                win.removeEventListener("MozAfterPaint", onPaint);
+                return {
+                    firstPaintMs: first === null ? null : Math.round(first - t0),
+                    lastPaintMs: last === null ? null : Math.round(last - t0),
+                    paints: count,
+                };
+            },
+            // Quiescence: no paint for `quietMs`, so the view has settled
+            // visually rather than merely stopped changing row counts.
+            async waitQuiet(quietMs = 500, capMs = 20000) {
+                const start = win.performance.now();
+                for (;;) {
+                    const now = win.performance.now();
+                    if (now - start > capMs) return "cap";
+                    if (last !== null && now - last > quietMs) return "quiet";
+                    if (last === null && now - start > quietMs * 2) return "no-paint";
+                    await sleep(100);
+                }
+            },
+        };
+    }
+
     // rule 3 — the ONLY correct way to drive the quick search
     async function search(text) {
         const sb = zp.document.getElementById("zotero-tb-search");
@@ -184,6 +243,30 @@
                 })),
             };
         },
+        /** Per-phase timings, slowest first by user-perceived paint time.
+         *  Use this to see WHERE a slow case spends its time; use
+         *  `summary()` for pass/fail. */
+        timings(mode = "build") {
+            return this.results
+                .map(r => {
+                    const m = r[mode] || {};
+                    const g = m.ring || {};
+                    return {
+                        name: r.name,
+                        lastPaintMs: m.lastPaintMs,   // user-perceived
+                        syncMs: m.syncMs,
+                        ringTotal: g.total,
+                        setup: g.setup, pass1: g.pass1, pass2: g.pass2,
+                        gatePatch: g.gatePatch, invalidate: g.invalidate,
+                        invSkipped: g.invSkipped,
+                        rows: m.rows, open: m.open, paints: m.paints,
+                    };
+                })
+                .sort((a, b) => (b.lastPaintMs || 0) - (a.lastPaintMs || 0));
+        },
+        /** The engine-comparison guard rail: never mix fields. */
+        note: "Compare engines with lastPaintMs only, matched cache warmth. "
+            + "ringTotal excludes paint; stableMs includes ~600ms polling padding.",
     };
     Zotero._wvMatrix = R;
 
@@ -207,12 +290,33 @@
                     apply();
                     await sleep(SETTLE);          // rule 1
                     Zotero._wvFilterPerf = [];
+                    const paint = paintRecorder();
+                    const tSync0 = win.performance.now();
                     lp._applyItemsListFilter({ cascade: true });
-                    await stable();
-                    await sleep(400);
+                    const syncMs = Math.round(win.performance.now() - tSync0);
+                    const quiet = await paint.waitQuiet();      // visual settle
+                    const painted = paint.stop();
+                    const tStable0 = win.performance.now();
+                    await stable();                             // row-count settle
+                    const stableMs = Math.round(win.performance.now() - tStable0);
                     const ring = (Zotero._wvFilterPerf || [])[0] || {};
-                    rec[mode] = Object.assign(
-                        { engaged: !!ring.buildMode, ms: ring.total }, snapshot());
+                    rec[mode] = Object.assign({
+                        engaged: !!ring.buildMode,
+                        // full per-phase breakdown, not just the total
+                        ring: {
+                            total: ring.total, setup: ring.setup, pass1: ring.pass1,
+                            pass2: ring.pass2, gatePatch: ring.gatePatch,
+                            invalidate: ring.invalidate, rows: ring.rows,
+                            invSkipped: !!ring.invSkipped,
+                            cascadeCapped: ring.cascadeCapped || false,
+                        },
+                        syncMs,
+                        firstPaintMs: painted.firstPaintMs,
+                        lastPaintMs: painted.lastPaintMs,   // closest to user-perceived
+                        paints: painted.paints,
+                        quiet,
+                        stableMs,
+                    }, snapshot());
                     reset();
                     await sleep(SETTLE);
                     lp._applyItemsListFilter({ cascade: true });

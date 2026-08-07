@@ -11025,7 +11025,38 @@ class _FilterMixin {
             const lib = this._wvSelectedLibraryID(win);
             const ctr = itemsView && itemsView.collectionTreeRow;
             const view = (ctr && (ctr.id != null ? ctr.id : ctr.type)) || "?";
-            return lib + "|" + view + "|" + qs + "|"
+            // QUICK-SEARCH INPUT THAT THE TEXT ALONE DOES NOT CAPTURE
+            // (root cause of the 2026-08-07 non-determinism):
+            // `_rowIsPrimary` consults the LIVE `rp.searchItemIDs` when a
+            // search is active, so a verdict is a function of the search
+            // RESULT SET, not just the typed text. Zotero rebuilds that
+            // Set asynchronously and REPLACES the object on each refresh,
+            // so verdicts cached against one refresh state were being
+            // reused against another: the same user action settled at
+            // 1281 rows cold and 8692 with a warm cache (measured on the
+            // real library with all other plugins disabled; native search
+            // alone is deterministic at 8290, so this was ours).
+            // Tagging the signature with the Set's IDENTITY (a lazily
+            // stamped id, not its contents — cheap) makes a rebuilt search
+            // set rotate the signature and drop the stale verdicts.
+            let qsTag = "";
+            if (qs) {
+                const rp: any = (itemsView && (itemsView.rowProvider || itemsView)) || null;
+                const sIDs: any = rp && (rp.searchItemIDs || rp._searchItemIDs);
+                if (sIDs) {
+                    if (!sIDs._wvSigId) {
+                        sIDs._wvSigId = ((Zotero as any)._wvSearchSetSeq
+                            = ((Zotero as any)._wvSearchSetSeq || 0) + 1);
+                    }
+                    qsTag = "|s" + sIDs._wvSigId + ":" + (sIDs.size || 0);
+                }
+                else {
+                    // Search text present but no result set yet — never
+                    // cache across that transient.
+                    qsTag = "|s?" + Math.random();
+                }
+            }
+            return lib + "|" + view + "|" + qs + qsTag + "|"
                 + JSON.stringify(this._filterState);
         } catch (e) {
             // Unique => never matches => caches disabled, never wrong.

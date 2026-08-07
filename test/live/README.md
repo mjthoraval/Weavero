@@ -84,6 +84,24 @@ sides, with the window visible and matched cache warmth. Comparing
 `ring.total` against a wall-clock figure is what produced the bogus
 "~7x faster than native" claim on 2026-08-07.
 
+
+## What the native comparison is (and is not) evidence about
+
+`vsNative()` compares the two engines on **results and execution time**.
+It deliberately says nothing about the filter's actual value, which is
+**access cost**: one click on a chip versus building the equivalent
+advanced search by hand, every time you want it.
+
+Concretely, from building the equivalents in this file: `annotationType`
+takes an INTEGER, not the type name; `fileType PDF` needs a second
+condition, `attachmentStorageType isNot webLink`, whose accepted values
+are only discoverable from an exception message. Each took several
+attempts with full API access and the source open. A chip is one click.
+
+So a native equivalent being fast or exact is **not** an argument for
+delegating to it. Use this harness to keep the engine honest, not to
+decide whether the feature earns its place.
+
 ## When to run it
 
 Per the standing rule: after **any** change touching filter apply,

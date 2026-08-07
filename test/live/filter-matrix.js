@@ -104,6 +104,37 @@
         try { return !win.document.hidden; } catch (e) { return null; }
     }
 
+    /* AUTO-SYNC IS DISABLED FOR THE RUN AND RESTORED AFTERWARDS.
+     * A sync that writes items mid-run fires the notifier, which nulls
+     * the verdict caches -- so random cases would be measured cold while
+     * others are warm, and row counts could shift under the hash
+     * comparison. The user keeps auto-sync ON normally, so this is a
+     * borrow-and-return, done in the same finally that restores the
+     * filter state. `itemsChanged` below certifies after the fact that
+     * nothing wrote to the library during the run. */
+    const syncControl = {
+        prevAutoSync: null,
+        async disable() {
+            try {
+                this.prevAutoSync = Zotero.Prefs.get("sync.autoSync");
+                Zotero.Prefs.set("sync.autoSync", false);
+            } catch (e) {}
+        },
+        restore() {
+            try {
+                if (this.prevAutoSync !== null) {
+                    Zotero.Prefs.set("sync.autoSync", this.prevAutoSync);
+                }
+            } catch (e) {}
+        },
+        async itemsChangedSince(sqlDate) {
+            try {
+                return await Zotero.DB.valueQueryAsync(
+                    "SELECT COUNT(*) FROM items WHERE clientDateModified > ?", [sqlDate]);
+            } catch (e) { return null; }
+        },
+    };
+
     function paintRecorder() {
         const t0 = win.performance.now();
         let first = null, last = null, count = 0;
@@ -148,7 +179,10 @@
         await sleep(4200);
     }
 
-    // rule 4 — rows AND open containers
+    // rule 4 — rows AND open containers AND selection. All three are
+    // user-visible state; two engines agreeing on rows while disagreeing
+    // on what stays selected are NOT equivalent (user requirement,
+    // 2026-08-07).
     function snapshot() {
         const ids = [], open = [];
         const n = rp().getRowCount();
@@ -161,7 +195,33 @@
         }
         ids.sort((a, b) => a - b);
         open.sort((a, b) => a - b);
-        return { rows: ids.length, idsHash: fnv(ids), open: open.length, openHash: fnv(open) };
+        let sel = [];
+        try { sel = zp.getSelectedItems().map(it => it.id).sort((a, b) => a - b); }
+        catch (e) { sel = ["ERR"]; }
+        return {
+            rows: ids.length, idsHash: fnv(ids),
+            open: open.length, openHash: fnv(open),
+            selCount: sel.length, selHash: fnv(sel), sel: sel.slice(0, 12),
+        };
+    }
+
+    /* A comparison of SELECTION only means something if both engines
+     * start from the same selection, so each run seeds a deterministic
+     * one: the first `n` top-level regular items of the collapsed view,
+     * chosen by id order so the choice does not depend on scroll or
+     * previous state. */
+    async function seedSelection(n = 3) {
+        const picked = [];
+        const total = rp().getRowCount();
+        for (let i = 0; i < total && picked.length < n; i++) {
+            let row;
+            try { row = rp().getRow(i); } catch (e) { continue; }
+            const it = row && row.ref;
+            if (it && it.isRegularItem && it.isRegularItem()) picked.push(it.id);
+        }
+        try { zp.itemsView.selectItems(picked); } catch (e) {}
+        await sleep(500);
+        return picked;
     }
 
     function reset() {
@@ -291,14 +351,95 @@
                 })
                 .sort((a, b) => (b.lastPaintMs || 0) - (a.lastPaintMs || 0));
         },
+        /** Weavero vs Zotero's own engine, for the cases with an exact
+         *  native equivalent. Same view, same clock, same snapshot
+         *  function, both from a collapsed baseline — the like-for-like
+         *  comparison that ad-hoc measurements failed to provide. */
+        vsNative() {
+            return this.results
+                .filter(r => r.native && r.native.rows != null)
+                .map(r => {
+                    const b = r.build || {};
+                    const nv = r.native;
+                    const sameRows = b.idsHash === nv.idsHash;
+                    const sameOpen = b.openHash === nv.openHash;
+                    const sameSel = b.selHash === nv.selHash;
+                    return {
+                        name: r.name,
+                        // EQUIVALENT only if all three user-visible states agree
+                        EQUIVALENT: sameRows && sameOpen && sameSel,
+                        sameRows, sameOpen, sameSel,
+                        weavero: b.rows + "/" + b.open + " sel:" + b.selCount,
+                        native: nv.rows + "/" + nv.open + " sel:" + nv.selCount,
+                        weaveroSyncMs: b.syncMs,
+                        nativeSyncMs: nv.syncMs,
+                        // Only meaningful when EQUIVALENT — otherwise the
+                        // two engines did different work.
+                        ratio: (b.syncMs && nv.syncMs)
+                            ? +(nv.syncMs / b.syncMs).toFixed(2) : null,
+                    };
+                });
+        },
         /** The engine-comparison guard rail: never mix fields. */
-        note: "Compare engines with lastPaintMs only, matched cache warmth. "
+        note: "Compare engines with vsNative() (same clock, same view). "
             + "ringTotal excludes paint; stableMs includes ~600ms polling padding.",
     };
     Zotero._wvMatrix = R;
 
+    /* NATIVE COMPARISON — the same question asked of Zotero's own engine.
+     * `itemsView.setFilter('advanced-search', search)` applies a
+     * Zotero.Search to the CURRENT view in place (the channel the
+     * advanced-search pane uses), so it is genuinely comparable: same
+     * view, same starting expansion, same clock, same snapshot function.
+     * Only cases whose chips have an exact native equivalent are
+     * compared; the rest report `native: "inexpressible"` rather than a
+     * misleading number. Cache warmth is matched by running native from
+     * the same collapsed baseline as the Weavero modes. */
+    const NATIVE_EQUIV = {
+        "itemType": () => [["resultLevel", "item", null], ["itemType", "is", "journalArticle"]],
+        "hasURL": () => [["resultLevel", "item", null], ["url", "isNotEmpty", null]],
+        "annotationColor": () => [["resultLevel", "annotation", null],
+            ["annotationColor", "is", "#ffd400"]],
+        "annotationType": () => [["resultLevel", "annotation", null],
+            ["annotationType", "is", "highlight"]],
+        "fileType PDF": () => [["resultLevel", "attachment", null],
+            ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")]],
+    };
+
+    async function runNative(name, seedIDs) {
+        const build = NATIVE_EQUIV[name];
+        if (!build) return { native: "inexpressible" };
+        try {
+            const s = new Zotero.Search();
+            s.libraryID = Zotero.Libraries.userLibraryID;
+            for (const [c, op, v] of build()) s.addCondition(c, op, v);
+            try { rp().collapseAllRows(); } catch (e) {}
+            await stable();
+            // Same starting selection as the Weavero runs, so the
+            // selection comparison is meaningful rather than incidental.
+            if (seedIDs && seedIDs.length) {
+                try { zp.itemsView.selectItems(seedIDs); } catch (e) {}
+                await sleep(500);
+            }
+            const paint = paintRecorder();
+            const t0 = win.performance.now();
+            await zp.itemsView.setFilter("advanced-search", s);
+            const syncMs = Math.round(win.performance.now() - t0);
+            await paint.waitQuiet();
+            const painted = paint.stop();
+            const snap = snapshot();
+            await zp.itemsView.setFilter("advanced-search", null);
+            await sleep(SETTLE);
+            return Object.assign({ syncMs, lastPaintMs: painted.lastPaintMs,
+                paints: painted.paints }, snap);
+        }
+        catch (e) { return { native: "error: " + e }; }
+    }
+
     (async function run() {
         const prevBuildPref = Zotero.Prefs.get("weavero.filterBuildMode");
+        const startedSql = Zotero.Date.dateToSQL(new Date(), true);
+        await syncControl.disable();
         try {
             const { AddonManager } = ChromeUtils.importESModule(
                 "resource://gre/modules/AddonManager.sys.mjs");
@@ -314,6 +455,7 @@
                     try { rp().collapseAllRows(); } catch (e) {}
                     await stable();
                     reset();
+                    rec.seeded = await seedSelection();   // identical start state
                     apply();
                     await sleep(SETTLE);          // rule 1
                     Zotero._wvFilterPerf = [];
@@ -351,7 +493,9 @@
                     await sleep(300);
                 }
                 rec.MATCH = rec.cascade.idsHash === rec.build.idsHash
-                    && rec.cascade.openHash === rec.build.openHash;   // rule 4
+                    && rec.cascade.openHash === rec.build.openHash
+                    && rec.cascade.selHash === rec.build.selHash;     // rule 4
+                rec.native = await runNative(name, rec.seeded);   // same clock + same seed
                 R.results.push(rec);
             }
             R.status = "done";
@@ -368,6 +512,13 @@
             }
             reset();
             try { lp._applyItemsListFilter({ cascade: true }); } catch (e) {}
+            try { await zp.itemsView.setFilter("advanced-search", null); } catch (e) {}
+            syncControl.restore();
+            // Certify that nothing wrote to the library during the run;
+            // a non-zero count means cache-nulling notifier traffic could
+            // have made some cases cold, so timings are suspect.
+            R.itemsChangedDuringRun = await syncControl.itemsChangedSince(startedSql);
+            R.autoSyncRestoredTo = Zotero.Prefs.get("sync.autoSync");
         }
     })();
 

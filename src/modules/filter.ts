@@ -11053,14 +11053,33 @@ class _FilterMixin {
         // Map each visible PRIMARY (matching) item → its new filtered
         // index. Non-primary rows (dimmed context) are intentionally
         // excluded so they can't hold the selection.
+        // Prefer the primary set pass 2 just published (2026-08-07): it
+        // computed exactly these verdicts moments ago, and recomputing
+        // them here cost a `_rowIsPrimary` per filtered row — 400-600ms
+        // on large parent filters, more than the apply itself. Falls back
+        // to deriving when the stamp does not match this view/state (a
+        // different apply, or none yet), so behaviour is unchanged.
+        const published = this._wvLastPrimaryIDs;
+        let primarySet: Set<number> | null = null;
+        try {
+            const sigNow = this._wvFilterStateSig(win, iv);
+            if (published && published.sig === sigNow && published.ids) {
+                primarySet = published.ids;
+            }
+        } catch (e) {}
         const idxById = new Map<any, number>();
         for (let i = 0; i < count; i++) {
             let row: any;
             try { row = iv.getRow(i); } catch (e) { continue; }
             if (!row || !row.ref || row.ref.id == null) continue;
             let primary = false;
-            try { primary = this._rowIsPrimary(row.ref, state); }
-            catch (e) {}
+            if (primarySet) {
+                primary = primarySet.has(row.ref.id);
+            }
+            else {
+                try { primary = this._rowIsPrimary(row.ref, state); }
+                catch (e) {}
+            }
             if (primary) idxById.set(row.ref.id, i);
         }
         // `untrusted` => targetIdx stays empty => the selection is cleared
@@ -11987,6 +12006,9 @@ class _FilterMixin {
         // its inner loop pushes descendant indices that the outer
         // loop will also visit, so naive push-twice produces dupes.
         const keepSet = new Set();
+        // Item ids this pass judged PRIMARY, handed to the selection
+        // reconcile so it need not recompute the same verdicts.
+        const _primaryIDs = new Set<number>();
         const pushKeep = (i) => {
             if (!keepSet.has(i)) {
                 // Trace WHICH rule first added each row. Helps
@@ -12094,6 +12116,13 @@ class _FilterMixin {
             if (isOrphanRow(j)) continue;
             const item = row.ref;
             if (isPrimary(item)) {
+                // Publish it for the selection reconcile (2026-08-07).
+                // That pass used to re-derive primary status by calling
+                // `_rowIsPrimary` on EVERY filtered row — 16k predicate
+                // calls on a large parent filter, measured as 400-600ms
+                // of the `sync - ring` gap, i.e. often more than the
+                // filter apply itself. This loop has the answer already.
+                if (item && item.id != null) _primaryIDs.add(item.id);
                 pushKeep(j);
             } else if (hasMatch(item)) {
                 pushKeep(j);
@@ -12896,6 +12925,9 @@ class _FilterMixin {
         // against (END-of-apply row count — that's what it will observe).
         this._wvLastApplySig = _sig;
         this._wvLastApplyRawRows = (rp._rows && rp._rows.length) || 0;
+        // Hand pass 2's primary verdicts to the reconcile, stamped with
+        // the signature so it can only be used for THIS view/state.
+        this._wvLastPrimaryIDs = { sig: _sig, ids: _primaryIDs };
     }
 
     /** Debounce a re-apply of the items-list filter after the

@@ -48,7 +48,7 @@ import { winOf } from "../lib/dom";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
-    BOOKMARK_PATH,
+    BOOKMARK_PATH, WV_FUNNEL_PATH,
 } from "./constants";
 
 // Module-level data backing the three "constants" the filter
@@ -396,6 +396,15 @@ class _FilterMixin {
             delete rp.getRowCount;
             delete rp._wvOrigGetRow;
             delete rp._wvOrigGetRowCount;
+            // Restore the item pane's count getter (own property on the
+            // itemsView; deleting it re-exposes the prototype getter).
+            // The host is stored on `rp` because these teardown sites
+            // only have `rp` in scope.
+            if (rp._wvObjRowCountHost) {
+                try { delete rp._wvObjRowCountHost.objectRowCount; }
+                catch (e) {}
+                delete rp._wvObjRowCountHost;
+            }
             if (rp._wvOrigGetLevel) {
                 delete rp.getLevel;
                 delete rp._wvOrigGetLevel;
@@ -5047,6 +5056,37 @@ class _FilterMixin {
                                         try { rp2.refreshRowMap(); } catch (e) {}
                                     }
                                 } catch (e) {}
+                                // KEEP IS NOW STALE. Everything above —
+                                // _refreshContainer on every open parent,
+                                // then _expandMatchParents — MUTATES
+                                // `_rows` AFTER the apply computed `keep`
+                                // against the pre-mutation array. The
+                                // watermark then disagrees with
+                                // `_rows.length` and `getRow` falls back to
+                                // passing indices through UNTRANSLATED, so
+                                // the view renders UNFILTERED while the
+                                // chip still shows as active. Measured
+                                // 2026-08-07 on clearing a quick search
+                                // with a chip on: 18 782 rows shown where
+                                // the chip alone gives 15 326, watermark
+                                // 18 780 vs 18 782 rows, and any later
+                                // apply restored it. Re-apply once the row
+                                // mutations above are done.
+                                //
+                                // 2026-08-08: instrumenting the apply path
+                                // showed this block is NOT on the failing
+                                // path at all -- a helper called from here
+                                // never fired during a reproduction. The
+                                // apply that would have refreshed the
+                                // watermark is instead DROPPED by the
+                                // `_filterApplying` guard (traced:
+                                // `cascade=false applying=true wm 18780
+                                // rows 18782`), so the repair lives at that
+                                // bounce site now. Kept as a belt-and-braces
+                                // arm: it is a no-op unless the watermark
+                                // genuinely disagrees.
+                                try { this._wvScheduleStaleKeepRetry(); }
+                                catch (e) {}
                             } catch (e) {
                                 dbg(
                                     "[Weavero][filter] post-setFilter reapply err: " + e);
@@ -5273,6 +5313,15 @@ class _FilterMixin {
                 delete rp.getRowCount;
                 delete rp._wvOrigGetRow;
                 delete rp._wvOrigGetRowCount;
+                // Restore the item pane's count getter (own property on the
+                // itemsView; deleting it re-exposes the prototype getter).
+                // The host is stored on `rp` because these teardown sites
+                // only have `rp` in scope.
+                if (rp._wvObjRowCountHost) {
+                    try { delete rp._wvObjRowCountHost.objectRowCount; }
+                    catch (e) {}
+                    delete rp._wvObjRowCountHost;
+                }
                 if (rp._wvOrigGetLevel) {
                     delete rp.getLevel;
                     delete rp._wvOrigGetLevel;
@@ -10763,6 +10812,13 @@ class _FilterMixin {
             // But a deliberate CASCADE apply must not be silently
             // swallowed — same reasoning as the suppression guard above.
             if (opts && opts.cascade) this._wvScheduleCascadeRetry();
+            // A NON-cascade bounce is usually safe to drop (the comment
+            // above), but not when it was the only apply that would have
+            // seen the settled row count: `keep` then keeps a watermark
+            // that no longer matches `_rows.length`, and the filter shows
+            // as active while displaying an unfiltered list. Arm the
+            // stale-keep check — a no-op unless that actually happened.
+            else this._wvScheduleStaleKeepRetry();
             return;
         }
         // ---- Order-B fix (approach a, flickery — see work/TODO.md) ----
@@ -10918,6 +10974,86 @@ class _FilterMixin {
      *  capture point) and after a completed reconcile, where the view was just
      *  rebuilt. `selCount` stamps how many rows were selected then, so a later
      *  capture can tell whether the snapshot still describes the selection. */
+    /** Rebuild `keep` when the watermark no longer describes the live rows.
+     *
+     *  The keep array maps FILTERED indices onto a snapshot of `_rows`, and
+     *  `getRow` deliberately degrades to pass-through (i.e. shows the
+     *  UNFILTERED view) whenever `_rows.length` has moved since. That guard
+     *  prevents wrong-row lookups, but nothing rebuilt `keep` afterwards, so
+     *  the degraded state persisted until the user happened to trigger
+     *  another apply — the filter looked active and did nothing (2026-08-07:
+     *  clearing a quick search with a chip on; write-up in
+     *  work/bug-filter-lost-after-search-clear.md).
+     *
+     *  WHERE IT COMES FROM (traced 2026-08-08, after two fixes aimed at the
+     *  wrong place): the apply that WOULD have refreshed the watermark is
+     *  dropped by the `_filterApplying` re-entrancy guard. The trace reads
+     *  `apply cascade=false applying=true wm 18780 rows 18782` — a
+     *  non-cascade bounce, so it does not even get `_wvScheduleCascadeRetry`,
+     *  and the bounce site's promise that "the next observer fire will catch
+     *  them" does not hold, because by then the only remaining mutations are
+     *  Weavero's own suppressed ones.
+     *
+     *  WHY THIS CANNOT RUN AWAY (the 122-reapply loop of dev.24 is the
+     *  cautionary tale): the trigger is `watermark !== _rows.length`, which
+     *  is SELF-CLEARING — one successful rebuild makes it false and the
+     *  retry becomes a no-op. The 4s episode deadline is only a backstop for
+     *  a pathological never-settling view, and it degrades to exactly
+     *  today's behaviour.
+     *
+     *  `cascade: false` deliberately: expansion is already in place from the
+     *  apply that did run, only `keep` needs rebuilding — and a cascade
+     *  would re-enter the Order-B setFilter re-route while a search is
+     *  live. */
+    _wvScheduleStaleKeepRetry() {
+        try {
+            const now = Date.now();
+            // Do NOT extend an episode already in flight — otherwise each
+            // re-arm pushes the deadline out and the bound is meaningless.
+            if (!(this as any)._wvStaleKeepUntil
+                || now > (this as any)._wvStaleKeepUntil) {
+                (this as any)._wvStaleKeepUntil = now + 4000;
+            }
+            if ((this as any)._wvStaleKeepTimer) return;       // already pending
+            const win = Zotero.getMainWindow();
+            const setT = (win && win.setTimeout)
+                ? win.setTimeout.bind(win) : setTimeout;
+            (this as any)._wvStaleKeepTimer = setT(() => {
+                (this as any)._wvStaleKeepTimer = null;
+                try {
+                    const P: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    if (!P || P !== this) return;              // stale instance
+                    if (Date.now() > (this as any)._wvStaleKeepUntil) return;
+                    if (this._filterApplying
+                        || ((this as any)._suppressTreeObserverUntil
+                            && Date.now()
+                                < (this as any)._suppressTreeObserverUntil)) {
+                        this._wvScheduleStaleKeepRetry();      // still blocked
+                        return;
+                    }
+                    const w2 = Zotero.getMainWindow();
+                    const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
+                    const rp: any = iv && (iv.rowProvider || iv);
+                    if (!rp || !rp._wvOrigGetRow) return;      // not patched
+                    if (!this._isFilterActive(this._filterState)) return;
+                    const live = (rp._rows && rp._rows.length) || 0;
+                    if (rp._wvKeepRowsLen === live) return;    // fresh — done
+                    dbg("[Weavero][filter] stale keep after bounced apply"
+                        + " (watermark " + rp._wvKeepRowsLen + " vs rows "
+                        + live + ") — rebuilding");
+                    try { this._applyItemsListFilter({ cascade: false }); }
+                    catch (e) {}
+                    // Rows can drift again while THAT apply runs; re-arming
+                    // is safe because the condition is self-clearing.
+                    this._wvScheduleStaleKeepRetry();
+                } catch (e) {
+                    dbg("[Weavero][filter] staleKeepRetry err: " + e);
+                }
+            }, 200);
+        } catch (e) {}
+    }
+
     _wvNoteSafeSelection(ids: any[], selCount: number) {
         try {
             this._wvSafeSelIDs = { ids: (ids || []).slice(), selCount };
@@ -11250,6 +11386,412 @@ class _FilterMixin {
         } catch (e) {}
     }
 
+    /** Is the tiered item-pane count enabled? Default ON; the pref only
+     *  exists so a user who prefers Zotero's single number can have it. */
+    _wvCountBreakdownEnabled(): boolean {
+        try { return Zotero.Prefs.get("weavero.itemCountBreakdown") !== false; }
+        catch (e) { return true; }
+    }
+
+    /** Build the replacement for the item pane's "N items in this view".
+     *
+     *  Two things the single number cannot say (MJT, 2026-08-08):
+     *
+     *   A. WHAT is being counted. `objectRowCount` sums top-level items,
+     *      attachments, notes and annotations into one figure, which is
+     *      why it moves when you expand a row — the behaviour reported as
+     *      a bug in forum thread 132551. Splitting the tiers makes that
+     *      legible instead of surprising. Notes are their own tier rather
+     *      than lumped with attachments: they are user-authored content,
+     *      not a file or a derived mark.
+     *
+     *   B. How much of the view is a HIT. With a filter active, some rows
+     *      match and others are only present to hold a matching child.
+     *      Weavero already knows which is which (pass 2 publishes the
+     *      primary ids), and no native surface offers this.
+     *
+     *  Counted through the PATCHED accessors, so the figures describe the
+     *  filtered view for free. Returns null when it cannot build a
+     *  trustworthy string, and the caller falls back to Zotero's own. */
+    _wvBuildCountMessage(win: any, onlySelected?: boolean): any | null {
+        try {
+            const zp: any = win && win.ZoteroPane;
+            const iv: any = zp && zp.itemsView;
+            const rp: any = iv && (iv.rowProvider || iv);
+            if (!rp || typeof rp.getRowCount !== "function") return null;
+            const n = rp.getRowCount();
+            if (!n) return null;                    // let Zotero say "No items"
+            // Same box, two scopes (MJT, 9 Aug 2026): the whole view, or
+            // just the SELECTION. `selection.selected` is a Set of row
+            // indices (verified live), so the only difference is which
+            // indices are walked -- every count, level and match rule
+            // below is shared, which is the point of routing both through
+            // one builder rather than writing a second one.
+            let indices: any = null;
+            if (onlySelected) {
+                const sel: any = iv && iv.selection;
+                if (!sel || !sel.selected || !sel.selected.size) return null;
+                indices = [];
+                for (const i of sel.selected) {
+                    if (i >= 0 && i < n) indices.push(i);
+                }
+                if (!indices.length) return null;
+            }
+            // Only trust a primary set published for THIS view/state —
+            // an unstamped read would report a previous filter's match
+            // count against the current rows.
+            let primary: any = null;
+            try {
+                const pub: any = this._wvLastPrimaryIDs;
+                if (pub && pub.ids && this._isFilterActive(this._filterState)
+                    && pub.sig === this._wvFilterStateSig(win, iv)) {
+                    primary = pub.ids;
+                }
+            } catch (e) {}
+            // POSITION, not kind (MJT, 2026-08-08). Classifying by
+            // isNote()/isAttachment() conflated two independent axes and
+            // drew STANDALONE notes — which are top-level rows — indented
+            // as children (28 of them in the real library). Depth comes
+            // from the row's actual tree level, so every tier is true by
+            // construction and standalone notes/attachments land at 0.
+            // MATCH SOURCES. "matching vs context" is a property of ANY
+            // narrowing mechanism, not of Weavero's chips — MJT, 8 Aug
+            // 2026. A row is a MATCH when it satisfies every active
+            // narrowing; anything else visible is an ancestor carried
+            // along to hold a match, i.e. context.
+            //
+            // Gate on `_searchMode`, NOT on the presence of
+            // `_searchItemIDs`: measured 9 Aug 2026, that set is
+            // populated with the WHOLE library (42 223 ids) when no
+            // search is active, so presence proves nothing.
+            //   baseline  searchMode=false  itemIDs 42223  parentIDs 18422
+            //   quick     searchMode=true   itemIDs  7776  parentIDs   480
+            //   advanced  searchMode=true   itemIDs 15329  parentIDs     0
+            // (advanced reports 0 parents because resultLevel=item needs
+            // no child context.)
+            const sources: any[] = [];
+            if (primary) sources.push({ label: "filter", set: primary });
+            try {
+                if (rp._searchMode) {
+                    const sIDs = rp._searchItemIDs || rp.searchItemIDs;
+                    if (sIDs && typeof sIDs.has === "function") {
+                        // Quick search owns the toolbar box; anything else
+                        // in search mode is the advanced-search channel.
+                        const sb: any = win.document
+                            && win.document.getElementById("zotero-tb-search");
+                        const live = (sb && sb.value)
+                            ? String(sb.value).trim() : "";
+                        sources.push({
+                            label: live ? "quick search" : "advanced search",
+                            set: sIDs,
+                        });
+                    }
+                }
+            } catch (e) {}
+
+            // Per level: [matching, context]. Depth from the row's own
+            // tree level, so standalone notes/attachments land at 0.
+            const lv = [[0, 0], [0, 0], [0, 0]];
+            const walk = indices || null;
+            const count = walk ? walk.length : n;
+            for (let k = 0; k < count; k++) {
+                const i = walk ? walk[k] : k;
+                let row;
+                try { row = rp.getRow(i); } catch (e) { continue; }
+                const ref: any = row && row.ref;
+                if (!ref || (row.isObjectRow === false)) continue;
+                let d = 0;
+                try {
+                    d = (typeof rp.getLevel === "function")
+                        ? rp.getLevel(i) : (row.level || 0);
+                }
+                catch (e) { d = row.level || 0; }
+                if (d < 0) d = 0;
+                if (d > 2) d = 2;
+                let isMatch = sources.length > 0;
+                for (const src of sources) {
+                    if (!src.set.has(ref.id)) { isMatch = false; break; }
+                }
+                lv[d][isMatch ? 0 : 1]++;
+            }
+
+            const LABELS = ["top-level", "children", "annotations"];
+            const rowsOut: any[] = [];
+            for (let d = 0; d < 3; d++) {
+                // All three levels ALWAYS, including zeros: a missing
+                // tier is ambiguous, and a block that changes height as
+                // rows expand is twitchy to read.
+                rowsOut.push({
+                    depth: d, label: LABELS[d],
+                    match: lv[d][0], context: lv[d][1],
+                    total: lv[d][0] + lv[d][1],
+                });
+            }
+            return {
+                rows: rowsOut,
+                // No sources => nothing is narrowing, so the match/context
+                // split is meaningless and only the totals are shown.
+                split: sources.length > 0,
+                sourceLabel: sources.map(x => x.label).join(" + "),
+            };
+        }
+        catch (e) {
+            dbg("[Weavero][filter] buildCountMessage err: " + e);
+            return null;
+        }
+    }
+
+    /** Build the count box element. Shared by BOTH render paths — the
+     *  unselected/selected message box and the batch-edit prompt — so the
+     *  two can never drift apart. Returns the holder; the caller decides
+     *  where it goes. */
+    _wvRenderCountBox(win: any, lines: any): any {
+        const doc = win.document;
+    // Centred as a BLOCK, left-aligned inside: centring
+    // each cell would destroy the indentation that
+    // carries the hierarchy.
+    const holder = doc.createXULElement("vbox");
+    holder.className = "wv-count-tree";
+    holder.style.width = "max-content";
+    holder.style.marginInline = "auto";
+    holder.style.textAlign = "left";
+    holder.style.border =
+        "1px solid color-mix(in srgb, currentColor 22%, transparent)";
+    holder.style.background =
+        "color-mix(in srgb, currentColor 6%, transparent)";
+    holder.style.borderRadius = "5px";
+    holder.style.padding = "6px 10px";
+    holder.style.marginBlockStart = "0.8em";
+
+    const grid = doc.createElementNS(
+        "http://www.w3.org/1999/xhtml", "div");
+    grid.style.display = "grid";
+    // label | match | context — numbers right-aligned so
+    // digits line up column-wise and can be compared by
+    // eye without reading the labels.
+    grid.style.gridTemplateColumns = lines.split
+        ? "auto auto auto" : "auto auto";
+    grid.style.columnGap = "12px";
+    grid.style.rowGap = "2px";
+    grid.style.opacity = "0.85";
+    const cell = (text, opts?: any) => {
+        const c = doc.createElementNS(
+            "http://www.w3.org/1999/xhtml", "div");
+        c.textContent = text;
+        if (opts && opts.indent) {
+            c.style.paddingInlineStart = opts.indent + "px";
+        }
+        if (opts && opts.num) c.style.textAlign = "right";
+        if (opts && opts.head) {
+            c.style.opacity = "0.7";
+            c.style.fontSize = "0.9em";
+        }
+        grid.appendChild(c);
+        return c;
+    };
+    if (lines.split) {
+        // The funnel sits in the grid's top-left header
+        // cell — that IS the box's top-left corner, so it
+        // needs no absolute positioning and cannot overlap
+        // the numbers (MJT, 9 Aug 2026, replacing the
+        // "narrowed by ..." text line).
+        //
+        // A GENERAL funnel: plain currentColor, NOT the
+        // amber-stemmed Weavero mark. The narrowing may be
+        // Zotero's own quick or advanced search, so
+        // branding it would misattribute the numbers. The
+        // source is named in the tooltip instead.
+        const head0 = cell("");
+        const fSvg =
+            '<svg xmlns="http://www.w3.org/2000/svg"'
+            + ' viewBox="0 0 16 16" fill="none">'
+            + '<path fill="context-fill" fill-rule="evenodd"'
+            + ' clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
+            + '</svg>';
+        const fImg: any = doc.createElementNS(
+            "http://www.w3.org/1999/xhtml", "img");
+        fImg.setAttribute("src",
+            "data:image/svg+xml;charset=utf-8,"
+            + encodeURIComponent(fSvg));
+        fImg.setAttribute("width", "12");
+        fImg.setAttribute("height", "12");
+        fImg.setAttribute("title",
+            "narrowed by " + lines.sourceLabel);
+        fImg.style.setProperty(
+            "-moz-context-properties", "fill, stroke");
+        fImg.style.fill = "currentColor";
+        fImg.style.opacity = "0.8";
+        fImg.style.display = "block";
+        head0.appendChild(fImg);
+        cell("match", { num: true, head: true });
+        cell("context", { num: true, head: true });
+    }
+    else {
+        cell("");
+        cell("rows", { num: true, head: true });
+    }
+    for (const r of lines.rows) {
+        cell(r.label, { indent: r.depth * 14 });
+        if (lines.split) {
+            cell(String(r.match.toLocaleString()), { num: true });
+            cell(String(r.context.toLocaleString()), { num: true });
+        }
+        else {
+            cell(String(r.total.toLocaleString()), { num: true });
+        }
+    }
+    holder.appendChild(grid);
+        return holder;
+    }
+
+    /** Wrap the item pane's message setter so the unselected count is
+     *  replaced by the tiered version. `setItemPaneMessage` is the single
+     *  seam every path funnels through (itemPane.js `renderMessage`), so
+     *  one wrap covers selection changes, refreshes and our own applies.
+     *  Versioned + stored-original so a plugin reload re-hooks cleanly. */
+    _wvWireItemCountBreakdown(win: any) {
+        try {
+            const pane: any = win && win.document
+                && win.document.getElementById("zotero-item-pane");
+            if (!pane || typeof pane.setItemPaneMessage !== "function") return;
+            if (pane._wvCountWired === 1) return;
+            // Re-wire cleanly across reloads rather than stacking wraps.
+            if (pane._wvOrigSetItemPaneMessage) {
+                pane.setItemPaneMessage = pane._wvOrigSetItemPaneMessage;
+            }
+            const orig = pane.setItemPaneMessage;
+            pane._wvOrigSetItemPaneMessage = orig;
+            pane.setItemPaneMessage = function (msg) {
+                // Let Zotero render its own message FIRST and untouched --
+                // the native "N items in this view" stays the headline and
+                // Weavero's breakdown is appended beneath it, so the tiers
+                // read as perspective on that number rather than replacing
+                // it. Appending after `orig` is also required, not merely
+                // tidy: `itemMessagePane.render()` calls replaceChildren(),
+                // so anything added first would be wiped.
+                const ret = orig.call(this, msg);
+                try {
+                    // Resolve the LIVE plugin at call time — a closure over
+                    // `this` goes stale across reloads.
+                    const lp: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    const doc = win.document;
+                    const box = doc.getElementById(
+                        "zotero-item-pane-message-box");
+                    // CENTERING: the native line is `text-align: start`
+                    // and full-width — it only LOOKS centered because the
+                    // box shrinks to fit it and the groupbox centers the
+                    // box. Appending a longer line widens the box, so the
+                    // native text jumps to the left edge. Centring the box
+                    // text keeps Zotero's line looking exactly as it did
+                    // (MJT, 2026-08-08). Cleared again whenever we add
+                    // nothing, so the pane is untouched with the pref off.
+                    const clear = () => {
+                        try { if (box) box.style.textAlign = ""; } catch (e) {}
+                    };
+                    // Two messages carry a count worth breaking down:
+                    // the unselected view total, and a multi-item
+                    // SELECTION. (A single selected item renders the item
+                    // pane itself, not a message, so it never arrives
+                    // here.) Same box, same rules, different scope.
+                    const l10n = msg && msg.l10nId;
+                    const forSelection = l10n === "item-pane-message-items-selected";
+                    if (!lp || !msg
+                        || (l10n !== "item-pane-message-unselected" && !forSelection)
+                        || !lp._wvCountBreakdownEnabled()) { clear(); return ret; }
+                    const lines = lp._wvBuildCountMessage(win, forSelection);
+                    // `lines` is an OBJECT now ({rows, split, sourceLabel}),
+                    // so probe `.rows` — `.length` on the object is
+                    // undefined and would silently suppress the whole
+                    // breakdown.
+                    if (!lines || !lines.rows || !lines.rows.length || !box) {
+                        clear(); return ret;
+                    }
+                    box.style.textAlign = "center";
+                    const holder = lp._wvRenderCountBox(win, lines);
+                    box.appendChild(holder);
+                } catch (e) {}
+                return ret;
+            };
+            // A multi-item selection does NOT come through
+            // setItemPaneMessage. Zotero 10 switches the pane to
+            // `batch-edit-prompt` mode and localizes
+            // #batch-edit-prompt-message directly
+            // (itemPane.js::renderBatchEditorPrompt), leaving the message
+            // box holding stale unselected content that is merely hidden.
+            //
+            // Verified the hard way on 9 Aug 2026: driving the check with
+            // ZoteroPane.itemSelected() DID produce the message path and
+            // the box appeared, so the feature looked verified while the
+            // real UI showed nothing. Same class of harness lie as
+            // dispatching `input` instead of `command` at the search box.
+            if (typeof pane.renderBatchEditorPrompt === "function") {
+                if (pane._wvOrigRenderBatchPrompt) {
+                    pane.renderBatchEditorPrompt = pane._wvOrigRenderBatchPrompt;
+                }
+                const origBatch = pane.renderBatchEditorPrompt;
+                pane._wvOrigRenderBatchPrompt = origBatch;
+                pane.renderBatchEditorPrompt = function () {
+                    const ret = origBatch.apply(this, arguments);
+                    try {
+                        const lp: any = (Zotero as any).Weavero
+                            && (Zotero as any).Weavero.plugin;
+                        const gb = win.document.getElementById("batch-edit-prompt");
+                        if (!gb) return ret;
+                        // This branch re-renders in place rather than
+                        // replacing children, so drop any previous box or
+                        // they would stack up.
+                        const prev = gb.querySelector(".wv-count-tree");
+                        if (prev) prev.remove();
+                        if (!lp || !lp._wvCountBreakdownEnabled()) return ret;
+                        const lines = lp._wvBuildCountMessage(win, true);
+                        if (!lines || !lines.rows || !lines.rows.length) return ret;
+                        const holder = lp._wvRenderCountBox(win, lines);
+                        // Breathing room before the Edit Multiple Items
+                        // button — without it the box reads as part of the
+                        // button's own grouping rather than as information
+                        // about the selection (MJT, 9 Aug 2026).
+                        holder.style.marginBlockEnd = "1.1em";
+                        const msgEl = win.document.getElementById(
+                            "batch-edit-prompt-message");
+                        if (msgEl && msgEl.nextSibling) {
+                            gb.insertBefore(holder, msgEl.nextSibling);
+                        }
+                        else { gb.appendChild(holder); }
+                    } catch (e) {}
+                    return ret;
+                };
+            }
+            pane._wvCountWired = 1;
+        } catch (e) {}
+    }
+
+    _wvUnwireItemCountBreakdown(win: any) {
+        try {
+            const pane: any = win && win.document
+                && win.document.getElementById("zotero-item-pane");
+            if (!pane || !pane._wvOrigSetItemPaneMessage) return;
+            // Drop the centring we applied to Zotero's own message box.
+            try {
+                const box: any = win.document.getElementById(
+                    "zotero-item-pane-message-box");
+                if (box) box.style.textAlign = "";
+            } catch (e) {}
+            pane.setItemPaneMessage = pane._wvOrigSetItemPaneMessage;
+            delete pane._wvOrigSetItemPaneMessage;
+            if (pane._wvOrigRenderBatchPrompt) {
+                pane.renderBatchEditorPrompt = pane._wvOrigRenderBatchPrompt;
+                delete pane._wvOrigRenderBatchPrompt;
+            }
+            try {
+                const gb = win.document.getElementById("batch-edit-prompt");
+                const prev = gb && gb.querySelector(".wv-count-tree");
+                if (prev) prev.remove();
+            } catch (e) {}
+            delete pane._wvCountWired;
+        } catch (e) {}
+    }
+
     _applyItemsListFilterInner(opts?) {
         // Auto-expand cascade is opt-IN. The MutationObserver-fired
         // reapply must NOT cascade (it would re-open every parent the
@@ -11407,6 +11949,15 @@ class _FilterMixin {
                 delete rp.getRowCount;
                 delete rp._wvOrigGetRow;
                 delete rp._wvOrigGetRowCount;
+                // Restore the item pane's count getter (own property on the
+                // itemsView; deleting it re-exposes the prototype getter).
+                // The host is stored on `rp` because these teardown sites
+                // only have `rp` in scope.
+                if (rp._wvObjRowCountHost) {
+                    try { delete rp._wvObjRowCountHost.objectRowCount; }
+                    catch (e) {}
+                    delete rp._wvObjRowCountHost;
+                }
                 if (rp._wvOrigGetLevel) {
                     delete rp.getLevel;
                     delete rp._wvOrigGetLevel;
@@ -11482,6 +12033,21 @@ class _FilterMixin {
             // tree. Pure paint invalidate — doesn't add/remove rows —
             // so it can't loop through the MutationObserver.
             try { itemsView.tree.invalidate(); } catch (e) {}
+            // Re-render the item pane count on the CLEAR path too. The
+            // count getter has just been unpatched, but the message
+            // itself is only refreshed from `itemsView.onRefresh`
+            // upstream, so without this it keeps showing the FILTERED
+            // number after the filter is gone (measured 2026-08-08:
+            // message stuck at 15,329 with 17,928 rows restored).
+            // Same empty-selection gate as the apply path.
+            try {
+                const _zp: any = win && win.ZoteroPane;
+                const _sel: any = itemsView && itemsView.selection;
+                if (_zp && typeof _zp.itemSelected === "function"
+                    && _sel && _sel.count === 0) {
+                    Promise.resolve(_zp.itemSelected()).catch(() => {});
+                }
+            } catch (e) {}
             return;
         }
 
@@ -12644,6 +13210,81 @@ class _FilterMixin {
             if (stale()) return rp._wvOrigGetRowCount();
             return keep.length;
         };
+        // The item pane's "N items in this view" message reads
+        // `itemsView.objectRowCount` (itemPane.js), which reduces over
+        // `this._rows` DIRECTLY -- it never goes through getRow /
+        // getRowCount, so our translation does not reach it and the pane
+        // reports the UNFILTERED library count while a chip is active.
+        // Measured 2026-08-08 on the real library: pane said "17,928
+        // items in this view" with 15,329 rows actually shown.
+        //
+        // This is Weavero's discrepancy to fix, and is deliberately
+        // scoped to it. The related upstream bug -- expanding a row does
+        // not refresh the message at all, because zoteroPane.js only
+        // updates it from `itemsView.onRefresh` (added for
+        // zotero/zotero#5913, whose own comment lists only refresh-driven
+        // causes) -- is NOT patched here: it affects every Zotero user,
+        // and two mechanisms racing on the same message once upstream
+        // fixes it would be worse than the bug.
+        //
+        // Patched on the itemsView INSTANCE (the getter lives on the
+        // prototype), so teardown is a plain `delete`. The host is
+        // remembered on `rp` because the teardown sites only have `rp`.
+        try {
+            const findProtoGetter = (obj, name) => {
+                let o = obj;
+                while (o) {
+                    const d = Object.getOwnPropertyDescriptor(o, name);
+                    if (d && typeof d.get === "function") return d.get;
+                    o = Object.getPrototypeOf(o);
+                }
+                return null;
+            };
+            // Capture the REAL prototype getter exactly once. After the
+            // first install the own property IS our getter, so re-reading
+            // it here would capture ourselves and recurse. Cached on the
+            // itemsView and cleared on teardown.
+            const host: any = itemsView;
+            if (!host._wvOrigObjCountGetter) {
+                const g = findProtoGetter(
+                    Object.getPrototypeOf(itemsView), "objectRowCount");
+                if (g) host._wvOrigObjCountGetter = g;
+            }
+            const origObjCount = host._wvOrigObjCountGetter;
+            // REDEFINE ON EVERY APPLY. The previous version installed once
+            // and skipped thereafter if the own property existed, so the
+            // getter kept closing over the FIRST apply's `keep` and
+            // watermark. Every later apply then tripped its own stale()
+            // check and fell through to the UNFILTERED count -- the item
+            // pane read "20,508 items in this view" over a 2,190-row
+            // filtered view, while the tiers (which go through the
+            // per-apply getRow/getRowCount patches) stayed correct.
+            // Reported 2026-08-08.
+            if (origObjCount) {
+                Object.defineProperty(itemsView, "objectRowCount", {
+                    configurable: true,
+                    get: function () {
+                        try {
+                            // Same contract as the other patched
+                            // accessors: a stale keep means fall through
+                            // to the unfiltered original.
+                            if (stale()) return origObjCount.call(this);
+                            let n = 0;
+                            for (let i = 0; i < keep.length; i++) {
+                                const row = rp._wvOrigGetRow(keep[i] as number);
+                                if (row && row.isObjectRow) n++;
+                            }
+                            return n;
+                        }
+                        catch (e) {
+                            try { return origObjCount.call(this); }
+                            catch (e2) { return 0; }
+                        }
+                    },
+                });
+                rp._wvObjRowCountHost = itemsView;
+            }
+        } catch (e) {}
         if (rp._wvOrigGetLevel) {
             rp.getLevel = function (idx) {
                 if (this[SELF]) return rp._wvOrigGetLevel(idx);
@@ -12912,6 +13553,8 @@ class _FilterMixin {
             try { itemsView.tree.invalidate(); } catch (e) {}
         }
         this._wvLastKeepHash = _keepHash;
+        // (The item-pane count refresh lives at the END of this method —
+        // it must run AFTER `_wvLastPrimaryIDs` is published.)
         _mark("invalidate");
         try {
             _perf.rows = (rp._rows && rp._rows.length) || 0;
@@ -12928,6 +13571,26 @@ class _FilterMixin {
         // Hand pass 2's primary verdicts to the reconcile, stamped with
         // the signature so it can only be used for THIS view/state.
         this._wvLastPrimaryIDs = { sig: _sig, ids: _primaryIDs };
+        // Re-render the item pane's count message. MUST be after the
+        // publish above: the tiered message reports how many rows are
+        // matches vs context, and it reads exactly this stamped set. An
+        // earlier version of this call sat next to the invalidate, which
+        // runs BEFORE the publish, so the matching/context half silently
+        // never appeared (2026-08-08).
+        //
+        // Upstream refreshes this message only from `itemsView.onRefresh`
+        // (zoteroPane.js, zotero/zotero#5913) which a Weavero apply does
+        // not fire. Gated on an empty selection: the only state where the
+        // message is shown, and `itemSelected()` is otherwise a full
+        // item-pane render.
+        try {
+            const _zp: any = win && win.ZoteroPane;
+            const _sel: any = itemsView && itemsView.selection;
+            if (_zp && typeof _zp.itemSelected === "function"
+                && _sel && _sel.count === 0) {
+                Promise.resolve(_zp.itemSelected()).catch(() => {});
+            }
+        } catch (e) {}
     }
 
     /** Debounce a re-apply of the items-list filter after the

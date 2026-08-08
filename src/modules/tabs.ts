@@ -4522,6 +4522,112 @@ class _TabsMixin {
         } catch (_) {}
     }
 
+    /** Issue #29, Calorion's rule (2026-08-04): automation should fire only
+     *  when a document is FULLY closed, not when a view of it goes away —
+     *  "if there are multiple tabs open with the same document visible, A&T
+     *  should only be notified when the last one is closed".
+     *
+     *  `_wvBlindAutomationTabClose` already hides Weavero's own programmatic
+     *  closes. This covers the other half: a USER closing one of several
+     *  views of the same document. Counts views across every main window AND
+     *  torn-off reader windows, since those are exactly the extra views
+     *  Weavero's multi-window features create — and A&T only tracks one
+     *  window, so it cannot make this judgement itself.
+     *
+     *  INCOMPLETE — do not treat #29 as closed (9 Aug 2026). Tested against
+     *  the REAL Actions & Tags 2.5.2 with Calorion's own script:
+     *    - tab vs another TAB  → blinds correctly (synthetic check)
+     *    - tab vs a torn-off READER WINDOW → FAILS; the item was tagged
+     *      while the reader window still showed the document
+     *  The reader-window branch below is therefore unverified. Two
+     *  untested causes: the survivor scan may not see the torn-off reader,
+     *  or A&T may resolve that close by some route other than
+     *  `data.tabStatus`, in which case deleting the map entry cannot help.
+     *  Status note: work/issue-29-status.md.
+     *
+     *  Wrapping `Zotero_Tabs.close` (rather than observing the notifier) is
+     *  deliberate: the entry must be removed from A&T's map BEFORE the close
+     *  notification fires, and observer ordering is not guaranteed. This is a
+     *  hot path — every tab close goes through it — so the guard is fully
+     *  defensive and the original is always called. */
+    _wvBlindNonFinalCloses(win: any, ids: any) {
+        try {
+            const Z: any = win && win.Zotero_Tabs;
+            if (!Z || !Z._tabs) return;
+            const raw = (ids == null) ? [Z.selectedID]
+                : (Array.isArray(ids) ? ids : [ids]);
+            const closing = new Set(raw.filter(Boolean));
+            if (!closing.size) return;
+            // item behind each CLOSING tab
+            const itemOf = new Map();
+            for (const t of Z._tabs) {
+                if (closing.has(t.id) && t.data && t.data.itemID) {
+                    itemOf.set(t.id, t.data.itemID);
+                }
+            }
+            if (!itemOf.size) return;
+            // every item still visible SOMEWHERE once these tabs are gone
+            const survivors = new Set();
+            for (const w of Zotero.getMainWindows()) {
+                const ZT: any = w && w.Zotero_Tabs;
+                for (const t of (ZT && ZT._tabs) || []) {
+                    if (closing.has(t.id)) continue;
+                    if (t.data && t.data.itemID) survivors.add(t.data.itemID);
+                }
+            }
+            // Torn-off reader windows are not main windows, so their views
+            // are invisible to the loop above. Skip readers belonging to the
+            // closing tabs or they would count as their own survivors.
+            try {
+                for (const r of ((Zotero as any).Reader
+                    && (Zotero as any).Reader._readers) || []) {
+                    if (!r || !r.itemID) continue;
+                    if (r.tabID && closing.has(r.tabID)) continue;
+                    survivors.add(r.itemID);
+                }
+            } catch (e) {}
+            for (const [tabID, itemID] of itemOf) {
+                if (survivors.has(itemID)) {
+                    this._wvBlindAutomationTabClose(tabID);
+                }
+            }
+        } catch (e) {}
+    }
+
+    /** Per-window, versioned, reload-proof wrap of `Zotero_Tabs.close`. */
+    _wvWireLastViewCloseGuard(win: any) {
+        try {
+            const Z: any = win && win.Zotero_Tabs;
+            if (!Z || typeof Z.close !== "function") return;
+            if (Z._wvLastViewWired === 1) return;
+            if (Z._wvOrigTabsClose) Z.close = Z._wvOrigTabsClose;
+            const orig = Z.close;
+            Z._wvOrigTabsClose = orig;
+            Z.close = function (ids?: any) {
+                try {
+                    // Resolve the LIVE plugin — a closure would go stale
+                    // across reloads.
+                    const lp: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvBlindNonFinalCloses(win, ids);
+                }
+                catch (e) {}
+                return orig.apply(this, arguments);
+            };
+            Z._wvLastViewWired = 1;
+        } catch (e) {}
+    }
+
+    _wvUnwireLastViewCloseGuard(win: any) {
+        try {
+            const Z: any = win && win.Zotero_Tabs;
+            if (!Z || !Z._wvOrigTabsClose) return;
+            Z.close = Z._wvOrigTabsClose;
+            delete Z._wvOrigTabsClose;
+            delete Z._wvLastViewWired;
+        } catch (e) {}
+    }
+
     /** Dispatcher for moving a reader/note tab between main windows. A PDF
      *  reader is moved WITHOUT reloading — its live docshell is swapped into the
      *  target window (Firefox-style; see `_wvSwapMoveToMain`). Notes or any
@@ -9069,6 +9175,22 @@ class _TabsMixin {
                     if (LP() && Date.now() - wiredAt < 90000) {
                         const stack = String(new Error().stack || "").split("\n").slice(1, 4).join(" <- ");
                         trace("close[" + name() + "]: " + JSON.stringify(ids) + " via " + stack);
+                    }
+                } catch (e) {}
+                // Issue #29 last-view guard runs HERE, not in a second
+                // wrapper of its own. Two independent wraps of
+                // `Zotero_Tabs.close` (this tracer, keyed `_wvOrigClose`,
+                // and the guard, keyed `_wvOrigTabsClose`) raced on wiring
+                // order and the guard fell OUT of the chain entirely: it
+                // never executed on a real close, while a synthetic test
+                // that called it directly passed and made it look wired.
+                // Diagnosed 9 Aug 2026 against the real Actions & Tags.
+                // One wrapper, both jobs, no ordering hazard. Idempotent —
+                // blinding an id A&T never tracked is a no-op.
+                try {
+                    const lp: any = LP();
+                    if (lp && typeof lp._wvBlindNonFinalCloses === "function") {
+                        lp._wvBlindNonFinalCloses(win, ids);
                     }
                 } catch (e) {}
                 return origClose(ids);

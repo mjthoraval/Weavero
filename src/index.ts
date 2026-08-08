@@ -2118,6 +2118,12 @@ class WeaveroPlugin {
                 // clear-restore) and a live-quick-search fallback check.
                 // Turning this OFF restores the cascade path exactly.
                 "filterBuildMode",
+                // Tiered item-pane count (2026-08-08): replaces "N items
+                // in this view" with items/attachments/notes/annotations,
+                // plus matching-vs-context while a filter is active. On by
+                // default; the pref exists so a user who prefers Zotero's
+                // single number can restore it.
+                "itemCountBreakdown",
             ];
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm",
@@ -3418,6 +3424,16 @@ class WeaveroPlugin {
                 : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) this._setupTabExternalRepositioner(w);
         } catch (e) { Zotero.debug("[Weavero] tab-ext repositioner init err: " + e); }
+        // Tiered item-pane count on ALREADY-OPEN windows too —
+        // onMainWindowLoad only fires for new ones, so without this a
+        // plugin reload leaves the running window on Zotero's plain count.
+        try {
+            const wins = Zotero.getMainWindows
+                ? Zotero.getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) (this as any)._wvWireItemCountBreakdown(w);
+            for (const w of wins) (this as any)._wvWireLastViewCloseGuard(w);
+        } catch (e) { Zotero.debug("[Weavero] item-count init err: " + e); }
         // Consolidate multi-open-in-new-window into one tabbed reader window
         // (when reader-window tabs are active). Per-window; also re-applied on
         // already-open windows here since onMainWindowLoad only fires for new ones.
@@ -4578,6 +4594,11 @@ class WeaveroPlugin {
                     }, d);
                 }
             } catch (e) {}
+            // Tiered item-pane count. Wraps the item pane's message setter,
+            // so it must be per-window and re-hooked on reload.
+            try { (this as any)._wvWireItemCountBreakdown(_window); } catch (e) {}
+            // Issue #29: only let close-automation see a document's LAST view.
+            try { (this as any)._wvWireLastViewCloseGuard(_window); } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }
@@ -4589,6 +4610,8 @@ class WeaveroPlugin {
      *  reader event listeners etc. survive across windows. */
     onMainWindowUnload(_window) {
         try { (this as any)._wvUnwireLoadURIHook(_window); } catch (e) {}
+        try { (this as any)._wvUnwireItemCountBreakdown(_window); } catch (e) {}
+        try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}
         try {
             // Window-close upkeep, only when managed windows are in play:
             //  • re-anchor — if the closing window was the anchor, the new
@@ -4792,6 +4815,15 @@ class WeaveroPlugin {
         try {
             for (const w of Zotero.getMainWindows()) {
                 (this as any)._wvUnwireDefaultChildMenu(w);
+            }
+        } catch (e) {}
+        // The item-pane message wrap also lives on a window-owned element
+        // that outlives the plugin — disabling Weavero must give Zotero's
+        // own count string back.
+        try {
+            for (const w of Zotero.getMainWindows()) {
+                (this as any)._wvUnwireItemCountBreakdown(w);
+                (this as any)._wvUnwireLastViewCloseGuard(w);
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles

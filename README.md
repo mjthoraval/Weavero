@@ -307,12 +307,6 @@ can spare helps keep it free and moving. Thank you.
 
 ### Third-party assets
 
-The position-bookmark pushpin icon adapts the `pin-angle-fill` glyph from
-[Bootstrap Icons](https://github.com/twbs/icons) — MIT License, Copyright (c)
-2019–2024 The Bootstrap Authors:
-
-> Permission is hereby granted, free of charge, to any person obtaining a copy of
-> this software and associated documentation files (the "Software"), to deal in
-> the Software without restriction … The above copyright notice and this
-> permission notice shall be included in all copies or substantial portions of
-> the Software.
+The in-document position-bookmark marker uses the `pin-angle-fill` glyph from
+[Bootstrap Icons](https://github.com/twbs/icons), MIT licensed. Full notice:
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

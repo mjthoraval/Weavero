@@ -466,7 +466,8 @@ const RP_PIN_EMOJI = "📌";
 // or SVG letterboxes the drawing and the tip drifts off the box's bottom-centre.
 // In-document position-bookmark marker: Bootstrap Icons `pin-angle-fill`,
 // path copied VERBATIM. MIT licence (Copyright (c) 2019-2024 The Bootstrap
-// Authors) -- attribution + notice in README "Third-party assets". Chosen over Zotero's own
+// Authors) -- full notice in THIRD-PARTY-NOTICES.md (do NOT drop it: the
+// path is a verbatim copy, so MIT's notice requirement applies). Chosen over Zotero's own
 // `16/universal/pin.svg`, which is line-art AND unreferenced anywhere in
 // Zotero's UI, and over hand-drawn attempts that never read as a pushpin.
 //

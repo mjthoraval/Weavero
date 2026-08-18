@@ -43,6 +43,27 @@ The part that keeps the system improving: every bug fix must end by
 So bugs converge: each one leaves the process stronger, and nothing depends
 on anyone remembering.
 
+## Changing this structure — migration rules
+
+Every rule has a **loading class**, and restructures must respect it —
+a rule is only as strong as the guarantee that it is loaded at the moment
+it applies:
+
+- **Mechanical** (hooks, permission gates) — cannot be skipped. For rules
+  where a hard stop is affordable.
+- **Ambient** (root CLAUDE.md, always-loaded context) — for rules guarding
+  actions that occur in MANY flows: versioning, committing, where to work.
+  One line each; details may live deeper.
+- **On-demand** (skills, path-scoped rules) — procedure detail. Allowed
+  only when every flow needing it is funneled through a *binding* trigger:
+  path-scope auto-load, or ambient text that says INVOKE the skill — a
+  "see also" mention is not a trigger.
+
+Moving a rule down this ladder (ambient → on-demand) requires adding its
+binding trigger in the same change. Any pruning of a rule source requires:
+a name→destination ledger written BEFORE deleting, a dangling-reference
+scan after, and a snapshot of whatever is deleted.
+
 ## Using this for your own plugin
 
 Copy the shape, not the content: a short root file with commands +

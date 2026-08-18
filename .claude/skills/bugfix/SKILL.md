@@ -53,7 +53,8 @@ knows why the code refuses to be simplified.
 
 ## Step 5: Verify like it's release day
 
-- /verify cycle: bump `-dev.N`, build, install, force-reload.
+- INVOKE the /verify skill for the cycle (version bump, build, install,
+  force-reload) — it owns the version rules; never bump from memory.
 - Prove the fix against the ORIGINAL repro, plus the neighbouring cases the
   fix could plausibly break (e.g. same-state vs cross-state, both apply
   orders, with and without an active filter).
@@ -77,7 +78,8 @@ knows why the code refuses to be simplified.
    exemption down (in the fix commit and the report), never silently.
 2. **Route the lesson to its ONE home:** code convention → the matching
    `.claude/rules/` file; process mistake → the skill step that should have
-   prevented it; hard behavioural constraint → project.md invariants;
+   prevented it; hard behavioural constraint → the root CLAUDE.md
+   Hard invariants;
    upstream defect → the upstream-bugs register with a "Retire when"
    line; personal preference/state → agent memory. Prune anything the new
    text supersedes.

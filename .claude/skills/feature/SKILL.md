@@ -42,7 +42,7 @@ live via `zotero_execute_js`, or label it a guess.
 ## Step 3: Plan checkpoint
 
 Present a short plan: files touched, approach, invariants at risk (check the
-"Subsystem invariants" list in project.md), test plan, and anything that
+"Hard invariants" list in the root CLAUDE.md), test plan, and anything that
 deviates from a standing convention. Wait for approval. This is the second and
 LAST interaction.
 
@@ -53,9 +53,12 @@ LAST interaction.
 - Follow the path rules (auto-loaded from `.claude/rules/` when editing).
 - Comments state constraints and hard-won invariants, not narration.
 
-## Step 5: Verify (use the /verify skill's cycle)
+## Step 5: Verify — INVOKE the /verify skill
 
-Bump `-dev.N`, build, install into the RUNNING Zotero (check which profile is
+Load /verify with the Skill tool; never reproduce its steps from memory — it
+owns the version rules (incl. branch suffixes), the install cycle, and the
+live-check discipline. Its cycle: bump the version per its §1, build, install
+into the RUNNING Zotero (check which profile is
 live first: `PathUtils.profileDir`), force-reload, then verify each "done-when"
 item live via the bridge — DOM checks, row counts, screenshots as evidence.
 Simulate manual gestures where the feature involves them; note that scripted
@@ -66,8 +69,8 @@ can only be done by hand, SAY so in the report rather than faking it.
 
 If implementation surprised you anywhere — an API behaved differently than
 assumed, a convention was missing, a verification step was invented on the
-spot — route the lesson to its one home (rules file / skill step /
-project.md invariant / upstream register / memory) before reporting. New
+spot — route the lesson to its one home (rules file / skill step / root
+CLAUDE.md invariant / upstream register / memory) before reporting. New
 behaviour with a contract worth keeping gets a guard: a spec, a live-suite
 check, or a manual-protocol entry (same rules as /bugfix Step 6).
 

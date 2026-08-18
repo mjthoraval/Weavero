@@ -4,6 +4,11 @@ Weavero is a Zotero 7+ plugin: clickable links in annotation comments and notes,
 
 **How work happens here**: the repeatable workflows are skills in [.claude/skills/](.claude/skills/) — `feature`, `bugfix`, `verify` (build→install→live-check cycle), `release` (maintainer-only), `upstream-check`. Path-scoped conventions are in [.claude/rules/](.claude/rules/). The architecture of this setup, and why, is explained in [.claude/README.md](.claude/README.md); the broader methodology is documented publicly at [docs/developing-with-ai.md](docs/developing-with-ai.md).
 
+**Versioning and parallel sessions** (kept in this always-loaded file on purpose — loading rules in [.claude/README.md](.claude/README.md)):
+
+- Any version bump: INVOKE the `verify` skill — never bump from memory of the pattern. WIP builds on `main` are `-dev.N` of the next version; **branch/fork builds carry their own suffix** (`-defatt.N`, `-annsrc.N`), never main's `-dev.N`.
+- If another agent session may share this clone (unexplained commits, dirty files, or the user says testing is ongoing elsewhere): do NOT commit to `main` — work in a separate clone on a suffixed branch. Before any commit, check `git diff` for hunks that aren't yours; when installing into a shared test instance, state which version replaced which.
+
 ## Commands
 
 - Build: `npm run build` (prebuild runs `tsc --noEmit` — 0 errors required)
@@ -25,7 +30,7 @@ Never assert how Zotero or Firefox behaves from memory. Grep a local clone of [z
 ## Hard invariants (each paid for with a real regression)
 
 - Note tabs open via `ZoteroPane.openNote(id, {openInWindow: false})` ONLY.
-- Taskbar overlay writes go through `_wvOvSetBadge` only (see `modules/tabs.ts`).
+- Taskbar overlay writes go through `_wvOvSetBadge` only — never `_wvSetTaskbarOverlay`/`_wvApplyTaskbarOverlay` directly (see `modules/tabs.ts`).
 - The items-list filter is per-main-window: explicit target window, per-window expando state — never bind to `Zotero.getMainWindow()` implicitly.
 - With quick/advanced search active, FILTER logic governs: every visible tree satisfies all criteria within the same item; user-reveal force-keeps are within-state only.
 - Popup contracts are locked by `test/popups.spec.js`; `test/compat.spec.js` locks the `winOf(node)`-not-`ownerGlobal` rule.

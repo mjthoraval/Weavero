@@ -13,6 +13,9 @@ description: The Weavero build-install-verify cycle. Use after any src/ change t
   `-dev.N`.
 - Bump in `src/manifest.json` AND `package.json` (and `package-lock.json` if
   present) — versions must match. Zotero won't reinstall an identical version.
+- Publish ≠ release: squash-pushing dev commits does NOT reset the cycle —
+  `-dev.N` continues on the same next-version target; only an actual release
+  (bare version + tag) starts a new one.
 
 ## 2. Build
 

@@ -93,16 +93,21 @@ absolute targets; re-run on the same library and compare deltas.
 filter takes about the same time as, or less than, Zotero's own quick
 search on the same library:
 
-| Operation (same library, same session) | time to result |
-|---|---|
-| **Weavero filter apply** — typical (median of 39 configurations) | **1.6 s** |
-| **Weavero filter apply** — fastest to slowest configuration | 1.5 – 2.4 s |
-| **Native Zotero quick search** (the closest built-in equivalent) | 2.5 – 3.4 s |
+| Operation (same library, same session) | apply | clear |
+|---|---|---|
+| **Weavero chip**: Item Type = Journal Article | **1.5 s** | **0.7 s** |
+| **Native Advanced Search**, same criterion, same 15,333 results | 3.7 s | 3.5 s |
+| **Weavero filter** — typical across all 39 configurations (median) | 1.6 s | — |
+| **Weavero filter** — fastest to slowest configuration | 1.5 – 2.4 s | — |
+| Native quick search, text narrowing (context only) | 2.5 – 3.4 s | 3.2 – 4.3 s |
 
-The caveat: a filter and a quick search are *analogous* operations, not
-identical ones (search does full-text/database work; a filter narrows
-already-loaded rows), so read the native row as context, not as the
-same task measured twice. Details below.
+The first two rows are a like-for-like comparison: the same criterion
+(*Item Type is Journal Article*) producing the identical result set,
+applied via Weavero's chip vs Zotero's Advanced Search
+(`itemsView.setFilter("advanced-search", …)`), timed to row-count
+stability. The quick-search row is *analogous* rather than identical
+(text search does full-text/database work) and is kept for context.
+Details below.
 
 Filter speed is measured by two tools that share one list of filter
 configurations (defined once, in the matrix, so speed and correctness

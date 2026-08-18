@@ -34,6 +34,12 @@ only. The number may be higher than the dev line predicted — that's expected.
   `fix:` commit names its regression guard or its written exemption (the
   /bugfix lock-it-in convention). A fix with neither goes back through
   /bugfix Step 6 before the release proceeds.
+- **Perf gate**: if the release ships perf-relevant changes (filter/search
+  machinery, per-row or per-annotation rendering, reader load paths), run
+  the matching Level-5 bench (`bench/bench-weavero-ui.js` for items-list
+  filter apply/clear; see bench/README.md for comparability rules) and
+  compare against the reference results — regressions are measured, not
+  felt.
 - Remind the user of any manual protocols due (restart testing, popup
   contracts) — flagged, not silently skipped.
 

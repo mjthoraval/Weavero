@@ -57,6 +57,9 @@ manifest changed, their rules files carry the extra checks.
   with `--profile …/.scaffold/test/profile`) — never the user's instance.
 - Frequency: popups specs after touching popup code; targeted specs for
   suite-covered machinery; the FULL suite only pre-release or on request.
+- Perf-relevant changes (filter apply path, per-row rendering, reader
+  load): run the matching `bench/` suite (TESTING.md Level 5) —
+  `bench-weavero-ui.js` times items-list filter apply/clear.
 
 ## 6. Report
 

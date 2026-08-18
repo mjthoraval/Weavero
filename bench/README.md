@@ -81,6 +81,18 @@ maintainer's library (17,932 top-level rows), 39/39 correctness pass:
 Slowest five: hasAnnotations FALSE (2382), hasRelated (1914),
 itemTypeEXCL + color (1647), fileType linkedFile (1612), hasTag (1597).
 
+**Native comparator** (same library, same session, `fields` mode, driven
+by `command` events): Zotero's own quick-search narrowing — the closest
+native operation to a chip apply — measured with Weavero disabled:
+search "drop" first row change **2480 ms**, stable **3356 ms** (8,294
+rows); clearing the search 3223 / 4286 ms. With Weavero installed but
+idle the same run reads 2405 / 4405 ms — within noise of native. Caveat:
+these are *analogous* operations, not identical ones (quick search does
+full-text/DB work; a chip filters already-loaded rows), so the native
+numbers bound the comparison rather than equal it. On this library,
+Weavero's filter applies (1474 ms headline, 1570 ms median, 2382 ms
+worst) sit at or below the native search's own narrowing time.
+
 Recorded on the maintainer's machine — treat as *shapes*, not absolute
 targets; re-run on the same library and compare deltas.
 

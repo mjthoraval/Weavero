@@ -110,6 +110,19 @@
     const check = (name, pass, detail) => R.checks.push({ name, pass: !!pass, detail });
     const observe = (name, detail) => R.observations.push({ name, detail });
 
+    /* dev.15 made the last word asynchronous BY DESIGN: a final apply
+     * lands after search quiescence, and the dev.29 stale-keep repair
+     * runs on its own timer after a clear. Snapshots that race either
+     * one report phantom failures (this suite read 8/10 under dev.16
+     * while search-modes, which waits, was clean). Wait for BOTH
+     * schedulers to go idle rather than sleeping blind. */
+    async function faSettle() {
+        const t0 = Date.now();
+        while ((lp._wvFATimer || lp._wvStaleKeepTimer)
+            && Date.now() - t0 < 15000) await sleep(300);
+        await sleep(1200);
+    }
+
     async function stable() {
         let last = -1, steady = 0, guard = 0;
         while (steady < 4 && guard++ < 200) {
@@ -244,6 +257,7 @@
                 qsOnly.rows < base.rows, { base: base.rows, qs: qsOnly.rows });
 
             await applyChip(g => { g.itemType = ["journalArticle"]; });
+            await faSettle();
             const qsThenChip = snap();
             check("chip AFTER quick search narrows further",
                 qsThenChip.rows < qsOnly.rows,
@@ -257,6 +271,7 @@
             await applyChip(g => { g.itemType = ["journalArticle"]; });
             const chipOnly = snap();
             await search("drop");
+            await faSettle();
             const chipThenQs = snap();
             check("ORDER INDEPENDENCE: chip-then-search == search-then-chip",
                 chipThenQs.idsHash === qsThenChip.idsHash,
@@ -266,6 +281,7 @@
 
             // clearing the search must leave the chip active
             await search("");
+            await faSettle();
             const afterQsCleared = snap();
             check("clearing quick search leaves the chip applied",
                 afterQsCleared.idsHash === chipOnly.idsHash,

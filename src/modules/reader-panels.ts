@@ -1361,6 +1361,10 @@ const RP_BM_CSS = [
     "}",
     ".wv-bm-reader-sublabel{opacity:.55;font-style:italic;}",
     ".wv-bm-reader-row .wv-bm-reader-page{flex:0 0 auto;opacity:.5;font-size:11px;}",
+    // Comment badge (issue #30): muted speech bubble between label and page
+    // number. currentColor so it follows the row's light/dark text colour.
+    ".wv-bm-reader-row .wv-bm-comment-badge{flex:0 0 auto;display:flex;align-items:center;opacity:.45;}",
+    ".wv-bm-reader-row .wv-bm-comment-badge svg{display:block;}",
     ".wv-bm-reader-row .wv-bm-reader-actions{display:none;gap:1px;flex:0 0 auto;}",
     ".wv-bm-reader-row:hover .wv-bm-reader-actions{display:flex;}",
     ".wv-bm-reader-actbtn{border:none;background:none;cursor:pointer;opacity:.55;padding:1px 4px;border-radius:3px;color:inherit;font-size:12px;line-height:1;}",
@@ -6012,7 +6016,13 @@ class _ReaderPanelsMixin {
                 backdrop.addEventListener("click", (e: any) => { if (e.target === backdrop) finish(null); });
                 const onKey = (e: any) => {
                     if (e.key === "Escape") { e.preventDefault(); finish(null); }
-                    // Enter in the comment TEXTAREA inserts a newline, not submit.
+                    // Ctrl/⌘+Enter saves from ANYWHERE, comment textarea
+                    // included — parity with the shared title+comment editor
+                    // (_bmShowEditDialog), whose Ctrl+Enter the user expects
+                    // to work in every bookmark dialog (2026-08-18). Page
+                    // bookmarks route HERE instead, and lacked it.
+                    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); }
+                    // Plain Enter in the comment TEXTAREA inserts a newline, not submit.
                     else if (e.key === "Enter" && !(cInput && e.target === cInput)) { e.preventDefault(); submit(); }
                 };
                 dlg.addEventListener("keydown", onKey);
@@ -9595,7 +9605,20 @@ class _ReaderPanelsMixin {
             // sidebar (driven by _state.annotations). On show, unblock and
             // re-render the real (filtered) set.
             if (hide) this._wvReaderSetViewAnnotationsBlocked(reader, true);
-            else { this._wvReaderSetViewAnnotationsBlocked(reader, false); try { this._wvApplyReaderFilter(reader); } catch (_) {} }
+            else {
+                this._wvReaderSetViewAnnotationsBlocked(reader, false);
+                // Force the setFilter pass by passing the CURRENT native
+                // includes as `inc`. A bare _wvApplyReaderFilter(reader) is
+                // not enough here: its anti-blink gate (2026-07-26) skips
+                // setFilter when nothing in the filter changed -- and
+                // un-hiding changes nothing in the filter. But the view was
+                // just rendered EMPTY by the block, so skipping the render
+                // leaves it empty forever (reported 2026-08-17: hide then
+                // un-hide, annotations never reappear). setFilter always
+                // ends in manager.render() with a fresh array, so one pass
+                // is guaranteed to repaint the unblocked view.
+                try { this._wvApplyReaderFilter(reader, this._wvReaderNativeIncludes(reader)); } catch (_) {}
+            }
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderApplyHideAnnotations err: " + e);
         }
@@ -12664,6 +12687,8 @@ class _ReaderPanelsMixin {
         // Drop the plain HTML tooltip in favour of the rich hover card wired
         // below — the two would otherwise both fire on hover.
         row.appendChild(ic); row.appendChild(label);
+        // Comment badge (issue #30) — same indicator as the in-document rows.
+        if (this._wvBmHasComment(bm)) row.appendChild(this._wvBmCommentBadge(idoc));
         // Orphan bookmark — Zotero target deleted/purged. Mark + flash on click.
         const missing = this._bmTargetMissing(bm);
         if (missing) {
@@ -14059,7 +14084,11 @@ class _ReaderPanelsMixin {
         page.textContent = pageLbl ? ("p. " + pageLbl) : "";
         // No inline rename/delete buttons on hover (user preference) —
         // both actions live in the right-click context menu instead.
-        row.appendChild(ic); row.appendChild(label); row.appendChild(page);
+        row.appendChild(ic); row.appendChild(label);
+        // Comment badge next to the page number (issue #30) — signals the
+        // hover card has comment text to show.
+        if (this._wvBmHasComment(bm)) row.appendChild(this._wvBmCommentBadge(idoc));
+        row.appendChild(page);
         // Orphan bookmark — its Zotero target was deleted/purged. Mark the row
         // (dim + strikethrough) + ⚠ badge; clicking flashes instead of no-op.
         const missing = this._bmTargetMissing(bm);
@@ -14079,6 +14108,54 @@ class _ReaderPanelsMixin {
             section || (this._wvReaderBookmarkIsLocal(reader, bm) ? "local" : "global"), false);
         this._wvReaderWireRowHover(reader, idoc, row, bm);
         return row;
+    }
+
+    /** Does this bookmark carry a comment? Mirrors the hover card's sources
+     *  (issue #30): the bookmark's own `comment` (position/text/url, set via
+     *  Edit Bookmark…), or — for annotation bookmarks — the live target
+     *  annotation's comment. READ-ONLY, cheap (getByLibraryAndKey is a sync
+     *  cache hit for loaded items). */
+    _wvBmHasComment(bm: any) {
+        try {
+            if (String(bm.comment || "").trim()) return true;
+            if (bm.type === "item" && bm.itemKey) {
+                const it: any = Zotero.Items.getByLibraryAndKey(bm.libraryID, bm.itemKey);
+                if (it && it.isAnnotation && it.isAnnotation()) {
+                    return !!String(it.annotationComment || "").trim();
+                }
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    /** Small muted speech-bubble badge for bookmark rows with a comment
+     *  (issue #30). Own 12-px glyph rather than the 16-px filter tile's:
+     *  viewBox must equal the rendered size for the 1-px stroke to land on
+     *  pixel rows (the pixel-sharp-icons rule) — scaling the 16-px path to
+     *  12 px anti-aliases the stroke to a blur. Same .5-grid trick, no
+     *  native title: the rich hover card already shows the comment text. */
+    _wvBmCommentBadge(idoc: any) {
+        const badge = idoc.createElementNS(NS_HTML_RP, "span");
+        badge.className = "wv-bm-comment-badge";
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = idoc.createElementNS(NS, "svg");
+        svg.setAttribute("viewBox", "0 0 12 12");
+        svg.setAttribute("width", "12");
+        svg.setAttribute("height", "12");
+        svg.setAttribute("fill", "none");
+        const path = idoc.createElementNS(NS, "path");
+        path.setAttribute("d",
+            "M0.5 2C0.5 1.17 1.17 0.5 2 0.5H10"
+            + "C10.83 0.5 11.5 1.17 11.5 2V7"
+            + "C11.5 7.83 10.83 8.5 10 8.5H5"
+            + "L3.5 11.5V8.5H2"
+            + "C1.17 8.5 0.5 7.83 0.5 7V2Z");
+        path.setAttribute("stroke", "currentColor");
+        path.setAttribute("stroke-width", "1");
+        path.setAttribute("stroke-linejoin", "round");
+        svg.appendChild(path);
+        badge.appendChild(svg);
+        return badge;
     }
 
     /** Hover affordance: after a short delay over a bookmark row, show a rich

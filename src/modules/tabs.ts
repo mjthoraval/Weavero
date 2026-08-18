@@ -7358,7 +7358,13 @@ class _TabsMixin {
                             const zp = win.ZoteroPane;
                             const cv = zp && zp.collectionsView;
                             if (cv && typeof cv.selectLibrary === "function") {
-                                const row = zp.getCollectionTreeRow && zp.getCollectionTreeRow();
+                                // V10: singular getter throws; the catch was
+                                // killing this whole enforcement loop. Plural
+                                // first; singular = v9 path (15 Aug 2026).
+                                const rows0 = (typeof zp.getCollectionTreeRows === "function")
+                                    ? zp.getCollectionTreeRows() : null;
+                                const row = (rows0 && rows0[0])
+                                    || (!rows0 && zp.getCollectionTreeRow && zp.getCollectionTreeRow());
                                 if (row && row.id === wanted) return;   // settled
                                 cv.selectLibrary(Zotero.Libraries.userLibraryID);
                             }

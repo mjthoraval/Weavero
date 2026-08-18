@@ -2501,6 +2501,79 @@ class _FilterMixin {
      *  Ctrl+A grabs the annotations, not the ancestor rows the tree
      *  keeps around for shape; filter by annotation colour AND item type
      *  → it grabs both. The chips still override it. */
+    /** Does the active filter target CHILD rows (attachments/annotations)?
+     *
+     *  Gates the Order-B re-route. That re-route re-runs Zotero's search
+     *  refresh so a chip-matching CHILD the search alone dropped gets
+     *  re-added — necessary for annotation/attachment chips, and pure
+     *  damage for parent-level ones.
+     *
+     *  Measured 9 Aug 2026, mode `fields`, chip = itemType journalArticle:
+     *  with the re-route the view is 6 165 top-level items against a
+     *  ground truth of 6 166 (it drops items that match the search
+     *  DIRECTLY — they disappear from Zotero's raw `_rows` during the
+     *  rebuild); with it suppressed the view is exactly 6 166, missing 0,
+     *  extra 0. Suppressing it unconditionally is NOT an option: it
+     *  regresses annotationColor badly, which is the case it was written
+     *  for.
+     *
+     *  Reuses `_effectiveSelectionTargetKinds` rather than a second
+     *  dimension list, so a new dimension cannot be classified one way
+     *  here and another way there. Defaults to TRUE on any doubt — the
+     *  old behaviour — so an unclassified filter keeps the re-route. */
+    _wvFilterTargetsChildren(): boolean {
+        try {
+            // Judge the CHIPS ONLY. `_effectiveSelectionTargetKinds` is the
+            // wrong oracle here: it also folds in cross-level scopes and
+            // the QUICK SEARCH's own scope, which defaults to all three row
+            // kinds. With a search live it therefore answered "targets
+            // children" for a pure itemType chip and the re-route fired
+            // anyway — measured 9 Aug 2026: kinds
+            // {parent,attachment,annotation} all true with only itemType
+            // set, and item 3772 lost as a result. The same probe with no
+            // search live returned parent-only, which is what made the gate
+            // look correct when it was first written.
+            const g: any = this._activeGroup();
+            if (!g) return true;
+            const levels = this._wvDimLevels();
+            const isSet = (f: string) => {
+                const v = g[f];
+                if (v == null) return false;
+                return Array.isArray(v) ? v.length > 0 : v !== false;
+            };
+            for (const f of levels.annotation) if (isSet(f)) return true;
+            for (const f of levels.attachment) if (isSet(f)) return true;
+            // Cross-level dimensions (Has Tag / Has Related / Has Link /
+            // Added By) CAN match children, so they keep the re-route.
+            for (const f of ["hasTag", "hasRelated", "hasLink",
+                "addedBy", "addedByExclude"]) {
+                if (isSet(f)) return true;
+            }
+            return false;
+        }
+        catch (e) { return true; }
+    }
+
+    /** Which row LEVEL each filter dimension targets. Single source of
+     *  truth, shared by `_effectiveSelectionTargetKinds` (which also folds
+     *  in cross-level scopes and the quick search) and by
+     *  `_wvFilterTargetsChildren` (which must NOT). */
+    _wvDimLevels(): Record<string, string[]> {
+        return {
+            annotation: ["annotationColor", "annotationColorExclude", "annotationType",
+                "annotationTypeExclude", "annotationHasComment",
+                "annotationAuthor", "annotationAuthorExclude"],
+            attachment: ["attachmentFileType", "attachmentFileTypeExclude",
+                "outlineClass", "outlineClassExclude",
+                "outlineFlags", "outlineFlagsExclude",
+                "outlineVerdict", "outlineVerdictExclude"],
+            parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
+                "hasPMID", "hasPMCID", "hasURL",
+                "hasAttachment", "publication", "publicationExclude",
+                "readStatus", "readStatusExclude", "inOtherLibrary"],
+        };
+    }
+
     _effectiveSelectionTargetKinds() {
         const ALL = { parent: true, attachment: true, annotation: true };
         const fs = this._filterState || {};
@@ -2529,19 +2602,7 @@ class _FilterMixin {
         // Target smart-default picks all three kinds (parent +
         // attachment + annotation), matching the user's expectation
         // when filtering by a tag that may sit on any row.
-        const CAT: Record<string, string[]> = {
-            annotation: ["annotationColor", "annotationColorExclude", "annotationType",
-                "annotationTypeExclude", "annotationHasComment",
-                "annotationAuthor", "annotationAuthorExclude"],
-            attachment: ["attachmentFileType", "attachmentFileTypeExclude",
-                "outlineClass", "outlineClassExclude",
-                "outlineFlags", "outlineFlagsExclude",
-                "outlineVerdict", "outlineVerdictExclude"],
-            parent: ["itemType", "itemTypeExclude", "hasAbstract", "hasDOI",
-                "hasPMID", "hasPMCID", "hasURL",
-                "hasAttachment", "publication", "publicationExclude",
-                "readStatus", "readStatusExclude", "inOtherLibrary"],
-        };
+        const CAT: Record<string, string[]> = this._wvDimLevels();
         const isSet = (g, f) => {
             const v = g[f];
             if (v == null) return false;
@@ -5087,6 +5148,11 @@ class _FilterMixin {
                                 // genuinely disagrees.
                                 try { this._wvScheduleStaleKeepRetry(); }
                                 catch (e) {}
+                                // Authoritative final pass once the search
+                                // fully settles — see _wvArmFinalApply.
+                                // `true` = search event: always re-apply,
+                                // even onto an identical signature.
+                                try { this._wvArmFinalApply(true); } catch (e) {}
                             } catch (e) {
                                 dbg(
                                     "[Weavero][filter] post-setFilter reapply err: " + e);
@@ -8224,6 +8290,21 @@ class _FilterMixin {
         trigger.appendChild(triggerPopup);
         triggerRow.appendChild(trigger);
 
+        // Last-used item types, ALWAYS visible as one-click tiles
+        // (requested 15 Aug 2026): the MRU used to live at the top of
+        // the dropdown, which still cost a click to reach. It now sits
+        // inline next to the trigger and is REMOVED from the dropdown
+        // (no duplication). Selection state renders on the tiles
+        // themselves; the selected-chips row keeps only types that are
+        // NOT in the MRU.
+        const mruRow = doc.createElementNS(NS_HTML, "div");
+        mruRow.className = "wv-filter-itype-mru";
+        mruRow.style.display = "flex";
+        mruRow.style.alignItems = "center";
+        mruRow.style.gap = "2px";
+        mruRow.style.marginLeft = "4px";
+        triggerRow.appendChild(mruRow);
+
         const selectedRow = doc.createElementNS(NS_HTML, "div");
         selectedRow.className = "wv-filter-itype-selected";
         triggerRow.appendChild(selectedRow);
@@ -8297,36 +8378,41 @@ class _FilterMixin {
                         } catch (e) {}
                         return { id: t.name, name: label };
                     });
-                const allById = new Map(all.map(v => [v.id, v]));
+                // The MRU renders INLINE in the trigger row; the dropdown
+                // stays the COMPLETE alphabetical list (MJT, 15 Aug 2026:
+                // holes in the menu were more confusing than the
+                // duplication they avoided). The old recent-block at the
+                // top is gone -- the tiles replace it -- so each type
+                // appears exactly once here.
+                return [...all].sort((a, b) => a.name.localeCompare(b.name));
+            } catch (e) {
+                dbg("[Weavero][filter] item types enum err: " + e);
+                return [];
+            }
+        };
+
+        /** MRU ids, validated against the live type list. Cap 5 to match
+         *  the "New Item" button (`newItemTypeMRU`, also the seed when
+         *  Weavero has no history of its own yet). */
+        const computeMruIds = () => {
+            try {
+                const valid = new Set((Zotero.ItemTypes.getTypes() || [])
+                    .map(t => t.name));
                 const wvMru = (String(Zotero.Prefs.get(
                     "extensions.zotero.weavero.itemTypeFilterMRU", true)) || "")
                     .split(",").filter(Boolean);
                 const zMru = (String(Zotero.Prefs.get(
                     "newItemTypeMRU")) || "").split(",").filter(Boolean);
-                // Cap at 5 to match Zotero's "New Item" toolbar
-                // button (zoteroPane.js stores 5 in `newItemTypeMRU`).
-                // Higher caps were confusing — users expect the same
-                // shortlist they see when creating new items.
                 const seen = new Set();
-                const recent = [];
+                const out = [];
                 for (const name of [...wvMru, ...zMru]) {
-                    if (seen.has(name)) continue;
-                    const v = allById.get(name);
-                    if (!v) continue;
+                    if (seen.has(name) || !valid.has(name)) continue;
                     seen.add(name);
-                    recent.push(v);
-                    if (recent.length >= 5) break;
+                    out.push(name);
+                    if (out.length >= 5) break;
                 }
-                const rest = [...all]
-                    .sort((a, b) => a.name.localeCompare(b.name));
-                if (recent.length && rest.length) {
-                    return [...recent, { separator: true }, ...rest];
-                }
-                return [...recent, ...rest];
-            } catch (e) {
-                dbg("[Weavero][filter] item types enum err: " + e);
-                return [];
-            }
+                return out;
+            } catch (e) { return []; }
         };
 
         const bumpMRU = (id) => {
@@ -8390,8 +8476,15 @@ class _FilterMixin {
             const g = this._activeGroup();
             const sel = (g && g.itemType) || [];
             const exc = (g && g.itemTypeExclude) || [];
-            for (const id of sel) selectedRow.appendChild(buildSelectedChip(id, false));
-            for (const id of exc) selectedRow.appendChild(buildSelectedChip(id, true));
+            // Types in the MRU row show their state ON the tile — a chip
+            // here too would render the same icon twice side by side.
+            const inMru = new Set(computeMruIds());
+            for (const id of sel) {
+                if (!inMru.has(id)) selectedRow.appendChild(buildSelectedChip(id, false));
+            }
+            for (const id of exc) {
+                if (!inMru.has(id)) selectedRow.appendChild(buildSelectedChip(id, true));
+            }
         };
 
         const renderList = () => {
@@ -8457,10 +8550,89 @@ class _FilterMixin {
                     this._applyItemsListFilter({ cascade: true });
                     renderSelected();
                     renderList();
+                    renderMru();
                 });
                 box.appendChild(btn);
             }
         };
+
+        /** Update tile selected/excluded state IN PLACE, without
+         *  reordering. A tile click must not move the tile (MJT, 15 Aug
+         *  2026): the immediate reorder meant select-then-unselect could
+         *  not be two clicks on the same position — the tile jumped to
+         *  the front under the cursor. */
+        const refreshMruStates = () => {
+            const g = this._activeGroup();
+            const sel = new Set((g && g.itemType) || []);
+            const exc = new Set((g && g.itemTypeExclude) || []);
+            for (const btn of mruRow.querySelectorAll(".wv-itype-mru-tile")) {
+                const ic = btn.querySelector(".icon-item-type");
+                const id = ic && ic.dataset.itemType;
+                if (!id) continue;
+                if (sel.has(id)) {
+                    btn.dataset.selected = "true";
+                    delete btn.dataset.excluded;
+                }
+                else if (exc.has(id)) {
+                    btn.dataset.excluded = "true";
+                    delete btn.dataset.selected;
+                }
+                else {
+                    delete btn.dataset.selected;
+                    delete btn.dataset.excluded;
+                }
+            }
+        };
+
+        /** The always-visible last-used tiles. Order = MRU (most recent
+         *  first). Clicking toggles include, Alt+click toggles exclude —
+         *  identical semantics and identical calls to the dropdown grid.
+         *  REORDER RULES (MJT, 15 Aug 2026): a tile click bumps the MRU
+         *  pref but does NOT reorder the row — the new order appears the
+         *  next time the popup opens. Only a pick from the DROPDOWN
+         *  reorders live (that type may not be in the row yet at all). */
+        const renderMru = () => {
+            while (mruRow.firstChild) mruRow.removeChild(mruRow.firstChild);
+            const g = this._activeGroup();
+            const sel = new Set((g && g.itemType) || []);
+            const exc = new Set((g && g.itemTypeExclude) || []);
+            for (const id of computeMruIds()) {
+                let label = id;
+                try { label = Zotero.ItemTypes.getLocalizedString(id); }
+                catch (e) {}
+                const btn = doc.createElementNS(NS_HTML, "button");
+                btn.type = "button";
+                btn.className = "wv-filter-opt wv-filter-opt-icon wv-itype-mru-tile";
+                btn.title = label + " — recently used. Click to filter; "
+                    + "Alt+click to exclude.";
+                if (sel.has(id)) btn.dataset.selected = "true";
+                else if (exc.has(id)) btn.dataset.excluded = "true";
+                const icon = doc.createElementNS(NS_HTML, "span");
+                icon.className = "icon icon-css icon-item-type";
+                icon.dataset.itemType = id;
+                btn.appendChild(icon);
+                btn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    const g2 = this._activeGroup();
+                    if (!g2) return;
+                    const next = this._toggleIncludeExclude(
+                        id,
+                        g2.itemType || [],
+                        g2.itemTypeExclude || [],
+                        !!e.altKey);
+                    g2.itemType = next.include;
+                    g2.itemTypeExclude = next.exclude;
+                    if (!e.altKey && next.include.includes(id)) bumpMRU(id);
+                    this._renderFilterBar();
+                    this._applyItemsListFilter({ cascade: true });
+                    renderSelected();
+                    renderList();
+                    refreshMruStates();   // state only — position stays put
+                });
+                mruRow.appendChild(btn);
+            }
+        };
+        renderMru();
 
         // Toggle list visibility — outside-click closes.
         let listOpen = false;
@@ -10764,6 +10936,21 @@ class _FilterMixin {
     }
 
     _applyItemsListFilter(opts?) {
+        // Any EXTERNAL apply while a quick search is live also deserves a
+        // final pass at quiescence (a chip applied mid-settle races the
+        // same rebuild). Internal applies set `_wvViaSetFilter` — among
+        // them the final apply itself — and must NOT re-arm, or the
+        // observer cycle described in _wvArmFinalApply would loop.
+        try {
+            if (!(this as any)._wvViaSetFilter) {
+                const _w0 = Zotero.getMainWindow();
+                const _sb0: any = _w0 && _w0.document
+                    && _w0.document.getElementById("zotero-tb-search");
+                if (_sb0 && _sb0.value && String(_sb0.value).trim()) {
+                    this._wvArmFinalApply();
+                }
+            }
+        } catch (e) {}
         // Toggle-in-progress: when the Show Non-Matching * toggle
         // handler is running its async `rp.refresh()`, Zotero's own
         // pref-observer + refresh path triggers multiple setFilter
@@ -10842,7 +11029,11 @@ class _FilterMixin {
             if (opts && opts.cascade && _live
                 && !this._wvViaSetFilter && !this._collectionSwapping
                 && _iv && typeof _iv.setFilter === "function"
-                && this._isFilterActive(this._filterState)) {
+                && this._isFilterActive(this._filterState)
+                // Parent-level chips must NOT re-route: the rebuild drops
+                // items that match the search directly. See
+                // _wvFilterTargetsChildren for the measurements.
+                && this._wvFilterTargetsChildren()) {
                 _iv.setFilter("search", _live);
                 return;
             }
@@ -11005,6 +11196,188 @@ class _FilterMixin {
      *  apply that did run, only `keep` needs rebuilding — and a cascade
      *  would re-enter the Order-B setFilter re-route while a search is
      *  live. */
+    /** Is Zotero's row set INCOMPLETE for the live search?
+     *
+     *  Invariant: while a quick search is active, every id in
+     *  `searchParentIDs` must have a raw row — those are precisely the
+     *  parents Zotero itself decided to show because a descendant
+     *  matched. A missing one means the row set was built against an
+     *  incomplete match set and never corrected.
+     *
+     *  Safe against build mode: `filterBuildMode` constructs `_rows`
+     *  itself, which would make this fire constantly — but build mode
+     *  DEliberately falls back to the cascade path whenever a live quick
+     *  search is present, so during a search `_rows` is always Zotero's
+     *  own array and contains search rows regardless of the chip.
+     *
+     *  Uses `searchParentIDs` and NOT `searchItemIDs`: the latter also
+     *  holds child items, which legitimately have no row while their
+     *  parent is collapsed, so checking it would false-positive on
+     *  almost every collapsed view. */
+    _wvSearchCoverageIncomplete(rp: any): boolean {
+        try {
+            if (!rp || !rp._rows) return false;
+            const sm = rp.searchMode || rp._searchMode;
+            if (!sm) return false;
+            const pIDs = rp.searchParentIDs || rp._searchParentIDs;
+            if (!pIDs || typeof pIDs.has !== "function" || !pIDs.size) return false;
+            const have = new Set();
+            for (const row of rp._rows) {
+                if (row && row.ref && row.ref.id != null) have.add(row.ref.id);
+            }
+            // (a) MISSING: a parent Zotero said to show has no row.
+            for (const id of pIDs) {
+                if (!have.has(id)) return true;
+            }
+            // (b) STALE: a TOP-LEVEL row that the live search does not
+            //     justify at all. Measured 9 Aug 2026 on the `prewetting`
+            //     repro: chip-then-search produced 10 such rows —
+            //     leftovers from the chip-only state that the search
+            //     rebuild never cleared — alongside one missing item.
+            //     Checking (a) alone missed this entirely, and also missed
+            //     a missing SELF-match, which lives in `searchItemIDs`
+            //     rather than `searchParentIDs`.
+            //
+            //     Top-level only: child rows can legitimately be shown
+            //     unmatched (the Show Non-Matching Attachments /
+            //     Annotations toggles), whereas a top-level row always
+            //     needs a justification while a search is active.
+            const sIDs = rp.searchItemIDs || rp._searchItemIDs;
+            if (sIDs && typeof sIDs.has === "function") {
+                const rows = rp._rows;
+                for (let i = 0; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || !row.ref || row.ref.id == null) continue;
+                    if ((row.level || 0) !== 0) continue;
+                    const id = row.ref.id;
+                    if (!sIDs.has(id) && !pIDs.has(id)) return true;
+                }
+            }
+            return false;
+        }
+        catch (e) { return false; }
+    }
+
+    /** LAST-WRITER-AT-QUIESCENCE: one authoritative re-apply after a live
+     *  quick search has fully settled.
+     *
+     *  Why this shape (11 Aug 2026, after five failed point-fixes): the
+     *  filter has several independent reapply triggers (MutationObserver,
+     *  cascade retry, stale-keep retry, the setFilter microtask apply) and
+     *  they race Zotero's async multi-stage search rebuild. Gating any ONE
+     *  of them just changes which one loses the race — a gated build still
+     *  produced a poisoned keep from an UNgated trigger. But correctness
+     *  only requires the LAST apply to run on settled state: an apply at
+     *  true quiescence overwrites any earlier poison (proven by the manual
+     *  probe — a plain re-apply on quiet rows always yields the correct
+     *  view). So nothing is rerouted or removed; this adds a guaranteed
+     *  final pass per search event.
+     *
+     *  Quiescence = `_rows.length` AND both search-set sizes unchanged for
+     *  4 consecutive 200ms ticks. The sets are part of the signature
+     *  because one poisoned run had FRESH keep over WRONG verdicts — the
+     *  apply had raced the sets, not the rows.
+     *
+     *  Loop safety: `_wvFALastSig` persists on the plugin ACROSS episodes.
+     *  The final apply's own invalidate fires the MutationObserver, whose
+     *  reapply re-arms this scheduler; with the signature unchanged the
+     *  new episode ends without applying, so there is no apply/observe
+     *  cycle. Bounded further by a 30s deadline and 3 applies/episode. */
+    _wvArmFinalApply(isSearchEvent?: boolean) {
+        try {
+            // A genuine SEARCH EVENT must always get a final apply, even
+            // when the resulting state SIGNATURE matches the previous
+            // search's. Found via MJT's repro (15 Aug 2026): chip ->
+            // search -> clear -> SAME search again. The second search
+            // rebuilt rows and the intermediate applies computed verdicts
+            // against half-built search sets — but the settled signature
+            // (rows/setsizes) was identical to the first search's, so the
+            // persisted `_wvFALastSig` made the scheduler skip its
+            // authoritative pass and the poisoned verdicts became
+            // permanent (identical lastSig across both cycles, view stuck
+            // one item short with a fresh watermark). Same signature is
+            // NOT the same state: verdicts are not in the signature.
+            //
+            // External applies (site 2 — observer reapplies etc.) keep
+            // the persistence: that is what terminates the apply ->
+            // invalidate -> observer -> re-arm cycle.
+            if (isSearchEvent) delete (this as any)._wvFALastSig;
+            (this as any)._wvFA = { until: Date.now() + 30000, sig: "", stable: 0, applies: 0 };
+            // HOLD: while this episode is watching, intermediate repairs
+            // are pointless — the final apply overwrites them — and each
+            // one repaints the tree. Measured 15 Aug 2026 on the
+            // prewetting repro: 10 applies / 9 invalidates in the settle
+            // window, one every ~450ms (the user reported it as
+            // flickering). The stale-keep retry defers while this is set.
+            (this as any)._wvFAHold = true;
+            if ((this as any)._wvFATimer) return;          // tick loop already running
+            const win = Zotero.getMainWindow();
+            const setT = (win && win.setTimeout) ? win.setTimeout.bind(win) : setTimeout;
+            const tick = () => {
+                (this as any)._wvFATimer = null;
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P || P !== this) return;                       // stale instance
+                    const st: any = (this as any)._wvFA;
+                    if (!st || Date.now() > st.until) {
+                        (this as any)._wvFAHold = false;                // episode over
+                        return;
+                    }
+                    const w2 = Zotero.getMainWindow();
+                    const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
+                    const rp: any = iv && (iv.rowProvider || iv);
+                    if (!rp) { (this as any)._wvFAHold = false; return; }
+                    if (!this._isFilterActive(this._filterState)) {
+                        (this as any)._wvFAHold = false;
+                        return;
+                    }
+                    const sb: any = w2 && w2.document
+                        && w2.document.getElementById("zotero-tb-search");
+                    if (!(sb && sb.value && String(sb.value).trim())) {
+                        (this as any)._wvFAHold = false;                // search gone
+                        return;
+                    }
+                    if (this._filterApplying
+                        || ((this as any)._suppressTreeObserverUntil
+                            && Date.now() < (this as any)._suppressTreeObserverUntil)) {
+                        (this as any)._wvFATimer = setT(tick, 200);     // blocked — wait
+                        return;
+                    }
+                    const sIDs: any = rp.searchItemIDs || rp._searchItemIDs;
+                    const pIDs: any = rp.searchParentIDs || rp._searchParentIDs;
+                    const sig = ((rp._rows && rp._rows.length) || 0)
+                        + "/" + ((sIDs && sIDs.size) || 0)
+                        + "/" + ((pIDs && pIDs.size) || 0);
+                    if (sig !== st.sig) {
+                        st.sig = sig; st.stable = 0;
+                        (this as any)._wvFATimer = setT(tick, 200);
+                        return;
+                    }
+                    st.stable++;
+                    if (st.stable < 4) {
+                        (this as any)._wvFATimer = setT(tick, 200);
+                        return;
+                    }
+                    // QUIESCENT. Apply exactly once per distinct state.
+                    if ((this as any)._wvFALastSig === sig) {
+                        (this as any)._wvFAHold = false;                // done
+                        return;
+                    }
+                    if (st.applies >= 3) return;                        // backstop
+                    st.applies++; st.stable = 0;
+                    (this as any)._wvFALastSig = sig;
+                    dbg("[Weavero][filter] final apply at quiescence (" + sig + ")");
+                    const wasVia = (this as any)._wvViaSetFilter;
+                    (this as any)._wvViaSetFilter = true;   // internal — no Order-B, no self-arm
+                    try { this._applyItemsListFilter({ cascade: true }); }
+                    finally { (this as any)._wvViaSetFilter = wasVia; }
+                    (this as any)._wvFATimer = setT(tick, 200);         // confirm round
+                } catch (e) { dbg("[Weavero][filter] finalApply err: " + e); }
+            };
+            (this as any)._wvFATimer = setT(tick, 200);
+        } catch (e) {}
+    }
+
     _wvScheduleStaleKeepRetry() {
         try {
             const now = Date.now();
@@ -11032,14 +11405,79 @@ class _FilterMixin {
                         this._wvScheduleStaleKeepRetry();      // still blocked
                         return;
                     }
+                    // Defer to the final-apply scheduler: while its episode
+                    // is watching, acting here only adds repaints that the
+                    // final apply overwrites (the ~450ms flicker storm).
+                    // Re-arm rather than act; when the hold clears — final
+                    // apply landed, search gone, or 30s deadline — this
+                    // retry resumes its normal duties (the dev.29 clear
+                    // path does not raise the hold at all).
+                    if ((this as any)._wvFAHold) {
+                        this._wvScheduleStaleKeepRetry();
+                        return;
+                    }
                     const w2 = Zotero.getMainWindow();
                     const iv: any = w2 && w2.ZoteroPane && w2.ZoteroPane.itemsView;
                     const rp: any = iv && (iv.rowProvider || iv);
-                    if (!rp || !rp._wvOrigGetRow) return;      // not patched
+                    if (!rp) return;
+                    // Nothing to restore if no filter is meant to be on.
                     if (!this._isFilterActive(this._filterState)) return;
+                    // PATCH MISSING is a REPAIR trigger, not a reason to
+                    // bail. A search refresh legitimately removes the
+                    // accessors and the follow-up apply re-installs them
+                    // (observed: patched false -> true ~3.6s into a
+                    // search). Intermittently that re-install never
+                    // happens and the view is left completely unfiltered
+                    // while the chip still reads as active — reproduced
+                    // 4/8 on 9 Aug 2026. The original guard here returned
+                    // early in exactly that state, so the one helper able
+                    // to repair it opted out.
+                    const missing = !rp._wvOrigGetRow;
                     const live = (rp._rows && rp._rows.length) || 0;
-                    if (rp._wvKeepRowsLen === live) return;    // fresh — done
-                    dbg("[Weavero][filter] stale keep after bounced apply"
+                    // THIRD trigger: Zotero's own row set is incomplete for
+                    // the live search. Distinct from the two above — the
+                    // patch can be installed and `keep` perfectly fresh
+                    // while `_rows` itself is missing a parent Zotero said
+                    // to show. Repairing that needs a ROW rebuild, which
+                    // only re-issuing the search filter can produce; a
+                    // plain re-apply would faithfully re-translate the
+                    // same incomplete rows.
+                    const coverage = this._wvSearchCoverageIncomplete(rp);
+                    const staleKeep = rp._wvKeepRowsLen !== live;
+                    if (!missing && !coverage && !staleKeep) return;  // fresh — done
+                    // ORDER MATTERS. A stale keep or a missing patch means
+                    // the CHIP is not being applied at all — `getRow` falls
+                    // through untranslated and the view shows Zotero's raw
+                    // search rows. Repair that FIRST with a re-apply.
+                    //
+                    // Measured 9 Aug 2026 on the `prewetting` repro: 78 raw
+                    // top-level rows shown where the chip should leave 69,
+                    // with `keepFresh: false` and every row legitimately
+                    // justified by the search (`unjustifiedTopRaw: 0`). The
+                    // first version of this branch re-issued the SEARCH on
+                    // any coverage complaint and returned, which rebuilt
+                    // the rows, re-staled the keep, and never re-applied —
+                    // so the chip stayed off. Re-issuing the search is only
+                    // right when the keep is already fresh and Zotero's own
+                    // row set is genuinely short.
+                    if (coverage && !missing && !staleKeep) {
+                        const sb2: any = w2 && w2.document
+                            && w2.document.getElementById("zotero-tb-search");
+                        const term = (sb2 && sb2.value) ? String(sb2.value) : "";
+                        if (term && iv && typeof iv.setFilter === "function") {
+                            dbg("[Weavero][filter] search coverage incomplete"
+                                + " — forcing a row rebuild");
+                            const wasVia = this._wvViaSetFilter;
+                            this._wvViaSetFilter = true;   // don't re-enter Order-B
+                            try { iv.setFilter("search", term); }
+                            catch (e) {}
+                            finally { this._wvViaSetFilter = wasVia; }
+                            this._wvScheduleStaleKeepRetry();
+                            return;
+                        }
+                    }
+                    dbg("[Weavero][filter] " + (missing ? "PATCH MISSING" : "stale keep")
+                        + " after bounced apply"
                         + " (watermark " + rp._wvKeepRowsLen + " vs rows "
                         + live + ") — rebuilding");
                     try { this._applyItemsListFilter({ cascade: false }); }
@@ -11265,8 +11703,21 @@ class _FilterMixin {
         try {
             const qs = this._currentQuickSearchValue || "";
             const lib = this._wvSelectedLibraryID(win);
-            const ctr = itemsView && itemsView.collectionTreeRow;
-            const view = (ctr && (ctr.id != null ? ctr.id : ctr.type)) || "?";
+            // V10 removed ItemTree#collectionTreeRow, so this read was
+            // permanently undefined and view collapsed to "?" for every
+            // state — two collections with the same library + search text
+            // shared a signature, letting the no-op-skip wrongly skip a
+            // needed reapply (audited 15 Aug 2026). Plural first (also
+            // fixes multi-collection selections, which now get distinct
+            // signatures per combination); singular = v9 path.
+            const ctrs: any[] = (itemsView && Array.isArray(itemsView.collectionTreeRows))
+                ? itemsView.collectionTreeRows
+                : ((itemsView && itemsView.collectionTreeRow)
+                    ? [itemsView.collectionTreeRow] : []);
+            const view = ctrs.length
+                ? ctrs.map((c: any) => (c && c.id != null) ? c.id : (c && c.type))
+                    .join(",")
+                : "?";
             // QUICK-SEARCH INPUT THAT THE TEXT ALONE DOES NOT CAPTURE
             // (root cause of the 2026-08-07 non-determinism):
             // `_rowIsPrimary` consults the LIVE `rp.searchItemIDs` when a
@@ -11515,7 +11966,7 @@ class _FilterMixin {
                 lv[d][isMatch ? 0 : 1]++;
             }
 
-            const LABELS = ["top-level", "children", "annotations"];
+            const LABELS = ["Top-level", "Children", "Annotations"];
             const rowsOut: any[] = [];
             for (let d = 0; d < 3; d++) {
                 // All three levels ALWAYS, including zeros: a missing
@@ -11623,12 +12074,12 @@ class _FilterMixin {
         fImg.style.opacity = "0.8";
         fImg.style.display = "block";
         head0.appendChild(fImg);
-        cell("match", { num: true, head: true });
-        cell("context", { num: true, head: true });
+        cell("Match", { num: true, head: true });
+        cell("Context", { num: true, head: true });
     }
     else {
         cell("");
-        cell("rows", { num: true, head: true });
+        cell("Rows", { num: true, head: true });
     }
     for (const r of lines.rows) {
         cell(r.label, { indent: r.depth * 14 });
@@ -12062,6 +12513,34 @@ class _FilterMixin {
         // translation). Data changes null the sig via the notifier
         // invalidator (_wvWireFilterCacheInvalidator).
         const _sig = this._wvFilterStateSig(win, itemsView);
+        // OPTION 1 (MJT, 16 Aug 2026): with a chip and a search combined,
+        // FILTER logic governs — every shown tree must satisfy all
+        // criteria. The user-revealed / user-opened force-keeps are a
+        // WITHIN-STATE affordance (keep open what the user opened despite
+        // reapplies); carried across STATE changes they resurrect trees
+        // the new criteria reject — traced 16 Aug: a book force-kept under
+        // a journalArticle chip because it had been revealed under an
+        // earlier search-only state. Clear them whenever the reveal SCOPE
+        // changes: library/view/search TEXT/group config — i.e. the sig
+        // MINUS the search-set identity tag, which changes on every
+        // rebuild of the same search and would wrongly clear a chevron
+        // click's own state (that click's apply keeps an unchanged scope).
+        try {
+            const scopeKey = String(_sig).replace(/\|s\d+:\d+/, "|s");
+            if ((this as any)._wvRevealScopeKey !== undefined
+                && (this as any)._wvRevealScopeKey !== scopeKey) {
+                if (this._userRevealedAllIDs && this._userRevealedAllIDs.size) {
+                    this._userRevealedAllIDs.clear();
+                }
+                if (this._userOpenedIDs && this._userOpenedIDs.size) {
+                    this._userOpenedIDs.clear();
+                }
+                if (this._userClosedIDs && this._userClosedIDs.size) {
+                    this._userClosedIDs.clear();
+                }
+            }
+            (this as any)._wvRevealScopeKey = scopeKey;
+        } catch (e) {}
         // Whether our getRow patch was ALREADY installed when this apply
         // began — used by the identical-keep invalidate skip below (a
         // first activation must always re-render).

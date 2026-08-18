@@ -260,7 +260,14 @@ class _TabSessionsMixin {
         try {
             const zp = w && w.ZoteroPane;
             if (!zp) return state;
-            const row = zp.getCollectionTreeRow && zp.getCollectionTreeRow();
+            // V10: the singular getter still EXISTS but THROWS (Zotero 10
+            // developer notes), and the outer catch swallowed it — so tab
+            // sessions silently stopped recording the collection scope on
+            // v10 (audited 15 Aug 2026). Plural first; singular = v9 path.
+            const rows = (typeof zp.getCollectionTreeRows === "function")
+                ? zp.getCollectionTreeRows() : null;
+            const row = (rows && rows[0])
+                || (!rows && zp.getCollectionTreeRow && zp.getCollectionTreeRow());
             if (row && row.id) state.collection = row.id;   // "L1" / "C123" / "S45"
             const iv = zp.itemsView;
             if (iv && iv._getColumnPrefs) {

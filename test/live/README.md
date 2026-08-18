@@ -7,7 +7,7 @@ what fixtures can cover; these cover what only a live library can.
 
 | Script | What it verifies |
 |---|---|
-| `filter-matrix.js` | The whole filter case list, cascade vs build mode, comparing visible-row ids AND open-container ids |
+| `filter-matrix.js` | The whole filter case list: cascade vs build mode AND the native Advanced-Search comparison, comparing visible rows, open containers, grey (dimmed) state, and selection. SELF-REPORTING: on finish it writes the full analysis to `<data dir>/weavero/filter-matrix-report.json` — launch it (paste into Run JavaScript, or one bridge call) and read the file when done; no polling |
 
 ## Running
 

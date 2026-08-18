@@ -25,3 +25,9 @@ paths:
   before AND after, diff per-tab keys; in the sessions UI expand via the
   twisty ONLY — clicking the row switches sessions (destructive). Full
   protocol: `docs/restart-testing.md`.
+- Long live runs (matrix, benches): make the script SELF-REPORTING — it
+  writes its full analysis to a file on finish (filter-matrix writes
+  `<data dir>/weavero/filter-matrix-report.json`). Launch once, read the
+  file once; never poll status through the bridge or stream large JSON
+  into the conversation. The user can also launch these themselves via
+  Run JavaScript and just hand over the report path.

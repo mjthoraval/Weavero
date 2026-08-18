@@ -184,15 +184,53 @@
     // on what stays selected are NOT equivalent (user requirement,
     // 2026-08-07).
     function snapshot() {
-        const ids = [], open = [];
-        const n = rp().getRowCount();
+        const ids = [], open = [], grey = [];
+        // GREY (dimmed) rows -- the RENDERING truth, not a proxy. Both
+        // engines dim to the same rgba(255,255,255,.55) via ONE shared
+        // CSS rule (constants.ts ~873): `.wv-not-target` (Weavero) and
+        // `.context-row:not(.wv-primary)` (native). The DOM class can't
+        // be read for off-screen rows (virtualized table), so replicate
+        // each class's exact assignment predicate at the model level:
+        //   Weavero (pane.ts _applySelectionTargetVisuals):
+        //     (!allOn && !kindOK) || (filterActive && !_rowIsPrimary)
+        //   native (itemTree.jsx _getRowData):
+        //     searchMode && !searchItemIDs.has(id)
+        // First version of this capture used ONLY the native predicate
+        // and reported Weavero grey:0 while the screen showed dimmed
+        // rows -- a false "display divergence" that reached the user
+        // (2026-08-18). Verified against rendered computed styles.
+        const _rp = rp();
+        const sm = !!(_rp.searchMode || _rp._searchMode);
+        const sIDs = _rp.searchItemIDs || _rp._searchItemIDs;
+        const lpActive = !!(lp && lp._filterState
+            && lp._isFilterActive(lp._filterState));
+        let eff = { parent: true, attachment: true, annotation: true };
+        try { eff = lp._effectiveSelectionTargetKinds() || eff; } catch (e) {}
+        const allOn = !!(eff.parent && eff.attachment && eff.annotation);
+        const n = _rp.getRowCount();
         for (let i = 0; i < n; i++) {
             let row;
-            try { row = rp().getRow(i); } catch (e) { continue; }
+            try { row = _rp.getRow(i); } catch (e) { continue; }
             if (!row || !row.ref) continue;
             ids.push(row.ref.id);
             if (row.isOpen) open.push(row.ref.id);
+            let g = false;
+            try {
+                if (lpActive) {
+                    const kind = lp._rowKindOf(row.ref) || "parent";
+                    const kindOK = !!eff[kind];
+                    let primary = true;
+                    try { primary = lp._rowIsPrimary(row.ref, lp._filterState); }
+                    catch (e) {}
+                    g = (!allOn && !kindOK) || !primary;
+                }
+                else if (sm && sIDs) {
+                    g = !sIDs.has(row.ref.id);
+                }
+            } catch (e) {}
+            if (g) grey.push(row.ref.id);
         }
+        grey.sort((a, b) => a - b);
         ids.sort((a, b) => a - b);
         open.sort((a, b) => a - b);
         let sel = [];
@@ -201,6 +239,7 @@
         return {
             rows: ids.length, idsHash: fnv(ids),
             open: open.length, openHash: fnv(open),
+            grey: grey.length, greyHash: fnv(grey),
             selCount: sel.length, selHash: fnv(sel), sel: sel.slice(0, 12),
         };
     }
@@ -396,21 +435,23 @@
                     const sameRows = b.idsHash === nv.idsHash;
                     const sameOpen = b.openHash === nv.openHash;
                     const sameSel = b.selHash === nv.selHash;
+                    const sameGrey = b.greyHash === nv.greyHash;
                     const known = EXPECTED_DIVERGENCE[r.name] || {};
                     // An UNEXPLAINED disagreement is the thing to look at;
                     // documented semantic differences are not failures.
                     const unexplained = (!sameRows && !known.rows)
                         || (!sameOpen && !known.open)
-                        || (!sameSel && !known.sel);
+                        || (!sameSel && !known.sel)
+                        || (!sameGrey && !known.grey);
                     return {
                         name: r.name,
                         // EQUIVALENT only if all three user-visible states agree
-                        EQUIVALENT: sameRows && sameOpen && sameSel,
+                        EQUIVALENT: sameRows && sameOpen && sameSel && sameGrey,
                         UNEXPLAINED: unexplained,
                         knownDivergence: Object.keys(known).length ? known : undefined,
-                        sameRows, sameOpen, sameSel,
-                        weavero: b.rows + "/" + b.open + " sel:" + b.selCount,
-                        native: nv.rows + "/" + nv.open + " sel:" + nv.selCount,
+                        sameRows, sameOpen, sameSel, sameGrey,
+                        weavero: b.rows + "/" + b.open + " grey:" + b.grey + " sel:" + b.selCount,
+                        native: nv.rows + "/" + nv.open + " grey:" + nv.grey + " sel:" + nv.selCount,
                         weaveroSyncMs: b.syncMs,
                         nativeSyncMs: nv.syncMs,
                         // Only meaningful when EQUIVALENT — otherwise the
@@ -460,6 +501,50 @@
             ["joinMode", "all", null],
             ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")],
             ["attachmentStorageType", "isNot", "webLink"]],
+        // --- 2026-08-18 extension: full expressible coverage (MJT's
+        // review: only Weavero-specific DATA is inexpressible). Same
+        // discipline: an entry stays only once verified EXACT in a run,
+        // or its divergence is traced and documented.
+        "itemTypeEXCL": () => [["resultLevel", "item", null], ["itemType", "isNot", "journalArticle"]],
+        "hasURL FALSE": () => [["resultLevel", "item", null], ["url", "isEmpty", null]],
+        "hasAttachment": () => [["resultLevel", "item", null], ["numAttachments", "isNot", "0"]],
+        "hasAttachment FALSE": () => [["resultLevel", "item", null], ["numAttachments", "is", "0"]],
+        "hasDOI": () => [["resultLevel", "item", null], ["DOI", "isNotEmpty", null]],
+        "hasPMID": () => [["resultLevel", "item", null], ["PMID", "isNotEmpty", null]],
+        "hasPMCID": () => [["resultLevel", "item", null], ["PMCID", "isNotEmpty", null]],
+        "hasAbstract": () => [["resultLevel", "item", null], ["abstractNote", "isNotEmpty", null]],
+        "annotationColorEXCL": () => [["resultLevel", "annotation", null], ["annotationColor", "isNot", "#ffd400"]],
+        "annotationHasComment": () => [["resultLevel", "annotation", null], ["annotationComment", "isNotEmpty", null]],
+        "annotationHasComment FALSE": () => [["resultLevel", "annotation", null], ["annotationComment", "isEmpty", null]],
+        "fileType EPUB": () => [["resultLevel", "attachment", null], ["joinMode", "all", null],
+            ["fileTypeID", "is", Zotero.FileTypes.getID("ebook")], ["attachmentStorageType", "isNot", "webLink"]],
+        "fileType linkedFile": () => [["resultLevel", "attachment", null], ["attachmentStorageType", "is", "linkedFile"]],
+        "itemNote": () => [["resultLevel", "item", null], ["numNotes", "isNot", "0"]],
+        "standaloneNote": () => [["itemType", "is", "note"], ["noChildren", "true", null]],
+        "hasAnnotations": () => [["resultLevel", "item", null], ["numAnnotations", "isNot", "0"]],
+        "hasAnnotations FALSE": () => [["resultLevel", "item", null], ["numAnnotations", "is", "0"]],
+        "hasTag": () => [["resultLevel", "item", null], ["numTags", "isNot", "0"]],
+        "PDF + yellow": () => [["resultLevel", "annotation", null], ["joinMode", "all", null],
+            ["annotationColor", "is", "#ffd400"],
+            ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")], ["attachmentStorageType", "isNot", "webLink"]],
+        "EPUB + highlight": () => [["resultLevel", "annotation", null], ["joinMode", "all", null],
+            ["annotationType", "is", Zotero.Annotations.ANNOTATION_TYPE_HIGHLIGHT],
+            ["fileTypeID", "is", Zotero.FileTypes.getID("ebook")], ["attachmentStorageType", "isNot", "webLink"]],
+        "itemType + colorEXCL": () => [["resultLevel", "annotation", null], ["joinMode", "all", null],
+            ["itemType", "is", "journalArticle"], ["annotationColor", "isNot", "#ffd400"]],
+        "itemTypeEXCL + color": () => [["resultLevel", "annotation", null], ["joinMode", "all", null],
+            ["itemType", "isNot", "journalArticle"], ["annotationColor", "is", "#ffd400"]],
+        "hasAttachment + fileType": () => [["resultLevel", "attachment", null], ["joinMode", "all", null],
+            ["fileTypeID", "is", Zotero.FileTypes.getID("pdf")], ["attachmentStorageType", "isNot", "webLink"]],
+        "multi-group OR (2)": () => [["resultLevel", "item", null], ["joinMode", "any", null],
+            ["annotationColor", "is", "#ffd400"], ["itemType", "is", "book"]],
+        "multi-group OR (3)": () => [["resultLevel", "item", null], ["joinMode", "any", null],
+            ["annotationColor", "is", "#ffd400"], ["itemType", "is", "book"], ["DOI", "isNotEmpty", null]],
+        "empty result": () => [["resultLevel", "item", null], ["publicationTitle", "is", "ZZZ-NO-SUCH-PUBLICATION"]],
+        // Inexpressible by design -- the data lives outside zotero.sqlite
+        // or has no search condition: inOtherLibrary (+FALSE), hasRelated,
+        // hasLink, hasBookmarks, "all five stacked" (inOtherLibrary leg),
+        // "scope excludes annotations" (a Weavero display concept).
     };
 
     /* KNOWN, INTENTIONAL DIVERGENCES from native. Recorded so they are not
@@ -572,6 +657,25 @@
                 R.results.push(rec);
             }
             R.status = "done";
+            // SELF-REPORT: write the full analysis to disk so no agent or
+            // human needs to poll the run or pull JSON through the bridge
+            // (token/attention economy, 2026-08-18). One launch -> one
+            // file. Path: <Zotero data dir>/weavero/filter-matrix-report.json
+            try {
+                const report = {
+                    finished: new Date().toISOString(),
+                    zotero: R.zotero, weavero: R.weavero,
+                    summary: R.summary(),
+                    speed: R.speedSummary(),
+                    vsNative: R.vsNative(),
+                };
+                const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                const dest = PathUtils.join(dir, "filter-matrix-report.json");
+                await Zotero.File.putContentsAsync(dest,
+                    JSON.stringify(report, null, 1));
+                R.reportPath = dest;
+            } catch (e) { R.reportError = String(e); }
         }
         catch (e) {
             R.status = "error: " + e;

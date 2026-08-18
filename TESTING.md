@@ -8,7 +8,10 @@ against. Levels are ordered from fastest/most-frequent to deepest/rarest.
 > Maintainer note: the development assistant tracks the **trigger table**
 > (§ When to run what) and proactively flags whenever a level is due —
 > e.g. "this change touches popup code → run the popup specs and the
-> manual popup checklist before building."
+> manual popup checklist before building." The assistant's workflow files
+> are published in [.claude/](.claude/) — the `verify` and `bugfix` skills
+> encode these triggers, and every `fix:` commit names the regression
+> guard this contract requires.
 
 ---
 

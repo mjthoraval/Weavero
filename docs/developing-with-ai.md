@@ -359,9 +359,17 @@ Three habits carried the most weight in Weavero's instruction files:
   manifests. Cheap, mechanical, and they catch the classic
   agent-editing failure modes.
 
-Weavero's instruction files themselves are private working notes, but
-their operative content is distilled in this page and in the public
-testing contract: **[TESTING.md](https://github.com/mjthoraval/Weavero/blob/main/TESTING.md)**
+**Weavero's instruction files are published.** The live agent workflow —
+the root [`CLAUDE.md`](https://github.com/mjthoraval/Weavero/blob/main/CLAUDE.md),
+the step-by-step skills in
+[`.claude/skills/`](https://github.com/mjthoraval/Weavero/tree/main/.claude/skills),
+the path-scoped rules in
+[`.claude/rules/`](https://github.com/mjthoraval/Weavero/tree/main/.claude/rules),
+and the typecheck-gate hooks — is in the repo, with
+[`.claude/README.md`](https://github.com/mjthoraval/Weavero/blob/main/.claude/README.md)
+explaining the architecture and the bug → regression-guard → process-update
+learning loop. Use them as working examples for the principles on this page.
+The testing contract is public too: **[TESTING.md](https://github.com/mjthoraval/Weavero/blob/main/TESTING.md)**
 (which test suite to run on which kind of change), the
 [`bench/`](https://github.com/mjthoraval/Weavero/tree/main/bench)
 performance protocol, and the manual test protocols for what automation
@@ -511,6 +519,7 @@ human reviews diffs, tests the gestures, and decides.
 | Community ecosystem project | [zotero-plugin.dev](https://zotero-plugin.dev/) · [NGI0 grant](https://nlnet.nl/project/Zotero-plugin-ecosystem/) |
 | Worked example | [Weavero source](https://github.com/mjthoraval/Weavero) |
 
-*This page reflects the Weavero workflow as of July 2026 (Zotero 10
-beta). Corrections and additions welcome —
+*This page reflects the Weavero workflow as of August 2026 (Zotero 10).
+The instruction files it describes are published in the repo's `.claude/`
+directory. Corrections and additions welcome —
 [open an issue](https://github.com/mjthoraval/Weavero/issues).*

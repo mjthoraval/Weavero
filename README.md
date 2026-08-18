@@ -266,6 +266,8 @@ npm run build      # esbuild bundles src/ → .scaffold/build/weavero.xpi (+ upd
 
 Developed with [Claude](https://claude.ai) and [MCP Server Zotero Dev](https://github.com/introfini/mcp-server-zotero-dev) (hot-reload + privileged-context JS for fast iteration). The full workflow — and a from-scratch guide to building Zotero plugins with an AI agent — is documented at **[Developing Zotero plugins with AI](https://mjthoraval.github.io/Weavero/developing-with-ai)**.
 
+**The AI workflow itself is published in this repo**: [CLAUDE.md](CLAUDE.md) (project guidance, agent-agnostic — [AGENTS.md](AGENTS.md) points there), the step-by-step workflows in [.claude/skills/](.claude/skills/), path-scoped conventions in [.claude/rules/](.claude/rules/), and mechanical gates in [.claude/hooks/](.claude/hooks/). Start with **[.claude/README.md](.claude/README.md)** for how the pieces fit together and the learning loop that turns every bug into a regression guard plus a process improvement. Contributions made with an AI agent are welcome — the agent will pick these files up automatically; please test what it produces before opening a PR.
+
 The Node toolchain (optional but recommended) provides:
 
 ```bash

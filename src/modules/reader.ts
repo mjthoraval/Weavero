@@ -12279,6 +12279,15 @@ class _ReaderMixin {
             + "[data-wv-purpose=\"relations\"]");
         const hasBoth = !!(cmtBadge && relBadge);
         const place = (badge, leftPdf) => {
+            // Same compare as the steady-state painter's "Position
+            // update guard" (dataset stamps are kept in lockstep with
+            // the style): this runs at rAF rate while the pointer is
+            // down, and a held-still drag frame recomputes an
+            // identical position -- skip the redundant writes.
+            if (badge.dataset.wvLeftPdf === String(leftPdf)
+                    && badge.dataset.wvTopPdf === String(topPdf)) {
+                return;
+            }
             badge.style.left = "calc(var(--page-offset-left, 0px) + "
                 + leftPdf + "px * var(--scale-factor, 1))";
             badge.style.top = "calc(var(--page-offset-top, 0px) + ("

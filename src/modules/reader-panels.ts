@@ -3277,6 +3277,15 @@ class _ReaderPanelsMixin {
                     return null;
                 } catch (_) { return null; }
             };
+            // The 250ms tracking timer below re-measures an UNMOVED layout on
+            // most ticks -- write the style only when the position changed.
+            let lastL: string | null = null, lastT: string | null = null;
+            const setPos = (l: string, t: string) => {
+                if (l === lastL && t === lastT) return;
+                lastL = l; lastT = t;
+                pin.style.left = l;
+                pin.style.top = t;
+            };
             const place = () => {
                 try {
                     if (!pin.isConnected) return false;
@@ -3360,8 +3369,8 @@ class _ReaderPanelsMixin {
                                     const z2 = (hostRect2.width && host.offsetWidth) ? (hostRect2.width / host.offsetWidth) : 1;
                                     const tipX2 = (last.right - hostRect2.left) / (z2 || 1);
                                     const tipY2 = (last.bottom - hostRect2.top) / (z2 || 1);
-                                    pin.style.left = Math.round(tipX2 - W / 2) + "px";
-                                    pin.style.top = Math.max(-H, Math.round(tipY2 - H)) + "px";
+                                    setPos(Math.round(tipX2 - W / 2) + "px",
+                                        Math.max(-H, Math.round(tipY2 - H)) + "px");
                                     return true;
                                 }
                             }
@@ -3385,8 +3394,8 @@ class _ReaderPanelsMixin {
                     // NO left clamp: a page marker belongs in the margin, i.e.
                     // at a NEGATIVE offset inside the content box -- clamping to
                     // 0 pinned it back onto the first character (2026-07-29).
-                    pin.style.left = Math.round(leftPx) + "px";
-                    pin.style.top = Math.max(-H, Math.round(tipY - H)) + "px";
+                    setPos(Math.round(leftPx) + "px",
+                        Math.max(-H, Math.round(tipY - H)) + "px");
                     return true;
                 } catch (_) { return true; }   // transient (re-render): keep tracking
             };

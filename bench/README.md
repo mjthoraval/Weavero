@@ -89,6 +89,21 @@ absolute targets; re-run on the same library and compare deltas.
 
 ### Items-list filter apply/clear (2026-08-18, Weavero 0.18.6-dev.1, real library)
 
+**The simple answer** — on an 18,000-item library, applying a Weavero
+filter takes about the same time as, or less than, Zotero's own quick
+search on the same library:
+
+| Operation (same library, same session) | time to result |
+|---|---|
+| **Weavero filter apply** — typical (median of 39 configurations) | **1.6 s** |
+| **Weavero filter apply** — fastest to slowest configuration | 1.5 – 2.4 s |
+| **Native Zotero quick search** (the closest built-in equivalent) | 2.5 – 3.4 s |
+
+The caveat: a filter and a quick search are *analogous* operations, not
+identical ones (search does full-text/database work; a filter narrows
+already-loaded rows), so read the native row as context, not as the
+same task measured twice. Details below.
+
 Filter speed is measured by two tools that share one list of filter
 configurations (defined once, in the matrix, so speed and correctness
 coverage cannot drift apart):

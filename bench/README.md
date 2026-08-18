@@ -59,7 +59,35 @@ invocations for statistics.
 | `bench-window-machinery.js` | tab → reader-window tear-off duration (`swapUsed` = Weavero's no-reload docshell swap), window-close behavior | edit `ITEM_ID`; pick a light document so machinery cost isn't swamped by PDF load |
 | `bench-weavero-ui.js` | items-list filter apply/clear latency; tabs-menu open | requires Weavero; treat the tabs-menu number as indicative only |
 
-### Reference: items-list filter apply/clear
+## Methodology / comparability rules
+
+Hard-won rules — numbers are only comparable if you follow them:
+
+1. **Measure a matrix of configurations** (no plugin / plugin A / plugin
+   B / A+B). Toggle via `AddonManager` plus a graceful restart
+   (`Zotero.Utilities.Internal.quit(true)`) — never force-kill the
+   process between configurations: unflushed addon state can resurrect a
+   disable you already reverted.
+2. **Anchor sidebar scrolling on fixed card indexes** (`m-sidebar.js`
+   scrolls card #30/#80 into view), never on `scrollHeight` fractions:
+   total scroll height varies per configuration (each plugin's clamped
+   previews change it), so fraction anchors cover *different annotation
+   ranges* in different configs.
+3. **Discard the first-ever open** of a document after a restart — cache
+   warm-up can add seconds to `tSidebar`. Use ≥ 3 runs per data point.
+4. With **lazy rendering**, dwell/settle metrics include background idle
+   work — read them as *time to full coverage*, not user-perceived
+   delay; the **frame-time stats are the user-perceived metric**.
+5. Some plugins only wire readers they saw open — after a restart,
+   close and reopen the test tab before measuring (the prep script does
+   this) and verify the plugin's stylesheet/DOM markers are present.
+
+## Reference results
+
+Recorded on the maintainer's machine — treat all numbers as *shapes*, not
+absolute targets; re-run on the same library and compare deltas.
+
+### Items-list filter apply/clear (2026-08-18, Weavero 0.18.6-dev.1, real library)
 
 Two instruments, one case catalog:
 
@@ -93,33 +121,7 @@ numbers bound the comparison rather than equal it. On this library,
 Weavero's filter applies (1474 ms headline, 1570 ms median, 2382 ms
 worst) sit at or below the native search's own narrowing time.
 
-Recorded on the maintainer's machine — treat as *shapes*, not absolute
-targets; re-run on the same library and compare deltas.
-
-## Methodology / comparability rules
-
-Hard-won rules — numbers are only comparable if you follow them:
-
-1. **Measure a matrix of configurations** (no plugin / plugin A / plugin
-   B / A+B). Toggle via `AddonManager` plus a graceful restart
-   (`Zotero.Utilities.Internal.quit(true)`) — never force-kill the
-   process between configurations: unflushed addon state can resurrect a
-   disable you already reverted.
-2. **Anchor sidebar scrolling on fixed card indexes** (`m-sidebar.js`
-   scrolls card #30/#80 into view), never on `scrollHeight` fractions:
-   total scroll height varies per configuration (each plugin's clamped
-   previews change it), so fraction anchors cover *different annotation
-   ranges* in different configs.
-3. **Discard the first-ever open** of a document after a restart — cache
-   warm-up can add seconds to `tSidebar`. Use ≥ 3 runs per data point.
-4. With **lazy rendering**, dwell/settle metrics include background idle
-   work — read them as *time to full coverage*, not user-perceived
-   delay; the **frame-time stats are the user-perceived metric**.
-5. Some plugins only wire readers they saw open — after a restart,
-   close and reopen the test tab before measuring (the prep script does
-   this) and verify the plugin's stylesheet/DOM markers are present.
-
-## Reference results (2026-07, Zotero 10 beta, 200-annotation fixture)
+### Reader sidebar / PDF scrolling (2026-07, Zotero 10 beta, 200-annotation fixture)
 
 Recorded on the maintainer's machine — treat as *shapes*, not absolute
 numbers. Sidebar vs PDF, identical methodology per configuration:

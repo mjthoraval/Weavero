@@ -89,14 +89,18 @@ absolute targets; re-run on the same library and compare deltas.
 
 ### Items-list filter apply/clear (2026-08-18, Weavero 0.18.6-dev.1, real library)
 
-Two instruments, one case catalog:
+Filter speed is measured by two tools that share one list of filter
+configurations (defined once, in the matrix, so speed and correctness
+coverage cannot drift apart):
 
-- **Headline** (`bench-weavero-ui.js`): single journalArticle chip on the
-  full library — apply **1474 ms**, clear **696 ms**.
-- **Per-configuration** (`test/live/filter-matrix.js` — run it, then read
-  `Zotero._wvMatrix.speedSummary()`): all 39 filter configurations timed in
-  both modes while their correctness is verified. `paintMs` (last paint) is
-  the user-perceived apply time; `ringMs` is the plugin's own work.
+- **Quick headline** (`bench-weavero-ui.js`, seconds to run): times a
+  single representative case — a journalArticle chip on the full
+  library — apply **1474 ms**, clear **696 ms**.
+- **Full run** (`test/live/filter-matrix.js`, ~6 min — run it, then read
+  `Zotero._wvMatrix.speedSummary()`): times all 39 filter configurations
+  in both modes while verifying their correctness in the same pass.
+  `paintMs` (last paint) is the user-perceived apply time; `ringMs` is
+  the plugin's own work.
 
 Baseline — 2026-08-18, Weavero 0.18.6-dev.1, Zotero 10.0-beta.26,
 maintainer's library (17,932 top-level rows), 39/39 correctness pass:

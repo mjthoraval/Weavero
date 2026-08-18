@@ -59,6 +59,20 @@ invocations for statistics.
 | `bench-window-machinery.js` | tab → reader-window tear-off duration (`swapUsed` = Weavero's no-reload docshell swap), window-close behavior | edit `ITEM_ID`; pick a light document so machinery cost isn't swamped by PDF load |
 | `bench-weavero-ui.js` | items-list filter apply/clear latency; tabs-menu open | requires Weavero; treat the tabs-menu number as indicative only |
 
+### Reference: items-list filter apply/clear (bench-weavero-ui.js)
+
+First recorded baseline — 2026-08-18, Weavero 0.18.6-dev.1, Zotero
+10.0-beta.26, maintainer's library (17,932 top-level rows; journalArticle
+chip filters to 15,333):
+
+| Metric | ms |
+|---|---|
+| filterApplyMs (full-library chip apply) | 1474 |
+| filterClearMs | 696 |
+
+Recorded on the maintainer's machine — treat as *shapes*, not absolute
+targets; re-run on the same library and compare deltas.
+
 ## Methodology / comparability rules
 
 Hard-won rules — numbers are only comparable if you follow them:

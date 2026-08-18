@@ -82,7 +82,7 @@ Built on Zotero's own reader ([`zotero/reader`](https://github.com/zotero/reader
 <details id="filters">
 <summary><b>Filters</b></summary>
 
-**Filter popup** — a toolbar funnel `▼` next to the search box opens a compact filter panel; an accent dot marks the button while any filter is active. Click a facet to include, **Alt+click to exclude**. Filtering stays interactive on multi-ten-thousand-item libraries — applies run at or below the speed of Zotero's own quick-search narrowing; measured timings for all 39 filter configurations, the native comparison, and the methodology are in [`bench/`](bench/README.md).
+**Filter popup** — a toolbar funnel `▼` next to the search box opens a compact filter panel; an accent dot marks the button while any filter is active. Click a facet to include, **Alt+click to exclude**. Filtering stays interactive on multi-ten-thousand-item libraries — a filter applies as fast as or faster than Zotero's own quick-search narrows; measured timings for all 39 filter configurations, the native comparison, and the methodology are in [`bench/`](bench/README.md).
 
 - Annotation **colour**, **type**, **has-comment**
 - **Attachment file type** — PDF / EPUB / Snapshot / Image / Video / Web Link / Linked File / Other File

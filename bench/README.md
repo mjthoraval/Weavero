@@ -59,16 +59,27 @@ invocations for statistics.
 | `bench-window-machinery.js` | tab → reader-window tear-off duration (`swapUsed` = Weavero's no-reload docshell swap), window-close behavior | edit `ITEM_ID`; pick a light document so machinery cost isn't swamped by PDF load |
 | `bench-weavero-ui.js` | items-list filter apply/clear latency; tabs-menu open | requires Weavero; treat the tabs-menu number as indicative only |
 
-### Reference: items-list filter apply/clear (bench-weavero-ui.js)
+### Reference: items-list filter apply/clear
 
-First recorded baseline — 2026-08-18, Weavero 0.18.6-dev.1, Zotero
-10.0-beta.26, maintainer's library (17,932 top-level rows; journalArticle
-chip filters to 15,333):
+Two instruments, one case catalog:
 
-| Metric | ms |
-|---|---|
-| filterApplyMs (full-library chip apply) | 1474 |
-| filterClearMs | 696 |
+- **Headline** (`bench-weavero-ui.js`): single journalArticle chip on the
+  full library — apply **1474 ms**, clear **696 ms**.
+- **Per-configuration** (`test/live/filter-matrix.js` — run it, then read
+  `Zotero._wvMatrix.speedSummary()`): all 39 filter configurations timed in
+  both modes while their correctness is verified. `paintMs` (last paint) is
+  the user-perceived apply time; `ringMs` is the plugin's own work.
+
+Baseline — 2026-08-18, Weavero 0.18.6-dev.1, Zotero 10.0-beta.26,
+maintainer's library (17,932 top-level rows), 39/39 correctness pass:
+
+| Statistic (cascade mode) | paintMs | ringMs |
+|---|---|---|
+| median across 39 configs | 1570 | 1136 |
+| worst (`hasAnnotations FALSE`) | 2382 | 1819 |
+
+Slowest five: hasAnnotations FALSE (2382), hasRelated (1914),
+itemTypeEXCL + color (1647), fileType linkedFile (1612), hasTag (1597).
 
 Recorded on the maintainer's machine — treat as *shapes*, not absolute
 targets; re-run on the same library and compare deltas.

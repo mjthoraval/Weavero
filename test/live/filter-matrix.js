@@ -303,6 +303,38 @@
         weavero: null,
         results: [],
         status: "running",
+        // Per-configuration SPEED report (2026-08-18): the matrix has always
+        // captured per-case timing (syncMs, the _wvFilterPerf ring phases,
+        // paint times, stableMs) -- this surfaces it as the publishable
+        // per-config speed table. lastPaintMs is the user-perceived apply
+        // time; ring.total is the plugin's own work. Sorted slowest-first.
+        speedSummary() {
+            const rows = this.results.map(r => ({
+                name: r.name,
+                cascade: r.cascade ? {
+                    paintMs: r.cascade.lastPaintMs, ringMs: r.cascade.ring && r.cascade.ring.total,
+                    syncMs: r.cascade.syncMs, stableMs: r.cascade.stableMs,
+                } : null,
+                build: r.build ? {
+                    paintMs: r.build.lastPaintMs, ringMs: r.build.ring && r.build.ring.total,
+                    syncMs: r.build.syncMs, stableMs: r.build.stableMs,
+                } : null,
+            }));
+            rows.sort((a, b) => ((b.cascade && b.cascade.paintMs) || 0)
+                - ((a.cascade && a.cascade.paintMs) || 0));
+            const worst = rows[0];
+            const meds = (key) => {
+                const v = rows.map(r => r.cascade && r.cascade[key])
+                    .filter(x => x != null).sort((a, b) => a - b);
+                return v.length ? v[Math.floor(v.length / 2)] : null;
+            };
+            return {
+                ran: rows.length,
+                medianCascade: { paintMs: meds("paintMs"), ringMs: meds("ringMs") },
+                worst: worst && { name: worst.name, cascade: worst.cascade },
+                perCase: rows,
+            };
+        },
         summary() {
             const fails = this.results.filter(r => !r.MATCH);
             return {

@@ -26,13 +26,16 @@ The complete rule set, in plain English, with worked screenshots. Read top to bo
 
 Three concepts the rest of the document leans on.
 
-### Levels
+### Types and positions
 
-Every row in the items tree belongs to one of three **levels**:
+Every row in the items tree has one of four **types**:
 
-- **Parent level** — regular items (papers, books, web pages) and standalone notes. The top-level rows you see when you collapse everything.
-- **Attachment level** — file attachments (PDFs, EPUBs, images), web-link attachments, AND child notes attached to a regular item (called "item notes"). Anything that sits at depth 1 under a regular item.
-- **Annotation level** — annotations sitting under a file attachment.
+- **Parent items** — regular items (papers, books, web pages): the items that can hold child attachments and notes.
+- **Attachments** — file attachments (PDFs, EPUBs, images) and web-link attachments. An attachment is attachment-typed **wherever it sits** — a standalone attachment at the top level still answers the attachment chips.
+- **Notes** — the one type that roams: a **standalone note** sits at the top level, an **item note** sits as a child of a regular item. The `Standalone Note` and `Item Note` tiles are the two position scopes of this type.
+- **Annotations** — annotations sitting under a file attachment.
+
+The combination rules below operate on **tree position** — top level, child (depth 1), annotation leaf — and each type maps into it: parent items at the top; attachments by what they are, wherever they sit; notes by where they sit; annotations at the leaf. One corollary worth knowing (it follows from Rule 2): a chip aimed at a position that a row's spine simply doesn't have can never be satisfied there — a standalone attachment has no parent on its spine, so adding any parent-item chip (e.g. `Has Attachment File`) excludes it, while attachment chips alone include it.
 
 ### Real match vs ancestor-keep
 

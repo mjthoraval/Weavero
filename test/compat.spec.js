@@ -37,6 +37,19 @@ describe("Weavero — Firefox 153 compatibility", () => {
         expect(bundle).to.contain("documentGlobal");
     });
 
+    // FF153 paints plain panels' shadow ::part(content) and ignores the
+    // --panel-background var chain (verified live 2026-08-18) — without a
+    // DIRECT background on the part every Weavero plain panel renders
+    // translucent on Zotero 11. Both stylesheets must carry the rule: the
+    // main-window sheet (constants.ts) and the reader-iframe hovercard
+    // sheet (reader-panels.ts BM_HOVERCARD_CSS).
+    it("ships the FF153 plain-panel background rule (both sheets)", () => {
+        const rule = /panel\[id\^="wv-"\]:not\(\[type="arrow"\]\)::part\(content\)/g;
+        const hits = (bundle.match(rule) || []).length;
+        expect(hits, "part-background rule present in main + reader sheets")
+            .to.be.at.least(2);
+    });
+
     // Exactly ONE occurrence is expected: the deliberate fallback inside
     // winOf(). Anything above that is a bare use that will break on Zotero 11.
     it("contains no bare ownerGlobal outside winOf()", () => {

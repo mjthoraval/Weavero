@@ -768,6 +768,21 @@ export const PLUGIN_CSS = [
     "  -moz-context-properties: fill, fill-opacity;",
     "  fill: var(--fill-secondary);",
     "}",
+    // FF153/Zotero 11: plain (non-arrow) XUL panels no longer get an
+    // opaque native background — the toolkit paints the panel's shadow
+    // `::part(content)` and IGNORES the `--panel-background` custom
+    // property chain entirely (verified live 2026-08-18: setting the var
+    // with !important leaves bg rgba(0,0,0,0.6); only a DIRECT
+    // `background` on the part repaints). Zotero's own
+    // `:is(panel)::part(content)` material overrides are equally inert
+    // there, so every Weavero plain panel rendered translucent. Paint the
+    // part directly; arrow panels keep the toolkit arrowpanel background
+    // and are excluded. Register: work/zotero-upstream-bugs.md (retire if
+    // upstream makes --panel-background effective again — this direct
+    // rule then still wins harmlessly but should be dropped).
+    "panel[id^=\"wv-\"]:not([type=\"arrow\"])::part(content) {",
+    "  background: var(--material-sidepane, Menu);",
+    "}",
     // Popup-internal styles (the panel hosts an HTML subtree).
     ".wv-filter-popup-inner { padding: 6px; min-width: 200px; }",
     ".wv-filter-popup-header {",

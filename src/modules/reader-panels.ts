@@ -1571,6 +1571,11 @@ const RP_OUTLINE_CSS = [
  *  pane bookmark popup (in the main window) can inject the same look without
  *  pulling in reader-iframe-specific rules. */
 export const BM_HOVERCARD_CSS = [
+    // FF153: plain panels paint no opaque background of their own — give
+    // the hovercard's XUL host panel one directly on its shadow part
+    // (same fix as the main-window rule in constants.ts; the reader
+    // iframe lacks Zotero's --material-* vars, hence the Menu fallback).
+    "panel[id^=\"wv-\"]:not([type=\"arrow\"])::part(content){background:var(--material-sidepane,Menu);}",
     // Interactive (expandable), so it captures the pointer; it auto-hides when
     // the cursor leaves BOTH the row and card.
     ".wv-bm-hovercard{position:absolute;z-index:2147483647;max-width:340px;min-width:170px;",

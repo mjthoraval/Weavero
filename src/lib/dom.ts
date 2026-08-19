@@ -31,3 +31,16 @@ export function winOf(node: any): any {
         return null;
     }
 }
+
+/** Container for dynamically created XUL popups (panels, menupopups).
+ *  Zotero 10's main window has NO #mainPopupSet -- the real container is
+ *  the anonymous top-level <popupset> under <window> (verified live
+ *  2026-08-19). A menupopup parked on documentElement renders INLINE
+ *  (the bottom-left text-list incident); always prefer a popupset. The
+ *  documentElement fallback remains for docs without one (reader
+ *  iframe), where panels behave. */
+export function wvPopupHost(doc: any): any {
+    return doc.getElementById("mainPopupSet")
+        || doc.querySelector("window > popupset")
+        || doc.documentElement;
+}

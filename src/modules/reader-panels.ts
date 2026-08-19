@@ -24,6 +24,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
+import { wvPopupHost } from "../lib/dom";
 
 declare const Components: any;
 declare const Services: any;
@@ -14462,7 +14463,7 @@ class _ReaderPanelsMixin {
                     hostPanel.setAttribute("consumeoutsideclicks", "false");
                     card.style.position = "static";   // let the panel size to the card
                     hostPanel.appendChild(card);
-                    const phost = idoc.getElementById("mainPopupSet") || idoc.documentElement;
+                    const phost = wvPopupHost(idoc);
                     phost.appendChild(hostPanel);
                 } catch (_) { hostPanel = null; }
             }

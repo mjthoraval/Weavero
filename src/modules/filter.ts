@@ -44,7 +44,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-import { winOf } from "../lib/dom";
+import { winOf, wvPopupHost } from "../lib/dom";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -8021,9 +8021,7 @@ class _FilterMixin {
         // <window> (verified live 2026-08-19; the old documentElement
         // fallback parked the menu on the window root, where it once
         // rendered as an inline text list at the bottom-left).
-        const popupHost = doc.getElementById("mainPopupSet")
-            || doc.querySelector("window > popupset")
-            || doc.documentElement;
+        const popupHost = wvPopupHost(doc);
         // Sweep DOCUMENT-WIDE, not just the current host (2026-08-19):
         // a mode menu once parked on the documentElement fallback
         // renders INLINE (bottom-left text list, MJT's screenshot) and
@@ -10233,7 +10231,7 @@ class _FilterMixin {
         if (!tipW) {
             tipW = doc.createXULElement("tooltip");
             tipW.id = "wv-filter-tooltip";
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(tipW);
         }
         let pending = 0;

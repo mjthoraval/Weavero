@@ -27,6 +27,7 @@
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
+import { wvPopupHost } from "../lib/dom";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -1460,7 +1461,7 @@ class _BookmarksMixin {
         const inner = doc.createElementNS(NS_HTML, "div");
         inner.id = BM_CHIP_INNER_ID;
         panel.appendChild(inner);
-        const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+        const host = wvPopupHost(doc);
         host.appendChild(panel);
         this._bmRenderLibChipBar(doc, win, inner);
         // Anchor the chip popup to the FUNNEL BUTTON inside the
@@ -2422,7 +2423,7 @@ class _BookmarksMixin {
             box.appendChild(btns);
             panel.appendChild(box);
 
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(panel);
             const close = () => { try { panel.remove(); } catch (_) {} };
             const doSave = async () => {
@@ -3214,7 +3215,7 @@ class _BookmarksMixin {
             this._bmEmptyContextMenu(win, e.screenX, e.screenY);
         });
         panel.appendChild(inner);
-        const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+        const host = wvPopupHost(doc);
         host.appendChild(panel);
         this._bmRenderPopupList(win);
         this._bmInstallDismiss(win, panel, anchorBtn);
@@ -3705,7 +3706,7 @@ class _BookmarksMixin {
             }
             panel.addEventListener("mouseenter", () => this._bmCancelCloseTimer());
             panel.addEventListener("mouseleave", () => this._bmScheduleCloseFlyouts(depth));
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(panel);
             this._bmFlyoutStack = this._bmFlyoutStack || [];
             this._bmFlyoutStack.push({ panel, depth, folderId: folder.id });
@@ -3966,7 +3967,7 @@ class _BookmarksMixin {
             };
             add("Pick item from library…", () => { this._bmHidePopup(win); this._bmAddBookmarksDialog(); }, BM_MENU_BOOKMARK_ICON);
             add("Add Link…", () => { this._bmHidePopup(win); this._bmAddLinkDialog(win); }, BM_MENU_LINK_ICON);
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });
@@ -4015,7 +4016,7 @@ class _BookmarksMixin {
             const manual = curField === "manual";
             add("Ascending", !manual && curDir === "asc", () => apply(undefined, "asc"), manual);
             add("Descending", !manual && curDir === "desc", () => apply(undefined, "desc"), manual);
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });
@@ -4111,7 +4112,7 @@ class _BookmarksMixin {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });
@@ -4168,7 +4169,7 @@ class _BookmarksMixin {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });
@@ -4197,7 +4198,7 @@ class _BookmarksMixin {
                 const name = this._bmPromptName(win, "New Folder", "New Folder");
                 if (name) this._bmAddFolder(name).then(() => this._bmRenderPopupList(win));
             }, BM_MENU_NEWFOLDER_ICON);
-            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            const host = wvPopupHost(doc);
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });

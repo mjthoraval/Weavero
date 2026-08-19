@@ -7015,6 +7015,7 @@ class _FilterMixin {
         // The Attachment File Type section also hosts the Item Note
         // tile (right of the file-type icons, after a vertical bar).
         const attachmentFileTypeSection = doc.createElementNS(NS_HTML, "div");
+        const notesSection = doc.createElementNS(NS_HTML, "div");
         // Has Annotations tri-state — Attachment group, below the
         // file-type / item-note row.
         const hasAnnotationsSection = doc.createElementNS(NS_HTML, "div");
@@ -7206,6 +7207,7 @@ class _FilterMixin {
         // vertical separator).
         inner.appendChild(attachmentFileTypeSection);
         inner.appendChild(hasAnnotationsSection);
+        inner.appendChild(notesSection);
 
         addGroupHeader("Annotation");
         inner.appendChild(colorSection);
@@ -7389,6 +7391,7 @@ class _FilterMixin {
             this._renderTypeSection(doc, typeSection, refreshAll);
             this._renderHasCommentSection(doc, commentSection, refreshAll);
             this._renderAttachmentFileTypeSection(doc, attachmentFileTypeSection, refreshAll);
+            this._renderNotesSection(doc, notesSection, refreshAll);
             this._renderHasAnnotationsSection(doc, hasAnnotationsSection, refreshAll);
             this._renderReadStatusSection(doc, readStatusSection, refreshAll);
             this._renderItemTypeRow(doc, itemTypeRowSection, refreshAll, searchCtx);
@@ -8387,75 +8390,6 @@ class _FilterMixin {
         selectedRow.className = "wv-filter-itype-selected";
         triggerRow.appendChild(selectedRow);
 
-        // Standalone Note tile, right end of the trigger row, after
-        // a thin vertical separator. The selectedRow above takes
-        // all remaining flex space, so the separator + tile sit
-        // flush against the right edge naturally.
-        const sep = doc.createElementNS(NS_HTML, "div");
-        sep.className = "wv-filter-vertical-separator";
-        triggerRow.appendChild(sep);
-
-        const sg0 = this._activeGroup();
-        const snCur = sg0 ? sg0.standaloneNote : null;
-        const snBtn = doc.createElementNS(NS_HTML, "button");
-        snBtn.type = "button";
-        snBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        snBtn.title = "Standalone Note — show only top-level "
-            + "(parentless) notes. Alt+click to exclude (hide "
-            + "standalone notes).";
-        if (snCur === true) snBtn.dataset.selected = "true";
-        else if (snCur === false) snBtn.dataset.excluded = "true";
-        const snIcon = doc.createElementNS(NS_HTML, "img");
-        snIcon.className = "wv-filter-svg";
-        snIcon.src = "chrome://zotero/skin/16/universal/note.svg";
-        snIcon.alt = "Standalone Note";
-        snIcon.style.color = "var(--accent-yellow)";
-        snBtn.appendChild(snIcon);
-        snBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const g = this._activeGroup();
-            if (!g) return;
-            let next;
-            if (e.altKey) next = (g.standaloneNote === false) ? null : false;
-            else next = (g.standaloneNote === true) ? null : true;
-            g.standaloneNote = next;
-            this._renderFilterBar();
-            this._applyItemsListFilter({ cascade: true });
-            refreshAll();
-        });
-        triggerRow.appendChild(snBtn);
-
-        // Standalone Attachment tile (2026-08-19) — the attachment
-        // type's missing position scope, symmetric to Standalone Note.
-        // A RESTRICTION: intersects with Attachment File Type
-        // (standalone + PDF = standalone PDFs), no OR pair.
-        const saCur = sg0 ? sg0.standaloneAttachment : null;
-        const saBtn = doc.createElementNS(NS_HTML, "button");
-        saBtn.type = "button";
-        saBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        saBtn.title = "Standalone Attachment — show only top-level "
-            + "(parentless) attachments. Alt+click to exclude.";
-        if (saCur === true) saBtn.dataset.selected = "true";
-        else if (saCur === false) saBtn.dataset.excluded = "true";
-        const saIcon = doc.createElementNS(NS_HTML, "img");
-        saIcon.className = "wv-filter-svg";
-        saIcon.src = "chrome://zotero/skin/16/universal/attachment.svg";
-        saIcon.alt = "Standalone Attachment";
-        saIcon.style.color = "var(--accent-blue)";
-        saBtn.appendChild(saIcon);
-        saBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const g = this._activeGroup();
-            if (!g) return;
-            let next;
-            if (e.altKey) next = (g.standaloneAttachment === false) ? null : false;
-            else next = (g.standaloneAttachment === true) ? null : true;
-            g.standaloneAttachment = next;
-            this._renderFilterBar();
-            this._applyItemsListFilter({ cascade: true });
-            refreshAll();
-        });
-        triggerRow.appendChild(saBtn);
 
         // Vertical 2-col suggestion list (hidden until trigger is
         // clicked).
@@ -10299,23 +10233,94 @@ class _FilterMixin {
             opts.appendChild(btn);
         }
 
-        // Item Note tile sits at the FAR RIGHT of the file-type
-        // row — mirrors the Standalone Note tile's placement at the
-        // right end of the Item Type row (where the selected-chips
-        // container's `flex: 1 1 auto` does the same job
-        // implicitly). Here the file-type tiles are fixed-size flex
-        // items, so we push everything-after-the-separator to the
-        // right with `margin-left: auto` on the separator itself.
-        // Item notes are attachment-level rows (same tree depth as
-        // attachments); the file-type tiles target attachment-files,
-        // the Item Note tile targets the OTHER kind of attachment-
-        // level row, hence the visual grouping.
+        // Standalone Attachment tile sits at the FAR RIGHT of the
+        // file-type row (2026-08-19) -- the attachment type's position
+        // scope lives beside its file-type facets, in the spot the
+        // Item Note tile occupied before notes got their own row.
         const sep = doc.createElementNS(NS_HTML, "div");
         sep.className = "wv-filter-vertical-separator";
         sep.style.marginLeft = "auto";
         opts.appendChild(sep);
 
-        const inCur = g0 ? g0.itemNote : null;
+        // Standalone Attachment tile (2026-08-19) — the attachment
+        // type's missing position scope, symmetric to Standalone Note.
+        // A RESTRICTION: intersects with Attachment File Type
+        // (standalone + PDF = standalone PDFs), no OR pair.
+        const saCur = g0 ? g0.standaloneAttachment : null;
+        const saBtn = doc.createElementNS(NS_HTML, "button");
+        saBtn.type = "button";
+        saBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        saBtn.title = "Standalone Attachment — show only top-level "
+            + "(parentless) attachments. Alt+click to exclude.";
+        if (saCur === true) saBtn.dataset.selected = "true";
+        else if (saCur === false) saBtn.dataset.excluded = "true";
+        const saIcon = doc.createElementNS(NS_HTML, "img");
+        saIcon.className = "wv-filter-svg";
+        saIcon.src = "chrome://zotero/skin/16/universal/attachment.svg";
+        saIcon.alt = "Standalone Attachment";
+        saIcon.style.color = "var(--accent-blue)";
+        saBtn.appendChild(saIcon);
+        saBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.standaloneAttachment === false) ? null : false;
+            else next = (g.standaloneAttachment === true) ? null : true;
+            g.standaloneAttachment = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        opts.appendChild(saBtn);
+    }
+
+
+    /** Notes row (2026-08-19, four-type classification): the Notes
+     *  type's two position tiles side by side -- Standalone Note and
+     *  Item Note -- in their own section between the attachment block
+     *  and the annotation block, matching the published taxonomy order
+     *  (parent items, attachments, notes, annotations). The tiles kept
+     *  their exact semantics (including the Rule 1 OR pairs with Item
+     *  Type / Attachment File Type); only their home moved. */
+    _renderNotesSection(doc, section, refreshAll) {
+        while (section.firstChild) section.removeChild(section.firstChild);
+        section.className = "wv-filter-section";
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        const opts = doc.createElementNS(NS_HTML, "div");
+        opts.className = "wv-filter-options";
+        section.appendChild(opts);
+        const sg0 = this._activeGroup();
+        const snCur = sg0 ? sg0.standaloneNote : null;
+        const snBtn = doc.createElementNS(NS_HTML, "button");
+        snBtn.type = "button";
+        snBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        snBtn.title = "Standalone Note — show only top-level "
+            + "(parentless) notes. Alt+click to exclude (hide "
+            + "standalone notes).";
+        if (snCur === true) snBtn.dataset.selected = "true";
+        else if (snCur === false) snBtn.dataset.excluded = "true";
+        const snIcon = doc.createElementNS(NS_HTML, "img");
+        snIcon.className = "wv-filter-svg";
+        snIcon.src = "chrome://zotero/skin/16/universal/note.svg";
+        snIcon.alt = "Standalone Note";
+        snIcon.style.color = "var(--accent-yellow)";
+        snBtn.appendChild(snIcon);
+        snBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.standaloneNote === false) ? null : false;
+            else next = (g.standaloneNote === true) ? null : true;
+            g.standaloneNote = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        opts.appendChild(snBtn);
+
+        const inCur = sg0 ? sg0.itemNote : null;
         const inBtn = doc.createElementNS(NS_HTML, "button");
         inBtn.type = "button";
         inBtn.className = "wv-filter-opt wv-filter-opt-icon";

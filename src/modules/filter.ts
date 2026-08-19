@@ -8631,7 +8631,11 @@ class _FilterMixin {
                     if (seen.has(name) || !valid.has(name)) continue;
                     seen.add(name);
                     out.push(name);
-                    if (out.length >= 5) break;
+                    // Cap raised 5 -> 9 (2026-08-19): the Standalone
+                    // Note/Attachment tiles left this row for their own
+                    // sections, so the MRU can use the full line (MJT).
+                    // The row wraps if selected chips crowd it.
+                    if (out.length >= 9) break;
                 }
                 return out;
             } catch (e) { return []; }

@@ -1291,15 +1291,16 @@ class WeaveroPlugin {
     // ---- Group 3: External viewer (was Group 1; moved to Visual extras) ----
     /** "Open in External Viewer" right-click menu entry that launches
      *  the item's best attachment with the OS default application
-     *  (replaces the standalone Open PDF for Zotero plugin). Default OFF
-     *  — opt-in, since Zotero's own reader is most users' default.
-     *  Tab 3 (Visual extras) — gated by enableVisualExtras. */
+     *  (replaces the standalone Open PDF for Zotero plugin). Default ON
+     *  since 2026-08-18 (MJT: discoverability — anyone annoyed can
+     *  disable it; was opt-in before). Tab 3 (Visual extras) — gated by
+     *  enableVisualExtras. */
     _getEnableOpenExternalViewer() {
         if (!this._getEnableVisualExtras()) return false;
         try {
             const v = Zotero.Prefs.get("weavero.enableOpenExternalViewer");
-            return v === undefined ? false : !!v;
-        } catch (e) { return false; }
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
     }
     _getEnablePluginsSearch() {
         if (!this._getEnableVisualExtras()) return false;
@@ -2124,10 +2125,12 @@ class WeaveroPlugin {
                 // default; the pref exists so a user who prefers Zotero's
                 // single number can restore it.
                 "itemCountBreakdown",
+                // Default ON since 2026-08-18 (MJT: discoverability) —
+                // was in the OFF list; the getter fallback flipped with it.
+                "enableOpenExternalViewer",
             ];
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm",
-                "enableOpenExternalViewer",
                 "debug",
                 // Optional URL schemes — all opt-in
                 "enableMagnetScheme", "enableMailtoScheme", "enableSkypeScheme",

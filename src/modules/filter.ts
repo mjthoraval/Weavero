@@ -8016,11 +8016,25 @@ class _FilterMixin {
         // toplevel popups in the main window. Nesting it inside the
         // wv-filter-popup <panel> leaves openPopup() as a no-op
         // (popups inside popups don't initialize correctly here).
+        // Zotero 10's main window has NO #mainPopupSet -- the real
+        // container is the anonymous top-level <popupset> under
+        // <window> (verified live 2026-08-19; the old documentElement
+        // fallback parked the menu on the window root, where it once
+        // rendered as an inline text list at the bottom-left).
         const popupHost = doc.getElementById("mainPopupSet")
+            || doc.querySelector("window > popupset")
             || doc.documentElement;
-        const STALE_MENUS = popupHost.querySelectorAll(
+        // Sweep DOCUMENT-WIDE, not just the current host (2026-08-19):
+        // a mode menu once parked on the documentElement fallback
+        // renders INLINE (bottom-left text list, MJT's screenshot) and
+        // a host-scoped sweep never finds it again. Also catch bare
+        // menuitems orphaned at window level by the same failure.
+        const STALE_MENUS = doc.querySelectorAll(
             "menupopup.wv-filter-mode-menupopup");
         for (const m of STALE_MENUS) m.remove();
+        for (const el of [...doc.documentElement.children]) {
+            if (el.tagName === "menuitem") el.remove();
+        }
         const menuPopup = doc.createXULElement("menupopup");
         menuPopup.className = "wv-filter-mode-menupopup";
         popupHost.appendChild(menuPopup);

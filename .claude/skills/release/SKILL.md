@@ -57,8 +57,11 @@ git commit -am "release: bump to vX.Y.Z" && git tag vX.Y.Z
 
 One squashed conventional `feat`/`fix` commit + a separate `release:` bump —
 that's what renders in auto release notes. If origin/main moved (dependabot),
-merge it in BEFORE squashing. `--force-with-lease` is allowed; plain
-`--force` and `reset --hard` are not.
+merge it in BEFORE squashing. Branch merges in the dev line are fine: the
+commit-tree squash takes the FINAL TREE, so merge commits collapse with the
+rest — but the guard audit must range over fix: commits that arrived via
+merges too (`git log <last-tag>..HEAD` includes them). `--force-with-lease`
+is allowed; plain `--force` and `reset --hard` are not.
 
 ## 5. Publish
 

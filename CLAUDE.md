@@ -7,7 +7,7 @@ Weavero is a Zotero 7+ plugin: clickable links in annotation comments and notes,
 **Versioning and parallel sessions** (kept in this always-loaded file on purpose — loading rules in [.claude/README.md](.claude/README.md)):
 
 - Any version bump: INVOKE the `verify` skill — never bump from memory of the pattern. WIP builds on `main` are `-dev.N` of the next version; **branch/fork builds carry their own suffix** (`-defatt.N`, `-annsrc.N`), never main's `-dev.N`.
-- If another agent session may share this clone (unexplained commits, dirty files, or the user says testing is ongoing elsewhere): do NOT commit to `main` — work in a separate clone on a suffixed branch. Before any commit, check `git diff` for hunks that aren't yours; when installing into a shared test instance, state which version replaced which.
+- If another agent session may share this clone (unexplained commits, dirty files, or the user says testing is ongoing elsewhere): do NOT commit to `main` — INVOKE the `branch` skill and work in a separate clone on a suffixed branch. Merging a branch back also goes through the `branch` skill (merged-suite gate, renumbering, handoff message). Before any commit, check `git diff` for hunks that aren't yours; when installing into a shared test instance, state which version replaced which.
 
 ## Commands
 

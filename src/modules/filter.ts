@@ -3244,18 +3244,28 @@ class _FilterMixin {
         // both books AND item notes, because a row is never
         // simultaneously a regular item AND a note; AND'ing the
         // two makes the group empty by definition.
-        if (group.itemNote != null) {
-            const isNote = !!(item.isNote && item.isNote());
-            if (isNote) {
-                const isChild = !!item.parentItem;
-                if (isChild !== group.itemNote) return false;
-            }
+        // Standalone Note <-> Item Note are the NOTE kind's Rule 1 OR
+        // pair (2026-08-19, MJT): mutually exclusive positions, so both
+        // INCLUDES together mean "either kind of note" -- the AND
+        // reading was a guaranteed contradiction (zero rows). Mixed or
+        // exclude directions keep independent per-row semantics.
+        if (group.itemNote === true && group.standaloneNote === true) {
+            // any note passes; non-notes unaffected here
         }
-        if (group.standaloneNote != null) {
-            const isNote = !!(item.isNote && item.isNote());
-            if (isNote) {
-                const isStandalone = !item.parentItem;
-                if (isStandalone !== group.standaloneNote) return false;
+        else {
+            if (group.itemNote != null) {
+                const isNote = !!(item.isNote && item.isNote());
+                if (isNote) {
+                    const isChild = !!item.parentItem;
+                    if (isChild !== group.itemNote) return false;
+                }
+            }
+            if (group.standaloneNote != null) {
+                const isNote = !!(item.isNote && item.isNote());
+                if (isNote) {
+                    const isStandalone = !item.parentItem;
+                    if (isStandalone !== group.standaloneNote) return false;
+                }
             }
         }
         if (group.standaloneAttachment != null) {
@@ -3982,7 +3992,11 @@ class _FilterMixin {
         // "pass" Has Related; an annotation only sees its parent
         // attachment and grandparent regular item, not the other
         // attachments under the same root or their annotations.
-        const candidates = { parent: [] as any[], attachment: [] as any[], annotation: [] as any[] };
+        // `note` bucket added 2026-08-19: the four-type classifier made
+        // _rowKindOf return "note", so without it notes fell out of every
+        // tree-level check (itemNote requirement, Has Link note text,
+        // Has Tag/Related over notes) -- caught by the note-pair OR work.
+        const candidates = { parent: [] as any[], attachment: [] as any[], note: [] as any[], annotation: [] as any[] };
         const pushByKind = (it) => {
             if (!it) return;
             const k = this._rowKindOf(it);
@@ -4023,7 +4037,7 @@ class _FilterMixin {
         // proper handling of exclude/include).
         const checkChipAcrossTree = (predicate, scope, kindKeys) => {
             for (const k of kindKeys) {
-                if (scope && scope[k] === false) continue;
+                if (!this._wvScopeAllows(scope, k)) continue;
                 for (const row of candidates[k]) {
                     if (predicate(row)) return true;
                 }
@@ -4036,14 +4050,14 @@ class _FilterMixin {
                 || { annotation: true, attachment: true, parent: true };
             if (!checkChipAcrossTree(
                 checkRelated, sc,
-                ["annotation", "attachment", "parent"])) return false;
+                ["annotation", "attachment", "note", "parent"])) return false;
         }
         if (group.hasTag != null) {
             const sc = group.hasTagScope
                 || { annotation: true, attachment: true, parent: true };
             if (!checkChipAcrossTree(
                 checkTag, sc,
-                ["annotation", "attachment", "parent"])) return false;
+                ["annotation", "attachment", "note", "parent"])) return false;
         }
         if (group.hasLink != null) {
             // Has Link scope keys are text-source-specific
@@ -4057,10 +4071,9 @@ class _FilterMixin {
                 }
             }
             if (!found && sc.itemNoteText !== false) {
-                for (const att of candidates.attachment) {
-                    if (!att.isNote || !att.isNote()) continue;
-                    if (!att.parentItem) continue; // standalone — not item note
-                    if (this._itemHasLinks(att) === group.hasLink) { found = true; break; }
+                for (const n of candidates.note) {
+                    if (!n.parentItem) continue; // standalone — not item note
+                    if (this._itemHasLinks(n) === group.hasLink) { found = true; break; }
                 }
             }
             if (!found && sc.standaloneText !== false) {
@@ -4085,7 +4098,23 @@ class _FilterMixin {
         // direction here ("=true"); EXCLUDE ("=false") behaves as
         // a per-row filter in `_rowPassesFilters` (just drop the
         // matching rows from results — no tree-level requirement).
-        if (group.standaloneNote === true) {
+        if (group.standaloneNote === true && group.itemNote === true) {
+            // OR pair, both sides on: the tree satisfies the Notes
+            // requirement if its root is a standalone note OR its spine
+            // holds an item note.
+            const rootIsStandalone = !!(root.isNote
+                && root.isNote() && !root.parentItem);
+            if (!rootIsStandalone) {
+                let hasItemNote = false;
+                for (const cand of candidates.note) {
+                    if (cand && !!cand.parentItem) {
+                        hasItemNote = true; break;
+                    }
+                }
+                if (!hasItemNote) return false;
+            }
+        }
+        else if (group.standaloneNote === true) {
             // Tree's root must itself be a standalone note. For any
             // non-standalone tree (regular item / its descendants),
             // this fails — e.g. Web Link + standaloneNote=true
@@ -4102,7 +4131,9 @@ class _FilterMixin {
                 && root.isAttachment() && !root.parentItem);
             if (!rootIsSA) return false;
         }
-        if (group.itemNote === true) {
+        if (group.itemNote === true && group.standaloneNote !== true) {
+            // (When BOTH note tiles are on, the combined OR block above
+            // already enforced the Notes requirement.)
             // OR-pair with `attachmentFileType` (Rule 1): when both
             // are set, the attachment level is satisfied by EITHER
             // a matching attachment OR an item note. Don't enforce
@@ -4123,13 +4154,10 @@ class _FilterMixin {
                 || (group.outlineVerdictExclude && group.outlineVerdictExclude.length));
             if (!attFTActive) {
                 // Vertical-only: the row's spine must contain an
-                // item note. `candidates.attachment` was built from
-                // the spine and already includes item notes (their
-                // `_rowKindOf` is "attachment" — same level).
+                // item note (the `note` candidates bucket, four-type).
                 let hasItemNote = false;
-                for (const cand of candidates.attachment) {
-                    if (cand && cand.isNote && cand.isNote()
-                        && !!cand.parentItem) {
+                for (const cand of candidates.note) {
+                    if (cand && !!cand.parentItem) {
                         hasItemNote = true; break;
                     }
                 }
@@ -10730,7 +10758,7 @@ class _FilterMixin {
         section.className = "wv-filter-section wv-filter-notes-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
         const opts = doc.createElementNS(NS_HTML, "div");
-        opts.className = "wv-filter-options";
+        opts.className = "wv-filter-options wv-filter-or-group";
         section.appendChild(opts);
         const sg0 = this._activeGroup();
         const snCur = sg0 ? sg0.standaloneNote : null;
@@ -10738,8 +10766,8 @@ class _FilterMixin {
         snBtn.type = "button";
         snBtn.className = "wv-filter-opt wv-filter-opt-icon";
         snBtn.title = "Standalone Note — show only top-level "
-            + "(parentless) notes. Alt+click to exclude (hide "
-            + "standalone notes).";
+            + "(parentless) notes. Together with Item Note: either "
+            + "kind of note (OR). Alt+click to exclude.";
         if (snCur === true) snBtn.dataset.selected = "true";
         else if (snCur === false) snBtn.dataset.excluded = "true";
         const snIcon = doc.createElementNS(NS_HTML, "img");
@@ -10767,7 +10795,8 @@ class _FilterMixin {
         inBtn.type = "button";
         inBtn.className = "wv-filter-opt wv-filter-opt-icon";
         inBtn.title = "Item Note — show only notes attached to a regular item. "
-            + "Alt+click to exclude (hide item notes).";
+            + "Together with Standalone Note: either kind of note (OR). "
+            + "Alt+click to exclude.";
         if (inCur === true) inBtn.dataset.selected = "true";
         else if (inCur === false) inBtn.dataset.excluded = "true";
         const inIcon = doc.createElementNS(NS_HTML, "img");

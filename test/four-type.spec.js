@@ -82,6 +82,44 @@ describe("Weavero — four-type classification", function () {
         });
     });
 
+    describe("Standalone Note ↔ Item Note OR pair", function () {
+        it("both includes ON: any note passes the per-row filter", function () {
+            const g = Object.assign(plugin()._emptyFilterGroup(),
+                { standaloneNote: true, itemNote: true });
+            assert.isTrue(plugin()._rowPassesFilters(note(null), g, {}));
+            assert.isTrue(plugin()._rowPassesFilters(note({}), g, {}));
+        });
+        it("single include keeps its position restriction", function () {
+            const g = Object.assign(plugin()._emptyFilterGroup(),
+                { standaloneNote: true });
+            assert.isTrue(plugin()._rowPassesFilters(note(null), g, {}));
+            assert.isFalse(plugin()._rowPassesFilters(note({}), g, {}));
+        });
+    });
+
+    describe("tree-level checks see notes (four-type candidates bucket)", function () {
+        // Regression guard: the four-type classifier made _rowKindOf
+        // return "note", and the tree-walk candidates had no note
+        // bucket -- notes silently vanished from itemNote/hasTag/
+        // hasLink tree checks (caught 2026-08-19 by the pair-OR work).
+        it("child note satisfies the both-ON Notes requirement via its own spine", function () {
+            const parent = stub({ isRegularItem: () => true,
+                getAttachments: () => [], getNotes: () => [] });
+            const child = note(parent);
+            const g = Object.assign(plugin()._emptyFilterGroup(),
+                { standaloneNote: true, itemNote: true });
+            assert.isTrue(plugin()._treeSatisfiesCrossLevelScoped(child, g));
+        });
+        it("child note satisfies the single itemNote requirement", function () {
+            const parent = stub({ isRegularItem: () => true,
+                getAttachments: () => [], getNotes: () => [] });
+            const child = note(parent);
+            const g = Object.assign(plugin()._emptyFilterGroup(),
+                { itemNote: true });
+            assert.isTrue(plugin()._treeSatisfiesCrossLevelScoped(child, g));
+        });
+    });
+
     describe("_effectiveSelectionTargetKinds — four-way", function () {
         let saved;
         beforeEach(function () { saved = plugin()._filterState; });

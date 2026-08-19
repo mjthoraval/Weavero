@@ -104,6 +104,7 @@ There are **four** such OR groups. The filter popup tints each one as its own ca
 - **Annotation Type** — picking several types (highlight, underline, note, …) matches an annotation of *any* of them.
 - **Parent-level pair** — `Item Type` ↔ `Standalone Note`. A row passes if its item type matches OR it's a standalone note.
 - **Attachment-level pair** — `Attachment File Type` ↔ `Item Note`. A row passes if its file type matches OR it's an item note.
+- **Notes pair** — `Standalone Note` ↔ `Item Note` (the Notes section's grey group). The two positions are mutually exclusive, so selecting both means *either kind of note* — an AND reading would always yield zero rows.
 
 The `Has Comment` and `Annotation Source` toggles sit next to the Annotation Type card but are **not** part of it — each is a separate filter, AND'd like any other (which is why they stay outside the tint).
 

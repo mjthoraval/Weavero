@@ -8636,11 +8636,10 @@ class _FilterMixin {
                     if (seen.has(name) || !valid.has(name)) continue;
                     seen.add(name);
                     out.push(name);
-                    // Cap raised 5 -> 9 (2026-08-19): the Standalone
-                    // Note/Attachment tiles left this row for their own
-                    // sections, so the MRU can use the full line (MJT).
-                    // The row wraps if selected chips crowd it.
-                    if (out.length >= 9) break;
+                    // Cap 6 (MJT 2026-08-19): fills the freed line
+                    // without an overflow affordance; the boundary trim
+                    // below stays as a safety net.
+                    if (out.length >= 6) break;
                 }
                 return out;
             } catch (e) { return []; }
@@ -8892,29 +8891,13 @@ class _FilterMixin {
                         - (parseFloat(bcs.paddingRight) || 0);
                     const overflows = (el) =>
                         el.getBoundingClientRect().right > limit + 0.5;
-                    let removed = 0, guard = 0;
+                    // No overflow affordance (MJT 2026-08-19): tiles
+                    // that don't fit are simply not shown -- the full
+                    // list is one click away on the trigger.
+                    let guard = 0;
                     while (mruRow.lastChild && guard++ < 12
                         && overflows(mruRow.lastChild)) {
                         mruRow.removeChild(mruRow.lastChild);
-                        removed++;
-                    }
-                    if (removed > 0) {
-                        const more = doc.createElementNS(NS_HTML, "button");
-                        more.type = "button";
-                        more.className = "wv-filter-opt wv-itype-mru-more";
-                        more.textContent = "…";
-                        more.title = "More item types — open the full list";
-                        more.addEventListener("click", (e) => {
-                            e.stopPropagation();
-                            try { trigger.click(); } catch (err) {}
-                        });
-                        mruRow.appendChild(more);
-                        // The ellipsis itself must fit inside the box.
-                        let g2 = 0;
-                        while (overflows(more) && mruRow.children.length > 1
-                            && g2++ < 12) {
-                            mruRow.removeChild(more.previousSibling);
-                        }
                     }
                     return true;
                 } catch (e) { return true; }

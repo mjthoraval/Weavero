@@ -1514,9 +1514,10 @@ export const PLUGIN_CSS = [
     // `flex: 0 0 auto` so it sits on the first line and lets the
     // chip row absorb the remaining width.
     ".wv-filter-itype-trigger-row {",
-    // Single line by design (MJT 2026-08-19): the MRU render trims
-    // trailing tiles that would overflow instead of wrapping.
-    "  display: flex; flex-wrap: nowrap; align-items: flex-start;",
+    // Wraps for the SELECTED CHIPS' overflow (MJT 2026-08-19 v2);
+    // the MRU render still trims its own tiles to line 1 (wrapped
+    // tiles count as overflow there).
+    "  display: flex; flex-wrap: wrap; align-items: center;",
     "  gap: 4px; min-width: 0;",
     "}",
     ".wv-filter-itype-trigger {",
@@ -1540,8 +1541,10 @@ export const PLUGIN_CSS = [
     "  margin-inline: 0;",
     "}",
     ".wv-filter-itype-selected {",
-    "  display: flex; flex-wrap: wrap; gap: 3px;",
-    "  flex: 1 1 auto; min-width: 0;",
+    // Layout-transparent (2026-08-19): chips join the trigger row's
+    // own wrapping flex flow -- inline while they fit, full-width
+    // wrap on overflow.
+    "  display: contents;",
     "}",
     ".wv-filter-itype-chip {",
     "  display: inline-flex; align-items: center;",

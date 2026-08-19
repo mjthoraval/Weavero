@@ -7600,6 +7600,15 @@ class _FilterMixin {
             // too; re-sync the chip cue (the bar itself isn't re-rendered).
             try { this._updateSelectionTargetAutoCues(panel); } catch (e) {}
         };
+        // Narrow refresher for handlers that must NOT run refreshAll
+        // (the MRU tile click would reorder tiles mid-session): sync
+        // just the header's Clear buttons + the Selection Target cue.
+        // Instance-level so item-type row handlers reach it; replaced
+        // on every panel build (stale-closure safe: resolved at call).
+        (this as any)._wvPanelRefreshHeader = () => {
+            try { renderHeader(); } catch (e) {}
+            try { this._updateSelectionTargetAutoCues(panel); } catch (e) {}
+        };
         refreshAll();
     }
 
@@ -8581,6 +8590,12 @@ class _FilterMixin {
         mruRow.style.marginLeft = "4px";
         triggerRow.appendChild(mruRow);
 
+        // Selected chips share the trigger row's own flex flow
+        // (`display: contents`, MJT 2026-08-19 v2): inline after the
+        // MRU while they fit, overflow WRAPS to a full-width next line.
+        // (v1 gave them a separate always-below line; MJT: inline
+        // first, wrap only on overflow. The original wrapper-with-
+        // flex:1 stacked chips vertically in the leftover column.)
         const selectedRow = doc.createElementNS(NS_HTML, "div");
         selectedRow.className = "wv-filter-itype-selected";
         triggerRow.appendChild(selectedRow);
@@ -8707,7 +8722,9 @@ class _FilterMixin {
                 this._applyItemsListFilter({ cascade: true });
                 renderSelected();
                 renderList();
+                try { (this as any)._wvPanelRefreshHeader?.(); } catch (err) {}
             });
+            chip.dataset.wvType = id;
             return chip;
         };
 
@@ -8720,7 +8737,11 @@ class _FilterMixin {
             const exc = (g && g.itemTypeExclude) || [];
             // Types in the MRU row show their state ON the tile — a chip
             // here too would render the same icon twice side by side.
-            const inMru = new Set(computeMruIds());
+            // RENDERED tiles only (2026-08-19): the fit pass trims
+            // tiles, and a selected type whose tile was trimmed must
+            // fall back to a chip or its state becomes invisible.
+            const inMru = new Set([...mruRow.querySelectorAll(
+                ".icon-item-type")].map((i: any) => i.dataset.itemType));
             for (const id of sel) {
                 if (!inMru.has(id)) selectedRow.appendChild(buildSelectedChip(id, false));
             }
@@ -8870,6 +8891,9 @@ class _FilterMixin {
                     renderSelected();
                     renderList();
                     refreshMruStates();   // state only — position stays put
+                    // Clear buttons live in the header -- sync them
+                    // (MJT 2026-08-19: they didn't appear on tile select).
+                    try { (this as any)._wvPanelRefreshHeader?.(); } catch (err) {}
                 });
                 mruRow.appendChild(btn);
             }
@@ -8901,8 +8925,13 @@ class _FilterMixin {
                     const bcs = doc.defaultView.getComputedStyle(box);
                     const limit = box.getBoundingClientRect().right
                         - (parseFloat(bcs.paddingRight) || 0);
-                    const overflows = (el) =>
-                        el.getBoundingClientRect().right > limit + 0.5;
+                    const rowTop = mruRow.getBoundingClientRect().top;
+                    const overflows = (el) => {
+                        const r = el.getBoundingClientRect();
+                        // crossed the box edge, or WRAPPED below the
+                        // first line (the row flex-wraps for chips)
+                        return r.right > limit + 0.5 || r.top > rowTop + 4;
+                    };
                     // No overflow affordance (MJT 2026-08-19): tiles
                     // that don't fit are simply not shown -- the full
                     // list is one click away on the trigger.
@@ -8911,6 +8940,36 @@ class _FilterMixin {
                         && overflows(mruRow.lastChild)) {
                         mruRow.removeChild(mruRow.lastChild);
                     }
+                    // Tiles YIELD to selected chips (MJT 2026-08-19 v2:
+                    // chips stay inline first): while any chip wrapped
+                    // below line 1 and MRU tiles remain, drop tiles to
+                    // make room. Once tiles are exhausted, remaining
+                    // chips legitimately wrap to the next line.
+                    const host2 = mruRow.parentElement;
+                    const anyChipWrapped = () => [...host2.querySelectorAll(
+                        ".wv-filter-itype-chip")].some(c =>
+                        c.getBoundingClientRect().top > rowTop + 4);
+                    let g3 = 0;
+                    while (mruRow.lastChild && g3++ < 12 && anyChipWrapped()) {
+                        mruRow.removeChild(mruRow.lastChild);
+                    }
+                    // Trimmed tiles may have carried selected/excluded
+                    // state -- resync the chips so that state falls back
+                    // to chips instead of vanishing (single resync per
+                    // fit; renderSelected reads RENDERED tiles).
+                    try {
+                        const g = this._activeGroup();
+                        const stateIds = new Set([
+                            ...((g && g.itemType) || []),
+                            ...((g && g.itemTypeExclude) || [])]);
+                        const rendered = new Set([...mruRow.querySelectorAll(
+                            ".icon-item-type")].map((i: any) => i.dataset.itemType));
+                        const chipIds = new Set([...host2.querySelectorAll(
+                            ".wv-filter-itype-chip")].map((c: any) => c.dataset.wvType || ""));
+                        const missing = [...stateIds].some(id =>
+                            !rendered.has(id) && !chipIds.has(id));
+                        if (missing) renderSelected();
+                    } catch (e) {}
                     return true;
                 } catch (e) { return true; }
             };

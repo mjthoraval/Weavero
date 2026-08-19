@@ -906,6 +906,15 @@ export const PLUGIN_CSS = [
     ".wv-filter-section {",
     "  display: flex; flex-direction: row; align-items: center; gap: 4px;",
     "}",
+    // Notes section (2026-08-19, MJT): visually its own block -- rule
+    // lines above and below, same theme-agnostic grey-alpha family as
+    // the OR-group tint.
+    ".wv-filter-notes-section {",
+    "  border-top: 1px solid rgba(127,127,127,0.35);",
+    "  border-bottom: 1px solid rgba(127,127,127,0.35);",
+    "  padding: 6px 0;",
+    "  margin: 3px 0;",
+    "}",
     // Rule 1 same-level OR groups (Item Type ↔ Standalone Note,
     // Attachment File Type ↔ Item Note, Annotation Colour, Annotation
     // Type): a subtle card tint marks each as one "pick any of these"

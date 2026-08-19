@@ -10727,7 +10727,7 @@ class _FilterMixin {
      *  Type / Attachment File Type); only their home moved. */
     _renderNotesSection(doc, section, refreshAll) {
         while (section.firstChild) section.removeChild(section.firstChild);
-        section.className = "wv-filter-section";
+        section.className = "wv-filter-section wv-filter-notes-section";
         const NS_HTML = "http://www.w3.org/1999/xhtml";
         const opts = doc.createElementNS(NS_HTML, "div");
         opts.className = "wv-filter-options";

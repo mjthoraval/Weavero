@@ -151,7 +151,7 @@ What's *absent* is the point: both EPUBs (Fundamental Accessibility, Gulliver's)
 
 </summary>
 
-> Some chips don't pin a kind on their own — `Has Tag`, `Has Related`, `Has Link`, the `Tag`-with-value picker, `Has Annotations`, and `Item Note` (as the structural "tree has an item note" requirement). Each has a small **"Apply to" dropdown** with the three level toggles. The chip can only touch rows whose kind is ticked in its scope.
+> Some chips don't pin a kind on their own — `Has Tag`, `Has Related`, `Has Link`, the `Tag`-with-value picker, `Has Annotations`, and `Item Note` (as the structural "tree has an item note" requirement). Each has a small **"Apply to" dropdown** with the four type toggles — Parent items, Attachments, Notes, Annotations (see [Types and positions](#types-and-positions)). The chip can only touch rows whose type is ticked in its scope. Scopes saved before the Notes toggle existed migrate transparently: notes follow whichever old toggles covered their positions until you set the Notes toggle explicitly.
 
 For each cross-level chip and each row:
 
@@ -245,7 +245,7 @@ Compare the **Smith PDF** with Rule 5 above, where it was dimmed. Here it's **wh
 
 The toolbar's quick-search input is just Zotero's normal search. Weavero doesn't re-run it — it sees the items Zotero has already filtered to and combines them with the chip-based filter.
 
-The quick search has its own scope dropdown ("Restrict Quick Search to:") with the same three level toggles. When the search has text:
+The quick search has its own scope dropdown ("Restrict Quick Search to:") with the same four type toggles. When the search has text:
 
 - A row whose kind is **unchecked** in scope can't become a real match via the search — it's still kept as a dimmed ancestor when one of its descendants matches, so tree shape stays intact. With `parent = false`, parents stop appearing "in white" purely because their title matched the search, but they still serve as containers above matching descendants.
 - A row whose kind is **checked** in scope passes the search if the row itself, an ancestor, or a descendant — with kind also in scope — actually matches the search. This is the same vertical-spine rule as Rule 3. Siblings don't count. So:
@@ -266,7 +266,7 @@ The "Show Non-Matching Annotations" and "Show Non-Matching Attachments" toggles 
 
 </summary>
 
-Selection Target chooses which row kinds Ctrl+A picks. Rows that aren't in the target are dimmed (greyed out, unselectable). Set it explicitly with the three buttons at the bottom of the popup, or leave it on the smart default:
+Selection Target chooses which row kinds Ctrl+A picks. Rows that aren't in the target are dimmed (greyed out, unselectable). Set it explicitly with the four buttons at the bottom of the popup (Parent, Attachment, Note, Annotation), or leave it on the smart default:
 
 - No filter on → every kind is in the target.
 - Filter on → the target is the union of the kinds each active chip actually targets. Annotation-only chips contribute "annotation". Attachment File Type contributes "attachment". A cross-level chip contributes the kinds inside its scope.

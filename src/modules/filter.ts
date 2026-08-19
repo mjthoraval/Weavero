@@ -1579,7 +1579,7 @@ class _FilterMixin {
                         // kind is in the resolved target.
                         let eff: any = null;
                         try { eff = self._effectiveSelectionTargetKinds(); } catch (e) {}
-                        if (eff && !(eff.parent && eff.attachment && eff.annotation)) {
+                        if (eff && !(eff.parent && eff.attachment && eff.note && eff.annotation)) {
                             if (!eff[kind]) return false;
                         }
                         // Primary gate — when the filter is active,
@@ -2378,6 +2378,10 @@ class _FilterMixin {
             // exclude variants reject those rows.
             itemNote: null,
             standaloneNote: null,
+            // Standalone Attachment tile (2026-08-19): tri-state like its
+            // note sibling; true = only parentless attachments, false =
+            // exclude them. Restriction (ANDs with file type), not a pair.
+            standaloneAttachment: null,
             // Parent-targeting tri-state filters (regular items
             // only; non-regulars relax through). Each is `null /
             // true / false` for off / include / exclude.
@@ -2440,6 +2444,7 @@ class _FilterMixin {
         if (group.hasTag != null) return true;
         if (group.itemNote != null) return true;
         if (group.standaloneNote != null) return true;
+        if (group.standaloneAttachment != null) return true;
         if (group.hasAbstract != null) return true;
         if (group.hasDOI != null) return true;
         if (group.hasPMID != null) return true;
@@ -2575,15 +2580,15 @@ class _FilterMixin {
     }
 
     _effectiveSelectionTargetKinds() {
-        const ALL = { parent: true, attachment: true, annotation: true };
+        const ALL = { parent: true, attachment: true, note: true, annotation: true };
         const fs = this._filterState || {};
         const tgt = fs.selectionTarget || {};
         const exc = fs.selectionTargetExclude || {};
-        if (tgt.parent || tgt.attachment || tgt.annotation) {
-            return { parent: !!tgt.parent, attachment: !!tgt.attachment, annotation: !!tgt.annotation };
+        if (tgt.parent || tgt.attachment || tgt.note || tgt.annotation) {
+            return { parent: !!tgt.parent, attachment: !!tgt.attachment, note: !!tgt.note, annotation: !!tgt.annotation };
         }
-        if (exc.parent || exc.attachment || exc.annotation) {
-            return { parent: !exc.parent, attachment: !exc.attachment, annotation: !exc.annotation };
+        if (exc.parent || exc.attachment || exc.note || exc.annotation) {
+            return { parent: !exc.parent, attachment: !exc.attachment, note: !exc.note, annotation: !exc.annotation };
         }
         // --- smart default ---
         if (!this._isFilterActive(fs)) return { ...ALL };
@@ -2624,8 +2629,8 @@ class _FilterMixin {
             for (const { f, s } of rowScopedFields) {
                 if (!isSet(g, f)) continue;
                 const sc = g[s] || { annotation: true, attachment: true, parent: true };
-                for (const k of ["annotation", "attachment", "parent"]) {
-                    if (sc[k] !== false) cats.add(k);
+                for (const k of ["annotation", "attachment", "note", "parent"]) {
+                    if (this._wvScopeAllows(sc, k)) cats.add(k);
                 }
             }
             // Has Link — text-source-specific scope keys mapped to
@@ -2633,8 +2638,9 @@ class _FilterMixin {
             if (isSet(g, "hasLink")) {
                 const sc = g.hasLinkScope || { annotationComment: true, itemNoteText: true, standaloneText: true };
                 if (sc.annotationComment !== false) cats.add("annotation");
-                if (sc.itemNoteText !== false) cats.add("attachment");
-                if (sc.standaloneText !== false) cats.add("parent");
+                // Both note-text sources live on note-kind rows now.
+                if (sc.itemNoteText !== false) cats.add("note");
+                if (sc.standaloneText !== false) cats.add("note");
             }
             // Added By — topLevel→parent, attachments→attachment,
             // annotations→annotation.
@@ -2643,11 +2649,14 @@ class _FilterMixin {
                 if (sc.topLevel !== false) cats.add("parent");
                 if (sc.attachments !== false) cats.add("attachment");
                 if (sc.annotations !== false) cats.add("annotation");
+                if (sc.notes !== undefined
+                    ? sc.notes !== false : sc.topLevel !== false) cats.add("note");
             }
             // Single-kind neutrals — they only apply to one row
             // kind, so they contribute exactly that kind.
-            if (isSet(g, "itemNote")) cats.add("attachment");
-            if (isSet(g, "standaloneNote")) cats.add("parent");
+            if (isSet(g, "itemNote")) cats.add("note");
+            if (isSet(g, "standaloneNote")) cats.add("note");
+            if (isSet(g, "standaloneAttachment")) cats.add("attachment");
             if (isSet(g, "hasAnnotations")) cats.add("attachment");
             // Tag filter (annotationTag) — cross-level: matches any
             // row whose own tags contain the chosen tag. Shares the
@@ -2656,16 +2665,16 @@ class _FilterMixin {
             if (isSet(g, "annotationTag") || isSet(g, "annotationTagExclude")) {
                 const sc = g.hasTagScope
                     || { annotation: true, attachment: true, parent: true };
-                for (const k of ["annotation", "attachment", "parent"]) {
-                    if (sc[k] !== false) cats.add(k);
+                for (const k of ["annotation", "attachment", "note", "parent"]) {
+                    if (this._wvScopeAllows(sc, k)) cats.add(k);
                 }
             }
             // Quick-search scope is also row-kind-scoped — include
             // its allowed kinds when an actual search is typed.
             if (this._currentQuickSearchValue && g.quickSearchScope) {
                 const sc = g.quickSearchScope;
-                for (const k of ["annotation", "attachment", "parent"]) {
-                    if (sc[k] !== false) cats.add(k);
+                for (const k of ["annotation", "attachment", "note", "parent"]) {
+                    if (this._wvScopeAllows(sc, k)) cats.add(k);
                 }
             }
         };
@@ -2680,8 +2689,8 @@ class _FilterMixin {
         // 1 category → just that kind; 2 categories → those kinds;
         // 3 (or 0, which shouldn't happen given _isFilterActive) →
         // all kinds.
-        if (cats.size === 1 || cats.size === 2) {
-            return { parent: cats.has("parent"), attachment: cats.has("attachment"), annotation: cats.has("annotation") };
+        if (cats.size >= 1 && cats.size <= 3) {
+            return { parent: cats.has("parent"), attachment: cats.has("attachment"), note: cats.has("note"), annotation: cats.has("annotation") };
         }
         return { ...ALL };
     }
@@ -2699,10 +2708,10 @@ class _FilterMixin {
             if (!bar) return;
             const fs = this._filterState || {};
             const ti = fs.selectionTarget || {}, te = fs.selectionTargetExclude || {};
-            const noExplicit = !(ti.parent || ti.attachment || ti.annotation
-                || te.parent || te.attachment || te.annotation);
+            const noExplicit = !(ti.parent || ti.attachment || ti.note || ti.annotation
+                || te.parent || te.attachment || te.note || te.annotation);
             const eff = this._effectiveSelectionTargetKinds();
-            const narrowed = noExplicit && !(eff.parent && eff.attachment && eff.annotation);
+            const narrowed = noExplicit && !(eff.parent && eff.attachment && eff.note && eff.annotation);
             for (const btn of bar.querySelectorAll(".wv-filter-scope-toggle") as any) {
                 const key = btn.dataset && btn.dataset.key;
                 if (!key) continue;
@@ -3220,6 +3229,17 @@ class _FilterMixin {
                 if (isStandalone !== group.standaloneNote) return false;
             }
         }
+        if (group.standaloneAttachment != null) {
+            // Standalone Attachment tile (2026-08-19): a RESTRICTION on
+            // attachment rows, intersecting with Attachment File Type
+            // (standalone + PDF = standalone PDFs). Deliberately NOT an
+            // OR pair -- unlike Standalone Note <-> Item Type.
+            const isAtt = !!(item.isAttachment && item.isAttachment());
+            if (isAtt) {
+                const isStandalone = !item.parentItem;
+                if (isStandalone !== group.standaloneAttachment) return false;
+            }
+        }
         // Parent-targeting "Has *" tri-states. Each one only fails
         // when the item IS a regular item and doesn't satisfy the
         // chosen direction. Non-regulars relax through (matches the
@@ -3316,13 +3336,8 @@ class _FilterMixin {
             // with the Has Tag filter — one scope, both filters.
             const tagSc = group.hasTagScope
                 || { annotation: true, attachment: true, parent: true };
-            const isAnn = !!(item.isAnnotation && item.isAnnotation());
-            const isAtt = !isAnn
-                && !!(item.isAttachment && item.isAttachment());
-            const isPar = !isAnn && !isAtt;
-            const inScope = (isAnn && tagSc.annotation !== false)
-                || (isAtt && tagSc.attachment !== false)
-                || (isPar && tagSc.parent !== false);
+            const inScope = this._wvScopeAllows(
+                tagSc, this._rowKindOf(item));
             if (!inScope) {
                 if (!opts.relaxOutOfScopeAddedBy) return false;
                 // else: skip the tag check entirely (subtree-keep).
@@ -3367,10 +3382,14 @@ class _FilterMixin {
             const isAnn = !!(item.isAnnotation && item.isAnnotation());
             const isAttach = !isAnn
                 && !!(item.isAttachment && item.isAttachment());
-            const isTopLevel = !isAnn && !isAttach;
+            const isNt = !isAnn && !isAttach
+                && !!(item.isNote && item.isNote());
+            const isTopLevel = !isAnn && !isAttach && !isNt;
             const inScope = (isAnn && scope.annotations)
                 || (isAttach && scope.attachments)
-                || (isTopLevel && scope.topLevel);
+                || (isTopLevel && scope.topLevel)
+                || (isNt && (scope.notes !== undefined
+                    ? scope.notes !== false : scope.topLevel !== false));
             if (!inScope) {
                 if (!opts.relaxOutOfScopeAddedBy) return false;
                 // else: skip the addedBy check entirely.
@@ -3387,10 +3406,14 @@ class _FilterMixin {
             const isAnn = !!(item.isAnnotation && item.isAnnotation());
             const isAttach = !isAnn
                 && !!(item.isAttachment && item.isAttachment());
-            const isTopLevel = !isAnn && !isAttach;
+            const isNt = !isAnn && !isAttach
+                && !!(item.isNote && item.isNote());
+            const isTopLevel = !isAnn && !isAttach && !isNt;
             const inScope = (isAnn && scope.annotations)
                 || (isAttach && scope.attachments)
-                || (isTopLevel && scope.topLevel);
+                || (isTopLevel && scope.topLevel)
+                || (isNt && (scope.notes !== undefined
+                    ? scope.notes !== false : scope.topLevel !== false));
             if (inScope) {
                 const addedBy = this._getItemAddedBy(item);
                 if (addedBy && wantedAddedByX.includes(addedBy)) return false;
@@ -3411,7 +3434,7 @@ class _FilterMixin {
             const k = this._rowKindOf(item);
             if (k) {
                 // Out-of-scope kinds: drop entirely.
-                if (group.quickSearchScope[k] === false) return false;
+                if (!this._wvScopeAllows(group.quickSearchScope, k)) return false;
                 // Vertical-spine search check — same logic as
                 // cross-level chips (Rule 3): the row, or any of its
                 // ancestors / descendants whose kind is also in
@@ -4016,6 +4039,13 @@ class _FilterMixin {
                 && root.isNote() && !root.parentItem);
             if (!rootIsStandalone) return false;
         }
+        if (group.standaloneAttachment === true) {
+            // Tree's root must itself be a parentless attachment; file-
+            // type chips then apply to that same row (intersection).
+            const rootIsSA = !!(root.isAttachment
+                && root.isAttachment() && !root.parentItem);
+            if (!rootIsSA) return false;
+        }
         if (group.itemNote === true) {
             // OR-pair with `attachmentFileType` (Rule 1): when both
             // are set, the attachment level is satisfied by EITHER
@@ -4142,10 +4172,29 @@ class _FilterMixin {
         if (item.isAnnotation && item.isAnnotation()) return "annotation";
         if (item.isAttachment && item.isAttachment()) return "attachment";
         if (item.isNote && item.isNote()) {
-            return item.parentItem ? "attachment" : "parent";
+            // FOUR-TYPE CLASSIFICATION (2026-08-19, MJT-approved): notes
+            // are their own kind. Before this, a note's kind came from its
+            // POSITION (standalone -> "parent", child -> "attachment"),
+            // which made scopes and Selection Target lie about notes.
+            return "note";
         }
         if (item.isRegularItem && item.isRegularItem()) return "parent";
         return null;
+    }
+
+    /** Kind-scope consult with the pre-four-type MIGRATION built in
+     *  (2026-08-19): saved scopes from before the "note" kind have no
+     *  `note` key -- notes then rode `parent` (standalone) and
+     *  `attachment` (child). Preserve behaviour: an unset `note` key is
+     *  in scope iff either of those covering toggles is. Never write
+     *  the derived value back here -- the UI materialises it when a
+     *  scope dropdown opens. */
+    _wvScopeAllows(sc, kind) {
+        if (!sc || !kind) return true;
+        if (kind === "note" && sc.note === undefined) {
+            return sc.parent !== false || sc.attachment !== false;
+        }
+        return sc[kind] !== false;
     }
 
     /** Strict kind-specific check: returns true iff `item` is
@@ -4298,7 +4347,7 @@ class _FilterMixin {
             const k = this._rowKindOf(item);
             const tagSc = group.hasTagScope
                 || { annotation: true, attachment: true, parent: true };
-            if (k && tagSc[k] !== false) {
+            if (k && this._wvScopeAllows(tagSc, k)) {
                 const tags = (item.getTags && item.getTags()) || [];
                 const names = tags.map(t => t && t.tag).filter(Boolean);
                 if (group.annotationTag && group.annotationTag.length
@@ -4328,9 +4377,13 @@ class _FilterMixin {
             const sc = group.addedByScope || {
                 topLevel: true, attachments: true, annotations: true,
             };
+            // Notes: dedicated `notes` toggle; unset = migrate from
+            // topLevel (ALL notes rode topLevel here pre-four-type).
             const inScope = (isAnn && sc.annotations)
                 || (isAtt && sc.attachments)
-                || ((isReg || isNote) && sc.topLevel);
+                || (isReg && sc.topLevel)
+                || (isNote && (sc.notes !== undefined
+                    ? sc.notes !== false : sc.topLevel !== false));
             if (inScope) {
                 const addedBy = this._getItemAddedBy(item);
                 if (addedBy && group.addedBy
@@ -4350,7 +4403,7 @@ class _FilterMixin {
         // walks their subtree on the keep pass.
         // Cross-level scope check (mirrors _rowPassesFilters).
         const cInScope = (scopeObj, kind) =>
-            !scopeObj || !kind || scopeObj[kind] !== false;
+            this._wvScopeAllows(scopeObj, kind);
         if (group.hasRelated != null) {
             const k = this._rowKindOf(item);
             if (cInScope(group.hasRelatedScope, k)) {
@@ -4392,6 +4445,11 @@ class _FilterMixin {
         if (group.standaloneNote != null) {
             const isSN = !!(item.isNote && item.isNote() && !item.parentItem);
             if (isSN === group.standaloneNote) return true;
+        }
+        if (group.standaloneAttachment != null) {
+            const isSA = !!(item.isAttachment && item.isAttachment()
+                && !item.parentItem);
+            if (isSA === group.standaloneAttachment) return true;
         }
         // Parent-targeting Has-* — only regular items can be primary
         // for these. Non-regulars don't count as kind matches here.
@@ -5662,6 +5720,9 @@ class _FilterMixin {
             if (group.standaloneNote != null) {
                 bar.appendChild(this._buildStandaloneNoteChip(doc, group, gi));
             }
+            if (group.standaloneAttachment != null) {
+                bar.appendChild(this._buildStandaloneAttachmentChip(doc, group, gi));
+            }
             if (group.hasAbstract != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
                     "hasAbstract", "Has Abstract"));
@@ -6046,6 +6107,20 @@ class _FilterMixin {
             fillValue: () => {},
             onRemove: () => {
                 group.standaloneNote = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildStandaloneAttachmentChip(doc, group, gi) {
+        const value = group.standaloneAttachment;
+        return this._buildFilterChip(doc, {
+            field: "Standalone Attachment",
+            op: value ? "is" : "is not",
+            fillValue: () => {},
+            onRemove: () => {
+                group.standaloneAttachment = null;
                 this._pruneEmptyGroups();
             },
             onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
@@ -7150,9 +7225,11 @@ class _FilterMixin {
         // doesn't affect filtering itself).
         const selChoices = [
             { key: "parent",     label: "Parent",
-              tip: "Regular items + standalone notes will be selectable in Ctrl+A." },
+              tip: "Regular items will be selectable in Ctrl+A." },
             { key: "attachment", label: "Attachment",
-              tip: "Attachment rows will be selectable in Ctrl+A." },
+              tip: "Attachment rows (standalone included) will be selectable in Ctrl+A." },
+            { key: "note",       label: "Note",
+              tip: "Notes (standalone and item notes) will be selectable in Ctrl+A." },
             { key: "annotation", label: "Annotation",
               tip: "Annotation rows will be selectable in Ctrl+A." },
         ];
@@ -7210,12 +7287,12 @@ class _FilterMixin {
         // The inferred-default cue (`data-auto` on a chip): only when no
         // chip is explicitly set AND `_effectiveSelectionTargetKinds`
         // narrows to one kind. Pass that narrowed set to buildToggleBar.
-        const _noExplicitSelTarget = !(selTarget.parent || selTarget.attachment || selTarget.annotation
-            || selTargetExc.parent || selTargetExc.attachment || selTargetExc.annotation);
+        const _noExplicitSelTarget = !(selTarget.parent || selTarget.attachment || selTarget.note || selTarget.annotation
+            || selTargetExc.parent || selTargetExc.attachment || selTargetExc.note || selTargetExc.annotation);
         let _selTargetAuto: any = null;
         if (_noExplicitSelTarget) {
             const eff = this._effectiveSelectionTargetKinds();
-            if (!(eff.parent && eff.attachment && eff.annotation)) _selTargetAuto = eff;
+            if (!(eff.parent && eff.attachment && eff.note && eff.annotation)) _selTargetAuto = eff;
         }
         const selBar = buildToggleBar(
             "Selection Target:",
@@ -7924,6 +8001,7 @@ class _FilterMixin {
                     const KINDS_ROW_TAG = [
                         { key: "parent",     label: "Parent" },
                         { key: "attachment", label: "Attachment" },
+                        { key: "note",       label: "Note" },
                         { key: "annotation", label: "Annotation" },
                     ];
                     const arrow = doc.createElementNS(NS_HTML, "button");
@@ -8346,6 +8424,38 @@ class _FilterMixin {
             refreshAll();
         });
         triggerRow.appendChild(snBtn);
+
+        // Standalone Attachment tile (2026-08-19) — the attachment
+        // type's missing position scope, symmetric to Standalone Note.
+        // A RESTRICTION: intersects with Attachment File Type
+        // (standalone + PDF = standalone PDFs), no OR pair.
+        const saCur = sg0 ? sg0.standaloneAttachment : null;
+        const saBtn = doc.createElementNS(NS_HTML, "button");
+        saBtn.type = "button";
+        saBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        saBtn.title = "Standalone Attachment — show only top-level "
+            + "(parentless) attachments. Alt+click to exclude.";
+        if (saCur === true) saBtn.dataset.selected = "true";
+        else if (saCur === false) saBtn.dataset.excluded = "true";
+        const saIcon = doc.createElementNS(NS_HTML, "img");
+        saIcon.className = "wv-filter-svg";
+        saIcon.src = "chrome://zotero/skin/16/universal/attachment.svg";
+        saIcon.alt = "Standalone Attachment";
+        saIcon.style.color = "var(--accent-blue)";
+        saBtn.appendChild(saIcon);
+        saBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.standaloneAttachment === false) ? null : false;
+            else next = (g.standaloneAttachment === true) ? null : true;
+            g.standaloneAttachment = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        triggerRow.appendChild(saBtn);
 
         // Vertical 2-col suggestion list (hidden until trigger is
         // clicked).
@@ -8919,6 +9029,7 @@ class _FilterMixin {
         const KINDS_QS = [
             { key: "parent",     label: "Parent" },
             { key: "attachment", label: "Attachment" },
+            { key: "note",       label: "Note" },
             { key: "annotation", label: "Annotation" },
         ];
         btn.__wvKinds = KINDS_QS;
@@ -9031,6 +9142,13 @@ class _FilterMixin {
         // level scope popup so the shared CSS rules apply.
         const inner = doc.createElementNS(NS_HTML, "div");
         inner.className = "wv-filter-scope-popup wv-qs-scope-popup-inner";
+        try {
+            const gq = this._activeGroup();
+            const sq = gq && gq.quickSearchScope;
+            if (sq && sq.note === undefined) {
+                sq.note = sq.parent !== false || sq.attachment !== false;
+            }
+        } catch (e) {}
         // Override the `position: absolute` from .wv-filter-scope-popup
         // since here we're inside a XUL panel that positions itself.
         inner.style.position = "static";
@@ -9125,6 +9243,7 @@ class _FilterMixin {
         const KINDS_ROW = [
             { key: "parent",     label: "Parent" },
             { key: "attachment", label: "Attachment" },
+            { key: "note",       label: "Note" },
             { key: "annotation", label: "Annotation" },
         ];
         // Has Link's kind list — text-source-specific buckets
@@ -9257,6 +9376,12 @@ class _FilterMixin {
             for (const k of kinds) g[scopeKey][k.key] = true;
         }
         const scope = g[scopeKey];
+        // MIGRATION (2026-08-19): pre-four-type scopes have no `note`
+        // key; materialise it from the covering toggles (see
+        // _wvScopeAllows) so the checkbox shows what the verdict does.
+        if (kinds.some(k => k.key === "note") && scope.note === undefined) {
+            scope.note = scope.parent !== false || scope.attachment !== false;
+        }
 
         const pop = doc.createElementNS(NS_HTML, "div");
         pop.className = "wv-filter-scope-popup";
@@ -10614,9 +10739,15 @@ class _FilterMixin {
                 };
             }
             const scope = group.addedByScope;
+            // MIGRATION (2026-08-19): unset `notes` follows topLevel
+            // (all notes rode the top-level toggle pre-four-type).
+            if (scope.notes === undefined) {
+                scope.notes = scope.topLevel !== false;
+            }
             const items = [
                 { key: "topLevel",    label: "Top-level items" },
                 { key: "attachments", label: "Attachments" },
+                { key: "notes",       label: "Notes" },
                 { key: "annotations", label: "Annotations" },
             ];
             for (const it of items) {

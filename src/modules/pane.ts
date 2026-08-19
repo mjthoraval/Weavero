@@ -2595,7 +2595,7 @@ class _PaneMixin {
             // (`_patchIsSelectable`), so the dimmed rows match what
             // select-all will actually pick.
             const eff = this._effectiveSelectionTargetKinds();
-            const allOn = !!(eff.parent && eff.attachment && eff.annotation);
+            const allOn = !!(eff.parent && eff.attachment && eff.note && eff.annotation);
             const state = this._filterState;
             const filterActive = !!state && this._isFilterActive(state);
             const qsValue = this._currentQuickSearchValue;

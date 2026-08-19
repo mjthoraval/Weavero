@@ -334,6 +334,10 @@
         ["empty result", () => { G().publication = ["ZZZ-NO-SUCH-PUBLICATION"]; }],
         ["scope excludes annotations", () => { G().annotationColor = ["#ffd400"];
             G().quickSearchScope = { annotation: false, attachment: true, parent: true }; }],
+        // Four-type classification (2026-08-19)
+        ["standaloneAttachment", () => { G().standaloneAttachment = true; }],
+        ["hasTag scoped to notes", () => { G().hasTag = true;
+            G().hasTagScope = { parent: false, attachment: false, note: true, annotation: false }; }],
     ];
 
     const R = {
@@ -541,6 +545,9 @@
         "multi-group OR (3)": () => [["resultLevel", "item", null], ["joinMode", "any", null],
             ["annotationColor", "is", "#ffd400"], ["itemType", "is", "book"], ["DOI", "isNotEmpty", null]],
         "empty result": () => [["resultLevel", "item", null], ["publicationTitle", "is", "ZZZ-NO-SUCH-PUBLICATION"]],
+        // Standalone attachments: Find attachments + noChildren excludes
+        // child items -- untested translation, the run will verify.
+        "standaloneAttachment": () => [["resultLevel", "attachment", null], ["noChildren", "true", null]],
         // Inexpressible by design -- the data lives outside zotero.sqlite
         // or has no search condition: inOtherLibrary (+FALSE), hasRelated,
         // hasLink, hasBookmarks, "all five stacked" (inOtherLibrary leg),

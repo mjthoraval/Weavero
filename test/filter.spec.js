@@ -67,11 +67,15 @@ describe("Weavero — items-tree filter", () => {
         it("classifies a regular item as 'parent'", () => {
             expect(wv._rowKindOf(regular)).to.equal("parent");
         });
-        it("classifies a STANDALONE note as 'parent' (top-level row)", () => {
-            expect(wv._rowKindOf(standaloneNote)).to.equal("parent");
+        // FOUR-TYPE CLASSIFICATION (2026-08-19): notes are their own
+        // kind at BOTH positions -- the old position-based mapping
+        // (standalone->parent, child->attachment) is retired. Full
+        // contract: test/four-type.spec.js.
+        it("classifies a STANDALONE note as 'note' (four-type)", () => {
+            expect(wv._rowKindOf(standaloneNote)).to.equal("note");
         });
-        it("classifies a CHILD note as 'attachment' (sits at the attachment level)", () => {
-            expect(wv._rowKindOf(childNote)).to.equal("attachment");
+        it("classifies a CHILD note as 'note' (four-type)", () => {
+            expect(wv._rowKindOf(childNote)).to.equal("note");
         });
         it("classifies an attachment as 'attachment'", function () {
             if (!attachment) this.skip();

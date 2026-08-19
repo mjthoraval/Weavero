@@ -86,7 +86,7 @@ Built on Zotero's own reader ([`zotero/reader`](https://github.com/zotero/reader
 
 - Annotation **colour**, **type**, **has-comment**
 - **Attachment file type** — PDF / EPUB / Snapshot / Image / Video / Web Link / Linked File / Other File
-- **Item Type** (native menulist + icon-only chips for the types you use), plus a **Standalone Note** tile
+- **Item Type** (native menulist + icon-only chips for the types you use), plus **Standalone Note** and **Standalone Attachment** tiles
 - **Parent flags**: *Has DOI*, *Has URL*, *Has Abstract*, *Has Attachment File*
 - **Attachment / annotation flags**: *Has Bookmarks* (Weavero document bookmarks), *Has Annotations*, *Item Note*
 - **Cross-level**: *Has Tag*, *Has Related*, *Has Link* (a URL in a comment or note) — each with an *Apply to* scope (parent / attachment / annotation)

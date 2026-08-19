@@ -8870,12 +8870,51 @@ class _FilterMixin {
             // re-renders and trims for real.
             const fitToLine = () => {
                 try {
-                    const host = mruRow.parentElement;
-                    if (!host || host.clientWidth <= 0) return false;
-                    let guard = 0;
-                    while (host.scrollWidth > host.clientWidth + 1
-                        && mruRow.lastChild && guard++ < 12) {
+                    // Boundary = the GROUP's tinted box, not the popup
+                    // edge (MJT 2026-08-19: tiles must not cross the
+                    // background). Overflow renders as an ellipsis that
+                    // opens the full list, never as a crossing tile.
+                    const box = mruRow.closest(".wv-filter-or-group")
+                        || mruRow.parentElement;
+                    if (!box || box.clientWidth <= 0) return false;
+                    // Layout-timing hole (2026-08-19): the box can
+                    // report a width while the tiles' rects are still
+                    // zero -- "no overflow" would be concluded from
+                    // stale geometry. Not laid out until the last tile
+                    // measures nonzero.
+                    if (mruRow.lastChild
+                        && mruRow.lastChild.getBoundingClientRect
+                        && mruRow.lastChild.getBoundingClientRect().width === 0) {
+                        return false;
+                    }
+                    const bcs = doc.defaultView.getComputedStyle(box);
+                    const limit = box.getBoundingClientRect().right
+                        - (parseFloat(bcs.paddingRight) || 0);
+                    const overflows = (el) =>
+                        el.getBoundingClientRect().right > limit + 0.5;
+                    let removed = 0, guard = 0;
+                    while (mruRow.lastChild && guard++ < 12
+                        && overflows(mruRow.lastChild)) {
                         mruRow.removeChild(mruRow.lastChild);
+                        removed++;
+                    }
+                    if (removed > 0) {
+                        const more = doc.createElementNS(NS_HTML, "button");
+                        more.type = "button";
+                        more.className = "wv-filter-opt wv-itype-mru-more";
+                        more.textContent = "…";
+                        more.title = "More item types — open the full list";
+                        more.addEventListener("click", (e) => {
+                            e.stopPropagation();
+                            try { trigger.click(); } catch (err) {}
+                        });
+                        mruRow.appendChild(more);
+                        // The ellipsis itself must fit inside the box.
+                        let g2 = 0;
+                        while (overflows(more) && mruRow.children.length > 1
+                            && g2++ < 12) {
+                            mruRow.removeChild(more.previousSibling);
+                        }
                     }
                     return true;
                 } catch (e) { return true; }
@@ -8884,12 +8923,17 @@ class _FilterMixin {
             // panel: widths are 0 at render time, and the clipped-tile
             // screenshot proved it, 2026-08-19). Try now, then retry on
             // the next tick(s) until layout gives real widths.
-            if (!fitToLine()) {
+            {
+                // Always run at least one deferred pass too -- a first
+                // pass that succeeded on half-laid-out geometry must be
+                // re-checked once the panel has settled.
                 let tries = 0;
                 const later = () => {
-                    if (fitToLine() || ++tries > 10) return;
+                    if (fitToLine() && tries > 0) return;
+                    if (++tries > 12) return;
                     doc.defaultView.setTimeout(later, 60);
                 };
+                fitToLine();
                 doc.defaultView.setTimeout(later, 60);
             }
         };

@@ -1514,9 +1514,9 @@ export const PLUGIN_CSS = [
     // `flex: 0 0 auto` so it sits on the first line and lets the
     // chip row absorb the remaining width.
     ".wv-filter-itype-trigger-row {",
-    // wrap allowed since the MRU cap rose to fill the freed line
-    // (2026-08-19) -- overflow grows the row instead of clipping.
-    "  display: flex; flex-wrap: wrap; align-items: flex-start;",
+    // Single line by design (MJT 2026-08-19): the MRU render trims
+    // trailing tiles that would overflow instead of wrapping.
+    "  display: flex; flex-wrap: nowrap; align-items: flex-start;",
     "  gap: 4px; min-width: 0;",
     "}",
     ".wv-filter-itype-trigger {",

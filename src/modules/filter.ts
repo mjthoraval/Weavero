@@ -8536,6 +8536,11 @@ class _FilterMixin {
         opts.appendChild(triggerRow);
 
         const trigger = doc.createXULElement("menulist");
+        // XUL menulists size the CLOSED control to the widest menu
+        // item by default -- that rendered as dead space inside the
+        // "Item Type" button (MJT 2026-08-19). The popup sizes itself
+        // independently, so the closed control can hug its label.
+        trigger.setAttribute("sizetopopup", "none");
         trigger.setAttribute("native", "true");
         trigger.setAttribute("label", "Item Type");
         trigger.className = "wv-filter-itype-trigger";
@@ -8857,6 +8862,22 @@ class _FilterMixin {
                 });
                 mruRow.appendChild(btn);
             }
+            // FIT-TO-LINE (MJT 2026-08-19): the row must stay a single
+            // line -- trim trailing tiles that overflow the popup width
+            // instead of wrapping. Measured on the row's parent (the
+            // trigger row), which has the bounded width. Skipped when
+            // the popup renders hidden (zero widths) -- the next open
+            // re-renders and trims for real.
+            try {
+                const host = mruRow.parentElement;
+                if (host && host.clientWidth > 0) {
+                    let guard = 0;
+                    while (host.scrollWidth > host.clientWidth + 1
+                        && mruRow.lastChild && guard++ < 12) {
+                        mruRow.removeChild(mruRow.lastChild);
+                    }
+                }
+            } catch (e) {}
         };
         renderMru();
 

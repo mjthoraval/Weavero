@@ -367,6 +367,138 @@ describe("Weavero — items-tree filter", () => {
         });
     });
 
+    // ---- annotation Source facet (annotationIsExternal) -----------
+    //
+    // Guard for the Source tri-state (2026-08-18, forum 121605):
+    // true = embedded in the PDF (isExternal), false = made in Zotero
+    // Reader — embedded-first encoding (MJT same day: plain click
+    // selects the external annotations). Contracts:
+    //   1. per-row: the chip hides non-matching annotation rows,
+    //   2. Has Annotations is SOURCE-AWARE while the chip is set,
+    //   3. Has Annotations=No + Source alone waives the tree-join
+    //      "needs a matching annotation" rule (zero matches IS the
+    //      satisfied state); with a colour chip added the waiver
+    //      does NOT apply (kept contradictory, as pre-Source).
+    describe("annotation Source facet", () => {
+        let parent, att, attExtOnly, attNatOnly, annNative, annExternal,
+            annExtOnly;
+        const mkGroup = (over) => Object.assign(wv._emptyFilterGroup(), over);
+        before(async function () {
+            this.timeout(20000);
+            const lib = Zotero.Libraries.userLibraryID;
+            parent = new Zotero.Item("journalArticle");
+            parent.libraryID = lib;
+            parent.setField("title", "WV-TEST source parent");
+            await parent.saveTx();
+            const mkPdf = async (title) => {
+                const a = new Zotero.Item("attachment");
+                a.libraryID = lib; a.parentID = parent.id;
+                a.attachmentLinkMode = Zotero.Attachments.LINK_MODE_IMPORTED_URL;
+                a.attachmentContentType = "application/pdf";
+                a.setField("title", title);
+                await a.saveTx();
+                return a;
+            };
+            const mkAnn = async (parentAtt, text, isExternal) => {
+                const ann = new Zotero.Item("annotation");
+                /** @type {any} */ (ann).libraryID = lib;
+                ann.parentID = parentAtt.id;
+                const aa = /** @type {any} */ (ann);
+                aa.annotationType = "highlight";
+                aa.annotationText = text;
+                aa.annotationColor = "#ffd400";
+                aa.annotationSortIndex = "00001|000001|00000";
+                aa.annotationPosition = JSON.stringify(
+                    { pageIndex: 0, rects: [[0, 0, 9, 9]] });
+                if (isExternal) aa.annotationIsExternal = true;
+                await ann.saveTx();
+                return ann;
+            };
+            att = await mkPdf("WV-TEST source pdf mixed");
+            annNative = await mkAnn(att, "WV-TEST native ann", false);
+            annExternal = await mkAnn(att, "WV-TEST external ann", true);
+            attExtOnly = await mkPdf("WV-TEST source pdf ext-only");
+            annExtOnly = await mkAnn(attExtOnly, "WV-TEST ext-only ann", true);
+            attNatOnly = await mkPdf("WV-TEST source pdf native-only");
+            await mkAnn(attNatOnly, "WV-TEST native-only ann", false);
+        });
+        after(async () => {
+            try { await parent.eraseTx(); } catch (e) {}
+        });
+
+        it("fixture sanity: annotationIsExternal persisted", () => {
+            expect(!!(/** @type {any} */ (annNative)).annotationIsExternal).to.equal(false);
+            expect(!!(/** @type {any} */ (annExternal)).annotationIsExternal).to.equal(true);
+        });
+
+        it("per-row: Source=Embedded (true) keeps external, drops native", () => {
+            const g = mkGroup({ annotationSource: true });
+            expect(wv._rowPassesFilters(annExternal, g)).to.equal(true);
+            expect(wv._rowPassesFilters(annNative, g)).to.equal(false);
+        });
+
+        it("per-row: Source=Zotero (false) keeps native, drops external", () => {
+            const g = mkGroup({ annotationSource: false });
+            expect(wv._rowPassesFilters(annExternal, g)).to.equal(false);
+            expect(wv._rowPassesFilters(annNative, g)).to.equal(true);
+        });
+
+        it("_kindOK and _rowHasOwnKindMatch respect the source", () => {
+            const g = mkGroup({ annotationSource: true });
+            expect(wv._kindOK(annExternal, g, "annotation")).to.equal(true);
+            expect(wv._kindOK(annNative, g, "annotation")).to.equal(false);
+            expect(wv._rowHasOwnKindMatch(annExternal, g)).to.equal(true);
+            expect(wv._rowHasOwnKindMatch(annNative, g)).to.equal(false);
+        });
+
+        it("Has Annotations=Yes is source-aware", () => {
+            const gZot = mkGroup({ hasAnnotations: true, annotationSource: false });
+            expect(wv._rowPassesFilters(att, gZot), "mixed pdf has a Zotero ann")
+                .to.equal(true);
+            expect(wv._rowPassesFilters(attExtOnly, gZot),
+                "ext-only pdf has NO Zotero ann").to.equal(false);
+            const gEmb = mkGroup({ hasAnnotations: true, annotationSource: true });
+            expect(wv._rowPassesFilters(attExtOnly, gEmb)).to.equal(true);
+        });
+
+        it("Has Annotations=No + Source=Zotero: ext-only passes, incl. tree-join waiver", () => {
+            const g = mkGroup({ hasAnnotations: false, annotationSource: false });
+            expect(wv._rowPassesFilters(attExtOnly, g)).to.equal(true);
+            expect(wv._rowPassesFilters(att, g), "mixed pdf HAS a Zotero ann")
+                .to.equal(false);
+            expect(wv._rowSatisfiesTreeJoin(attExtOnly, g),
+                "waiver: zero matching annotations is the satisfied state")
+                .to.equal(true);
+        });
+
+        it("waiver does NOT extend to colour chips (stays contradictory)", () => {
+            const g = mkGroup({ hasAnnotations: false, annotationSource: false,
+                annotationColor: ["#ffd400"] });
+            expect(wv._rowSatisfiesTreeJoin(attExtOnly, g)).to.equal(false);
+        });
+
+        // Attachment-level tile (2026-08-19): true = attachment carries
+        // >=1 embedded annotation; never filters annotation rows.
+        it("Has Embedded Annotations: attachment-level include/exclude", () => {
+            const gY = mkGroup({ hasEmbeddedAnnotations: true });
+            expect(wv._rowPassesFilters(att, gY), "mixed carries one").to.equal(true);
+            expect(wv._rowPassesFilters(attExtOnly, gY)).to.equal(true);
+            expect(wv._rowPassesFilters(attNatOnly, gY), "native-only lacks one")
+                .to.equal(false);
+            const gN = mkGroup({ hasEmbeddedAnnotations: false });
+            expect(wv._rowPassesFilters(attNatOnly, gN)).to.equal(true);
+            expect(wv._rowPassesFilters(att, gN)).to.equal(false);
+        });
+
+        it("Has Embedded Annotations leaves annotation rows untouched", () => {
+            const g = mkGroup({ hasEmbeddedAnnotations: true });
+            expect(wv._rowPassesFilters(annNative, g),
+                "native row relaxes through the attachment-level chip")
+                .to.equal(true);
+            expect(wv._rowPassesFilters(annExternal, g)).to.equal(true);
+        });
+    });
+
     // ---- native-search oracle parity (2026-08-06) -----------------
     //
     // User: "make advanced searches that match the behaviour of the

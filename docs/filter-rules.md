@@ -105,7 +105,9 @@ There are **four** such OR groups. The filter popup tints each one as its own ca
 - **Parent-level pair** — `Item Type` ↔ `Standalone Note`. A row passes if its item type matches OR it's a standalone note.
 - **Attachment-level pair** — `Attachment File Type` ↔ `Item Note`. A row passes if its file type matches OR it's an item note.
 
-The `Has Comment` toggle sits next to the Annotation Type card but is **not** part of it — it's a separate filter, AND'd like any other (which is why it stays outside the tint).
+The `Has Comment` and `Annotation Source` toggles sit next to the Annotation Type card but are **not** part of it — each is a separate filter, AND'd like any other (which is why they stay outside the tint).
+
+**Annotation Source** distinguishes annotations *embedded in the PDF* by an outside reader (click) from annotations *made in Zotero Reader* (Alt+click) — something native Advanced Search cannot express. Its attachment-level sibling, **Has Embedded Annotations** (the lock-badged tile in the Attachment group), keeps only attachments that *carry* at least one embedded annotation (Alt+click: none) while leaving the annotation rows untouched — use it when you want to find externally-annotated PDFs but still see all their annotations. While it's set, `Has Annotations` counts only annotations of that source, so `Source = Made in Zotero` + `Has Annotations = Yes` finds the attachments you annotated in Zotero, and `Has Annotations = No` finds the ones you haven't touched yet even if they came with embedded annotations. One caveat: Zotero imports embedded annotations when it first *opens* a PDF — a file annotated elsewhere but never opened in Zotero has no annotation entries yet and counts as un-annotated.
 
 **Example.** `Attachment File Type = EPUB` + `Item Note = is` — the two halves of the attachment-level pair.
 

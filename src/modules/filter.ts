@@ -2275,6 +2275,18 @@ class _FilterMixin {
             annotationType: [],
             annotationTypeExclude: [],
             annotationHasComment: null,
+            // Annotation source tri-state (`annotationIsExternal`):
+            //   null  → any source
+            //   true  → embedded in the PDF by an outside reader
+            //           (isExternal true; imported read-only items)
+            //   false → made in Zotero Reader (isExternal false).
+            // Embedded-first encoding since 2026-08-18 (MJT: plain click
+            // should select the external annotations) — true carries the
+            // tile's data-selected styling, so the primary gesture keeps
+            // the include look shared by every other tile.
+            // Native Advanced Search cannot express this at all —
+            // `isExternal` appears nowhere in searchConditions.js.
+            annotationSource: null,
             annotationTag: [],
             annotationTagExclude: [],
             annotationAuthor: [],
@@ -2393,6 +2405,13 @@ class _FilterMixin {
             hasAttachment: null,
             // Attachment-targeting tri-state — file attachments only.
             hasAnnotations: null,
+            // "Has Embedded Annotations" (2026-08-19, MJT) — attachment-
+            // level tri-state: true = the file attachment carries at
+            // least one PDF-embedded annotation (annotationIsExternal),
+            // false = none. Unlike the annotation-level Source chip it
+            // does NOT filter annotation rows — an attachment with both
+            // kinds still shows all of them.
+            hasEmbeddedAnnotations: null,
             // Publication multi-select (parent items only). State
             // shape mirrors Tag / Author / Added By: parallel
             // include + exclude arrays of titles.
@@ -2422,6 +2441,7 @@ class _FilterMixin {
         if (group.annotationType && group.annotationType.length) return true;
         if (group.annotationTypeExclude && group.annotationTypeExclude.length) return true;
         if (group.annotationHasComment != null) return true;
+        if (group.annotationSource != null) return true;
         if (group.annotationTag && group.annotationTag.length) return true;
         if (group.annotationTagExclude && group.annotationTagExclude.length) return true;
         if (group.annotationAuthor && group.annotationAuthor.length) return true;
@@ -2452,6 +2472,7 @@ class _FilterMixin {
         if (group.hasURL != null) return true;
         if (group.hasAttachment != null) return true;
         if (group.hasAnnotations != null) return true;
+        if (group.hasEmbeddedAnnotations != null) return true;
         if (group.publication && group.publication.length) return true;
         if (group.publicationExclude && group.publicationExclude.length) return true;
         if (group.readStatus && group.readStatus.length) return true;
@@ -2567,6 +2588,7 @@ class _FilterMixin {
         return {
             annotation: ["annotationColor", "annotationColorExclude", "annotationType",
                 "annotationTypeExclude", "annotationHasComment",
+                "annotationSource",
                 "annotationAuthor", "annotationAuthorExclude"],
             attachment: ["attachmentFileType", "attachmentFileTypeExclude",
                 "outlineClass", "outlineClassExclude",
@@ -2658,6 +2680,7 @@ class _FilterMixin {
             if (isSet(g, "standaloneNote")) cats.add("note");
             if (isSet(g, "standaloneAttachment")) cats.add("attachment");
             if (isSet(g, "hasAnnotations")) cats.add("attachment");
+            if (isSet(g, "hasEmbeddedAnnotations")) cats.add("attachment");
             // Tag filter (annotationTag) — cross-level: matches any
             // row whose own tags contain the chosen tag. Shares the
             // `hasTagScope` with Has Tag (both are tag concepts;
@@ -3180,6 +3203,12 @@ class _FilterMixin {
                 if (hasComment !== group.annotationHasComment) return false;
             }
         }
+        if (group.annotationSource != null) {
+            const isAnn = !!(item.isAnnotation && item.isAnnotation());
+            if (isAnn && !this._annSourceMatches(item, group.annotationSource)) {
+                return false;
+            }
+        }
         // Cross-level checks — apply to every row kind, strict
         // per-row matching. Each item is evaluated independently;
         // descendants of a matching parent are NOT auto-kept by
@@ -3278,9 +3307,24 @@ class _FilterMixin {
         if (group.hasAnnotations != null) {
             const isFa = !!(item.isFileAttachment && item.isFileAttachment());
             if (isFa) {
-                const ids = item.getAnnotations() || [];
-                const v = ids.length > 0;
+                // Source-aware: while the Source chip is set, only
+                // annotations of that source count — so Source=Zotero
+                // + Has Annotations=No means "no annotations I made
+                // in Zotero" even when embedded ones exist.
+                const anns = item.getAnnotations() || [];
+                const v = anns.some(
+                    a => this._annSourceMatches(a, group.annotationSource));
                 if (v !== group.hasAnnotations) return false;
+            }
+        }
+        if (group.hasEmbeddedAnnotations != null) {
+            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
+            if (isFa) {
+                // Attachment-level only — deliberately NOT source-
+                // scoped and never filters annotation rows.
+                const anns = item.getAnnotations() || [];
+                const v = anns.some(a => !!(a as any).annotationIsExternal);
+                if (v !== group.hasEmbeddedAnnotations) return false;
             }
         }
         // Publication — regular items only.
@@ -3696,11 +3740,21 @@ class _FilterMixin {
         // no annotations, so no annotation in the tree could have
         // related items.
         if (!this._treeSatisfiesCrossLevelScoped(item, group)) return false;
-        const annActive = (group.annotationColor && group.annotationColor.length)
+        const annActiveOther = (group.annotationColor && group.annotationColor.length)
             || (group.annotationColorExclude && group.annotationColorExclude.length)
             || (group.annotationType && group.annotationType.length)
             || (group.annotationTypeExclude && group.annotationTypeExclude.length)
             || group.annotationHasComment != null;
+        const annActive = annActiveOther || group.annotationSource != null;
+        // Has Annotations=No + Source (and no other annotation chip)
+        // legitimately selects trees with ZERO matching annotations
+        // ("attachments I haven't annotated in Zotero") — the usual
+        // "annotation-targeting chip needs a matching annotation in
+        // the tree" rule would contradict the No and empty the view.
+        // Waive it for exactly that combination; when colour/type/
+        // comment chips are also set, No stays contradictory (empty),
+        // same as before the Source chip existed.
+        const annWaived = group.hasAnnotations === false && !annActiveOther;
         const attActive = !!(
             (group.attachmentFileType && group.attachmentFileType.length)
             || (group.attachmentFileTypeExclude && group.attachmentFileTypeExclude.length)
@@ -3732,7 +3786,7 @@ class _FilterMixin {
             return true;
         }
         if (isAtt) {
-            if (annActive) {
+            if (annActive && !annWaived) {
                 // `item.getAnnotations` exists on every Item (it's on
                 // the prototype) but THROWS unless the item is a file
                 // attachment. Web-link / standalone-link attachments
@@ -3797,7 +3851,7 @@ class _FilterMixin {
             // When `attActive` is set, the annotation must be
             // under an attachment that also satisfies
             // `attachmentFileType`.
-            if (annActive) {
+            if (annActive && !annWaived) {
                 const attIds = (typeof item.getAttachments === "function")
                     ? (item.getAttachments() || []) : [];
                 let annLevelOK = false;
@@ -3848,8 +3902,10 @@ class _FilterMixin {
 
             // Notes have no annotations of their own → annotation-
             // targeting filters can never be satisfied at the note
-            // row; reject.
-            if (annActive) return false;
+            // row; reject. (Same waiver as attachments: under
+            // Has Annotations=No + Source, "zero matching
+            // annotations" is the SATISFIED state.)
+            if (annActive && !annWaived) return false;
             // Same-level OR: skip attActive only when this row is
             // an item note AND itemNote chip matches it.
             if (attActive && !itemNoteSelfMatched) return false;
@@ -4090,9 +4146,27 @@ class _FilterMixin {
                 if (!cand || !cand.isFileAttachment
                     || !cand.isFileAttachment()) continue;
                 const anns = cand.getAnnotations() || [];
-                if (anns.length > 0) { hasAnnotated = true; break; }
+                if (anns.some(a => this._annSourceMatches(
+                    a, group.annotationSource))) {
+                    hasAnnotated = true; break;
+                }
             }
             if (!hasAnnotated) return false;
+        }
+        if (group.hasEmbeddedAnnotations === true) {
+            // Vertical-only, same shape as Has Annotations above:
+            // spine must include a file attachment carrying at least
+            // one PDF-embedded annotation.
+            let hasEmb = false;
+            for (const cand of candidates.attachment) {
+                if (!cand || !cand.isFileAttachment
+                    || !cand.isFileAttachment()) continue;
+                const anns = cand.getAnnotations() || [];
+                if (anns.some(a => !!(a as any).annotationIsExternal)) {
+                    hasEmb = true; break;
+                }
+            }
+            if (!hasEmb) return false;
         }
         // ── Parent-LEVEL chips also enforce tree-level
         // constraints per Rule 2. Without this, an attachment
@@ -4200,6 +4274,19 @@ class _FilterMixin {
     /** Strict kind-specific check: returns true iff `item` is
      *  actually of `kind` AND passes all filters in `group` that
      *  target that kind. Used by `_rowSatisfiesTreeJoin`. */
+    /** Does annotation `ann` satisfy the tri-state Source value?
+     *  `src` true = embedded in the PDF (`annotationIsExternal`),
+     *  false = made in Zotero Reader, null/undefined = any
+     *  (embedded-first encoding, 2026-08-18). Embedded annotations
+     *  become items only once Zotero has OPENED the file (reader.js
+     *  runs PDFWorker.import on open) — a PDF annotated elsewhere
+     *  but never opened here has no annotation rows at all, which no
+     *  item-level filter can see. */
+    _annSourceMatches(ann, src) {
+        if (src == null) return true;
+        return !!ann.annotationIsExternal === src;
+    }
+
     _kindOK(item, group, kind) {
         if (!item || !group) return false;
         if (kind === "annotation") {
@@ -4216,6 +4303,9 @@ class _FilterMixin {
                 const txt = item.annotationComment;
                 const has = !!(txt && String(txt).trim().length);
                 if (has !== group.annotationHasComment) return false;
+            }
+            if (!this._annSourceMatches(item, group.annotationSource)) {
+                return false;
             }
             return true;
         }
@@ -4293,6 +4383,10 @@ class _FilterMixin {
                 const txt = item.annotationComment;
                 const has = !!(txt && String(txt).trim().length);
                 if (has === group.annotationHasComment) return true;
+            }
+            if (group.annotationSource != null
+                && this._annSourceMatches(item, group.annotationSource)) {
+                return true;
             }
         }
 
@@ -4497,13 +4591,24 @@ class _FilterMixin {
                 if (v === group.inOtherLibrary) return true;
             }
         }
-        // Has Annotations — file attachments only.
+        // Has Annotations — file attachments only. Source-aware,
+        // same as the per-row check.
         if (group.hasAnnotations != null) {
             const isFa = !!(item.isFileAttachment && item.isFileAttachment());
             if (isFa) {
-                const ids = item.getAnnotations() || [];
-                const v = ids.length > 0;
+                const anns = item.getAnnotations() || [];
+                const v = anns.some(
+                    a => this._annSourceMatches(a, group.annotationSource));
                 if (v === group.hasAnnotations) return true;
+            }
+        }
+        // Has Embedded Annotations — file attachments only.
+        if (group.hasEmbeddedAnnotations != null) {
+            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
+            if (isFa) {
+                const anns = item.getAnnotations() || [];
+                const v = anns.some(a => !!(a as any).annotationIsExternal);
+                if (v === group.hasEmbeddedAnnotations) return true;
             }
         }
         // Quick search — only count as a kind-match when THIS
@@ -4539,7 +4644,8 @@ class _FilterMixin {
                             && group.annotationType.length)
                         || (group.annotationTypeExclude
                             && group.annotationTypeExclude.length)
-                        || group.annotationHasComment != null);
+                        || group.annotationHasComment != null
+                        || group.annotationSource != null);
                     const attChipActive = !!(
                         (group.attachmentFileType
                             && group.attachmentFileType.length)
@@ -4748,13 +4854,31 @@ class _FilterMixin {
         // `<tooltip id="html-tooltip" page="true"/>`). Mozilla's
         // tooltip listener handles position, delay, theming, and
         // OS-native cursor offset for us — exactly matching every
-        // other tooltip in the Zotero UI. No custom JS needed.
-        panel.setAttribute("tooltip", "html-tooltip");
+        // FF153 (register #14): the page-tooltip engine is broken for
+        // fast target changes inside panels — stale labels, stale
+        // anchors, and after any interference an unrecoverable dead
+        // state (ring-proven, 2026-08-19). Weavero now OWNS tooltips
+        // in this popup: no `tooltip="html-tooltip"` routing; the
+        // title attrs stay (they are the text source) and
+        // `_wvArmTooltipRing` shows/hides a dedicated tooltip
+        // element deterministically. Retire when Gecko's page
+        // tooltips recover (restore the attribute, drop the arm).
         const NS_HTML = "http://www.w3.org/1999/xhtml";
         const inner = doc.createElementNS(NS_HTML, "div");
         inner.className = "wv-filter-popup-inner wv-filter-panel-inner";
         panel.appendChild(inner);
         panel.addEventListener("popupshowing", () => {
+            // Tooltip-miss forensics (2026-08-19): tile tooltips
+            // intermittently fail to show on the FF153 source build
+            // while the title attrs are verifiably correct — suspect
+            // the html-tooltip page-mode engine inside panels. Ring
+            // is persistent (Zotero-global, survives plugin reloads)
+            // per the intermittent-bug rule; read Zotero._wvTtRing.
+            try {
+                const liveWv = (Zotero as any).Weavero
+                    && (Zotero as any).Weavero.plugin;
+                if (liveWv) liveWv._wvArmTooltipRing(doc);
+            } catch (e) {}
             // Frame the toolbar quick-search BEFORE width is
             // measured below — adding the 1-px left border shifts
             // its `getBoundingClientRect().left` 1 px outward, and
@@ -5648,6 +5772,9 @@ class _FilterMixin {
             if (group.annotationHasComment != null) {
                 bar.appendChild(this._buildHasCommentChip(doc, group, gi));
             }
+            if (group.annotationSource != null) {
+                bar.appendChild(this._buildAnnotationSourceChip(doc, group, gi));
+            }
             if (group.annotationTag && group.annotationTag.length) {
                 bar.appendChild(this._buildTagChip(doc, group, gi));
             }
@@ -5750,6 +5877,10 @@ class _FilterMixin {
             if (group.hasAnnotations != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
                     "hasAnnotations", "Has Annotations"));
+            }
+            if (group.hasEmbeddedAnnotations != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasEmbeddedAnnotations", "Has Embedded Annotations"));
             }
             if (group.publication && group.publication.length) {
                 bar.appendChild(this._buildPublicationChip(doc, group, gi));
@@ -5992,6 +6123,25 @@ class _FilterMixin {
             fillValue: () => {},
             onRemove: () => {
                 group.annotationHasComment = null;
+                this._pruneEmptyGroups();
+            },
+            onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
+        });
+    }
+
+    _buildAnnotationSourceChip(doc, group, gi) {
+        // value=true  → embedded in the PDF (external)
+        // value=false → made in Zotero Reader
+        const value = group.annotationSource;
+        return this._buildFilterChip(doc, {
+            field: "Annotation Source",
+            op: "is",
+            fillValue: (valSeg) => {
+                valSeg.textContent = value
+                    ? "Embedded in PDF" : "Made in Zotero";
+            },
+            onRemove: () => {
+                group.annotationSource = null;
                 this._pruneEmptyGroups();
             },
             onEdit: (anchor) => this._openFilterPanelForGroup(anchor, gi),
@@ -8878,6 +9028,7 @@ class _FilterMixin {
         sep.style.marginLeft = "auto";
         opts.appendChild(sep);
         opts.appendChild(this._makeHasCommentTile(doc, refreshAll));
+        opts.appendChild(this._makeAnnotationSourceTile(doc, refreshAll));
     }
 
     /** True iff `item` is one of the three text sources Has Link
@@ -9687,6 +9838,85 @@ class _FilterMixin {
             refreshAll();
         });
         optsBox.appendChild(haBtn);
+
+        // ── Has Embedded Annotations tile (tri-state, 2026-08-19) ──
+        // Attachment-level: the file carries at least one PDF-embedded
+        // annotation. Unlike the annotation-level Source chip, it never
+        // filters annotation ROWS.
+        const curEmb = g0 ? g0.hasEmbeddedAnnotations : null;
+        const heBtn = doc.createElementNS(NS_HTML, "button");
+        heBtn.type = "button";
+        heBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        heBtn.title = "Has Embedded Annotations — file attachments "
+            + "carrying at least one annotation embedded in the PDF by "
+            + "an outside reader. Shows ALL their annotations (use the "
+            + "Source tile to filter the rows). Alt+click to exclude.";
+        if (curEmb === true) heBtn.dataset.selected = "true";
+        else if (curEmb === false) heBtn.dataset.excluded = "true";
+        heBtn.appendChild(this._makeHasEmbeddedAnnotationsSvg(doc));
+        heBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.hasEmbeddedAnnotations === false) ? null : false;
+            else          next = (g.hasEmbeddedAnnotations === true) ? null : true;
+            g.hasEmbeddedAnnotations = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        optsBox.appendChild(heBtn);
+    }
+
+    /** Has Embedded Annotations glyph — the same `attachment-
+     *  annotations.svg` stacked-notes artwork the Has Annotations tile
+     *  uses (path verbatim, fill-based), with the reader's lock badged
+     *  TOP-RIGHT exactly like the Source tile's, so the two lock-
+     *  carrying tiles read as one family: lock on a single note =
+     *  filter the annotation rows by source; lock on the attachment
+     *  glyph = filter the attachments. Same mask-knockout + full-
+     *  opacity-lock construction as `_makeAnnotationSourceSvg`. */
+    _makeHasEmbeddedAnnotationsSvg(doc) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS, "svg");
+        svg.setAttribute("class", "wv-filter-svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("fill", "none");
+        svg.style.color = "var(--tag-purple)";
+        const defs = doc.createElementNS(NS, "defs");
+        const mask = doc.createElementNS(NS, "mask");
+        mask.setAttribute("id", "wv-hasemb-lock-knockout");
+        const keep = doc.createElementNS(NS, "rect");
+        keep.setAttribute("x", "0"); keep.setAttribute("y", "0");
+        keep.setAttribute("width", "16"); keep.setAttribute("height", "16");
+        keep.setAttribute("fill", "white");
+        mask.appendChild(keep);
+        const cut = doc.createElementNS(NS, "rect");
+        cut.setAttribute("x", "7.4"); cut.setAttribute("y", "-0.4");
+        cut.setAttribute("width", "8.6"); cut.setAttribute("height", "9.6");
+        cut.setAttribute("rx", "2");
+        cut.setAttribute("fill", "black");
+        mask.appendChild(cut);
+        defs.appendChild(mask);
+        svg.appendChild(defs);
+        const notes = doc.createElementNS(NS, "path");
+        notes.setAttribute("fill-rule", "evenodd");
+        notes.setAttribute("clip-rule", "evenodd");
+        notes.setAttribute("d", "M3 3V0H16V13H13V15.5V16H12.5H6.5H6.29289L6.14645 15.8536L0.146447 9.85355L0 9.70711V9.5V3.5V3H0.5H3ZM4 3H12.5H13V3.5V12H15V1H4V3ZM1 9V4H12V15H7V9.5V9H6.5H1ZM1.70711 10L6 14.2929V10H1.70711Z");
+        notes.setAttribute("fill", "currentColor");
+        notes.setAttribute("mask", "url(#wv-hasemb-lock-knockout)");
+        svg.appendChild(notes);
+        const g = doc.createElementNS(NS, "g");
+        g.setAttribute("transform", "translate(6.6 -0.3) scale(0.58)");
+        const lock = doc.createElementNS(NS, "path");
+        lock.setAttribute("fill-rule", "evenodd");
+        lock.setAttribute("clip-rule", "evenodd");
+        lock.setAttribute("d", "M6 4C6 2.89543 6.89543 2 8 2C9.10457 2 10 2.89543 10 4V6H6V4ZM5 6V4C5 2.34315 6.34315 1 8 1C9.65685 1 11 2.34315 11 4V6H12C12.5523 6 13 6.44772 13 7V14C13 14.5523 12.5523 15 12 15H4C3.44772 15 3 14.5523 3 14V7C3 6.44771 3.44772 6 4 6H5ZM4 14V7H12V14H4Z");
+        lock.setAttribute("fill", "currentColor");
+        g.appendChild(lock);
+        svg.appendChild(g);
+        return svg;
     }
 
     /** Build the Has Comment tile as a standalone button element so
@@ -9731,6 +9961,218 @@ class _FilterMixin {
             refreshAll();
         });
         return btn;
+    }
+
+    /** Annotation Source tile — tri-state on `annotationIsExternal`,
+     *  inline at the right end of the Annotation Type row next to
+     *  Has Comment. Click → made in Zotero Reader; Alt+click →
+     *  embedded in the PDF (source is binary, so excluding one kind
+     *  IS selecting the other — the standard tile gesture covers
+     *  every state). */
+    _makeAnnotationSourceTile(doc, refreshAll) {
+        const NS_HTML = "http://www.w3.org/1999/xhtml";
+        const g0 = this._activeGroup();
+        const cur = g0 ? g0.annotationSource : null;
+        const btn = doc.createElementNS(NS_HTML, "button");
+        btn.type = "button";
+        btn.className = "wv-filter-opt wv-filter-opt-icon";
+        // Same row-alignment constraint as the Has Comment tile it
+        // sits beside (see `_makeHasCommentTile`).
+        (btn as any).style.alignSelf = "center";
+        if (cur === true) btn.dataset.selected = "true";
+        else if (cur === false) btn.dataset.excluded = "true";
+        btn.title = "Annotation Source — embedded in the PDF by an "
+            + "outside reader (imported when Zotero first opens the "
+            + "file). Alt+click: made in Zotero Reader.";
+        btn.appendChild(this._makeAnnotationSourceSvg(doc));
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) {
+                next = (g.annotationSource === false) ? null : false;
+            } else {
+                next = (g.annotationSource === true) ? null : true;
+            }
+            g.annotationSource = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        return btn;
+    }
+
+    /** Annotation Source glyph — Zotero's own icon language, per MJT
+     *  2026-08-18: the native annotation-note glyph with the reader's
+     *  external-annotation LOCK superposed bottom-right. Both paths
+     *  copied verbatim from upstream artwork: the note from
+     *  `16/universal/annotate-note.svg` (stroke-only, .5 grid), the
+     *  padlock from the reader's `res/icons/16/lock.svg` (the exact
+     *  badge shown on read-only external annotations in the sidebar),
+     *  scaled 0.58 into the corner. A mask knocks the note's strokes
+     *  out around the badge, Zotero-badge style. Lock at full opacity
+     *  (upstream's 0.5 is illegible at badge size). `--tag-purple`
+     *  matches the annotation-section accent. */
+    _makeAnnotationSourceSvg(doc) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS, "svg");
+        svg.setAttribute("class", "wv-filter-svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("fill", "none");
+        svg.style.color = "var(--tag-purple)";
+        const defs = doc.createElementNS(NS, "defs");
+        const mask = doc.createElementNS(NS, "mask");
+        mask.setAttribute("id", "wv-annsrc-lock-knockout");
+        const keep = doc.createElementNS(NS, "rect");
+        keep.setAttribute("x", "0"); keep.setAttribute("y", "0");
+        keep.setAttribute("width", "16"); keep.setAttribute("height", "16");
+        keep.setAttribute("fill", "white");
+        mask.appendChild(keep);
+        const cut = doc.createElementNS(NS, "rect");
+        cut.setAttribute("x", "7.4"); cut.setAttribute("y", "-0.4");
+        cut.setAttribute("width", "8.6"); cut.setAttribute("height", "9.6");
+        cut.setAttribute("rx", "2");
+        cut.setAttribute("fill", "black");
+        mask.appendChild(cut);
+        defs.appendChild(mask);
+        svg.appendChild(defs);
+        // Base: annotate-note.svg path verbatim (fold bottom-left, so
+        // the badge corner is clean).
+        const note = doc.createElementNS(NS, "path");
+        note.setAttribute("d", "M7.5 14.5H14.5V1.5H1.5V8.5M7.5 14.5L1.5 8.5M7.5 14.5V8.5H1.5");
+        note.setAttribute("stroke", "currentColor");
+        note.setAttribute("stroke-width", "1");
+        note.setAttribute("fill", "none");
+        note.setAttribute("mask", "url(#wv-annsrc-lock-knockout)");
+        svg.appendChild(note);
+        // Badge: reader lock.svg path verbatim, scaled into the
+        // TOP-RIGHT corner (MJT 2026-08-18; the note's fold is
+        // bottom-left, so both right corners are clean — top-right
+        // keeps the fold visible).
+        const g = doc.createElementNS(NS, "g");
+        g.setAttribute("transform", "translate(6.6 -0.3) scale(0.58)");
+        const lock = doc.createElementNS(NS, "path");
+        lock.setAttribute("fill-rule", "evenodd");
+        lock.setAttribute("clip-rule", "evenodd");
+        lock.setAttribute("d", "M6 4C6 2.89543 6.89543 2 8 2C9.10457 2 10 2.89543 10 4V6H6V4ZM5 6V4C5 2.34315 6.34315 1 8 1C9.65685 1 11 2.34315 11 4V6H12C12.5523 6 13 6.44772 13 7V14C13 14.5523 12.5523 15 12 15H4C3.44772 15 3 14.5523 3 14V7C3 6.44771 3.44772 6 4 6H5ZM4 14V7H12V14H4Z");
+        lock.setAttribute("fill", "currentColor");
+        g.appendChild(lock);
+        svg.appendChild(g);
+        return svg;
+    }
+
+    /** Weavero-owned tooltips for the filter popup (2026-08-19,
+     *  register #14). The FF153 page-tooltip engine is broken for
+     *  fast target changes inside panels — ring-proven progression:
+     *  stale labels, then stale anchors (SHOW→hide within ~10ms),
+     *  then an unrecoverable dead state once interfered with. Two
+     *  shim rounds fighting the engine both failed, so the engine is
+     *  disabled for this popup (no `tooltip` attribute on the panel)
+     *  and this method provides tooltips deterministically: delegated
+     *  hover on the panel, 350ms delay, a dedicated `wv-filter-
+     *  tooltip` element, dismiss on leaving the [title] holder or on
+     *  panel close. `title` attributes remain the single text source.
+     *  The capped Zotero-global ring `Zotero._wvTtRing` keeps
+     *  recording (k:"wvshow"/"wvhide") for the upstream report.
+     *  Survival rules: numeric per-window version stamp + stored
+     *  handler refs, unhook before re-hook (VER 3 cleanup also
+     *  removes the retired engine-shim listeners). */
+    _wvArmTooltipRing(doc) {
+        const win: any = doc.defaultView;
+        if (!win) return;
+        // The stamp lives on the PANEL, not the window: a plugin
+        // reload recreates the panel (listeners gone with it) while
+        // the window persists — a window-level stamp then skips the
+        // re-arm and the fresh panel has NO tooltips (bit on
+        // annsrc.12, 2026-08-19). Stamp scope must match the wired
+        // object's lifetime.
+        const panel: any = doc.getElementById("wv-filter-popup");
+        if (!panel) return;
+        const VER = 5;
+        if (panel._wvTtVer === VER) return;
+        const Z: any = Zotero;
+        Z._wvTtRing = Z._wvTtRing || [];
+        const push = (e) => {
+            try {
+                e.t = Date.now();
+                Z._wvTtRing.push(e);
+                if (Z._wvTtRing.length > 200) Z._wvTtRing.shift();
+            } catch (err) {}
+        };
+        // One-time cleanup of legacy window-level handlers (VER ≤ 4
+        // stored refs on the window; incl. the retired html-tooltip
+        // engine shims).
+        const engineTip = doc.getElementById("html-tooltip");
+        const old = win._wvTtRingHandlers;
+        if (old) {
+            if (engineTip) {
+                try { engineTip.removeEventListener("popupshowing", old.show, true); } catch (e) {}
+                try { engineTip.removeEventListener("popuphidden", old.hide, true); } catch (e) {}
+            }
+            try { win.removeEventListener("mouseover", old.over, true); } catch (e) {}
+            if (old.overP) {
+                try { panel.removeEventListener("mouseover", old.overP, true); } catch (e) {}
+                try { panel.removeEventListener("mouseout", old.outP, true); } catch (e) {}
+                try { panel.removeEventListener("popuphiding", old.hideAll, true); } catch (e) {}
+            }
+            delete win._wvTtRingHandlers;
+        }
+        // The engine must never race us in this popup.
+        try { panel.removeAttribute("tooltip"); } catch (e) {}
+        // Dedicated tooltip element, created once per document.
+        let tipW: any = doc.getElementById("wv-filter-tooltip");
+        if (!tipW) {
+            tipW = doc.createXULElement("tooltip");
+            tipW.id = "wv-filter-tooltip";
+            const host = doc.getElementById("mainPopupSet") || doc.documentElement;
+            host.appendChild(tipW);
+        }
+        let pending = 0;
+        let curHolder: any = null;
+        const cancel = () => {
+            if (pending) { try { win.clearTimeout(pending); } catch (e) {} pending = 0; }
+        };
+        const hideAll = () => {
+            cancel();
+            curHolder = null;
+            try { tipW.hidePopup(); } catch (e) {}
+            push({ k: "wvhide" });
+        };
+        const overP = (ev) => {
+            try {
+                const h = ev.target && ev.target.closest && ev.target.closest("[title]");
+                if (!h || h === curHolder) return;
+                cancel();
+                try { tipW.hidePopup(); } catch (e) {}
+                curHolder = h;
+                pending = win.setTimeout(() => {
+                    pending = 0;
+                    try {
+                        if (curHolder !== h) return;
+                        const txt = String(h.getAttribute("title") || "");
+                        if (!txt) return;
+                        tipW.setAttribute("label", txt);
+                        tipW.openPopup(h, "after_start", 0, 2, false, false, null);
+                        push({ k: "wvshow", title: txt.slice(0, 40) });
+                    } catch (e) {}
+                }, 350);
+            } catch (e) {}
+        };
+        const outP = (ev) => {
+            try {
+                const h = ev.target && ev.target.closest && ev.target.closest("[title]");
+                if (!h || h !== curHolder) return;
+                const to = ev.relatedTarget;
+                if (to && h.contains(to)) return;
+                hideAll();
+            } catch (e) {}
+        };
+        panel.addEventListener("mouseover", overP, true);
+        panel.addEventListener("mouseout", outP, true);
+        panel.addEventListener("popuphiding", hideAll, true);
+        panel._wvTtHandlers = { overP, outP, hideAll };
+        panel._wvTtVer = VER;
     }
 
     /** Has Comment now sits inline at the right end of the

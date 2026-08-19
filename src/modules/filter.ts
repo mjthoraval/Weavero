@@ -8868,16 +8868,30 @@ class _FilterMixin {
             // trigger row), which has the bounded width. Skipped when
             // the popup renders hidden (zero widths) -- the next open
             // re-renders and trims for real.
-            try {
-                const host = mruRow.parentElement;
-                if (host && host.clientWidth > 0) {
+            const fitToLine = () => {
+                try {
+                    const host = mruRow.parentElement;
+                    if (!host || host.clientWidth <= 0) return false;
                     let guard = 0;
                     while (host.scrollWidth > host.clientWidth + 1
                         && mruRow.lastChild && guard++ < 12) {
                         mruRow.removeChild(mruRow.lastChild);
                     }
-                }
-            } catch (e) {}
+                    return true;
+                } catch (e) { return true; }
+            };
+            // Render can run BEFORE the popup lays out (user-opened
+            // panel: widths are 0 at render time, and the clipped-tile
+            // screenshot proved it, 2026-08-19). Try now, then retry on
+            // the next tick(s) until layout gives real widths.
+            if (!fitToLine()) {
+                let tries = 0;
+                const later = () => {
+                    if (fitToLine() || ++tries > 10) return;
+                    doc.defaultView.setTimeout(later, 60);
+                };
+                doc.defaultView.setTimeout(later, 60);
+            }
         };
         renderMru();
 

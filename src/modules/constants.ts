@@ -1528,6 +1528,17 @@ export const PLUGIN_CSS = [
     // the other rows in the panel.
     "  margin: 0 !important;",
     "}",
+    // Inner padding of the closed control (MJT 2026-08-19: 'too much
+    // padding inside the Item Type box'). Measured: the HOST menulist
+    // carries 11px inline padding each side (proton button styling);
+    // the shadow label-box/label add ~2-3px more. Trim the host.
+    ".wv-filter-itype-trigger {",
+    "  padding-inline: 4px !important;",
+    "}",
+    ".wv-filter-itype-trigger::part(label-box) {",
+    "  padding-inline: 2px;",
+    "  margin-inline: 0;",
+    "}",
     ".wv-filter-itype-selected {",
     "  display: flex; flex-wrap: wrap; gap: 3px;",
     "  flex: 1 1 auto; min-width: 0;",

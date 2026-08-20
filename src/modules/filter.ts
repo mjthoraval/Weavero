@@ -4999,6 +4999,21 @@ class _FilterMixin {
                     const sb: any = docTop.getElementById("zotero-tb-search");
                     if (!sb) return;
                     const panelAny2 = panel as any;
+                    // With Advanced Search active there is no visible
+                    // search box to align with -- and, decisively, a
+                    // CSS transform moves the PAINTED content but not
+                    // the native popup widget, so any large shift gets
+                    // CLIPPED at the widget's edge (2026-08-20: the
+                    // popup was wider than the collapsed span, the
+                    // +~106px shift pushed a third of it outside the
+                    // widget, and the user saw a ~250px popup while
+                    // every rect measured 362 -- rects include
+                    // transforms). Skip the horizontal shift entirely;
+                    // the popup hangs left of the button natively.
+                    if (sb.hasAttribute("advanced-search-open")) {
+                        panelAny2.style.transform = "translateY(3px)";
+                        return;
+                    }
                     // Reset transform so we measure the natural
                     // unshifted position.
                     panelAny2.style.transform = "translateY(3px)";
@@ -5009,7 +5024,10 @@ class _FilterMixin {
                     // edge — paired with the +6 px width bump in
                     // `_renderFilterPanelContents` so the popup
                     // extends 3 px past each side of the search /
-                    // filter-button row.
+                    // filter-button row. Kept small by construction:
+                    // in normal mode the width derives from the same
+                    // span this aligns against, so dx stays within
+                    // the widget's slack and nothing clips.
                     const dx = Math.round(sRect.left - pRect.left - 3);
                     panelAny2.style.transform =
                         "translate(" + dx + "px, 3px)";
@@ -7175,8 +7193,41 @@ class _FilterMixin {
                 const span = Math.round(fbRect.right - sRect.left);
                 const POPUP_CHROME_DELTA = 22;
                 const POPUP_EXTEND_EACH_SIDE = 3;
-                const w = Math.max(220,
+                // BY DESIGN the width sticks to the Quick Search span
+                // (the framed search reads as nested inside the popup).
+                // With Advanced Search active (#5658) the Quick Search
+                // isn't visible -- the widget swaps its #search-deck to
+                // the #advanced-search-indicator and shrinks -- so the
+                // span means nothing there and AS mode is handled
+                // separately (MJT 2026-08-20): reuse the remembered
+                // normal-state width (cached per window each time the
+                // popup renders with the plain search showing), falling
+                // back to the designed width for a window that has never
+                // rendered outside AS mode. Quick search maxes at 300px
+                // upstream, so the designed fallback (340) is what the
+                // stick-to-search rule yields on a normal layout anyway.
+                const MIN_INNER = 220;
+                const AS_FALLBACK_INNER = 340;
+                const win = doc.defaultView as any;
+                // Detect AS mode via the `advanced-search-open`
+                // ATTRIBUTE on the search box -- it's what upstream's
+                // CSS keys the shrink on, so it's in sync by
+                // construction. The first attempt keyed on the
+                // indicator's `.deck-selected` class, which missed on
+                // the user's real opens (2026-08-20, post-restart) --
+                // the miss made this code trust the collapsed span AND
+                // cache it as the "normal" width.
+                const asMode = tbSearch.hasAttribute("advanced-search-open");
+                let w = Math.max(MIN_INNER,
                     span - POPUP_CHROME_DELTA + POPUP_EXTEND_EACH_SIDE * 2);
+                if (!asMode) {
+                    win._wvFilterPopupNormalW = w;
+                }
+                else {
+                    w = win._wvFilterPopupNormalW > 0
+                        ? win._wvFilterPopupNormalW
+                        : AS_FALLBACK_INNER;
+                }
                 inner.style.minWidth = w + "px";
                 inner.style.maxWidth = w + "px";
             } catch (e) {}

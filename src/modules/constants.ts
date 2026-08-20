@@ -1089,6 +1089,12 @@ export const PLUGIN_CSS = [
     "}",
     ".wv-filter-seltarget-bar {",
     "  margin-bottom: 0;",
+    // The four-type chip set (Parent/Attachment/Note/Annotation +
+    // label) wants ~376px -- wider than the stick-to-quick-search
+    // popup width (Quick Search maxes at 300px upstream). Wrap
+    // instead of clipping chips off the right edge (2026-08-20).
+    "  flex-wrap: wrap;",
+    "  row-gap: 2px;",
     "}",
     // Greyed rows in the items tree — same color treatment Zotero
     // uses for quick-search context rows (`.context-row`), so

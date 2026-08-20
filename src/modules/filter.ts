@@ -9812,6 +9812,10 @@ class _FilterMixin {
 
         const optsBox = doc.createElementNS(NS_HTML, "div");
         optsBox.className = "wv-filter-options";
+        // Right-aligned like the attachment/annotation sections' Has-*
+        // tiles (MJT 2026-08-20): the popup grammar is "left = what the
+        // row IS, right = what it HAS", and this row is all Has-tiles.
+        optsBox.style.justifyContent = "flex-end";
         section.appendChild(optsBox);
 
         const g0 = this._activeGroup();

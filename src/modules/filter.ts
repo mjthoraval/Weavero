@@ -10178,10 +10178,14 @@ class _FilterMixin {
         const heBtn = doc.createElementNS(NS_HTML, "button");
         heBtn.type = "button";
         heBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        // Tooltip deliberately does NOT mention annotation rows: the
+        // tile filters attachments and never expands their
+        // annotations, so the old "Shows ALL their annotations"
+        // sentence read as a promise the tile doesn't keep (MJT
+        // 2026-08-20).
         heBtn.title = "Has Embedded Annotations — file attachments "
             + "carrying at least one annotation embedded in the PDF by "
-            + "an outside reader. Shows ALL their annotations (use the "
-            + "Source tile to filter the rows). Alt+click to exclude.";
+            + "an outside reader. Alt+click to exclude.";
         if (curEmb === true) heBtn.dataset.selected = "true";
         else if (curEmb === false) heBtn.dataset.excluded = "true";
         heBtn.appendChild(this._makeHasEmbeddedAnnotationsSvg(doc));

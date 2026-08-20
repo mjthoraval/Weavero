@@ -10923,7 +10923,21 @@ class _FilterMixin {
         else if (saCur === false) saBtn.dataset.excluded = "true";
         const saIcon = doc.createElementNS(NS_HTML, "img");
         saIcon.className = "wv-filter-svg";
-        saIcon.src = "chrome://zotero/skin/16/universal/attachment.svg";
+        // Standalone motif "E" (user pick 2026-08-20): left-margin bar
+        // + paperclip, matching the Standalone Note tile — one shared
+        // "standalone" language across both kinds. Stroke-drawn clip
+        // (not the stock filled attachment.svg) so its line weight
+        // matches the bar and the note pair.
+        saIcon.src = "data:image/svg+xml;utf8,"
+            + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
+            + " fill='none' stroke='context-stroke' stroke-width='1'"
+            + " shape-rendering='geometricPrecision'>"
+            + "<path d='M1.5 0.5 V15.5'/>"
+            + "<g transform='translate(2,0)'>"
+            + "<path d='M5 9.5 L10.2 4.3 a2.05 2.05 0 0 1 2.9 2.9"
+            + " L7.4 12.9 a3.4 3.4 0 0 1 -4.8 -4.8 L8.3 2.4'/>"
+            + "</g>"
+            + "</svg>";
         saIcon.alt = "Standalone Attachment";
         saIcon.style.color = "var(--accent-blue)";
         saBtn.appendChild(saIcon);
@@ -10969,7 +10983,23 @@ class _FilterMixin {
         else if (snCur === false) snBtn.dataset.excluded = "true";
         const snIcon = doc.createElementNS(NS_HTML, "img");
         snIcon.className = "wv-filter-svg";
-        snIcon.src = "chrome://zotero/skin/16/universal/note.svg";
+        // Standalone motif (user pick "E" of five rendered candidates,
+        // 2026-08-20): a bare vertical bar at the LEFT MARGIN — "flush
+        // at the tree's root level". Pairs with the Item Note icon,
+        // which grows a branch off the same left spine into the note;
+        // standalone = the spine with nothing hanging above. The note
+        // body below is copied from the Item Note icon verbatim so the
+        // pair differs ONLY in bar-vs-branch. Same motif on the
+        // Standalone Attachment tile.
+        snIcon.src = "data:image/svg+xml;utf8,"
+            + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
+            + " fill='none' stroke='context-stroke' stroke-width='1'"
+            + " shape-rendering='geometricPrecision'>"
+            + "<path d='M1.5 0.5 V15.5'/>"
+            + "<path d='M4.5 1.5 H14.5 V10.5 L10.5 14.5 H4.5 Z'/>"
+            + "<path d='M5.5 3.5 H13.5'/>"
+            + "<path d='M14.5 10.5 H10.5 V14.5'/>"
+            + "</svg>";
         snIcon.alt = "Standalone Note";
         snIcon.style.color = "var(--accent-yellow)";
         snBtn.appendChild(snIcon);

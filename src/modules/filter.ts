@@ -4771,8 +4771,56 @@ class _FilterMixin {
         try {
             for (const m of doc.querySelectorAll(
                 "menupopup.wv-filter-mode-menupopup")) m.remove();
+            for (const el of doc.querySelectorAll(
+                'menuitem[name="wv-filter-mode"]')) el.remove();
             for (const el of [...doc.documentElement.children]) {
                 if (el.tagName === "menuitem") el.remove();
+            }
+        } catch (e) {}
+
+        // Stray-menuitem WATCHDOG (2026-08-20): the strip reappeared
+        // DURING normal operation (mid filter-matrix run, no reload),
+        // and neither sweep-while-open nor mid-command re-render
+        // reproduces the orphaning -- the path is still uncaught. So:
+        // self-heal the moment a mode menuitem is inserted anywhere
+        // outside its menupopup, and RECORD its parent chain to
+        // Zotero._wvStrayLog (persistent ring, survives reloads) so
+        // the next occurrence pinpoints the culprit. Observer lifetime
+        // = the window; the version stamp lives ON THE WINDOW to match
+        // (the 2026-08-19 stale-stamp lesson).
+        try {
+            const winAny: any = win;
+            if (winAny._wvStrayObsVer !== 1 || !winAny._wvStrayObs) {
+                if (winAny._wvStrayObs) {
+                    try { winAny._wvStrayObs.disconnect(); } catch (e) {}
+                }
+                const obs = new winAny.MutationObserver((recs: any[]) => {
+                    try {
+                        for (const rec of recs) {
+                            for (const n of rec.addedNodes as any) {
+                                if (!n || n.localName !== "menuitem") continue;
+                                if (!n.getAttribute
+                                    || n.getAttribute("name") !== "wv-filter-mode") continue;
+                                if (n.closest
+                                    && n.closest("menupopup.wv-filter-mode-menupopup")) continue;
+                                const ring = ((Zotero as any)._wvStrayLog
+                                    = (Zotero as any)._wvStrayLog || []);
+                                const chain: string[] = [];
+                                let p = n.parentElement;
+                                for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
+                                    chain.push(p.localName + (p.id ? "#" + p.id : ""));
+                                }
+                                ring.push({ t: new Date().toISOString(),
+                                    label: n.getAttribute("label"), chain });
+                                if (ring.length > 60) ring.shift();
+                                try { n.remove(); } catch (e) {}
+                            }
+                        }
+                    } catch (e) {}
+                });
+                obs.observe(doc.documentElement, { childList: true, subtree: true });
+                winAny._wvStrayObs = obs;
+                winAny._wvStrayObsVer = 1;
             }
         } catch (e) {}
 

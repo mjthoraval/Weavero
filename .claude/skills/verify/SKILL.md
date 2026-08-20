@@ -9,6 +9,13 @@ description: The Weavero build-install-verify cycle. Use after any src/ change t
 
 - Iterating: `-dev.N` of the NEXT version (`0.18.5` → `0.18.6-dev.1`, then
   `-dev.2`, …). Never a bare clean version for work-in-progress.
+- One `N` per code state, NEVER reused: every build whose code differs gets a
+  fresh `-dev.N` — including rebuilds of an amended commit and instrumented
+  diagnostic builds. Reusing a number breaks "which code is running?" and
+  "which version replaced which" (2026-08-20: six different builds shipped as
+  dev.11; a whole debugging round was spent unsure whether the user's popup
+  ran the code under test). A commit may span several N; a single N must
+  never span several code states.
 - Branch builds get their own suffix (`-defatt.N`, `-fx153.N`), never main's
   `-dev.N`.
 - Bump in `src/manifest.json` AND `package.json` (and `package-lock.json` if

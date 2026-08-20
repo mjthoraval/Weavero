@@ -44,7 +44,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-import { winOf, wvPopupHost } from "../lib/dom";
+import { winOf, wvPopupHost, wvDismissTooltip } from "../lib/dom";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -4760,6 +4760,22 @@ class _FilterMixin {
             win.setTimeout(() => this._setupItemsListFilter(win), 1000);
             return;
         }
+        // Orphan sweep at plugin startup (MJT 2026-08-20: after a
+        // plugin reload, the PREVIOUS instance's mode menupopup
+        // lingered and rendered as an inline text strip at the
+        // top-left until the next panel build's own sweep ran --
+        // same family as the 2026-08-19 bottom-left incident).
+        // Shutdown doesn't remove it, so the new instance sweeps
+        // its predecessors' strays the moment it wires the window.
+        // Runs BEFORE the already-wired guard on purpose.
+        try {
+            for (const m of doc.querySelectorAll(
+                "menupopup.wv-filter-mode-menupopup")) m.remove();
+            for (const el of [...doc.documentElement.children]) {
+                if (el.tagName === "menuitem") el.remove();
+            }
+        } catch (e) {}
+
         if (doc.getElementById("wv-filter-bar")) return;
 
         // Toolbar button — XUL <toolbarbutton type="menu"> next to the
@@ -4895,7 +4911,20 @@ class _FilterMixin {
         const inner = doc.createElementNS(NS_HTML, "div");
         inner.className = "wv-filter-popup-inner wv-filter-panel-inner";
         panel.appendChild(inner);
+        // Any CLICK inside the popup retires a lingering hover
+        // tooltip FIRST (capture phase) — click-opened overlays
+        // (scope popups, mode menu, dropdown lists) otherwise render
+        // under the tooltip of the very control that was clicked
+        // (MJT 2026-08-20: scope-arrow tooltip covered the freshly
+        // opened Apply-to popup; the engine only retires tooltips on
+        // mousemove, never on click).
+        inner.addEventListener("mousedown", () => {
+            try { wvDismissTooltip(doc); } catch (e) {}
+        }, true);
         panel.addEventListener("popupshowing", () => {
+            // The funnel button's own tooltip must not cover the
+            // opening panel — same click-vs-tooltip family as above.
+            try { wvDismissTooltip(doc); } catch (e) {}
             // Tooltip-miss forensics (2026-08-19): tile tooltips
             // intermittently fail to show on the FF153 source build
             // while the title attrs are verifiably correct — suspect

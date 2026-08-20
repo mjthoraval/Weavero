@@ -24,7 +24,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
-import { wvPopupHost } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip } from "../lib/dom";
 
 declare const Components: any;
 declare const Services: any;
@@ -14518,6 +14518,7 @@ class _ReaderPanelsMixin {
             if (hostPanel) {
                 // Float the card panel just past the flyout row's right edge,
                 // top-aligned with it — beside the flyout, never over its rows.
+                try { wvDismissTooltip(idoc); } catch (_e) {}
                 try { hostPanel.openPopup(rowEl, "end_before", 0, 0, false, false); } catch (_) {}
             } else {
                 this._wvReaderPositionBmHoverCard(card, rowEl, idoc);

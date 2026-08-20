@@ -44,3 +44,21 @@ export function wvPopupHost(doc: any): any {
         || doc.querySelector("window > popupset")
         || doc.documentElement;
 }
+
+/** Hide any currently-showing native tooltip in `doc`. Overlays opened
+ *  by CLICK (scope popups, mode menus, hovercards) otherwise render
+ *  under the still-visible hover tooltip of the very control that was
+ *  clicked -- the engine only retires it on mousemove, not on click
+ *  (MJT 2026-08-20; recurring tooltip-engine family, see the mistakes
+ *  ledger 2026-08-19/20 entries). Sweeps every <tooltip> element
+ *  (html-tooltip plus Zotero's and Weavero's own) so it works in any
+ *  chrome document. */
+export function wvDismissTooltip(doc: any): void {
+    try {
+        for (const t of doc.querySelectorAll("tooltip")) {
+            try {
+                if (t.state === "open" || t.state === "showing") t.hidePopup();
+            } catch (e) {}
+        }
+    } catch (e) {}
+}

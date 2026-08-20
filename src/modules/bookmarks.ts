@@ -27,7 +27,7 @@
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
-import { wvPopupHost } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip } from "../lib/dom";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -1479,6 +1479,7 @@ class _BookmarksMixin {
             const y = win.screenY + (aR ? aR.top : bmR.top);
             panel.openPopupAtScreen(x, y, false);
         } catch (_) {
+            try { wvDismissTooltip(doc); } catch (_e) {}
             try { panel.openPopup(anchorBtn || bmPanel, "end_before", 0, 0, false, false); } catch (__) {}
         }
     }
@@ -3219,6 +3220,7 @@ class _BookmarksMixin {
         host.appendChild(panel);
         this._bmRenderPopupList(win);
         this._bmInstallDismiss(win, panel, anchorBtn);
+        try { wvDismissTooltip(doc); } catch (_e) {}
         panel.openPopup(anchorBtn, "after_start", 0, 0, false, false);
         // Firefox-bookmarks style: extend the popup vertically to fill
         // the space from below the anchor button down to ~20px above
@@ -3711,6 +3713,7 @@ class _BookmarksMixin {
             this._bmFlyoutStack = this._bmFlyoutStack || [];
             this._bmFlyoutStack.push({ panel, depth, folderId: folder.id });
             // To the right of the row, top-aligned.
+            try { wvDismissTooltip(doc); } catch (_e) {}
             panel.openPopup(rowEl, "end_before", 0, 0, false, false);
         } catch (e) {
             Zotero.debug("[Weavero] _bmOpenFlyout err: " + e);
@@ -3971,6 +3974,7 @@ class _BookmarksMixin {
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });
+            try { wvDismissTooltip(doc); } catch (_e) {}
             menu.openPopup(anchorBtn, "after_start", 0, 0, false, false);
         } catch (e) {
             Zotero.debug("[Weavero] _bmShowDropdownAddMenu err: " + e);
@@ -4020,6 +4024,7 @@ class _BookmarksMixin {
             host.appendChild(menu);
             menu.addEventListener("popuphidden",
                 () => { try { menu.remove(); } catch (e) {} }, { once: true });
+            try { wvDismissTooltip(doc); } catch (_e) {}
             menu.openPopup(anchorBtn, "after_start", 0, 0, false, false);
         } catch (e) {
             Zotero.debug("[Weavero] _bmShowSortMenu err: " + e);

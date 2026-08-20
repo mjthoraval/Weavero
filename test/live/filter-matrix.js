@@ -338,6 +338,19 @@
         ["standaloneAttachment", () => { G().standaloneAttachment = true; }],
         ["hasTag scoped to notes", () => { G().hasTag = true;
             G().hasTagScope = { parent: false, attachment: false, note: true, annotation: false }; }],
+        // Notes OR pair (both position tiles ON = either kind of note)
+        ["notes pair OR", () => { G().standaloneNote = true;
+            G().itemNote = true; }],
+        // Annotation Source family (merged 2026-08-19). Deliberately
+        // ABSENT from NATIVE_EQUIV: `annotationIsExternal` has no
+        // native search condition -- inexpressibility is the point.
+        ["annotationSource embedded", () => { G().annotationSource = true; }],
+        ["annotationSource zotero", () => { G().annotationSource = false; }],
+        ["hasEmbeddedAnnotations", () => { G().hasEmbeddedAnnotations = true; }],
+        ["hasEmbeddedAnnotations FALSE", () => {
+            G().hasEmbeddedAnnotations = false; }],
+        ["source-aware hasAnnotations", () => { G().annotationSource = false;
+            G().hasAnnotations = true; }],
     ];
 
     const R = {

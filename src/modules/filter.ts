@@ -10939,7 +10939,11 @@ class _FilterMixin {
             + "</g>"
             + "</svg>";
         saIcon.alt = "Standalone Attachment";
-        saIcon.style.color = "var(--accent-blue)";
+        // Attachments accent per upstream's $item-pane-sections palette
+        // (GREEN — blue is the Info section; the original 2026-08-19
+        // tile shipped off-palette blue, caught by MJT 2026-08-20).
+        // Matches the Has Attachment File tile.
+        saIcon.style.color = "var(--accent-green)";
         saBtn.appendChild(saIcon);
         saBtn.addEventListener("click", (e) => {
             e.stopPropagation();

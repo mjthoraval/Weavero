@@ -1096,6 +1096,12 @@ export const PLUGIN_CSS = [
     "  flex-wrap: wrap;",
     "  row-gap: 2px;",
     "}",
+    // Label takes the full first line so the four chips start
+    // together on their own line (MJT 2026-08-20: mid-set wrapping
+    // left 'Annotation' stranded alone under the label).
+    ".wv-filter-seltarget-bar .wv-filter-scope-bar-label {",
+    "  flex-basis: 100%;",
+    "}",
     // Greyed rows in the items tree — same color treatment Zotero
     // uses for quick-search context rows (`.context-row`), so
     // unselectable rows still read but stay subdued.

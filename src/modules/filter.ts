@@ -9812,10 +9812,6 @@ class _FilterMixin {
 
         const optsBox = doc.createElementNS(NS_HTML, "div");
         optsBox.className = "wv-filter-options";
-        // Right-aligned like the attachment/annotation sections' Has-*
-        // tiles (MJT 2026-08-20): the popup grammar is "left = what the
-        // row IS, right = what it HAS", and this row is all Has-tiles.
-        optsBox.style.justifyContent = "flex-end";
         section.appendChild(optsBox);
 
         const g0 = this._activeGroup();
@@ -9868,32 +9864,11 @@ class _FilterMixin {
         // Attachments → `--accent-green`. DOI / URL don't have
         // dedicated section entries so they stay neutral
         // (currentColor).
-        buildBtn("hasDOI", "Has DOI",
-            "chrome://zotero/skin/16/universal/crossref.svg",
-            "Has DOI — regular items with a DOI. Alt+click to exclude.");
-        buildBtn("hasPMID", "PMID", null,
-            "Has PMID — regular items with a PMID (field or Extra). "
-            + "Alt+click to exclude.");
-        buildBtn("hasPMCID", "PMCID", null,
-            "Has PMCID — regular items with a PMCID (field or Extra). "
-            + "Alt+click to exclude.");
-        buildBtn("hasURL", "Has URL",
-            "chrome://zotero/skin/16/universal/globe.svg",
-            "Has URL — regular items with a URL field. "
-            + "Alt+click to exclude.");
-        buildBtn("hasAbstract", "Has Abstract",
-            "chrome://zotero/skin/16/universal/abstract.svg",
-            "Has Abstract — regular items with a non-empty abstract. "
-            + "Alt+click to exclude.",
-            "var(--accent-azure)");
-        buildBtn("hasAttachment", "Has Attachment File",
-            "chrome://zotero/skin/16/universal/attachment.svg",
-            "Has Attachment File — regular items with at least "
-            + "one attachment file (PDF, EPUB, snapshot, etc.). "
-            + "Distinct from Item Note — item notes are also "
-            + "attachment-level rows but have their own tile in "
-            + "the Attachment group. Alt+click to exclude.",
-            "var(--accent-green)");
+        // In Multiple Libraries leads the row on the LEFT — it's a
+        // membership property, not a Has-* tile (MJT 2026-08-20). The
+        // Has-* tiles follow, pushed to the right edge by the same
+        // auto-margin separator the attachment/annotation sections use
+        // (popup grammar: left = what it IS, right = what it HAS).
         // Two OVERLAPPING library buildings, back one dimmed (50%) with a
         // hairline gap along the front's block outline — custom artwork,
         // no upstream glyph exists for "in multiple libraries". NO chain
@@ -9930,6 +9905,36 @@ class _FilterMixin {
                     try { this._wvEnsureLinkedLibCache(winOf(section), true); } catch (e) {}
                 }
             });
+        const hasSep = doc.createElementNS(NS_HTML, "div");
+        hasSep.className = "wv-filter-vertical-separator";
+        hasSep.style.marginLeft = "auto";
+        optsBox.appendChild(hasSep);
+        buildBtn("hasDOI", "Has DOI",
+            "chrome://zotero/skin/16/universal/crossref.svg",
+            "Has DOI — regular items with a DOI. Alt+click to exclude.");
+        buildBtn("hasPMID", "PMID", null,
+            "Has PMID — regular items with a PMID (field or Extra). "
+            + "Alt+click to exclude.");
+        buildBtn("hasPMCID", "PMCID", null,
+            "Has PMCID — regular items with a PMCID (field or Extra). "
+            + "Alt+click to exclude.");
+        buildBtn("hasURL", "Has URL",
+            "chrome://zotero/skin/16/universal/globe.svg",
+            "Has URL — regular items with a URL field. "
+            + "Alt+click to exclude.");
+        buildBtn("hasAbstract", "Has Abstract",
+            "chrome://zotero/skin/16/universal/abstract.svg",
+            "Has Abstract — regular items with a non-empty abstract. "
+            + "Alt+click to exclude.",
+            "var(--accent-azure)");
+        buildBtn("hasAttachment", "Has Attachment File",
+            "chrome://zotero/skin/16/universal/attachment.svg",
+            "Has Attachment File — regular items with at least "
+            + "one attachment file (PDF, EPUB, snapshot, etc.). "
+            + "Distinct from Item Note — item notes are also "
+            + "attachment-level rows but have their own tile in "
+            + "the Attachment group. Alt+click to exclude.",
+            "var(--accent-green)");
     }
 
     /** Row hosting two tiles in the Attachment group:

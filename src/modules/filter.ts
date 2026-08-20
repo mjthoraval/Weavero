@@ -9265,17 +9265,20 @@ class _FilterMixin {
             grp.appendChild(btn);
         }
 
-        // Has Comment tile sits at the FAR RIGHT of this row —
-        // mirrors the Item Note / Standalone Note right-aligned
-        // placement in their respective rows. Thin vertical
-        // separator with `margin-left: auto` pushes the tile to
-        // the right edge of the flex container.
+        // Annotation Source sits LEFT-adjacent to the tinted type
+        // card, outside the tint (MJT 2026-08-20): it partitions what
+        // the annotation IS (origin), so it doesn't belong in the
+        // right-edge block, which means "Has …" — the same grammar
+        // move as In Multiple Libraries and Standalone Attachment.
+        opts.appendChild(this._makeAnnotationSourceTile(doc, refreshAll));
+        // Has Comment alone at the FAR RIGHT — a genuine Has-tile.
+        // Thin vertical separator with `margin-left: auto` pushes it
+        // to the right edge of the flex container.
         const sep = doc.createElementNS(NS_HTML, "div");
         sep.className = "wv-filter-vertical-separator";
         sep.style.marginLeft = "auto";
         opts.appendChild(sep);
         opts.appendChild(this._makeHasCommentTile(doc, refreshAll));
-        opts.appendChild(this._makeAnnotationSourceTile(doc, refreshAll));
     }
 
     /** True iff `item` is one of the three text sources Has Link
@@ -10292,11 +10295,13 @@ class _FilterMixin {
     }
 
     /** Annotation Source tile — tri-state on `annotationIsExternal`,
-     *  inline at the right end of the Annotation Type row next to
-     *  Has Comment. Click → made in Zotero Reader; Alt+click →
-     *  embedded in the PDF (source is binary, so excluding one kind
-     *  IS selecting the other — the standard tile gesture covers
-     *  every state). */
+     *  left-adjacent to the Annotation Type card (outside its tint —
+     *  it ANDs with the types). Click → embedded in the PDF;
+     *  Alt+click → made in Zotero Reader (source is binary, so
+     *  excluding one kind IS selecting the other — the standard tile
+     *  gesture covers every state). [The previous version of this
+     *  comment had the two gestures INVERTED vs the code and the
+     *  tooltip — caught 2026-08-20.] */
     _makeAnnotationSourceTile(doc, refreshAll) {
         const NS_HTML = "http://www.w3.org/1999/xhtml";
         const g0 = this._activeGroup();

@@ -8261,7 +8261,9 @@ class _FilterMixin {
                     arrow.type = "button";
                     arrow.className = "wv-filter-selected-pill-scope";
                     arrow.textContent = "▾";
-                    arrow.title = "Choose which row kinds the Tag filter applies to (shared with Has Tag).";
+                    arrow.title = "Choose which categories the Tag filter "
+                        + "applies to — parent items, attachments, notes, "
+                        + "annotations (shared with Has Tag).";
                     const allOn = KINDS_ROW_TAG.every(
                         k => tagScope[k.key] !== false);
                     if (!allOn) arrow.dataset.modified = "true";
@@ -9600,7 +9602,12 @@ class _FilterMixin {
                 const arrow = doc.createElementNS(NS_HTML, "button");
                 arrow.type = "button";
                 arrow.className = "wv-filter-cross-scope-arrow";
-                arrow.title = "Choose which row kinds this filter applies to";
+                // "categories" = the four-type classification (parent
+                // items / attachments / notes / annotations) — the
+                // pre-four-type "row kinds" wording survived the 2026-08
+                // reorganization until MJT flagged it (2026-08-20).
+                arrow.title = "Choose which categories this filter applies "
+                    + "to — parent items, attachments, notes, annotations";
                 arrow.textContent = "▾";
                 const scope = (g0 && g0[scopeKey]) || {};
                 const allOn = kindList.every(k => scope[k.key] !== false);
@@ -9666,8 +9673,18 @@ class _FilterMixin {
         const inner = anchor.closest(".wv-filter-popup-inner")
             || doc.querySelector(".wv-filter-popup-inner");
         if (!inner) return;
+        // TOGGLE (MJT 2026-08-20): a second click on the SAME arrow
+        // closes its popup instead of re-opening it. The outside-
+        // mousedown dismisser deliberately exempts the anchor (so the
+        // opening click doesn't self-close), which made the arrow
+        // reopen-only until this check.
         const stale = inner.querySelectorAll(".wv-filter-scope-popup");
-        for (const s of stale) s.remove();
+        let ownWasOpen = false;
+        for (const s of stale) {
+            if ((s as any)._wvScopeAnchor === anchor) ownWasOpen = true;
+            s.remove();
+        }
+        if (ownWasOpen) return;
 
         const g = this._activeGroup();
         if (!g) return;
@@ -9686,6 +9703,8 @@ class _FilterMixin {
 
         const pop = doc.createElementNS(NS_HTML, "div");
         pop.className = "wv-filter-scope-popup";
+        // Anchor stamp read by the toggle check above.
+        (pop as any)._wvScopeAnchor = anchor;
 
         const heading = doc.createElementNS(NS_HTML, "div");
         heading.className = "wv-filter-scope-popup-head";

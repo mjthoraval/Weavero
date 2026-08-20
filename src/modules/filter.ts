@@ -9998,6 +9998,61 @@ class _FilterMixin {
             optsBox.appendChild(lfBtn);
         }
 
+        // ── Standalone Attachment tile (just after Linked File) ─
+        // Moved off the file-type row (MJT 2026-08-20: its old spot
+        // inside the tinted OR box read as part of the pick-any file
+        // kinds while it actually ANDs with them). Here it sits with
+        // its semantic sibling: Linked File and Standalone both say
+        // HOW/WHERE the attachment lives (storage mode, tree
+        // position), not what kind of file it is.
+        // A RESTRICTION: intersects with Attachment File Type
+        // (standalone + PDF = standalone PDFs), no OR pair.
+        const saCur = g0 ? g0.standaloneAttachment : null;
+        const saBtn = doc.createElementNS(NS_HTML, "button");
+        saBtn.type = "button";
+        saBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        saBtn.title = "Standalone Attachment — show only top-level "
+            + "(parentless) attachments. Alt+click to exclude.";
+        if (saCur === true) saBtn.dataset.selected = "true";
+        else if (saCur === false) saBtn.dataset.excluded = "true";
+        const saIcon = doc.createElementNS(NS_HTML, "img");
+        saIcon.className = "wv-filter-svg";
+        // Standalone motif "E" (user pick 2026-08-20): left-margin bar
+        // + paperclip, matching the Standalone Note tile — one shared
+        // "standalone" language across both kinds. Stroke-drawn clip
+        // (not the stock filled attachment.svg) so its line weight
+        // matches the bar and the note pair.
+        saIcon.src = "data:image/svg+xml;utf8,"
+            + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
+            + " fill='none' stroke='context-stroke' stroke-width='1'"
+            + " shape-rendering='geometricPrecision'>"
+            + "<path d='M1.5 0.5 V15.5'/>"
+            + "<g transform='translate(2,0)'>"
+            + "<path d='M5 9.5 L10.2 4.3 a2.05 2.05 0 0 1 2.9 2.9"
+            + " L7.4 12.9 a3.4 3.4 0 0 1 -4.8 -4.8 L8.3 2.4'/>"
+            + "</g>"
+            + "</svg>";
+        saIcon.alt = "Standalone Attachment";
+        // Attachments accent per upstream's $item-pane-sections palette
+        // (GREEN — blue is the Info section; the original 2026-08-19
+        // tile shipped off-palette blue, caught by MJT 2026-08-20).
+        // Matches the Has Attachment File tile.
+        saIcon.style.color = "var(--accent-green)";
+        saBtn.appendChild(saIcon);
+        saBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.standaloneAttachment === false) ? null : false;
+            else next = (g.standaloneAttachment === true) ? null : true;
+            g.standaloneAttachment = next;
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        optsBox.appendChild(saBtn);
+
         // Separator pushes the Has Bookmarks + Has Annotations pair
         // to the right edge — same `margin-left: auto` trick the
         // Item Note row uses.
@@ -10899,65 +10954,6 @@ class _FilterMixin {
             });
             opts.appendChild(btn);
         }
-
-        // Standalone Attachment tile sits at the FAR RIGHT of the
-        // file-type row (2026-08-19) -- the attachment type's position
-        // scope lives beside its file-type facets, in the spot the
-        // Item Note tile occupied before notes got their own row.
-        const sep = doc.createElementNS(NS_HTML, "div");
-        sep.className = "wv-filter-vertical-separator";
-        sep.style.marginLeft = "auto";
-        opts.appendChild(sep);
-
-        // Standalone Attachment tile (2026-08-19) — the attachment
-        // type's missing position scope, symmetric to Standalone Note.
-        // A RESTRICTION: intersects with Attachment File Type
-        // (standalone + PDF = standalone PDFs), no OR pair.
-        const saCur = g0 ? g0.standaloneAttachment : null;
-        const saBtn = doc.createElementNS(NS_HTML, "button");
-        saBtn.type = "button";
-        saBtn.className = "wv-filter-opt wv-filter-opt-icon";
-        saBtn.title = "Standalone Attachment — show only top-level "
-            + "(parentless) attachments. Alt+click to exclude.";
-        if (saCur === true) saBtn.dataset.selected = "true";
-        else if (saCur === false) saBtn.dataset.excluded = "true";
-        const saIcon = doc.createElementNS(NS_HTML, "img");
-        saIcon.className = "wv-filter-svg";
-        // Standalone motif "E" (user pick 2026-08-20): left-margin bar
-        // + paperclip, matching the Standalone Note tile — one shared
-        // "standalone" language across both kinds. Stroke-drawn clip
-        // (not the stock filled attachment.svg) so its line weight
-        // matches the bar and the note pair.
-        saIcon.src = "data:image/svg+xml;utf8,"
-            + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
-            + " fill='none' stroke='context-stroke' stroke-width='1'"
-            + " shape-rendering='geometricPrecision'>"
-            + "<path d='M1.5 0.5 V15.5'/>"
-            + "<g transform='translate(2,0)'>"
-            + "<path d='M5 9.5 L10.2 4.3 a2.05 2.05 0 0 1 2.9 2.9"
-            + " L7.4 12.9 a3.4 3.4 0 0 1 -4.8 -4.8 L8.3 2.4'/>"
-            + "</g>"
-            + "</svg>";
-        saIcon.alt = "Standalone Attachment";
-        // Attachments accent per upstream's $item-pane-sections palette
-        // (GREEN — blue is the Info section; the original 2026-08-19
-        // tile shipped off-palette blue, caught by MJT 2026-08-20).
-        // Matches the Has Attachment File tile.
-        saIcon.style.color = "var(--accent-green)";
-        saBtn.appendChild(saIcon);
-        saBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const g = this._activeGroup();
-            if (!g) return;
-            let next;
-            if (e.altKey) next = (g.standaloneAttachment === false) ? null : false;
-            else next = (g.standaloneAttachment === true) ? null : true;
-            g.standaloneAttachment = next;
-            this._renderFilterBar();
-            this._applyItemsListFilter({ cascade: true });
-            refreshAll();
-        });
-        opts.appendChild(saBtn);
     }
 
 

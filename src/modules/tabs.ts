@@ -10894,8 +10894,8 @@ class _TabsMixin {
                 if (win.Zotero_Tabs && win.Zotero_Tabs.selectedType === "library") {
                     const ctxEl = win.document.getElementById("zotero-context-pane");
                     const splitter = win.document.getElementById("zotero-context-splitter");
-                    if (ctxEl) ctxEl.setAttribute("collapsed", "true");
-                    if (splitter) splitter.setAttribute("hidden", "true");
+                    if (ctxEl) ctxEl.toggleAttribute("collapsed", true);
+                    if (splitter) splitter.toggleAttribute("hidden", true);
                 }
             } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvGuardContextPaneCrossWindow err: " + e); }

@@ -27,7 +27,7 @@ import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
     WV_FUNNEL_DATA_URI,
 } from "./constants";
-import { winOf } from "../lib/dom";
+import { winOf, wvIsHiddenOrCollapsed } from "../lib/dom";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -5632,7 +5632,7 @@ class _ReaderMixin {
                 hbox.className = "wv-note-outline-hbox";
                 const pane = doc.createXULElement("vbox");
                 pane.className = "wv-note-outline-pane";
-                if ((win._wvWT && win._wvWT.noteOutlineCollapsed)) pane.setAttribute("collapsed", "true");
+                pane.toggleAttribute("collapsed", !!(win._wvWT && win._wvWT.noteOutlineCollapsed));
                 const splitter = doc.createXULElement("splitter");
                 splitter.className = "wv-note-outline-splitter";
                 splitter.setAttribute("collapse", "before");
@@ -15240,7 +15240,7 @@ class _ReaderMixin {
                 // untyped items keep the main window's current state
                 // (so e.g. the hamburger-promoted items stay hidden
                 // here just like there).
-                let hidden = child.hidden || child.getAttribute("hidden") === "true";
+                let hidden = wvIsHiddenOrCollapsed(child);
                 if (/menu-type-/.test(cls)) hidden = !/menu-type-reader/.test(cls);
                 if (tag === "menuseparator") {
                     if (!hidden && popup.children.length && !lastIsSep()) {
@@ -15596,9 +15596,7 @@ class _ReaderMixin {
                     if (ch.tagName !== "menu") continue;
                     const popupId = ch.querySelector(":scope > menupopup")?.id;
                     if (!popupId) continue;
-                    const hidden = !!(ch as any).hidden
-                        || ch.getAttribute("hidden") === "true"
-                        || ch.getAttribute("collapsed") === "true";
+                    const hidden = wvIsHiddenOrCollapsed(ch);
                     sources.push({
                         label: ch.getAttribute("label") || "",
                         accesskey: ch.getAttribute("accesskey") || "",
@@ -15951,9 +15949,7 @@ class _ReaderMixin {
                         const pid = sm._wvSrcPopupId;
                         if (!pid) continue;
                         const srcMenu: any = doc.getElementById(pid)?.parentElement;
-                        sm.hidden = !srcMenu || !!srcMenu.hidden
-                            || srcMenu.getAttribute("hidden") === "true"
-                            || srcMenu.getAttribute("collapsed") === "true";
+                        sm.hidden = !srcMenu || wvIsHiddenOrCollapsed(srcMenu);
                     }
                 } catch (er) {}
             }, true);
@@ -16719,10 +16715,10 @@ class _ReaderMixin {
                         try {
                             const lpR: any = (Zotero as any).Weavero?.plugin;
                             const wlabel = lpR && lpR._wvClosedTopLabel && lpR._wvClosedTopLabel();
-                            if (wlabel) { reopen.setAttribute("label", wlabel); reopen.setAttribute("disabled", "false"); }
+                            if (wlabel) { reopen.setAttribute("label", wlabel); reopen.toggleAttribute("disabled", false); }
                             else {
                                 reopen.setAttribute("label", str("tabs.undoClose", "Reopen Closed Tab", 1));
-                                reopen.setAttribute("disabled", String(!(win._wvWTClosed && win._wvWTClosed.length)));
+                                reopen.toggleAttribute("disabled", !(win._wvWTClosed && win._wvWTClosed.length));
                             }
                         } catch (e) {}
                         try { const t = targetTab(); pinTab.setAttribute("label", (t && t.pinned) ? "Unpin Tab" : "Pin Tab"); } catch (e) {}
@@ -16748,8 +16744,8 @@ class _ReaderMixin {
                             const t = targetTab(); const stx = win._wvWT;
                             if (t && stx) {
                                 const idx = stx.tabs.findIndex((x: any) => x.id === t.id);
-                                moveStartItem.setAttribute("disabled", String(idx <= 0));
-                                moveEndItem.setAttribute("disabled", String(idx >= stx.tabs.length - 1));
+                                moveStartItem.toggleAttribute("disabled", idx <= 0);
+                                moveEndItem.toggleAttribute("disabled", idx >= stx.tabs.length - 1);
                             }
                         } catch (e) {}
                     } catch (e) {}

@@ -1724,7 +1724,7 @@ class _TabGroupsMixin {
                 // Window-identity colour glyph on the RIGHT, like the
                 // list-all-tabs headers (user request 2026-07-15).
                 try { (this as any)._wvDecorateWindowTargetMenuitem(doc, wi, w, !!t.isReader); } catch (e) {}
-                if (isSrc) wi.setAttribute("disabled", "true");
+                if (isSrc) wi.toggleAttribute("disabled", true);
                 else wi.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
                 place(wi);
                 added++;
@@ -4526,7 +4526,7 @@ class _TabGroupsMixin {
                 mi.classList.add("menuitem-iconic");
                 mi.setAttribute("label", label);
                 try { if (icon) mi.setAttribute("image", icon); } catch (er) {}
-                if (disabled) mi.setAttribute("disabled", "true");
+                if (disabled) mi.toggleAttribute("disabled", true);
                 else mi.addEventListener("command", (ev: any) => {
                     try {
                         ev.stopPropagation();

@@ -62,3 +62,32 @@ export function wvDismissTooltip(doc: any): void {
         }
     } catch (e) {}
 }
+
+/** True if a XUL element is hidden or collapsed, on every Zotero we support.
+ *
+ *  Firefox 153 made `hidden`/`collapsed` (and `selected`/`disabled`/`checked`)
+ *  **boolean XUL attributes matched on presence alone**, so `getAttribute()`
+ *  returns `""` and the once-idiomatic `=== "true"` test is FALSE while the
+ *  element is genuinely hidden. The reverse trap also exists: measured on
+ *  2026-08-21, `toggleAttribute("collapsed", true)` sets `.collapsed === true`
+ *  on Zotero 11 but leaves it **false** on Zotero 10, which only honours the
+ *  literal `"true"`. So neither the property alone nor the string test alone is
+ *  correct on both.
+ *
+ *  Presence with any value other than "false" means hidden -- that covers the
+ *  Zotero 11 empty-string form, the legacy `"true"` form, and still respects an
+ *  explicit `"false"` written by older code. */
+export function wvIsHiddenOrCollapsed(el: any): boolean {
+    try {
+        if (!el) return false;
+        if (el.hidden === true || el.collapsed === true) return true;
+        for (const name of ["hidden", "collapsed"]) {
+            if (el.hasAttribute && el.hasAttribute(name)
+                && el.getAttribute(name) !== "false") return true;
+        }
+        return false;
+    }
+    catch (e) {
+        return false;
+    }
+}

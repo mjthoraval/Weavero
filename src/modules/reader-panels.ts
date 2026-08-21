@@ -3026,7 +3026,24 @@ class _ReaderPanelsMixin {
      *  embedded-else-extract.) A Weavero-curated outline (Phase 3) overrides. */
     async _wvReaderFetchOutline(reader: any): Promise<{ source: string, tree: any[] } | null> {
         try {
-            if (reader._type && reader._type !== "pdf") return null;
+            // Non-PDF (DOM) views -- EPUB and snapshot -- have no pdf.js
+            // document, but Zotero DOES build an outline for them and hands it
+            // to the reader through onSetOutline: epub-view from the book's
+            // TOC, snapshot-view from the heading tree (H1-H6 / aria-level).
+            // Reading it here is what stops the takeover from HIDING a working
+            // native outline: until 2026-08-21 this returned null for every
+            // non-PDF type, so the panel read "No outline for this document"
+            // while the native view it had just hidden held a full tree
+            // (issue #34, reproduced on an APS snapshot AND a Verne EPUB).
+            if (reader._type && reader._type !== "pdf") {
+                const st = reader._internalReader && reader._internalReader._state;
+                const tree = (st && st.outline) || null;
+                if (!tree || !tree.length) return null;
+                return {
+                    source: reader._type === "epub" ? "embedded" : "extracted",
+                    tree: this._wvOutlineCopyTree(tree),
+                };
+            }
             const iw = reader._iframeWindow;
             const app = iw && (iw.PDFViewerApplication
                 || (iw.wrappedJSObject && iw.wrappedJSObject.PDFViewerApplication));
@@ -3040,24 +3057,33 @@ class _ReaderPanelsMixin {
                 const emb = pdfDoc.getOutline ? await pdfDoc.getOutline() : null;
                 if (emb && emb.length) source = "embedded";
             } catch (_) {}
-            const copy = (nodes: any): any[] => {
-                const out: any[] = [];
-                const arr = nodes || [];
-                for (let i = 0; i < arr.length; i++) {
-                    const n = arr[i];
-                    let position: any = null;
-                    try { if (n.location && n.location.position) position = JSON.parse(JSON.stringify(n.location.position)); } catch (_) {}
-                    out.push({
-                        title: String(n.title == null ? "" : n.title),
-                        url: n.url ? String(n.url) : null,
-                        position,
-                        items: copy(n.items),
-                    });
-                }
-                return out;
-            };
-            return { source, tree: copy(raw) };
+            return { source, tree: this._wvOutlineCopyTree(raw) };
         } catch (_) { return null; }
+    }
+
+    /** Deep-copy an outline tree to plain JS (the source is Xray-wrapped) and
+     *  keep BOTH anchor shapes, because the producers differ: pdf.js and
+     *  snapshot-view give `location.position` (page geometry / a DOM
+     *  selector), epub-view gives `location.href` into the book. Dropping
+     *  `href` is why EPUB entries would render but never navigate (#34). */
+    _wvOutlineCopyTree(nodes: any): any[] {
+        const out: any[] = [];
+        const arr = nodes || [];
+        for (let i = 0; i < arr.length; i++) {
+            const n = arr[i];
+            let position: any = null;
+            try { if (n.location && n.location.position) position = JSON.parse(JSON.stringify(n.location.position)); } catch (_) {}
+            let href: string | null = null;
+            try { if (n.location && n.location.href) href = String(n.location.href); } catch (_) {}
+            out.push({
+                title: String(n.title == null ? "" : n.title),
+                url: n.url ? String(n.url) : null,
+                position,
+                href,
+                items: this._wvOutlineCopyTree(n.items),
+            });
+        }
+        return out;
     }
 
     /** Human label + tooltip for an outline source. */
@@ -7981,6 +8007,25 @@ class _ReaderPanelsMixin {
             // -- the resolver may need async page-text recovery.
             if (this._wvReadingModeActive(reader)) {
                 Promise.resolve(this._wvOutlineRmNavigate(reader, idoc, node)).catch(() => {});
+                return;
+            }
+            // EPUB TOC entries anchor by href into the book, not by page
+            // geometry, and `NavLocation` accepts `href` directly. Hand it to
+            // the reader: the rect/pageIndex path below has nothing to work
+            // with, so without this an EPUB entry rendered but did nothing
+            // when clicked (#34, 2026-08-21). A curated entry that has since
+            // resolved a real position keeps the geometry path.
+            if (node && node.href && !node.position && !node.resolvedPosition) {
+                try {
+                    const ir0 = reader._internalReader;
+                    const iw0 = reader._iframeWindow;
+                    const Cu0 = (Components as any).utils;
+                    if (ir0 && typeof ir0.navigate === "function") {
+                        ir0.navigate((iw0 && Cu0)
+                            ? Cu0.cloneInto({ href: node.href }, iw0)
+                            : { href: node.href });
+                    }
+                } catch (_) {}
                 return;
             }
             const ir = reader._internalReader;

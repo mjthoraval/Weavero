@@ -50,6 +50,13 @@ manifest changed, their rules files carry the extra checks.
   global before heavy async work so a bridge hiccup doesn't lose them.
 - Timing measurements: beware sampling inside a CSS transition or debounce
   window — a wrong first read cost a false "dimming is broken" alarm once.
+- **A hidden or occluded window suspends `requestAnimationFrame`**, and
+  anything driven by it silently freezes: pdf.js's `pdfViewer._location`
+  stops tracking scroll (programmatic scrollTop "works" while every position
+  read returns the same stale value), and the filter matrix captures no paint
+  timings at all. Check `window.document.hidden` BEFORE trusting any
+  scroll / position / paint measurement, and say so rather than reporting a
+  frozen reading as a result (2026-08-20, both failure modes in one day).
 - Hot reload leaves stale DOM handlers in open reader tabs — reopen the tab
   before judging reader behaviour.
 - Synthetic clicks/keys are `isTrusted: false`; XUL handlers may ignore them.

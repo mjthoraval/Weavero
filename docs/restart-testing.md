@@ -19,6 +19,14 @@ scripts.
   **collapsed/expanded state**.
 - Note tabs (selected and background), duplicate tabs (same window and across
   windows), pinned tabs.
+- **Pinned tabs are VISIBLE, not merely present.** Check the rendered box, not
+  the DOM: Weavero hides the real pinned tab and shows a mirror in its place,
+  so a mirror mounted in a container upstream has hidden takes the pinned tab
+  off the tab bar entirely while every DOM query still passes. Zotero
+  10.0.1-beta.1 did exactly that to `.pinned-tabs` (`display: none`), and the
+  bug was invisible to every automated check we had. Assert a non-zero
+  `getBoundingClientRect()` on the mirror, and read it as the guard for the
+  whole family: any Weavero decoration whose host is an upstream container.
 - Only the selected tab of each window loads; everything else restores
   lazily (`*-unloaded`) — minimal reload work.
 - The selected tab of each window, the focused window, window geometry
@@ -56,6 +64,10 @@ JavaScript works; an MCP/RDP dev bridge makes it scriptable.
 7. After the workspace settles (~15–30 s), run `snapshot.js` again → `after.json`.
 8. Diff the two JSON files. Windows are matched by name/content; tabs by
    `libraryID:itemKey`; expect only `lazy`/`-unloaded` differences.
+   **Compare the whole `geom` object, `x`/`y` included** — a window can come
+   back the right size, maximized, and on the wrong MONITOR. A diff that
+   checked only `w`/`h`/`st` passed the anchor window landing on the other
+   screen (2026-08-21); it was caught by looking at the screen, not the data.
 9. Read the restore trace: filter the debug log for `[Weavero][trace]`
    (timings for every restore phase), and `<data dir>/weavero/trace-quit.json`
    for the quit-side breadcrumbs of the PREVIOUS session.

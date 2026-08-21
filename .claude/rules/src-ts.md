@@ -71,3 +71,18 @@ patches: write the patch script with the Write tool and run `python file.py` —
 bash heredocs eat one backslash level and have corrupted source before.
 Size-delta sanity after writes: a one-line change never shrinks a file by
 hundreds of bytes.
+
+## Inline SVG inherits the container's fill/stroke
+
+`.wv-filter-svg` (and friends) set `fill: currentColor; stroke: currentColor`
+so that `<img src="chrome://…">` icons theme correctly. An **inline** SVG
+built with `createElementNS` is a different animal: its children INHERIT that
+stroke, so a shape declaring only a fill still gets a 1-px outline — 1-px bars
+render 2 px and the glyph reads thick. Opt out on the root with
+`svg.style.stroke = "none"` (a `stroke` *attribute* loses to the class rule);
+children that want a stroke set their own, which still wins.
+
+This is invisible to standalone rasterisation: serialising the same markup to
+a data URI and drawing it to a canvas shows it crisp, because the class rule
+never applies there. **Verify icons in situ** — `getComputedStyle` on a child
+of the rendered node — not on a copy (2026-08-20, three rounds lost to it).

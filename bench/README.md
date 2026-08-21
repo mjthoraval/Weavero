@@ -133,6 +133,39 @@ maintainer's library (17,932 top-level rows), 39/39 correctness pass:
 Slowest five: hasAnnotations FALSE (2382), hasRelated (1914),
 itemTypeEXCL + color (1647), fileType linkedFile (1612), hasTag (1597).
 
+Re-run — 2026-08-20, Weavero 0.18.6-dev.24, Zotero 10.0.1-beta.1, same
+library, 47/47 correctness pass (47 configs: the 39 above, +2 four-type,
++6 annotation-source/notes-pair), paint captured for 44/47:
+
+| Statistic (cascade mode) | paintMs | ringMs |
+|---|---|---|
+| median, 41 configs shared with the baseline | 1041 | 770 |
+| median, all 47 configs | 999 | 726 |
+| worst (`fileType PDF`) | 2429 | 1964 |
+
+No regression: every one of the baseline's slowest five improved —
+hasAnnotations FALSE 2382 → 1898, hasRelated 1914 → 1405,
+itemTypeEXCL + color 1647 → 1362, fileType linkedFile 1612 → 649,
+hasTag 1597 → 1409. The top end is flat (worst 2382 → 2429, a different
+case). The six new configurations all land at 406–461 ms paint.
+
+Two measurement lessons from this cycle, both learned by getting them
+wrong first:
+
+- **Run it on an idle machine.** An earlier run of the same matrix, with
+  three web-search agents running alongside it, read ringMs median 1801
+  (+59% vs baseline) — pure contention, not a regression.
+- **Keep the window visible.** In that same run paint timing was captured
+  for 3 of 47 cases; the user-perceived metric was simply absent. The
+  report's `paintTiming` field states the ratio — check it before
+  believing any paint number.
+
+The quick headline (`bench-weavero-ui.js`) is sensitive to session
+warmth — the journalArticle case read ~245 ms apply on a warm session
+here versus the 1474 ms recorded above, while the matrix's own itemType
+case (paint 924, timed to settle rather than first row change) is the
+comparable figure. Prefer the matrix for anything that has to hold up.
+
 **Native comparator** (same library, same session, `fields` mode, driven
 by `command` events): Zotero's own quick-search narrowing — the closest
 native operation to a chip apply — measured with Weavero disabled:

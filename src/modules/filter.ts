@@ -327,6 +327,22 @@ class _FilterMixin {
         return true;
     }
 
+    /** True iff `item` (an attachment) carries a CURATED Weavero outline.
+     *  Reads the in-memory outline store, which is synchronous and
+     *  self-loading: `_wvOutlineStore()` returns {} and kicks off the
+     *  load when cold, so a filter apply during startup simply matches
+     *  nothing rather than blocking -- the tile warms the store on
+     *  activation and re-applies (the linked-libraries cache pattern).
+     *  Embedded and extracted outlines are deliberately NOT covered:
+     *  knowing those requires parsing every PDF (the dev outline-eval
+     *  scan), so they live in the dev facets instead. */
+    _wvHasCuratedOutline(item) {
+        try {
+            if (!item || !item.key) return false;
+            return !!this._wvOutlineHasCurated(item.libraryID, item.key);
+        } catch (e) { return false; }
+    }
+
     /** DEV outline-eval facets. The set of filter tokens an ATTACHMENT
      *  satisfies, drawn from its recorded classification (source + flags)
      *  and its eval verdict. Two facet namespaces share ONE set so
@@ -2412,6 +2428,13 @@ class _FilterMixin {
             // does NOT filter annotation rows — an attachment with both
             // kinds still shows all of them.
             hasEmbeddedAnnotations: null,
+            // Has Weavero Outline (2026-08-20): attachments carrying a
+            // CURATED outline (weavero/outlines.json). Deliberately not
+            // "has an outline" -- embedded and extracted outlines can
+            // only be known by parsing each PDF (the dev outline-eval
+            // scan), so a tile promising those would answer "no" for
+            // every unscanned file. This one is instant and exact.
+            hasOutline: null,
             // Publication multi-select (parent items only). State
             // shape mirrors Tag / Author / Added By: parallel
             // include + exclude arrays of titles.
@@ -2473,6 +2496,7 @@ class _FilterMixin {
         if (group.hasAttachment != null) return true;
         if (group.hasAnnotations != null) return true;
         if (group.hasEmbeddedAnnotations != null) return true;
+        if (group.hasOutline != null) return true;
         if (group.publication && group.publication.length) return true;
         if (group.publicationExclude && group.publicationExclude.length) return true;
         if (group.readStatus && group.readStatus.length) return true;
@@ -2681,6 +2705,7 @@ class _FilterMixin {
             if (isSet(g, "standaloneAttachment")) cats.add("attachment");
             if (isSet(g, "hasAnnotations")) cats.add("attachment");
             if (isSet(g, "hasEmbeddedAnnotations")) cats.add("attachment");
+            if (isSet(g, "hasOutline")) cats.add("attachment");
             // Tag filter (annotationTag) — cross-level: matches any
             // row whose own tags contain the chosen tag. Shares the
             // `hasTagScope` with Has Tag (both are tag concepts;
@@ -3335,6 +3360,16 @@ class _FilterMixin {
                 const anns = item.getAnnotations() || [];
                 const v = anns.some(a => !!(a as any).annotationIsExternal);
                 if (v !== group.hasEmbeddedAnnotations) return false;
+            }
+        }
+        if (group.hasOutline != null) {
+            // Attachment-level, like its Has-* neighbours: a parent row
+            // relaxes through and is kept as an ancestor of whichever
+            // attachment matches.
+            const isFa = !!(item.isFileAttachment && item.isFileAttachment());
+            if (isFa) {
+                const v = this._wvHasCuratedOutline(item);
+                if (v !== group.hasOutline) return false;
             }
         }
         // Publication — regular items only.
@@ -4181,6 +4216,17 @@ class _FilterMixin {
             }
             if (!hasAnnotated) return false;
         }
+        if (group.hasOutline === true) {
+            // Vertical: the spine must include a file attachment that
+            // carries a curated outline.
+            let hasOl = false;
+            for (const cand of candidates.attachment) {
+                if (!cand || !cand.isFileAttachment
+                    || !cand.isFileAttachment()) continue;
+                if (this._wvHasCuratedOutline(cand)) { hasOl = true; break; }
+            }
+            if (!hasOl) return false;
+        }
         if (group.hasEmbeddedAnnotations === true) {
             // Vertical-only, same shape as Has Annotations above:
             // spine must include a file attachment carrying at least
@@ -4628,6 +4674,13 @@ class _FilterMixin {
                 const v = anns.some(
                     a => this._annSourceMatches(a, group.annotationSource));
                 if (v === group.hasAnnotations) return true;
+            }
+        }
+        // Has Weavero Outline — file attachments only.
+        if (group.hasOutline != null) {
+            const isFaOl = !!(item.isFileAttachment && item.isFileAttachment());
+            if (isFaOl && this._wvHasCuratedOutline(item) === group.hasOutline) {
+                return true;
             }
         }
         // Has Embedded Annotations — file attachments only.
@@ -5654,6 +5707,20 @@ class _FilterMixin {
     }
 
     _teardownItemsListFilterIn(targetWin: any) {
+        // Close the filter popup FIRST. Its contents are built on
+        // `popupshowing`, so a popup still open when the plugin is
+        // torn down keeps the outgoing build's DOM -- after an update
+        // or a dev reload the user goes on looking at the previous
+        // version's tiles and icons, with no way to tell (MJT
+        // 2026-08-20 lost three rounds to exactly this: "why do I
+        // still see thick lines?"). Closing here guarantees the next
+        // open renders with whatever code is then live.
+        try {
+            const b = targetWin && targetWin.document
+                && targetWin.document.getElementById("wv-filter-tb-button");
+            const p = b && b.querySelector("panel");
+            if (p && (p.state === "open" || p.state === "showing")) p.hidePopup();
+        } catch (e) {}
         try {
             if (this._filterTreeObserver) {
                 this._filterTreeObserver.disconnect();
@@ -6000,6 +6067,10 @@ class _FilterMixin {
             if (group.hasAnnotations != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
                     "hasAnnotations", "Has Annotations"));
+            }
+            if (group.hasOutline != null) {
+                bar.appendChild(this._buildHasFieldChip(doc, group, gi,
+                    "hasOutline", "Has Weavero Outline"));
             }
             if (group.hasEmbeddedAnnotations != null) {
                 bar.appendChild(this._buildHasFieldChip(doc, group, gi,
@@ -9733,7 +9804,7 @@ class _FilterMixin {
         buildBtn(
             "hasLink", "hasLinkScope", KINDS_HAS_LINK,
             "Has Link",
-            (d) => this._makeLinkSvg(d),
+            (d) => this._makeLinkTileSvg(d),
             "Has Link — items whose annotation comment or note text "
             + "contains a URL. Alt+click to exclude. ▾ to choose "
             + "which text source(s) to scan.");
@@ -10250,6 +10321,215 @@ class _FilterMixin {
             refreshAll();
         });
         optsBox.appendChild(heBtn);
+
+        // ── Has Weavero Outline tile (tri-state) ────────────────
+        const curOl = g0 ? g0.hasOutline : null;
+        const olBtn = doc.createElementNS(NS_HTML, "button");
+        olBtn.type = "button";
+        olBtn.className = "wv-filter-opt wv-filter-opt-icon";
+        olBtn.title = "Has Weavero Outline — attachments with an outline "
+            + "you curated in the reader's Outline tab (renamed entries, "
+            + "your own additions). NOT the document's own embedded or "
+            + "extracted outline: those can only be known by opening every "
+            + "file. Alt+click to exclude.";
+        if (curOl === true) olBtn.dataset.selected = "true";
+        else if (curOl === false) olBtn.dataset.excluded = "true";
+        olBtn.appendChild(this._makeOutlineSourceSvg(doc));
+        olBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const g = this._activeGroup();
+            if (!g) return;
+            let next;
+            if (e.altKey) next = (g.hasOutline === false) ? null : false;
+            else          next = (g.hasOutline === true) ? null : true;
+            g.hasOutline = next;
+            // The store is lazy: warm it (and re-apply once it lands) so
+            // the first click can't quietly match nothing.
+            if (next != null) {
+                try {
+                    Promise.resolve((this as any)._wvOutlineInit()).then(() => {
+                        try { this._applyItemsListFilter({ cascade: true }); } catch (er) {}
+                    }).catch(() => {});
+                } catch (er) {}
+            }
+            this._renderFilterBar();
+            this._applyItemsListFilter({ cascade: true });
+            refreshAll();
+        });
+        // FIRST of the right-aligned block (MJT 2026-08-20), ahead of
+        // Has Bookmarks / Has Annotations / Has Embedded Annotations.
+        optsBox.insertBefore(olBtn, hbBtn);
+    }
+
+    /** Has Weavero Outline glyph: an outline / table-of-contents mark
+     *  (three indented lines over a rule) carrying the accent-blue DOT
+     *  the reader's outline panel already shows beside "Weavero" in its
+     *  source chip (`.wv-outline-src-weavero .wv-outline-src-dot`). The
+     *  dot is the marker, not the glyph's colour: green and amber are
+     *  taken by *embedded* and *extracted* in that same chip, so tinting
+     *  the whole glyph either of those would misinform, and tinting it
+     *  accent blue would sink into the blue background a selected tile
+     *  paints (MJT 2026-08-20 -- "the icon should carry the information
+     *  that it is a Weavero outline rather than a native one"). */
+    _makeOutlineSourceSvg(doc) {
+        const NS_SVG = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS_SVG, "svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("width", "16");
+        svg.setAttribute("height", "16");
+        svg.classList.add("wv-filter-svg");
+        // EVERY edge on an integer coordinate, and `crispEdges` on the
+        // bars: the viewBox is 16 and the icon renders at 16px, so a
+        // fractional y or height straddles the pixel grid and each bar
+        // comes out as two rows of grey (MJT 2026-08-20, zoomed
+        // screenshot -- the first version used y=1.6/5.2/8.4 and
+        // height=1.4). Same rule as the rest of Weavero's artwork:
+        // viewBox equals rendered size, 1-px features on whole pixels.
+        // `.wv-filter-svg` sets `stroke: currentColor`, and an INLINE
+        // svg passes that down to every child: a rect declaring only
+        // a fill still gets a 1px outline, so 1px bars render 2px and
+        // the whole glyph reads THICK (MJT 2026-08-20, three rounds of
+        // "why do I still see thick lines?"). Invisible when the same
+        // markup is rasterised standalone -- which is exactly how I
+        // kept measuring it "crisp". Zotero's own icons escape it by
+        // being <img src="chrome://...">: external SVGs ignore page
+        // CSS. Inline ones must opt out, and via STYLE -- a stroke
+        // attribute loses to the class rule. Children that want a
+        // stroke set it themselves, which still wins.
+        svg.style.stroke = "none";
+        svg.setAttribute("shape-rendering", "crispEdges");
+        const bar = (x, y, w) => {
+            const r = doc.createElementNS(NS_SVG, "rect");
+            r.setAttribute("x", String(x));
+            r.setAttribute("y", String(y));
+            r.setAttribute("width", String(w));
+            r.setAttribute("height", "1");
+            r.setAttribute("fill", "currentColor");
+            return r;
+        };
+        // Same shape language as the reader's own Outline tab button
+        // (MJT 2026-08-20: "why not reuse the outline icon used above
+        // the outline?") -- bullet + line rows, two of them indented.
+        // REDRAWN rather than reused: that button's path is built on a
+        // 20 grid (3.25 / 9.75 / 16.75), and a 20-unit icon shown at
+        // 16px scales by 0.8, which puts every edge back between pixels
+        // -- the very blur this tile was just fixed for. Design copied,
+        // grid corrected.
+        svg.appendChild(bar(1, 2, 1));    svg.appendChild(bar(3, 2, 12));
+        svg.appendChild(bar(1, 5, 1));    svg.appendChild(bar(3, 5, 12));
+        svg.appendChild(bar(4, 8, 1));    svg.appendChild(bar(6, 8, 9));
+        svg.appendChild(bar(4, 11, 1));   svg.appendChild(bar(6, 11, 2));
+        // Weavero-source dot, bottom-right, in the panel's own colour.
+        // Antialiased on purpose -- crispEdges would step the curve.
+        const dot = doc.createElementNS(NS_SVG, "circle");
+        dot.setAttribute("cx", "12");
+        dot.setAttribute("cy", "12");
+        dot.setAttribute("r", "3");
+        dot.setAttribute("fill", "var(--color-accent, #5e6ad2)");
+        dot.setAttribute("shape-rendering", "geometricPrecision");
+        svg.appendChild(dot);
+        return svg;
+    }
+
+    /** A padlock drawn FOR 16px: four axis-aligned rects on whole
+     *  pixels. The badge used to be Zotero's own 16px lock.svg scaled
+     *  to 0.58 at a fractional offset, which turns its 1-px strokes
+     *  into 0.58 px of grey -- unreadable mush at tile size (MJT
+     *  2026-08-20, zoomed screenshot). Upstream artwork is still
+     *  copied verbatim where it renders at its design size; a badge
+     *  shrunk to a third of the icon is not that case, so it is drawn
+     *  rather than scaled. */
+    _wvAppendMiniLock(doc, svg) {
+        const NS = "http://www.w3.org/2000/svg";
+        const bar = (x, y, w, h) => {
+            const r = doc.createElementNS(NS, "rect");
+            r.setAttribute("x", String(x));
+            r.setAttribute("y", String(y));
+            r.setAttribute("width", String(w));
+            r.setAttribute("height", String(h));
+            r.setAttribute("fill", "currentColor");
+            r.setAttribute("shape-rendering", "crispEdges");
+            svg.appendChild(r);
+        };
+        // 5x7 overall (badge sizes tried: 6x9 too big, 5x6 too small
+        // to read as a padlock -- MJT). The first version was 6x9, which forced a
+        // knock-out slab a fifth of the icon wide and left the base
+        // glyph unrecognisable (MJT 2026-08-20: "I would expect the
+        // icon on the right to be exactly the same icon as on the left
+        // plus the lock"). A badge has to be small enough that the
+        // glyph it sits on still reads.
+        bar(11, 1, 3, 1);   // shackle top
+        bar(11, 2, 1, 2);   // shackle left
+        bar(13, 2, 1, 2);   // shackle right
+        bar(10, 4, 5, 4);   // body
+    }
+
+    /** Has Link glyph FOR THE TILE: two interlocking links drawn on a
+     *  16 grid. The shared badge (`_makeLinkSvg`, annotation.ts) is a
+     *  24-unit viewBox reused at 16px on other surfaces -- a 0.67 scale
+     *  that lands its 1-px strokes between pixel rows, so the tile
+     *  rendered as grey fuzz (MJT 2026-08-20). Strokes are centred on
+     *  half-pixels here, which is what puts a 1-px line exactly on one
+     *  pixel row. The shared badge is left alone: it renders at 1em on
+     *  surfaces where the font size varies, so there is no single grid
+     *  to snap it to. */
+    _makeLinkTileSvg(doc) {
+        const NS = "http://www.w3.org/2000/svg";
+        const svg = doc.createElementNS(NS, "svg");
+        svg.setAttribute("class", "wv-filter-svg");
+        svg.setAttribute("viewBox", "0 0 16 16");
+        svg.setAttribute("width", "16");
+        svg.setAttribute("height", "16");
+        svg.setAttribute("fill", "none");
+        svg.style.stroke = "none";   // children set their own stroke
+        const link = (x) => {
+            const r = doc.createElementNS(NS, "rect");
+            r.setAttribute("x", String(x));
+            r.setAttribute("y", "5.5");
+            r.setAttribute("width", "7");
+            r.setAttribute("height", "5");
+            // rx=1, measured: the straight runs then land on exactly
+            // one pixel row/column each and only the four small corners
+            // soften -- 45% antialiased pixels against 86% at rx=2.5
+            // (fully rounded ends are ALL curve) and 84% for Zotero's
+            // own link.svg. Square corners measure a perfect 0%, kept in
+            // reserve if this still reads soft.
+            r.setAttribute("rx", "1");
+            r.setAttribute("stroke", "currentColor");
+            r.setAttribute("stroke-width", "1");
+            r.setAttribute("fill", "none");
+            svg.appendChild(r);
+        };
+        link(1.5);
+        link(7.5);
+        return svg;
+    }
+
+    /** Rectangular knockout on whole pixels, giving the badge clear
+     *  space. The old cut used x=7.4 / y=-0.4 / rx=2, whose soft edges
+     *  showed as a grey halo around the badge. */
+    _wvLockKnockoutMask(doc, svg, id) {
+        const NS = "http://www.w3.org/2000/svg";
+        const defs = doc.createElementNS(NS, "defs");
+        const mask = doc.createElementNS(NS, "mask");
+        mask.setAttribute("id", id);
+        const keep = doc.createElementNS(NS, "rect");
+        keep.setAttribute("x", "0"); keep.setAttribute("y", "0");
+        keep.setAttribute("width", "16"); keep.setAttribute("height", "16");
+        keep.setAttribute("fill", "white");
+        mask.appendChild(keep);
+        // The badge's own footprint plus a 1px margin -- NOT a slab
+        // across the corner. The old cut (7x10) removed a fifth of the
+        // icon, so the stacked-notes glyph no longer matched its
+        // lock-free sibling.
+        const cut = doc.createElementNS(NS, "rect");
+        cut.setAttribute("x", "9"); cut.setAttribute("y", "0");
+        cut.setAttribute("width", "7"); cut.setAttribute("height", "9");
+        cut.setAttribute("fill", "black");
+        cut.setAttribute("shape-rendering", "crispEdges");
+        mask.appendChild(cut);
+        defs.appendChild(mask);
+        svg.appendChild(defs);
     }
 
     /** Has Embedded Annotations glyph — the same `attachment-
@@ -10267,22 +10547,8 @@ class _FilterMixin {
         svg.setAttribute("viewBox", "0 0 16 16");
         svg.setAttribute("fill", "none");
         svg.style.color = "var(--tag-purple)";
-        const defs = doc.createElementNS(NS, "defs");
-        const mask = doc.createElementNS(NS, "mask");
-        mask.setAttribute("id", "wv-hasemb-lock-knockout");
-        const keep = doc.createElementNS(NS, "rect");
-        keep.setAttribute("x", "0"); keep.setAttribute("y", "0");
-        keep.setAttribute("width", "16"); keep.setAttribute("height", "16");
-        keep.setAttribute("fill", "white");
-        mask.appendChild(keep);
-        const cut = doc.createElementNS(NS, "rect");
-        cut.setAttribute("x", "7.4"); cut.setAttribute("y", "-0.4");
-        cut.setAttribute("width", "8.6"); cut.setAttribute("height", "9.6");
-        cut.setAttribute("rx", "2");
-        cut.setAttribute("fill", "black");
-        mask.appendChild(cut);
-        defs.appendChild(mask);
-        svg.appendChild(defs);
+        svg.style.stroke = "none";
+        this._wvLockKnockoutMask(doc, svg, "wv-hasemb-lock-knockout");
         const notes = doc.createElementNS(NS, "path");
         notes.setAttribute("fill-rule", "evenodd");
         notes.setAttribute("clip-rule", "evenodd");
@@ -10290,15 +10556,7 @@ class _FilterMixin {
         notes.setAttribute("fill", "currentColor");
         notes.setAttribute("mask", "url(#wv-hasemb-lock-knockout)");
         svg.appendChild(notes);
-        const g = doc.createElementNS(NS, "g");
-        g.setAttribute("transform", "translate(6.6 -0.3) scale(0.58)");
-        const lock = doc.createElementNS(NS, "path");
-        lock.setAttribute("fill-rule", "evenodd");
-        lock.setAttribute("clip-rule", "evenodd");
-        lock.setAttribute("d", "M6 4C6 2.89543 6.89543 2 8 2C9.10457 2 10 2.89543 10 4V6H6V4ZM5 6V4C5 2.34315 6.34315 1 8 1C9.65685 1 11 2.34315 11 4V6H12C12.5523 6 13 6.44772 13 7V14C13 14.5523 12.5523 15 12 15H4C3.44772 15 3 14.5523 3 14V7C3 6.44771 3.44772 6 4 6H5ZM4 14V7H12V14H4Z");
-        lock.setAttribute("fill", "currentColor");
-        g.appendChild(lock);
-        svg.appendChild(g);
+        this._wvAppendMiniLock(doc, svg);
         return svg;
     }
 
@@ -10406,22 +10664,8 @@ class _FilterMixin {
         svg.setAttribute("viewBox", "0 0 16 16");
         svg.setAttribute("fill", "none");
         svg.style.color = "var(--tag-purple)";
-        const defs = doc.createElementNS(NS, "defs");
-        const mask = doc.createElementNS(NS, "mask");
-        mask.setAttribute("id", "wv-annsrc-lock-knockout");
-        const keep = doc.createElementNS(NS, "rect");
-        keep.setAttribute("x", "0"); keep.setAttribute("y", "0");
-        keep.setAttribute("width", "16"); keep.setAttribute("height", "16");
-        keep.setAttribute("fill", "white");
-        mask.appendChild(keep);
-        const cut = doc.createElementNS(NS, "rect");
-        cut.setAttribute("x", "7.4"); cut.setAttribute("y", "-0.4");
-        cut.setAttribute("width", "8.6"); cut.setAttribute("height", "9.6");
-        cut.setAttribute("rx", "2");
-        cut.setAttribute("fill", "black");
-        mask.appendChild(cut);
-        defs.appendChild(mask);
-        svg.appendChild(defs);
+        svg.style.stroke = "none";
+        this._wvLockKnockoutMask(doc, svg, "wv-annsrc-lock-knockout");
         // Base: annotate-note.svg path verbatim (fold bottom-left, so
         // the badge corner is clean).
         const note = doc.createElementNS(NS, "path");
@@ -10431,19 +10675,10 @@ class _FilterMixin {
         note.setAttribute("fill", "none");
         note.setAttribute("mask", "url(#wv-annsrc-lock-knockout)");
         svg.appendChild(note);
-        // Badge: reader lock.svg path verbatim, scaled into the
-        // TOP-RIGHT corner (MJT 2026-08-18; the note's fold is
-        // bottom-left, so both right corners are clean — top-right
-        // keeps the fold visible).
-        const g = doc.createElementNS(NS, "g");
-        g.setAttribute("transform", "translate(6.6 -0.3) scale(0.58)");
-        const lock = doc.createElementNS(NS, "path");
-        lock.setAttribute("fill-rule", "evenodd");
-        lock.setAttribute("clip-rule", "evenodd");
-        lock.setAttribute("d", "M6 4C6 2.89543 6.89543 2 8 2C9.10457 2 10 2.89543 10 4V6H6V4ZM5 6V4C5 2.34315 6.34315 1 8 1C9.65685 1 11 2.34315 11 4V6H12C12.5523 6 13 6.44772 13 7V14C13 14.5523 12.5523 15 12 15H4C3.44772 15 3 14.5523 3 14V7C3 6.44771 3.44772 6 4 6H5ZM4 14V7H12V14H4Z");
-        lock.setAttribute("fill", "currentColor");
-        g.appendChild(lock);
-        svg.appendChild(g);
+        // Badge: the crisp mini-lock, TOP-RIGHT (MJT 2026-08-18; the
+        // note's fold is bottom-left, so both right corners are clean
+        // — top-right keeps the fold visible).
+        this._wvAppendMiniLock(doc, svg);
         return svg;
     }
 

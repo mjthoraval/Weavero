@@ -1,13 +1,20 @@
 ---
 name: release
 description: Cut and publish a Weavero release. Use ONLY when the user explicitly approves a release ("start the release", "ok to release"). Runs the full gate battery, squashes the dev line, tags, publishes, and hand-edits the notes.
-disable-model-invocation: true
 ---
 
 # Release pipeline
 
 **Precondition: the user has explicitly approved THIS release.** Suggesting a
 release is fine; running this skill without their word is not.
+
+> `disable-model-invocation: true` was removed on 2026-08-21: in the VS Code
+> extension it hid the skill from the COMMAND PALETTE as well as from the
+> model, so `/release` returned "No matching commands" and the maintainer
+> could not start a release at all. The gate is now the precondition above
+> plus the standing rule that releases and pushes need an explicit instruction
+> in the user's current message. Do not restore the flag without checking that
+> `/release` still autocompletes.
 
 ## 1. Commit everything outstanding
 

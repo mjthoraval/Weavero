@@ -29,8 +29,9 @@ A Zotero 7 to 10-beta plugin that layers convenience features on top of the stan
 Grouped the same way as the Preferences tabs. Expand a group below for the details and screenshots.
 
 - **[Enhanced links and relations](#enhanced-links-and-relations)** — clickable links (URLs, `zotero://`, 17 optional app schemes) in comments and notes; inline or icon + popup, colour-coded, with markdown; copy `zotero://` links for items / collections / searches / reader page / location / selection; Ctrl/Shift+click navigation through internal document links (into a split pane or a second window); related-item tools (*Add Related…*, chain badge, *Open Related* submenu, Related column, linked-library highlight).
-- **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has DOI/URL/Related/Links*, multi-select tag/publication/author/added-by/collection/search) with a removable chip bar; reader annotation filter; Selection Target tri-state; structured tabs menu with per-library and file-type filters.
+- **[Filters](#filters)** — items-tree filter popup (annotation colour/type/comment, attachment & item type, *Has DOI/URL/Related/Links/Weavero Outline*, multi-select tag/publication/author/added-by/collection/search) with a removable chip bar; reader annotation filter; Selection Target tri-state; structured tabs menu with per-library and file-type filters.
 - **[Bookmarks](#bookmarks)** — library bookmarks (items / collections / searches / URLs) via a toolbar dropdown; document bookmarks (in-PDF positions, pages, selected text, annotations) in a reader-sidebar tab, foldered and draggable, with search + funnel filter and hover cards; auto-hide when empty.
+- **[Reader outline](#reader-outline)** — an editable Outline tab: rename entries, add your own (selected text, page anchors, pinned spots), reorder and nest by drag, switch between the document's original outline and your curated copy — and a **current-section highlight** that follows your reading position.
 - **[Tabs and Windows](#tabs-and-windows)** — pinned tabs (Firefox-style, icon-only); named, colour-coded **tab groups** (collapse, drag-into, reopen, move between windows); **tab sessions** (save and switch whole workspaces); multi-select tabs; **move or tear-off a reader tab to another window with no reload** (scroll, zoom and selection preserved); **multi-tab reader windows** with their own tab strip and a Firefox-style **+** button; full drag-and-drop tab management in the "List all tabs" popup; reopen the last closed window/group; an item-details pane beside the reader in separate windows; and optional multiple main windows.
 - **[Default attachment](#default-attachment)** — choose which child an item opens: any attachment (PDF or not), a linked URL, or a child note. Stored as a tag, so the choice syncs and survives without the plugin.
 - **[Extras](#extras)** — items-tree columns (annotation, related, tag counts); *Added By* for annotations with per-user colours; group-library tab glyph; Hide title bar (Firefox-style); *Open in External Viewer*; *PDF outline text highlight* (experimental).
@@ -130,6 +131,20 @@ Bookmarks across two scopes. **Stored locally** in `<Zotero data dir>/weavero/bo
 - **Rename, edit &amp; reset** — rename a bookmark (and edit its comment) without touching the source; *Reset to Original Name* restores the live label. Deleted targets show as dimmed, struck-through **orphans** with a ⚠ badge.
 - **Hover card** — hovering a row shows a rich card: kind, colour swatch, page label, text preview, comment, tags, source document, and created date.
 - **Auto-hide when empty** (optional, per scope) — hide the collections-pane button / reader tab until you add the first bookmark.
+
+</details>
+
+<details id="reader-outline">
+<summary><b>Reader outline</b></summary>
+
+The reader's **Outline** tab becomes editable. Your edits are **stored locally** in `<Zotero data dir>/weavero/outlines.json` — see the syncing/backup warning near the top of this page; the document's own outline is never modified.
+
+- **Sources** — the document's **embedded** outline, the one **Zotero extracts** when a PDF has none, or your own **Weavero outline** (a curated copy, created on the first edit). A chip in the panel header switches between them; *Reset to Original* discards the curated copy.
+- **Edit** — rename entries (the target stays put, so renaming never changes where an entry goes), delete, reorder and re-indent by drag, expand/collapse all with `+` / `-`.
+- **Add your own entries** — from selected text, a **page anchor** (top or bottom of a page), or a **pinned spot** you place in the document. Each kind carries its own glyph, and entries show their page number — something Zotero's own outline doesn't ([zotero/zotero#3752](https://github.com/zotero/zotero/issues/3752)).
+- **Current-section highlight** — as you scroll, the entry for the section you're reading is marked. It works on all three sources, and on entries you added yourself. The tree is never expanded or collapsed for you: the marker sits on the deepest entry *visible in your tree*, and relocates the moment you expand a branch. Zotero's own reader has highlighting since 7.0.11; Weavero's Outline tab replaces the native view, so it brings its own — plus the immediate refresh after expanding that the native one still lacks ([forums #114157](https://forums.zotero.org/discussion/114157/how-to-locate-the-current-position-of-the-pdf-reader)).
+- **…and it follows sections *within* a page.** Native tracking is page-granular — several headings on one page are indistinguishable, in Zotero as in Acrobat and Firefox's viewer. Weavero compares your reading position (a quarter down the view, the same place a click on an entry lands its target) against each heading's own height, so a page of short sections is followed one heading at a time. Where a PDF's embedded outline stores no real heading coordinates — some store only a page — that page falls back to the page-granular behaviour.
+- **Reading Mode** — the outline stays available as a read-only lens, and Reading Mode's own generated outline is offered as an extra source.
 
 </details>
 

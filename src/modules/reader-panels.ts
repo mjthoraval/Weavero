@@ -1501,6 +1501,12 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-row.wv-outline-selected{background:var(--accent-blue10,rgba(94,106,210,.15));border-radius:4px;}",
     ".wv-outline-label{display:block;flex:1 1 auto;min-width:0;font-size:.6875rem;line-height:1.2;padding:.21875rem;white-space:normal;cursor:pointer;user-select:none;-moz-user-select:none;overflow-wrap:anywhere;}",
     ".wv-outline-row.wv-outline-active .wv-outline-label{outline:3px solid var(--accent-blue50,var(--color-accent,#5e6ad2));border-radius:5px;}",
+    // Scroll-spy current-position marker (FR #33, 2026-08-20): grey left
+    // bar + faint wash -- DELIBERATELY not the blue family (blue ring =
+    // keyboard cursor, blue tint = selection; position is ambient state,
+    // not user intent). SumatraPDF's grey treatment is the liked
+    // precedent; Acrobat's subtle icon tint is the criticized one.
+    ".wv-outline-row.wv-outline-current{box-shadow:inset 2px 0 0 0 var(--fill-secondary,#888);background:rgba(127,127,127,.13);border-radius:4px;}",
     // Page number at the row's right end -- same treatment as bookmark rows
     // (`.wv-bm-reader-page`): dimmed, 11px, flush right, never wraps.
     ".wv-outline-page{flex:0 0 auto;align-self:center;margin-inline-start:6px;padding-inline-end:2px;opacity:.5;font-size:11px;white-space:nowrap;}",
@@ -3897,6 +3903,12 @@ class _ReaderPanelsMixin {
                 return;
             }
             this._wvRenderOutlineEntries(reader, idoc, list, entries, curatedView, outlineFilter);
+            // Scroll-spy: (re)wire the scroll feed and recompute the
+            // current-position highlight at every render -- rendering is
+            // what expand/collapse and source switches go through, so this
+            // is also the fix for native's stale-after-expand gap.
+            try { this._wvOutlineSpyWire(reader, idoc); } catch (_) {}
+            try { this._wvOutlineSpyUpdate(reader, idoc); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderOutline err: " + e); }
     }
 
@@ -5237,6 +5249,301 @@ class _ReaderPanelsMixin {
 
     /** The 0-based index of the page currently shown in the reader (the page
      *  the user is looking at) -- the basis for the "Set Target" page anchors. */
+    /** Outline scroll-spy (FR #33, 2026-08-20): highlight the entry for
+     *  the CURRENT reading position. Native has this since Zotero 7.0.11
+     *  (reader `getOutlinePath`), but the takeover hides the native view,
+     *  so the behaviour is recreated on Weavero's rows. Mirrors native
+     *  mechanics: deepest VISIBLE entry with pageIndex <= current page;
+     *  suppressed for 1.5s after outline-initiated navigation (clicking an
+     *  entry must not fight the highlight); recomputed at every render --
+     *  which also fixes the stale-highlight-after-expand gap native still
+     *  has (forums 114157). Investigation: work/fr33-outline-highlighting.md */
+    _wvOutlineSpyUpdate(reader: any, idoc: any) {
+        try {
+            const list = idoc.querySelector(
+                "." + RP_OUTLINE_VIEW_CLASS + " .wv-outline-list");
+            if (!list) return;
+            if (Date.now() - (reader._wvOutlineNavTime || 0) < 1500) return;
+            // READING POSITION = the viewport's TOP EDGE when pdf.js can
+            // report it. `currentPageNumber` names the DOMINANT page,
+            // `_location` the FIRST VISIBLE one, and they disagree for a
+            // whole screenful around every page break: reading the tail
+            // of page 7 with page 8 filling most of the window, the
+            // dominant rule already says 8 and skips everything below
+            // the first heading of 7 (MJT 2026-08-20: "it still jumps
+            // from Discussion to References" -- Disclosures and
+            // Acknowledgements sit at the bottom of page 7). One frame
+            // for both the page choice and the sub-page pass, so they
+            // can never disagree; `currentPageNumber` stays the
+            // fallback when there is no `_location` (EPUB, Reading
+            // Mode, snapshots).
+            const vp = this._wvOutlineReadingPos(reader);
+            const cur = vp ? vp.pageIndex : this._wvOutlineCurrentPageIndex(reader);
+            if (!Number.isInteger(cur) || cur < 0) return;
+            const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+            let best: any = null;
+            let bestPage = -Infinity;
+            let bestY: any = null;
+            let firstAtOrBefore: any = null;
+            // ONE rule: the marker is the LAST entry the reading
+            // position has passed. An entry counts as passed when it
+            // sits on an earlier page, or on this page at or above the
+            // reading line. Nothing else -- the previous version kept
+            // "the first entry of the page the line is on" as a
+            // fallback, which marked a heading the reader had not
+            // reached yet: with the line a quarter down page 21 and
+            // section 6 near the page's foot, it highlighted 6 while
+            // section 5 was still being read (MJT 2026-08-20).
+            for (const r of rows) {
+                const en = r._wvOl && r._wvOl.entry;
+                if (!en || en.url) continue;
+                const pos = en.resolvedPosition || en.position;
+                const pi = (pos && Number.isInteger(pos.pageIndex))
+                    ? pos.pageIndex : null;
+                if (pi == null || pi > cur) continue;
+                if (firstAtOrBefore === null) firstAtOrBefore = r;
+                const y = this._wvOutlineEntryY(pos);
+                if (pi === cur && vp) {
+                    // On the line's own page, a heading below the line
+                    // has not been reached. Entries with no height
+                    // (embedded destinations that store only a page)
+                    // fall back to page granularity and count as
+                    // reached.
+                    if (y != null && y < vp.y - 1) continue;
+                }
+                if (pi > bestPage) { best = r; bestPage = pi; bestY = y; continue; }
+                if (pi !== bestPage) continue;
+                if (pi < cur) {
+                    // A page entirely behind us: every heading on it has
+                    // been passed, so its LAST one is the section we are
+                    // in (not its first -- that bounced the marker back
+                    // to the top of a page whose sections we had read).
+                    best = r; bestY = y;
+                }
+                else if (vp && y != null && bestY != null && y < bestY) {
+                    // Same page as the line: the lowest heading still
+                    // above it. Equal heights keep the FIRST, which is
+                    // native getOutlinePath's tie-break and what a click
+                    // expects (nav to "Abstract" must not settle on a
+                    // same-page sibling).
+                    best = r; bestY = y;
+                }
+            }
+            // Before the document's first heading there is nothing to
+            // have passed; show that first heading rather than nothing,
+            // so the panel never looks inert at the top of a file. Only
+            // ever an entry at or before the current page.
+            if (!best) best = firstAtOrBefore;
+
+            const prev = list.querySelector(".wv-outline-row.wv-outline-current");
+            if (prev === best) return;
+            if (prev) prev.classList.remove("wv-outline-current");
+            if (best) {
+                best.classList.add("wv-outline-current");
+                // Keep it in view like native does -- but never yank the
+                // list while keyboard focus is inside the outline (the
+                // cursor and the spy must not fight over scroll).
+                const ae = idoc.activeElement;
+                if (!(ae && ae.closest
+                        && ae.closest("." + RP_OUTLINE_VIEW_CLASS))) {
+                    try { best.scrollIntoView({ block: "nearest" }); } catch (_) {}
+                }
+            }
+        } catch (_) {}
+    }
+
+    /** An outline entry's height on its page, in PDF coordinates (y grows
+     *  UPWARD), or null when the entry carries no usable height.
+     *  Verified per source 2026-08-20: EXTRACTED outlines carry real text
+     *  rects (Truscott 2013: 522 / 352 / 306 on page 0); WEAVERO entries
+     *  carry selection rects, a pin point, or a page anchor; EMBEDDED
+     *  outlines carry the destination point, which is a real heading
+     *  height in some PDFs and a uniform page-top constant in others
+     *  (Kundu 2016: every entry at 665.972) -- the uniform case simply
+     *  fails the distinct-heights test and stays page-granular. */
+    _wvOutlineEntryY(pos: any): number | null {
+        try {
+            if (!pos) return null;
+            // Page anchors first: they store a placeholder [[0,0,0,0]]
+            // rect, so the anchor is the only truthful signal.
+            if (pos.anchor === "top") return Infinity;
+            if (pos.anchor === "bottom") return -Infinity;
+            const r0 = pos.rects && pos.rects.length ? pos.rects[0] : null;
+            if (r0 && r0.length >= 4) {
+                const top = Math.max(r0[1], r0[3]);
+                if (Number.isFinite(top)) return top;
+            }
+            if (Number.isFinite(pos.y)) return pos.y;
+        } catch (_) {}
+        return null;
+    }
+
+    /** READING LINE: how far down the viewport the "you are here" line
+     *  sits, as a fraction of the visible height. The extreme top edge
+     *  (0) is wrong -- a heading one point below it is plainly on screen
+     *  and being read, yet would not count as reached, so the marker
+     *  names a section that has already scrolled away (MJT 2026-08-20:
+     *  viewport top at y=152 with Acknowledgements at y=146, marker
+     *  stuck on Disclosures while the next page filled 82% of the
+     *  window).
+     *
+     *  A QUARTER down, because that is where this plugin already puts a
+     *  navigation target -- `innerHeight * 0.25` / `clientHeight / 4` at
+     *  every jump site (MJT 2026-08-20: "why not 1/4th, same as the
+     *  positioning when clicking on an outline item?"). One notion of
+     *  "where the reading position is" across navigating and tracking:
+     *  click an entry and its heading lands exactly ON this line, so the
+     *  marker settles on what was clicked by construction rather than by
+     *  luck. */
+    get _wvOutlineSpyLine(): number { return 1 / 4; }
+
+    /** The reading line as {pageIndex, y} in PDF coordinates, or null.
+     *  Walks pdf.js's own page views to find which page the line falls
+     *  in and converts through `getPagePoint`, so zoom, rotation and
+     *  page gaps are handled by the viewer rather than by arithmetic
+     *  here. Falls back to the viewport's top edge (`_location`) when
+     *  page views are unavailable, and returns null in Reading Mode. */
+    _wvOutlineReadingPos(reader: any): { pageIndex: number, y: number } | null {
+        try {
+            if (this._wvReadingModeActive(reader)) return null;
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication
+                || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            const viewer = app && app.pdfViewer;
+            if (!viewer) return null;
+            const vdoc = win.document;
+            const vc = vdoc && vdoc.getElementById("viewerContainer");
+            const pages = viewer._pages;
+            if (vc && pages && pages.length) {
+                const line = vc.scrollTop
+                    + vc.clientHeight * this._wvOutlineSpyLine;
+                for (let i = 0; i < pages.length; i++) {
+                    const d = pages[i] && pages[i].div;
+                    if (!d || typeof pages[i].getPagePoint !== "function") continue;
+                    const top = d.offsetTop;
+                    const bottom = top + d.offsetHeight;
+                    if (line < top) {
+                        // In the gap above page i: page i-1 is entirely
+                        // behind us, nothing on page i reached yet --
+                        // express that as page i's own top edge.
+                        const pt0 = pages[i].getPagePoint(0, 0);
+                        if (pt0 && Number.isFinite(pt0[1])) {
+                            return { pageIndex: i, y: pt0[1] };
+                        }
+                        break;
+                    }
+                    if (line < bottom) {
+                        const pt = pages[i].getPagePoint(0, line - top);
+                        if (pt && Number.isFinite(pt[1])) {
+                            return { pageIndex: i, y: pt[1] };
+                        }
+                        break;
+                    }
+                }
+            }
+            // Fallback: the viewport's top edge.
+            const vt = this._wvOutlineViewportTop(reader);
+            return vt ? { pageIndex: vt.pageIndex, y: vt.topY } : null;
+        } catch (_) {}
+        return null;
+    }
+
+    /** The viewport's top edge as {pageIndex, topY} in PDF coordinates,
+     *  or null when unavailable. pdf.js maintains `pdfViewer._location`
+     *  for its own URL/history use and refreshes it on scroll, so this
+     *  is a property read (~1.2us measured), not a computation -- the
+     *  sub-page pass costs nothing per scroll tick.
+     *  `_location.pageNumber` can differ from `currentPageNumber` (they
+     *  use different rules; observed 7 vs 8 live): `topY` belongs to
+     *  `_location`'s page, so the caller must only compare within that
+     *  page. Reading Mode reflows into its own overlay -- no PDF page
+     *  frame, so no sub-page pass there. */
+    _wvOutlineViewportTop(reader: any): { pageIndex: number, topY: number } | null {
+        try {
+            if (this._wvReadingModeActive(reader)) return null;
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const win = pv && pv._iframeWindow;
+            const app = win && (win.PDFViewerApplication
+                || (win.wrappedJSObject && win.wrappedJSObject.PDFViewerApplication));
+            const loc = app && app.pdfViewer && app.pdfViewer._location;
+            if (!loc) return null;
+            const pageIndex = Number(loc.pageNumber) - 1;
+            const topY = Number(loc.top);
+            if (!Number.isInteger(pageIndex) || pageIndex < 0) return null;
+            if (!Number.isFinite(topY)) return null;
+            return { pageIndex, topY };
+        } catch (_) {}
+        return null;
+    }
+
+    /** Wire the spy to the document view's scroll, throttled to a 150ms
+     *  trailing tick. The wiring stamp lives ON THE CONTAINER being
+     *  listened to -- its lifetime IS the wiring's lifetime (the
+     *  2026-08-19 stale-stamp lesson); a rebuilt view arrives unstamped
+     *  and gets rewired by the next render. The listener resolves the
+     *  LIVE plugin at event time (reload safety). DOM scroll events cross
+     *  Xrays fine -- only content-side METHOD wrapping doesn't (see
+     *  reference_weavero_reader_xray_method_wrap). */
+    _wvOutlineSpyWire(reader: any, idoc: any) {
+        try {
+            const targets: any[] = [];
+            try {
+                const ir = reader && reader._internalReader;
+                const pv = ir && (ir._primaryView || ir._lastView);
+                const w2 = pv && pv._iframeWindow;
+                const vc = w2 && w2.document
+                    && w2.document.getElementById("viewerContainer");
+                if (vc) targets.push(vc);
+            } catch (_) {}
+            try {
+                // Reading Mode scrolls its own SDT iframe, not the base view.
+                if (this._wvReadingModeActive(reader)) {
+                    const sdtv = this._wvOutlineRmView(reader);
+                    const iwin = sdtv && sdtv._iframeWindow;
+                    if (iwin) targets.push(iwin);
+                }
+            } catch (_) {}
+            for (const t of targets) {
+                const tt = t as any;
+                // The scroll target OUTLIVES the plugin: a reload leaves
+                // the previous instance's listener attached but dead,
+                // and a boolean stamp then skips re-wiring forever --
+                // scroll tracking silently stops until the tab is
+                // reopened (hit live 2026-08-20; the marker froze across
+                // seven scroll positions while the reading position
+                // updated fine). The stamp must match the WIRING's
+                // lifetime, not the container's, so it names the plugin
+                // instance and the old handler is swapped out
+                // (mistakes ledger 2026-08-19, same family).
+                if (tt._wvOlSpyPlugin === this && tt._wvOlSpyHandler) continue;
+                if (tt._wvOlSpyHandler) {
+                    try { t.removeEventListener("scroll", tt._wvOlSpyHandler); } catch (e) {}
+                }
+                const readerRef = reader;
+                let tick: any = null;
+                const handler = () => {
+                    if (tick) return;
+                    const win = idoc.defaultView;
+                    if (!win) return;
+                    tick = win.setTimeout(() => {
+                        tick = null;
+                        try {
+                            const lp = (Zotero as any).Weavero
+                                && (Zotero as any).Weavero.plugin;
+                            if (lp) lp._wvOutlineSpyUpdate(readerRef, idoc);
+                        } catch (_) {}
+                    }, 150);
+                };
+                t.addEventListener("scroll", handler, { passive: true });
+                tt._wvOlSpyHandler = handler;
+                tt._wvOlSpyPlugin = this;
+            }
+        } catch (_) {}
+    }
+
     _wvOutlineCurrentPageIndex(reader: any): number {
         // Reading Mode: the base view is hidden and its currentPageNumber is
         // stale, so derive the page from the topmost visible reflow block via
@@ -7650,6 +7957,22 @@ class _ReaderPanelsMixin {
 
     _wvOutlineNavigate(reader: any, idoc: any, node: any, row: any) {
         try {
+            // Scroll-spy suppression stamp (native's 1.5s rule): the jump
+            // this navigation triggers must not move the current-position
+            // highlight away from what the user just clicked. One-shot
+            // settle after the window lapses -- a click-jump with no
+            // further scrolling would otherwise keep the highlight stale.
+            reader._wvOutlineNavTime = Date.now();
+            try {
+                const w0 = idoc.defaultView;
+                if (w0) w0.setTimeout(() => {
+                    try {
+                        const lp = (Zotero as any).Weavero
+                            && (Zotero as any).Weavero.plugin;
+                        if (lp) lp._wvOutlineSpyUpdate(reader, idoc);
+                    } catch (_) {}
+                }, 1600);
+            } catch (_) {}
             try { const prev = idoc.querySelector(".wv-outline-row.wv-outline-active"); if (prev) prev.classList.remove("wv-outline-active"); } catch (_) {}
             if (row) row.classList.add("wv-outline-active");
             if (node.url) { try { Zotero.launchURL(node.url); } catch (_) {} return; }

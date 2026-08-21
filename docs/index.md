@@ -28,6 +28,10 @@ A funnel next to the search box opens a filter popup: annotation colour/type/com
 
 Bookmark items, collections, searches, and URLs from a collections-pane dropdown — and in-document locations (positions, pages, text passages, annotations) from a Bookmarks tab in the reader sidebar. Folders, drag-and-drop, search, filtering, and hover previews.
 
+## Reader outline
+
+The reader's Outline tab becomes editable: rename entries, add your own (text selections, page anchors, pinned spots), drag to reorder or nest, and switch between the document's original outline and your curated **Weavero outline**. The outline also **highlights the section you're currently reading** as you scroll — embedded, extracted, and Weavero outlines alike — marking the deepest entry visible in your tree without ever expanding or collapsing it for you.
+
 ## Tabs and windows
 
 Pinned tabs, named colour-coded **tab groups**, multi-select tabs, and a structured "List all tabs" menu grouped by library with per-library and file-type filters. Reader tabs **move or tear off to another window with no reload** — scroll position, zoom, and selection preserved. Separate reader windows can show the full item-details pane.

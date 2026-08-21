@@ -4405,15 +4405,47 @@ class _TabsMixin {
             // icons below the tab bar" bug, 2026-07-04). Mount the mirrors
             // INSIDE the row when it exists; fall back to the container on
             // older layouts where `.pinned-tabs` was the row itself.
-            const rowC = pinnedC.querySelector(":scope > .tabs") || pinnedC;
+            // Mount host: Zotero's `.pinned-tabs` row when it is actually
+            // RENDERED, else the visible strip.
+            //
+            // The row was the right home in July 2026 (it fixed mirrors
+            // dropping below the tab bar). Zotero 10.0.1-beta.1 renders it
+            // `display: none` and puts the library tab in the main strip
+            // instead -- so mirrors mounted there became invisible, and
+            // since the real pinned tab is deliberately hidden in favour
+            // of its mirror, the pinned tab disappeared from the tab bar
+            // altogether (MJT 2026-08-21). Never assume an upstream
+            // container is visible: measure it.
+            let rowC: any = pinnedC.querySelector(":scope > .tabs") || pinnedC;
+            try {
+                const vis = (el: any) => {
+                    if (!el) return false;
+                    const cs = win.getComputedStyle(el);
+                    if (cs.display === "none" || cs.visibility === "hidden") return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 || r.height > 0;
+                };
+                if (!vis(pinnedC) || !vis(rowC)) {
+                    const strip = doc.querySelector("#tab-bar-container .tabs-wrapper .tabs");
+                    if (strip) rowC = strip;
+                }
+            } catch (e) {}
             let cont = doc.getElementById("wv-pinned-mirrors");
             if (!tabIDs || !tabIDs.length) { if (cont) cont.remove(); return; }
+            // In the main strip the mirrors belong just right of the library
+            // tab (Firefox's pinned region); in the dedicated row, append.
+            const placeCont = (c: any) => {
+                const lib = rowC.querySelector(':scope > .tab[data-id="zotero-pane"]');
+                if (lib && lib.nextSibling) rowC.insertBefore(c, lib.nextSibling);
+                else if (lib) rowC.appendChild(c);
+                else rowC.appendChild(c);
+            };
             if (!cont) {
                 cont = doc.createElement("div");
                 cont.id = "wv-pinned-mirrors";
-                rowC.appendChild(cont);
+                placeCont(cont);
             } else if (cont.parentElement !== rowC) {
-                rowC.appendChild(cont);   // re-home after a layout change
+                placeCont(cont);   // re-home after a layout change
             }
             const Z = win.Zotero_Tabs;
             const want = new Set(tabIDs.map(String));
@@ -6627,6 +6659,37 @@ class _TabsMixin {
         } catch (e) { Zotero.debug("[Weavero] _ensurePinnedTabStyles err: " + e); }
     }
 
+    /** The tabs a Pin/Unpin command should act on: the multi-selection when
+     *  the context tab is part of one, else just that tab. Returns
+     *  `{ libraryID, itemKey, item }` per tab, library tab excluded
+     *  (MJT 2026-08-20: the entry read "Pin Tab" beside "Close 2 Tabs" and
+     *  "Duplicate 2 Tabs" -- and it really did act on one tab only, so the
+     *  plural label had to come with plural behaviour). */
+    _wvPinTargetsFor(win: any, tabID: any): any[] {
+        const out: any[] = [];
+        try {
+            const Z: any = win && win.Zotero_Tabs;
+            if (!Z || !tabID || tabID === "zotero-pane") return out;
+            let ids: any[] = [tabID];
+            try {
+                const tg = this._wvTabMultiSelTargets && this._wvTabMultiSelTargets(win, tabID);
+                if (tg && tg.length) ids = tg;
+            } catch (e) {}
+            for (const id of ids) {
+                if (!id || id === "zotero-pane") continue;
+                const tab = Z._tabs.find((x: any) => x && x.id === id);
+                const k = tab ? this._tabPinKey(tab) : null;
+                if (!k) continue;
+                let item: any = null;
+                try { item = Zotero.Items.get(tab.data.itemID); } catch (e) {}
+                if (!item) continue;
+                if (out.some((o: any) => o.libraryID === k.libraryID && o.itemKey === k.itemKey)) continue;
+                out.push({ libraryID: k.libraryID, itemKey: k.itemKey, item });
+            }
+        } catch (e) {}
+        return out;
+    }
+
     /** Register the Pin/Unpin entry via Zotero's MenuManager plugin API
      *  (`target: "main/tab"`) — same mechanism the Copy Select/Open Link
      *  entries use. Appending to the popup AFTER Zotero's _openMenu opens
@@ -6653,8 +6716,18 @@ class _TabsMixin {
                             const item = ctx.items && ctx.items[0];
                             if (!item || !item.libraryID || !item.key) { ctx.setVisible(false); return; }
                             ctx.setVisible(true);
-                            const pinned = self._pinnedTabsHas(item.libraryID, item.key);
-                            ctx.menuElem.setAttribute("label", pinned ? "Unpin Tab" : "Pin Tab");
+                            const winPin: any = ctx.menuElem.ownerDocument
+                                && ctx.menuElem.ownerDocument.defaultView;
+                            const tgts = self._wvPinTargetsFor(winPin, ctx.tabID);
+                            const nPin = tgts.length || 1;
+                            // Mixed selection pins: only an all-pinned selection
+                            // offers Unpin (Firefox's rule).
+                            const pinned = tgts.length
+                                ? tgts.every((t: any) => self._pinnedTabsHas(t.libraryID, t.itemKey))
+                                : self._pinnedTabsHas(item.libraryID, item.key);
+                            ctx.menuElem.setAttribute("label",
+                                (pinned ? "Unpin" : "Pin")
+                                + (nPin > 1 ? " " + nPin + " Tabs" : " Tab"));
                             // MenuManager appends custom items AFTER all built-ins
                             // (Show in Library / Move Tab / Duplicate Tab / Close /
                             // Close Other Tabs / Reopen Closed Tab). The user wants
@@ -6683,6 +6756,10 @@ class _TabsMixin {
                                     const tabID2 = ctx.tabID;
                                     if (win2 && tabID2 && tabID2 !== "zotero-pane" && self._wvTabMultiSelTargets) {
                                         const tg = self._wvTabMultiSelTargets(win2, tabID2);
+                                        // "Group Tabs" -- for ANY selection, single tab
+                                        // included, so it is injected outside the
+                                        // multi-select branch below.
+                                        try { self._wvInjectGroupTabsMenuItem(win2, popup, (tg && tg.length ? tg : [tabID2])); } catch (e) {}
                                         if (tg && tg.length > 1) {
                                             self._wvMakeMoveTabMenuMulti(win2, popup, tg);
                                             self._wvMakeCloseTabsMenuMulti(win2, popup, tg);
@@ -6698,19 +6775,32 @@ class _TabsMixin {
                     },
                     onCommand: (_ev, ctx) => {
                         try {
-                            const item = ctx.items && ctx.items[0];
-                            if (!item) return;
-                            if (self._pinnedTabsHas(item.libraryID, item.key)) {
-                                self._pinnedTabsRemove(item.libraryID, item.key);
+                            const winPin: any = ctx.menuElem && ctx.menuElem.ownerDocument
+                                && ctx.menuElem.ownerDocument.defaultView;
+                            let tgts = self._wvPinTargetsFor(winPin, ctx.tabID);
+                            if (!tgts.length) {
+                                const item0 = ctx.items && ctx.items[0];
+                                if (!item0) return;
+                                tgts = [{ libraryID: item0.libraryID, itemKey: item0.key, item: item0 }];
                             }
-                            else {
-                                // _pinTabByCommand both adds the pref entry AND
-                                // moves the tab to "last pinned + 1" so a fresh
-                                // pin lands at the right end of the pinned group
-                                // (Firefox behaviour).
-                                try {
-                                    for (const w of Zotero.getMainWindows()) self._pinTabByCommand(w, item);
-                                } catch (e) {}
+                            // Whole selection, matching the label: unpin only when
+                            // every target is pinned, otherwise pin the ones that
+                            // are not (already-pinned tabs are left alone).
+                            const allPinned = tgts.every((t: any) =>
+                                self._pinnedTabsHas(t.libraryID, t.itemKey));
+                            for (const t of tgts) {
+                                if (allPinned) {
+                                    self._pinnedTabsRemove(t.libraryID, t.itemKey);
+                                }
+                                else if (!self._pinnedTabsHas(t.libraryID, t.itemKey)) {
+                                    // _pinTabByCommand both adds the pref entry AND
+                                    // moves the tab to "last pinned + 1" so a fresh
+                                    // pin lands at the right end of the pinned group
+                                    // (Firefox behaviour).
+                                    try {
+                                        for (const w of Zotero.getMainWindows()) self._pinTabByCommand(w, t.item);
+                                    } catch (e) {}
+                                }
                             }
                             // Re-apply on all known windows so the class shows up
                             // immediately (the MutationObserver will also pick
@@ -6786,7 +6876,7 @@ class _TabsMixin {
             if (label === S("general.showInLibrary", "Show in Library")) return "showInLibrary";
             if (label === S("tabs.move", "Move Tab") || label === "Move Tabs") return "moveTab";
             if (label === S("tabs.duplicate", "Duplicate Tab") || /^Duplicate \d+ Tabs$/.test(label)) return "duplicate";
-            if (label === "Pin Tab" || label === "Unpin Tab") return "pin";
+            if (/^(Pin|Unpin)( \d+)? Tabs?$/.test(label || "")) return "pin";
             if (label === S("general.close", "Close") || /^Close \d+ Tabs$/.test(label)) return "close";
             if (label === S("tabs.closeOther", "Close Other Tabs")) return "closeOther";
             return null;
@@ -6881,6 +6971,65 @@ class _TabsMixin {
      *  groups change). Inserted before the native "Move to New Window" (the
      *  submenu's last direct menuitem). `targets` is the right-clicked selection;
      *  a multi-selection moves all together, sequenced so each move settles. */
+    /** Top-level "Group Tabs" in the tab context menu, directly above
+     *  "Move Tabs" (MJT 2026-08-20). Grouping was reachable only through
+     *  Move Tabs > window > New Group -- a same-window action buried in a
+     *  move-to-another-window menu, which is why it kept being looked for
+     *  at the top level. One click, always a NEW group; adding to an
+     *  existing group stays in Move Tabs, and the duplication is
+     *  deliberate. Rebuilt on every popupshowing (tagged wv-grouptabs). */
+    _wvInjectGroupTabsMenuItem(win: any, popup: any, targets: any[]) {
+        try {
+            if (this._getEnableTabGroups && !this._getEnableTabGroups()) return;
+            const doc = popup.ownerDocument;
+            for (const el of Array.from(popup.querySelectorAll(".wv-grouptabs")) as any[]) el.remove();
+            const ids = (targets || []).filter((t: any) => t && t !== "zotero-pane");
+            if (!ids.length) return;
+            // A tab already in a group has nothing to gain here: this entry
+            // only ever makes a NEW group, so offering it for grouped tabs
+            // would silently pull them out of the group they are in. That
+            // is a MOVE, and it stays in Move Tabs (MJT 2026-08-20: "I
+            // should not be able to Group Tabs for tabs already in a
+            // group"). Hidden when ANY of the selected tabs is grouped, so
+            // the entry can never cost an existing membership.
+            try {
+                const Z: any = win && win.Zotero_Tabs;
+                for (const id of ids) {
+                    const t = Z && Z._tabs.find((x: any) => x && x.id === id);
+                    if (t && this._wvTabGroupStamp && this._wvTabGroupStamp(t)) return;
+                }
+            } catch (e) {}
+            // Anchor on the move menu so the two related actions read as a
+            // pair; fall back to the popup's head if it is absent.
+            const moveLabel = Zotero.getString("tabs.move");
+            const findMove = () => {
+                for (const m of popup.querySelectorAll("menu")) {
+                    const l = m.getAttribute && m.getAttribute("label");
+                    if (l === moveLabel || l === "Move Tabs" || l === "Move Tab") return m;
+                }
+                return null;
+            };
+            const mi = doc.createXULElement("menuitem");
+            mi.classList.add("wv-grouptabs");
+            mi.setAttribute("label", ids.length > 1 ? "Group Tabs" : "Group Tab");
+            mi.addEventListener("command", () => {
+                try { this._wvGroupTabsIntoNewGroup(win, ids.slice()); } catch (e) {}
+            });
+            const place = () => {
+                const mv = findMove();
+                if (mv && mv.parentNode === popup) popup.insertBefore(mi, mv);
+                else popup.appendChild(mi);
+            };
+            place();
+            // Re-place on a settle tick: the popup is still being assembled
+            // while this runs (other onShowing handlers add and REORDER
+            // entries, and the move menu is relabelled "Move Tabs" for a
+            // multi-selection), so an insert made now can end up mid-menu
+            // -- measured live 2026-08-20, it landed six items down.
+            try { win.setTimeout(() => { try { if (mi.parentNode === popup) place(); } catch (e) {} }, 0); } catch (e) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvInjectGroupTabsMenuItem err: " + e); }
+    }
+
     _wvInjectMoveTargetsIntoNativeMoveMenu(win: any, popup: any, targets: any[]) {
         try {
             const doc = popup.ownerDocument;

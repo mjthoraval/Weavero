@@ -320,6 +320,17 @@ class _TabGroupsMixin {
                 "  box-shadow: inset 0 0 0 1px var(--accent-blue, #4072e5);",
                 "  background: color-mix(in srgb, var(--accent-blue, #4072e5) 22%, transparent);",
                 "}",
+                // The ACTIVE tab inside a selection: a thicker ring, Firefox's
+                // treatment. With every selected tab tinted identically there
+                // was no way to tell which one you were actually looking at
+                // (MJT 2026-08-20). Zotero marks it `.selected`; the 2px inset
+                // reads as "this is the one on screen", the 1px as "also
+                // selected".
+                "#tab-bar-container .tab.wv-multisel.selected,",
+                ".wv-window-tabs .wv-window-tab.wv-multisel.wv-active {",
+                "  box-shadow: inset 0 0 0 2px var(--accent-blue, #4072e5);",
+                "  background: color-mix(in srgb, var(--accent-blue, #4072e5) 34%, transparent);",
+                "}",
                 // Drag-onto-tab group creation: the armed target tab.
                 "#tab-bar-container .tab.wv-group-create-target {",
                 "  box-shadow: inset 0 0 0 2px var(--accent-blue, #4072e5) !important;",
@@ -2143,6 +2154,39 @@ class _TabGroupsMixin {
     /** Drop landed on an armed target → new group from target + dragged tab.
      *  (A dragged multi-selection follows via the multi-drag settle pass,
      *  which copies the dragged tab's group outcome to the whole batch.) */
+    /** Group the given tabs into a NEW group, then open the name editor --
+     *  the one-click action behind the context menu's "Group Tabs"
+     *  (MJT 2026-08-20: grouping was reachable only through Move Tabs,
+     *  which is a move-elsewhere menu; grouping happens in place).
+     *  Adding tabs to an EXISTING group stays in Move Tabs, deliberately:
+     *  this entry always means "make a new group out of these".
+     *  The library tab is never grouped. */
+    _wvGroupTabsIntoNewGroup(win: any, tabIDs: any[]) {
+        try {
+            const Z: any = win && win.Zotero_Tabs;
+            if (!Z || !tabIDs || !tabIDs.length) return;
+            const tabs = tabIDs
+                .filter((id: any) => id && id !== "zotero-pane")
+                .map((id: any) => Z._tabs.find((x: any) => x && x.id === id))
+                .filter(Boolean);
+            if (!tabs.length) return;
+            const groups = this._tabGroupsGet();
+            const color = WV_GROUP_COLORS[groups.length % WV_GROUP_COLORS.length].id;
+            const g = this._tabGroupCreate("", color);
+            // StampJoin also lifts each tab out of any group it was in.
+            for (const t of tabs) this._wvTabGroupStampJoin(t, g.id);
+            this._wvTabGroupApplyEverywhere();
+            this._wvTGDbg("group-create from menu: " + tabs.length + " tab(s)");
+            // Name it right away, exactly as the drag-to-group path does.
+            win.setTimeout(() => {
+                try {
+                    const chip = win.document.getElementById("wv-tgchip-" + g.id);
+                    if (chip) this._wvShowTabGroupEditor(win, g.id, chip);
+                } catch (e) {}
+            }, 150);
+        } catch (e) { Zotero.debug("[Weavero] _wvGroupTabsIntoNewGroup err: " + e); }
+    }
+
     _wvTabGroupCreateFromDrop(win: any, targetID: any, draggedID: any) {
         try {
             const Z: any = win.Zotero_Tabs;

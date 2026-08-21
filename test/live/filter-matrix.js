@@ -351,6 +351,10 @@
             G().hasEmbeddedAnnotations = false; }],
         ["source-aware hasAnnotations", () => { G().annotationSource = false;
             G().hasAnnotations = true; }],
+        // Curated-outline tile (2026-08-20). No NATIVE_EQUIV: the store
+        // is Weavero's own, so native cannot express it at all.
+        ["hasOutline", () => { G().hasOutline = true; }],
+        ["hasOutline FALSE", () => { G().hasOutline = false; }],
     ];
 
     const R = {

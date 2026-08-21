@@ -8661,7 +8661,7 @@ class _FilterMixin {
                 item.setAttribute("label", m.label);
                 item.setAttribute("type", "radio");
                 item.setAttribute("name", "wv-filter-mode");
-                if (m.key === mode.key) item.setAttribute("checked", "true");
+                item.toggleAttribute("checked", m.key === mode.key);
                 item.addEventListener("command", () => {
                     switchMode(m.key);
                     try { search.focus(); } catch (err) {}

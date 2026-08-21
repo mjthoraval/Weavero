@@ -6241,7 +6241,7 @@ class _ReaderPanelsMixin {
                     wrap.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;cursor:pointer;");
                     const r: any = idoc.createElementNS(NS, "input");
                     r.setAttribute("type", "radio"); r.setAttribute("name", "wv-outline-pos"); r.value = val;
-                    if (checked) r.setAttribute("checked", "checked");
+                    r.toggleAttribute("checked", !!checked);
                     const t = idoc.createElementNS(NS, "span"); t.textContent = label;
                     wrap.appendChild(r); wrap.appendChild(t);
                     return r;

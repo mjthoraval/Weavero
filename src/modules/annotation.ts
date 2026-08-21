@@ -603,7 +603,7 @@ class _AnnotationMixin {
                 mi.classList.add("menuitem-iconic");
                 mi.setAttribute("image", opts.iconURL);
             }
-            if (opts.disabled) mi.setAttribute("disabled", "true");
+            mi.toggleAttribute("disabled", !!opts.disabled);
             mi.addEventListener("command", () => {
                 try { onCommand(); }
                 catch (e) {

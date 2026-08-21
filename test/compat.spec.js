@@ -71,4 +71,44 @@ describe("Weavero — Firefox 153 compatibility", () => {
         expect(iOwn).to.be.above(-1);
         expect(iDoc, "documentGlobal must be checked first").to.be.below(iOwn);
     });
+
+    // Firefox 153 made hidden/collapsed/selected/disabled/checked BOOLEAN XUL
+    // attributes, matched on presence alone: any value -- including the string
+    // "false" -- means true. Measured on 11.0.SOURCE.77a3a8815 (2026-08-21):
+    // setAttribute("disabled", "false") leaves el.disabled === true, so the
+    // four sites that wrote String(cond) disabled their menu items
+    // unconditionally. toggleAttribute() is correct on Zotero 7-11 alike.
+    it("writes boolean XUL attributes with toggleAttribute, never setAttribute", () => {
+        const re = /setAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']/g;
+        const hits = bundle.match(re) || [];
+        expect(hits, `boolean attrs must use toggleAttribute: ${hits.join(", ")}`)
+            .to.have.lengthOf(0);
+    });
+
+    // The sneakier half: once anything sets these by presence, getAttribute()
+    // returns "" and `=== "true"` is FALSE while the element IS hidden. The
+    // reverse also bites -- measured, toggleAttribute("collapsed", true) sets
+    // .collapsed on Zotero 11 but NOT on Zotero 10, which honours only the
+    // literal "true". wvIsHiddenOrCollapsed() covers every form.
+    it("reads hidden/collapsed through wvIsHiddenOrCollapsed, not === \"true\"", () => {
+        const re = /getAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']\s*\)\s*===\s*["']true["']/g;
+        const hits = bundle.match(re) || [];
+        expect(hits, `boolean attr reads must not compare to "true": ${hits.join(", ")}`)
+            .to.have.lengthOf(0);
+        expect(bundle, "wvIsHiddenOrCollapsed must ship")
+            .to.include("wvIsHiddenOrCollapsed");
+    });
+
+    // Menu icons: the Z11 notes say <menuitem> icons became <html:img> and
+    // point at the --menuitem-icon CSS variable. MEASURED 2026-08-21 on
+    // 11.0.SOURCE.77a3a8815: the legacy `image` attribute still populates the
+    // img (currentSrc set, naturalWidth 16), and Zotero 11 itself still calls
+    // setAttribute("image", ...) in utilities_internal.js/locateMenu.js. So the
+    // 34 call sites need NO migration. This guard exists to record that the
+    // question was settled by measurement, and to fail loudly if a future beta
+    // ever does drop the attribute -- at which point the icons vanish silently.
+    it("still relies on the image attribute for menu icons (verified on Z11)", () => {
+        expect(bundle, "menu icons are set via the image attribute")
+            .to.include('setAttribute("image"');
+    });
 });

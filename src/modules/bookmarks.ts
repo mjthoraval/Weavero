@@ -4008,8 +4008,8 @@ class _BookmarksMixin {
                 const mi = doc.createXULElement("menuitem");
                 mi.setAttribute("label", label);
                 mi.setAttribute("type", "radio");
-                if (checked) mi.setAttribute("checked", "true");
-                if (disabled) mi.setAttribute("disabled", "true");
+                mi.toggleAttribute("checked", !!checked);
+                mi.toggleAttribute("disabled", !!disabled);
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };

@@ -10616,6 +10616,19 @@ class _ReaderMixin {
 
     async _setupReaderObserver(reader) {
         if (this._readerObservers.has(reader)) return;
+        // CLAIM THE SLOT BEFORE THE FIRST AWAIT. The guard above used to be
+        // the only protection, but `_readerObservers.set` happens ~380 lines
+        // and three awaits later, so every concurrent caller passed the guard
+        // and installed its OWN observers and listeners on the same document.
+        // Measured 2026-08-22: 72 concurrent setups on one reader, ~450ms
+        // each, every one of them firing on every React repaint -- Firefox
+        // raised "unresponsive script" against react-dom and switching tabs
+        // or reopening a PDF froze for tens of seconds. The placeholder is
+        // replaced by the real record at the end; the finally below removes
+        // it again on every path that bails, so a failed setup can still be
+        // retried later.
+        let installed = false;
+        this._readerObservers.set(reader, { pending: true });
         try {
             if (typeof reader._waitForReader === "function") await reader._waitForReader();
             else if (reader._initPromise) await reader._initPromise;
@@ -11016,8 +11029,17 @@ class _ReaderMixin {
             // the outer doc never sees a highlight/image resize.)
             try { this._setupInnerReaderObserver(reader, idoc); }
             catch(e) { Zotero.debug("[Weavero] inner setup error: " + e); }
+            installed = true;
         } catch (err) {
             Zotero.debug("[Weavero] _setupReaderObserver error: " + err.message);
+        } finally {
+            // Drop the claim unless a real record replaced it, so a reader
+            // whose setup bailed (dead instance, no document, error) is not
+            // left permanently unwirable.
+            try {
+                const rec: any = this._readerObservers.get(reader);
+                if (!installed && rec && rec.pending) this._readerObservers.delete(reader);
+            } catch (_) {}
         }
     }
 
@@ -14311,14 +14333,29 @@ class _ReaderMixin {
         const reader = this._findReaderForDoc(idoc);
         if (!reader || !reader._item) return;
 
+        // TWO PHASES, deliberately. `scrollHeight`/`clientHeight` force a
+        // synchronous layout, and this used to read them and insert icons in
+        // the SAME loop -- so every row invalidated layout for the next one.
+        // With 224 annotations that is 224 forced reflows per pass, and the
+        // pass runs on each sidebar render: reopening a reader or switching
+        // tabs froze Zotero for seconds and Firefox raised "unresponsive
+        // script" pointing at react-dom (MJT, 2026-08-22). Measuring
+        // everything FIRST costs one layout; the writes then follow with no
+        // reads between them.
+        const rows: any[] = [];
         for (const row of idoc.querySelectorAll(".annotation, .annotation-row")) {
             const cmt = row.querySelector(".comment.wv-comment-preview");
             if (!cmt) continue;
             const preview = cmt.querySelector(".wv-md-preview");
             if (!preview) continue;
-            const overflows = preview.scrollHeight > preview.clientHeight + 1;
-            const existing = row.querySelector("." + BTN_SIDEBAR_CLASS);
-
+            rows.push({ row, preview, existing: row.querySelector("." + BTN_SIDEBAR_CLASS) });
+        }
+        // READ phase — no DOM writes in here.
+        for (const r of rows) {
+            r.overflows = r.preview.scrollHeight > r.preview.clientHeight + 1;
+        }
+        // WRITE phase — no layout reads in here.
+        for (const { row, overflows, existing } of rows) {
             if (overflows) {
                 if (existing) continue;
                 const key = this._findAnnotationKey(row, reader);

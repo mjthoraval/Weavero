@@ -364,7 +364,15 @@ export const PLUGIN_CSS = [
     // truncation on .content (~3 lines in the reader sidebar). The
     // editing-state rule has higher specificity (3 classes vs 2) so it
     // wins over the line-clamp display when the user is editing.
+    // Hide whatever the annotation editor renders, EXCEPT our preview.
+    // Naming `.content` alone stopped working: Zotero 10.0.1-beta.2 renders
+    // the comment in unclassed <div>s beside `.content` inside `.editor`, so
+    // `.content` was dutifully hidden (measured h=0) while two 359px divs
+    // rendered the full text under our 48px preview -- every annotation with
+    // a long comment looked permanently expanded (MJT, 2026-08-22).
+    // Structural selector so a future rename cannot break it again.
     ".comment.wv-comment-preview .content { display: none; }",
+    ".comment.wv-comment-preview .editor > *:not(.wv-md-preview) { display: none; }",
     ".comment.wv-comment-preview .wv-md-preview {",
     "  display: -webkit-box;",
     "  -webkit-box-orient: vertical;",
@@ -381,6 +389,7 @@ export const PLUGIN_CSS = [
     // full content visible), the icon would just clutter — hide it.
     ".annotation.selected .wv-btn-sidebar[data-wv-icon-reason='overflow'] { display: none; }",
     ".comment.wv-comment-preview.wv-editing .content { display: block; }",
+    ".comment.wv-comment-preview.wv-editing .editor > *:not(.wv-md-preview) { display: revert; }",
     ".comment.wv-comment-preview.wv-editing .wv-md-preview { display: none; }",
 
     // Flex layout gives the icon its own slot the text physically can't enter.

@@ -1159,6 +1159,7 @@ class _ReaderMixin {
             + "}"
             + ".wv-am-add-comment:hover { color: var(--fill-primary, inherit); }"
             + ".comment.wv-comment-preview .content { display: none; }"
+            + ".comment.wv-comment-preview .editor > *:not(.wv-md-preview) { display: none; }"
             + ".comment.wv-comment-preview .wv-md-preview {"
             + "  display: -webkit-box;"
             + "  -webkit-box-orient: vertical;"
@@ -1211,6 +1212,7 @@ class _ReaderMixin {
             + "}"
             // Amber-disc hover ring (type-2 / type-3 icons), same
             + ".comment.wv-comment-preview.wv-editing .content { display: block; }"
+            + ".comment.wv-comment-preview.wv-editing .editor > *:not(.wv-md-preview) { display: revert; }"
             + ".comment.wv-comment-preview.wv-editing .wv-md-preview { display: none; }"
             + ".wv-md-bold { font-weight: 700; }"
             + ".wv-md-italic { font-style: italic; }"

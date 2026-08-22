@@ -291,6 +291,32 @@ class _NoteEditorMixin {
             // (verified live), so retry from chrome. This loop covers the
             // load-lag; the per-sweep call in _processNoteEditors covers
             // notes opened much later into a pre-created editor.
+            // ONE poller per iframe. The loop below waits up to 15 x 700ms,
+            // and nothing used to stop a second call starting its own loop on
+            // the same editor -- so every sweep and every tab switch during a
+            // load spawned another. Switching tabs while a window reloads
+            // stacked 41 concurrent pollers, the slowest running 29s, and
+            // blocked the main thread for 12s: closing and reopening a PDF
+            // appeared to hang Zotero (MJT, 2026-08-22). The cheap attempt()
+            // above still runs on every call, so a later caller that finds the
+            // editor ready still installs immediately -- only the WAITING is
+            // deduplicated.
+            // Never poll an editor with NO note in it. Zotero keeps
+            // <note-editor> elements mounted and empty in the item pane and in
+            // every reader's context pane -- measured 2026-08-22: all five in
+            // a normal window were empty, four of them invisible. The loop
+            // below can never succeed there, so each sweep spent 15 x 700ms
+            // per empty editor for nothing, and reopening a PDF (which rebuilds
+            // those panes) stalled the main thread. The per-iframe load
+            // observer calls us again when a note actually arrives, which is
+            // the only moment the install can work.
+            try {
+                const host = iframe.closest ? iframe.closest("note-editor") : null;
+                if (host && !host.item) return;
+            } catch (_) {}
+            if ((iframe as any)._wvLinkifyPolling) return;
+            (iframe as any)._wvLinkifyPolling = true;
+            try {
             for (let i = 0; i < 15; i++) {
                 await (Zotero as any).Promise.delay(700);
                 if ((this as any)._wvDestroyed) return;
@@ -301,6 +327,7 @@ class _NoteEditorMixin {
                 }
                 if (r.indexOf("chrome-err") === 0) return;   // window gone
             }
+            } finally { try { (iframe as any)._wvLinkifyPolling = false; } catch (_) {} }
         } catch (e) {
             this._dbg("[Weavero] _wvInstallNoteLinkify err: " + e);
         }

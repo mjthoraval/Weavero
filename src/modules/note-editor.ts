@@ -223,6 +223,17 @@ class _NoteEditorMixin {
      *  `.wv-note-linkified`, click on `[data-wv-href]`). */
     async _wvInstallNoteLinkify(iframe) {
         if ((this as any)._wvDestroyed) return;
+        // FIRST, before the fetch and before any attempt: an editor with no
+        // note in it can never install. Zotero keeps <note-editor> elements
+        // mounted and empty in the item pane and every reader context pane,
+        // and each attempt evaluates the 342KB inject bundle in the page
+        // compartment (~80ms). Measured 2026-08-22: 125 calls, ~10s total,
+        // on editors that had nothing to decorate. The per-iframe load
+        // observer calls us again when a note actually arrives.
+        try {
+            const host0 = iframe && iframe.closest ? iframe.closest("note-editor") : null;
+            if (host0 && !host0.item) return;
+        } catch (_) {}
         try {
             if (!(this as any)._wvNoteInjectCode) {
                 const root = String((this as any)._rootURI || "");
@@ -310,10 +321,6 @@ class _NoteEditorMixin {
             // those panes) stalled the main thread. The per-iframe load
             // observer calls us again when a note actually arrives, which is
             // the only moment the install can work.
-            try {
-                const host = iframe.closest ? iframe.closest("note-editor") : null;
-                if (host && !host.item) return;
-            } catch (_) {}
             if ((iframe as any)._wvLinkifyPolling) return;
             (iframe as any)._wvLinkifyPolling = true;
             try {

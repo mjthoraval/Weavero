@@ -2081,6 +2081,13 @@ class WeaveroPlugin {
                 // Filters
                 "enableItemsTreeFilter", "enableSelectionTarget",
                 "enableTabsLibraryFilter", "enableTabsFileTypeFilter",
+                // Read-status filter: its getter reads TRUE when unset, so
+                // without this the Settings checkbox rendered UNCHECKED while
+                // the filter ran (same class of bug as windowIcons, 2026-07-16
+                // — this one was simply missed). Surfaced 2026-08-24 by a
+                // settings reset, which cleared the user value that had been
+                // masking it.
+                "enableReadStatusFilter",
                 // Visual extras
                 "enableAnnotationsCountColumn", "enableTagsCountAuto",
                 "enableRelatedColumn",
@@ -2128,6 +2135,9 @@ class WeaveroPlugin {
                 // Default ON since 2026-08-18 (MJT: discoverability) —
                 // was in the OFF list; the getter fallback flipped with it.
                 "enableOpenExternalViewer",
+                // Hidden prefs (no Settings checkbox) whose getters also read
+                // TRUE when unset — registered for the same invariant.
+                "readerOutlineTakeover", "recolorAmLinks",
             ];
             const OFF = [
                 "enableAppLinks", "enableAppLinksSkipConfirm",
@@ -2143,6 +2153,10 @@ class WeaveroPlugin {
                 // the reader Bookmarks tab stay visible even when empty unless
                 // the user opts into hiding them.
                 "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks",
+                // Read false when unset, so the checkboxes were already
+                // truthful; registered so every Settings-pane pref has a
+                // default-branch value (locked by prefs-defaults.spec.js).
+                "separateTaskbarButtons", "windowTitleGlyphs",
             ];
             for (const n of ON) branch.setBoolPref(P + n, true);
             for (const n of OFF) branch.setBoolPref(P + n, false);

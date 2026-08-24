@@ -2129,6 +2129,16 @@ class _ReaderPanelsMixin {
                 it.addEventListener("click", () => { close(); onPick(); });
                 menu.appendChild(it);
             };
+            // Title the menu, exactly as the bookmarks sort menu does
+            // (`heading("Sort by")`): three bare field names with a tick gave
+            // no clue what axis they set (user request 2026-08-24).
+            const heading = (text: string) => {
+                const hd = idoc.createElementNS(NS_HTML_RP, "div");
+                hd.className = "wv-ctx-heading";
+                hd.textContent = text;
+                menu.appendChild(hd);
+            };
+            heading("Sort by");
             // Direction lives in the sort BAR (one click on the active chip
             // toggles it) -- the menu stays fields-only (user call 2026-08-03).
             row("Position (default)", cur.field === "position", () => this._wvAnnSetSort("position"));

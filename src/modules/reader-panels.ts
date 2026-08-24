@@ -51,7 +51,7 @@ const RP_BM_CTX_WIRE_V = 15;   // v11: Tab-out stuck-check includes body (every 
 // this whenever the panel wiring/render structure changes so open tabs self-heal
 // on the next update. (undefined !== value, so the first stamp-aware build
 // already heals currently-stale tabs.)
-const RP_PANELS_WIRE_V = 14;
+const RP_PANELS_WIRE_V = 15;
 const RP_STYLE_ID = "wv-reader-panels-style";
 const NS_HTML_RP = "http://www.w3.org/1999/xhtml";
 

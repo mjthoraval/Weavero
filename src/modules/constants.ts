@@ -372,6 +372,7 @@ export const PLUGIN_CSS = [
     // a long comment looked permanently expanded (MJT, 2026-08-22).
     // Structural selector so a future rename cannot break it again.
     ".comment.wv-comment-preview .content { display: none; }",
+    ".comment.wv-comment-preview > *:not(.wv-md-preview) { display: none; }",
     ".comment.wv-comment-preview .editor > *:not(.wv-md-preview) { display: none; }",
     ".comment.wv-comment-preview .wv-md-preview {",
     "  display: -webkit-box;",
@@ -389,6 +390,7 @@ export const PLUGIN_CSS = [
     // full content visible), the icon would just clutter — hide it.
     ".annotation.selected .wv-btn-sidebar[data-wv-icon-reason='overflow'] { display: none; }",
     ".comment.wv-comment-preview.wv-editing .content { display: block; }",
+    ".comment.wv-comment-preview.wv-editing > *:not(.wv-md-preview) { display: revert; }",
     ".comment.wv-comment-preview.wv-editing .editor > *:not(.wv-md-preview) { display: revert; }",
     ".comment.wv-comment-preview.wv-editing .wv-md-preview { display: none; }",
 

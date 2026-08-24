@@ -2158,8 +2158,21 @@ class WeaveroPlugin {
                 // default-branch value (locked by prefs-defaults.spec.js).
                 "separateTaskbarButtons", "windowTitleGlyphs",
             ];
-            for (const n of ON) branch.setBoolPref(P + n, true);
-            for (const n of OFF) branch.setBoolPref(P + n, false);
+            // Per-pref guards, NOT one try around each loop: setBoolPref can
+            // throw NS_ERROR_UNEXPECTED (e.g. a name cleared earlier in the
+            // same session is un-recreatable until the pref service reloads),
+            // and an unguarded throw aborted the REST of the loop *and*
+            // everything below it — silently, since the outer catch only
+            // calls Zotero.debug. Observed 2026-08-24: one bad name left the
+            // char-pref defaults and the rename migration unregistered.
+            for (const n of ON) {
+                try { branch.setBoolPref(P + n, true); }
+                catch (e) { Zotero.debug("[Weavero] default pref " + n + ": " + e); }
+            }
+            for (const n of OFF) {
+                try { branch.setBoolPref(P + n, false); }
+                catch (e) { Zotero.debug("[Weavero] default pref " + n + ": " + e); }
+            }
             // Ctrl/Cmd+click split orientation when no split is open yet:
             // "horizontal" (default) or "vertical".
             try { branch.setCharPref(P + "ctrlClickSplit", "horizontal"); } catch (e) {}

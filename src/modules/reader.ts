@@ -1127,10 +1127,32 @@ class _ReaderMixin {
         // and the new code's preview-panel rules would never apply, which
         // shows up as a mix of correctly-rendered and unstyled comments
         // in the reader sidebar after the user toggles the plugin off/on.
+        // IDEMPOTENT per plugin instance. The remove-then-add above is
+        // correct ONLY when the element came from an older instance; doing it
+        // unconditionally was catastrophic, because _sidebarHandlerImpl calls
+        // this on EVERY annotation row render. Removing a <style> invalidates
+        // the whole document's styles and re-parses ~35KB of CSS, so a cold
+        // open of a 226-annotation PDF did that 226 times inside React's
+        // synchronous flushSync: a 7.3s main-thread freeze, 99.7% native,
+        // ~70% Style computation, with almost no Weavero JS self-time
+        // (differential Gecko profile, 2026-08-24).
+        //
+        // It also defeated diagnosis: disabling Weavero's stylesheets changed
+        // nothing, because this recreated them -- undisabled -- on the very
+        // next row.
+        //
+        // Stamp with a token unique to THIS plugin instance: an element left
+        // behind by a previous instance still gets replaced (the original
+        // intent), while the common case is a cheap early return.
+        const token = ((this as any)._wvOuterStyleToken
+            || ((this as any)._wvOuterStyleToken = "wv-" + Date.now() + "-"
+                + Math.random().toString(36).slice(2, 8)));
         const existing = doc.getElementById("weavero-reader-outer-styles");
+        if (existing && existing.getAttribute("data-wv-instance") === token) return;
         if (existing) existing.remove();
         const s = doc.createElement("style");
         s.id = "weavero-reader-outer-styles";
+        s.setAttribute("data-wv-instance", token);
         s.textContent =
             // Preview-panel CSS (v0.0.106). The sidebar comments live in
             // this outer reader iframe, so the visibility-swap rules need
@@ -1159,6 +1181,7 @@ class _ReaderMixin {
             + "}"
             + ".wv-am-add-comment:hover { color: var(--fill-primary, inherit); }"
             + ".comment.wv-comment-preview .content { display: none; }"
+            + ".comment.wv-comment-preview > *:not(.wv-md-preview) { display: none; }"
             + ".comment.wv-comment-preview .editor > *:not(.wv-md-preview) { display: none; }"
             + ".comment.wv-comment-preview .wv-md-preview {"
             + "  display: -webkit-box;"
@@ -1212,6 +1235,7 @@ class _ReaderMixin {
             + "}"
             // Amber-disc hover ring (type-2 / type-3 icons), same
             + ".comment.wv-comment-preview.wv-editing .content { display: block; }"
+            + ".comment.wv-comment-preview.wv-editing > *:not(.wv-md-preview) { display: revert; }"
             + ".comment.wv-comment-preview.wv-editing .editor > *:not(.wv-md-preview) { display: revert; }"
             + ".comment.wv-comment-preview.wv-editing .wv-md-preview { display: none; }"
             + ".wv-md-bold { font-weight: 700; }"
@@ -10757,8 +10781,7 @@ class _ReaderMixin {
                             traceContent(c);
                         }
                     } catch(err) {}
-                    try { this._processReaderSidebar(idoc); }
-                    catch(e) { Zotero.debug("[Weavero] sidebar scan error: " + e); }
+                    scanWithoutSelfFeedback(idoc);
                 }, delay);
             };
 
@@ -10817,9 +10840,26 @@ class _ReaderMixin {
                     if (popup) this._injectIconIntoPopup(popup, reader);
                 }
                 if (needsSyncScan) {
-                    try { this._processReaderSidebar(idoc); }
-                    catch(e) { Zotero.debug(
-                        "[Weavero] sync sidebar scan: " + e); }
+                    // ONE scan per frame, not one per mutation batch. This ran
+                    // _processReaderSidebar synchronously inside the observer
+                    // callback, and each scan mutates the DOM it is observing,
+                    // so a load storm fed itself. Measured 2026-08-24 on a
+                    // cold open of a 224-annotation PDF: 8,839 mutations and a
+                    // single 5,080ms main-thread block, 12s from tab select to
+                    // a settled DOM. rAF keeps the scan in the SAME frame the
+                    // mutation arrived in -- so no visible lag versus the old
+                    // synchronous call -- while collapsing N callbacks into 1.
+                    if (!(idoc as any)._wvSyncScanPending) {
+                        (idoc as any)._wvSyncScanPending = true;
+                        const runScan = () => {
+                            (idoc as any)._wvSyncScanPending = false;
+                            const live3 = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (live3 !== this) return;   // reload landed mid-frame
+                            scanWithoutSelfFeedback(idoc);
+                        };
+                        try { iwin.requestAnimationFrame(runScan); }
+                        catch (_) { try { iwin.setTimeout(runScan, 0); } catch (_2) { runScan(); } }
+                    }
                 }
                 if (needsCtxDecorate) {
                     try { this.decorateContextMenu(idoc); }
@@ -10830,6 +10870,36 @@ class _ReaderMixin {
                 // as a sync trigger (e.g. far-future Zotero DOM shapes).
                 scheduleSidebarScan(80);
             });
+            // Run a sidebar scan WITHOUT observing our own writes.
+            //
+            // The scan decorates annotation rows, which mutates the very DOM
+            // this observer watches, which schedules another scan -- the
+            // debounce never drains because the scan refills it. Measured
+            // 2026-08-24 on a cold open of a 224-annotation PDF: ~8,000
+            // mutations and a 5.07s main-thread block, unchanged by
+            // coalescing the callback (dev.15) because the loop is the cause,
+            // not the call frequency.
+            //
+            // Disconnect, scan, drain the queued records, re-observe. Anything
+            // Zotero changes during the scan is lost, which is why the
+            // debounced timer still runs afterwards as the safety net.
+            const scanWithoutSelfFeedback = (doc: any) => {
+                let reattach = false;
+                try { observer.disconnect(); reattach = true; } catch (_) {}
+                try { this._processReaderSidebar(doc); }
+                catch (e) { Zotero.debug("[Weavero] sidebar scan error: " + e); }
+                finally {
+                    if (reattach) {
+                        try { observer.takeRecords(); } catch (_) {}
+                        try {
+                            observer.observe(doc.body || doc.documentElement,
+                                { childList: true, subtree: true, characterData: true });
+                        } catch (_) {}
+                    }
+                }
+            };
+            (this as any)._wvScanNoFeedback = scanWithoutSelfFeedback;
+
             observer.observe(idoc.body || idoc.documentElement,
                 { childList: true, subtree: true, characterData: true });
 
@@ -13867,7 +13937,30 @@ class _ReaderMixin {
         if (!preview) {
             preview = doc.createElement("div");
             preview.className = "wv-md-preview";
-            contentEl.insertAdjacentElement("afterend", preview);
+            // OUTSIDE the editor, as a direct child of .comment.
+            //
+            // This used to go next to `.content`, which sits INSIDE
+            // `.editor` -- the region Zotero's rich-text (ProseMirror)
+            // annotation-comment editor manages. A foreign node in that
+            // region makes the editor call `document.execCommand`, and
+            // execCommand forces a SYNCHRONOUS style + layout flush. With 226
+            // annotations that is thousands of forced flushes: measured
+            // 2026-08-24 by differential Gecko profile, a 7.3s main-thread
+            // block, 99.7% native, `execCommand` present in 94% of blocking
+            // samples (10 in the control arms). Weavero itself calls
+            // execCommand once in the whole codebase, in a copy path -- the
+            // calls were Zotero's, provoked by our write.
+            //
+            // Controls from that study: Weavero fully enabled but NOT
+            // decorating the reader cost 74ms and zero stalls, versus 11s and
+            // a 7.3s freeze with the reader surfaces on. Keeping our node out
+            // of the editor's DOM is what removes the provocation.
+            if (commentEl.appendChild) commentEl.appendChild(preview);
+            else contentEl.insertAdjacentElement("afterend", preview);
+        } else if (preview.parentNode && preview.parentNode !== commentEl) {
+            // Migrate a preview planted inside the editor by an older build
+            // (or re-parented by an editor rebuild) back out to .comment.
+            try { commentEl.appendChild(preview); } catch (_) {}
         }
 
         // Copy contentEl's padding/margin to the preview so they line up

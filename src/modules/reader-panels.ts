@@ -5189,10 +5189,32 @@ class _ReaderPanelsMixin {
         try {
             const ir = reader && reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
-            const sr = pv && pv._selectionRanges;
-            if (!Array.isArray(sr) || !sr.length || sr[0].collapsed) return null;
-            if (typeof pv._getAnnotationFromSelectionRanges !== "function") return null;
-            const a = pv._getAnnotationFromSelectionRanges(sr, "highlight");
+            if (!pv) return null;
+            // The two view families expose DIFFERENT selection APIs, and the
+            // PDF one does not exist on a DOM view. Checking only for
+            // `_selectionRanges` / `_getAnnotationFromSelectionRanges` meant
+            // this returned null on EVERY snapshot and EPUB — so the #34
+            // follow-up that taught the code below to accept selector
+            // positions could never actually run there (found live 2026-08-24,
+            // while adding the right-click outline entry for DOM views).
+            //
+            // PDF: pre-computed `_selectionRanges` handed to
+            //      `_getAnnotationFromSelectionRanges`.
+            // DOM: `_getAnnotationFromTextSelection` reads the LIVE selection
+            //      out of the view's own content document (dom-view.tsx:522).
+            let a = null;
+            let fromDom = false;
+            const sr = pv._selectionRanges;
+            if (Array.isArray(sr) && sr.length) {
+                if (sr[0].collapsed) return null;
+                if (typeof pv._getAnnotationFromSelectionRanges !== "function") return null;
+                a = pv._getAnnotationFromSelectionRanges(sr, "highlight");
+            } else if (typeof pv._getAnnotationFromTextSelection === "function") {
+                a = pv._getAnnotationFromTextSelection("highlight");
+                fromDom = true;
+            } else {
+                return null;
+            }
             if (!a || !a.position) return null;
             // Accept BOTH position shapes. PDF views return page geometry
             // (`rects`); DOM views -- snapshot and EPUB -- return a WADM
@@ -5205,8 +5227,10 @@ class _ReaderPanelsMixin {
             // silently and forever (issue #34 follow-up, 2026-08-21).
             const rects = a.position.rects;
             const hasRects = Array.isArray(rects) && rects.length > 0;
-            const hasSelector = typeof a.position.value === "string" && a.position.value.length > 0;
-            if (!hasRects && !hasSelector) return null;
+            // A DOM view just built this position from a live range, so it is
+            // valid whichever WADM selector shape it chose (CssSelector and
+            // FragmentSelector carry `value`; TextPositionSelector does not).
+            if (!hasRects && !fromDom) return null;
             const position = JSON.parse(JSON.stringify(a.position));
             const text = String(a.text || "").replace(/\s+/g, " ").trim();
             return { position, text };

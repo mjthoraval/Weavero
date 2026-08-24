@@ -350,6 +350,10 @@ const RP_BM_TAB_ON = "wv-bm-tab-on";
 // Weavero's own outline panel replaces the NATIVE outline view when the
 // Outline tab is active: same tab slot, but Weavero owns the DOM (robust --
 // it hides the native React outline wrapper via CSS, never edits inside it).
+// Views that can carry an outline, and therefore offer the right-click
+// "Add Selected Text to Outline". PDF anchors by page geometry; snapshot and
+// EPUB anchor by WADM selector (#34 taught the panel to read both).
+const RP_OUTLINE_VIEW_TYPES = new Set(["pdf", "snapshot", "epub"]);
 const RP_OUTLINE_VIEW_CLASS = "wv-outline-reader-view";
 const RP_OUTLINE_TAB_ON = "wv-outline-tab-on";
 // Down-chevron twisty (rotated -90deg when collapsed via CSS).
@@ -6056,12 +6060,19 @@ class _ReaderPanelsMixin {
             while (end + 1 < entries.length && Math.max(0, entries[end + 1].indentLevel || 0) > base) end++;
             const block = entries.splice(idx, end - idx + 1);
             // Ordering position: page-anchor -> synthetic y (top/bottom of page).
+            const pvOrder1 = (() => {
+                try { const ir0 = reader._internalReader; return ir0 && (ir0._primaryView || ir0._lastView); }
+                catch (_) { return null; }
+            })();
             let posForOrder = pos;
-            if (!(pos.rects && pos.rects.length)) {
+            // Page anchors only. A DOM-view selector has no rects either, and
+            // synthesising one here would throw the real anchor away — guard
+            // on an integer pageIndex, which only PDF positions carry.
+            if (!(pos.rects && pos.rects.length) && Number.isInteger(pos.pageIndex)) {
                 const yy = pos.anchor === "bottom" ? 0 : 100000;
                 posForOrder = { pageIndex: pos.pageIndex, rects: [[0, yy, 0, yy]] };
             }
-            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder);
+            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder, pvOrder1);
             const delta = indent - base;
             if (delta) for (const en of block) en.indentLevel = Math.max(0, (en.indentLevel || 0) + delta);
             entries.splice(gap, 0, ...block);
@@ -6096,12 +6107,18 @@ class _ReaderPanelsMixin {
             // sits: a pin near the top of page 16 landed below Acknowledgments,
             // 2026-07-23.) A page-anchor has no rect, so give it a synthetic y for
             // ordering only: top-anchor -> top of page, bottom-anchor -> bottom.
+            const pvOrder2 = (() => {
+                try { const ir0 = reader._internalReader; return ir0 && (ir0._primaryView || ir0._lastView); }
+                catch (_) { return null; }
+            })();
             let posForOrder = pos;
-            if (pos && !(pos.rects && pos.rects.length)) {
+            // Page anchors only — see the sibling guard in
+            // _wvOutlineReplaceByPosition: a DOM selector must survive intact.
+            if (pos && !(pos.rects && pos.rects.length) && Number.isInteger(pos.pageIndex)) {
                 const yy = pos.anchor === "bottom" ? 0 : 100000;
                 posForOrder = { pageIndex: pos.pageIndex, rects: [[0, yy, 0, yy]] };
             }
-            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder);
+            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder, pvOrder2);
             const entry = {
                 title, indentLevel: indent,
                 position: pos, resolvedPosition: pos, regionTitle: title,
@@ -6516,7 +6533,13 @@ class _ReaderPanelsMixin {
             const entries: any[] = (d && d.entries) || [];
             const title = sel.text.slice(0, 160);
             const pos = sel.position;
-            const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos);
+            // The live view orders DOM-view entries by resolving each anchor
+            // against the document; PDF ignores it and uses page geometry.
+            const pvOrder = (() => {
+                try { const ir0 = reader._internalReader; return ir0 && (ir0._primaryView || ir0._lastView); }
+                catch (_) { return null; }
+            })();
+            const { gap, indent } = this._wvOutlineDocOrderGap(entries, pos, pvOrder);
             const entry = {
                 title, indentLevel: indent,
                 position: pos, resolvedPosition: pos, regionTitle: title,
@@ -6595,7 +6618,90 @@ class _ReaderPanelsMixin {
      *  the deeper level, so the new entry joins those siblings instead of
      *  becoming their parent (contiguity means everything deeper after it
      *  would otherwise read as ITS subtree). */
-    _wvOutlineDocOrderGap(entries: any[], pos: any): { gap: number, indent: number } {
+    _wvOutlineDocOrderGap(entries: any[], pos: any, pv?: any): { gap: number, indent: number } {
+        // A DOM view (snapshot/EPUB) anchors by WADM selector, not page
+        // geometry: `pageIndex` and `rects` are both absent, so the geometry
+        // loop below never breaks and EVERY new entry fell to the bottom of
+        // the list. `toDisplayedRange` is the base DOM view's own selector
+        // resolver — its presence IS the "this is a DOM view" test.
+        const domView = !!(pv && typeof pv.toDisplayedRange === "function");
+        const geometric = !!(pos && pos.rects && pos.rects.length);
+        const gap = (domView && !geometric)
+            ? this._wvOutlineDomOrderIndex(entries, pos, pv)
+            : this._wvOutlineGeomOrderIndex(entries, pos);
+        const prevIndent = gap > 0 ? Math.max(0, entries[gap - 1].indentLevel || 0) : 0;
+        const nextIndent = gap < entries.length ? Math.max(0, entries[gap].indentLevel || 0) : 0;
+        const indent = nextIndent > prevIndent ? nextIndent : prevIndent;
+        return { gap, indent };
+    }
+
+    /** Document-order index for a DOM view, by resolving each anchor against
+     *  the LIVE document and comparing boundary points.
+     *
+     *  An entry that will not resolve — a stale selector, or an EPUB section
+     *  not currently rendered in paginated mode — is SKIPPED, never used as a
+     *  break: one unresolvable entry must not drag the insertion point to the
+     *  top. When nothing after the selection resolves the entry appends, which
+     *  is the honest answer rather than a guessed position. */
+    _wvOutlineDomOrderIndex(entries: any[], pos: any, pv: any): number {
+        try {
+            const target = this._wvOutlineDomPoint(pv, { position: pos });
+            if (!target) return entries.length;
+            for (let i = 0; i < entries.length; i++) {
+                const pt = this._wvOutlineDomPoint(pv, entries[i]);
+                if (!pt) continue;
+                if (this._wvOutlineDomPointAfter(pt, target)) return i;
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineDomOrderIndex err: " + e); }
+        return entries.length;
+    }
+
+    /** Resolve an outline entry (or a bare {position}) to a boundary point in
+     *  the live document. Two anchor shapes, because the two DOM producers
+     *  differ: snapshot entries carry a selector `position`, EPUB TOC entries
+     *  carry an `href` into the book. Upstream pairs these same two primitives
+     *  in EPUBView._getOutlinePath. */
+    _wvOutlineDomPoint(pv: any, entry: any): any {
+        try {
+            const position = entry && (entry.resolvedPosition || entry.position);
+            if (position) {
+                // cloneInto for the same reason _wvOutlineNavRaw does it: the
+                // position is a chrome-side object crossing into content.
+                let arg = position;
+                try {
+                    const iw = pv._iframeWindow;
+                    const Cu = (Components as any).utils;
+                    if (iw && Cu) arg = Cu.cloneInto(position, iw);
+                } catch (_) {}
+                const r = pv.toDisplayedRange(arg);
+                if (r && r.startContainer) return { container: r.startContainer, offset: r.startOffset || 0 };
+            }
+            const href = entry && entry.href;
+            if (href && typeof pv._getHrefTarget === "function") {
+                const el = pv._getHrefTarget(href);
+                if (el) return { container: el, offset: 0 };
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    /** True when boundary point `a` sits after `b` in document order. Points in
+     *  DIFFERENT documents are not comparable — report false so the caller
+     *  skips that entry rather than breaking on a meaningless answer. */
+    _wvOutlineDomPointAfter(a: any, b: any): boolean {
+        try {
+            const doc = a.container.ownerDocument || a.container;
+            if ((b.container.ownerDocument || b.container) !== doc) return false;
+            const ra = doc.createRange(); ra.setStart(a.container, a.offset); ra.collapse(true);
+            const rb = doc.createRange(); rb.setStart(b.container, b.offset); rb.collapse(true);
+            // 0 === Range.START_TO_START; the constant lives on the CONTENT
+            // window's Range, which chrome code cannot name directly.
+            return ra.compareBoundaryPoints(0, rb) > 0;
+        } catch (_) { return false; }
+    }
+
+    /** The original PDF page-geometry ordering, unchanged. */
+    _wvOutlineGeomOrderIndex(entries: any[], pos: any): number {
         const page = (pos && pos.pageIndex) || 0;
         const top = (() => { try { return pos.rects[0][3]; } catch (_) { return 0; } })();
         let gap = entries.length;
@@ -6611,10 +6717,7 @@ class _ReaderPanelsMixin {
             lastPage = ePage;
             if (ePage > page || (ePage === page && eTop != null && eTop < top)) { gap = i; break; }
         }
-        const prevIndent = gap > 0 ? Math.max(0, entries[gap - 1].indentLevel || 0) : 0;
-        const nextIndent = gap < entries.length ? Math.max(0, entries[gap].indentLevel || 0) : 0;
-        const indent = nextIndent > prevIndent ? nextIndent : prevIndent;
-        return { gap, indent };
+        return gap;
     }
 
     /** True when the entry's title no longer matches the title its current
@@ -16802,9 +16905,14 @@ class _ReaderPanelsMixin {
                 const LABEL = "Add Selected Text to Bookmarks";
                 append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
                 this._wvReaderStampMenuIcon(reader, LABEL, icon);
-                // Same selection, other store: a new OUTLINE heading anchored to
-                // this text (PDF only -- the outline is a PDF concept here).
-                if ((reader._type || "pdf") === "pdf") {
+                // Same selection, other store: a new OUTLINE heading anchored
+                // to this text. Every view that CAN carry an outline gets this:
+                // PDF by page geometry, snapshot and EPUB by WADM selector.
+                // Was PDF-only ("the outline is a PDF concept here") until #34
+                // taught the panel to read DOM-view outlines — leaving the
+                // right-click add as the last surface that silently was not
+                // offered there (user request 2026-08-24).
+                if (RP_OUTLINE_VIEW_TYPES.has(reader._type || "pdf")) {
                     const OLABEL = "Add Selected Text to Outline";
                     append({ label: OLABEL, onCommand: () => this._wvOutlineAddFromSelection(reader) });
                     this._wvReaderStampMenuIcon(reader, OLABEL, this._wvReaderOutlineMenuIconURL());

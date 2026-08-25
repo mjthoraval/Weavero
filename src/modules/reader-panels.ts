@@ -10723,7 +10723,13 @@ class _ReaderPanelsMixin {
             const toHide = [...want].filter(k => !cur.has(k));
             const toShow = [...cur].filter(k => !want.has(k));
             if (toHide.length && typeof reader.unsetAnnotations === "function") {
-                reader.unsetAnnotations(toHide);
+                // AWAITED since beta.2 made the chrome wrapper async
+                // (zotero e01e6ef9f: it now awaits reader._initPromise).
+                // setAnnotations below was already awaited; leaving this one
+                // fire-and-forget meant a hide-only sync resolved while the
+                // hide was still pending, so a caller repainting on our
+                // resolution saw pre-hide state (beta.3 survey, 2026-08-24).
+                await reader.unsetAnnotations(toHide);
                 for (const k of toHide) cur.add(k);
             }
             if (toShow.length && typeof reader.setAnnotations === "function") {

@@ -17,6 +17,14 @@
 // other plugin authors can paste as-is; the tiny helpers are duplicated here
 // deliberately.
 //
+// ATTRIBUTION MODE (optional): predefine `Zotero._wvBenchProfile = true`
+// before loading, and the run records ONE Gecko profile with a named marker
+// per op ("WV <op> [win]"), saved to <data dir>/weavero/bench-profile.json.
+// Open it at https://profiler.firefox.com and read each op's marker range —
+// category split, blocking stacks — instead of running the manual
+// differential protocol. One profile with markers, NOT one per op: a dozen
+// 30MB files answer the same questions worse.
+//
 // Timing vocabulary (report each, never conflate — see test/live/README.md):
 //   applyPromiseMs — the awaited plugin call resolving (blocking cost)
 //   firstChangeMs  — first visible row-count change (latency)
@@ -41,7 +49,14 @@
     (async () => {
         const startedSql = Zotero.Date.dateToSQL(new Date(), true);
         const prevMode = Zotero.Prefs.get("search.quicksearch-mode", true);
+        const profiling = !!Zotero._wvBenchProfile;
         try {
+            if (profiling) {
+                if (Services.profiler.IsActive()) Services.profiler.StopProfiler();
+                Services.profiler.StartProfiler(20000000, 1,
+                    ["js", "stackwalk", "cpu"], ["GeckoMain"]);
+                R.profiling = true;
+            }
             // A colour actually used by this library's annotations, so the
             // colour dimension measures real work everywhere.
             const annColor = await Zotero.DB.valueQueryAsync(
@@ -82,7 +97,7 @@
                 /** Watch the row count while `fire` runs; sample every 50ms
                  *  until 5 equal samples follow at least one change (or the
                  *  90s ceiling). */
-                async function measure(fire) {
+                async function measure(fire, opName) {
                     const out = { applyPromiseMs: null, firstChangeMs: null,
                         settledMs: null, fromRows: rp().getRowCount(), toRows: null };
                     const t0 = win.performance.now();
@@ -114,6 +129,19 @@
                     out.settledMs = lastChangeAt === null ? null
                         : Math.round(lastChangeAt - t0);
                     out.toRows = last;
+                    if (profiling && opName) {
+                        // Marker spans fire -> now; startTime is the SAME
+                        // clock the profiler samples (this window's
+                        // performance.now()).
+                        try {
+                            ChromeUtils.addProfilerMarker(
+                                "WV " + opName + " [" + label + "]",
+                                { startTime: t0 }, JSON.stringify({
+                                    firstChangeMs: out.firstChangeMs,
+                                    settledMs: out.settledMs,
+                                    rows: out.fromRows + "->" + out.toRows }));
+                        } catch (e) {}
+                    }
                     return out;
                 }
 
@@ -128,8 +156,8 @@
                 async function loopOp(name, fireFactory, resetFactory) {
                     const runs = [];
                     for (let i = 0; i < LOOPS; i++) {
-                        runs.push(await measure(fireFactory()));
-                        if (resetFactory) await measure(resetFactory());
+                        runs.push(await measure(fireFactory(), name));
+                        if (resetFactory) await measure(resetFactory(), name + " reset");
                         await sleep(400);
                     }
                     const firsts = runs.map(r => r.firstChangeMs).filter(v => v != null);
@@ -149,7 +177,7 @@
                     () => applyGroup(g => { g.itemType = ["journalArticle"]; }), clearAll);
                 await applyGroup(g => { g.itemType = ["journalArticle"]; })();
                 await sleep(800);
-                W.ops["filter clear"] = await measure(clearAll());
+                W.ops["filter clear"] = await measure(clearAll(), "filter clear");
                 if (annColor) {
                     W.ops["filter annotationColor apply"] = await loopOp("annColor",
                         () => applyGroup(g => { g.annotationColor = [annColor]; }), clearAll);
@@ -166,23 +194,23 @@
                     const applyRes = await measure(async () => {
                         sb.value = TERM;
                         sb.dispatchEvent(new Event("command"));   // never `input`
-                    });
+                    }, "search " + mode + " apply");
                     const clearRes = await measure(async () => {
                         sb.value = "";
                         sb.dispatchEvent(new Event("command"));
-                    });
+                    }, "search " + mode + " clear");
                     W.ops["search " + mode] = { apply: applyRes, clear: clearRes };
                     await sleep(400);
                 }
                 Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
 
                 // ---- combined: chip + search (the invariant-bearing path) ----
-                await measure(applyGroup(g => { g.itemType = ["journalArticle"]; }));
+                await measure(applyGroup(g => { g.itemType = ["journalArticle"]; }), "combined chip apply");
                 W.ops["search fields UNDER an active chip"] = await measure(async () => {
                     sb.value = TERM; sb.dispatchEvent(new Event("command"));
-                });
-                await measure(async () => { sb.value = ""; sb.dispatchEvent(new Event("command")); });
-                W.ops["clear chip after combined"] = await measure(clearAll());
+                }, "search under chip");
+                await measure(async () => { sb.value = ""; sb.dispatchEvent(new Event("command")); }, "combined search clear");
+                W.ops["clear chip after combined"] = await measure(clearAll(), "clear chip after combined");
 
                 // ---- restore this window ----
                 try { await zp.collectionsView.selectWait(prevCollRow); } catch (e) {}
@@ -193,10 +221,21 @@
             if (Zotero.getMainWindows().length < 2) {
                 R.windows.B = "skipped: no second main window open (open one to measure it)";
             }
+            if (profiling) {
+                const data = await Services.profiler.getProfileDataAsync();
+                Services.profiler.StopProfiler();
+                const dir = PathUtils.join(Zotero.DataDirectory.dir, "weavero");
+                await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+                const path = PathUtils.join(dir, "bench-profile.json");
+                await Zotero.File.putContentsAsync(path, JSON.stringify(data));
+                R.profilePath = path;
+                R.profileNote = "open at https://profiler.firefox.com; each op is a 'WV ...' marker";
+            }
             R.status = "done";
         } catch (e) {
             R.status = "error: " + e;
         } finally {
+            try { if (profiling && Services.profiler.IsActive()) Services.profiler.StopProfiler(); } catch (e) {}
             try { Zotero.Prefs.set("search.quicksearch-mode", prevMode || "fields", true); } catch (e) {}
             try { delete p._wvFilterWinOverride; } catch (e) {}
             // Safety clear in EVERY main window, explicitly targeted.

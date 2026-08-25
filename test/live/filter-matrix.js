@@ -45,12 +45,15 @@
     const { win, zp, lp, sleep, rp, G, fnv, stable, syncControl, reset } = H;
 
     const SETTLE = 950;          // rule 1
-    // Historical fixed-sleep search settle, passed EXPLICITLY so the
-    // extraction changes nothing this file measures. Known to violate
-    // rule 2 (interactions measured a search-clear blocking ~5.5s on
-    // 2026-08-08) -- migrated to the stability-gated default in its own
-    // commit, where the timing change is visible on its own.
-    const search = (text) => H.search(text, { settle: "sleep", ms: 4200 });
+    // Stability-gated search settle (harness default), replacing the fixed
+    // 4200ms sleep this file carried since birth. interactions measured that
+    // sleep LYING on 2026-08-08: a search-clear blocks the main thread ~5.5s
+    // inside Zotero's own rebuild, so the fixed sleep snapshots mid-rebuild.
+    // The matrix's one call is the defensive clear before the case loop, so
+    // the exposure was a corrupted BASELINE for every case after a run that
+    // began with a search active. faSettle afterwards for the same reason
+    // interactions calls it: a clear can arm the stale-keep repair timer.
+    const search = async (text) => { await H.search(text); await H.faSettle(); };
 
     // rule 2 — stability only
 

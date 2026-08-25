@@ -10,6 +10,7 @@ what fixtures can cover; these cover what only a live library can.
 | `filter-matrix.js` | The whole filter case list: cascade vs build mode AND the native Advanced-Search comparison, comparing visible rows, open containers, grey (dimmed) state, and selection. Also the per-case SPEED table (`speedSummary()`), written with the analysis to `<data dir>/weavero/filter-matrix-report.json` | `Zotero._wvMatrix` |
 | `search-modes.js` | Quick-search MODE (titleCreatorYear / fields / everything) × a Weavero chip × both apply orders, against DB-computed ground truth; advanced search included | `Zotero._wvModes` |
 | `interactions.js` | Filter × native-UI sequences (searches, collection switches, multi-collection and multi-library selections) applied in realistic orders | `Zotero._wvInteract` |
+| `reader-filter.js` | The READER annotation filter on ALL THREE view families (PDF, EPUB, snapshot — per the parity rule), against the reader's own visibility model: type/colour/has-comment dims on each document's real annotations (read-only, skipped-not-faked when the fixture is trivial), the beta.2 hide-channel resolution contract, interplay with an active items-list filter, and EXACT restore | `Zotero._wvReaderFilter` |
 | `multi-window.js` | Per-main-window filter isolation — state, patches and watermarks never leak between windows | `Zotero._wvMultiWin` |
 
 ## Shared harness (`lib/harness.js`)

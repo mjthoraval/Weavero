@@ -179,7 +179,7 @@ bugs the other missed).
 
 **The live suites** (`test/live/`, shared harness in `lib/harness.js`)
 are the structured tier of this level: filter-matrix, search-modes,
-interactions, multi-window — each with its own oracle,
+interactions, reader-filter, multi-window — each with its own oracle,
 `test/live/README.md` has the map. `run-all.js` runs them sequentially
 and writes one combined report (`core` ≈ 5–8 min; `full` adds the
 matrix). Touched filter/search machinery ⇒ run `core`; pre-release ⇒

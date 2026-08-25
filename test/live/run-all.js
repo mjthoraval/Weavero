@@ -8,7 +8,8 @@
  *     <data dir>/weavero/live-report.json   (+ live-report.md digest)
  *
  * Profiles ("core" default):
- *     core = search-modes, interactions, multi-window   (~5-8 min)
+ *     core = search-modes, interactions, reader-filter,
+ *            multi-window                              (~6-9 min)
  *     full = core + filter-matrix                       (~10-20 min)
  * Predefine `Zotero._wvLiveProfile = "full"` to pick.
  *
@@ -30,6 +31,7 @@
     const SUITES = [
         { file: "search-modes.js", global: "_wvModes", capMs: 8 * 60000 },
         { file: "interactions.js", global: "_wvInteract", capMs: 8 * 60000 },
+        { file: "reader-filter.js", global: "_wvReaderFilter", capMs: 6 * 60000 },
         { file: "multi-window.js", global: "_wvMultiWin", capMs: 6 * 60000 },
     ];
     if (PROFILE === "full") {

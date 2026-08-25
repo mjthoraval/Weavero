@@ -69,6 +69,15 @@
      * while search-modes, which waits, was clean). Wait for BOTH
      * schedulers to go idle rather than sleeping blind. */
 
+    function topCount() {
+        const p = rp();
+        let n = 0;
+        for (let i = 0; i < p.getRowCount(); i++) {
+            try { if (p.getLevel(i) === 0) n++; } catch (e) {}
+        }
+        return n;
+    }
+
     function snap() {
         const w = H.rowWalk();
         const ids = w.ids, open = w.open;
@@ -127,15 +136,33 @@
             await zp.itemsView.waitForLoad();
             await search("");
             await clearChip();
+            // DOUBLE collapse around a full settle: a single collapseAllRows
+            // can run before async re-expansion (stale-keep repair, reveal
+            // leftovers from whatever ran before this suite) lands, leaving
+            // child rows in the BASELINE -- observed 2026-08-25: base captured
+            // at 120 rows (17 residual children) and the end-of-run
+            // restore-check then failed against a dirty baseline while the
+            // actual end state was clean.
+            try { rp().collapseAllRows(); } catch (e) {}
+            await stable(); await faSettle();
             try { rp().collapseAllRows(); } catch (e) {}
             await stable();
             const base = snap();
 
             /* ---- A. quick search x chip -------------------------------- */
+            const baseTop = topCount();
             await search("drop");
             const qsOnly = snap();
-            check("quick search alone narrows the view",
-                qsOnly.rows < base.rows, { base: base.rows, qs: qsOnly.rows });
+            // TOP-LEVEL, not total: a search REVEALS matching child rows, so
+            // the total can legitimately GROW while the view narrows (probed
+            // 2026-08-25: top level 103->32, total 103->107 -- beta.2's
+            // attachment-level Any-Field matching amplifies the reveal). The
+            // old `rows <` premise failed on correct behaviour. Same quantity
+            // search-modes has always compared.
+            const qsTop = topCount();
+            check("quick search alone narrows the view (top level)",
+                qsTop < baseTop, { baseTop, qsTop,
+                    totalForContext: base.rows + "->" + qsOnly.rows });
 
             await applyChip(g => { g.itemType = ["journalArticle"]; });
             await faSettle();
@@ -154,19 +181,41 @@
             await search("drop");
             await faSettle();
             const chipThenQs = snap();
+            let oiSnap = chipThenQs, oiRetried = false;
+            if (oiSnap.idsHash !== qsThenChip.idsHash) {
+                // Rule 5, encoded: expansion repair can still be landing when
+                // the first snapshot is taken (probed 2026-08-25: the same
+                // sequence converges to IDENTICAL id/top/open sets once
+                // settled; the flake failed one run in three). One retry
+                // after an extra settle; a real divergence fails both.
+                await stable(); await faSettle();
+                oiSnap = snap(); oiRetried = true;
+            }
             check("ORDER INDEPENDENCE: chip-then-search == search-then-chip",
-                chipThenQs.idsHash === qsThenChip.idsHash,
+                oiSnap.idsHash === qsThenChip.idsHash,
                 { searchThenChip: qsThenChip.rows + "/" + qsThenChip.open,
-                  chipThenSearch: chipThenQs.rows + "/" + chipThenQs.open,
-                  diff: diffOf(qsThenChip, chipThenQs) });
+                  chipThenSearch: oiSnap.rows + "/" + oiSnap.open,
+                  settledOnRetry: oiRetried,
+                  diff: diffOf(qsThenChip, oiSnap) });
 
             // clearing the search must leave the chip active
             await search("");
             await faSettle();
-            const afterQsCleared = snap();
+            let clSnap = snap(), clRetried = false;
+            if (clSnap.idsHash !== chipOnly.idsHash) {
+                await stable(); await faSettle();
+                clSnap = snap(); clRetried = true;
+            }
+            // NOTE the comparison is id sets only, deliberately: after a
+            // search clears under a chip, containers can legitimately remain
+            // FLAGGED open with zero visible children (their children are
+            // chip-filtered -- probed 2026-08-25: 0 vs 14 open flags over
+            // identical 73-row id sets). Open-flag equality is not part of
+            // this contract.
             check("clearing quick search leaves the chip applied",
-                afterQsCleared.idsHash === chipOnly.idsHash,
-                { chipOnly: chipOnly.rows, afterQsCleared: afterQsCleared.rows });
+                clSnap.idsHash === chipOnly.idsHash,
+                { chipOnly: chipOnly.rows, afterQsCleared: clSnap.rows,
+                  settledOnRetry: clRetried, diff: diffOf(chipOnly, clSnap) });
 
             await clearChip();
             try { rp().collapseAllRows(); } catch (e) {}

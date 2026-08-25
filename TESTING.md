@@ -177,6 +177,14 @@ tabs/windows/reader lifecycle gets a live round-trip probe on top of the
 automated suite, because suite timing ≠ human timing (both have caught
 bugs the other missed).
 
+**The live suites** (`test/live/`, shared harness in `lib/harness.js`)
+are the structured tier of this level: filter-matrix, search-modes,
+interactions, multi-window — each with its own oracle,
+`test/live/README.md` has the map. `run-all.js` runs them sequentially
+and writes one combined report (`core` ≈ 5–8 min; `full` adds the
+matrix). Touched filter/search machinery ⇒ run `core`; pre-release ⇒
+`full`.
+
 ## Level 4 — Manual protocols (scripted checklists, in-repo)
 
 Some surfaces cannot be exercised synthetically — programmatic events are
@@ -251,6 +259,7 @@ native machinery.
 | Touched install/startup/shutdown wiring | — | Level 4 disable/re-enable protocol |
 | Touched sessions/persistence | — | Level 4 restart protocol |
 | Touched drag/drop or focus behavior | — | Level 4 gesture matrix |
+| Touched filter apply / search / row building / keep logic | Level 3 `run-all.js core` | `full` (adds the matrix) |
 | Touched per-row / per-annotation rendering | — | Level 5 perf benches |
 | New Zotero beta installed | Level 6 audit | Level 1 + targeted Level 3 |
 | Before a release | Levels 0, 1, 4 (all three protocols) | Level 5 if perf-relevant changes shipped |

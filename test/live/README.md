@@ -5,13 +5,33 @@ Zotero against the real library, because they need real data volume,
 real search results, and the real items tree. The scaffold suite covers
 what fixtures can cover; these cover what only a live library can.
 
-| Script | What it verifies |
-|---|---|
-| `filter-matrix.js` | The whole filter case list: cascade vs build mode AND the native Advanced-Search comparison, comparing visible rows, open containers, grey (dimmed) state, and selection. SELF-REPORTING: on finish it writes the full analysis to `<data dir>/weavero/filter-matrix-report.json` — launch it (paste into Run JavaScript, or one bridge call) and read the file when done; no polling |
+| Script | What it verifies | Result global |
+|---|---|---|
+| `filter-matrix.js` | The whole filter case list: cascade vs build mode AND the native Advanced-Search comparison, comparing visible rows, open containers, grey (dimmed) state, and selection. Also the per-case SPEED table (`speedSummary()`), written with the analysis to `<data dir>/weavero/filter-matrix-report.json` | `Zotero._wvMatrix` |
+| `search-modes.js` | Quick-search MODE (titleCreatorYear / fields / everything) × a Weavero chip × both apply orders, against DB-computed ground truth; advanced search included | `Zotero._wvModes` |
+| `interactions.js` | Filter × native-UI sequences (searches, collection switches, multi-collection and multi-library selections) applied in realistic orders | `Zotero._wvInteract` |
+| `multi-window.js` | Per-main-window filter isolation — state, patches and watermarks never leak between windows | `Zotero._wvMultiWin` |
+
+## Shared harness (`lib/harness.js`)
+
+The earned-rules machinery — stability gating, `faSettle`, command-event
+search, `syncControl` certification, the row walk, the reporter — lives
+ONCE in `lib/harness.js` (`Zotero._wvLH`). **Load it before any suite**;
+suites fail fast with a clear message when it is missing. The suites keep
+their own oracles: that is what each one proves.
 
 ## Running
 
-Tools → Developer → Run JavaScript, paste the file, run. Then read:
+**The runner (preferred):** load `run-all.js` — it loads the harness,
+runs the suites sequentially, and writes ONE combined report to
+`<data dir>/weavero/live-report.json` (+ `.md` digest). Profiles:
+`core` (search-modes, interactions, multi-window; ~5–8 min) or
+`Zotero._wvLiveProfile = "full"` for + filter-matrix (~10–20 min). Edit
+`ROOT` in the file (or predefine `Zotero._wvLiveRoot`) for a different
+checkout path.
+
+**A single suite by hand:** Tools → Developer → Run JavaScript — paste
+`lib/harness.js` first, then the suite. Then read, e.g.:
 
 ```js
 JSON.stringify(Zotero._wvMatrix.summary())
@@ -37,10 +57,10 @@ the 2026-08-05..07 campaign was one of them:
    disagrees, the harness or the environment is at fault, not the mode
    comparison.
 
-## The rules this harness encodes
+## The rules the harness encodes
 
-They are commented in the source too, but they are the point of the
-file, so they are repeated here:
+They are commented in `lib/harness.js` too, but they are the point of
+the file, so they are repeated here:
 
 1. **Space applies ≥900 ms.** An apply inside the 300 ms post-apply
    observer-suppression window gets bounced to a retry, so an immediate

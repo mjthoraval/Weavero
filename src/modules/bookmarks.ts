@@ -596,8 +596,14 @@ class _BookmarksMixin {
                     id: "wvo-" + Zotero.Utilities.randomString(8),
                     title, indentLevel: depth,
                     position: n.position || null,
+                    // EPUB TOC entries anchor by href, not position. Dropping it
+                    // here left every curated EPUB entry with NO anchor at all, so
+                    // clicking one did nothing (2026-08-24). #34 taught the copy
+                    // step to carry href; curation is the OTHER path and was missed.
+                    href: n.href || null,
                     url: n.url || null,
-                    source: { title, position: n.position || null, url: n.url || null, origin: importedFrom },
+                    source: { title, position: n.position || null, href: n.href || null,
+                              url: n.url || null, origin: importedFrom },
                 });
                 walk(n.items, depth + 1);
             }

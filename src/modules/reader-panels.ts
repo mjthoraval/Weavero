@@ -3947,6 +3947,11 @@ class _ReaderPanelsMixin {
             // current-position highlight at every render -- rendering is
             // what expand/collapse and source switches go through, so this
             // is also the fix for native's stale-after-expand gap.
+            // Resolved-range cache belongs to the rendered rows; a re-render
+            // can add, remove or reorder entries.
+            try { if (reader._wvSpyRangeCache) reader._wvSpyRangeCache.clear(); } catch (_) {}
+            // One-shot repair for outlines curated before href was carried.
+            try { Promise.resolve(this._wvOutlineRepairDomHrefs(reader)).catch(() => {}); } catch (_) {}
             try { this._wvOutlineSpyWire(reader, idoc); } catch (_) {}
             try { this._wvOutlineSpyUpdate(reader, idoc); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvReaderRenderOutline err: " + e); }
@@ -3956,11 +3961,68 @@ class _ReaderPanelsMixin {
      *  entries with `indentLevel` -- the SAME order `_wvOutlineEnsureCurated`
      *  produces, so an original entry's array index maps to its curated
      *  counterpart after copy-on-first-edit. */
+    /** Restore `href` on curated entries stored before curation carried it.
+     *
+     *  An EPUB TOC entry anchors by href alone. Curation dropped it, so every
+     *  such entry in an already-curated outline has NO anchor and clicking it
+     *  returns immediately — the user sees manual entries navigate and the
+     *  original ones do nothing (reported 2026-08-24).
+     *
+     *  Pairs stored entries against the freshly fetched tree by TITLE IN
+     *  SEQUENCE, skipping user-created ones. Sequence matching survives entries
+     *  the user deleted or reordered; a title that does not match is left
+     *  alone rather than guessed at. Runs once per reader. */
+    async _wvOutlineRepairDomHrefs(reader: any): Promise<void> {
+        try {
+            if (!reader || (reader._type || "pdf") === "pdf") return;
+            if (reader._wvHrefRepaired) return;
+            reader._wvHrefRepaired = true;
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            await this._wvOutlineInit();
+            if (!this._wvOutlineHasCurated(att.libraryID, att.itemKey)) return;
+            const d = this._wvOutlineDoc(att.libraryID, att.itemKey);
+            const entries: any[] = (d && d.entries) || [];
+            const needy = entries.filter((e: any) => !e.href && !e.position
+                && !(e.source && e.source.origin === "user"));
+            if (!needy.length) return;
+            let cache = reader._wvOutlineCache;
+            if (!cache || !cache.tree) {
+                cache = await this._wvReaderFetchOutline(reader);
+                reader._wvOutlineCache = cache;
+            }
+            const fetched = this._wvOutlineFlattenTree((cache && cache.tree) || []);
+            if (!fetched.length) return;
+            let fi = 0, changed = 0;
+            for (const e of entries) {
+                if (e.source && e.source.origin === "user") continue;
+                let j = fi;
+                while (j < fetched.length && String(fetched[j].title) !== String(e.title)) j++;
+                if (j >= fetched.length) continue;   // no match ahead — leave it alone
+                if (!e.href && fetched[j].href) {
+                    e.href = fetched[j].href;
+                    if (e.source && !e.source.href) e.source.href = fetched[j].href;
+                    changed++;
+                }
+                fi = j + 1;
+            }
+            if (changed) {
+                await this._wvOutlinePersist();
+                Zotero.debug("[Weavero] outline href repair: restored " + changed);
+            }
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvOutlineRepairDomHrefs err: " + e);
+        }
+    }
+
     _wvOutlineFlattenTree(tree: any[]): any[] {
         const out: any[] = [];
         const walk = (nodes: any[], depth: number) => {
             for (const n of (nodes || [])) {
-                out.push({ id: null, title: n.title, position: n.position || null, url: n.url || null, indentLevel: depth });
+                // href travels with position: a DOM-view TOC entry may have only
+                // the former, and the rendered rows are built from THIS list.
+                out.push({ id: null, title: n.title, position: n.position || null,
+                           href: n.href || null, url: n.url || null, indentLevel: depth });
                 walk(n.items, depth + 1);
             }
         };
@@ -5354,6 +5416,16 @@ class _ReaderPanelsMixin {
             // can never disagree; `currentPageNumber` stays the
             // fallback when there is no `_location` (EPUB, Reading
             // Mode, snapshots).
+            // DOM views have no page index at all, so the whole page-based
+            // rule below returns immediately and the panel never marked a
+            // current section (parity survey 2026-08-24). Their reading
+            // position is simply the viewport top edge, compared against each
+            // entry's resolved range — the same primitive the ordering work
+            // uses, so the two agree by construction.
+            if ((reader._type || "pdf") !== "pdf") {
+                this._wvOutlineSpyMark(idoc, list, this._wvOutlineSpyPickDom(reader, list));
+                return;
+            }
             const vp = this._wvOutlineReadingPos(reader);
             const cur = vp ? vp.pageIndex : this._wvOutlineCurrentPageIndex(reader);
             if (!Number.isInteger(cur) || cur < 0) return;
@@ -5412,6 +5484,49 @@ class _ReaderPanelsMixin {
             // ever an entry at or before the current page.
             if (!best) best = firstAtOrBefore;
 
+            this._wvOutlineSpyMark(idoc, list, best);
+        } catch (_) {}
+    }
+
+    /** Show the 📌 for a DOM-view OUTLINE point entry, draggable, committing
+     *  back to the OUTLINE store.
+     *
+     *  The bookmark pin and this one share every mechanism except where the new
+     *  anchor is written — which is exactly the thing that must not be shared,
+     *  since an outline id means nothing to the bookmark store. */
+    _wvOutlineShowDomEntryPin(reader: any, entry: any, target: any, persist?: boolean) {
+        try {
+            if (!entry || !target) return;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv) return;
+            const commit = async (a: any) => {
+                try {
+                    const att = this._wvReaderAtt(reader);
+                    if (!att) return;
+                    const next = a.selector || a.position
+                        || (a.cfi ? { type: "FragmentSelector", value: a.cfi } : null);
+                    if (!next) return;
+                    const withAnchor = Object.assign({}, next, { anchor: "point" });
+                    await this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey,
+                        entry.id, withAnchor, entry.title);
+                    entry.position = withAnchor;
+                    entry.resolvedPosition = withAnchor;
+                } catch (e) { Zotero.debug("[Weavero] outline pin commit err: " + e); }
+            };
+            const iwin = pv._iframeWindow;
+            const doc = pv._iframeDocument || (iwin && iwin.document);
+            if (!iwin || !doc || !doc.body) return;
+            const range = this._wvDomRangeForAnchor(pv, { position: target, href: entry.href });
+            if (!range) return;
+            this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm: entry, commit, persist: !!persist });
+        } catch (e) { Zotero.debug("[Weavero] _wvOutlineShowDomEntryPin err: " + e); }
+    }
+
+    /** Apply the current-section marker. Shared by the page-based (PDF) and
+     *  range-based (DOM) pickers so they can never drift in behaviour. */
+    _wvOutlineSpyMark(idoc: any, list: any, best: any) {
+        try {
             const prev = list.querySelector(".wv-outline-row.wv-outline-current");
             if (prev === best) return;
             if (prev) prev.classList.remove("wv-outline-current");
@@ -5427,6 +5542,57 @@ class _ReaderPanelsMixin {
                 }
             }
         } catch (_) {}
+    }
+
+    /** The current section in a DOM view: the LAST entry whose anchor sits
+     *  at or above the viewport top edge — the same "last thing passed"
+     *  rule the PDF picker uses, expressed in client coordinates.
+     *
+     *  Resolved ranges are cached per reader: the spy runs on every scroll
+     *  and resolving ~50 selectors each time would be wasteful. Ranges are
+     *  live objects, so a cached one keeps reporting correct rects; the
+     *  cache is dropped whenever the outline is re-rendered. */
+    _wvOutlineSpyPickDom(reader: any, list: any): any {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv) return null;
+            const cache: Map<string, any> = reader._wvSpyRangeCache
+                || (reader._wvSpyRangeCache = new Map());
+            const rows: any[] = [...list.querySelectorAll(".wv-outline-row")];
+            // Chosen by POSITION, not by list order: the row closest above the
+            // line wins, and the earliest resolvable row is the fallback. The
+            // list is not reliably in document order — a user-added entry can
+            // sit anywhere — and picking "the last row in the list that is
+            // above the line" let one such entry hold the marker for the whole
+            // rest of the book (observed on the EPUB, 2026-08-24).
+            let best: any = null, bestTop = -Infinity;
+            let firstResolved: any = null, firstTop = Infinity;
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const en = row._wvOl && row._wvOl.entry;
+                if (!en || en.url) continue;
+                const key = String(en.id != null ? en.id : "idx-" + i);
+                let range = cache.get(key);
+                if (range === undefined) {
+                    range = this._wvDomRangeForAnchor(pv, en) || null;
+                    cache.set(key, range);
+                }
+                if (!range) continue;
+                let top;
+                try { top = range.getBoundingClientRect().top; } catch (_) { continue; }
+                if (!Number.isFinite(top)) continue;
+                if (top < firstTop) { firstTop = top; firstResolved = row; }
+                // +1 tolerance: an entry flush with the edge counts as passed.
+                if (top <= 1 && top > bestTop) { bestTop = top; best = row; }
+            }
+            // Above the first heading nothing has been passed; show that first
+            // heading rather than nothing, matching the PDF rule.
+            return best || firstResolved;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvOutlineSpyPickDom err: " + e);
+            return null;
+        }
     }
 
     /** An outline entry's height on its page, in PDF coordinates (y grows
@@ -8324,6 +8490,12 @@ class _ReaderPanelsMixin {
                 return;
             }
             this._wvOutlineNavRaw(reader, pv, target);
+            // Hand-placed DOM entries get the same 📌 confirmation a PDF pin
+            // entry gets. Heading entries do not — matching PDF, where only
+            // point entries are pinned.
+            if (target && target.anchor === "point" && (reader._type || "pdf") !== "pdf") {
+                this._wvOutlineShowDomEntryPin(reader, node, target);
+            }
         } catch (_) {}
     }
 
@@ -12303,9 +12475,106 @@ class _ReaderPanelsMixin {
      *  cheap in-memory scan, doing NO extraction. Runs effectively once per
      *  document; `_sortIndexTried` stops a text-less page being retried every
      *  open. Fire-and-forget from the render path. */
+    /** Resolve a DOM-view bookmark's stored anchor back to a live Range.
+     *  EPUB anchors by CFI, snapshot by WADM selector — the two views each
+     *  expose exactly one of the resolvers. */
+    _wvDomRangeForAnchor(pv: any, bm: any): any {
+        try {
+            const cfi = bm && bm.location && bm.location.cfi;
+            if (cfi && typeof pv.getRange === "function") {
+                const pr: any = pv.getRange(String(cfi), true);
+                if (!pr) return null;
+                return (typeof pr.toRange === "function") ? pr.toRange() : pr;
+            }
+            // EPUB TOC entries anchor by href into the book, not by a stored
+            // selector, so the outline needs this branch too.
+            const href = bm && bm.href;
+            if (href && typeof pv._getHrefTarget === "function") {
+                const el = pv._getHrefTarget(href);
+                if (el && el.ownerDocument) {
+                    const rr = el.ownerDocument.createRange();
+                    rr.selectNode(el);
+                    return rr;
+                }
+            }
+            const pos = bm && bm.position;
+            if (pos && !(pos.rects && pos.rects.length) && typeof pv.toDisplayedRange === "function") {
+                let arg = pos;
+                try {
+                    const Cu = (Components as any).utils;
+                    if (Cu && pv._iframeWindow) arg = Cu.cloneInto(pos, pv._iframeWindow);
+                } catch (_) {}
+                return pv.toDisplayedRange(arg);
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    /** Give DOM-view position bookmarks the location sort key they never had.
+     *
+     *  The PDF backfill computes keys from page data, and `_wvReaderGetPageData`
+     *  returns null for every non-PDF view — so snapshot and EPUB bookmarks
+     *  carried NO `sortIndex` and simply could not be ordered "By Location".
+     *  That includes every such bookmark made before this shipped, which is why
+     *  this is a migration and not just a capture-time change.
+     *
+     *  Self-gating like its PDF sibling: `_wvDomSortTried` marks an attempt, so
+     *  a bookmark whose anchor no longer resolves is not re-resolved on every
+     *  render. Re-renders only when the list is actually sorted by location. */
+    async _wvBackfillDomSortIndices(reader: any): Promise<void> {
+        try {
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv || typeof pv._getSortIndex !== "function") return;
+            const att = this._wvReaderAtt(reader);
+            if (!att) return;
+            await this._bmInit();
+            const doc = this._bmReaderDoc(att.libraryID, att.itemKey);
+            const cands: any[] = [];
+            const walk = (nodes: any[]) => {
+                for (const n of (nodes || [])) {
+                    if (n.type === "folder") { walk(n.children); continue; }
+                    if (n.type !== "position" && n.type !== "text") continue;
+                    if (n.sortIndex || n._wvDomSortTried) continue;
+                    const hasAnchor = !!((n.position && !(n.position.rects && n.position.rects.length))
+                        || (n.location && n.location.cfi));
+                    if (hasAnchor) cands.push(n);
+                }
+            };
+            walk(doc.local); walk(doc.global);
+            if (!cands.length) return;   // GATE: already migrated — essentially free
+            let changed = false;
+            for (const n of cands) {
+                n._wvDomSortTried = true;
+                changed = true;
+                const range = this._wvDomRangeForAnchor(pv, n);
+                if (!range) continue;
+                try {
+                    const si = pv._getSortIndex(range);
+                    if (typeof si === "string" && si) n.sortIndex = si;
+                } catch (_) {}
+            }
+            if (!changed) return;
+            await this._bmPersist();
+            try {
+                const idoc = reader._iframeWindow && reader._iframeWindow.document;
+                if (idoc && this._wvReaderBmSortMode("local", reader) === "location") {
+                    this._wvReaderRenderBmList(reader, idoc);
+                }
+            } catch (_) {}
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvBackfillDomSortIndices err: " + e);
+        }
+    }
+
     async _wvBackfillReaderSortIndices(reader: any): Promise<void> {
         try {
-            if (!reader || (reader._type && reader._type !== "pdf")) return;
+            if (!reader) return;
+            // DOM views have their own key source and their own walk.
+            if (reader._type && reader._type !== "pdf") {
+                await this._wvBackfillDomSortIndices(reader);
+                return;
+            }
             const att = this._wvReaderAtt(reader);
             if (!att) return;
             await this._bmInit();
@@ -16912,21 +17181,28 @@ class _ReaderPanelsMixin {
             // With a text selection, offer to bookmark the selected text (which
             // also highlights it on click). Otherwise, bookmark the position.
             if (text) {
-                const LABEL = "Add Selected Text to Bookmarks";
-                append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
-                this._wvReaderStampMenuIcon(reader, LABEL, icon);
-                // Same selection, other store: a new OUTLINE heading anchored
-                // to this text. Every view that CAN carry an outline gets this:
-                // PDF by page geometry, snapshot and EPUB by WADM selector.
-                // Was PDF-only ("the outline is a PDF concept here") until #34
-                // taught the panel to read DOM-view outlines — leaving the
-                // right-click add as the last surface that silently was not
-                // offered there (user request 2026-08-24).
+                // ORDER MIRRORS THE SIDEBAR TAB STRIP: Outline sits before
+                // Bookmarks there (Thumbnails > Annotations > Outline >
+                // Bookmarks, verified live on PDF and on the DOM views), so it
+                // sits before Bookmarks here too. Two lists offering the same
+                // two destinations must not disagree about their order
+                // (user request 2026-08-24). Applies to PDF, snapshot and EPUB
+                // alike — this block is shared by all three.
+                //
+                // The outline entry is gated: every view that CAN carry an
+                // outline gets it — PDF by page geometry, snapshot and EPUB by
+                // WADM selector. It was PDF-only ("the outline is a PDF concept
+                // here") until #34 taught the panel to read DOM-view outlines,
+                // leaving the right-click add as the last surface that silently
+                // was not offered there.
                 if (RP_OUTLINE_VIEW_TYPES.has(reader._type || "pdf")) {
                     const OLABEL = "Add Selected Text to Outline";
                     append({ label: OLABEL, onCommand: () => this._wvOutlineAddFromSelection(reader) });
                     this._wvReaderStampMenuIcon(reader, OLABEL, this._wvReaderOutlineMenuIconURL());
                 }
+                const LABEL = "Add Selected Text to Bookmarks";
+                append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
+                this._wvReaderStampMenuIcon(reader, LABEL, icon);
             } else {
                 // Menu items are scope-aware: when the bookmarks panel's
                 // Library tab is the active scope, the right-click items
@@ -16936,8 +17212,8 @@ class _ReaderPanelsMixin {
                 const activeScope = this._wvReaderBmScope();
                 const isLib = activeScope === "library";
                 const LABEL = isLib
-                    ? "Add Library Bookmark to This Position"
-                    : "Add Bookmark to This Position";
+                    ? "Add This Position to Library Bookmarks"
+                    : "Add This Position to Bookmarks";
                 // A position bookmark drops a 📌 marker in the document, so the
                 // menu item gets the matching pin glyph (not the ribbon).
                 // Snapshot the exact click point NOW (params are stale by command
@@ -17031,8 +17307,8 @@ class _ReaderPanelsMixin {
                         // `menupopup` exactly like the tab-header menu's
                         // "Copy As" (user asked why not, 2026-07-29).
                         LABEL_PAGE = isLib
-                            ? "Add Library Bookmark to This Page"
-                            : "Add Bookmark to This Page";
+                            ? "Add This Page to Library Bookmarks"
+                            : "Add This Page to Bookmarks";
                         {
                                 const doAdd = async (a: "top" | "bottom") => {
                                     let stored: any = null;
@@ -17077,15 +17353,24 @@ class _ReaderPanelsMixin {
                     }
                 }
 
-                append(...bmItems);
                 // "Add This Position to Outline" — the outline twin of the
                 // pin-bookmark entry (user request 2026-08-05): same exact
                 // clicked point, but the result is an OUTLINE entry. Own
-                // append → its own separator group, keeping the standing
-                // bookmarks → outline → copy-links menu order. PDF-only,
-                // over a page, outline feature on.
+                // append → its own separator group.
+                //
+                // OUTLINE FIRST, then bookmarks — the same order as the
+                // selection group and the sidebar tab strip
+                // (Annotations → Outline → Bookmarks). The two groups read
+                // one way throughout (2026-08-24); `bmItems` is appended
+                // after this block for exactly that reason.
                 let LABEL_OUTLINE: string | null = null;
-                if (overPage && reader._type === "pdf" && this._getEnableOutlineTakeover()) {
+                // Every outline-capable view, not PDF alone: a DOM view can
+                // anchor a clicked point too (selector / CFI), it just has no
+                // page geometry. PDF-only here meant snapshot and EPUB were
+                // offered the bookmark twin of this entry but never the
+                // outline one (parity survey 2026-08-24).
+                if (overPage && RP_OUTLINE_VIEW_TYPES.has(reader._type || "pdf")
+                        && this._getEnableOutlineTakeover()) {
                     const clickO = click;   // snapshot captured above (params are stale by command time)
                     // Ellipsis: this entry opens a title prompt, and menu
                     // convention marks further-input entries with "…" (the
@@ -17096,22 +17381,43 @@ class _ReaderPanelsMixin {
                         try {
                             const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                             if (!live) return;
-                            const pt = live._wvClickPointToPdf(reader, { params: clickO ? {
+                            const isDom = (reader._type || "pdf") !== "pdf";
+                            const dom = isDom ? live._wvDomPointToAnchor(reader, clickO) : null;
+                            const pt = isDom ? null : live._wvClickPointToPdf(reader, { params: clickO ? {
                                 x: clickO.x, y: clickO.y, position: clickO.position } : {} });
-                            if (!pt) return;
+                            if (isDom ? !(dom && dom.selector) : !pt) {
+                                if (isDom) live._wvReaderPanelNote(idoc, "No text at that point.");
+                                return;
+                            }
                             const title = live._wvOutlinePromptTitle();
                             if (!title) return;
-                            const pos = { pageIndex: pt.pageIndex, rects: [[pt.x, pt.y, pt.x, pt.y]], anchor: "point" };
+                            // `anchor:"point"` marks a hand-placed spot on BOTH
+                            // families. On PDF it also selects the exact-rect
+                            // navigation; on a DOM view it is what tells
+                            // navigation to drop the 📌, exactly as PDF does
+                            // for its pin entries.
+                            const pos = isDom
+                                ? Object.assign({}, dom.selector, { anchor: "point" })
+                                : { pageIndex: pt.pageIndex, rects: [[pt.x, pt.y, pt.x, pt.y]], anchor: "point" };
                             Promise.resolve(live._wvOutlineCreateEntry(reader, idoc, title, pos))
                                 .then((res: any) => {
                                     if (!res || !res.stored) return;
+                                    if (isDom) {
+                                        // Pin it immediately, like the PDF twin: the point of "add this
+                                        // position" is seeing WHERE, and it is draggable from that moment.
+                                        try { live._wvOutlineShowDomEntryPin(reader, res.stored, pos, true); } catch (_) {}
+                                        live._wvReaderPanelNote(idoc, "Added “" + title
+                                            + "” to the outline. Drag the pin to adjust.");
+                                    } else {
                                     try { live._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos); } catch (_) {}
                                     live._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page "
                                         + live._wvBmPageLabelFor(res.att, pt.pageIndex) + ". Drag the pin to adjust.");
+                                    }
                                 }).catch(() => {});
                         } catch (e) { Zotero.debug("[Weavero] add-position-to-outline err: " + e); }
                     } });
                 }
+                append(...bmItems);
                 // Only stamp the pin glyph when the pin entry was actually
                 // offered -- otherwise the stamper hunts a menuitem that isn't
                 // there.
@@ -18344,7 +18650,332 @@ class _ReaderPanelsMixin {
      *  (no drag — a CFI cannot be nudged by pixels the way PDF rects can);
      *  same 2.2s fade as the PDF pin. Both gaps reported 2026-08-04: no pin
      *  on add, no pin on row-click, in EPUBs. */
-    _wvReaderShowEpubPin(reader: any, cfi: string): boolean {
+    /** Draw the 📌 marker at a Range inside a DOM view's content document.
+     *
+     *  Shared by the EPUB and snapshot pins, which differ ONLY in how they
+     *  resolve their anchor to a Range (CFI vs WADM selector). Coordinates are
+     *  DOCUMENT-relative (client rect + scroll), so the pin is correct even
+     *  while a smooth scroll is still in flight.
+     *
+     *  Not usable for PDF: `_wvReaderShowPin` draws in unscaled page units. */
+    _wvReaderDrawDomPin(iwin: any, doc: any, range: any, opts?: any): boolean {
+        try {
+            if (!range || typeof range.getBoundingClientRect !== "function") return false;
+            const r = range.getBoundingClientRect();
+            // A collapsed range on a text node still reports a real rect; an
+            // all-zero one means the anchor did not resolve to laid-out
+            // content, and a pin at the origin would be a lie.
+            if (!r || (r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0)) return false;
+            const docX = r.left + (r.width / 2) + iwin.scrollX;
+            const docY = r.top + iwin.scrollY;
+            try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
+            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            pin.className = "wv-reader-pin";
+            const PIN_H = 32;
+            pin.innerHTML = RP_PIN_TIP_SVG;
+            const reader = opts && opts.reader;
+            const bm = opts && opts.bm;
+            const draggable = !!(reader && bm && bm.id);
+            pin.style.cssText = "position:absolute;z-index:2147483646;"
+                + "pointer-events:" + (draggable ? "auto" : "none") + ";"
+                + (draggable ? "cursor:grab;" : "")
+                + "left:" + docX + "px;top:" + docY + "px;height:" + PIN_H + "px;"
+                + "user-select:none;line-height:0;transform-origin:50% 100%;"
+                + "transform:translate(-50%,-100%) scale(1);opacity:1;"
+                + "transition:opacity .18s ease-out,transform .18s ease-out;";
+            doc.body.appendChild(pin);
+            const w: any = iwin;
+            let fadeT: any = null, killT: any = null;
+            const arm = () => {
+                fadeT = w.setTimeout(() => {
+                    try {
+                        pin.style.transition = "opacity .25s,transform .25s";
+                        pin.style.opacity = "0";
+                        pin.style.transform = "translate(-50%,-118%) scale(.6)";
+                    } catch (_) {}
+                }, 2200);
+                killT = w.setTimeout(() => { try { pin.remove(); } catch (_) {} }, 2520);
+            };
+            const disarm = () => {
+                try { w.clearTimeout(fadeT); } catch (_) {}
+                try { w.clearTimeout(killT); } catch (_) {}
+                try {
+                    pin.style.transition = "none";
+                    pin.style.opacity = "1";
+                    pin.style.transform = "translate(-50%,-100%) scale(1)";
+                } catch (_) {}
+            };
+            // A pin offered for ADJUSTMENT must not fade: it was drawn so the
+            // user can grab it, and 2.2s is not long enough to notice it, move
+            // the mouse and press — "I still cannot drag the pin after
+            // creation" (2026-08-24). Same `persist` contract the PDF pin has.
+            const persist = !!(opts && opts.persist);
+            const armIf = () => { if (!persist) arm(); };
+            armIf();
+            // HOVER KEEPS IT ALIVE — the PDF pin has done this from the start
+            // (stopFade on mouseenter, a short 900ms fade on leave) and it is
+            // what makes a transient pin draggable at all: you cannot reach
+            // for something that vanishes 2.2s after it appears. Without it a
+            // bookmark pin was effectively un-draggable (2026-08-24).
+            if (draggable) {
+                pin.addEventListener("mouseenter", () => {
+                    try {
+                        disarm();
+                        pin.style.transition = "transform .12s";
+                        pin.style.opacity = "1";
+                        pin.style.transform = "translate(-50%,-100%) scale(1)";
+                    } catch (_) {}
+                });
+                pin.addEventListener("mouseleave", () => {
+                    try { if (!persist && !pin._wvDragging) arm(); } catch (_) {}
+                });
+            }
+            if (persist) {
+                // Dismiss on the next click elsewhere in the document, so a
+                // persistent pin is never permanently in the way.
+                const away = (ev: any) => {
+                    try {
+                        if (ev.target && pin.contains && pin.contains(ev.target)) return;
+                        doc.removeEventListener("pointerdown", away, true);
+                        pin.remove();
+                    } catch (_) {}
+                };
+                try { doc.addEventListener("pointerdown", away, true); } catch (_) {}
+            }
+            if (draggable) this._wvWireDomPinDrag(iwin, doc, pin, docX, docY, reader, bm,
+                                                 disarm, armIf, opts && opts.commit);
+            return true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderDrawDomPin err: " + e);
+            return false;
+        }
+    }
+
+    /** Make a DOM-view pin draggable, so a position bookmark can be nudged to
+     *  the right spot — the EPUB/snapshot twin of the PDF pin's drag.
+     *
+     *  Two things are copied deliberately from that older implementation
+     *  because it paid for both:
+     *
+     *   - A DRAG THRESHOLD. The pin renders `translate(-50%,-100%)`, its head
+     *     ABOVE the anchor, so without a threshold a plain CLICK on the head
+     *     commits the cursor point and walks the bookmark upward every time.
+     *   - The drop point is where the TIP landed, not where the cursor is. The
+     *     tip is the anchor; reading the cursor would shift every drag by the
+     *     grab offset.
+     *
+     *  A drop that resolves to no text (empty margin, past the end) REVERTS
+     *  rather than storing a meaningless anchor. */
+    _wvWireDomPinDrag(iwin: any, doc: any, pin: any, docX: number, docY: number,
+                      reader: any, bm: any, disarm: () => void, arm: () => void,
+                      commit?: (anchor: any) => Promise<void> | void) {
+        try {
+            const THRESHOLD = 4;
+            let startX = 0, startY = 0, lifted = false, dragging = false;
+            // The drag origin is re-read from the pin on every pointerdown, NOT
+            // taken from the draw-time docX/docY. A pin that has already been
+            // dragged sits somewhere else, and rebasing from where it was FIRST
+            // drawn made the second drag of the same pin snap back to roughly
+            // the original spot — "working the first time, but jumping to the
+            // original place the second time" (reported 2026-08-24).
+            let baseX = docX, baseY = docY;
+            // Bounded trace: a drag is a real-mouse gesture, so scripted events
+            // cannot reproduce it (they arrive with no button/coords once they
+            // cross the compartment). Read with Zotero._wvPinDrag.
+            const T = ((Zotero as any)._wvPinDrag || ((Zotero as any)._wvPinDrag = []));
+            const tr = (what: string, extra?: any) => {
+                try { T.push(Object.assign({ t: Date.now(), what }, extra || {})); if (T.length > 40) T.shift(); } catch (_) {}
+            };
+            const onMove = (ev: any) => {
+                if (!dragging) return;
+                const dx = ev.clientX - startX, dy = ev.clientY - startY;
+                if (!lifted && Math.sqrt(dx * dx + dy * dy) < THRESHOLD) return;
+                if (!lifted) tr("lifted", { dx, dy });
+                lifted = true;
+                try { pin.style.cursor = "grabbing"; } catch (_) {}
+                pin.style.left = (baseX + dx) + "px";
+                pin.style.top = (baseY + dy) + "px";
+            };
+            const onUp = async (ev: any) => {
+                if (!dragging) return;
+                dragging = false;
+                pin._wvDragging = false;
+                try { doc.removeEventListener("pointermove", onMove, true); } catch (_) {}
+                try { doc.removeEventListener("pointerup", onUp, true); } catch (_) {}
+                try { pin.style.cursor = "grab"; } catch (_) {}
+                if (!lifted) { tr("drop-not-lifted"); arm(); return; }   // a click, not a drag — nothing moves
+                const dx = ev.clientX - startX, dy = ev.clientY - startY;
+                // The TIP is the anchor: its document point, converted back to
+                // client coordinates for the caret lookup.
+                const tipCX = baseX + dx - (iwin.scrollX || 0);
+                const tipCY = baseY + dy - (iwin.scrollY || 0);
+                const ir = reader._internalReader;
+                const pv = ir && (ir._primaryView || ir._lastView);
+                // The pin must not hit-test ITSELF. Resolving the drop runs
+                // caretPositionFromPoint at the tip, and the tip is exactly
+                // where the pin's SVG sits — with pointer-events:auto (needed
+                // to receive the drag at all) the hit returned the pin's own
+                // <g> element, getCFI refused it, and EVERY drop reverted
+                // "back to its initial position" (reported 2026-08-24, EPUB;
+                // the snapshot pin has the same SVG and the same bug).
+                let peSaved: any = null;
+                try { peSaved = pin.style.pointerEvents; pin.style.pointerEvents = "none"; } catch (_) {}
+                const anchor = this._wvDomAnchorFromContentPoint(pv, tipCX, tipCY);
+                try { pin.style.pointerEvents = peSaved || "auto"; } catch (_) {}
+                tr("drop", { tipCX: Math.round(tipCX), tipCY: Math.round(tipCY),
+                             baseX: Math.round(baseX), baseY: Math.round(baseY),
+                             dx: Math.round(dx), dy: Math.round(dy),
+                             scrollY: Math.round(iwin.scrollY || 0),
+                             anchor: anchor ? (anchor.cfi ? "cfi" : "position") : "NULL",
+                             sortIndex: anchor && anchor.sortIndex });
+                if (!anchor) {
+                    // Nothing to anchor to — snap back to where THIS gesture
+                    // started, not to where the pin was first drawn: on an
+                    // already-moved pin those differ, and using the draw
+                    // origin threw away the previous successful drag.
+                    pin.style.left = baseX + "px";
+                    pin.style.top = baseY + "px";
+                    arm();
+                    try {
+                        const rdoc = reader._iframeWindow && reader._iframeWindow.document;
+                        if (rdoc) this._wvReaderPanelNote(rdoc, "No text there — the bookmark stayed put.");
+                    } catch (_) {}
+                    return;
+                }
+                try {
+                    if (commit) {
+                        // A caller with its own store (the outline) persists
+                        // itself; writing an outline id through the BOOKMARK
+                        // store silently matched nothing and the drag was lost.
+                        await commit(anchor);
+                        tr("persisted", { via: "commit" });
+                        arm();
+                        return;
+                    }
+                    const att = this._wvReaderAtt(reader);
+                    if (att) {
+                        const updates: any = {};
+                        if (anchor.position) updates.position = anchor.position;
+                        if (anchor.cfi) updates.location = Object.assign({}, bm.location || {}, { cfi: anchor.cfi });
+                        if (anchor.sortIndex) updates.sortIndex = anchor.sortIndex;
+                        await this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates);
+                        tr("persisted", { keys: Object.keys(updates).join(",") });
+                        Object.assign(bm, updates);
+                        // Re-sort ONLY when the list is actually ordered by
+                        // location — the same rule the PDF move path follows, so
+                        // a manual arrangement is never silently rewritten.
+                        const rdoc = reader._iframeWindow && reader._iframeWindow.document;
+                        if (rdoc && this._wvReaderBmSortMode("local", reader) === "location") {
+                            this._wvReaderRenderBmList(reader, rdoc);
+                        }
+                    }
+                } catch (e) { Zotero.debug("[Weavero] pin drag persist err: " + e); }
+                arm();
+            };
+            pin.addEventListener("pointerdown", (ev: any) => {
+                try {
+                    if (ev.button !== 0) return;
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    // Where the pin IS now, not where it was first drawn.
+                    const curX = parseFloat(pin.style.left), curY = parseFloat(pin.style.top);
+                    baseX = isFinite(curX) ? curX : docX;
+                    baseY = isFinite(curY) ? curY : docY;
+                    tr("down", { x: ev.clientX, y: ev.clientY, button: ev.button,
+                                 baseX: Math.round(baseX), baseY: Math.round(baseY) });
+                    startX = ev.clientX; startY = ev.clientY;
+                    lifted = false; dragging = true;
+                    pin._wvDragging = true;
+                    disarm();   // never fade out from under a drag
+                    try { pin.setPointerCapture(ev.pointerId); } catch (_) {}
+                    doc.addEventListener("pointermove", onMove, true);
+                    doc.addEventListener("pointerup", onUp, true);
+                } catch (_) {}
+            }, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvWireDomPinDrag err: " + e); }
+    }
+
+    /** The 📌 for a SNAPSHOT position bookmark.
+     *
+     *  A position bookmark is documented to drop a pin, and PDF and EPUB each
+     *  had one — snapshots had neither, because `_wvReaderShowPin` needs page
+     *  geometry and `_wvReaderShowEpubPin` needs a CFI. So a snapshot bookmark
+     *  navigated correctly but gave no confirmation it had landed anywhere
+     *  (2026-08-24, alongside the capture fix that gave these bookmarks a real
+     *  anchor in the first place).
+     *
+     *  Resolves the stored selector through the view's own `toDisplayedRange`,
+     *  the same primitive the outline ordering uses. Returns false on anything
+     *  that is not a resolvable snapshot selector, so callers can fall through
+     *  to the PDF pin. */
+    _wvReaderShowSnapshotPin(reader: any, position: any, bm?: any, persist?: boolean): boolean {
+        try {
+            if (!position || (position.rects && position.rects.length)) return false;
+            if (this._wvReadingModeActive(reader)) return false;
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv || typeof pv.toDisplayedRange !== "function") return false;
+            const iwin = pv._iframeWindow;
+            const doc = pv._iframeDocument || (iwin && iwin.document);
+            if (!iwin || !doc || !doc.body) return false;
+            let arg = position;
+            try {
+                const Cu = (Components as any).utils;
+                if (Cu) arg = Cu.cloneInto(position, iwin);
+            } catch (_) {}
+            const range = pv.toDisplayedRange(arg);
+            if (!range) return false;
+            return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist });
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvReaderShowSnapshotPin err: " + e);
+            return false;
+        }
+    }
+
+    /** Draw the EPUB pin as soon as its CFI resolves, instead of after a fixed
+     *  wait.
+     *
+     *  This used to be `setTimeout(show, 350)`: resolving a CFI needs its
+     *  section mounted, and drawing too early lost the pin outright
+     *  (2026-08-04). But a fixed delay charges every case for the worst one.
+     *  Measured 2026-08-24 on a scrolled-mode book with all 46 sections
+     *  mounted, the CFI resolved on the FIRST sample (8 ms) — the whole 350 ms
+     *  was visible dead time, and the user noticed it.
+     *
+     *  So: try immediately, and retry on a short interval only while it
+     *  genuinely does not resolve. Instant whenever the section is already
+     *  mounted, still correct when one has to mount (paginated mode, a large
+     *  book), and bounded so a permanently unresolvable CFI stops trying.
+     *
+     *  The sequence guard matters: clicking a second bookmark while the first
+     *  is still retrying must not let the OLD pin land last, because drawing
+     *  removes whatever pin is already there. */
+    _wvReaderShowEpubPinWhenReady(reader: any, cfi: string, bm?: any, persist?: boolean) {
+        try {
+            // 2s was not enough: revealing the bookmarks tab resizes the
+            // content iframe, and the CFI resolved to a ZERO rect for ~1.9s
+            // after an add — 30 consecutive failed draws in a live recording,
+            // so the pin appeared only much later, or not at all.
+            const STEP = 50, DEADLINE = 6000;
+            const rw: any = reader && reader._iframeWindow;
+            const seq = (reader._wvEpubPinSeq = (reader._wvEpubPinSeq || 0) + 1);
+            let waited = 0;
+            const attempt = () => {
+                try {
+                    if (reader._wvEpubPinSeq !== seq) return;   // superseded
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!P) return;
+                    if (P._wvReaderShowEpubPin(reader, cfi, bm, persist)) return;
+                    waited += STEP;
+                    if (waited >= DEADLINE) return;
+                    if (rw && rw.setTimeout) rw.setTimeout(attempt, STEP);
+                } catch (_) {}
+            };
+            attempt();
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderShowEpubPinWhenReady err: " + e); }
+    }
+
+    _wvReaderShowEpubPin(reader: any, cfi: string, bm?: any, persist?: boolean): boolean {
         try {
             if (!cfi || typeof cfi !== "string" || cfi.indexOf("epubcfi(") !== 0) return false;
             if (this._wvReadingModeActive(reader)) return false;
@@ -18357,35 +18988,219 @@ class _ReaderPanelsMixin {
             const pr: any = pv.getRange(cfi, true);
             if (!pr) return false;
             const range: any = (typeof pr.toRange === "function") ? pr.toRange() : pr;
-            if (!range || typeof range.getBoundingClientRect !== "function") return false;
-            const r = range.getBoundingClientRect();
-            if (!r || (r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0)) return false;
-            const docX = r.left + (r.width / 2) + iwin.scrollX;
-            const docY = r.top + iwin.scrollY;
-            try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
-            const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-            pin.className = "wv-reader-pin";
-            const PIN_H = 32;
-            pin.innerHTML = RP_PIN_TIP_SVG;
-            pin.style.cssText = "position:absolute;z-index:2147483646;pointer-events:none;"
-                + "left:" + docX + "px;top:" + docY + "px;height:" + PIN_H + "px;"
-                + "user-select:none;line-height:0;transform-origin:50% 100%;"
-                + "transform:translate(-50%,-100%) scale(1);opacity:1;"
-                + "transition:opacity .18s ease-out,transform .18s ease-out;";
-            doc.body.appendChild(pin);
-            const w: any = iwin;
-            w.setTimeout(() => {
-                try {
-                    pin.style.transition = "opacity .25s,transform .25s";
-                    pin.style.opacity = "0";
-                    pin.style.transform = "translate(-50%,-118%) scale(.6)";
-                } catch (_) {}
-            }, 2200);
-            w.setTimeout(() => { try { pin.remove(); } catch (_) {} }, 2520);
-            return true;
+            return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist });
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderShowEpubPin err: " + e);
             return false;
+        }
+    }
+
+    /** Resolve a right-click point in a SNAPSHOT to a stored-position WADM
+     *  selector, or null when this is not that case.
+     *
+     *  "Add Bookmark to This Position" had two anchor branches and a snapshot
+     *  matched neither: `getCFI` is an EPUB method and
+     *  `_wvCaptureReaderPosition` is PDF page geometry. So the record fell
+     *  back to `_wvCaptureReaderLocation`'s viewport scroll percentage —
+     *  stored as `location:{scrollYPercent:0.1}` with `position:null`. The
+     *  bookmark returned to wherever the page happened to be scrolled instead
+     *  of the clicked spot, which is why it read as doing nothing at all
+     *  (reported 2026-08-24).
+     *
+     *  Same resolution the outline uses: caret at the point — collapsed
+     *  Range — `toSelector`. Gated on the ABSENCE of `getCFI` so the
+     *  established EPUB CFI path is never diverted through here.
+     *
+     *  NOTE: `caretPositionFromPoint` only resolves points inside the visible
+     *  viewport. That is always true of a real right-click, but it is why a
+     *  scripted check must aim on-screen. */
+    _wvSnapshotPointToSelector(reader: any, click: any): any {
+        const a = this._wvDomPointToAnchor(reader, click);
+        return (a && a.position) || null;
+    }
+
+    /** Resolve a point in a DOM view's content document to everything a
+     *  position bookmark needs: the anchor AND its location sort key.
+     *
+     *  `cx`/`cy` are CLIENT coordinates inside that document, so drag handlers
+     *  (whose events already fire there) can call this directly, while the
+     *  context menu goes through `_wvDomPointToAnchor` to convert first.
+     *
+     *  The two views anchor differently and that is deliberate: a snapshot has
+     *  no CFI, and an EPUB's CFI is its established anchor everywhere else in
+     *  Weavero — so `getCFI` decides, and a snapshot never reaches it.
+     *
+     *  `sortIndex` is what the Bookmarks list sorts "By Location" on. PDF gets
+     *  it from a page-data backfill that returns null for every non-PDF view,
+     *  so snapshot and EPUB bookmarks had NO location key at all and could not
+     *  be ordered. `_getSortIndex` is the views' own key — the same string
+     *  Zotero stores on annotations, so Weavero's bookmarks interleave with
+     *  them correctly.
+     *
+     *  NOTE `_getSortIndex` is PRIVATE upstream. Guarded by `typeof`: if a
+     *  reader bump removes it the bookmark still anchors, it just has no
+     *  location key and the list keeps manual order. */
+    _wvDomAnchorFromContentPoint(pv: any, cx: number, cy: number): any {
+        try {
+            if (!pv || typeof pv.toSelector !== "function") return null;
+            const idc = pv._iframeDocument;
+            if (!idc || typeof idc.caretPositionFromPoint !== "function") return null;
+            const caret = idc.caretPositionFromPoint(cx, cy);
+            if (!caret || !caret.offsetNode) return null;
+            // TEXT nodes only. An element hit (an image, a spacer, or an
+            // overlay drawn at the very point being probed) has no offset a
+            // CFI or a selector can anchor to, and passing one through meant
+            // the failure surfaced later as a mystery null.
+            let node = caret.offsetNode, offset = caret.offset;
+            if (node.nodeType !== 3) {
+                // Nearest text instead of nothing. A reader dragging a pin aims
+                // at a PLACE, and an EPUB place is often a figure, a margin or
+                // the gap between paragraphs: refusing those made every drop on
+                // an illustration snap back with no visible reason
+                // (2026-08-24 — the drop points were all inside an IMG).
+                // A FIGURE is a legitimate place to anchor — in an
+                // illustrated book it may be the only thing on screen. Verified
+                // on the live EPUB: a range selecting an <img> yields a working
+                // CFI, a sort key, and a round trip back to the same element.
+                // Only MEDIA elements though: the coarse containers under the
+                // same point (REPLACED-BODY, a full-document DIV) produced
+                // either an un-resolvable CFI or one spanning 195,000px.
+                const el = idc.elementFromPoint(cx, cy);
+                const media = el && el.closest
+                    ? el.closest("img, svg, video, canvas, picture, figure, image")
+                    : null;
+                if (media) {
+                    const mrng = idc.createRange();
+                    mrng.selectNode(media);
+                    const manchor = this._wvDomAnchorFromRange(pv, mrng);
+                    // PROVE it before storing it. An <img> yields a CFI that
+                    // getRange happily "resolves" — to the START OF THE
+                    // DOCUMENT, not the image — and that navigates nowhere, so
+                    // the bookmark saved fine and then went back to the old
+                    // spot on click (2026-08-24). A snapshot CssSelector for the
+                    // same image round-trips correctly, so this is a per-anchor
+                    // fact, not a per-view rule: verify, do not assume.
+                    if (manchor && this._wvDomAnchorRoundTrips(pv, manchor, mrng)) return manchor;
+                }
+                const near = this._wvNearestTextCaret(idc, cx, cy);
+                if (!near) return null;
+                node = near.offsetNode; offset = near.offset;
+            }
+            const rng = idc.createRange();
+            rng.setStart(node, offset);
+            rng.setEnd(node, offset);
+            return this._wvDomAnchorFromRange(pv, rng);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDomAnchorFromContentPoint err: " + e);
+            return null;
+        }
+    }
+
+    /** The stored anchor for a resolved Range: selector for both families,
+     *  CFI additionally on EPUB, plus the location sort key. */
+    _wvDomAnchorFromRange(pv: any, rng: any): any {
+        try {
+            const out: any = { position: null, cfi: null, selector: null, sortIndex: null };
+            // The SELECTOR is computed for both view families. Bookmarks keep
+            // the CFI on EPUB (their anchor everywhere else), but an outline
+            // entry stores a selector on BOTH — the same shape the
+            // add-from-selection path already produces, so the two ways of
+            // creating an entry cannot drift apart.
+            try {
+                const selr = pv.toSelector(rng);
+                if (selr) out.selector = JSON.parse(JSON.stringify(selr));
+            } catch (_) {}
+            if (typeof pv.getCFI === "function") {
+                const cfi = pv.getCFI(rng);
+                if (!cfi) return null;
+                // COLLAPSE a range CFI to its start. Anchoring to a figure
+                // selects the whole element, so getCFI returns a RANGE
+                // (`epubcfi(A,B,C)`) — and the navigation path feeds
+                // `location.cfi` to the view as a `pageNumber`, which cannot
+                // consume a range: the bookmark saved fine and then went
+                // nowhere on click ("if I click from the bookmarks, it goes
+                // back to the earlier position", 2026-08-24). Same collapse
+                // Copy-Link-to-This-Location already does for the same reason.
+                out.cfi = String(this._collapseEpubCfiToStart(String(cfi)));
+            } else {
+                if (!out.selector) return null;
+                out.position = out.selector;
+            }
+            try {
+                if (typeof pv._getSortIndex === "function") {
+                    const si = pv._getSortIndex(rng);
+                    if (typeof si === "string" && si) out.sortIndex = si;
+                }
+            } catch (_) {}
+            return out;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDomAnchorFromContentPoint err: " + e);
+            return null;
+        }
+    }
+
+    /** True when a freshly built anchor resolves back to (about) where it came
+     *  from. Cheap insurance against an anchor shape a view will accept and
+     *  then fail to navigate: resolve it and compare document positions. */
+    _wvDomAnchorRoundTrips(pv: any, anchor: any, srcRange: any): boolean {
+        try {
+            const probe: any = {};
+            if (anchor.cfi) probe.location = { cfi: anchor.cfi };
+            else if (anchor.position) probe.position = anchor.position;
+            else return false;
+            const back = this._wvDomRangeForAnchor(pv, probe);
+            if (!back) return false;
+            const a = srcRange.getBoundingClientRect();
+            const b = back.getBoundingClientRect();
+            if (!a || !b) return false;
+            // Same place, within a line or so. The failure mode being caught is
+            // not a small drift but a jump to the document start.
+            return Math.abs(a.top - b.top) < 40 && Math.abs(a.left - b.left) < 200;
+        } catch (_) { return false; }
+    }
+
+    /** The nearest caret that lands on real TEXT, searching outward from a
+     *  point that did not. Rings of increasing radius, closest first, so the
+     *  result is the nearest text in any direction rather than a bias toward
+     *  one side. Bounded — past ~200px the "nearest" text is not what the user
+     *  meant, and refusing is better than anchoring somewhere surprising. */
+    _wvNearestTextCaret(idc: any, cx: number, cy: number): any {
+        try {
+            // Out to ~600px: measured on a full-page EPUB plate, the nearest
+            // text sits 486px away. Closest-first, so ordinary pages still
+            // snap to the line under the cursor.
+            const RADII = [12, 28, 52, 88, 140, 200, 300, 430, 600];
+            const DIRS = [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]];
+            for (const rad of RADII) {
+                for (const [ux, uy] of DIRS) {
+                    const x = cx + ux * rad, y = cy + uy * rad;
+                    if (x < 0 || y < 0) continue;
+                    const c = idc.caretPositionFromPoint(x, y);
+                    if (c && c.offsetNode && c.offsetNode.nodeType === 3
+                            && String(c.offsetNode.nodeValue || "").trim().length) {
+                        return c;
+                    }
+                }
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    /** Chrome-coordinate entry point for the above (the reader context menu
+     *  reports the click in the reader iframe's space). PDF returns null — it
+     *  has real page geometry and its own capture path. */
+    _wvDomPointToAnchor(reader: any, click: any): any {
+        try {
+            if (!reader || (reader._type || "pdf") === "pdf") return null;
+            if (!click || typeof click.x !== "number" || typeof click.y !== "number") return null;
+            const ir = reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv || !pv._iframe) return null;
+            const br = pv._iframe.getBoundingClientRect();
+            return this._wvDomAnchorFromContentPoint(pv, click.x - br.x, click.y - br.y);
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDomPointToAnchor err: " + e);
+            return null;
         }
     }
 
@@ -18431,6 +19246,33 @@ class _ReaderPanelsMixin {
             // whitespace) so the bookmark returns to that spot and drops the pin
             // there, not at the page top. (EPUB/snapshot use the CFI location.)
             const pos = this._wvCaptureReaderPosition(reader, click);
+            // SNAPSHOT: neither of the two branches above applies. `getCFI` is
+            // an EPUB method, and `_wvCaptureReaderPosition` is PDF page
+            // geometry — so "Add Bookmark to This Position" silently degraded
+            // to whatever `_wvCaptureReaderLocation` had captured, the
+            // VIEWPORT's scroll percentage. The stored record read
+            // `location:{scrollYPercent:0.1}` with `position:null`: the
+            // bookmark returned to wherever the page happened to be scrolled
+            // rather than the clicked spot, and drew no pin, so from the user
+            // side the command did nothing (reported 2026-08-24).
+            //
+            // A snapshot view anchors by WADM selector, and resolves a point
+            // exactly as the outline does: caret at the click — collapsed
+            // Range — toSelector. Guarded on the ABSENCE of getCFI so the
+            // established EPUB CFI path above is left untouched.
+            // Extracted so it can be tested without a live reader: the bug
+            // was the ABSENCE of this branch, and a guard has to be able to
+            // assert the branch is taken for the right view.
+            if (!pos) {
+                // One resolver for both DOM views: the snapshot selector OR the
+                // EPUB CFI, plus the location sort key neither view was storing.
+                const domAnchor = this._wvDomPointToAnchor(reader, click);
+                if (domAnchor) {
+                    if (domAnchor.position) rec.position = domAnchor.position;
+                    if (domAnchor.cfi) { rec.location = rec.location || {}; rec.location.cfi = domAnchor.cfi; }
+                    if (domAnchor.sortIndex) rec.sortIndex = domAnchor.sortIndex;
+                }
+            }
             if (pos) {
                 rec.position = pos;
                 // Page label from the resolved page, in case it differs from the
@@ -18473,15 +19315,28 @@ class _ReaderPanelsMixin {
             // sees it land — same temporary marker as clicking the row
             // (PDF-only; EPUB/snapshot have no rects-based overlay and
             // `_wvReaderShowPin` returns early there).
-            if (entry && entry.type === "position" && entry.position) {
+            // Which pin depends on the ANCHOR SHAPE, not on merely having a
+            // position. Snapshot bookmarks now carry a selector `position`, so
+            // the old `entry.position` test sent them to the PDF pin, which
+            // returns early on anything without rects — no pin at all. The
+            // EPUB branch drew one but passed no bookmark, so it was not
+            // draggable: "I still cannot drag a pin after adding to bookmarks"
+            // (2026-08-24). Persistent, because it is offered to be adjusted.
+            const isDomView = (reader._type || "pdf") !== "pdf";
+            if (entry && entry.type === "position" && !isDomView && entry.position) {
                 try { this._wvReaderShowPin(reader, entry.position, entry.id); } catch (_) {}
             }
-            // EPUB: no rects-based position — the CFI is the anchor. Show the
-            // DOM pin there so the add is visible (reported 2026-08-04: "I do
-            // not see the pin being displayed" in an EPUB).
-            else if (entry && entry.type === "position" && !entry.position
-                    && entry.location && entry.location.cfi) {
-                try { this._wvReaderShowEpubPin(reader, entry.location.cfi); } catch (_) {}
+            else if (entry && entry.type === "position" && isDomView) {
+                try {
+                    const cfi = entry.location && entry.location.cfi;
+                    // NOT persistent: the PDF bookmark pin fades and hover keeps
+                    // it alive, which is enough to grab it. A lingering pin read
+                    // as stuck ("the pin also persists instead of disappearing",
+                    // 2026-08-24).
+                    if (cfi) this._wvReaderShowEpubPinWhenReady(reader, cfi, entry, false);
+                    else if (entry.position) this._wvReaderShowSnapshotPin(reader, entry.position, entry, false);
+                    this._wvReaderPanelNote(idoc, "Bookmark added. Drag the pin to adjust.");
+                } catch (_) {}
             }
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderAddCurrentBookmark err: " + e);
@@ -18666,7 +19521,13 @@ class _ReaderPanelsMixin {
                         }
                     } catch (_) {}
                     if (!scrolled) { try { reader.navigate({ position: bm.position }); } catch (_) {} }
-                    this._wvReaderShowPin(reader, bm.position, bm.id);
+                    // Snapshot first: its selector position carries no rects, so
+                    // _wvReaderShowPin (unscaled PDF page units) silently drew
+                    // nothing. Returns false for anything that is not a
+                    // resolvable snapshot selector, so PDF still falls through.
+                    if (!this._wvReaderShowSnapshotPin(reader, bm.position, bm)) {
+                        this._wvReaderShowPin(reader, bm.position, bm.id);
+                    }
                     return;
                 }
                 // A stored selection position scrolls to AND highlights the
@@ -18693,7 +19554,31 @@ class _ReaderPanelsMixin {
                 // Call the VIEW's navigate directly (args cloned into its
                 // compartment): the XPCOM reader.navigate takes no options.
                 let landed = false;
+                // RESOLVE, then scroll ourselves. `navigate({pageNumber: cfi})`
+                // silently does nothing for some anchors — an <img> CFI is
+                // resolved correctly by getRange (measured at document Y 1412)
+                // yet navigate left the view at 0, so clicking such a bookmark
+                // threw the reader to the top of the book (2026-08-24).
+                // Scrolling to the resolved rect works for every anchor shape
+                // and keeps the shared 1/4-from-top rule.
                 try {
+                    const pvR = reader._internalReader
+                        && (reader._internalReader._primaryView || reader._internalReader._lastView);
+                    const iwR = pvR && pvR._iframeWindow;
+                    const rngR = pvR && this._wvDomRangeForAnchor(pvR, bm);
+                    if (rngR && iwR) {
+                        const rc = rngR.getBoundingClientRect();
+                        const docY = rc.top + (iwR.scrollY || 0);
+                        // A degenerate rect means the anchor did not really
+                        // resolve; leave the view alone rather than jumping.
+                        if (rc.height > 0 || rc.width > 0 || docY > 0) {
+                            iwR.scrollTo(0, Math.max(0, Math.round(docY - (iwR.innerHeight || 800) * 0.25)));
+                            landed = true;
+                        }
+                    }
+                } catch (_) {}
+                try {
+                    if (landed) throw 0;   // resolved path won
                     const pvE = reader._internalReader
                         && (reader._internalReader._primaryView || reader._internalReader._lastView);
                     const iwE = pvE && pvE._iframeWindow;
@@ -18714,16 +19599,7 @@ class _ReaderPanelsMixin {
                 // getRange can mount the target section. (Both EPUB pin gaps
                 // reported 2026-08-04.)
                 if (bm.type === "position") {
-                    try {
-                        const rw: any = reader._iframeWindow;
-                        const show = () => {
-                            try {
-                                const P2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                                if (P2) P2._wvReaderShowEpubPin(reader, loc.cfi);
-                            } catch (_) {}
-                        };
-                        if (rw && rw.setTimeout) rw.setTimeout(show, 350); else show();
-                    } catch (_) {}
+                    this._wvReaderShowEpubPinWhenReady(reader, loc.cfi, bm);
                 }
             } else if (typeof loc.scrollYPercent === "number") {
                 reader.navigate({ scrollYPercent: loc.scrollYPercent });
@@ -18781,8 +19657,8 @@ class _ReaderPanelsMixin {
                     let addBmLabel: string | null = null;
                     if (plugin._getEnableReaderBookmarks()) {
                         addBmLabel = single
-                            ? "Add Bookmark to This Page"
-                            : "Add Bookmarks to " + pageIndexes.length + " Pages";
+                            ? "Add This Page to Bookmarks"
+                            : "Add These " + pageIndexes.length + " Pages to Bookmarks";
                         items.push({
                             label: addBmLabel,
                             onCommand: async () => {

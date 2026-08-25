@@ -126,7 +126,11 @@ describe("Weavero — DOM-view pin drag and location keys", () => {
             return { d, pin, counts: () => ({ disarmed, armed }) };
         };
         const send = (target, type, x, y) => {
-            const ev = target.ownerDocument.createEvent("Event");
+            // target may be the DOCUMENT itself (pointermove/up are wired on
+            // it), and document.ownerDocument is null -- the live probe that
+            // verified this behaviour used d.createEvent directly.
+            const dd = target.ownerDocument || target;
+            const ev = dd.createEvent("Event");
             ev.initEvent(type, true, true);
             ev.clientX = x; ev.clientY = y; ev.button = 0; ev.pointerId = 1;
             target.dispatchEvent(ev);

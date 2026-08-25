@@ -50,8 +50,10 @@ describe("Weavero — snapshot position pin", () => {
             wv._wvReaderDrawDomPin(w, d, stubRange(RECT));
             const pin = d.querySelector(".wv-reader-pin");
             // left = rect.left + width/2 + scrollX ; top = rect.top + scrollY
-            assert.include(pin.style.cssText, "left:150px");
-            assert.include(pin.style.cssText, "top:700px");
+            // (style properties, not cssText substrings: the serializer
+            // normalizes "left:150px" to "left: 150px")
+            assert.equal(pin.style.left, "150px");
+            assert.equal(pin.style.top, "700px");
         });
 
         it("refuses an all-zero rect rather than pinning the origin", () => {

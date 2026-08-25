@@ -35,33 +35,24 @@
  */
 
 (function () {
-    const win = Zotero.getMainWindows()[0];
-    const zp = win.ZoteroPane;
-    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
-    if (!lp) { throw new Error("Weavero is not loaded"); }
-
-    const sleep = ms => new Promise(r => win.setTimeout(r, ms));
-    const rp = () => zp.itemsView.rowProvider || zp.itemsView;
-    const G = () => lp._activeGroup();
+    // Shared machinery: test/live/lib/harness.js (load it first). The
+    // matrix keeps its own ORACLES (grey-predicate snapshot, paint
+    // recorder, native-equivalence ground truth, per-case speed report);
+    // only the transport helpers come from the harness.
+    const LH = Zotero._wvLH;
+    if (!LH) throw new Error("load test/live/lib/harness.js first (Zotero._wvLH missing)");
+    const H = LH.make();
+    const { win, zp, lp, sleep, rp, G, fnv, stable, syncControl, reset } = H;
 
     const SETTLE = 950;          // rule 1
-    const fnv = (arr) => {
-        let h = 0x811c9dc5;
-        for (const x of arr) { h = (h ^ x) >>> 0; h = Math.imul(h, 0x01000193) >>> 0; }
-        return h.toString(16);
-    };
+    // Historical fixed-sleep search settle, passed EXPLICITLY so the
+    // extraction changes nothing this file measures. Known to violate
+    // rule 2 (interactions measured a search-clear blocking ~5.5s on
+    // 2026-08-08) -- migrated to the stability-gated default in its own
+    // commit, where the timing change is visible on its own.
+    const search = (text) => H.search(text, { settle: "sleep", ms: 4200 });
 
     // rule 2 — stability only
-    async function stable() {
-        let last = -1, steady = 0, guard = 0;
-        while (steady < 4 && guard++ < 200) {
-            await sleep(150);
-            let n = 0;
-            try { n = rp().getRowCount(); } catch (e) {}
-            if (n === last) steady++; else { steady = 0; last = n; }
-        }
-        return last;
-    }
 
     /* TIMING MODEL — three different clocks, reported separately because
      * they answer different questions and conflating them produced a
@@ -112,28 +103,6 @@
      * borrow-and-return, done in the same finally that restores the
      * filter state. `itemsChanged` below certifies after the fact that
      * nothing wrote to the library during the run. */
-    const syncControl = {
-        prevAutoSync: null,
-        async disable() {
-            try {
-                this.prevAutoSync = Zotero.Prefs.get("sync.autoSync");
-                Zotero.Prefs.set("sync.autoSync", false);
-            } catch (e) {}
-        },
-        restore() {
-            try {
-                if (this.prevAutoSync !== null) {
-                    Zotero.Prefs.set("sync.autoSync", this.prevAutoSync);
-                }
-            } catch (e) {}
-        },
-        async itemsChangedSince(sqlDate) {
-            try {
-                return await Zotero.DB.valueQueryAsync(
-                    "SELECT COUNT(*) FROM items WHERE clientDateModified > ?", [sqlDate]);
-            } catch (e) { return null; }
-        },
-    };
 
     function paintRecorder() {
         const t0 = win.performance.now();
@@ -171,13 +140,6 @@
     }
 
     // rule 3 — the ONLY correct way to drive the quick search
-    async function search(text) {
-        const sb = zp.document.getElementById("zotero-tb-search");
-        if (!sb) return;
-        sb.value = text;
-        sb.dispatchEvent(new Event("command"));
-        await sleep(4200);
-    }
 
     // rule 4 — rows AND open containers AND selection. All three are
     // user-visible state; two engines agreeing on rows while disagreeing
@@ -263,21 +225,6 @@
         return picked;
     }
 
-    function reset() {
-        lp._filterState.groups.length = 1;
-        const g = G();
-        for (const k of ["itemType", "itemTypeExclude", "annotationColor",
-            "annotationColorExclude", "annotationType", "attachmentFileType",
-            "attachmentFileTypeExclude", "publication", "publicationExclude",
-            "readStatus", "annotationTag", "annotationTagExclude"]) g[k] = [];
-        for (const k of ["hasURL", "hasAttachment", "hasDOI", "hasPMID", "hasPMCID",
-            "inOtherLibrary", "annotationHasComment", "itemNote", "standaloneNote",
-            "hasAnnotations", "hasAbstract", "hasRelated", "hasLink", "hasBookmarks",
-            "hasTag"]) g[k] = null;
-        g.quickSearchScope = null;
-        lp._filterState.collections = [];
-        lp._filterState.savedSearches = [];
-    }
 
     // The canonical case list. Keep in sync with
     // work/filter-test-cases.md -- that file is the human-readable

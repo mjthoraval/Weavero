@@ -30,36 +30,16 @@
  */
 
 (function () {
-    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
-    if (!lp) throw new Error("Weavero is not loaded");
+    // Shared machinery: test/live/lib/harness.js (load it first). This
+    // suite is intrinsically per-window, so it builds a kit PER WINDOW
+    // (LH.make(win)) where it needs one; the top-level kit binds window A.
+    const LH = Zotero._wvLH;
+    if (!LH) throw new Error("load test/live/lib/harness.js first (Zotero._wvLH missing)");
+    const H = LH.make();
+    const { lp, sleep, fnv } = H;
 
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const fnv = (arr) => {
-        let h = 0x811c9dc5;
-        for (const x of arr) { h = (h ^ x) >>> 0; h = Math.imul(h, 0x01000193) >>> 0; }
-        return h.toString(16);
-    };
-
-    const R = {
-        started: new Date().toISOString(),
-        zotero: Zotero.version,
-        status: "running",
-        checks: [],
-        summary() {
-            const failed = this.checks.filter(c => !c.pass);
-            return {
-                status: this.status,
-                ran: this.checks.length,
-                passed: this.checks.filter(c => c.pass).length,
-                failures: failed.map(c => ({ name: c.name, detail: c.detail })),
-            };
-        },
-    };
+    const { R, check } = H.mkReport("multi-window");
     Zotero._wvMultiWin = R;
-
-    const check = (name, pass, detail) => {
-        R.checks.push({ name, pass: !!pass, detail });
-    };
 
     /* Snapshot a SPECIFIC window — never `Zotero.getMainWindow()`, which
      * would silently report whichever window happens to be focused and
@@ -67,40 +47,20 @@
     function snapOf(win) {
         const zp = win.ZoteroPane;
         const rp = zp.itemsView.rowProvider || zp.itemsView;
-        const ids = [], open = [];
-        const n = rp.getRowCount();
-        for (let i = 0; i < n; i++) {
-            let row;
-            try { row = rp.getRow(i); } catch (e) { continue; }
-            if (!row || !row.ref) continue;
-            ids.push(row.ref.id);
-            if (row.isOpen) open.push(row.ref.id);
-        }
-        ids.sort((a, b) => a - b);
-        open.sort((a, b) => a - b);
+        const w = LH.make(win).rowWalk(rp);
         let sel = [];
         try { sel = zp.getSelectedItems().map(it => it.id).sort((a, b) => a - b); }
         catch (e) { sel = ["ERR"]; }
         return {
-            rows: ids.length, idsHash: fnv(ids),
-            open: open.length, openHash: fnv(open),
+            rows: w.rows, idsHash: w.idsHash,
+            open: w.openCount, openHash: w.openHash,
             selCount: sel.length, selHash: fnv(sel),
             patched: !!(rp._wvOrigGetRow),
             watermark: rp._wvKeepRowsLen,
         };
     }
 
-    async function stableIn(win) {
-        const rp = () => win.ZoteroPane.itemsView.rowProvider || win.ZoteroPane.itemsView;
-        let last = -1, steady = 0, guard = 0;
-        while (steady < 4 && guard++ < 200) {
-            await sleep(150);
-            let n = 0;
-            try { n = rp().getRowCount(); } catch (e) {}
-            if (n === last) steady++; else { steady = 0; last = n; }
-        }
-        return last;
-    }
+    const stableIn = (win) => LH.make(win).stable();
 
     /* Apply a filter to an EXPLICIT window. The accessors bind to the
      * focused window unless `_wvFilterWinOverride` is set, so the target

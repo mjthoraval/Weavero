@@ -35,10 +35,11 @@
  */
 
 (function () {
-    const win = Zotero.getMainWindows()[0];
-    const zp = win.ZoteroPane;
-    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
-    if (!lp) throw new Error("Weavero is not loaded");
+    // Shared machinery: test/live/lib/harness.js (load it first).
+    const LH = Zotero._wvLH;
+    if (!LH) throw new Error("load test/live/lib/harness.js first (Zotero._wvLH missing)");
+    const H = LH.make();
+    const { win, zp, lp, sleep, rp, G, syncControl, faSettle, reset } = H;
 
     const TERM = "drop";
     const CHIP = "journalArticle";
@@ -48,54 +49,13 @@
         { key: "everything", cond: "quicksearch-everything" },
     ];
 
-    const sleep = ms => new Promise(r => win.setTimeout(r, ms));
-    const rp = () => zp.itemsView.rowProvider || zp.itemsView;
-    const G = () => lp._activeGroup();
+    // This suite's historical paddings/guards, passed explicitly.
+    const TUNE = { guard: 250 };
+    const stable = () => H.stable(TUNE);
 
-    const R = {
-        started: new Date().toISOString(),
-        status: "running",
-        checks: [],
-        observations: [],
-        summary() {
-            const failed = this.checks.filter(c => !c.pass);
-            return {
-                status: this.status,
-                ran: this.checks.length,
-                passed: this.checks.filter(c => c.pass).length,
-                itemsChangedDuringRun: this.itemsChangedDuringRun,
-                trustworthy: this.itemsChangedDuringRun === 0,
-                failures: failed.map(c => ({ name: c.name, detail: c.detail })),
-                observations: this.observations,
-            };
-        },
-    };
+    const { R, check, observe } = H.mkReport("search-modes");
     Zotero._wvModes = R;
-    const check = (name, pass, detail) => R.checks.push({ name, pass: !!pass, detail });
-    const observe = (name, detail) => R.observations.push({ name, detail });
 
-    const syncControl = {
-        prevAutoSync: null,
-        async disable() {
-            try {
-                this.prevAutoSync = Zotero.Prefs.get("sync.autoSync");
-                Zotero.Prefs.set("sync.autoSync", false);
-            } catch (e) {}
-        },
-        restore() {
-            try {
-                if (this.prevAutoSync !== null) {
-                    Zotero.Prefs.set("sync.autoSync", this.prevAutoSync);
-                }
-            } catch (e) {}
-        },
-        async itemsChangedSince(sqlDate) {
-            try {
-                return await Zotero.DB.valueQueryAsync(
-                    "SELECT COUNT(*) FROM items WHERE clientDateModified > ?", [sqlDate]);
-            } catch (e) { return null; }
-        },
-    };
 
     /* dev.15 made the last word ASYNCHRONOUS by design: after a search
      * settles, the final-apply scheduler waits for quiescence and then
@@ -104,22 +64,6 @@
      * `everything` read 11,107 here while a direct check with a longer
      * wait held 11,108 stably). Wait for the scheduler's tick loop to go
      * idle rather than sleeping blind. */
-    async function faSettle() {
-        const t0 = Date.now();
-        while (lp._wvFATimer && Date.now() - t0 < 15000) await sleep(300);
-        await sleep(1200);
-    }
-
-    async function stable() {
-        let last = -1, steady = 0, guard = 0;
-        while (steady < 4 && guard++ < 250) {
-            await sleep(150);
-            let n = 0;
-            try { n = rp().getRowCount(); } catch (e) {}
-            if (n === last) steady++; else { steady = 0; last = n; }
-        }
-        return last;
-    }
 
     /** TOP-LEVEL ids only. Child rows change with expansion, so they cannot
      *  be compared against a set-based ground truth; top level can. */
@@ -175,12 +119,6 @@
      * The factory cannot drift from the real shape, and cannot miss a
      * dimension added later. Never hand-enumerate this again.
      */
-    function reset() {
-        lp._filterState.groups.length = 0;
-        lp._filterState.groups.push(lp._emptyFilterGroup());
-        lp._filterState.collections = [];
-        lp._filterState.savedSearches = [];
-    }
 
     /* Fail loudly if the reset left anything active — otherwise a stale
      * dimension silently reroutes the whole run. */
@@ -196,38 +134,13 @@
         if (stray.length) check("reset left the group clean before " + label, false, { stray });
     }
 
-    async function clearChip() {
-        reset();
-        await sleep(950);
-        lp._applyItemsListFilter({ cascade: true });
-        await stable();
-        await sleep(500);
-    }
+    const clearChip = () => H.clearChip({ post: 500, stable: TUNE });
+    const applyChip = () => H.applyChip(g => { g.itemType = [CHIP]; },
+        { post: 500, stable: TUNE });
 
-    async function applyChip() {
-        reset();
-        G().itemType = [CHIP];
-        await sleep(950);
-        lp._applyItemsListFilter({ cascade: true });
-        await stable();
-        await sleep(500);
-    }
+    const search = (text) => H.search(text, { pre: 600, post: 500, stable: TUNE });
 
-    async function search(text) {
-        const sb = zp.document.getElementById("zotero-tb-search");
-        if (!sb) return;
-        sb.value = text;
-        sb.dispatchEvent(new Event("command"));        // never `input`
-        await sleep(600);
-        await stable();
-        await sleep(500);
-    }
-
-    async function advSearch(searchOrNull) {
-        await zp.itemsView.setFilter("advanced-search", searchOrNull);
-        await stable();
-        await sleep(600);
-    }
+    const advSearch = (x) => H.advSearch(x, { post: 600, stable: TUNE });
 
     const diff = (got, gt) => ({
         got: got.size, expected: gt.size,

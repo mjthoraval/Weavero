@@ -30,20 +30,17 @@
  */
 
 (function () {
-    const win = Zotero.getMainWindows()[0];
-    const zp = win.ZoteroPane;
-    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
-    if (!lp) throw new Error("Weavero is not loaded");
-
-    const sleep = ms => new Promise(r => win.setTimeout(r, ms));
-    const rp = () => zp.itemsView.rowProvider || zp.itemsView;
+    // Shared machinery: test/live/lib/harness.js (load it first). This
+    // suite's paddings/guards are the harness defaults.
+    const LH = Zotero._wvLH;
+    if (!LH) throw new Error("load test/live/lib/harness.js first (Zotero._wvLH missing)");
+    const H = LH.make();
+    const { win, zp, lp, sleep, rp, G, fnv, stable, faSettle, syncControl } = H;
     const cv = () => zp.collectionsView;
-    const G = () => lp._activeGroup();
-    const fnv = (arr) => {
-        let h = 0x811c9dc5;
-        for (const x of arr) { h = (h ^ x) >>> 0; h = Math.imul(h, 0x01000193) >>> 0; }
-        return h.toString(16);
-    };
+    const search = (text) => H.search(text);
+    const applyChip = (mutate) => H.applyChip(mutate);
+    const clearChip = () => H.clearChip();
+    const advSearch = (x) => H.advSearch(x);
 
     /* Borrow-and-return of auto-sync, ported from filter-matrix.js on
      * 2026-08-09 — and NOT optional.
@@ -61,54 +58,9 @@
      * clean cannot be distinguished from one that was perturbed. Treat a
      * non-zero `itemsChangedDuringRun` as invalidating the run, not as a
      * footnote. */
-    const syncControl = {
-        prevAutoSync: null,
-        async disable() {
-            try {
-                this.prevAutoSync = Zotero.Prefs.get("sync.autoSync");
-                Zotero.Prefs.set("sync.autoSync", false);
-            } catch (e) {}
-        },
-        restore() {
-            try {
-                if (this.prevAutoSync !== null) {
-                    Zotero.Prefs.set("sync.autoSync", this.prevAutoSync);
-                }
-            } catch (e) {}
-        },
-        async itemsChangedSince(sqlDate) {
-            try {
-                return await Zotero.DB.valueQueryAsync(
-                    "SELECT COUNT(*) FROM items WHERE clientDateModified > ?",
-                    [sqlDate]);
-            } catch (e) { return null; }
-        },
-    };
 
-    const R = {
-        started: new Date().toISOString(),
-        status: "running",
-        checks: [],
-        observations: [],
-        summary() {
-            const failed = this.checks.filter(c => !c.pass);
-            return {
-                status: this.status,
-                ran: this.checks.length,
-                passed: this.checks.filter(c => c.pass).length,
-                // Surfaced in the SUMMARY, not buried on the result
-                // object: a run during which the library changed is not
-                // evidence, and that has to be impossible to overlook.
-                itemsChangedDuringRun: this.itemsChangedDuringRun,
-                trustworthy: this.itemsChangedDuringRun === 0,
-                failures: failed.map(c => ({ name: c.name, detail: c.detail })),
-                observations: this.observations,
-            };
-        },
-    };
+    const { R, check, observe } = H.mkReport("interactions");
     Zotero._wvInteract = R;
-    const check = (name, pass, detail) => R.checks.push({ name, pass: !!pass, detail });
-    const observe = (name, detail) => R.observations.push({ name, detail });
 
     /* dev.15 made the last word asynchronous BY DESIGN: a final apply
      * lands after search quiescence, and the dev.29 stale-keep repair
@@ -116,35 +68,10 @@
      * one report phantom failures (this suite read 8/10 under dev.16
      * while search-modes, which waits, was clean). Wait for BOTH
      * schedulers to go idle rather than sleeping blind. */
-    async function faSettle() {
-        const t0 = Date.now();
-        while ((lp._wvFATimer || lp._wvStaleKeepTimer)
-            && Date.now() - t0 < 15000) await sleep(300);
-        await sleep(1200);
-    }
-
-    async function stable() {
-        let last = -1, steady = 0, guard = 0;
-        while (steady < 4 && guard++ < 200) {
-            await sleep(150);
-            let n = 0;
-            try { n = rp().getRowCount(); } catch (e) {}
-            if (n === last) steady++; else { steady = 0; last = n; }
-        }
-        return last;
-    }
 
     function snap() {
-        const ids = [], open = [];
-        const n = rp().getRowCount();
-        for (let i = 0; i < n; i++) {
-            let row;
-            try { row = rp().getRow(i); } catch (e) { continue; }
-            if (!row || !row.ref) continue;
-            ids.push(row.ref.id);
-            if (row.isOpen) open.push(row.ref.id);
-        }
-        ids.sort((a, b) => a - b); open.sort((a, b) => a - b);
+        const w = H.rowWalk();
+        const ids = w.ids, open = w.open;
         // `ids` is carried along so a FAILING check can report WHICH items
         // differ instead of only a hash mismatch. Two checks failed with
         // equal row counts but different hashes (2026-08-08) and there was
@@ -178,56 +105,10 @@
         };
     }
 
-    async function search(text) {                     // rule 3: `command`
-        const sb = zp.document.getElementById("zotero-tb-search");
-        if (!sb) return;
-        sb.value = text;
-        sb.dispatchEvent(new Event("command"));
-        // Rule 2 (gate on stability, never a fixed sleep) — this helper
-        // was the one place that ignored it, and it made the file lie.
-        // Measured 2026-08-08: clearing a search on the real library
-        // BLOCKS the main thread ~5.5s inside Zotero's own rebuild, so a
-        // 4200ms sleep snapshotted the view mid-rebuild and reported a
-        // Weavero failure for work Zotero had not finished. Row count
-        // also changes when a stale keep is rebuilt, so stability
-        // naturally covers that repair too — no extra grace needed.
-        await sleep(500);
-        await stable();
-        await sleep(400);
-    }
 
-    function reset() {
-        lp._filterState.groups.length = 1;
-        const g = G();
-        for (const k of ["itemType", "itemTypeExclude", "annotationColor",
-            "attachmentFileType"]) g[k] = [];
-        for (const k of ["hasURL", "hasAttachment", "inOtherLibrary"]) g[k] = null;
-        lp._filterState.collections = [];
-        lp._filterState.savedSearches = [];
-    }
 
-    async function applyChip(mutate) {
-        reset();
-        mutate(G());
-        await sleep(950);
-        lp._applyItemsListFilter({ cascade: true });
-        await stable();
-        await sleep(400);
-    }
 
-    async function clearChip() {
-        reset();
-        await sleep(950);
-        lp._applyItemsListFilter({ cascade: true });
-        await stable();
-        await sleep(300);
-    }
 
-    async function advSearch(searchOrNull) {
-        await zp.itemsView.setFilter("advanced-search", searchOrNull);
-        await stable();
-        await sleep(500);
-    }
 
     function pdfSearch() {
         const s = new Zotero.Search();

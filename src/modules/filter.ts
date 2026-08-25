@@ -522,7 +522,15 @@ class _FilterMixin {
                     ? "expandMatchParents"
                     : null);
             if (!methodName) return;
-            if (rp._wvExpandMatchParentsPatched) return;
+            // Tag-keyed both ways: "upstream-fixed@<tag>" and plain <tag>.
+            // A stale stamp (another build, or the boolean era) peels the
+            // wrapper first so the source sniff below reads ZOTERO's
+            // function, never our own replacement (which would read as
+            // "upstream-fixed" and silently drop the patch).
+            const wireTag = this._wvWireTag();
+            if (rp._wvExpandMatchParentsPatched === wireTag
+                || rp._wvExpandMatchParentsPatched === "upstream-fixed@" + wireTag) return;
+            if (rp._wvExpandMatchParentsPatched) delete rp[methodName];
             const orig = rp[methodName];
             const src = String(orig);
             // V9-COMPAT: Zotero 9's expandMatchParents takes
@@ -531,7 +539,7 @@ class _FilterMixin {
             // is a v10 nicety scoped out of basic v9 filter support.
             if (methodName === "expandMatchParents"
                 || !src.includes("rowsToOpen")) {
-                rp._wvExpandMatchParentsPatched = "upstream-fixed";
+                rp._wvExpandMatchParentsPatched = "upstream-fixed@" + wireTag;
                 return;
             }
             const self = this;
@@ -559,7 +567,7 @@ class _FilterMixin {
                 }
                 this.refreshRowMap();
             };
-            rp._wvExpandMatchParentsPatched = "weavero-patched";
+            rp._wvExpandMatchParentsPatched = wireTag;
             Zotero.debug("[Weavero] Patched broken _expandMatchParents (zotero forum #131294, fixed upstream in 8d59331)");
         } catch (e) {
             Zotero.debug("[Weavero] _patchExpandMatchParents err: " + e);
@@ -5408,9 +5416,12 @@ class _FilterMixin {
         try {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (itemsView && typeof itemsView.setFilter === "function"
-                && !itemsView._wvSetFilterWrapped) {
+                && itemsView._wvSetFilterWrapped !== this._wvWireTag()) {
+                // A stamp from another build: peel that build's wrapper so we
+                // bind the PROTOTYPE original, not a stale closure.
+                if (itemsView._wvSetFilterWrapped) delete itemsView.setFilter;
                 const origSetFilter = itemsView.setFilter.bind(itemsView);
-                itemsView._wvSetFilterWrapped = true;
+                itemsView._wvSetFilterWrapped = this._wvWireTag();
                 itemsView.setFilter = async (type, data) => {
                     this._collectionSwapping = true;
                     this._pauseFilterPatches();
@@ -5526,9 +5537,10 @@ class _FilterMixin {
         try {
             const itemsView = win && win.ZoteroPane && win.ZoteroPane.itemsView;
             if (itemsView && typeof itemsView.changeCollectionTreeRow === "function"
-                && !itemsView._wvCollChangeWrapped) {
+                && itemsView._wvCollChangeWrapped !== this._wvWireTag()) {
+                if (itemsView._wvCollChangeWrapped) delete itemsView.changeCollectionTreeRow;
                 const origChange = itemsView.changeCollectionTreeRow.bind(itemsView);
-                itemsView._wvCollChangeWrapped = true;
+                itemsView._wvCollChangeWrapped = this._wvWireTag();
                 itemsView.changeCollectionTreeRow = async (treeRow) => {
                     // Critical: un-patch the rowProvider BEFORE
                     // Zotero's collection-load logic runs. Otherwise
@@ -12690,11 +12702,36 @@ class _FilterMixin {
      *  Skipped above a size cap — resolving ids costs a getRow per row,
      *  and a select-all would pay it on every keystroke; huge selections
      *  keep the previous (derive-or-clear) behaviour. */
+    /** The wire tag every per-view/per-provider wrap in this module stamps
+     *  itself with. PER BUILD (the plugin version), not a hand-bumped
+     *  constant: hand-bumped versions re-break on the first release that
+     *  forgets the bump, and the failure mode is brutal — a hot plugin
+     *  upgrade leaves the OLD instance's wrappers installed (stale closures
+     *  over the previous plugin) while boolean "already wired" stamps make
+     *  the NEW instance skip wiring. Observed 2026-08-25 on the default
+     *  profile (dev.2 -> dev.51): filter state active, chip bar rendered,
+     *  apply resolving in 294ms — and 17,932 rows untouched. Restart cured
+     *  it, which is why the dev profile's constant restarts never saw it.
+     *  Same lesson _patchRefreshForReveals paid for on 2026-07-16 ("old
+     *  boolean-only guard survived plugin reloads and kept a STALE wrap
+     *  running") — generalized instead of re-learned per site.
+     *
+     *  Contract for users of this tag: stamp !== tag means "wired by some
+     *  OTHER build (or never)"; peel the own-prop wrapper with `delete`
+     *  (every wrapped member has a live prototype fallback — verified
+     *  live for setFilter, changeCollectionTreeRow,
+     *  _handleSelectionChange, _cacheState, _expandMatchParents) and wire
+     *  fresh. Guard: test/wire-stamps.spec.js. */
+    _wvWireTag(): string {
+        return "wv@" + ((this as any)._version || "dev");
+    }
+
     _wvPatchSelectionChangeForCapture(itemsView: any) {
         try {
             if (!itemsView
                 || typeof itemsView._handleSelectionChange !== "function") return;
-            if (itemsView._wvSelChangeWired === 1) return;
+            if (itemsView._wvSelChangeWired === this._wvWireTag()) return;
+            if (itemsView._wvSelChangeWired) delete itemsView._handleSelectionChange;
             const orig = itemsView._handleSelectionChange.bind(itemsView);
             const CAP = 500;
             itemsView._handleSelectionChange = function (selection: any, debounce: any) {
@@ -12716,7 +12753,7 @@ class _FilterMixin {
                 } catch (e) {}
                 return orig(selection, debounce);
             };
-            itemsView._wvSelChangeWired = 1;
+            itemsView._wvSelChangeWired = this._wvWireTag();
         } catch (e) {
             Zotero.debug("[Weavero] _wvPatchSelectionChangeForCapture err: " + e);
         }
@@ -12729,7 +12766,8 @@ class _FilterMixin {
     _wvPatchCacheStateForSelection(itemsView: any) {
         try {
             if (!itemsView || typeof itemsView._cacheState !== "function") return;
-            if (itemsView._wvCacheStateWired === 1) return;
+            if (itemsView._wvCacheStateWired === this._wvWireTag()) return;
+            if (itemsView._wvCacheStateWired) delete itemsView._cacheState;
             const orig = itemsView._cacheState.bind(itemsView);
             itemsView._cacheState = function () {
                 const r = orig();
@@ -12744,7 +12782,7 @@ class _FilterMixin {
                 } catch (e) {}
                 return r;
             };
-            itemsView._wvCacheStateWired = 1;
+            itemsView._wvCacheStateWired = this._wvWireTag();
         } catch (e) {
             Zotero.debug("[Weavero] _wvPatchCacheStateForSelection err: " + e);
         }

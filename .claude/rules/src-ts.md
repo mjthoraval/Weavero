@@ -36,6 +36,15 @@ name to a Zotero object, window, or document.
   go stale across reloads. Async-setup continuations: liveness-check after
   every await; callbacks self-neutralize; long-lived per-window wiring uses a
   numeric `_wv*Wired` version stamp + stored handler refs.
+- Wraps installed on LONG-LIVED Zotero objects (itemsView, rowProvider,
+  windows) stamp themselves with `this._wvWireTag()` — the BUILD version —
+  never a boolean and never a hand-bumped constant. A foreign stamp means
+  "wired by another build": peel the own-prop wrapper with `delete` (wrapped
+  members must have a live prototype fallback) and wire fresh. Booleans
+  shipped the hot-upgrade filter death (2026-08-25: stamps survived the
+  upgrade, the new instance skipped wiring, the filter went silently dead
+  until restart); a hand-bumped constant re-breaks on the first release that
+  forgets the bump. Guard: `test/wire-stamps.spec.js`.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).

@@ -83,7 +83,16 @@ manifest changed, their rules files carry the extra checks.
   session on small changes).
 - Perf-relevant changes (filter apply path, per-row rendering, reader
   load): run the matching `bench/` suite (TESTING.md Level 5) —
-  `bench-weavero-ui.js` times items-list filter apply/clear.
+  `bench-filter-search.js` times filter/search per dimension, mode and
+  window (it superseded bench-weavero-ui's filter numbers, whose 5s poll
+  cap returned -1 on a real library). Compare against
+  `work/perf-baselines.json`; >1.5x = flag it. For "where did the time
+  go", re-run with `Zotero._wvBenchProfile = true` and read the WV
+  markers in the saved Gecko profile.
+- Touched filter/search/reader-filter machinery: run the live suites via
+  `test/live/run-all.js` (core profile) after the user has validated the
+  change — same sequencing as the full npm suite above. Pre-release:
+  `full` (adds the matrix).
 
 ## 6. Report
 

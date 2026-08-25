@@ -22,6 +22,20 @@ measure any plugin that touches the reader sidebar or the tab system.
   item IDs before running. Use a scratch profile/library, not your real
   one: the fixture generator writes 200 annotations.
 
+## Scripts
+
+- `bench-filter-search.js` — **the filter/search timing suite**: items-list
+  filter apply/clear per dimension (medians over 3 loops), quick search
+  apply/clear per mode (titleCreatorYear / fields / everything), and the
+  combined chip+search path — in window A and, when a second main window is
+  open, window B. Read-only; restores selection, filter state and the
+  quicksearch mode; self-reports to `Zotero._wvBenchFS` with an
+  `itemsChangedDuringRun` certification. Supersedes `bench-weavero-ui.js`'s
+  filter numbers: that script's fixed 5s poll simply returned `-1` on a
+  real library (measured 2026-08-25 — the apply takes ~1s on 17,932 visible
+  rows and the poll design cannot see completion). Machine baselines live
+  OUTSIDE this public folder (they are hardware-specific).
+
 ## Running a script
 
 ```bash

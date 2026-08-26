@@ -6063,7 +6063,7 @@ class _ReaderPanelsMixin {
                         };
                     }
                 } catch (_) {}
-                const title = this._wvOutlineDomPinTitle(dom);
+                const title = "Pinned spot";   // plain default by request (2026-08-26): the clicked-text title was never useful
                 Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos, orderOpts))
                     .then((res: any) => {
                         if (!res || !res.stored) return;
@@ -6443,25 +6443,6 @@ class _ReaderPanelsMixin {
      *  outline if needed and ordering the entry by its target page (a light
      *  heuristic; drag reorders precisely). Returns `{ att, stored }` or null.
      *  Shared by every "+" add flow. 2026-07-23. */
-    /** Default title for a pin entry dropped at a DOM point: the text the
-     *  user pinned, read from the clicked text node at the caret — the same
-     *  "the gesture already says what you mean" rule that removed the modal
-     *  title prompt from the select-text flow (2026-08-21). Word-trimmed to
-     *  40 chars; media/margin clicks fall back to a plain label. */
-    _wvOutlineDomPinTitle(dom: any): string {
-        try {
-            const rng = dom && dom.range;
-            const n = rng && rng.startContainer;
-            if (n && n.nodeType === 3) {
-                let t = String(n.nodeValue || "").slice(rng.startOffset || 0).trim();
-                if (!t) t = String(n.nodeValue || "").trim();
-                if (t.length > 40) t = t.slice(0, 40).replace(/\s+\S*$/u, "");
-                if (t) return t;
-            }
-        } catch (_) {}
-        return "Pinned spot";
-    }
-
     async _wvOutlineCreateEntry(reader: any, idoc: any, title: string, pos: any, opts?: any): Promise<any> {
         try {
             const att = this._wvReaderAtt(reader);
@@ -17870,7 +17851,7 @@ class _ReaderPanelsMixin {
                             // Derived title + inline rename, no modal (same
                             // change as the + pin flow, 2026-08-26).
                             const title = isDom
-                                ? live._wvOutlineDomPinTitle(dom)
+                                ? "Pinned spot"   // plain default by request (2026-08-26)
                                 : "Page " + (() => { try { const a0 = live._wvReaderAtt(reader); return a0 ? live._wvBmPageLabelFor(a0, pt.pageIndex) : String(pt.pageIndex + 1); } catch (_) { return String(pt.pageIndex + 1); } })() + " pin";
                             // `anchor:"point"` marks a hand-placed spot on BOTH
                             // families. On PDF it also selects the exact-rect

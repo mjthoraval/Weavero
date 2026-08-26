@@ -6251,6 +6251,16 @@ class _ReaderPanelsMixin {
             // every drop silently "stayed armed" (reported: the + turns the
             // mouse into a pin, but a click does not place it).
             const isDom = !!(pv && typeof pv.toSelector === "function");
+            // Same zombie-arm guard as the select-region arm (see there).
+            const pinGen = (reader._wvPinArmGen = (reader._wvPinArmGen || 0) + 1);
+            const lpPin = this;
+            const pinStale = () => {
+                try {
+                    if (reader._wvPinArmGen !== pinGen) return true;
+                    const cur: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    return cur !== lpPin;
+                } catch (_) { return true; }
+            };
             const viewerC = pdoc.getElementById("viewerContainer")
                 || (isDom ? pdoc.documentElement : null);
             this._wvReaderPanelNote(idoc, "Move to a spot and click to drop the pin (Esc to cancel).");
@@ -6280,9 +6290,16 @@ class _ReaderPanelsMixin {
                 try { pdoc.removeEventListener("click", onClick, true); } catch (_) {}
                 try { pdoc.removeEventListener("keydown", onKey, true); } catch (_) {}
             };
-            onMove = (e: any) => { try { ghost.style.left = e.clientX + "px"; ghost.style.top = e.clientY + "px"; ghost.style.opacity = "1"; } catch (_) {} };
-            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Pin cancelled."); } };
+            onMove = (e: any) => {
+                if (pinStale()) { cleanup(); return; }
+                try { ghost.style.left = e.clientX + "px"; ghost.style.top = e.clientY + "px"; ghost.style.opacity = "1"; } catch (_) {}
+            };
+            onKey = (e: any) => {
+                if (pinStale()) { cleanup(); return; }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Pin cancelled."); }
+            };
             onClick = (e: any) => {
+                if (pinStale()) { cleanup(); return; }
                 try {
                     if (isDom) {
                         e.preventDefault(); e.stopPropagation();
@@ -6571,6 +6588,24 @@ class _ReaderPanelsMixin {
             const win = pv && pv._iframeWindow;
             const pdoc = win && win.document;
             if (!pdoc) return;
+            // ZOMBIE-ARM GUARD (2026-08-26): the arm's listeners live on the
+            // CONTENT document and survive plugin reloads holding dead
+            // closures. A stale arm from an earlier attempt ate every later
+            // selection AT MOUSEUP — collapsed 13ms after the drag ended,
+            // recorded with the user's own gesture — which is what made
+            // "Edit Region does not do anything" unfixable at the call sites.
+            // Each arm stamps a per-reader generation (`reader` survives
+            // reloads); only the NEWEST arm of the LIVE plugin instance may
+            // consume; anything else self-detaches on its first event.
+            const armGen = (reader._wvSelArmGen = (reader._wvSelArmGen || 0) + 1);
+            const lp = this;
+            const armStale = () => {
+                try {
+                    if (reader._wvSelArmGen !== armGen) return true;
+                    const cur: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    return cur !== lp;
+                } catch (_) { return true; }
+            };
             // Text ALREADY selected -> use it immediately. The natural gesture
             // is select-then-command; the arm waited for a SECOND selection
             // with only a small note as feedback, which read as "does not do
@@ -6636,8 +6671,12 @@ class _ReaderPanelsMixin {
                 try { if (supTimer) idoc.defaultView.clearTimeout(supTimer); } catch (_) {}
             };
             const cleanup = () => { detach(); dropSuppression(); };
-            onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); } };
+            onKey = (e: any) => {
+                if (armStale()) { cleanup(); return; }
+                if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Cancelled."); }
+            };
             onUp = () => {
+                if (armStale()) { cleanup(); return; }
                 try {
                     win.setTimeout(() => {
                         try {
@@ -18724,14 +18763,26 @@ class _ReaderPanelsMixin {
      *  the live selection is gone (freshness cap 45s, so a stale snapshot
      *  can never cause a surprise re-anchor minutes later). Build-keyed per
      *  the wire-tag rule. */
-    _wvWireDomSelTracker(reader: any) {
+    _wvWireDomSelTracker(reader: any, tries?: number) {
         try {
+            const n = tries || 0;
             const ir = reader && reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
-            if (!pv || typeof pv.toSelector !== "function") return;   // DOM views only
-            const doc = pv._iframeDocument;
-            const win = pv._iframeWindow;
-            if (!doc || !win) return;
+            const doc = pv && pv._iframeDocument;
+            const win = pv && pv._iframeWindow;
+            if (!pv || !doc || !win) {
+                // The per-reader setup runs BEFORE a slow EPUB's view exists
+                // — without a retry the tracker never wired on such readers
+                // (found on a fresh tab reload, 2026-08-26). Same retry shape
+                // as _wvOutlineInstallRecovery.
+                if (n < 40) {
+                    const w0: any = Zotero.getMainWindow();
+                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                        () => { try { this._wvWireDomSelTracker(reader, n + 1); } catch (_) {} }, 250);
+                }
+                return;
+            }
+            if (typeof pv.toSelector !== "function") return;   // DOM views only
             const tag = this._wvWireTag();
             if (pv._wvSelTrackWired === tag) return;
             if (pv._wvSelTrackFn) {

@@ -45,6 +45,15 @@ name to a Zotero object, window, or document.
   upgrade, the new instance skipped wiring, the filter went silently dead
   until restart); a hand-bumped constant re-breaks on the first release that
   forgets the bump. Guard: `test/wire-stamps.spec.js`.
+- ONE-SHOT ARMED LISTENERS on content documents (the select-region and
+  pin-placement arms) are the same failure family: the listener closures
+  survive plugin reloads on the content doc, and a stale arm CONSUMES the
+  user's next gesture (2026-08-26: a zombie select-region arm collapsed
+  every EPUB selection 13ms after mouseup — "Edit Region does nothing" was
+  undiagnosable at the call sites). Every arm stamps a per-reader
+  generation (`reader._wv*ArmGen` — `reader` survives reloads) and checks
+  generation + live plugin instance on its FIRST event, self-detaching when
+  stale. Never arm without both checks.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).

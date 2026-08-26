@@ -18607,7 +18607,18 @@ class _ReaderPanelsMixin {
      *  the native blue read as a murky green (screenshot, 2026-08-26).
      *  Older readers without setSpotlight still get the Weavero flash. */
     _wvDomNativeSpotlights(pv: any): boolean {
-        try { return !!(pv && typeof pv.setSpotlight === "function"); } catch (_) { return false; }
+        // setSpotlight exists on BOTH DOM views (inherited from DOMView), but
+        // only the EPUB view actually RENDERS the Navigation spotlight — on a
+        // snapshot the selector lands in `_spotlights` and the annotation
+        // overlay paints NOTHING (verified live 2026-08-26: spotlights size 1,
+        // zero colored overlay elements; "Text is not highlighted in the
+        // Snapshot"). Gate on the view that provably paints (getCFI marks the
+        // EPUB view). Upstream register entry: retire the getCFI qualifier
+        // when snapshot spotlights visibly render.
+        try {
+            return !!(pv && typeof pv.setSpotlight === "function"
+                && typeof pv.getCFI === "function");
+        } catch (_) { return false; }
     }
 
     _wvDomNativeOutlineFlash(reader: any, pv: any, location: any) {

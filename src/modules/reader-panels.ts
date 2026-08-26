@@ -6577,7 +6577,17 @@ class _ReaderPanelsMixin {
             // anything" (snapshot Edit Region, 2026-08-26). Arming is now only
             // the fallback for command-then-select.
             try {
-                const pre = this._wvOutlineReadSelection(reader);
+                let pre = this._wvOutlineReadSelection(reader);
+                if (!pre || !pre.position) {
+                    // The EPUB cleared the live selection during the
+                    // right-click — consume the tracker's snapshot, one-shot.
+                    const snap = reader._wvLastSel;
+                    if (snap && snap.sel && snap.sel.position
+                            && (Date.now() - snap.t) < 45000) {
+                        pre = snap.sel;
+                        reader._wvLastSel = null;
+                    }
+                }
                 if (pre && pre.position) {
                     try {
                         const vs0 = win.getSelection && win.getSelection();
@@ -18703,6 +18713,50 @@ class _ReaderPanelsMixin {
             };
             if (win) win.setTimeout(attempt, 120); else attempt();
         } catch (e) { Zotero.debug("[Weavero] _wvDomNativeOutlineFlash err: " + e); }
+    }
+
+    /** Remember the last REAL text selection in a DOM view. The EPUB view
+     *  clears the content selection during the right-click on the panel row
+     *  (the snapshot keeps it), so select-then-"Edit Region" arrived with
+     *  nothing to read and silently armed instead — recorded live with the
+     *  user's own gesture, 2026-08-26. Debounced 300ms per settled
+     *  selection; the arm's fast path consumes the snapshot ONE-SHOT when
+     *  the live selection is gone (freshness cap 45s, so a stale snapshot
+     *  can never cause a surprise re-anchor minutes later). Build-keyed per
+     *  the wire-tag rule. */
+    _wvWireDomSelTracker(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            if (!pv || typeof pv.toSelector !== "function") return;   // DOM views only
+            const doc = pv._iframeDocument;
+            const win = pv._iframeWindow;
+            if (!doc || !win) return;
+            const tag = this._wvWireTag();
+            if (pv._wvSelTrackWired === tag) return;
+            if (pv._wvSelTrackFn) {
+                try { doc.removeEventListener("selectionchange", pv._wvSelTrackFn); } catch (_) {}
+            }
+            let timer: any = null;
+            const fn = () => {
+                try {
+                    if (timer) win.clearTimeout(timer);
+                    timer = win.setTimeout(() => {
+                        try {
+                            const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (!lp) return;
+                            const sel = win.getSelection();
+                            if (!sel || sel.isCollapsed) return;   // keep the LAST non-collapsed one
+                            const info = lp._wvOutlineReadSelection(reader);
+                            if (info && info.position) reader._wvLastSel = { sel: info, t: Date.now() };
+                        } catch (_) {}
+                    }, 300);
+                } catch (_) {}
+            };
+            doc.addEventListener("selectionchange", fn);
+            pv._wvSelTrackFn = fn;
+            pv._wvSelTrackWired = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireDomSelTracker err: " + e); }
     }
 
     _wvOutlineInstallRecovery(reader: any, tries?: number) {

@@ -11090,6 +11090,7 @@ class _ReaderMixin {
             // Outline text highlight (in-place): make embedded-outline clicks
             // flash the heading text. No-op for non-PDF / no match.
             try { this._wvOutlineInstallRecovery(reader); } catch (_) {}
+            try { (this as any)._wvWireDomSelTracker(reader); } catch (_) {}
 
             // Also wire up text-annotation handling in the nested PDF.js iframe.
             // (The drag tracker for canvas annotations is wired from

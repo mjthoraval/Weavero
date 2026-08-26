@@ -12973,7 +12973,16 @@ class _ReaderPanelsMixin {
             const seq = gen != null ? gen : (pv._wvDomHlSeq = (pv._wvDomHlSeq || 0) + 1);
             for (const el of [...doc.querySelectorAll(".wv-dom-heading-flash")]) el.remove();
             if (pv._wvDomHlTimer) { try { iwin.clearTimeout(pv._wvDomHlTimer); } catch (_) {} }
-            const rects = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+            let rects = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+            // A range over an ELEMENT (an href target) reports the element's
+            // border box PLUS each line's box; painting both stacks the alpha
+            // — a big pale box with darker lines inside ("Why 2 boxes?",
+            // 2026-08-26). Keep only the leaf rects: drop any rect that fully
+            // contains another. Matches the per-line look of the PDF flash.
+            rects = rects.filter(a => !rects.some(b => b !== a
+                && a.left <= b.left + 1 && a.right >= b.right - 1
+                && a.top <= b.top + 1 && a.bottom >= b.bottom - 1
+                && (a.width > b.width + 2 || a.height > b.height + 2)));
             if (!rects.length) return;
             for (const r of rects.slice(0, 40)) {
                 const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");

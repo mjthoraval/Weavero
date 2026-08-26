@@ -123,3 +123,76 @@ describe("Weavero — media pin fractional placement", () => {
         assert.isFalse(Number.isNaN(pt.x) || Number.isNaN(pt.y));
     });
 });
+
+// Arm GENERATION guard (2026-08-26): stale arms survive on the content doc
+// across plugin reloads and consumed later gestures. Only the NEWEST arm may
+// act; an older one self-detaches on its first event.
+describe("Weavero — only the newest pin arm consumes", () => {
+    let wv, win;
+
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvOutlineArmPinPlacement !== "function") this.skip();
+        win = Zotero.getMainWindow();
+    });
+
+    it("arming twice: the first arm's click handler self-detaches", () => {
+        const doc = win.document.implementation.createHTMLDocument("wv-armgen");
+        const fakeWin = { document: doc, setTimeout: () => 0, clearTimeout: () => {} };
+        const pv = { toSelector: () => null, _iframeWindow: fakeWin, _iframeDocument: doc };
+        const reader = { _type: "snapshot", _internalReader: { _primaryView: pv } };
+        const idoc = win.document.implementation.createHTMLDocument("wv-armgen-panel");
+        wv._wvDomAnchorFromContentPoint = () =>
+            ({ selector: { type: "CssSelector", value: "#x" }, cfi: null, sortIndex: null });
+        try {
+            let first = 0, second = 0;
+            wv._wvOutlineArmPinPlacement(reader, idoc, () => {}, () => { first++; });
+            wv._wvOutlineArmPinPlacement(reader, idoc, () => {}, () => { second++; });
+            doc.dispatchEvent(new win.MouseEvent("click", { bubbles: true, clientX: 10, clientY: 10 }));
+            assert.equal(first, 0, "the STALE arm must not consume — the zombie-arm shape");
+            assert.equal(second, 1, "the newest arm consumes exactly once");
+        } finally { delete wv._wvDomAnchorFromContentPoint; }
+    });
+});
+
+// Flash painter rect hygiene (2026-08-26): a range over an element reports
+// the element box PLUS line boxes, and some snapshot ranges report every
+// line TWICE — any double paint doubles the multiply and reads as a deeper
+// colour. The painter must draw each covered line exactly once.
+describe("Weavero — flash painter paints each line exactly once", () => {
+    let wv, win;
+
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvDomHighlightRange !== "function") this.skip();
+        win = Zotero.getMainWindow();
+    });
+
+    const mkPv = () => {
+        const doc = win.document.implementation.createHTMLDocument("wv-paint");
+        const fakeWin = { document: doc, setTimeout: () => 1, clearTimeout: () => {}, scrollX: 0, scrollY: 0 };
+        return { pv: { _iframeWindow: fakeWin, _iframeDocument: doc }, doc };
+    };
+    const R = (l, t, w, h) => ({ left: l, top: t, width: w, height: h, right: l + w, bottom: t + h });
+    const fakeRange = (rects) => ({ getClientRects: () => rects, getBoundingClientRect: () => rects[0] });
+
+    it("drops the element box that contains the line boxes", () => {
+        const { pv, doc } = mkPv();
+        wv._wvDomHighlightRange(pv, fakeRange([R(10, 10, 500, 60), R(10, 10, 500, 28), R(10, 42, 400, 28)]));
+        assert.equal(doc.querySelectorAll(".wv-dom-heading-flash").length, 2,
+            "container box + 2 lines must paint as 2 line boxes");
+    });
+
+    it("drops exact duplicate line boxes (the measured deeper-blue shape)", () => {
+        const { pv, doc } = mkPv();
+        wv._wvDomHighlightRange(pv, fakeRange([R(15, 100, 938, 28), R(15, 137, 842, 28), R(15, 100, 938, 28), R(15, 137, 842, 28)]));
+        assert.equal(doc.querySelectorAll(".wv-dom-heading-flash").length, 2,
+            "4 reported rects for 2 lines paint exactly 2 boxes");
+    });
+
+    it("distinct lines all paint", () => {
+        const { pv, doc } = mkPv();
+        wv._wvDomHighlightRange(pv, fakeRange([R(0, 0, 300, 20), R(0, 25, 300, 20), R(0, 50, 200, 20)]));
+        assert.equal(doc.querySelectorAll(".wv-dom-heading-flash").length, 3);
+    });
+});

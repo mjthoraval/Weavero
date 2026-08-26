@@ -251,7 +251,8 @@ native machinery.
 | Trigger | Required | Recommended |
 |---|---|---|
 | Any `src/` edit | Level 0 | — |
-| Before any commit / build | Level 0 + Level 1 | — |
+| Before any commit / build | Level 0 + the targeted specs for what changed | — |
+| After the user validates a feature batch (and before any push/release) | Level 1 (full suite) | — (the runner's temp-profile Zotero competes with the instance under test — never run it while live testing is ongoing) |
 | After installing a dev build | Level 3 probe of the changed feature | — |
 | Touched tabs/windows/reader lifecycle | Levels 1 + 3 | tear-off/merge hand pass |
 | Touched popups | `popups.spec.js` | popup hand pass |

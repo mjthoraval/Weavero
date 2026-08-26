@@ -12991,14 +12991,27 @@ class _ReaderPanelsMixin {
                     + "left:" + (r.left + iwin.scrollX - 2) + "px;"
                     + "top:" + (r.top + iwin.scrollY - 1) + "px;"
                     + "width:" + (r.width + 4) + "px;height:" + (r.height + 2) + "px;"
-                    + "background:rgba(113,173,253,.45);border-radius:3px;"
+                    + "background:#B8D6FE;border-radius:3px;"
+                    + "mix-blend-mode:multiply;"
                     + "transition:opacity .3s ease-out;";
                 // The snapshot's own site CSS can override a plain inline
                 // background with !important (Annual Reviews does), leaving
                 // the box transparent — present, positioned, and invisible
                 // ("Still not", 2026-08-26; computed bg was rgba(0,0,0,0)).
                 // An inline !important outranks any stylesheet.
-                try { box.style.setProperty("background", "rgba(113,173,253,.45)", "important"); } catch (_) {}
+                // SOLID selection blue MULTIPLIED onto the page — alpha-over-
+                // text washed both the colour and the glyphs, so the flash
+                // looked different from a native selection of the same text
+                // ("Why is it not the same color?", 2026-08-26). Multiply
+                // keeps the text crisp and lands on the native selection look.
+                // #B8D6FE = the reader's ::selection colour rgba(113,173,253,.5)
+                // PRE-BLENDED ON WHITE: multiplying it onto the page gives the
+                // exact pixels a native selection produces behind black text
+                // (measured live, 2026-08-26), with the glyphs staying crisp.
+                try {
+                    box.style.setProperty("background", "#B8D6FE", "important");
+                    box.style.setProperty("mix-blend-mode", "multiply", "important");
+                } catch (_) {}
                 doc.body.appendChild(box);
             }
             pv._wvDomHlTimer = iwin.setTimeout(() => {
@@ -19942,7 +19955,40 @@ class _ReaderPanelsMixin {
                     const manchor = this._wvDomMediaAnchorAt(pv, idc, media, cx, cy);
                     if (manchor) return manchor;
                 }
+                // BESIDE a media element: a drop in the margin next to an
+                // image used to snap to the nearest TEXT — often a paragraph
+                // far above — while the user plainly meant the figure ("I
+                // was dropping the pin on the right-side of the image",
+                // 2026-08-26). When a media edge is closer than the nearest
+                // text, anchor to the media: the clamped fractional offset
+                // pins the image's nearest edge AT THE DROP HEIGHT, so the
+                // pin stays visually where it was dropped.
                 const near = this._wvNearestTextCaret(idc, cx, cy);
+                let nearDist = Infinity;
+                if (near) {
+                    try {
+                        const r0 = idc.createRange();
+                        r0.setStart(near.offsetNode, near.offset); r0.collapse(true);
+                        const rc0 = r0.getBoundingClientRect();
+                        nearDist = Math.hypot(rc0.left - cx, rc0.top + rc0.height / 2 - cy);
+                    } catch (_) {}
+                }
+                try {
+                    let bestM: any = null;
+                    for (const m of idc.querySelectorAll("img, svg, video, canvas, picture, image")) {
+                        const r = m.getBoundingClientRect();
+                        if (!r.width || !r.height) continue;
+                        if (cy < r.top - 24 || cy > r.bottom + 24) continue;
+                        const dx = cx < r.left ? r.left - cx : (cx > r.right ? cx - r.right : 0);
+                        const dy = cy < r.top ? r.top - cy : (cy > r.bottom ? cy - r.bottom : 0);
+                        const dist = Math.hypot(dx, dy);
+                        if (dist < 320 && (!bestM || dist < bestM.dist)) bestM = { media: m, dist };
+                    }
+                    if (bestM && bestM.dist < nearDist) {
+                        const a2 = this._wvDomMediaAnchorAt(pv, idc, bestM.media, cx, cy);
+                        if (a2) return a2;
+                    }
+                } catch (_) {}
                 if (!near) return null;
                 node = near.offsetNode; offset = near.offset;
             }

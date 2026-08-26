@@ -19423,6 +19423,23 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                     return;
                 }
+                // SNAP the pin to where the anchor actually resolved — the
+                // store has always snapped to the nearest text/media (a
+                // reflowable format cannot hold a raw pixel), but the pin
+                // element stayed at the drop pixels, so what the user saw
+                // disagreed with what was saved until the next navigation
+                // (reported 2026-08-26). Same placement math as the draw.
+                try {
+                    const rc2 = anchor.range && anchor.range.getBoundingClientRect();
+                    if (rc2 && (rc2.width || rc2.height || rc2.top || rc2.left)) {
+                        pin.style.transition = "left .15s ease-out, top .15s ease-out";
+                        pin.style.left = (rc2.left + rc2.width / 2 + (iwin.scrollX || 0)) + "px";
+                        pin.style.top = (rc2.top + (iwin.scrollY || 0)) + "px";
+                        iwin.setTimeout(() => {
+                            try { pin.style.transition = "opacity .18s ease-out,transform .18s ease-out"; } catch (_) {}
+                        }, 200);
+                    }
+                } catch (_) {}
                 try {
                     if (commit) {
                         // A caller with its own store (the outline) persists

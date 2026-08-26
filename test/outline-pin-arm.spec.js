@@ -88,3 +88,38 @@ describe("Weavero — pin-placement arm routes DOM clicks", () => {
         assert.equal(pdf + dom, 0, "off-page clicks keep the PDF arm armed, unchanged");
     });
 });
+
+// Intra-image precise pins (2026-08-26): an image is internally rigid — it
+// scales as a unit — so a FRACTIONAL offset {rx, ry} keeps pointing at the
+// same visual feature at any rendered size. Text reflows; only media anchors
+// carry an offset. The placement math is shared by the pin draw and the
+// post-drag snap.
+describe("Weavero — media pin fractional placement", () => {
+    let wv;
+
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvDomPinDocPoint !== "function") this.skip();
+    });
+
+    const rect = { left: 100, top: 200, width: 400, height: 300 };
+
+    it("no offset -> top-centre (the text-anchor contract, unchanged)", () => {
+        const pt = wv._wvDomPinDocPoint(rect, 10, 20);
+        assert.equal(pt.x, 100 + 200 + 10);
+        assert.equal(pt.y, 200 + 20);
+    });
+
+    it("a fractional offset places the tip INSIDE the box", () => {
+        const pt = wv._wvDomPinDocPoint(rect, 10, 20, { rx: 0.7, ry: 0.25 });
+        assert.equal(pt.x, 100 + 0.7 * 400 + 10);
+        assert.equal(pt.y, 200 + 0.25 * 300 + 20);
+    });
+
+    it("a malformed offset falls back to top-centre, never NaN", () => {
+        const pt = wv._wvDomPinDocPoint(rect, 0, 0, { rx: "0.5" });
+        assert.equal(pt.x, 300);
+        assert.equal(pt.y, 200);
+        assert.isFalse(Number.isNaN(pt.x) || Number.isNaN(pt.y));
+    });
+});

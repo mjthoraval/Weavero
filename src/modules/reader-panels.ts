@@ -5592,7 +5592,8 @@ class _ReaderPanelsMixin {
             if (!iwin || !doc || !doc.body) return;
             const range = this._wvDomRangeForAnchor(pv, { position: target, href: entry.href });
             if (!range) return;
-            this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm: entry, commit, persist: !!persist });
+            this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm: entry, commit, persist: !!persist,
+                mediaOffset: target && target.mediaOffset });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineShowDomEntryPin err: " + e); }
     }
 
@@ -6170,7 +6171,10 @@ class _ReaderPanelsMixin {
                 if (!name) return;   // cancelled after placing -> nothing created
                 const rec: any = { type: "position", viewType: reader._type, label: name };
                 if (dom.position) rec.position = dom.position;
-                if (dom.cfi) rec.location = { cfi: dom.cfi };
+                if (dom.cfi) {
+                    rec.location = { cfi: dom.cfi };
+                    if (dom.mediaOffset) rec.location.mediaOffset = dom.mediaOffset;
+                }
                 if (dom.sortIndex) rec.sortIndex = dom.sortIndex;
                 Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
                     .then((stored: any) => {
@@ -19239,6 +19243,39 @@ class _ReaderPanelsMixin {
      *  while a smooth scroll is still in flight.
      *
      *  Not usable for PDF: `_wvReaderShowPin` draws in unscaled page units. */
+    /** The rect a media fractional offset is measured against: the MEDIA
+     *  ELEMENT inside the resolved range, not the range box — an EPUB range
+     *  around an <img> node carries line-box padding, and measuring the
+     *  fraction against it drifted the pin ~5% (2026-08-26). */
+    _wvDomPinTargetRect(range: any, wantMedia: boolean): any {
+        const r = range.getBoundingClientRect();
+        if (!wantMedia) return r;
+        try {
+            const M = "img, svg, video, canvas, picture, image";
+            let m: any = null;
+            const c = range.startContainer && range.startContainer.childNodes
+                && range.startContainer.childNodes[range.startOffset];
+            if (c && c.nodeType === 1 && c.matches && c.matches(M)) m = c;
+            if (!m) {
+                let el: any = range.commonAncestorContainer;
+                if (el && el.nodeType === 3) el = el.parentElement;
+                if (el) m = (el.matches && el.matches(M)) ? el : (el.querySelector ? el.querySelector(M) : null);
+            }
+            if (m) return m.getBoundingClientRect();
+        } catch (_) {}
+        return r;
+    }
+
+    /** Document-coordinate point a DOM pin's TIP targets for a resolved
+     *  range: top-centre of the rect, unless a media fractional offset says
+     *  where inside the (rigid) image the pin belongs. */
+    _wvDomPinDocPoint(r: any, sx: number, sy: number, off?: any): { x: number, y: number } {
+        if (off && typeof off.rx === "number" && typeof off.ry === "number") {
+            return { x: r.left + off.rx * r.width + sx, y: r.top + off.ry * r.height + sy };
+        }
+        return { x: r.left + (r.width / 2) + sx, y: r.top + sy };
+    }
+
     _wvReaderDrawDomPin(iwin: any, doc: any, range: any, opts?: any): boolean {
         try {
             if (!range || typeof range.getBoundingClientRect !== "function") return false;
@@ -19247,8 +19284,10 @@ class _ReaderPanelsMixin {
             // all-zero one means the anchor did not resolve to laid-out
             // content, and a pin at the origin would be a lie.
             if (!r || (r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0)) return false;
-            const docX = r.left + (r.width / 2) + iwin.scrollX;
-            const docY = r.top + iwin.scrollY;
+            const rT = this._wvDomPinTargetRect(range, !!(opts && opts.mediaOffset));
+            const pt0 = this._wvDomPinDocPoint(rT, iwin.scrollX || 0, iwin.scrollY || 0, opts && opts.mediaOffset);
+            const docX = pt0.x;
+            const docY = pt0.y;
             try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-reader-pin";
@@ -19432,9 +19471,11 @@ class _ReaderPanelsMixin {
                 try {
                     const rc2 = anchor.range && anchor.range.getBoundingClientRect();
                     if (rc2 && (rc2.width || rc2.height || rc2.top || rc2.left)) {
+                        const rT2 = this._wvDomPinTargetRect(anchor.range, !!anchor.mediaOffset);
+                        const pt2 = this._wvDomPinDocPoint(rT2 || rc2, iwin.scrollX || 0, iwin.scrollY || 0, anchor.mediaOffset);
                         pin.style.transition = "left .15s ease-out, top .15s ease-out";
-                        pin.style.left = (rc2.left + rc2.width / 2 + (iwin.scrollX || 0)) + "px";
-                        pin.style.top = (rc2.top + (iwin.scrollY || 0)) + "px";
+                        pin.style.left = pt2.x + "px";
+                        pin.style.top = pt2.y + "px";
                         iwin.setTimeout(() => {
                             try { pin.style.transition = "opacity .18s ease-out,transform .18s ease-out"; } catch (_) {}
                         }, 200);
@@ -19454,7 +19495,14 @@ class _ReaderPanelsMixin {
                     if (att) {
                         const updates: any = {};
                         if (anchor.position) updates.position = anchor.position;
-                        if (anchor.cfi) updates.location = Object.assign({}, bm.location || {}, { cfi: anchor.cfi });
+                        if (anchor.cfi) {
+                            updates.location = Object.assign({}, bm.location || {}, { cfi: anchor.cfi });
+                            // Carry the intra-image offset — and CLEAR a stale
+                            // one when the new drop is on text, else the old
+                            // image point haunts every later placement.
+                            if (anchor.mediaOffset) updates.location.mediaOffset = anchor.mediaOffset;
+                            else delete updates.location.mediaOffset;
+                        }
                         if (anchor.sortIndex) updates.sortIndex = anchor.sortIndex;
                         await this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates);
                         tr("persisted", { keys: Object.keys(updates).join(",") });
@@ -19523,7 +19571,8 @@ class _ReaderPanelsMixin {
             } catch (_) {}
             const range = pv.toDisplayedRange(arg);
             if (!range) return false;
-            return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist });
+            return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist,
+                mediaOffset: position && position.mediaOffset });
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderShowSnapshotPin err: " + e);
             return false;
@@ -19586,7 +19635,8 @@ class _ReaderPanelsMixin {
             const pr: any = pv.getRange(cfi, true);
             if (!pr) return false;
             const range: any = (typeof pr.toRange === "function") ? pr.toRange() : pr;
-            return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist });
+            return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist,
+                mediaOffset: bm && ((bm.location && bm.location.mediaOffset) || bm.mediaOffset) });
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderShowEpubPin err: " + e);
             return false;
@@ -19638,11 +19688,82 @@ class _ReaderPanelsMixin {
      *  NOTE `_getSortIndex` is PRIVATE upstream. Guarded by `typeof`: if a
      *  reader bump removes it the bookmark still anchors, it just has no
      *  location key and the list keeps manual order. */
+    /** Media anchor with the intra-image fractional offset, round-trip
+     *  gated. PROVE the anchor before storing it: an <img> yields a CFI that
+     *  getRange happily "resolves" — to the START OF THE DOCUMENT, not the
+     *  image — and that navigates nowhere (2026-08-24); a snapshot
+     *  CssSelector for the same image round-trips correctly, so this is a
+     *  per-anchor fact, not a per-view rule.
+     *
+     *  The offset (2026-08-26): an image is internally rigid — it scales as
+     *  a unit — so a FRACTIONAL point keeps meaning the same visual feature
+     *  at any size, the way PDF page coordinates do. Text has no such
+     *  stability, which is why only media anchors carry this. It rides
+     *  INSIDE the selector object (extra keys are tolerated by the
+     *  resolvers, the anchor:"point" precedent) so every store that keeps
+     *  the selector keeps it. */
+    _wvDomMediaAnchorAt(pv: any, idc: any, media: any, cx: number, cy: number): any {
+        try {
+            const mrng = idc.createRange();
+            mrng.selectNode(media);
+            const manchor = this._wvDomAnchorFromRange(pv, mrng);
+            if (!manchor) return null;
+            // Verify the arms INDEPENDENTLY. On the Gulliver EPUB an image's
+            // CFI "resolves" to the document start while the SELECTOR for the
+            // same image round-trips exactly (measured 2026-08-26: cfi
+            // → (0,0), selector → the image) — an all-or-nothing check
+            // threw away a perfectly good anchor. Keep what proves out; when
+            // the CFI arm is dead, bookmarks ride the selector as `position`.
+            const selOk = !!(manchor.selector
+                && this._wvDomAnchorRoundTrips(pv, { position: manchor.selector }, mrng));
+            const cfiOk = !!(manchor.cfi
+                && this._wvDomAnchorRoundTrips(pv, { cfi: manchor.cfi }, mrng));
+            if (!selOk && !cfiOk) return null;
+            if (!cfiOk) manchor.cfi = null;
+            if (!selOk) { manchor.selector = null; if (manchor.position) manchor.position = null; }
+            if (!manchor.position && manchor.selector) manchor.position = manchor.selector;
+            try {
+                const mr = media.getBoundingClientRect();
+                if (mr && mr.width > 0 && mr.height > 0) {
+                    const off = {
+                        rx: Math.round(Math.max(0, Math.min(1, (cx - mr.left) / mr.width)) * 10000) / 10000,
+                        ry: Math.round(Math.max(0, Math.min(1, (cy - mr.top) / mr.height)) * 10000) / 10000,
+                    };
+                    manchor.mediaOffset = off;
+                    if (manchor.selector) manchor.selector.mediaOffset = off;
+                    if (manchor.position && manchor.position !== manchor.selector) manchor.position.mediaOffset = off;
+                }
+            } catch (_) {}
+            return manchor;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDomMediaAnchorAt err: " + e);
+            return null;
+        }
+    }
+
     _wvDomAnchorFromContentPoint(pv: any, cx: number, cy: number): any {
         try {
             if (!pv || typeof pv.toSelector !== "function") return null;
             const idc = pv._iframeDocument;
             if (!idc || typeof idc.caretPositionFromPoint !== "function") return null;
+            // MEDIA FIRST, for true replaced elements. On the snapshot a
+            // click inside an image gives a caret on the IMG (non-text), so
+            // the media fallback below ran — but on the EPUB the same click
+            // returns a caret in the SURROUNDING text node, so the image was
+            // silently anchored to nearby text and the intra-image offset
+            // never engaged (found live 2026-08-26, Gulliver). What the
+            // pointer is ON decides; the caret only decides among text.
+            // FIGURE is deliberately NOT in this first-chance list: a caption
+            // inside a figure must keep anchoring to its own text.
+            try {
+                const hitEl = idc.elementFromPoint(cx, cy);
+                const media0 = hitEl && hitEl.closest
+                    ? hitEl.closest("img, svg, video, canvas, picture, image") : null;
+                if (media0) {
+                    const a0 = this._wvDomMediaAnchorAt(pv, idc, media0, cx, cy);
+                    if (a0) return a0;
+                }
+            } catch (_) {}
             const caret = idc.caretPositionFromPoint(cx, cy);
             if (!caret || !caret.offsetNode) return null;
             // TEXT nodes only. An element hit (an image, a spacer, or an
@@ -19668,17 +19789,8 @@ class _ReaderPanelsMixin {
                     ? el.closest("img, svg, video, canvas, picture, figure, image")
                     : null;
                 if (media) {
-                    const mrng = idc.createRange();
-                    mrng.selectNode(media);
-                    const manchor = this._wvDomAnchorFromRange(pv, mrng);
-                    // PROVE it before storing it. An <img> yields a CFI that
-                    // getRange happily "resolves" — to the START OF THE
-                    // DOCUMENT, not the image — and that navigates nowhere, so
-                    // the bookmark saved fine and then went back to the old
-                    // spot on click (2026-08-24). A snapshot CssSelector for the
-                    // same image round-trips correctly, so this is a per-anchor
-                    // fact, not a per-view rule: verify, do not assume.
-                    if (manchor && this._wvDomAnchorRoundTrips(pv, manchor, mrng)) return manchor;
+                    const manchor = this._wvDomMediaAnchorAt(pv, idc, media, cx, cy);
+                    if (manchor) return manchor;
                 }
                 const near = this._wvNearestTextCaret(idc, cx, cy);
                 if (!near) return null;
@@ -19874,7 +19986,11 @@ class _ReaderPanelsMixin {
                 const domAnchor = this._wvDomPointToAnchor(reader, click);
                 if (domAnchor) {
                     if (domAnchor.position) rec.position = domAnchor.position;
-                    if (domAnchor.cfi) { rec.location = rec.location || {}; rec.location.cfi = domAnchor.cfi; }
+                    if (domAnchor.cfi) {
+                        rec.location = rec.location || {};
+                        rec.location.cfi = domAnchor.cfi;
+                        if (domAnchor.mediaOffset) rec.location.mediaOffset = domAnchor.mediaOffset;
+                    }
                     if (domAnchor.sortIndex) rec.sortIndex = domAnchor.sortIndex;
                 }
             }

@@ -2390,9 +2390,8 @@ class _ReaderPanelsMixin {
     _wvReaderEnsureOutlinePanel(reader: any, idoc: any) {
         try {
             if (!this._getEnableOutlineTakeover()) {
-                try { this._wvReaderActivateOutlineTakeover(reader, idoc, false); } catch (_) {}
-                const old = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
-                if (old) old.remove();
+                // The one strip implementation (view removal included).
+                try { this._wvReaderDeactivateOutlineTakeover(reader, idoc); } catch (_) {}
                 return;
             }
             const content = idoc.getElementById("sidebarContent");
@@ -2990,40 +2989,114 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** FULLY strip the outline takeover from one reader: visibility class,
+     *  parked native tabstop, the Weavero view element, and the per-reader
+     *  caches that belong to it. ONE implementation — the 2026-08-26 incident
+     *  was a partial strip (class only, one reader) done through
+     *  activate(false) directly: the other open readers kept the class with
+     *  nothing maintaining the view behind it, and the outline read as broken
+     *  until each reader's next mutation tick happened to run the ensure
+     *  pass. Deactivation must never depend on a later tick. */
+    /** Propagate `readerOutlineTakeover` flips to every OPEN reader
+     *  immediately. Without this, only each reader's next mutation tick
+     *  applied the change — idle readers sat in the half-state for
+     *  arbitrarily long (2026-08-26). Versioned per build on the Zotero
+     *  holder, same lifetime pattern as the default-child pref watch:
+     *  the observer outlives instances and resolves the live plugin. */
+    _wvWireOutlineTakeoverPrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvOutlineTakeoverPrefObs) {
+                if (g._wvOutlineTakeoverPrefObsVer === tag) return;
+                try { Zotero.Prefs.unregisterObserver(g._wvOutlineTakeoverPrefObs); } catch (_) {}
+                delete g._wvOutlineTakeoverPrefObs;
+            }
+            g._wvOutlineTakeoverPrefObsVer = tag;
+            g._wvOutlineTakeoverPrefObs = Zotero.Prefs.registerObserver(
+                "weavero.readerOutlineTakeover",
+                () => {
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp) return;
+                        const on = lp._getEnableOutlineTakeover();
+                        for (const r of (Zotero.Reader._readers || [])) {
+                            try {
+                                const idoc = r._iframeWindow && r._iframeWindow.document;
+                                if (!idoc) continue;
+                                if (!on) {
+                                    lp._wvReaderDeactivateOutlineTakeover(r, idoc);
+                                } else {
+                                    lp._wvReaderEnsureOutlinePanel(r, idoc);
+                                    // If the Outline tab is showing, take over
+                                    // right away — the flip must be visible
+                                    // without a tab round-trip.
+                                    const st = r._internalReader && r._internalReader._state;
+                                    if (st && st.sidebarView === "outline") {
+                                        lp._wvReaderActivateOutlineTakeover(r, idoc, true);
+                                    }
+                                }
+                            } catch (_) {}
+                        }
+                    } catch (e) { Zotero.debug("[Weavero] takeover pref watch err: " + e); }
+                });
+        } catch (e) { Zotero.debug("[Weavero] _wvWireOutlineTakeoverPrefWatch err: " + e); }
+    }
+
+    _wvReaderDeactivateOutlineTakeover(reader: any, idoc: any) {
+        try {
+            const container = idoc.getElementById("sidebarContainer");
+            if (container) container.classList.remove(RP_OUTLINE_TAB_ON);
+            // Restore the native outline wrapper's parked Tab stop (see the
+            // Shift+Tab freeze note in the activate path).
+            try {
+                const nat = idoc.querySelector(".outline-view[data-wv-parked-tabstop]");
+                if (nat) {
+                    nat.setAttribute("data-tabstop", "1");
+                    nat.removeAttribute("data-wv-parked-tabstop");
+                }
+            } catch (_) {}
+            // Remove the takeover view itself — an empty invisible wrapper is
+            // exactly the half-state that read as "outline not working".
+            try {
+                const view = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
+                if (view) view.remove();
+            } catch (_) {}
+            try { if (reader && reader._wvSpyRangeCache) reader._wvSpyRangeCache.clear(); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderDeactivateOutlineTakeover err: " + e); }
+    }
+
     _wvReaderActivateOutlineTakeover(reader: any, idoc: any, on: boolean) {
+        if (!on) {
+            // Single implementation for the strip: partial teardowns through
+            // this arm caused the 2026-08-26 half-state.
+            this._wvTabStateRing("ACTIVATE-OUTLINE on=false " + ((reader && reader._title) || ""));
+            this._wvReaderDeactivateOutlineTakeover(reader, idoc);
+            return;
+        }
         try {
             this._wvTabStateRing("ACTIVATE-OUTLINE on=" + on + " " + ((reader && reader._title) || "").slice(0, 14));
             const container = idoc.getElementById("sidebarContainer");
             if (!container) return;
-            if (on) {
-                try { this._wvReaderSetBmActive(reader, idoc, false); } catch (_) {}
-                container.classList.add(RP_OUTLINE_TAB_ON);
-                reader._wvOutlineFetchTries = 0;   // restart extraction-retry budget
-                this._wvReaderRenderOutline(reader, idoc);
-            } else {
-                container.classList.remove(RP_OUTLINE_TAB_ON);
-            }
+            try { this._wvReaderSetBmActive(reader, idoc, false); } catch (_) {}
+            container.classList.add(RP_OUTLINE_TAB_ON);
+            reader._wvOutlineFetchTries = 0;   // restart extraction-retry budget
+            this._wvReaderRenderOutline(reader, idoc);
             // Only the ACTIVE takeover view participates in the reader's
             // [data-tabstop] Tab walk -- an invisible stop is a dead stop.
             try {
                 const ovEl = idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS);
-                if (ovEl) { if (on) ovEl.setAttribute("data-tabstop", "1"); else ovEl.removeAttribute("data-tabstop"); }
+                if (ovEl) ovEl.setAttribute("data-tabstop", "1");
                 // Same rule for the NATIVE outline wrapper the takeover hides:
                 // it kept its stop, so Shift+Tab's reverse walk landed on an
                 // unfocusable hidden group and froze — focus never left the
                 // row ("I cannot tab out of the outline", 2026-08-05; forward
                 // Tab worked because the next stop is the PDF iframe proxy).
                 // Park the stop while we're active; restore on release.
-                const nat = idoc.querySelector(".outline-view[data-tabstop], .outline-view[data-wv-parked-tabstop]");
-                if (nat) {
-                    if (on && nat.hasAttribute("data-tabstop")) {
-                        nat.removeAttribute("data-tabstop");
-                        nat.setAttribute("data-wv-parked-tabstop", "1");
-                    }
-                    else if (!on && nat.hasAttribute("data-wv-parked-tabstop")) {
-                        nat.setAttribute("data-tabstop", "1");
-                        nat.removeAttribute("data-wv-parked-tabstop");
-                    }
+                const nat = idoc.querySelector(".outline-view[data-tabstop]");
+                if (nat && nat.hasAttribute("data-tabstop")) {
+                    nat.removeAttribute("data-tabstop");
+                    nat.setAttribute("data-wv-parked-tabstop", "1");
                 }
             } catch (_) {}
         } catch (_) {}

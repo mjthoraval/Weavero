@@ -5562,6 +5562,11 @@ Zotero.Weavero = {
                 // Re-offer the legacy import if the user turns the feature
                 // back on after choosing to stay with the other plugin.
                 try { _Weavero._wvWireDefaultChildPrefWatch(); } catch (e) {}
+                // Outline-takeover pref flips reach every OPEN reader
+                // immediately (2026-08-26: waiting on mutation ticks left
+                // idle readers with a class-only half-strip and a dead
+                // Outline tab).
+                try { _Weavero._wvWireOutlineTakeoverPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.

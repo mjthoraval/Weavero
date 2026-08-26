@@ -5970,8 +5970,13 @@ class _ReaderPanelsMixin {
                 ? this._wvOutlineAddWithSelectionRm(reader, idoc)
                 : this._wvOutlineAddWithSelection(reader, idoc)));
             if (!rmOn) item("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvOutlineAddWithPin(reader, idoc));
-            for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
-                item(c.label, c.icon, c.fn);
+            // Page anchors are PDF-only BY NATURE (parity register): a
+            // reflowable or scrolled DOM view has no stable page, so offering
+            // Top/Bottom-of-page there creates entries that go nowhere.
+            if ((reader._type || "pdf") === "pdf") {
+                for (const c of this._wvPageAnchorChoices(page, null, (a) => this._wvOutlineAddWithAnchor(reader, idoc, a))) {
+                    item(c.label, c.icon, c.fn);
+                }
             }
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
@@ -6025,6 +6030,18 @@ class _ReaderPanelsMixin {
                         this._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos);
                         this._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page "
                             + this._wvBmPageLabelFor(res.att, pageIndex) + ". Drag the pin to adjust.");
+                    }).catch(() => {});
+            }, (pos) => {
+                // DOM twin — same outcome as the right-click "Add This
+                // Position to Outline": selector anchor, immediate draggable
+                // pin.
+                const title = this._wvOutlinePromptTitle();
+                if (!title) return;
+                Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos))
+                    .then((res: any) => {
+                        if (!res || !res.stored) return;
+                        try { this._wvOutlineShowDomEntryPin(reader, res.stored, pos, true); } catch (_) {}
+                        this._wvReaderPanelNote(idoc, "Added “" + title + "” to the outline. Drag the pin to adjust.");
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithPin err: " + e); }
@@ -6106,6 +6123,28 @@ class _ReaderPanelsMixin {
                         try { this._wvReaderShowPin(reader, rec.position, stored && stored.id); } catch (_) {}
                         this._wvReaderPanelNote(idoc, "Bookmark pinned on page " + pageLabel + ". Drag the pin to adjust.");
                     }).catch(() => {});
+            }, (_pos, dom) => {
+                // DOM completion — same record shape as the right-click "Add
+                // Bookmark to This Position" on DOM views: snapshot selector
+                // in `position`, EPUB CFI in `location.cfi`, plus the location
+                // sort key. The pin drawn is the shared draggable one.
+                const att = this._wvReaderAtt(reader);
+                if (!att) return;
+                const name = this._bmPromptName(Zotero.getMainWindow(), "New Bookmark", "Pinned spot");
+                if (!name) return;   // cancelled after placing -> nothing created
+                const rec: any = { type: "position", viewType: reader._type, label: name };
+                if (dom.position) rec.position = dom.position;
+                if (dom.cfi) rec.location = { cfi: dom.cfi };
+                if (dom.sortIndex) rec.sortIndex = dom.sortIndex;
+                Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
+                    .then((stored: any) => {
+                        try { this._wvReaderRenderBmList(reader, idoc); } catch (_) {}
+                        try {
+                            if (dom.cfi) this._wvReaderShowEpubPin(reader, dom.cfi, stored, false);
+                            else this._wvReaderShowSnapshotPin(reader, rec.position, stored, false);
+                        } catch (_) {}
+                        this._wvReaderPanelNote(idoc, "Bookmark pinned. Drag the pin to adjust.");
+                    }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvBmAddWithPin err: " + e); }
     }
@@ -6158,18 +6197,30 @@ class _ReaderPanelsMixin {
      *  point. `onPlaced(pageIndex, x, y, pageNum)` is invoked with it (it may do
      *  async work, e.g. prompt for a title). Esc cancels. Shared by the create
      *  and modify pin flows. 2026-07-23. */
-    _wvOutlineArmPinPlacement(reader: any, idoc: any, onPlaced: (pageIndex: number, x: number, y: number, pageNum: number) => void) {
+    _wvOutlineArmPinPlacement(reader: any, idoc: any, onPlaced: (pageIndex: number, x: number, y: number, pageNum: number) => void, onPlacedDom?: (pos: any, dom: any) => void) {
         try {
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             const win = pv && pv._iframeWindow;
             const pdoc = win && win.document;
             if (!pdoc) return;
-            const viewerC = pdoc.getElementById("viewerContainer");
+            // DOM views (snapshot / EPUB) have no ".page" grid — their clicks
+            // resolve through caret-at-point, in the DOM branch of onClick
+            // below. Until 2026-08-26 the arm worked here (ghost pin followed
+            // the mouse) but the click handler required a pdf.js page, so
+            // every drop silently "stayed armed" (reported: the + turns the
+            // mouse into a pin, but a click does not place it).
+            const isDom = !!(pv && typeof pv.toSelector === "function");
+            const viewerC = pdoc.getElementById("viewerContainer")
+                || (isDom ? pdoc.documentElement : null);
             this._wvReaderPanelNote(idoc, "Move to a spot and click to drop the pin (Esc to cancel).");
             // A GHOST pin that REPLACES the cursor and follows the mouse until the
             // click drops it. Same marker as the anchored/bookmark pin, tip at the
             // pointer. pointer-events:none so it never eats the click. (2026-07-23)
+            // Never stack two ghosts: an abandoned arm (the pre-fix DOM arm
+            // could never complete, 2026-08-26) leaves its ghost in the doc
+            // with no reachable cleanup closure.
+            try { for (const g of Array.from(pdoc.querySelectorAll(".wv-pin-ghost")) as any[]) g.remove(); } catch (_) {}
             const ghost: any = pdoc.createElementNS(NS_HTML_RP, "div");
             ghost.className = "wv-reader-pin wv-pin-ghost";
             const PIN_H = 32;
@@ -6193,6 +6244,19 @@ class _ReaderPanelsMixin {
             onKey = (e: any) => { if (e.key === "Escape") { cleanup(); this._wvReaderPanelNote(idoc, "Pin cancelled."); } };
             onClick = (e: any) => {
                 try {
+                    if (isDom) {
+                        e.preventDefault(); e.stopPropagation();
+                        const dom = this._wvDomAnchorFromContentPoint(pv, e.clientX, e.clientY);
+                        cleanup();
+                        if (!dom || !dom.selector) {
+                            this._wvReaderPanelNote(idoc, "No text at that point.");
+                            return;
+                        }
+                        if (onPlacedDom) {
+                            try { onPlacedDom(Object.assign({}, dom.selector, { anchor: "point" }), dom); } catch (_) {}
+                        }
+                        return;
+                    }
                     const pageEl = e.target && e.target.closest && e.target.closest(".page");
                     if (!pageEl) return;   // outside a page -> stay armed
                     e.preventDefault(); e.stopPropagation();
@@ -6228,6 +6292,15 @@ class _ReaderPanelsMixin {
                         this._wvOutlineShowEntryPin(reader, idoc, ref.att.libraryID, ref.att.itemKey, ref.id, pos);
                         this._wvReaderPanelNote(idoc, "Target pinned on page "
                             + this._wvBmPageLabelFor(ref.att, pageIndex) + ". Drag the pin to adjust.");
+                    }).catch(() => {});
+            }, (pos) => {
+                Promise.resolve(this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, pos))
+                    .then(() => this._wvReaderRenderOutline(reader, idoc))
+                    .then(() => {
+                        const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
+                        const en = d && Array.isArray(d.entries) ? d.entries.find((z: any) => z.id === ref.id) : null;
+                        if (en) { try { this._wvOutlineShowDomEntryPin(reader, en, pos, true); } catch (_) {} }
+                        this._wvReaderPanelNote(idoc, "Target pinned. Drag the pin to adjust.");
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineBeginManualPin err: " + e); }
@@ -16401,7 +16474,10 @@ class _ReaderPanelsMixin {
                     if (!this._wvReadingModeActive(reader)) {
                         mkItem("Pin a spot…", WV_PIN_ICON_SVG, () => this._wvBmAddWithPin(reader, idoc));
                     }
-                    for (const c of this._wvPageAnchorChoices(pageLabelC, null, addPage)) mkItem(c.label, c.icon, c.fn);
+                    // Page anchors: PDF only, same rule as the outline's + menu.
+                    if ((reader._type || "pdf") === "pdf") {
+                        for (const c of this._wvPageAnchorChoices(pageLabelC, null, addPage)) mkItem(c.label, c.icon, c.fn);
+                    }
                     const s = idoc.createElementNS(NS_HTML_RP, "div");
                     s.className = "wv-ctx-sep";
                     menu.appendChild(s);

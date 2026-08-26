@@ -113,6 +113,24 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
         if (before !== undefined) rp._wvExpandMatchParentsPatched = before;
     });
 
+    it("the native-navigate outline wrapper peels a boolean-era wrap", function () {
+        if (typeof wv._wvOutlineInstallRecovery !== "function") this.skip();
+        // A view whose navigate lives on the PROTOTYPE, wrapped by a stale
+        // own-prop from "another build" under the boolean stamp -- the exact
+        // state that killed native outline clicks on 2026-08-26.
+        const proto = { navigate() { return "proto"; } };
+        const pv = Object.create(proto);
+        const stale = function _wvStaleFromOldBuild() { throw new Error("stale wrapper ran"); };
+        pv.navigate = stale;
+        pv._wvOutlineWired = true;
+        pv._wvOutlineOrigNavigate = stale;   // dead saved bind from the old build
+        wv._wvOutlineInstallRecovery({ _internalReader: { _primaryView: pv } });
+        assert.notStrictEqual(pv.navigate, stale, "a stale stamp must trigger re-wiring");
+        assert.strictEqual(pv._wvOutlineWired, wv._wvWireTag());
+        assert.notStrictEqual(pv._wvOutlineOrigNavigate, stale,
+            "the dead saved bind must be dropped, not trusted for restore");
+    });
+
     it("re-running the wiring under the CURRENT tag is a no-op (idempotent)", () => {
         wv._setupItemsListFilterIn(win);
         const sf = iv.setFilter, cc = iv.changeCollectionTreeRow;

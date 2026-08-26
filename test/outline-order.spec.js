@@ -14,6 +14,47 @@
 // ordering comparison under test is the genuine one -- only the view's
 // selector-resolution is stubbed, because that is the reader's job, not ours.
 
+// Location->title matching for the native-outline highlight interception:
+// AMBIGUITY DECLINES (2026-08-26). Some embedded outlines stamp every entry
+// with one degenerate destination (Kundu: y=666 on every entry), so two
+// entries on the same page are indistinguishable by position. Taking the
+// first in tree order recovered the WRONG title and highlighted the page's
+// running head ("β-Plane Model" lighting up "13.4 GEOSTROPHIC FLOW"). No
+// highlight beats a confidently wrong one -- the scroll still lands.
+describe("Weavero — outline location→title matching declines ambiguity", () => {
+    let wv;
+    const loc = (page, x, y) => ({ position: { pageIndex: page, rects: [[x, y, x, y]] } });
+    const entry = (title, l, items) => ({ title, location: l, items: items || [] });
+
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvOutlineFindTitle !== "function") this.skip();
+    });
+
+    it("a unique position resolves to its title", () => {
+        const o = [entry("One", loc(3, 0, 666)), entry("Two", loc(4, 0, 666))];
+        assert.equal(wv._wvOutlineFindTitle(o, loc(4, 0, 666)), "Two");
+    });
+
+    it("identity beats position, even among twins", () => {
+        const shared = loc(7, 0, 666);
+        const o = [entry("A", loc(7, 0, 666)), entry("B", shared)];
+        assert.equal(wv._wvOutlineFindTitle(o, shared), "B");
+    });
+
+    it("two entries at one degenerate position -> NO title (the Kundu case)", () => {
+        const o = [entry("13.3", loc(1, 0, 0), [entry("β-Plane Model", loc(720, 0, 666))]),
+                   entry("13.4 Geostrophic Flow", loc(720, 0, 666))];
+        assert.equal(wv._wvOutlineFindTitle(o, loc(720, 0, 666)), "",
+            "a guessed title highlights the wrong text; declining scrolls cleanly");
+    });
+
+    it("duplicate matches of the SAME title still resolve", () => {
+        const o = [entry("Same", loc(9, 0, 666)), entry("Same", loc(9, 0, 666))];
+        assert.equal(wv._wvOutlineFindTitle(o, loc(9, 0, 666)), "Same");
+    });
+});
+
 describe("Weavero — outline document-order insertion", () => {
     let wv, host, host2, pv;
 

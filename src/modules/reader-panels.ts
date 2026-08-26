@@ -17721,18 +17721,30 @@ class _ReaderPanelsMixin {
             const pi = pos && pos.pageIndex;
             const r = pos && pos.rects && pos.rects[0];
             const stack = Array.isArray(outline) ? outline.slice() : [];
+            const matches: string[] = [];
             while (stack.length) {
                 const it = stack.shift();
                 if (!it) continue;
+                // Identity is authoritative: the click carried the entry's own
+                // location object.
                 if (it.location === location) return String(it.title || "");
                 const ip = it.location && it.location.position;
                 const ir = ip && ip.rects && ip.rects[0];
                 if (ip && r && ir && ip.pageIndex === pi
                         && Math.abs(ir[0] - r[0]) < 0.5 && Math.abs(ir[1] - r[1]) < 0.5) {
-                    return String(it.title || "");
+                    matches.push(String(it.title || ""));
                 }
                 if (Array.isArray(it.items) && it.items.length) stack.push(...it.items);
             }
+            // AMBIGUITY DECLINES. Some embedded outlines stamp every entry
+            // with one degenerate destination (Kundu: y=666 everywhere), so
+            // two entries on the same page are indistinguishable by position.
+            // Taking the first in tree order recovered the WRONG title and
+            // highlighted the page's running head ("β-Plane Model" lighting
+            // up "13.4 GEOSTROPHIC FLOW", 2026-08-26). No highlight beats a
+            // confidently wrong one; the scroll still lands.
+            const distinct = [...new Set(matches)];
+            if (distinct.length === 1) return distinct[0];
         } catch (_) {}
         return "";
     }
@@ -18070,9 +18082,20 @@ class _ReaderPanelsMixin {
         let pv: any = null;
         try { const ir = reader && reader._internalReader; pv = ir && ir._primaryView; } catch (_) {}
         if (pv && typeof pv.navigate === "function") {
-            if (pv._wvOutlineWired) return;
+            // Build-keyed, not boolean: after a hot upgrade the OLD build's
+            // wrapper (dead closure) stayed installed behind `true` and every
+            // native outline click died inside it (2026-08-26; same class as
+            // the dev.52 filter-module fix -- this site was missed). A foreign
+            // stamp peels the own-prop wrapper; the prototype restores the
+            // true navigate, so the saved bind (old compartment, dead) is
+            // dropped rather than trusted.
+            if (pv._wvOutlineWired === this._wvWireTag()) return;
             try {
-                pv._wvOutlineWired = true;
+                if (pv._wvOutlineWired) {
+                    delete pv.navigate;
+                    delete pv._wvOutlineOrigNavigate;
+                }
+                pv._wvOutlineWired = this._wvWireTag();
                 if (!pv._wvOutlineOrigNavigate) pv._wvOutlineOrigNavigate = pv.navigate.bind(pv);
                 const origNavigate = pv._wvOutlineOrigNavigate;
                 pv.navigate = function (location: any, options: any) {
@@ -18095,7 +18118,6 @@ class _ReaderPanelsMixin {
                                 // recovery/highlight from a previous click.
                                 const gen = (pv._wvHlSeq = (pv._wvHlSeq || 0) + 1);
                                 plugin._wvClearStalePin(pv);
-                this._wvClearStalePin(pv);
                                 // Scroll to the dest WITHOUT the reader's native
                                 // flash. The native _highlightPosition arms an
                                 // unconditional 2s timer that nulls

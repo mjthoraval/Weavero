@@ -13032,6 +13032,22 @@ class _ReaderPanelsMixin {
                 && a.left <= b.left + 1 && a.right >= b.right - 1
                 && a.top <= b.top + 1 && a.bottom >= b.bottom - 1
                 && (a.width > b.width + 2 || a.height > b.height + 2)));
+            // DEDUPE near-identical siblings — a snapshot heading's range
+            // reported every line box TWICE (measured: 4 rects for 2 lines,
+            // exact duplicates), and multiply applied twice per line is
+            // precisely the "deeper blue" (2026-08-26). A rect that overlaps
+            // an already-kept rect by more than half its own area is the same
+            // line again, not new coverage.
+            const kept: any[] = [];
+            for (const a of rects) {
+                const dup = kept.some(b => {
+                    const ox = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+                    const oy = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+                    return ox * oy > 0.5 * a.width * a.height;
+                });
+                if (!dup) kept.push(a);
+            }
+            rects = kept;
             if (!rects.length) return;
             for (const r of rects.slice(0, 40)) {
                 const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");

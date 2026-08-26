@@ -60,6 +60,8 @@ Grouped the same way as the Preferences tabs. Expand a group below for the detai
 - *Reader (right-click on the page)* — **Copy Link to This Page** in a PDF (`zotero://open/.../items/<key>?page=N`, N = the page you clicked, even in spread / continuous-scroll layouts), or **Copy Link to This Location** in an EPUB / web snapshot (`?cfi=…` / `?sel=…` for the element under the cursor). With text selected it becomes **Copy Link to Selected Text** — for EPUB / snapshots that's a `?cfi=`/`?sel=` link to the exact passage; for PDFs it stays page-level (no `?rects=` URL form exists yet — [zotero/zotero#4508](https://github.com/zotero/zotero/issues/4508)).
 - The `zotero://` URI handler also resolves `…/collections/<key>` and `…/searches/<key>` paths (group-library variants supported), `?cfi=` / `?sel=` location params, and `…/items?itemKey=K1,K2` multi-select, and switches focus to the library tab when followed from a note.
 
+<a id="interlinked-navigation"></a>
+
 **Interlinked navigation** — <kbd>Ctrl/Cmd</kbd>-click or <kbd>Shift</kbd>+click an *internal* link to follow it without losing your place. Internal links include PDF cross-references and citations, EPUB section links, and web-snapshot `#fragment` links (external `http(s)` links are left alone).
 
 - **<kbd>Ctrl/Cmd</kbd>+click → split pane** — opens (or reuses) a split and sends the target to the *other* pane, so the pane you clicked from stays put; a reverse Ctrl+click from the second pane drives the first. Split orientation (horizontal / vertical) is configurable.

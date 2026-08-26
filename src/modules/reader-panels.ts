@@ -12987,11 +12987,14 @@ class _ReaderPanelsMixin {
             for (const r of rects.slice(0, 40)) {
                 const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
                 box.className = "wv-dom-heading-flash";
+                // RAW rects, no padding: padded line boxes overlapped between
+                // lines and the multiply doubled in the seams, reading as a
+                // stronger colour than the PDF flash (2026-08-26).
                 box.style.cssText = "position:absolute;z-index:2147483645;pointer-events:none;"
-                    + "left:" + (r.left + iwin.scrollX - 2) + "px;"
-                    + "top:" + (r.top + iwin.scrollY - 1) + "px;"
-                    + "width:" + (r.width + 4) + "px;height:" + (r.height + 2) + "px;"
-                    + "background:#B8D6FE;border-radius:3px;"
+                    + "left:" + (r.left + iwin.scrollX) + "px;"
+                    + "top:" + (r.top + iwin.scrollY) + "px;"
+                    + "width:" + r.width + "px;height:" + r.height + "px;"
+                    + "background:#C6DEFE;"
                     + "mix-blend-mode:multiply;"
                     + "transition:opacity .3s ease-out;";
                 // The snapshot's own site CSS can override a plain inline
@@ -13004,12 +13007,14 @@ class _ReaderPanelsMixin {
                 // looked different from a native selection of the same text
                 // ("Why is it not the same color?", 2026-08-26). Multiply
                 // keeps the text crisp and lands on the native selection look.
-                // #B8D6FE = the reader's ::selection colour rgba(113,173,253,.5)
-                // PRE-BLENDED ON WHITE: multiplying it onto the page gives the
-                // exact pixels a native selection produces behind black text
-                // (measured live, 2026-08-26), with the glyphs staying crisp.
+                // #C6DEFE = SELECTION_COLOR #71ADFD at the PDF flash's exact
+                // strength — page.js _pushHighlight paints highlighted
+                // positions at opacity 0.4 with multiply (light mode), and
+                // multiply-at-40% equals a single multiply of the colour
+                // pre-blended 40/60 on white. One strength on every reader
+                // ("still feels stronger than in PDF", 2026-08-26).
                 try {
-                    box.style.setProperty("background", "#B8D6FE", "important");
+                    box.style.setProperty("background", "#C6DEFE", "important");
                     box.style.setProperty("mix-blend-mode", "multiply", "important");
                 } catch (_) {}
                 doc.body.appendChild(box);

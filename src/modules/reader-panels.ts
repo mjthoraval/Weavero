@@ -13043,7 +13043,7 @@ class _ReaderPanelsMixin {
                     + "left:" + (r.left + iwin.scrollX) + "px;"
                     + "top:" + (r.top + iwin.scrollY) + "px;"
                     + "width:" + r.width + "px;height:" + r.height + "px;"
-                    + "background:#C6DEFE;"
+                    + "background:#B9DBFF;"
                     + "mix-blend-mode:multiply;"
                     + "transition:opacity .3s ease-out;";
                 // The snapshot's own site CSS can override a plain inline
@@ -13056,14 +13056,15 @@ class _ReaderPanelsMixin {
                 // looked different from a native selection of the same text
                 // ("Why is it not the same color?", 2026-08-26). Multiply
                 // keeps the text crisp and lands on the native selection look.
-                // #C6DEFE = SELECTION_COLOR #71ADFD at the PDF flash's exact
-                // strength — page.js _pushHighlight paints highlighted
-                // positions at opacity 0.4 with multiply (light mode), and
-                // multiply-at-40% equals a single multiply of the colour
-                // pre-blended 40/60 on white. One strength on every reader
-                // ("still feels stronger than in PDF", 2026-08-26).
+                // #B9DBFF reproduces the EPUB spotlight's recipe — the
+                // annotation overlay paints SELECTION_COLOR #71ADFD at 50%
+                // NORMAL alpha (no multiply), the lightest of the three
+                // renderers; the PDF-multiply match still read darker to the
+                // eye ("still in darker blue", 2026-08-26). Multiplying the
+                // 50/50 white pre-blend approximates that normal-alpha look
+                // on any light page while keeping glyphs crisp.
                 try {
-                    box.style.setProperty("background", "#C6DEFE", "important");
+                    box.style.setProperty("background", "#B9DBFF", "important");
                     box.style.setProperty("mix-blend-mode", "multiply", "important");
                 } catch (_) {}
                 doc.body.appendChild(box);

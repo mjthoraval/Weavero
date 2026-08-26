@@ -138,6 +138,20 @@ describe("Weavero — outline document-order insertion", () => {
         });
     });
 
+    describe("live-point override", () => {
+        it("orders by the LIVE clicked point when given, ignoring the selector round trip", () => {
+            // The stored selector claims "d" (a wrong first-match is exactly
+            // how an ambiguous toSelector output misordered a pin,
+            // 2026-08-26) -- but the live caret point says "b". The live
+            // point must win.
+            const entries = [entryAt("a"), entryAt("c")];
+            const el = host.getElementById("b");
+            const { gap } = wv._wvOutlineDocOrderGap(entries, sel("d"), pv,
+                { container: el.firstChild || el, offset: 0 });
+            assert.equal(gap, 1, "between a and c, where the click actually was");
+        });
+    });
+
     describe("EPUB href anchors", () => {
         it("orders TOC entries that anchor by href, not position", () => {
             const entries = [{ href: "a", indentLevel: 0 }, { href: "d", indentLevel: 0 }];

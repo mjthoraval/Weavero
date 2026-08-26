@@ -6020,28 +6020,64 @@ class _ReaderPanelsMixin {
      *  user asked for (drop it where you want, then name it). 2026-07-23. */
     _wvOutlineAddWithPin(reader: any, idoc: any) {
         try {
+            // NO MODAL TITLE PROMPT on either arm (2026-08-26: "when creating
+            // a pin outline, it opens a popup window ... you need to fill it
+            // and accept to finish"). The entry is created at the click with a
+            // derived title and the row opens in INLINE RENAME — the same
+            // shape the select-text flow moved to on 2026-08-21.
             this._wvOutlineArmPinPlacement(reader, idoc, (pageIndex, x, y, pageNum) => {
-                const title = this._wvOutlinePromptTitle();
-                if (!title) return;   // cancelled after placing -> no entry created
+                const att = this._wvReaderAtt(reader);
+                const title = "Page " + (att ? this._wvBmPageLabelFor(att, pageIndex) : String(pageIndex + 1)) + " pin";
                 const pos = { pageIndex, rects: [[x, y, x, y]], anchor: "point" };
                 Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos))
                     .then((res: any) => {
                         if (!res || !res.stored) return;
                         this._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos);
-                        this._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page "
-                            + this._wvBmPageLabelFor(res.att, pageIndex) + ". Drag the pin to adjust.");
+                        this._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
+                        try {
+                            const dd = this._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
+                            const ix = dd && dd.entries ? dd.entries.findIndex((z: any) => z.id === res.stored.id) : -1;
+                            this._wvOutlineBeginRename(reader, idoc, res.stored, ix, true);
+                        } catch (_) {}
                     }).catch(() => {});
-            }, (pos) => {
+            }, (pos, dom) => {
                 // DOM twin — same outcome as the right-click "Add This
-                // Position to Outline": selector anchor, immediate draggable
-                // pin.
-                const title = this._wvOutlinePromptTitle();
-                if (!title) return;
-                Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos))
+                // Position to Outline": selector anchor, immediate pin.
+                // The insertion gap is computed HERE, at the click, FROM THE
+                // LIVE CLICKED POINT: the round-tripped selector can resolve
+                // to a different first match and ordered one pin to the list
+                // bottom while its pin drew at the clicked spot (2026-08-26).
+                let orderOpts: any = null;
+                try {
+                    const att0 = this._wvReaderAtt(reader);
+                    const d0 = att0 && this._wvOutlineDoc(att0.libraryID, att0.itemKey);
+                    if (d0 && Array.isArray(d0.entries) && d0.entries.length) {
+                        const ir0 = reader._internalReader;
+                        const pv0 = ir0 && (ir0._primaryView || ir0._lastView);
+                        const livePt = dom && dom.range
+                            ? { container: dom.range.startContainer, offset: dom.range.startOffset || 0 }
+                            : null;
+                        orderOpts = {
+                            orderGap: this._wvOutlineDocOrderGap(d0.entries, pos, pv0, livePt).gap,
+                            orderN: d0.entries.length,
+                        };
+                    }
+                } catch (_) {}
+                const title = this._wvOutlineDomPinTitle(dom);
+                Promise.resolve(this._wvOutlineCreateEntry(reader, idoc, title, pos, orderOpts))
                     .then((res: any) => {
                         if (!res || !res.stored) return;
-                        try { this._wvOutlineShowDomEntryPin(reader, res.stored, pos, true); } catch (_) {}
-                        this._wvReaderPanelNote(idoc, "Added “" + title + "” to the outline. Drag the pin to adjust.");
+                        // TRANSIENT pin (hover keeps it alive for the grab):
+                        // a persistent one only dismissed on clicks inside the
+                        // CONTENT doc, so panel clicks left it standing
+                        // forever ("the pin is not disappearing", 2026-08-26).
+                        try { this._wvOutlineShowDomEntryPin(reader, res.stored, pos); } catch (_) {}
+                        this._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
+                        try {
+                            const dd = this._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
+                            const ix = dd && dd.entries ? dd.entries.findIndex((z: any) => z.id === res.stored.id) : -1;
+                            this._wvOutlineBeginRename(reader, idoc, res.stored, ix, true);
+                        } catch (_) {}
                     }).catch(() => {});
             });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineAddWithPin err: " + e); }
@@ -6407,7 +6443,26 @@ class _ReaderPanelsMixin {
      *  outline if needed and ordering the entry by its target page (a light
      *  heuristic; drag reorders precisely). Returns `{ att, stored }` or null.
      *  Shared by every "+" add flow. 2026-07-23. */
-    async _wvOutlineCreateEntry(reader: any, idoc: any, title: string, pos: any): Promise<any> {
+    /** Default title for a pin entry dropped at a DOM point: the text the
+     *  user pinned, read from the clicked text node at the caret — the same
+     *  "the gesture already says what you mean" rule that removed the modal
+     *  title prompt from the select-text flow (2026-08-21). Word-trimmed to
+     *  40 chars; media/margin clicks fall back to a plain label. */
+    _wvOutlineDomPinTitle(dom: any): string {
+        try {
+            const rng = dom && dom.range;
+            const n = rng && rng.startContainer;
+            if (n && n.nodeType === 3) {
+                let t = String(n.nodeValue || "").slice(rng.startOffset || 0).trim();
+                if (!t) t = String(n.nodeValue || "").trim();
+                if (t.length > 40) t = t.slice(0, 40).replace(/\s+\S*$/u, "");
+                if (t) return t;
+            }
+        } catch (_) {}
+        return "Pinned spot";
+    }
+
+    async _wvOutlineCreateEntry(reader: any, idoc: any, title: string, pos: any, opts?: any): Promise<any> {
         try {
             const att = this._wvReaderAtt(reader);
             if (!att) return null;
@@ -6440,7 +6495,23 @@ class _ReaderPanelsMixin {
                 const yy = pos.anchor === "bottom" ? 0 : 100000;
                 posForOrder = { pageIndex: pos.pageIndex, rects: [[0, yy, 0, yy]] };
             }
-            const { gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder, pvOrder2);
+            // A caller that resolved the click may hand over the insertion
+            // gap computed AT THE GESTURE — the "+ Pin a spot" flow runs a
+            // modal title prompt between the click and this call, and a pin
+            // ordered after that nested event loop landed at the bottom of
+            // the list while its anchor resolved fine (reported 2026-08-26,
+            // not deterministic). The pre-computed gap is only honoured when
+            // the list is unchanged since it was computed (orderN guard).
+            let gap: number, indent: number;
+            const preGap = opts && Number.isInteger(opts.orderGap) ? opts.orderGap : null;
+            if (preGap != null && opts.orderN === entries.length) {
+                gap = Math.max(0, Math.min(entries.length, preGap));
+                const prevI = gap > 0 ? Math.max(0, entries[gap - 1].indentLevel || 0) : 0;
+                const nextI = gap < entries.length ? Math.max(0, entries[gap].indentLevel || 0) : 0;
+                indent = nextI > prevI ? nextI : prevI;
+            } else {
+                ({ gap, indent } = this._wvOutlineDocOrderGap(entries, posForOrder, pvOrder2));
+            }
             const entry = {
                 title, indentLevel: indent,
                 position: pos, resolvedPosition: pos, regionTitle: title,
@@ -6940,7 +7011,7 @@ class _ReaderPanelsMixin {
      *  the deeper level, so the new entry joins those siblings instead of
      *  becoming their parent (contiguity means everything deeper after it
      *  would otherwise read as ITS subtree). */
-    _wvOutlineDocOrderGap(entries: any[], pos: any, pv?: any): { gap: number, indent: number } {
+    _wvOutlineDocOrderGap(entries: any[], pos: any, pv?: any, targetPoint?: any): { gap: number, indent: number } {
         // A DOM view (snapshot/EPUB) anchors by WADM selector, not page
         // geometry: `pageIndex` and `rects` are both absent, so the geometry
         // loop below never breaks and EVERY new entry fell to the bottom of
@@ -6949,7 +7020,7 @@ class _ReaderPanelsMixin {
         const domView = !!(pv && typeof pv.toDisplayedRange === "function");
         const geometric = !!(pos && pos.rects && pos.rects.length);
         const gap = (domView && !geometric)
-            ? this._wvOutlineDomOrderIndex(entries, pos, pv)
+            ? this._wvOutlineDomOrderIndex(entries, pos, pv, targetPoint)
             : this._wvOutlineGeomOrderIndex(entries, pos);
         const prevIndent = gap > 0 ? Math.max(0, entries[gap - 1].indentLevel || 0) : 0;
         const nextIndent = gap < entries.length ? Math.max(0, entries[gap].indentLevel || 0) : 0;
@@ -6965,16 +7036,30 @@ class _ReaderPanelsMixin {
      *  break: one unresolvable entry must not drag the insertion point to the
      *  top. When nothing after the selection resolves the entry appends, which
      *  is the honest answer rather than a guessed position. */
-    _wvOutlineDomOrderIndex(entries: any[], pos: any, pv: any): number {
+    _wvOutlineDomOrderIndex(entries: any[], pos: any, pv: any, targetPoint?: any): number {
+        // Persistent bounded trace — an entry intermittently appended instead
+        // of inserting in document order (2026-08-26), and the state at THAT
+        // moment is unrecoverable afterwards. Read: Zotero._wvOrdLog.
+        const trace: any = { t: Date.now(), n: entries.length, target: false, resolved: 0, after: -1, out: -1,
+            pos: (() => { try { return JSON.stringify(pos).slice(0, 120); } catch (_) { return "?"; } })() };
+        const g: any = Zotero;
+        try { (g._wvOrdLog = g._wvOrdLog || []).push(trace); if (g._wvOrdLog.length > 40) g._wvOrdLog.shift(); } catch (_) {}
         try {
-            const target = this._wvOutlineDomPoint(pv, { position: pos });
-            if (!target) return entries.length;
+            // A caller holding the LIVE clicked point passes it directly:
+            // re-resolving the selector can land on a different first match
+            // (see _wvDomAnchorFromRange). trace.live marks which path ran.
+            const target = targetPoint || this._wvOutlineDomPoint(pv, { position: pos });
+            trace.live = !!targetPoint;
+            trace.target = !!target;
+            if (!target) { trace.out = entries.length; return entries.length; }
             for (let i = 0; i < entries.length; i++) {
                 const pt = this._wvOutlineDomPoint(pv, entries[i]);
                 if (!pt) continue;
-                if (this._wvOutlineDomPointAfter(pt, target)) return i;
+                trace.resolved++;
+                if (this._wvOutlineDomPointAfter(pt, target)) { trace.after = i; trace.out = i; return i; }
             }
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineDomOrderIndex err: " + e); }
+        trace.out = entries.length;
         return entries.length;
     }
 
@@ -17782,8 +17867,11 @@ class _ReaderPanelsMixin {
                                 if (isDom) live._wvReaderPanelNote(idoc, "No text at that point.");
                                 return;
                             }
-                            const title = live._wvOutlinePromptTitle();
-                            if (!title) return;
+                            // Derived title + inline rename, no modal (same
+                            // change as the + pin flow, 2026-08-26).
+                            const title = isDom
+                                ? live._wvOutlineDomPinTitle(dom)
+                                : "Page " + (() => { try { const a0 = live._wvReaderAtt(reader); return a0 ? live._wvBmPageLabelFor(a0, pt.pageIndex) : String(pt.pageIndex + 1); } catch (_) { return String(pt.pageIndex + 1); } })() + " pin";
                             // `anchor:"point"` marks a hand-placed spot on BOTH
                             // families. On PDF it also selects the exact-rect
                             // navigation; on a DOM view it is what tells
@@ -17792,20 +17880,44 @@ class _ReaderPanelsMixin {
                             const pos = isDom
                                 ? Object.assign({}, dom.selector, { anchor: "point" })
                                 : { pageIndex: pt.pageIndex, rects: [[pt.x, pt.y, pt.x, pt.y]], anchor: "point" };
-                            Promise.resolve(live._wvOutlineCreateEntry(reader, idoc, title, pos))
+                            // Same live-point ordering as the + pin flow (the
+                            // selector round trip is not trusted for ORDER).
+                            let rcOrder: any = null;
+                            try {
+                                if (isDom && dom && dom.range) {
+                                    const att1 = live._wvReaderAtt(reader);
+                                    const d1 = att1 && live._wvOutlineDoc(att1.libraryID, att1.itemKey);
+                                    if (d1 && Array.isArray(d1.entries) && d1.entries.length) {
+                                        const ir1 = reader._internalReader;
+                                        const pv1 = ir1 && (ir1._primaryView || ir1._lastView);
+                                        rcOrder = {
+                                            orderGap: live._wvOutlineDocOrderGap(d1.entries, pos, pv1,
+                                                { container: dom.range.startContainer, offset: dom.range.startOffset || 0 }).gap,
+                                            orderN: d1.entries.length,
+                                        };
+                                    }
+                                }
+                            } catch (_) {}
+                            Promise.resolve(live._wvOutlineCreateEntry(reader, idoc, title, pos, rcOrder))
                                 .then((res: any) => {
                                     if (!res || !res.stored) return;
                                     if (isDom) {
                                         // Pin it immediately, like the PDF twin: the point of "add this
                                         // position" is seeing WHERE, and it is draggable from that moment.
-                                        try { live._wvOutlineShowDomEntryPin(reader, res.stored, pos, true); } catch (_) {}
-                                        live._wvReaderPanelNote(idoc, "Added “" + title
-                                            + "” to the outline. Drag the pin to adjust.");
+                                        // TRANSIENT (hover keeps it alive): the persistent variant only
+                                        // dismissed on content clicks and outlived every panel interaction
+                                        // (2026-08-26).
+                                        try { live._wvOutlineShowDomEntryPin(reader, res.stored, pos); } catch (_) {}
+                                        live._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
                                     } else {
                                     try { live._wvOutlineShowEntryPin(reader, idoc, res.att.libraryID, res.att.itemKey, res.stored.id, pos); } catch (_) {}
-                                    live._wvReaderPanelNote(idoc, "Added “" + title + "” pinned on page "
-                                        + live._wvBmPageLabelFor(res.att, pt.pageIndex) + ". Drag the pin to adjust.");
+                                    live._wvReaderPanelNote(idoc, "Pinned. Type its title (Enter to keep); drag the pin to adjust.");
                                     }
+                                    try {
+                                        const dd = live._wvOutlineDoc(res.att.libraryID, res.att.itemKey);
+                                        const ix = dd && dd.entries ? dd.entries.findIndex((z: any) => z.id === res.stored.id) : -1;
+                                        live._wvOutlineBeginRename(reader, idoc, res.stored, ix, true);
+                                    } catch (_) {}
                                 }).catch(() => {});
                         } catch (e) { Zotero.debug("[Weavero] add-position-to-outline err: " + e); }
                     } });
@@ -19588,7 +19700,14 @@ class _ReaderPanelsMixin {
      *  CFI additionally on EPUB, plus the location sort key. */
     _wvDomAnchorFromRange(pv: any, rng: any): any {
         try {
-            const out: any = { position: null, cfi: null, selector: null, sortIndex: null };
+            // `range` is the LIVE clicked range — the ground truth the
+            // selector/CFI merely approximate. Callers that need document
+            // ORDER must use it, not the round-tripped selector: `toSelector`
+            // can emit an ambiguous path ("div:nth-child(22) > svg") whose
+            // FIRST querySelector match is a different element — one pin
+            // anchored visually at the top ordered as DOM-last because the
+            // first match was a floating footer widget (2026-08-26).
+            const out: any = { position: null, cfi: null, selector: null, sortIndex: null, range: rng };
             // The SELECTOR is computed for both view families. Bookmarks keep
             // the CFI on EPUB (their anchor everywhere else), but an outline
             // entry stores a selector on BOTH — the same shape the

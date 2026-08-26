@@ -12982,14 +12982,14 @@ class _ReaderPanelsMixin {
                     + "left:" + (r.left + iwin.scrollX - 2) + "px;"
                     + "top:" + (r.top + iwin.scrollY - 1) + "px;"
                     + "width:" + (r.width + 4) + "px;height:" + (r.height + 2) + "px;"
-                    + "background:rgba(255,212,0,.45);border-radius:3px;"
+                    + "background:rgba(113,173,253,.45);border-radius:3px;"
                     + "transition:opacity .3s ease-out;";
                 // The snapshot's own site CSS can override a plain inline
                 // background with !important (Annual Reviews does), leaving
                 // the box transparent — present, positioned, and invisible
                 // ("Still not", 2026-08-26; computed bg was rgba(0,0,0,0)).
                 // An inline !important outranks any stylesheet.
-                try { box.style.setProperty("background", "rgba(255,212,0,.45)", "important"); } catch (_) {}
+                try { box.style.setProperty("background", "rgba(113,173,253,.45)", "important"); } catch (_) {}
                 doc.body.appendChild(box);
             }
             pv._wvDomHlTimer = iwin.setTimeout(() => {

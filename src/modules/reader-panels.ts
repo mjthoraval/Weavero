@@ -7017,6 +7017,45 @@ class _ReaderPanelsMixin {
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
             if (!pv) return;
+            // DOM views (snapshot / EPUB): find the CURRENT title's text in
+            // the live document and re-anchor the entry to it — the DOM
+            // equivalent of the PDF text-layer recovery, with the same
+            // resolve-once contract (this runs only from the menu). Until
+            // 2026-08-26 the menu item existed on DOM views and silently did
+            // nothing (parity register).
+            if ((reader._type || "pdf") !== "pdf") {
+                const d0 = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const e0 = d0 && Array.isArray(d0.entries)
+                    ? d0.entries.find((x: any) => x.id === id) : null;
+                if (!e0) return;
+                const title0 = String(e0.title || "").trim();
+                if (!title0) return;
+                const found = this._wvDomFindTextRange(pv, title0);
+                if (!found) {
+                    this._wvReaderPanelNote(idoc,
+                        "Couldn\u2019t find that text in the document \u2014 the region is unchanged.");
+                    return;
+                }
+                let selr: any = null;
+                try { selr = pv.toSelector(found); } catch (_) {}
+                if (!selr) {
+                    this._wvReaderPanelNote(idoc, "Couldn\u2019t anchor to that text.");
+                    return;
+                }
+                const precise = JSON.parse(JSON.stringify(selr));
+                e0.resolvedPosition = precise;
+                await this._wvOutlineSetEntryPosition(att.libraryID, att.itemKey, id, precise, title0);
+                await this._wvReaderRenderOutline(reader, idoc);
+                // Show it: scroll (quarter-from-top, the shared rule) + flash.
+                try {
+                    const iw = pv._iframeWindow;
+                    const rc = found.getBoundingClientRect();
+                    iw.scrollTo(0, Math.max(0, Math.round(rc.top + iw.scrollY
+                        - (iw.innerHeight || 800) * 0.25)));
+                    this._wvDomHighlightRange(pv, found);
+                } catch (_) {}
+                return;
+            }
             const ref = { att, id };
             const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
             const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
@@ -7605,6 +7644,23 @@ class _ReaderPanelsMixin {
             // a curated entry's saved `resolvedPosition`, else its own position.
             const established = curated && entry.resolvedPosition != null;
             let target = established ? entry.resolvedPosition : entry.position;
+            // DOM views (snapshot / EPUB): the anchors are EXACT (selector or
+            // href) and `Reader.open` navigates them natively — same location
+            // shape the in-place `ir.navigate` path uses. Our part is only the
+            // quarter-down placement + the flash/pin confirmation, done once
+            // the new window's view can resolve the anchor. Until 2026-08-26
+            // this item silently did nothing on DOM entries (parity register).
+            if ((reader._type || "pdf") !== "pdf") {
+                if (!target && !entry.href) return;
+                const location: any = target
+                    ? { position: JSON.parse(JSON.stringify(target)) }
+                    : { href: String(entry.href) };
+                const attId = att.att.id;
+                const gen = (this._wvOutlineOpenGen = (this._wvOutlineOpenGen || 0) + 1);
+                Zotero.Reader.open(attId, location, { openInWindow: true });
+                this._wvOutlinePrepareNewDomWindow(attId, entry, gen, 0);
+                return;
+            }
             if (!target) return;
             // Not established and still a coarse POINT -> establish it ONCE here,
             // in the already-loaded source reader, using the ORIGINAL title
@@ -7662,6 +7718,76 @@ class _ReaderPanelsMixin {
      *     jitter); a stray centre shows for at most one tick.
      *   - We also raise the window to the FRONT once per open (the removed
      *     `maximize()` used to do this incidentally). */
+    /** DOM-view twin of `_wvOutlinePrepareNewWindow`: wait for the item's
+     *  own-window reader to be able to RESOLVE the entry's anchor (EPUB
+     *  sections mount progressively), then raise the window, apply the
+     *  quarter-down placement, and confirm — flash for heading entries, the
+     *  draggable pin for point entries. No scroll-enforce fight here: the
+     *  native navigate on DOM views is a single placement, not the PDF's
+     *  late re-centre, so one refinement after resolvability suffices. */
+    _wvOutlinePrepareNewDomWindow(attId: number, entry: any, gen: number, tries?: number, lastTop?: number, held?: number) {
+        if (this._wvOutlineOpenGen !== gen) return;   // superseded by a newer open
+        const n = tries || 0;
+        let h = held || 0;
+        let top = lastTop;
+        let done = false;
+        try {
+            const mainWin: any = Zotero.getMainWindow();
+            const nr: any = (Zotero.Reader._readers || []).find((r: any) =>
+                r && r.itemID === attId && r._window && r._window !== mainWin);
+            const ir = nr && nr._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const iwin = pv && pv._iframeWindow;
+            const doc = pv && (pv._iframeDocument || (iwin && iwin.document));
+            if (pv && iwin && doc && doc.body) {
+                const target = (entry.source && entry.resolvedPosition != null)
+                    ? entry.resolvedPosition : entry.position;
+                const rng = this._wvDomRangeForAnchor(pv,
+                    { position: target || null, href: entry.href || null });
+                const rc = rng && rng.getBoundingClientRect();
+                if (rng && rc && (rc.width || rc.height)) {
+                    // STABILITY GATE before placing anything: an EPUB mounts
+                    // its sections progressively, and every mount ABOVE the
+                    // target shifts document coordinates — a flash painted
+                    // early ended up ~34k px away from the text once loading
+                    // finished, and the native (late) href-navigate overrode
+                    // the early scroll anyway (found live 2026-08-26). Only
+                    // when the anchor's document position has held still for
+                    // several ticks is the layout trustworthy.
+                    const docTop = rc.top + (iwin.scrollY || 0);
+                    if (top != null && Math.abs(docTop - top) <= 2) h += 1; else h = 0;
+                    top = docTop;
+                    if (h >= 3) {
+                        done = true;
+                        try { nr._window.focus(); } catch (_) {}
+                        // Quarter-down placement (a paginated EPUB ignores
+                        // window scrolls — harmless no-op there).
+                        try {
+                            const want = (iwin.innerHeight || 800) * 0.25;
+                            const rc2 = rng.getBoundingClientRect();
+                            if (Math.abs(rc2.top - want) > 40) {
+                                iwin.scrollTo(0, Math.max(0, Math.round(rc2.top + iwin.scrollY - want)));
+                            }
+                        } catch (_) {}
+                        if (target && target.anchor === "point") {
+                            try { this._wvOutlineShowDomEntryPin(nr, entry, target); } catch (_) {}
+                        } else {
+                            this._wvDomHighlightRange(pv, rng);
+                        }
+                    }
+                }
+            }
+        } catch (_) {}
+        // ~30s of scheduled ticks: the Kundu-sized EPUB spends ~14s just
+        // mounting sections (live, 2026-08-26), and load jank stretches real
+        // tick spacing well past 200ms. The loop is passive until stability,
+        // so a long cap costs nothing.
+        if (done || n > 150) return;
+        const w0: any = Zotero.getMainWindow();
+        ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+            () => this._wvOutlinePrepareNewDomWindow(attId, entry, gen, n + 1, top, h), 200);
+    }
+
     _wvOutlinePrepareNewWindow(attId: number, position: any, gen: number, tries?: number, stable?: number, raised?: boolean) {
         // Superseded by a newer open -> abandon this (stale) enforce loop.
         if (this._wvOutlineOpenGen !== gen) return;
@@ -8044,18 +8170,36 @@ class _ReaderPanelsMixin {
             {
                 const _tgt = (entry && (entry.resolvedPosition || entry.position)) || null;
                 const _anchor = _tgt && _tgt.anchor;
+                const _isDom = (reader._type || "pdf") !== "pdf";
                 if (_anchor === "top" || _anchor === "bottom") {
                     // Page-anchor entry: Edit Position (manual page + top/bottom).
                     if (!rmLens) mk("Edit Position…", RP_TEXT_SVG,
                         () => this._wvOutlineEditPosition(reader, idoc, entry, index, curatedView));
                 } else if (_anchor === "point") {
-                    // Pin entry: Edit Position drops a persistent, draggable pin
-                    // that commits only when the user clicks Done.
+                    // Pin entry: Edit Position shows a draggable pin. PDF uses
+                    // the Done-committing editor; DOM views show the persistent
+                    // pin whose drag commits to the outline store directly
+                    // (the machinery shipped 2026-08-25).
                     if (!rmLens) mk("Edit Position", RP_TEXT_SVG,
-                        () => this._wvOutlineEditPinPosition(reader, idoc, entry, index, curatedView));
+                        () => {
+                            if (_isDom) {
+                                this._wvOutlineNavigate(reader, idoc, entry, null);
+                                const tgt = entry.resolvedPosition || entry.position;
+                                this._wvOutlineShowDomEntryPin(reader, entry, tgt, true);
+                            } else {
+                                this._wvOutlineEditPinPosition(reader, idoc, entry, index, curatedView);
+                            }
+                        });
                 } else {
+                    // Region entry. PDF: the handle-drag editor. DOM views: the
+                    // select-text re-anchor flow (arm, select, re-anchor +
+                    // reorder + navigate) — the natural DOM equivalent, and
+                    // until 2026-08-26 this item appeared on DOM views and
+                    // silently did nothing (parity register).
                     if (!rmLens) mk("Edit Region…", RP_TEXT_SVG,
-                        () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
+                        () => _isDom
+                            ? this._wvOutlineBeginSelectRegion(reader, idoc, entry, index, curatedView)
+                            : this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
                 }
             }
             // "Reset to Original Name" only when the title has been changed from
@@ -8566,8 +8710,20 @@ class _ReaderPanelsMixin {
             // Hand-placed DOM entries get the same 📌 confirmation a PDF pin
             // entry gets. Heading entries do not — matching PDF, where only
             // point entries are pinned.
-            if (target && target.anchor === "point" && (reader._type || "pdf") !== "pdf") {
-                this._wvOutlineShowDomEntryPin(reader, node, target);
+            if ((reader._type || "pdf") !== "pdf") {
+                const pvD = pv;
+                if (target && target.anchor === "point") {
+                    this._wvOutlineShowDomEntryPin(reader, node, target);
+                } else if (pvD) {
+                    // Parity with the PDF panel: navigating a heading entry
+                    // flashes its anchored text. Exact anchors only (selector
+                    // or href) — nothing is guessed.
+                    try {
+                        const rng = this._wvDomRangeForAnchor(pvD,
+                            { position: target, href: node && node.href });
+                        if (rng) this._wvDomHighlightRange(pvD, rng);
+                    } catch (_) {}
+                }
             }
         } catch (_) {}
     }
@@ -12554,6 +12710,88 @@ class _ReaderPanelsMixin {
      *  cheap in-memory scan, doing NO extraction. Runs effectively once per
      *  document; `_sortIndexTried` stops a text-less page being retried every
      *  open. Fire-and-forget from the render path. */
+    /** The DOM twin of the PDF in-place text highlight: temporary boxes over
+     *  a Range's client rects in the content document, auto-clearing on the
+     *  same reset-on-each-click contract (a new generation supersedes an
+     *  in-flight one; rapid clicks never wipe a later highlight -- the
+     *  native-timer bug the PDF painter was built around, forums #122030).
+     *  Boxes live in the content doc like the pins do, positioned in
+     *  DOCUMENT coordinates so mid-flight smooth scrolling cannot smear
+     *  them. */
+    _wvDomHighlightRange(pv: any, range: any, gen?: number) {
+        try {
+            const iwin = pv && pv._iframeWindow;
+            const doc = pv && (pv._iframeDocument || (iwin && iwin.document));
+            if (!iwin || !doc || !doc.body || !range) return;
+            const seq = gen != null ? gen : (pv._wvDomHlSeq = (pv._wvDomHlSeq || 0) + 1);
+            for (const el of [...doc.querySelectorAll(".wv-dom-heading-flash")]) el.remove();
+            if (pv._wvDomHlTimer) { try { iwin.clearTimeout(pv._wvDomHlTimer); } catch (_) {} }
+            const rects = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+            if (!rects.length) return;
+            for (const r of rects.slice(0, 40)) {
+                const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                box.className = "wv-dom-heading-flash";
+                box.style.cssText = "position:absolute;z-index:2147483645;pointer-events:none;"
+                    + "left:" + (r.left + iwin.scrollX - 2) + "px;"
+                    + "top:" + (r.top + iwin.scrollY - 1) + "px;"
+                    + "width:" + (r.width + 4) + "px;height:" + (r.height + 2) + "px;"
+                    + "background:rgba(255,212,0,.45);border-radius:3px;"
+                    + "transition:opacity .3s ease-out;";
+                doc.body.appendChild(box);
+            }
+            pv._wvDomHlTimer = iwin.setTimeout(() => {
+                try {
+                    if (pv._wvDomHlSeq !== seq && gen == null) return;
+                    for (const el of [...doc.querySelectorAll(".wv-dom-heading-flash")]) {
+                        el.style.opacity = "0";
+                        iwin.setTimeout(() => { try { el.remove(); } catch (_) {} }, 350);
+                    }
+                } catch (_) {}
+            }, 2000);
+        } catch (e) { Zotero.debug("[Weavero] _wvDomHighlightRange err: " + e); }
+    }
+
+    /** Find TEXT in a DOM view's content document: normalized (NFKC,
+     *  case-folded, letters+digits only — the same folding title matching
+     *  uses) so punctuation/whitespace/encoding differences don't break the
+     *  match. Returns a Range over the first occurrence, or null.
+     *
+     *  One pass builds a normalized buffer with a per-character map back to
+     *  (text node, raw offset); the needle is searched in that buffer and the
+     *  hit mapped back. Whole-document scan — bounded by document size, run
+     *  only on explicit user actions (Re-detect), never per click: click
+     *  paths use the entries' EXACT anchors instead. */
+    _wvDomFindTextRange(pv: any, text: string): any {
+        try {
+            const doc = pv && pv._iframeDocument;
+            if (!doc || !doc.body) return null;
+            const needle = this._wvOutlineNorm(text);
+            if (!needle || needle.length < 3) return null;
+            const walker = doc.createTreeWalker(doc.body, 0x4 /* SHOW_TEXT */);
+            let buf = "";
+            const map: Array<{ node: any, off: number }> = [];
+            let node;
+            while ((node = walker.nextNode())) {
+                const raw = String(node.nodeValue || "");
+                for (let i = 0; i < raw.length; i++) {
+                    const n = this._wvOutlineNorm(raw[i]);
+                    for (let j = 0; j < n.length; j++) { buf += n[j]; map.push({ node, off: i }); }
+                }
+                if (map.length > 4000000) break;   // pathological doc: give up honestly
+            }
+            const at = buf.indexOf(needle);
+            if (at < 0) return null;
+            const first = map[at], last = map[at + needle.length - 1];
+            const range = doc.createRange();
+            range.setStart(first.node, first.off);
+            range.setEnd(last.node, last.off + 1);
+            return range;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvDomFindTextRange err: " + e);
+            return null;
+        }
+    }
+
     /** Resolve a DOM-view bookmark's stored anchor back to a live Range.
      *  EPUB anchors by CFI, snapshot by WADM selector — the two views each
      *  expose exactly one of the resolvers. */
@@ -18077,6 +18315,65 @@ class _ReaderPanelsMixin {
      *  `weavero.enableOutlineTextHighlight` (default on). Idempotent per view;
      *  captures the true original navigate once for clean re-install; reads the
      *  live plugin so it survives reloads. */
+    /** The DOM-view arm of the native-outline click highlight (the feature
+     *  graduated 2026-08-26, extended beyond PDF the same day). A native
+     *  outline click on an EPUB/snapshot navigates with the entry's EXACT
+     *  anchor in the location (href into the book, or a selector), so unlike
+     *  PDF nothing is recovered by text search: match the location to an
+     *  outline entry (identity, else href/selector equality — AMBIGUITY
+     *  DECLINES, the Kundu lesson), resolve it to a live Range, flash it.
+     *  Never touches scroll ownership: the native navigate has already run;
+     *  the flash retries briefly for EPUB section mount, then gives up. */
+    _wvDomNativeOutlineFlash(reader: any, pv: any, location: any) {
+        try {
+            const lp = this;
+            if (!lp._getEnableOutlineTextHighlight()) return;
+            const st = reader && reader._internalReader && reader._internalReader._state;
+            const outline = st && st.outline;
+            if (!outline || !location) return;
+            const locHref = location.href != null ? String(location.href) : null;
+            const locSel = location.position && !location.position.rects
+                ? JSON.stringify(location.position) : null;
+            if (!locHref && !locSel) return;
+            const matches: any[] = [];
+            const stack = outline.slice();
+            let identity = null;
+            while (stack.length) {
+                const it = stack.shift();
+                if (!it) continue;
+                if (it.location === location) { identity = it; break; }
+                const h = it.location && it.location.href != null
+                    ? String(it.location.href) : null;
+                const ps = it.location && it.location.position
+                    ? JSON.stringify(it.location.position) : null;
+                if ((locHref && h === locHref) || (locSel && ps === locSel)) matches.push(it);
+                if (Array.isArray(it.items) && it.items.length) stack.push(...it.items);
+            }
+            const entry = identity || (matches.length === 1 ? matches[0] : null);
+            if (!entry) return;   // not an outline click, or ambiguous -> decline
+            const seq = (pv._wvDomHlSeq = (pv._wvDomHlSeq || 0) + 1);
+            const win = pv._iframeWindow;
+            let waited = 0;
+            const attempt = () => {
+                try {
+                    if (pv._wvDomHlSeq !== seq) return;   // superseded by a newer click
+                    const rng = lp._wvDomRangeForAnchor(pv, {
+                        position: entry.location && entry.location.position,
+                        href: entry.location && entry.location.href,
+                    });
+                    const rc = rng && rng.getBoundingClientRect();
+                    if (rng && rc && (rc.width || rc.height)) {
+                        lp._wvDomHighlightRange(pv, rng, seq);
+                        return;
+                    }
+                    waited += 150;
+                    if (waited < 2400 && win) win.setTimeout(attempt, 150);
+                } catch (_) {}
+            };
+            if (win) win.setTimeout(attempt, 120); else attempt();
+        } catch (e) { Zotero.debug("[Weavero] _wvDomNativeOutlineFlash err: " + e); }
+    }
+
     _wvOutlineInstallRecovery(reader: any, tries?: number) {
         const n = tries || 0;
         let pv: any = null;
@@ -18099,6 +18396,20 @@ class _ReaderPanelsMixin {
                 if (!pv._wvOutlineOrigNavigate) pv._wvOutlineOrigNavigate = pv.navigate.bind(pv);
                 const origNavigate = pv._wvOutlineOrigNavigate;
                 pv.navigate = function (location: any, options: any) {
+                    // DOM views (EPUB / snapshot): the native navigate owns the
+                    // scroll untouched; the flash rides after it, gated at
+                    // click time like the PDF arm.
+                    try {
+                        if (typeof (pv as any).toSelector === "function") {
+                            const ret0 = origNavigate(location, options);
+                            try {
+                                const lp0: any = (Zotero as any).Weavero
+                                    && (Zotero as any).Weavero.plugin;
+                                if (lp0) lp0._wvDomNativeOutlineFlash(reader, pv, location);
+                            } catch (_) {}
+                            return ret0;
+                        }
+                    } catch (_) {}
                     let handled = false;
                     try {
                         const plugin: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;

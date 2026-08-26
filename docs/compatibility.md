@@ -74,7 +74,7 @@ depend on v10-only row classes), but unconfirmed — check before relying.
 | No-reload reader-tab move / tear-off between windows | Untested | Yes | tabs module; `swapDocShells` — likely v10-dependent, check. |
 | Item pane in separate reader windows | Untested | Yes | reader module; mirrors the main-window item pane. |
 | Compact title bar (hide title bar) | Untested | Yes | pane module; Windows/Linux only. |
-| Outline text highlight on navigation | Untested | Yes | reader-panels module; ON by default (and has been since v0.12). Best-effort heading recovery: encoding mismatches and same-page duplicate destinations decline rather than guess. |
+| Outline text highlight on navigation | Untested | Yes | reader-panels module; ON by default (and has been since v0.12). All reader types: PDF recovers the heading on the page; EPUB/snapshot resolve the entry's exact anchor. Best-effort: encoding mismatches and ambiguous destinations decline rather than guess. |
 
 ## v9-specific cosmetic note
 

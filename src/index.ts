@@ -4369,6 +4369,23 @@ class WeaveroPlugin {
      *  plugin's init resolves; the teardown calls are no-op safe so this
      *  is idempotent. */
     onMainWindowLoad(_window) {
+        // Issue #35 (macOS Dock reopen): a main window created MID-SESSION
+        // restores its tabs outside the startup guard-lift pipeline, and
+        // nothing re-applied the group visuals there — tabs knew their
+        // group ("Remove from Tab Group" showed) but chips never rendered.
+        // Idempotent re-applies on a widening schedule: the claim pass
+        // re-stamps members from the preserved shadow as tabs arrive.
+        try {
+            const lat = (this as any);
+            for (const ms of [2000, 5000, 15000]) {
+                _window.setTimeout(() => {
+                    try {
+                        if (lat._wvDestroyed || _window.closed) return;
+                        lat._applyTabGroups(_window);
+                    } catch (e) {}
+                }, ms);
+            }
+        } catch (e) {}
         try {
             // Ctrl+Shift+T → reopen last closed reader window / group (falls
             // through to Zotero's native tab-undo when Weavero's stack is empty).
@@ -4639,6 +4656,10 @@ class WeaveroPlugin {
      *  through dead refs. Lighter than destroy() — preferences observer,
      *  reader event listeners etc. survive across windows. */
     onMainWindowUnload(_window) {
+        // Issue #35: arm the window-teardown latch BEFORE any teardown work.
+        // The tab-close storm this unload triggers must never prune group
+        // members or empty-delete groups (see tearingDown in tab-groups.ts).
+        try { (this as any)._wvMainWindowClosingAt = Date.now(); } catch (e) {}
         try { (this as any)._wvUnwireLoadURIHook(_window); } catch (e) {}
         try { (this as any)._wvUnwireItemCountBreakdown(_window); } catch (e) {}
         try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}

@@ -860,7 +860,17 @@ class _TabGroupsMixin {
                 try {
                     return !!((Services.startup && Services.startup.shuttingDown)
                         || (this as any)._wvQuitting
-                        || ((Zotero as any).Weavero && (Zotero as any).Weavero._quitting));
+                        || ((Zotero as any).Weavero && (Zotero as any).Weavero._quitting)
+                        // A MAIN WINDOW is closing while the app lives — the
+                        // macOS Cmd+W path (issue #35, confirmed by the
+                        // reporter 2026-08-26). Its tabs close en masse
+                        // exactly like a quit, but none of the flags above are
+                        // set, so the member prune and the empty-delete below
+                        // destroyed the group's persisted state: chips could
+                        // not come back on the Dock reopen, and a LATER full
+                        // restart had nothing left to restore (their case 3).
+                        // 20s latch armed in onMainWindowUnload.
+                        || (Date.now() - ((this as any)._wvMainWindowClosingAt || 0) < 20000));
                 } catch (e) { return false; }
             })();
             for (const g of groups) {

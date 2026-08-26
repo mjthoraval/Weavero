@@ -6516,7 +6516,42 @@ class _ReaderPanelsMixin {
                     reader._wvOutlineSelAnchor = String(stored.id);
                 }
             } catch (_) {}
+            // REVEAL the new entry — the same treatment its sibling
+            // _wvOutlineAddFromSelection has had since 2026-07-21 (drift
+            // between the two creation paths, the parity register's standing
+            // failure shape). Without this, a pin inserted under a COLLAPSED
+            // chapter of a nested outline (EPUB) was invisible, and the
+            // inline rename that follows creation silently found no row
+            // (reported 2026-08-26). Expand the ancestor chain BEFORE the
+            // render; scroll to the row after it.
+            try {
+                const dd = this._wvOutlineDoc(att.libraryID, att.itemKey);
+                const ce: any[] = (dd && dd.entries) || [];
+                const idx = stored ? ce.findIndex((x: any) => x.id === stored.id) : -1;
+                if (idx >= 0) {
+                    const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
+                    let lvl = Math.max(0, ce[idx].indentLevel || 0);
+                    for (let j = idx - 1; j >= 0 && lvl > 0; j--) {
+                        const jl = Math.max(0, ce[j].indentLevel || 0);
+                        if (jl < lvl) { expandedSet.add(String(ce[j].id)); lvl = jl; }
+                    }
+                }
+            } catch (_) {}
+            try {
+                const ir = reader._internalReader;
+                if (ir) { ir.toggleSidebar(true); ir.setSidebarView("outline"); }
+                if (idoc && idoc.querySelector("." + RP_OUTLINE_VIEW_CLASS)) {
+                    try { this._wvReaderActivateOutlineTakeover(reader, idoc, true); } catch (_) {}
+                }
+            } catch (_) {}
             await this._wvReaderRenderOutline(reader, idoc);
+            try {
+                if (stored) {
+                    const row: any = [...idoc.querySelectorAll(".wv-outline-row")]
+                        .find((r: any) => r._wvOl && r._wvOl.entry && r._wvOl.entry.id === stored.id);
+                    if (row) row.scrollIntoView({ block: "nearest" });
+                }
+            } catch (_) {}
             return { att, stored };
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineCreateEntry err: " + e); return null; }
     }
@@ -6536,6 +6571,22 @@ class _ReaderPanelsMixin {
             const win = pv && pv._iframeWindow;
             const pdoc = win && win.document;
             if (!pdoc) return;
+            // Text ALREADY selected -> use it immediately. The natural gesture
+            // is select-then-command; the arm waited for a SECOND selection
+            // with only a small note as feedback, which read as "does not do
+            // anything" (snapshot Edit Region, 2026-08-26). Arming is now only
+            // the fallback for command-then-select.
+            try {
+                const pre = this._wvOutlineReadSelection(reader);
+                if (pre && pre.position) {
+                    try {
+                        const vs0 = win.getSelection && win.getSelection();
+                        if (vs0 && vs0.removeAllRanges) vs0.removeAllRanges();
+                    } catch (_) {}
+                    try { onSelected(pre); } catch (_) {}
+                    return;
+                }
+            } catch (_) {}
             this._wvReaderPanelNote(idoc, "Select text in the document (Esc to cancel).");
             // Suppress the reader's own annotation popup for the duration of
             // the arm. Selecting text here means "this is my outline entry",
@@ -8705,6 +8756,28 @@ class _ReaderPanelsMixin {
         } catch (_) {}
     }
 
+    /** Resolve a DOM anchor and land it at the shared 1/4-from-top rule.
+     *  Returns the resolved range on success; null means the caller must fall
+     *  back to the native navigate (unresolvable anchor, or a view that does
+     *  not scroll vertically — paginated EPUB). A manual scroll fires no
+     *  native spotlight, so the caller flashes the Weavero highlight. */
+    _wvDomQuarterPlace(pv: any, anchor: any): any {
+        try {
+            const iwin = pv && pv._iframeWindow;
+            const doc = pv && pv._iframeDocument;
+            const scrollable = iwin && doc && doc.documentElement
+                && (Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0)
+                    > (iwin.innerHeight || 0) + 50);
+            if (!scrollable) return null;
+            const rng = this._wvDomRangeForAnchor(pv, anchor);
+            const rc = rng && rng.getBoundingClientRect();
+            if (!rc || (!rc.width && !rc.height)) return null;
+            iwin.scrollTo(0, Math.max(0, Math.round(rc.top + iwin.scrollY
+                - (iwin.innerHeight || 800) * 0.25)));
+            return rng;
+        } catch (_) { return null; }
+    }
+
     _wvOutlineNavigate(reader: any, idoc: any, node: any, row: any) {
         try {
             // Scroll-spy suppression stamp (native's 1.5s rule): the jump
@@ -8740,6 +8813,19 @@ class _ReaderPanelsMixin {
             // when clicked (#34, 2026-08-21). A curated entry that has since
             // resolved a real position keeps the geometry path.
             if (node && node.href && !node.position && !node.resolvedPosition) {
+                // The 1/4-from-top rule for pure href entries too — the
+                // native href navigate lands the target at the very TOP
+                // (epub-view block 'start'), while everything else in the
+                // panel lands a quarter down (reported 2026-08-26).
+                try {
+                    const irH = reader._internalReader;
+                    const pvH = irH && (irH._primaryView || irH._lastView);
+                    const rngH = pvH && this._wvDomQuarterPlace(pvH, { href: node.href });
+                    if (rngH) {
+                        if (this._getEnableOutlineTextHighlight()) this._wvDomHighlightRange(pvH, rngH);
+                        return;
+                    }
+                } catch (_) {}
                 try {
                     const ir0 = reader._internalReader;
                     const iw0 = reader._iframeWindow;
@@ -8849,7 +8935,22 @@ class _ReaderPanelsMixin {
                     .catch(() => { try { this._wvOutlineNavPageTop(reader, pv, target.pageIndex); } catch (_) {} });
                 return;
             }
-            this._wvOutlineNavRaw(reader, pv, target);
+            // DOM views: place the target OURSELVES at the shared 1/4-from-top
+            // rule. The native navigate centres selector positions and puts
+            // EPUB hrefs at the top (dom-view.tsx block 'center' /
+            // epub-view.ts block 'start'), so manual entries landed centred
+            // and native ones at the top — neither matches the PDF panel
+            // (reported 2026-08-26). Manual placement also means OUR flash
+            // confirms: no native spotlight fires on a plain scroll. Falls
+            // back to the native navigate when the anchor doesn't resolve or
+            // the view doesn't scroll vertically (paginated EPUB).
+            let wvPlacedDom = false;
+            if ((reader._type || "pdf") !== "pdf") {
+                try {
+                    wvPlacedDom = !!this._wvDomQuarterPlace(pv, { position: target, href: node && node.href });
+                } catch (_) {}
+            }
+            if (!wvPlacedDom) this._wvOutlineNavRaw(reader, pv, target);
             // Hand-placed DOM entries get the same 📌 confirmation a PDF pin
             // entry gets. Heading entries do not — matching PDF, where only
             // point entries are pinned.
@@ -8857,10 +8958,13 @@ class _ReaderPanelsMixin {
                 const pvD = pv;
                 if (target && target.anchor === "point") {
                     this._wvOutlineShowDomEntryPin(reader, node, target);
-                } else if (pvD) {
+                } else if (pvD && (wvPlacedDom || !this._wvDomNativeSpotlights(pvD))) {
                     // Parity with the PDF panel: navigating a heading entry
                     // flashes its anchored text. Exact anchors only (selector
-                    // or href) — nothing is guessed.
+                    // or href) — nothing is guessed. Skipped when the native
+                    // navigate already spotlights the target (double-highlight
+                    // screenshot, 2026-08-26); manual-scroll paths (re-detect,
+                    // the open-in-window prepare) keep the Weavero flash.
                     try {
                         const rng = this._wvDomRangeForAnchor(pvD,
                             { position: target, href: node && node.href });
@@ -18497,10 +18601,20 @@ class _ReaderPanelsMixin {
      *  DECLINES, the Kundu lesson), resolve it to a live Range, flash it.
      *  Never touches scroll ownership: the native navigate has already run;
      *  the flash retries briefly for EPUB section mount, then gives up. */
+    /** True when this view natively spotlights navigation targets
+     *  (dom-view.tsx setSpotlight, 10.0.2-beta era): our own flash on a
+     *  native-navigate path would DOUBLE the highlight — yellow boxes over
+     *  the native blue read as a murky green (screenshot, 2026-08-26).
+     *  Older readers without setSpotlight still get the Weavero flash. */
+    _wvDomNativeSpotlights(pv: any): boolean {
+        try { return !!(pv && typeof pv.setSpotlight === "function"); } catch (_) { return false; }
+    }
+
     _wvDomNativeOutlineFlash(reader: any, pv: any, location: any) {
         try {
             const lp = this;
             if (!lp._getEnableOutlineTextHighlight()) return;
+            if (lp._wvDomNativeSpotlights(pv)) return;   // native flash already covers this click
             const st = reader && reader._internalReader && reader._internalReader._state;
             const outline = st && st.outline;
             if (!outline || !location) return;
@@ -19306,7 +19420,18 @@ class _ReaderPanelsMixin {
             doc.body.appendChild(pin);
             const w: any = iwin;
             let fadeT: any = null, killT: any = null;
+            const clearT = () => {
+                try { w.clearTimeout(fadeT); } catch (_) {}
+                try { w.clearTimeout(killT); } catch (_) {}
+            };
+            // arm() is IDEMPOTENT: it clears any pending timers first. Without
+            // this, a double-arm (mouseleave then drop, with no disarm in
+            // between) ORPHANED the earlier kill timer — disarm only clears
+            // the latest pair, so the orphan fired on its own schedule and
+            // removed the pin even mid-drag ("it does not disappear
+            // mid-drag", 2026-08-26). Every arm is now a full fresh window.
             const arm = () => {
+                clearT();
                 fadeT = w.setTimeout(() => {
                     try {
                         pin.style.transition = "opacity .25s,transform .25s";
@@ -19317,8 +19442,7 @@ class _ReaderPanelsMixin {
                 killT = w.setTimeout(() => { try { pin.remove(); } catch (_) {} }, 2520);
             };
             const disarm = () => {
-                try { w.clearTimeout(fadeT); } catch (_) {}
-                try { w.clearTimeout(killT); } catch (_) {}
+                clearT();
                 try {
                     pin.style.transition = "none";
                     pin.style.opacity = "1";

@@ -333,13 +333,24 @@ const RP_POPUP_CSS = [
     ".wv-rf-cal-day[data-today]{outline:1px solid var(--color-panedivider,rgba(127,127,127,.5));}",
     ".wv-rf-cal-day[data-selected]{background:var(--color-accent,#5e6ad2);color:#fff;}",
     // Sort bar between the sidebar toolbar and the annotations list.
-    ".wv-ann-sortbar{display:flex;gap:4px;align-items:center;padding:3px 8px;",
+    // Visibility is PURE CSS (:has on the active view button): the bar
+    // stays mounted across tab switches and appears in the SAME frame as
+    // the view flip. The script-driven ensure inserted it ~60ms after the
+    // list painted, shifting everything down -- the tab-switch flicker
+    // (user report 2026-08-28).
+    ".wv-ann-sortbar{display:none;gap:4px;align-items:center;padding:3px 8px;justify-content:flex-end;",
     "  border-bottom:1px solid var(--color-panedivider,rgba(127,127,127,.3));flex:0 0 auto;}",
+    "#sidebarContainer:has(#viewAnnotations.active) .wv-ann-sortbar{display:flex;}",
     ".wv-ann-sortchip{font-size:11px;padding:2px 8px;border-radius:9px;border:1px solid transparent;",
     "  background:transparent;color:inherit;cursor:pointer;white-space:nowrap;}",
     ".wv-ann-sortchip:hover{background:var(--fill-quinary,rgba(127,127,127,.12));}",
     ".wv-ann-sortchip.wv-on{background:var(--fill-quarternary,rgba(127,127,127,.18));",
     "  border-color:var(--color-panedivider,rgba(127,127,127,.3));font-weight:600;}",
+    // Manual-order drag: ONE insertion line, above or below the hovered
+    // card, matching where the drop will land (the dev.18 rule painted a
+    // border AND an inset shadow -- a full blue box, user caught it).
+    ".wv-ann-drop-before{border-top:2px solid var(--color-accent,#5e6ad2) !important;}",
+    ".wv-ann-drop-after{border-bottom:2px solid var(--color-accent,#5e6ad2) !important;}",
 ].join("");
 
 // ---- Feature B: Bookmarks sidebar tab ----------------------------------
@@ -1703,34 +1714,49 @@ class _ReaderPanelsMixin {
     // rank (created since the last push, or external/embedded ones with no
     // Zotero item) sort to the end until the next sweep refreshes the map.
 
-    _wvAnnSort(): any {
+    /** The sort for a reader -- A DOCUMENT PROPERTY, not a global (user
+     *  call 2026-08-28 after one drag flipped every tab to Manual): each
+     *  attachment stores {mode, dir, keys} in ann-order.json; documents
+     *  without an entry default to position/asc. The old global pref
+     *  weavero.readerAnnSort is retired (cleared on first store load). */
+    _wvAnnSort(reader?: any): any {
         try {
-            const raw = String(Zotero.Prefs.get("weavero.readerAnnSort") || "");
-            const parts = raw.split("|");
-            if (parts[0] === "dateAdded" || parts[0] === "dateModified") {
-                return { field: parts[0], dir: parts[1] === "asc" ? "asc" : "desc" };
-            }
-            if (parts[0] === "position" && parts[1] === "desc") {
-                return { field: "position", dir: "desc" };
+            if (reader) {
+                const att = this._wvReaderAtt(reader);
+                const e = att && this._wvAnnOrderEntry(att.libraryID, att.itemKey);
+                if (e && e.mode && e.mode !== "position") {
+                    return { field: e.mode, dir: e.dir === "desc" ? "desc" : (e.dir === "asc" ? "asc" : (e.mode === "manual" ? "asc" : "desc")) };
+                }
+                if (e && e.mode === "position" && e.dir === "desc") {
+                    return { field: "position", dir: "desc" };
+                }
             }
         } catch (e) {}
         return { field: "position", dir: "asc" };
     }
 
-    _wvAnnSetSort(field: string, dir?: string) {
+    _wvAnnSetSort(field: string, dir?: string, reader?: any) {
         try {
-            // Explicit dir wins (the menu's Ascending/Descending rows);
-            // re-picking the active field keeps its direction; switching
-            // fields takes that field's default (position asc, dates desc).
-            const cur = this._wvAnnSort();
+            // Explicit dir wins (the direction arrow); re-picking the active
+            // field keeps its direction; switching fields takes that field's
+            // default (position asc, dates desc).
+            const att = reader ? this._wvReaderAtt(reader) : null;
+            if (!att) return;   // per-document: nothing to set without one
+            const cur = this._wvAnnSort(reader);
             const d = dir || (cur.field === field ? cur.dir
                 : (field === "position" ? "asc" : "desc"));
-            if (field !== "dateAdded" && field !== "dateModified") {
-                // Empty pref = the position|asc default.
-                Zotero.Prefs.set("weavero.readerAnnSort", d === "desc" ? "position|desc" : "");
-            } else {
-                Zotero.Prefs.set("weavero.readerAnnSort", field + "|" + d);
+            const e = this._wvAnnOrderEntry(att.libraryID, att.itemKey);
+            let keys: string[] = e ? e.keys : [];
+            if (field === "manual" && !keys.length) {
+                // First manual pick with no stored order: capture the
+                // current visible order as the base.
+                try {
+                    const idoc = reader._iframeWindow && reader._iframeWindow.document;
+                    keys = [...idoc.querySelectorAll("#annotationsView .annotation[data-sidebar-annotation-id]")]
+                        .map((c: any) => c.getAttribute("data-sidebar-annotation-id")).filter(Boolean);
+                } catch (_) {}
             }
+            this._wvAnnOrderWrite(att.libraryID, att.itemKey, { mode: field, dir: d, keys }).catch(() => {});
         } catch (e) {}
         // Apply everywhere a sidebar is open.
         try {
@@ -1791,7 +1817,7 @@ class _ReaderPanelsMixin {
             const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
             if (!iw) return;
             const idoc: any = reader._iframeWindow && reader._iframeWindow.document;
-            const cur = this._wvAnnSort();
+            const cur = this._wvAnnSort(reader);
             if (cur.field === "position" && cur.dir !== "desc") {
                 iw.__wvAnnRank = null;
                 if (idoc) idoc._wvAnnDates = null;
@@ -1802,7 +1828,16 @@ class _ReaderPanelsMixin {
                 const dates: any = {};
                 const anns: any[] = (attItem && typeof attItem.getAnnotations === "function")
                     ? attItem.getAnnotations() : [];
-                if (cur.field === "position") {
+                if (cur.field === "manual") {
+                    // Stored per-attachment key order; unranked (new)
+                    // annotations fall to the end via the Infinity default,
+                    // same rule as the date modes.
+                    this._wvAnnOrderEnsureLoaded(reader);
+                    const order: string[] = (att && att.libraryID != null && att.itemKey)
+                        ? this._wvAnnOrderGet(att.libraryID, att.itemKey) : [];
+                    for (let i = 0; i < order.length; i++) rank[order[i]] = i;
+                }
+                else if (cur.field === "position") {
                     // position|desc: reverse document order. annotationSortIndex
                     // is the same string the reader's own sort keys on.
                     const sorted = anns.slice().sort((a, b) => {
@@ -1874,7 +1909,7 @@ class _ReaderPanelsMixin {
     _wvAnnStampDates(reader: any, idoc: any) {
         try {
             if (!idoc) return;
-            const cur = this._wvAnnSort();
+            const cur = this._wvAnnSort(reader);
             const on = cur.field !== "position";
             const map: any = idoc._wvAnnDates || {};
             for (const card of idoc.querySelectorAll("#annotationsView .annotation")) {
@@ -1912,10 +1947,11 @@ class _ReaderPanelsMixin {
             if (!idoc) return;
             const sc = idoc.getElementById("sidebarContainer");
             let bar: any = sc && sc.querySelector(".wv-ann-sortbar");
-            const cur = this._wvAnnSort();
-            const va: any = idoc.getElementById("viewAnnotations");
-            const annActive = !!(va && va.classList.contains("active"));
-            if (!sc || !annActive || cur.field === "position") {
+            const cur = this._wvAnnSort(reader);
+            // NOT gated on the active view: the bar stays mounted and CSS
+            // (:has) shows it only while Annotations is active -- removing
+            // it per switch caused the reflow flicker.
+            if (!sc || cur.field === "position") {
                 if (bar) bar.remove();
                 return;
             }
@@ -1930,33 +1966,246 @@ class _ReaderPanelsMixin {
             if (bar.getAttribute("data-wv-sig") === sig) return;
             bar.setAttribute("data-wv-sig", sig);
             while (bar.firstChild) bar.removeChild(bar.firstChild);
-            const chip = (label: string, field: string) => {
-                const c = idoc.createElementNS(NS_HTML_RP, "button");
-                c.className = "wv-ann-sortchip" + (cur.field === field ? " wv-on" : "");
-                c.textContent = label + (cur.field === field
-                    ? " " + (cur.dir === "asc" ? "↑" : "↓") : "");
-                c.addEventListener("click", (ev: any) => {
+            // ONE dropdown chip (same look as the outline source chip) + a
+            // direction arrow when the mode has one -- four side-by-side
+            // chips outgrew the bar when Manual joined (user call
+            // 2026-08-28: "make it like the outline dropdown, with the sort
+            // arrows next to it when relevant").
+            // "Annotations" title at the left, same typography as the
+            // outline header (user call 2026-08-28: consistency).
+            const title = idoc.createElementNS(NS_HTML_RP, 'span');
+            title.className = 'wv-outline-head-title';
+            title.textContent = 'Annotations';
+            bar.appendChild(title);
+            const labels: any = { position: "Position", dateAdded: "Date Added",
+                dateModified: "Date Modified", manual: "Manual" };
+            const drop = idoc.createElementNS(NS_HTML_RP, "button");
+            drop.className = "wv-outline-src-chip wv-outline-src-switchable wv-ann-sortdrop";
+            drop.setAttribute("title", "Annotation sort");
+            const lab = idoc.createElementNS(NS_HTML_RP, "span");
+            lab.textContent = labels[cur.field] || cur.field;
+            drop.appendChild(lab);
+            const caret = idoc.createElementNS(NS_HTML_RP, "span");
+            caret.className = "wv-outline-src-caret";
+            caret.innerHTML = RP_OUTLINE_CHEVRON;
+            drop.appendChild(caret);
+            drop.addEventListener("click", (ev: any) => {
+                try {
+                    ev.preventDefault(); ev.stopPropagation();
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const rd = (idoc as any)._wvAnnSortReader || reader;
+                    if (P && rd) P._wvShowAnnSortMenu(rd, idoc, drop);
+                } catch (e) {}
+            });
+            bar.appendChild(drop);
+            if (cur.field !== "manual") {
+                const dir = idoc.createElementNS(NS_HTML_RP, "button");
+                dir.className = "wv-ann-sortchip wv-on wv-ann-sortdir";
+                dir.textContent = cur.dir === "asc" ? "↑" : "↓";
+                dir.setAttribute("title", "Toggle sort direction");
+                dir.addEventListener("click", (ev: any) => {
                     try {
                         ev.preventDefault(); ev.stopPropagation();
-                        // Live plugin at event time -- closures go stale
-                        // across plugin reloads.
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!P) return;
-                        const c2 = P._wvAnnSort();
-                        if (c2.field === field) {
-                            P._wvAnnSetSort(field, c2.dir === "asc" ? "desc" : "asc");
-                        }
-                        else {
-                            P._wvAnnSetSort(field);
-                        }
+                        const rd2 = (idoc as any)._wvAnnSortReader || reader;
+                        const c2 = P._wvAnnSort(rd2);
+                        P._wvAnnSetSort(c2.field, c2.dir === "asc" ? "desc" : "asc", rd2);
                     } catch (e) {}
                 });
-                bar.appendChild(c);
-            };
-            chip("Position", "position");
-            chip("Date Added", "dateAdded");
-            chip("Date Modified", "dateModified");
+                bar.appendChild(dir);
+            }
         } catch (e) {}
+    }
+
+    // ---- Manual annotation order (forum request 132987) ---------------------
+    // Per-attachment display order for the sidebar, stored locally at
+    // <data dir>/weavero/ann-order.json as {version, orders: {"lib:key":
+    // [annotationKey,...]}}. Display-only: sortIndex and the annotations
+    // themselves are never touched, exactly like the date modes.
+
+    _wvAnnOrderPath(this: any) {
+        return PathUtils.join(Zotero.DataDirectory.dir, "weavero", "ann-order.json");
+    }
+
+    /** Fire-and-forget load; re-pushes ranks once when the doc arrives so a
+     *  manual-mode sidebar opened before the read completes self-heals. */
+    _wvAnnOrderEnsureLoaded(this: any, reader?: any) {
+        if (this._wvAnnOrderDoc || this._wvAnnOrderLoading) return;
+        this._wvAnnOrderLoading = true;
+        (async () => {
+            let doc: any = { version: 1, orders: {} };
+            try {
+                const raw = await IOUtils.readUTF8(this._wvAnnOrderPath());
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === "object" && parsed.orders) doc = parsed;
+            } catch (_) { /* missing file = empty store */ }
+            if (!this._wvLive || this._wvLive()) {
+                this._wvAnnOrderDoc = doc;
+                this._wvAnnOrderLoading = false;
+                // The pre-per-document GLOBAL pref is retired.
+                try {
+                    if (Zotero.Prefs.get("weavero.readerAnnSort") !== undefined) {
+                        Zotero.Prefs.clear("weavero.readerAnnSort");
+                    }
+                } catch (_) {}
+                // Re-ensure EVERY reader: their per-doc modes only now
+                // became readable.
+                try {
+                    for (const r of (Zotero.Reader._readers || [])) {
+                        try {
+                            const idoc2 = r._iframeWindow && r._iframeWindow.document;
+                            if (idoc2) this._wvAnnSortEnsure(r, idoc2);
+                        } catch (_) {}
+                    }
+                } catch (_) {}
+            }
+        })();
+    }
+
+    /** Entry shape: {mode, dir, keys}. Legacy bare-array entries
+     *  (dev.18-25) read as manual. */
+    _wvAnnOrderEntry(this: any, libraryID: number, itemKey: string): any {
+        try {
+            const d = this._wvAnnOrderDoc;
+            const e = d && d.orders && d.orders[libraryID + ":" + itemKey];
+            if (Array.isArray(e)) return { mode: "manual", dir: "asc", keys: e };
+            if (e && typeof e === "object") {
+                return { mode: e.mode || "position", dir: e.dir, keys: Array.isArray(e.keys) ? e.keys : [] };
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    _wvAnnOrderGet(this: any, libraryID: number, itemKey: string): string[] {
+        const e = this._wvAnnOrderEntry(libraryID, itemKey);
+        return e ? e.keys : [];
+    }
+
+    async _wvAnnOrderWrite(this: any, libraryID: number, itemKey: string, entry: any) {
+        try {
+            if (!this._wvAnnOrderDoc) this._wvAnnOrderDoc = { version: 1, orders: {} };
+            this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = {
+                mode: entry.mode || "position",
+                dir: entry.dir,
+                keys: Array.isArray(entry.keys) ? entry.keys.slice() : [],
+            };
+            const path = this._wvAnnOrderPath();
+            try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
+            await IOUtils.writeUTF8(path, JSON.stringify(this._wvAnnOrderDoc),
+                { tmpPath: path + ".tmp" });
+            // Refresh every open reader -- per-document resolution means only
+            // readers of this attachment actually change.
+            try {
+                for (const r of (Zotero.Reader._readers || [])) {
+                    try {
+                        const idoc = r._iframeWindow && r._iframeWindow.document;
+                        if (idoc) this._wvAnnSortEnsure(r, idoc);
+                    } catch (_) {}
+                }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] ann-order write err: " + e); }
+    }
+
+    /** Document-level drag wiring for row reordering. Native drag machinery
+     *  (annotation -> note editor) is untouched: we only act on drags that
+     *  START on a sidebar card and END inside the annotations list; a drop
+     *  anywhere else never reaches our reorder path. */
+    _wvAnnDragWire(this: any, reader: any, idoc: any) {
+        // v3: half-split semantics (v2's forbidden middle reverted by user).
+        const WIRE_V = 3;
+        if ((idoc as any).__wvAnnDragWired === WIRE_V) return;
+        const prev = (idoc as any).__wvAnnDragH;
+        if (prev) {
+            for (const t of ["dragstart", "dragover", "drop", "dragend"]) {
+                try { idoc.removeEventListener(t, prev, true); } catch (_) {}
+            }
+        }
+        const clearMarks = () => {
+            try {
+                for (const el of idoc.querySelectorAll(".wv-ann-drop-before, .wv-ann-drop-after")) {
+                    el.classList.remove("wv-ann-drop-before", "wv-ann-drop-after");
+                }
+            } catch (_) {}
+        };
+        const cardOf = (t: any) => {
+            try {
+                if (!t || !t.closest) return null;
+                return t.closest("#annotationsView .annotation[data-sidebar-annotation-id]") || null;
+            } catch (_) { return null; }
+        };
+        const h = (e: any) => {
+            try {
+                const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                if (!P || !P._getEnableAnnSort || !P._getEnableAnnSort()) return;
+                if (e.type === "dragstart") {
+                    const c0 = cardOf(e.target);
+                    (idoc as any).__wvAnnDragKey = c0 ? c0.getAttribute("data-sidebar-annotation-id") : null;
+                    return;
+                }
+                if (e.type === "dragend") {
+                    (idoc as any).__wvAnnDragKey = null;
+                    clearMarks();
+                    return;
+                }
+                const dragKey = (idoc as any).__wvAnnDragKey;
+                if (!dragKey) return;
+                const c = cardOf(e.target);
+                if (!c) { if (e.type === "dragover") clearMarks(); return; }
+                const r = c.getBoundingClientRect();
+                // HALF-split (user settled 2026-08-28 after trying a
+                // forbidden middle zone: "no reason" -- and it matches the
+                // bookmarks tree's drag): top half inserts above, bottom half
+                // below, every point on a card is a valid target.
+                const rel = (e.clientY - r.top) / Math.max(1, r.height);
+                const zone = rel < 0.5 ? "before" : "after";
+                if (e.type === "dragover") {
+                    clearMarks();
+                    e.preventDefault();
+                    try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+                    c.classList.add(zone === "before" ? "wv-ann-drop-before" : "wv-ann-drop-after");
+                    return;
+                }
+                if (e.type === "drop") {
+                    clearMarks();
+                    e.preventDefault(); e.stopPropagation();
+                    (idoc as any).__wvAnnDragKey = null;
+                    const targetKey = c.getAttribute("data-sidebar-annotation-id");
+                    const rd = (idoc as any)._wvAnnSortReader || reader;
+                    P._wvAnnManualMove(rd, idoc, dragKey, targetKey, zone === "before");
+                }
+            } catch (_) {}
+        };
+        for (const t of ["dragstart", "dragover", "drop", "dragend"]) {
+            idoc.addEventListener(t, h, true);
+        }
+        (idoc as any).__wvAnnDragH = h;
+        (idoc as any).__wvAnnDragWired = WIRE_V;
+    }
+
+    /** Apply one manual move. The base order is the CURRENT VISIBLE order
+     *  (auto-switch capture: what you see is what you had, plus the move),
+     *  then the pref flips to manual if it wasn't there already. */
+    async _wvAnnManualMove(this: any, reader: any, idoc: any, dragKey: string, targetKey: string, before: boolean) {
+        try {
+            if (!dragKey || !targetKey || dragKey === targetKey) return;
+            const att = this._wvReaderAtt(reader);
+            if (!att || att.libraryID == null || !att.itemKey) return;
+            const visible: string[] = [];
+            for (const card of idoc.querySelectorAll("#annotationsView .annotation[data-sidebar-annotation-id]")) {
+                const k = card.getAttribute("data-sidebar-annotation-id");
+                if (k) visible.push(k);
+            }
+            if (!visible.includes(dragKey) || !visible.includes(targetKey)) return;
+            const arr = visible.filter(k => k !== dragKey);
+            const ti = arr.indexOf(targetKey);
+            arr.splice(before ? ti : ti + 1, 0, dragKey);
+            await this._wvAnnOrderWrite(att.libraryID, att.itemKey,
+                { mode: "manual", dir: "asc", keys: arr });
+            // Per-document: refresh this reader (the ensure sweep covers any
+            // other tab showing the same attachment).
+            this._wvAnnSortEnsure(reader, idoc);
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnManualMove err: " + e); }
     }
 
     /** Per-sweep ensure: wire the wrapper, refresh ranks, and wire the sort
@@ -1977,14 +2226,20 @@ class _ReaderPanelsMixin {
                 }
                 return;
             }
+            // Store load FIRST: per-document modes live in ann-order.json,
+            // so waiting for a non-default mode to trigger the load is a
+            // chicken-and-egg (bit on dev.26: a manual doc read as position
+            // forever because the store never loaded).
+            this._wvAnnOrderEnsureLoaded(reader);
             this._wvAnnSortWire(reader);
             this._wvAnnPushRanks(reader);
             (idoc as any)._wvAnnSortReader = reader;
+            try { this._wvAnnDragWire(reader, idoc); } catch (e) {}
             // Sweep away the button earlier dev builds mounted.
             try { const b = idoc.querySelector(".wv-ann-sortbtn"); if (b) b.remove(); } catch (e) {}
             const va: any = idoc.getElementById("viewAnnotations");
             if (!va) return;
-            try { va.classList.toggle("wv-ann-sort-on", this._wvAnnSort().field !== "position"); } catch (e) {}
+            try { va.classList.toggle("wv-ann-sort-on", this._wvAnnSort(reader).field !== "position"); } catch (e) {}
             // Re-stamp card dates after every React re-render of the sidebar
             // (scroll, edits, filtering all rebuild cards without our code in
             // the loop). Stamping is mutation-quiet, so this settles.
@@ -2116,7 +2371,7 @@ class _ReaderPanelsMixin {
             // handler can toggle-close it.
             menu.setAttribute("data-wv-annsort", "1");
             const close = () => this._wvCloseReaderBmContextMenu(idoc);
-            const cur = this._wvAnnSort();
+            const cur = this._wvAnnSort(reader);
             const row = (label: string, ticked: boolean, onPick: () => void) => {
                 const it = idoc.createElementNS(NS_HTML_RP, "div");
                 it.className = "wv-ctx-item";
@@ -2141,9 +2396,18 @@ class _ReaderPanelsMixin {
             heading("Sort by");
             // Direction lives in the sort BAR (one click on the active chip
             // toggles it) -- the menu stays fields-only (user call 2026-08-03).
-            row("Position (default)", cur.field === "position", () => this._wvAnnSetSort("position"));
-            row("Date Added", cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded"));
-            row("Date Modified", cur.field === "dateModified", () => this._wvAnnSetSort("dateModified"));
+            row("Position (default)", cur.field === "position", () => this._wvAnnSetSort("position", undefined, reader));
+            row("Date Added", cur.field === "dateAdded", () => this._wvAnnSetSort("dateAdded", undefined, reader));
+            row("Date Modified", cur.field === "dateModified", () => this._wvAnnSetSort("dateModified", undefined, reader));
+            // Manual is offered only when this document actually HAS a
+            // manually-arranged order (user call 2026-08-28) -- dragging a
+            // card is how one comes to exist in the first place.
+            try {
+                const attM = this._wvReaderAtt(reader);
+                if (attM && this._wvAnnOrderGet(attM.libraryID, attM.itemKey).length) {
+                    row("Manual (drag to reorder)", cur.field === "manual", () => this._wvAnnSetSort("manual", undefined, reader));
+                }
+            } catch (e) {}
             (idoc.body || idoc.documentElement).appendChild(menu);
             const r = anchor.getBoundingClientRect();
             menu.style.left = Math.max(6, r.left) + "px";
@@ -2190,6 +2454,16 @@ class _ReaderPanelsMixin {
                 delete (idoc as any).__wvAnnDateObs;
                 delete (idoc as any).__wvAnnDateObsV;
                 for (const el of idoc.querySelectorAll(".wv-ann-date, .wv-ann-sortbar")) { try { el.remove(); } catch (e) {} }
+                try {
+                    const dh = (idoc as any).__wvAnnDragH;
+                    if (dh) {
+                        for (const t of ["dragstart", "dragover", "drop", "dragend"]) {
+                            idoc.removeEventListener(t, dh, true);
+                        }
+                        delete (idoc as any).__wvAnnDragH;
+                        delete (idoc as any).__wvAnnDragWired;
+                    }
+                } catch (e) {}
                 // NOTE: the chrome-side date-picker veto is NOT lifted here --
                 // it belongs to the FILTER feature (wired by the filter
                 // popup's date inputs) and is torn down in
@@ -7340,6 +7614,51 @@ class _ReaderPanelsMixin {
             const d = this._wvOutlineDoc(ref.att.libraryID, ref.att.itemKey);
             const e = d && Array.isArray(d.entries) ? d.entries.find((x: any) => x.id === ref.id) : null;
             if (!e) return;
+            // DOM view (EPUB / snapshot): the PDF editor below is hard-gated
+            // on PDFViewerApplication, so until 2026-08-27 Edit Region had NO
+            // handle-drag editor off PDF (user report, with the PDF editor as
+            // the expected look). Resolve the stored selector to a live Range
+            // and open the Range-based twin; a selector that will not resolve
+            // falls back to the select-text re-anchor flow, which needs no
+            // seed.
+            const pvD = reader._internalReader
+                && (reader._internalReader._primaryView || reader._internalReader._lastView);
+            if (pvD && typeof pvD.toDisplayedRange === "function") {
+                let seed: any = null;
+                try {
+                    let arg: any = e.resolvedPosition || e.position;
+                    try {
+                        const Cu = (Components as any).utils;
+                        if (pvD._iframeWindow && Cu) arg = Cu.cloneInto(arg, pvD._iframeWindow);
+                    } catch (_) {}
+                    seed = pvD.toDisplayedRange(arg);
+                } catch (_) {}
+                if (!seed || typeof seed.cloneRange !== "function") {
+                    return this._wvOutlineBeginSelectRegion(reader, idoc, entry, index, curatedView);
+                }
+                return this._wvDomRegionEditorOpen(reader, idoc, seed, {
+                    editorId: ref.id,
+                    noteWord: "title",
+                    onCommit: (rangeNew: any, text: string | null, withText: boolean) => {
+                        // The outline stores a SELECTOR on both DOM families
+                        // (same shape as add-from-selection — see
+                        // _wvDomAnchorFromRange), derived from the LIVE range.
+                        let selr: any = null;
+                        try { selr = pvD.toSelector(rangeNew); } catch (_) {}
+                        if (!selr) return;
+                        const precise = JSON.parse(JSON.stringify(selr));
+                        let chain: Promise<any> = Promise.resolve();
+                        if (withText && text) {
+                            chain = chain
+                                .then(() => this._wvOutlineRenameEntry(ref.att.libraryID, ref.att.itemKey, ref.id, text))
+                                .then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise, text));
+                        } else {
+                            chain = chain.then(() => this._wvOutlineSetEntryPosition(ref.att.libraryID, ref.att.itemKey, ref.id, precise));
+                        }
+                        return chain.then(() => this._wvReaderRenderOutline(reader, idoc));
+                    },
+                });
+            }
             return this._wvRegionEditorOpen(reader, idoc, e.resolvedPosition || e.position, {
                 editorId: ref.id,
                 noteWord: "title",
@@ -7416,14 +7735,57 @@ class _ReaderPanelsMixin {
             const pv = reader._internalReader
                 && (reader._internalReader._primaryView || reader._internalReader._lastView);
             if (!pv || typeof pv.getRange !== "function" || typeof pv.getCFI !== "function") return;
-            const iw = pv._iframeWindow;
-            const doc = iw && iw.document;
-            if (!doc || !doc.body) return;
             const pr = pv.getRange(pos.value, true);
             const seed = pr && ((typeof pr.toRange === "function") ? pr.toRange() : pr);
             if (!seed || typeof seed.cloneRange !== "function") {
                 this._wvReaderPanelNote(idoc, "The bookmarked text could not be located."); return;
             }
+            return this._wvDomRegionEditorOpen(reader, idoc, seed, {
+                editorId: "bm:" + bm.id,
+                noteWord: "label",
+                // Bookmarks keep the CFI on EPUB (their anchor everywhere
+                // else) -- derived from the LIVE committed range, exactly as
+                // the pre-refactor editor did.
+                onCommit: (rangeNew: any, text: string | null, withText: boolean) => {
+                    let cfiNew: any = null;
+                    try { cfiNew = pv.getCFI(rangeNew); } catch (_) {}
+                    if (!cfiNew) return;
+                    const updates: any = {
+                        position: Object.assign({}, pos, { value: cfiNew.toString() }),
+                    };
+                    if (text) updates.text = text.slice(0, 160);
+                    if (withText && text) updates.label = text.slice(0, 160);
+                    return Promise.resolve(this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates))
+                        .then(() => {
+                            try {
+                                this._wvMarkBmFocus(reader, bm.id);
+                                this._wvReaderRenderBmList(reader, idoc);
+                                this._wvReaderShowEpubPin(reader, cfiNew.toString());
+                            } catch (_) {}
+                        });
+                },
+            });
+        } catch (err) { Zotero.debug("[Weavero] _wvBmEditRegionEpub err: " + err); }
+    }
+
+    /** The DOM-VIEW handle-drag region editor (EPUB and snapshot) -- the
+     *  Range-based twin of `_wvRegionEditorOpen` (which speaks PDF page
+     *  geometry and cannot run on a DOM view). Extracted from the EPUB
+     *  bookmark editor 2026-08-27 when the OUTLINE's Edit Region turned out
+     *  to have no handle-drag editor off PDF (user report: "works in a PDF,
+     *  but not in EPUBs or Snapshots"). Anchor-agnostic: the caller derives
+     *  its own anchor (bookmark CFI, outline selector) from the LIVE
+     *  committed Range in `opts.onCommit(range, text, withText)`. `seed` is
+     *  the current region as a Range in the view's content document. */
+    _wvDomRegionEditorOpen(reader: any, idoc: any, seed: any, opts: any) {
+        try {
+            const pv = reader._internalReader
+                && (reader._internalReader._primaryView || reader._internalReader._lastView);
+            if (!pv) return;
+            const iw = pv._iframeWindow;
+            const doc = iw && iw.document;
+            if (!doc || !doc.body) return;
+            if (!seed || typeof seed.cloneRange !== "function") return;
             try { if (pv._wvRegionEditor) pv._wvRegionEditor.destroy(); } catch (_) {}
             let range = seed.cloneRange();
 
@@ -7482,30 +7844,19 @@ class _ReaderPanelsMixin {
             const destroy = () => {
                 try { container.remove(); } catch (_) {}
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
-                if (pv._wvRegionEditor && pv._wvRegionEditor._id === "bm:" + bm.id) pv._wvRegionEditor = null;
+                if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
             };
             const commit = (withText?: boolean) => {
-                let cfiNew: any = null;
-                try { cfiNew = pv.getCFI(range); } catch (_) {}
-                // Read the range's CURRENT text always -> the bookmark's owned
-                // text, kept in step with the geometry (Save-and-Text also
-                // adopts it as the visible label).
+                // Read the range's CURRENT text always -> kept in step with
+                // the geometry (Save-and-Text also adopts it as the visible
+                // label/title). The LIVE range goes to the caller, which
+                // derives its own anchor from it (CFI or selector).
                 const text = String(range.toString() || "").replace(/\s+/g, " ").trim();
+                const committed = range;
                 destroy();
-                if (!cfiNew) return;
-                const updates: any = {
-                    position: Object.assign({}, pos, { value: cfiNew.toString() }),
-                };
-                if (text) updates.text = text.slice(0, 160);
-                if (withText && text) updates.label = text.slice(0, 160);
-                Promise.resolve(this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates))
-                    .then(() => {
-                        try {
-                            this._wvMarkBmFocus(reader, bm.id);
-                            this._wvReaderRenderBmList(reader, idoc);
-                            this._wvReaderShowEpubPin(reader, cfiNew.toString());
-                        } catch (_) {}
-                    }).catch(() => {});
+                try {
+                    Promise.resolve(opts.onCommit(committed, text || null, !!withText)).catch(() => {});
+                } catch (_) {}
             };
             const onKey = (ev: any) => {
                 if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); destroy(); }
@@ -7542,15 +7893,16 @@ class _ReaderPanelsMixin {
             saveTextBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} commit(true); });
             cancelBtn.addEventListener("click", (e: any) => { try { e.stopPropagation(); } catch (_) {} destroy(); });
             doc.addEventListener("keydown", onKey, true);
-            pv._wvRegionEditor = { _id: "bm:" + bm.id, destroy };
+            pv._wvRegionEditor = { _id: opts.editorId, destroy };
             paint();
             // Bring the region into view (same 1/4 rule as navigation).
             try {
                 const r0 = range.getClientRects()[0];
                 if (r0) iw.scrollTo(0, Math.max(0, r0.top + iw.scrollY - iw.innerHeight * 0.25));
             } catch (_) {}
-            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the label. (Enter = Save Region, Esc = cancel.)");
-        } catch (err) { Zotero.debug("[Weavero] _wvBmEditRegionEpub err: " + err); }
+            this._wvReaderPanelNote(idoc, "Drag the handles to reshape the region — Save Region, or Save Region and Text to reload the "
+                + (opts.noteWord || "label") + ". (Enter = Save Region, Esc = cancel.)");
+        } catch (err) { Zotero.debug("[Weavero] _wvDomRegionEditorOpen err: " + err); }
     }
 
     /** "Edit Region…" for a TEXT bookmark: reshape the stored selection with
@@ -8434,15 +8786,14 @@ class _ReaderPanelsMixin {
                             }
                         });
                 } else {
-                    // Region entry. PDF: the handle-drag editor. DOM views: the
-                    // select-text re-anchor flow (arm, select, re-anchor +
-                    // reorder + navigate) — the natural DOM equivalent, and
-                    // until 2026-08-26 this item appeared on DOM views and
-                    // silently did nothing (parity register).
+                    // Region entry: the handle-drag editor on EVERY view —
+                    // _wvOutlineEditRegion branches internally (PDF page
+                    // geometry vs DOM Range twin, 2026-08-27; the DOM route
+                    // was the select-text re-anchor flow before, which the
+                    // user read as "Edit Region does not work" — it now
+                    // remains only as the fallback for a stale selector).
                     if (!rmLens) mk("Edit Region…", RP_TEXT_SVG,
-                        () => _isDom
-                            ? this._wvOutlineBeginSelectRegion(reader, idoc, entry, index, curatedView)
-                            : this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
+                        () => this._wvOutlineEditRegion(reader, idoc, entry, index, curatedView));
                 }
             }
             // "Reset to Original Name" only when the title has been changed from
@@ -12751,11 +13102,35 @@ class _ReaderPanelsMixin {
         try {
             if (reader) {
                 const st = reader._wvBmSortState || (reader._wvBmSortState = {});
-                if (!st[section]) st[section] = this._wvReaderBmSortFromPref(section);
+                // Seed priority (2026-08-28, matching the per-document
+                // annotation sort): the DOCUMENT's own persisted sort first,
+                // the last-used pref only for documents never sorted.
+                if (!st[section]) {
+                    st[section] = this._wvReaderBmSortFromDoc(section, reader)
+                        || this._wvReaderBmSortFromPref(section);
+                }
                 return st[section];
             }
         } catch (_) {}
         return this._wvReaderBmSortFromPref(section);
+    }
+
+    /** The document's persisted sort seed for a section, or null. Stored in
+     *  bookmarks.json under readerBmSort["lib:key"][section] = "field:dir". */
+    _wvReaderBmSortFromDoc(section: WvBmSortSection, reader: any): { field: string, dir: "asc" | "desc" } | null {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att) return null;
+            const m = this._bmDoc && this._bmDoc.readerBmSort;
+            const raw = m && m[att.libraryID + ":" + att.itemKey] && m[att.libraryID + ":" + att.itemKey][section];
+            if (!raw) return null;
+            const [f, d] = String(raw).split(":");
+            let field = "manual";
+            if (f === "alpha" || f === "date") field = f;
+            else if (f === "location" && section === "local") field = "location";
+            const dir: any = (d === "asc" || d === "desc") ? d : this._wvReaderBmSortDefaultDir(field);
+            return { field, dir };
+        } catch (_) { return null; }
     }
     _wvReaderBmSortMode(section: WvBmSortSection, reader?: any): string {
         return this._wvReaderBmSort(section, reader).field;
@@ -12787,6 +13162,19 @@ class _ReaderPanelsMixin {
             else d = curr.dir;
             if (reader) {
                 try { (reader._wvBmSortState || (reader._wvBmSortState = {}))[section] = { field: f, dir: d }; } catch (_) {}
+                // Persist as THIS DOCUMENT's sort (2026-08-28) so a reopened
+                // tab restores it; the pref below stays the seed for
+                // never-sorted documents.
+                try {
+                    const att = this._wvReaderAtt(reader);
+                    if (att && this._bmDoc) {
+                        if (!this._bmDoc.readerBmSort) this._bmDoc.readerBmSort = {};
+                        const k = att.libraryID + ":" + att.itemKey;
+                        if (!this._bmDoc.readerBmSort[k]) this._bmDoc.readerBmSort[k] = {};
+                        this._bmDoc.readerBmSort[k][section] = f === "manual" ? "manual" : (f + ":" + d);
+                        this._bmPersist().catch(() => {});
+                    }
+                } catch (_) {}
             }
             Zotero.Prefs.set("weavero.readerBmSort." + section, f === "manual" ? "manual" : (f + ":" + d));
         } catch (_) {}
@@ -17861,14 +18249,19 @@ class _ReaderPanelsMixin {
                 // here") until #34 taught the panel to read DOM-view outlines,
                 // leaving the right-click add as the last surface that silently
                 // was not offered there.
+                // Dual-icon scheme across the add items (user request
+                // 2026-08-27, after "Add This Position to Outline" got it):
+                // LEFT = what is added (selected text / pin), RIGHT = the
+                // destination list (outline glyph / bookmark ribbon).
                 if (RP_OUTLINE_VIEW_TYPES.has(reader._type || "pdf")) {
                     const OLABEL = "Add Selected Text to Outline";
                     append({ label: OLABEL, onCommand: () => this._wvOutlineAddFromSelection(reader) });
-                    this._wvReaderStampMenuIcon(reader, OLABEL, this._wvReaderOutlineMenuIconURL());
+                    this._wvReaderStampMenuIcon(reader, OLABEL,
+                        this._wvReaderSelTextMenuIconURL(), this._wvReaderOutlineMenuIconURL());
                 }
                 const LABEL = "Add Selected Text to Bookmarks";
                 append({ label: LABEL, onCommand: () => this._wvReaderAddSelectedText(reader) });
-                this._wvReaderStampMenuIcon(reader, LABEL, icon);
+                this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderSelTextMenuIconURL(), icon);
             } else {
                 // Menu items are scope-aware: when the bookmarks panel's
                 // Library tab is the active scope, the right-click items
@@ -18115,10 +18508,18 @@ class _ReaderPanelsMixin {
                 // offered -- otherwise the stamper hunts a menuitem that isn't
                 // there.
                 if (overPage) {
-                    this._wvReaderStampMenuIcon(reader, LABEL, this._wvReaderPinMenuIconURL());
+                    // Pin left + ribbon right (dual-icon scheme, 2026-08-27).
+                    this._wvReaderStampMenuIcon(reader, LABEL,
+                        this._wvReaderPinMenuIconURL(), this._wvReaderBmMenuIconURL());
                 }
                 if (LABEL_OUTLINE) {
-                    this._wvReaderStampMenuIcon(reader, LABEL_OUTLINE, this._wvReaderOutlineMenuIconURL());
+                    // Pin LEFT + outline glyph RIGHT (user request 2026-08-27):
+                    // the entry drops a PIN — same left icon as its bookmark
+                    // sibling — and the right-edge outline glyph marks where
+                    // the result lands. The selection variant keeps its single
+                    // outline icon (no pin is dropped there).
+                    this._wvReaderStampMenuIcon(reader, LABEL_OUTLINE,
+                        this._wvReaderPinMenuIconURL(), this._wvReaderOutlineMenuIconURL());
                 }
                 if (LABEL_PAGE && pageAddFn) {
                     this._wvReaderStampPageAnchorSubmenu(reader, LABEL_PAGE,
@@ -18149,6 +18550,21 @@ class _ReaderPanelsMixin {
         return WV_PIN_ICON_URI;
     }
 
+    /** Selected-text glyph for the reader context menu: the panel menus'
+     *  RP_TEXT_SVG text-bars motif as a baked-colour data URI (chrome menu
+     *  icons cannot use currentColor). LEFT icon of the two "Add Selected
+     *  Text to …" items under the dual-icon scheme (2026-08-27): left = what
+     *  is added (selection / pin), right = the destination list. */
+    _wvReaderSelTextMenuIconURL() {
+        let dark = true;
+        try { dark = this._detectUIDark(); } catch (_) {}
+        const color = dark ? "#e3e3e3" : "#555555";
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+            + 'viewBox="0 0 16 16" fill="' + color + '">'
+            + '<path d="M3 3H10V5H3ZM3 7H13V9H3ZM3 11H10V13H3Z"/></svg>';
+        return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
     /** Outline glyph for the reader context menu: the native Outline tab's
      *  dot-and-line motif (reader res/icons/20/outline.svg), REDRAWN on a 16
      *  grid -- menu icons render at 16px and scaling the 20-grid original puts
@@ -18170,8 +18586,12 @@ class _ReaderPanelsMixin {
     /** Stamp an icon onto a reader context-menu item (matched by label) once
      *  the popup renders — the reader's `append()` API carries no icon, so we
      *  decorate the rendered XUL menuitem (mirrors "Copy Link to This Page").
-     *  The listener removes itself after stamping or a 3 s timeout. */
-    _wvReaderStampMenuIcon(reader: any, label: string, iconURL: string) {
+     *  The listener removes itself after stamping or a 3 s timeout.
+     *  `rightIconURL`: optional second glyph at the item's right edge — XUL
+     *  menuitems have no second icon slot, so it rides as a right-anchored
+     *  background image on the item itself (hover highlight is a background
+     *  COLOR, so the image survives it). */
+    _wvReaderStampMenuIcon(reader: any, label: string, iconURL: string, rightIconURL?: string) {
         try {
             const win = reader._window;
             const ps = reader._popupset;
@@ -18188,6 +18608,13 @@ class _ReaderPanelsMixin {
                     if (mi) {
                         mi.classList.add("menuitem-iconic");
                         mi.setAttribute("image", iconURL);
+                        if (rightIconURL) {
+                            mi.style.backgroundImage = "url('" + rightIconURL + "')";
+                            mi.style.backgroundRepeat = "no-repeat";
+                            mi.style.backgroundPosition = "right 8px center";
+                            mi.style.backgroundSize = "16px 16px";
+                            mi.style.paddingRight = "30px";
+                        }
                         done = true;
                     }
                 } catch (_) { done = true; }
@@ -18226,9 +18653,28 @@ class _ReaderPanelsMixin {
                     if (mi) {
                         const doc = win.document;
                         const menu = doc.createXULElement("menu");
-                        menu.setAttribute("label", label);
+                        // Trailing NBSPs reserve label clearance for the
+                        // right-side ribbon (plain trailing spaces collapse in
+                        // layout; padding-right cannot reserve it — see below).
+                        menu.setAttribute("label", label + " ".repeat(10));
                         menu.classList.add("menu-iconic");
                         menu.setAttribute("image", WV_PAGE_TOP_URI);
+                        // Dual-icon scheme (2026-08-27): destination ribbon
+                        // BEFORE the submenu arrow (user caught it painted
+                        // after). Measured live (InspectorUtils on the open
+                        // popup): the arrow is a ::after box whose RIGHT edge
+                        // sits exactly at the padding boundary — so any
+                        // padding-right moves the ARROW inboard and the
+                        // background (painted in the padding zone) ends up
+                        // right of it. No padding override: theme padding
+                        // keeps the arrow at ~6..22px from the edge, ribbon at
+                        // 28..44px sits left of it with a small gap.
+                        try {
+                            menu.style.backgroundImage = "url('" + this._wvReaderBmMenuIconURL() + "')";
+                            menu.style.backgroundRepeat = "no-repeat";
+                            menu.style.backgroundPosition = "right 28px center";
+                            menu.style.backgroundSize = "16px 16px";
+                        } catch (_) {}
                         const sub = doc.createXULElement("menupopup");
                         const mk = (lbl: string, img: string, anchor: "top" | "bottom") => {
                             const it = doc.createXULElement("menuitem");

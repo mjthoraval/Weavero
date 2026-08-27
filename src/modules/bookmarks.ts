@@ -429,7 +429,12 @@ class _BookmarksMixin {
         };
         const readerBookmarks = (doc.readerBookmarks && typeof doc.readerBookmarks === "object")
             ? doc.readerBookmarks : {};
-        return { version: doc.version || 2, bookmarks: fix(doc.bookmarks), readerBookmarks };
+        // Per-document bookmark SORT seeds ("lib:key" -> {local, global},
+        // each "field:dir") -- the normalizer rebuilds the doc wholesale, so
+        // an unlisted field would be silently dropped on the next persist.
+        const readerBmSort = (doc.readerBmSort && typeof doc.readerBmSort === "object")
+            ? doc.readerBmSort : {};
+        return { version: doc.version || 2, bookmarks: fix(doc.bookmarks), readerBookmarks, readerBmSort };
     }
 
     // ---- Reader (in-document) bookmarks -----------------------------------

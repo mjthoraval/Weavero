@@ -1,0 +1,6 @@
+# All text files are LF in the repo and on every checkout, regardless of the
+# contributor's core.autocrlf (the Git for Windows installer default of true
+# would otherwise convert on checkout and warn on every add). Zotero upstream
+# expects LF; binaries are auto-detected. Verified 2026-08-27: the whole index
+# was already LF, so this normalizes nothing retroactively.
+* text=auto eol=lf

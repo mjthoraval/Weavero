@@ -545,6 +545,23 @@ class _NoteEditorMixin {
                 const DELAY_MS = 500;
                 const onMove = (e) => {
                     const a = findAnchor(e);
+                    // PERSIST MODE (hidden pref weavero.tooltipPersist):
+                    // industry standard (surveyed 2026-08-27) — the open
+                    // tooltip stays while the pointer remains on the SAME
+                    // anchor; movement resets the 5s stationary auto-hide.
+                    // Default (off) keeps the original hide-on-move model.
+                    if (a && this._noteLinkTooltipCurrentAnchor === a
+                            && this._wvTooltipPersist && this._wvTooltipPersist()) {
+                        if (this._noteLinkTooltipAutopop) {
+                            try { iwin.clearTimeout(this._noteLinkTooltipAutopop); } catch (err) {}
+                        }
+                        this._noteLinkTooltipAutopopWin = iwin;
+                        this._noteLinkTooltipAutopop = iwin.setTimeout(() => {
+                            this._noteLinkTooltipAutopop = null;
+                            this._hideLinkTooltipFromIframe();
+                        }, 5000);
+                        return;
+                    }
                     // Cancel any pending open — every movement
                     // restarts the delay window.
                     if (this._noteLinkTooltipTimer) {
@@ -572,6 +589,19 @@ class _NoteEditorMixin {
                         // The cursor has been still over a link for
                         // the full delay — open the tooltip.
                         this._showLinkTooltipFromIframe(href, sx, sy, a);
+                        // Persist mode: arm the 5s stationary auto-hide from
+                        // the moment of showing (Windows TTDT_AUTOPOP model);
+                        // kept-moves in onMove re-arm it.
+                        if (this._wvTooltipPersist && this._wvTooltipPersist()) {
+                            if (this._noteLinkTooltipAutopop) {
+                                try { iwin.clearTimeout(this._noteLinkTooltipAutopop); } catch (err) {}
+                            }
+                            this._noteLinkTooltipAutopopWin = iwin;
+                            this._noteLinkTooltipAutopop = iwin.setTimeout(() => {
+                                this._noteLinkTooltipAutopop = null;
+                                this._hideLinkTooltipFromIframe();
+                            }, 5000);
+                        }
                     }, DELAY_MS);
                 };
                 const onOut = (e) => {
@@ -1384,6 +1414,12 @@ class _NoteEditorMixin {
 
     _hideLinkTooltipFromIframe() {
         this._noteLinkTooltipCurrentAnchor = null;
+        // A stale persist-mode auto-hide must not kill the NEXT tooltip
+        // shown within its 5s window — clear it on every hide.
+        if (this._noteLinkTooltipAutopop && this._noteLinkTooltipAutopopWin) {
+            try { this._noteLinkTooltipAutopopWin.clearTimeout(this._noteLinkTooltipAutopop); } catch (e) {}
+            this._noteLinkTooltipAutopop = null;
+        }
         try {
             const win = Zotero.getMainWindow();
             const doc = win && win.document;

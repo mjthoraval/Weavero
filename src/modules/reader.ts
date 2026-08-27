@@ -11092,6 +11092,7 @@ class _ReaderMixin {
             try { this._wvOutlineInstallRecovery(reader); } catch (_) {}
             try { (this as any)._wvWireDomSelTracker(reader); } catch (_) {}
             try { (this as any)._wvWirePreviewLinkZones(reader); } catch (_) {}
+            try { (this as any)._wvWireExternalLinkTip(reader); } catch (_) {}
 
             // Also wire up text-annotation handling in the nested PDF.js iframe.
             // (The drag tracker for canvas annotations is wired from
@@ -17151,6 +17152,21 @@ class _ReaderMixin {
             const origSet = pv._wvPrevZonesOrig;
             pv._wvPrevZonesWired = tag;
             pv._onSetOverlayPopup = function (popup: any) {
+                // UPSTREAM BUG FIX (2026-08-27): hover a link -> popup shows;
+                // popup closes; stop on the SAME link again -> nothing. The
+                // hover handler only opens when `_selectedOverlay !== overlay`
+                // (pdf-view.js), and while every close path upstream TRIES to
+                // clear `_selectedOverlay`, the open-callback sets it BEFORE a
+                // fire-and-forget `await renderPreviewPage()` -- a silent
+                // render failure (reproduced live: pdf.js "startCleanup: Page
+                // is currently rendering") or any close that skips the reset
+                // strands the guard, and that link never previews again.
+                // Enforce the invariant at the one choke point every close
+                // passes through: no popup => no hover guard. Standard hover
+                // UI re-triggers on dwell (browser tooltips, Wikipedia
+                // previews, VS Code hovers), so reappearing is the correct
+                // behaviour.
+                if (!popup) { try { (this as any)._selectedOverlay = null; } catch (_) {} }
                 const ret = origSet.call(this, popup);
                 try {
                     const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
@@ -17163,6 +17179,275 @@ class _ReaderMixin {
                 return ret;
             };
         } catch (e) { Zotero.debug("[Weavero] _wvWirePreviewLinkZones err: " + e); }
+    }
+
+    /** EXTERNAL-LINK URL TIP — a managed tooltip with correct dwell
+     *  semantics for plain URL links in the PDF text (user report
+     *  2026-08-27: "hover shows the popup once; move within the same link;
+     *  stop — it never appears again"). Upstream shows NO popup for
+     *  external links: it writes the URL into the WHOLE PAGE DIV's `title`
+     *  (pdf-view.js `page.div.title = overlay.url`), and Gecko re-shows a
+     *  title tooltip only after the pointer LEAVES the element — the
+     *  element being the entire page, the tooltip is one-shot per page
+     *  visit. Traced live: the user's "popup" was that native tooltip;
+     *  every move logged `external-link -> delayer.close`, no popup
+     *  machinery at all. Standard hover UI re-triggers on every dwell, so
+     *  Weavero replaces the mechanism: hide on move, show after a 350ms
+     *  dwell, EVERY time — and blank the page-div title so the native
+     *  one-shot tooltip cannot double up. */
+    _wvWireExternalLinkTip(this: any, reader: any, tries?: number) {
+        try {
+            const n = tries || 0;
+            const ir = reader && reader._internalReader;
+            const pv = ir && ir._primaryView;
+            const win = pv && pv._iframeWindow;
+            const isPdf = !!(win && win.PDFViewerApplication);
+            if (!pv || typeof pv.pointerEventToPosition !== "function" || !isPdf) {
+                if (n < 40) {
+                    const w0: any = Zotero.getMainWindow();
+                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                        () => { try { this._wvWireExternalLinkTip(reader, n + 1); } catch (_) {} }, 250);
+                }
+                return;
+            }
+            const tag = this._wvWireTag();
+            if (pv._wvExtTipWired === tag) return;
+            // Peel a previous build's listener (stored ref — the handler
+            // closure survives plugin reloads on the content window).
+            if (pv._wvExtTipHandler) {
+                try { win.removeEventListener("pointermove", pv._wvExtTipHandler, true); } catch (_) {}
+                try { win.document.removeEventListener("scroll", pv._wvExtTipHandler, true); } catch (_) {}
+            }
+            pv._wvExtTipWired = tag;
+            const handler = function (ev: any) {
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvExtTipOnMove(reader, ev && ev.clientX !== undefined ? ev : null);
+                } catch (_) {}
+            };
+            pv._wvExtTipHandler = handler;
+            win.addEventListener("pointermove", handler, { capture: true, passive: true });
+            // Wheel-scrolling moves the content under a stationary pointer:
+            // hide + re-dwell with the same client point (the hit-test at
+            // fire time re-resolves what is under it).
+            win.document.addEventListener("scroll", handler, { capture: true, passive: true });
+        } catch (e) { Zotero.debug("[Weavero] _wvWireExternalLinkTip err: " + e); }
+    }
+
+    /** Move/scroll step of the URL tip: hide, remember the pointer event,
+     *  restart the dwell timer (chrome-window timer — content-compartment
+     *  timers are the note-editor dead-timer family). */
+    _wvExtTipOnMove(this: any, reader: any, ev: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && ir._primaryView;
+            const win = pv && pv._iframeWindow;
+            if (!pv || !win) return;
+            const rw0: any = reader._window || Zotero.getMainWindow();
+            // PERSIST MODE (hidden pref weavero.tooltipPersist, default off):
+            // the industry standard surveyed 2026-08-27 (ARIA/WCAG 1.4.13,
+            // Win32, Acrobat/Word, note apps) — a visible tip stays up while
+            // the pointer remains over the SAME link, with the Windows-style
+            // 5s auto-hide when stationary (reset by movement). Default off
+            // keeps the polished Gecko convention (hide on move, reappear on
+            // every dwell).
+            try {
+                if (ev && this._wvTooltipPersist()) {
+                    if (this._wvExtTipDivVisible(pv) && pv._wvExtTipOv) {
+                        const pos0 = pv.pointerEventToPosition(ev);
+                        const ov0 = pos0 && pv._getSelectableOverlay(pos0);
+                        if (ov0 === pv._wvExtTipOv) {
+                            pv._wvExtTipEvt = ev;
+                            this._wvExtTipArmAutopop(reader, pv);
+                            return;   // still on the link — keep the tip
+                        }
+                    }
+                }
+            } catch (_) {}
+            if (pv._wvExtTipAutopop) {
+                try { rw0.clearTimeout(pv._wvExtTipAutopop); } catch (_) {}
+                pv._wvExtTipAutopop = null;
+            }
+            // Native jitter tolerance (nsXULTooltipListener: a VISIBLE
+            // tooltip survives moves within kTooltipMouseMoveTolerance = 7
+            // DEVICE px of where it appeared; the pending countdown gets no
+            // such slack). Scroll events (no client point) always count as
+            // movement — the content moved under the tip.
+            try {
+                const at = pv._wvExtTipShownAt;
+                if (ev && at && this._wvExtTipDivVisible(pv)) {
+                    const dpr = win.devicePixelRatio || 1;
+                    if (Math.abs(ev.clientX - at.x) * dpr <= 7
+                            && Math.abs(ev.clientY - at.y) * dpr <= 7) {
+                        return;   // jitter — keep the tip, keep no timer
+                    }
+                }
+            } catch (_) {}
+            try { this._wvExtTipHide(reader, pv); } catch (_) {}
+            if (ev) pv._wvExtTipEvt = ev;   // scroll events carry no client point — keep the last one
+            const rw: any = reader._window || Zotero.getMainWindow();
+            if (pv._wvExtTipTimer) { try { rw.clearTimeout(pv._wvExtTipTimer); } catch (_) {} }
+            pv._wvExtTipTimer = rw.setTimeout(() => {
+                try {
+                    pv._wvExtTipTimer = null;
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvExtTipShow(reader, pv);
+                } catch (_) {}
+                // 500ms = the Weavero hover-delay convention (note-editor link
+                // tooltip + annotation-comment URL spans), confirmed 2026-08-27.
+            }, 500);
+        } catch (_) {}
+    }
+
+    /** Dwell fired: hit-test the remembered pointer position; over an
+     *  external link, render the tip and suppress the native title. */
+    _wvExtTipShow(this: any, reader: any, pv: any) {
+        try {
+            const ev = pv._wvExtTipEvt;
+            if (!ev) return;
+            const pos = pv.pointerEventToPosition(ev);
+            if (!pos) return;
+            const ov = pv._getSelectableOverlay(pos);
+            if (!ov || ov.type !== "external-link" || !ov.url) return;
+            const Cu = (Components as any).utils;
+            // Blank the page-div titles upstream keeps setting, so the
+            // native one-shot tooltip never competes with this one.
+            try {
+                const app = Cu.waiveXrays(pv._iframeWindow.PDFViewerApplication);
+                for (const pg of app.pdfViewer._pages) { if (pg.div && pg.div.title) pg.div.title = ""; }
+            } catch (_) {}
+            this._wvExtTipRender(reader, pv, String(ov.url), ev.clientX, ev.clientY);
+            // Anchor point for the jitter tolerance in _wvExtTipOnMove.
+            pv._wvExtTipShownAt = { x: ev.clientX, y: ev.clientY };
+            // Overlay identity for persist mode's same-link test; autopop
+            // only runs in persist mode (Gecko mode has no timed hide).
+            pv._wvExtTipOv = ov;
+            if (this._wvTooltipPersist()) this._wvExtTipArmAutopop(reader, pv);
+        } catch (_) {}
+    }
+
+    /** Hidden switch between the two surveyed conventions (2026-08-27):
+     *  false (default) = polished Gecko (hide on move, reappear per dwell);
+     *  true = industry persist-while-hovered (ARIA/Win32/Acrobat model). */
+    _wvTooltipPersist(this: any): boolean {
+        // SHORT-form pref name: Zotero.Prefs auto-prepends "extensions.
+        // zotero."; the second get() arg is the GLOBAL-branch flag, NOT a
+        // default (passing true reads a nonexistent root path — bit here
+        // 2026-08-27, the persist branch never armed).
+        try { return Zotero.Prefs.get("weavero.tooltipPersist") === true; }
+        catch (_) { return false; }
+    }
+
+    /** Persist mode's Windows-style auto-hide: 5s stationary (TTDT_AUTOPOP
+     *  default) hides the tip; any kept movement re-arms. */
+    _wvExtTipArmAutopop(this: any, reader: any, pv: any) {
+        try {
+            const rw: any = reader._window || Zotero.getMainWindow();
+            if (pv._wvExtTipAutopop) { try { rw.clearTimeout(pv._wvExtTipAutopop); } catch (_) {} }
+            pv._wvExtTipAutopop = rw.setTimeout(() => {
+                pv._wvExtTipAutopop = null;
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvExtTipHide(reader, pv);
+                } catch (_) {}
+            }, 5000);
+        } catch (_) {}
+    }
+
+    /** True while the in-content tip div is showing in this view. */
+    _wvExtTipDivVisible(this: any, pv: any): boolean {
+        try {
+            const d = pv._iframeWindow.document.getElementById("wv-exttip");
+            return !!(d && d.style.display !== "none");
+        } catch (_) { return false; }
+    }
+
+    /** Hide the tip (remove the div; also retire any legacy chrome popup). */
+    _wvExtTipHide(this: any, reader: any, pv: any) {
+        try {
+            const d = pv._iframeWindow.document.getElementById("wv-exttip");
+            if (d) d.remove();
+        } catch (_) {}
+        try {
+            const rw: any = reader._window || Zotero.getMainWindow();
+            if (rw._wvExtTipEl) { rw._wvExtTipEl.hidePopup(); rw._wvExtTipEl.remove(); delete rw._wvExtTipEl; }
+        } catch (_) {}
+    }
+
+    /** Renderer (kept separate so the live check can drive it): a real XUL
+     *  <tooltip> popup in the reader's chrome window — the SAME widget that
+     *  draws title-attribute tooltips, so the look matches Zotero exactly by
+     *  construction ("match exactly / reuse the same code", 2026-08-27); no
+     *  hand-styled imitation to drift. One reused element per chrome window;
+     *  the popup engine handles screen-edge clamping itself. Position:
+     *  content client point + the iframe's mozInnerScreen origin (CSS px —
+     *  mixed-DPI monitor offsets are the popup engine's problem, same as
+     *  native tooltips). */
+    _wvExtTipRender(this: any, reader: any, pv: any, url: string, cx: number, cy: number) {
+        try {
+            // IN-CONTENT overlay div, not an OS popup. Two popup-widget
+            // renderers died in one day (2026-08-27): a manual <tooltip>
+            // stops painting after native-engine interference, and even a
+            // PANEL's OS window went visible-but-blank under the dwell's
+            // open/hide churn (EnumWindows said visible at (904,580);
+            // CopyFromScreen showed only the PDF underneath). Page content
+            // ALWAYS paints -- this is the dev.7 mechanism with the native
+            // look copied live from a chrome <tooltip> donor. Trade-off:
+            // clips at the iframe edge, so it flips above the cursor near
+            // the bottom.
+            const rw: any = reader._window || Zotero.getMainWindow();
+            // retire any legacy chrome popup from earlier builds
+            try {
+                if (rw._wvExtTipEl) { rw._wvExtTipEl.hidePopup(); rw._wvExtTipEl.remove(); delete rw._wvExtTipEl; }
+            } catch (_) {}
+            let donor: any = rw.document.getElementById("wv-exttip-style-donor");
+            if (!donor) {
+                donor = rw.document.createXULElement("tooltip");
+                donor.id = "wv-exttip-style-donor";
+                rw.document.documentElement.appendChild(donor);
+            }
+            const idoc = pv._iframeWindow.document;
+            let tip: any = idoc.getElementById("wv-exttip");
+            if (!tip) {
+                tip = idoc.createElement("div");
+                tip.id = "wv-exttip";
+                // WRAP like the native tooltip (MJT screenshot 2026-08-27:
+                // native wraps long URLs mid-string at the theme max-width;
+                // a nowrap+ellipsis line diverges). Width comes from the
+                // donor below; anywhere-wrapping because URLs have no spaces.
+                tip.style.cssText = "position:fixed;pointer-events:none;z-index:2147483647;"
+                    + "white-space:normal;overflow-wrap:anywhere;width:max-content;"
+                    + "box-sizing:border-box;";
+                idoc.body.appendChild(tip);
+            }
+            try {
+                const cs = rw.getComputedStyle(donor);
+                tip.style.background = cs.backgroundColor;
+                tip.style.color = cs.color;
+                tip.style.border = cs.borderTopWidth + " " + cs.borderTopStyle + " " + cs.borderTopColor;
+                tip.style.borderRadius = cs.borderRadius;
+                tip.style.padding = cs.paddingTop + " " + cs.paddingRight + " " + cs.paddingBottom + " " + cs.paddingLeft;
+                tip.style.fontSize = cs.fontSize;
+                tip.style.fontFamily = cs.fontFamily;
+                const dmw = cs.maxWidth;
+                tip.style.maxWidth = (dmw && dmw !== "none") ? dmw : "40em";
+            } catch (_) {}
+            tip.textContent = url;
+            tip.style.display = "block";
+            // +21: the native tooltip frame margin (PopupType::Tooltip only);
+            // client coords ARE the div's fixed coords -- no screen math.
+            let x = cx, y = cy + 21;
+            tip.style.left = x + "px";
+            tip.style.top = y + "px";
+            try {
+                const iw = pv._iframeWindow;
+                const b = tip.getBoundingClientRect();
+                if (b.right > iw.innerWidth - 4) x = Math.max(4, iw.innerWidth - 4 - b.width);
+                if (b.bottom > iw.innerHeight - 4) y = Math.max(4, cy - b.height - 8);
+                tip.style.left = x + "px";
+                tip.style.top = y + "px";
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvExtTipRender err: " + e); }
     }
 
     /** Map a PDF-space rect [x1,y1,x2,y2] (origin bottom-left) into CSS

@@ -11093,6 +11093,7 @@ class _ReaderMixin {
             try { (this as any)._wvWireDomSelTracker(reader); } catch (_) {}
             try { (this as any)._wvWirePreviewLinkZones(reader); } catch (_) {}
             try { (this as any)._wvWireExternalLinkTip(reader); } catch (_) {}
+            try { (this as any)._wvWireReaderDocLinkTip(reader); } catch (_) {}
 
             // Also wire up text-annotation handling in the nested PDF.js iframe.
             // (The drag tracker for canvas annotations is wired from
@@ -17354,6 +17355,124 @@ class _ReaderMixin {
         } catch (_) {}
     }
 
+    /** URL tip for links in the READER document -- the parsed
+     *  citation/reference preview popups' <a href> links above all (user
+     *  request 2026-08-28, forum 132548's residual: links whose text is not
+     *  the URL disclosed nothing on hover). Same dwell semantics as the
+     *  in-page tip. */
+    _wvWireReaderDocLinkTip(this: any, reader: any, tries?: number) {
+        try {
+            const n = tries || 0;
+            const win = reader && reader._iframeWindow;
+            if (!win || !win.document || !win.document.body) {
+                if (n < 40) {
+                    const w0: any = Zotero.getMainWindow();
+                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                        () => { try { this._wvWireReaderDocLinkTip(reader, n + 1); } catch (_) {} }, 250);
+                }
+                return;
+            }
+            const tag = this._wvWireTag();
+            if (reader._wvExtTipDocWired === tag) return;
+            if (reader._wvExtTipDocH) {
+                try { win.removeEventListener("pointermove", reader._wvExtTipDocH, true); } catch (_) {}
+                try { win.document.removeEventListener("scroll", reader._wvExtTipDocH, true); } catch (_) {}
+            }
+            reader._wvExtTipDocWired = tag;
+            const handler = function (ev: any) {
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvExtTipDocOnMove(reader, ev && ev.clientX !== undefined ? ev : null);
+                } catch (_) {}
+            };
+            reader._wvExtTipDocH = handler;
+            win.addEventListener("pointermove", handler, { capture: true, passive: true });
+            win.document.addEventListener("scroll", handler, { capture: true, passive: true });
+        } catch (e) { Zotero.debug("[Weavero] _wvWireReaderDocLinkTip err: " + e); }
+    }
+
+    /** Which URL (if any) a hover over `node` should disclose. Skips only
+     *  anchors that already carry a native title. A text==url suppression
+     *  (the Obsidian rule) was tried and REVERTED same-day: the user hovered
+     *  a visible-URL reference link, got nothing, and read it as broken --
+     *  consistency beats redundancy avoidance (2026-08-28). */
+    _wvExtTipDocEligible(this: any, node: any): { a: any, url: string } | null {
+        try {
+            const a = node && node.closest && node.closest("a[href]");
+            if (!a) return null;
+            const url = String(a.getAttribute("href") || "");
+            if (!url || url === "#") return null;
+            if (a.getAttribute("title")) return null;
+            return { a, url };
+        } catch (_) { return null; }
+    }
+
+    _wvExtTipDocOnMove(this: any, reader: any, ev: any) {
+        try {
+            const win = reader && reader._iframeWindow;
+            if (!win || !win.document) return;
+            const rw: any = reader._window || Zotero.getMainWindow();
+            const el = ev ? this._wvExtTipDocEligible(ev.target) : null;
+            // Persist mode: still on the same anchor -> keep, reset autopop.
+            try {
+                if (ev && el && this._wvTooltipPersist() && reader._wvExtTipDocA === el.a) {
+                    const d0 = win.document.getElementById("wv-exttip");
+                    if (d0 && d0.style.display !== "none") {
+                        reader._wvExtTipDocEvt = ev;
+                        if (reader._wvExtTipDocAutopop) { try { rw.clearTimeout(reader._wvExtTipDocAutopop); } catch (_) {} }
+                        reader._wvExtTipDocAutopop = rw.setTimeout(() => {
+                            reader._wvExtTipDocAutopop = null;
+                            try { const d1 = win.document.getElementById("wv-exttip"); if (d1) d1.remove(); } catch (_) {}
+                        }, 5000);
+                        return;
+                    }
+                }
+            } catch (_) {}
+            // Jitter tolerance for the visible tip.
+            try {
+                const at = reader._wvExtTipDocShownAt;
+                const d0 = win.document.getElementById("wv-exttip");
+                if (ev && at && d0 && d0.style.display !== "none") {
+                    const dpr = win.devicePixelRatio || 1;
+                    if (Math.abs(ev.clientX - at.x) * dpr <= 7
+                            && Math.abs(ev.clientY - at.y) * dpr <= 7) return;
+                }
+            } catch (_) {}
+            try { const d0 = win.document.getElementById("wv-exttip"); if (d0) d0.remove(); } catch (_) {}
+            if (reader._wvExtTipDocAutopop) { try { rw.clearTimeout(reader._wvExtTipDocAutopop); } catch (_) {} reader._wvExtTipDocAutopop = null; }
+            if (ev) { reader._wvExtTipDocEvt = ev; reader._wvExtTipDocA = el ? el.a : null; }
+            if (reader._wvExtTipDocTimer) { try { rw.clearTimeout(reader._wvExtTipDocTimer); } catch (_) {} }
+            reader._wvExtTipDocTimer = rw.setTimeout(() => {
+                try {
+                    reader._wvExtTipDocTimer = null;
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvExtTipDocShow(reader);
+                } catch (_) {}
+            }, 500);
+        } catch (_) {}
+    }
+
+    _wvExtTipDocShow(this: any, reader: any) {
+        try {
+            const win = reader && reader._iframeWindow;
+            const ev = reader._wvExtTipDocEvt;
+            if (!win || !ev) return;
+            const el = this._wvExtTipDocEligible(ev.target);
+            if (!el || !el.a.isConnected) return;
+            this._wvExtTipRenderIn(reader, win, el.url, ev.clientX, ev.clientY);
+            reader._wvExtTipDocShownAt = { x: ev.clientX, y: ev.clientY };
+            reader._wvExtTipDocA = el.a;
+            if (this._wvTooltipPersist()) {
+                const rw: any = reader._window || Zotero.getMainWindow();
+                if (reader._wvExtTipDocAutopop) { try { rw.clearTimeout(reader._wvExtTipDocAutopop); } catch (_) {} }
+                reader._wvExtTipDocAutopop = rw.setTimeout(() => {
+                    reader._wvExtTipDocAutopop = null;
+                    try { const d1 = win.document.getElementById("wv-exttip"); if (d1) d1.remove(); } catch (_) {}
+                }, 5000);
+            }
+        } catch (_) {}
+    }
+
     /** True while the in-content tip div is showing in this view. */
     _wvExtTipDivVisible(this: any, pv: any): boolean {
         try {
@@ -17384,6 +17503,14 @@ class _ReaderMixin {
      *  mixed-DPI monitor offsets are the popup engine's problem, same as
      *  native tooltips). */
     _wvExtTipRender(this: any, reader: any, pv: any, url: string, cx: number, cy: number) {
+        return this._wvExtTipRenderIn(reader, pv && pv._iframeWindow, url, cx, cy);
+    }
+
+    /** Target-window renderer: `tw` is the content window whose document
+     *  hosts the tip div -- the PDF iframe for in-page links, READER.html
+     *  for links inside overlay popups (a div in the pdf iframe would sit
+     *  UNDER the popup, which floats in the reader document). */
+    _wvExtTipRenderIn(this: any, reader: any, tw: any, url: string, cx: number, cy: number) {
         try {
             // IN-CONTENT overlay div, not an OS popup. Two popup-widget
             // renderers died in one day (2026-08-27): a manual <tooltip>
@@ -17406,7 +17533,8 @@ class _ReaderMixin {
                 donor.id = "wv-exttip-style-donor";
                 rw.document.documentElement.appendChild(donor);
             }
-            const idoc = pv._iframeWindow.document;
+            if (!tw || !tw.document) return;
+            const idoc = tw.document;
             let tip: any = idoc.getElementById("wv-exttip");
             if (!tip) {
                 tip = idoc.createElement("div");
@@ -17440,7 +17568,7 @@ class _ReaderMixin {
             tip.style.left = x + "px";
             tip.style.top = y + "px";
             try {
-                const iw = pv._iframeWindow;
+                const iw = tw;
                 const b = tip.getBoundingClientRect();
                 if (b.right > iw.innerWidth - 4) x = Math.max(4, iw.innerWidth - 4 - b.width);
                 if (b.bottom > iw.innerHeight - 4) y = Math.max(4, cy - b.height - 8);

@@ -80,6 +80,23 @@ describe("Weavero — external-link URL tip", () => {
         assert.isAtLeast(timers[0], 200, "a real dwell, not instant");
     });
 
+    it("reader-doc link eligibility: text!=url only, no titled links", () => {
+        const d = win.document.implementation.createHTMLDocument("wv-doceligible");
+        const mk = (href, text, title) => {
+            const a = d.createElement("a");
+            a.setAttribute("href", href); a.textContent = text;
+            if (title) a.setAttribute("title", title);
+            d.body.appendChild(a); return a;
+        };
+        assert.isOk(wv._wvExtTipDocEligible(mk("https://doi.org/10.1/x", "Phys. Fluids 29")),
+            "journal-name link discloses its URL");
+        assert.isOk(wv._wvExtTipDocEligible(mk("https://doi.org/10.1/x", "https://doi.org/10.1/x")),
+            "text == url ALSO discloses (suppression reverted 2026-08-28: read as broken)");
+        assert.isNull(wv._wvExtTipDocEligible(mk("https://doi.org/10.1/x", "CrossRef", "tip")),
+            "native title wins");
+        assert.isNull(wv._wvExtTipDocEligible(mk("#", "empty")), "hash href skipped");
+    });
+
     it("jitter within the native 7px tolerance keeps a visible tip", () => {
         const pv = stubPv();
         const timers = [];

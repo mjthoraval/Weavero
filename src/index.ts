@@ -2087,7 +2087,7 @@ class WeaveroPlugin {
                 // — this one was simply missed). Surfaced 2026-08-24 by a
                 // settings reset, which cleared the user value that had been
                 // masking it.
-                "enableReadStatusFilter",
+                "enableReadStatusFilter", "previewLinkZones",
                 // Visual extras
                 "enableAnnotationsCountColumn", "enableTagsCountAuto",
                 "enableRelatedColumn",

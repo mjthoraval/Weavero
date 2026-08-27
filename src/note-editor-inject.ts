@@ -23,8 +23,41 @@ import { Plugin, PluginKey } from "prosemirror-state";
     // Bumped when this script gains behaviour chrome depends on; chrome
     // re-evals the bundle into an already-injected page when the page's
     // __wvNoteInjectV is older (re-eval is safe: install() dedups via the
-    // __wvLinkify spec marker).
-    const INJECT_V = 4;
+    // __wvLinkify spec marker and REPLACES a plugin from an older bundle).
+    // Chrome reads this number out of the bundle text -- keep the
+    // `INJECT_V = <n>` literal greppable.
+    const INJECT_V = 5;
+
+    /** CROSS-BUNDLE DecorationSet interop (issue #37 -- "Search in notes
+     *  does not find anything", root-caused 2026-08-27).
+     *
+     *  Our DecorationSet comes from THIS bundle's prosemirror-view copy, so
+     *  it fails the page bundle's `instanceof DecorationSet`. That is fine
+     *  while ours is the ONLY decoration source (`DecorationGroup.from`
+     *  returns `members[0]` untouched, and the view duck-types it) -- but
+     *  the moment a second source appears (the findbar's search-highlight
+     *  plugin), `from()` takes its mixing branch:
+     *      members.reduce((r, m) => r.concat(
+     *          m instanceof DecorationSet ? m : m.members), [])
+     *  and reads `.members` off our set. Plain DecorationSets have no
+     *  `members`, so `concat(undefined)` plants `undefined` in the group,
+     *  and every later `members[i].eq(...)` / `.localsInner(...)` throws
+     *  ("this.members[t] is undefined") -- the whole updateState dies and
+     *  the search paints NOTHING, in every note, whenever linkify is
+     *  installed. Giving OUR prototype a `members` getter returning [this]
+     *  makes the reduce flatten our sets exactly like the page's own
+     *  DecorationGroups (which carry a real `members` array and already
+     *  pass through that branch). Verified against prosemirror-view 1.40.1
+     *  dist -- if the pinned version ever moves, re-check `from()`. */
+    try {
+        const dsp: any = (DecorationSet as any).prototype;
+        if (!Object.getOwnPropertyDescriptor(dsp, "members")) {
+            Object.defineProperty(dsp, "members", {
+                get() { return [this]; },
+                configurable: true,
+            });
+        }
+    } catch (e) { /* interop shim failed -- solo rendering still works */ }
 
     /** Zotero's bundled note-editor has a latent bug (present in 10.0-beta):
      *  REPORTED UPSTREAM and FIXED (2026-08-03): zotero-dev thread
@@ -218,7 +251,11 @@ import { Plugin, PluginKey } from "prosemirror-state";
                 }));
             }
         });
-        return DecorationSet.create(doc, decos);
+        // No matches -> null, NEVER our bundle's `DecorationSet.empty`: the
+        // page's viewDecorations drops falsy results, but it can only
+        // recognise its OWN empty singleton -- ours would join the group and
+        // hit the same `.members` mixing as any other set (issue #37).
+        return decos.length ? DecorationSet.create(doc, decos) : null;
     }
 
     function makePlugin(): any {
@@ -232,8 +269,9 @@ import { Plugin, PluginKey } from "prosemirror-state";
                     // Master "Editor" toggle (enableNotes) off → no decorations,
                     // WITHOUT uninstalling (uninstall = reconfigure = the
                     // t.destroy risk). Chrome flips the flag + re-decorates.
+                    // null, not our empty -- see buildDecos (issue #37).
                     if ((window as any).__wvLinkifyEnabled === false) {
-                        return DecorationSet.empty;
+                        return null;
                     }
                     return buildDecos(state.doc);
                 },
@@ -243,7 +281,11 @@ import { Plugin, PluginKey } from "prosemirror-state";
         // updateState throws a transient error AFTER the plugin landed
         // (observed live), and works across separate eval()s of this script
         // (each has a fresh PluginKey, so key identity can't be used).
+        // __wvLinkifyV lets a NEWER bundle recognise and replace a plugin
+        // whose decorations() closure still runs the older code -- re-eval
+        // alone never touches the installed plugin instance.
         spec.__wvLinkify = true;
+        spec.__wvLinkifyV = INJECT_V;
         return new Plugin(spec);
     }
 
@@ -258,11 +300,18 @@ import { Plugin, PluginKey } from "prosemirror-state";
         shimPluginStateDestroys(view);
         hardenPluginViewDestroys(view);
         wrapUpdateStateForHardening(view);
-        const has = () => view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify);
+        const has = () => view.state.plugins.some((p: any) => p.spec && p.spec.__wvLinkify
+            && Number(p.spec.__wvLinkifyV || 0) >= INJECT_V);
         if (has()) return "already";
+        // A plugin from an OLDER bundle (missing/lower __wvLinkifyV) is
+        // dropped in the same reconfigure that adds the fresh one -- its
+        // decorations() closure is the code being fixed (issue #37: the
+        // v4 closure returned cross-bundle empties and unstamped sets).
         try {
             view.updateState(view.state.reconfigure({
-                plugins: view.state.plugins.concat(makePlugin()),
+                plugins: view.state.plugins
+                    .filter((p: any) => !(p.spec && p.spec.__wvLinkify))
+                    .concat(makePlugin()),
             }));
             return "installed";
         } catch (e: any) {

@@ -11091,6 +11091,7 @@ class _ReaderMixin {
             // flash the heading text. No-op for non-PDF / no match.
             try { this._wvOutlineInstallRecovery(reader); } catch (_) {}
             try { (this as any)._wvWireDomSelTracker(reader); } catch (_) {}
+            try { (this as any)._wvWirePreviewLinkZones(reader); } catch (_) {}
 
             // Also wire up text-annotation handling in the nested PDF.js iframe.
             // (The drag tracker for canvas annotations is wired from
@@ -17112,6 +17113,176 @@ class _ReaderMixin {
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderCompactMenubarStyles err: " + e);
         }
+    }
+
+    /** PREVIEW LINK ZONES — make the DOIs/URLs inside the reader's
+     *  citation-preview popup clickable. The native popup is a BITMAP
+     *  (pdf-renderer renderPreviewPage rasterizes the whole destination
+     *  page; preview-popup.js shows it in a scrollable <img>), so nothing
+     *  in it is interactive. The page's Link annotations are mappable into
+     *  image pixels though: transparent zones are laid over the <img>,
+     *  click — Zotero.launchURL. External URLs only (v1); a Weavero-parsed
+     *  text popup is the planned follow-up. 2026-08-27, MJT.
+     *
+     *  Wrap discipline: `_onSetOverlayPopup` is an INSTANCE property (the
+     *  reader assigns it from options), so the original is stashed ONCE on
+     *  the view (— it belongs to the reader and survives plugin reloads)
+     *  and the wrapper re-installs per build (wire-tag rule); the wrapper
+     *  resolves the LIVE plugin at call time, so a stale wrapper can never
+     *  act through a dead instance. */
+    _wvWirePreviewLinkZones(this: any, reader: any, tries?: number) {
+        try {
+            const n = tries || 0;
+            const ir = reader && reader._internalReader;
+            const pv = ir && ir._primaryView;
+            const win = pv && pv._iframeWindow;
+            const isPdf = !!(win && win.PDFViewerApplication);
+            if (!pv || typeof pv._onSetOverlayPopup !== "function" || !isPdf) {
+                if (n < 40) {
+                    const w0: any = Zotero.getMainWindow();
+                    ((w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout)(
+                        () => { try { this._wvWirePreviewLinkZones(reader, n + 1); } catch (_) {} }, 250);
+                }
+                return;
+            }
+            const tag = this._wvWireTag();
+            if (pv._wvPrevZonesWired === tag) return;
+            if (!pv._wvPrevZonesOrig) pv._wvPrevZonesOrig = pv._onSetOverlayPopup;
+            const origSet = pv._wvPrevZonesOrig;
+            pv._wvPrevZonesWired = tag;
+            pv._onSetOverlayPopup = function (popup: any) {
+                const ret = origSet.call(this, popup);
+                try {
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp && popup && popup.type === "internal-link" && popup.image
+                            && popup.destinationPosition) {
+                        const seq = (pv._wvPrevZonesSeq = (pv._wvPrevZonesSeq || 0) + 1);
+                        lp._wvPreviewInjectZones(reader, pv, popup, 0, seq);
+                    }
+                } catch (_) {}
+                return ret;
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvWirePreviewLinkZones err: " + e); }
+    }
+
+    /** Map a PDF-space rect [x1,y1,x2,y2] (origin bottom-left) into CSS
+     *  pixels of the preview <img>. `vb` is the page's viewBox at scale 1,
+     *  `scale` the render scale (popup.width / viewBox width), `cssRatio`
+     *  the on-screen shrink (img.clientWidth / popup.width). Rotation is
+     *  not handled (v1 — rotated pages simply get no zones offset right,
+     *  acceptable; noted for the follow-up). Pure — spec-guarded. */
+    _wvPreviewMapRect(this: any, vpRect: number[], tx: number, ty: number, dpr: number, cssRatioX: number, cssRatioY: number) {
+        // Project a VIEWPORT-space rect (pdf.js convertToViewportRectangle
+        // output at the render scale) into the popup <img>'s CSS pixels.
+        // The preview canvas is TRIMMED (pdf-renderer _trimCanvas crops the
+        // whitespace margins) and divided by devicePixelRatio before it
+        // becomes the image — unaccounted, the zones sat one reference
+        // entry off (2026-08-27). (tx, ty) is the trim origin in canvas px,
+        // derived from the popup's own destination dot; per-axis css ratios
+        // cover a size-constrained popup.
+        const x1 = Math.min(vpRect[0], vpRect[2]), x2 = Math.max(vpRect[0], vpRect[2]);
+        const y1 = Math.min(vpRect[1], vpRect[3]), y2 = Math.max(vpRect[1], vpRect[3]);
+        return {
+            left: ((x1 - tx) / dpr) * cssRatioX,
+            top: ((y1 - ty) / dpr) * cssRatioY,
+            width: ((x2 - x1) / dpr) * cssRatioX,
+            height: ((y2 - y1) / dpr) * cssRatioY,
+        };
+    }
+
+    /** Build + inject the zones once React has rendered the popup <img>.
+     *  Retries briefly; idempotent per popup instance via a marker. */
+    async _wvPreviewInjectZones(this: any, reader: any, pv: any, popup: any, tries: number, seq: number) {
+        try {
+            let on = true;
+            try { on = Zotero.Prefs.get("weavero.previewLinkZones", true) !== false; } catch (_) {}
+            if (!on) return;
+            if (seq !== pv._wvPrevZonesSeq) return;   // a newer popup superseded this one
+            const idoc = reader._iframeWindow && reader._iframeWindow.document;
+            if (!idoc) return;
+            const inner = idoc.querySelector(".preview-popup .inner");
+            const img = inner && inner.querySelector("img");
+            if (!inner || !img || !img.clientWidth) {
+                if (tries < 20) {
+                    const w0: any = Zotero.getMainWindow();
+                    w0.setTimeout(() => { try { this._wvPreviewInjectZones(reader, pv, popup, tries + 1, seq); } catch (_) {} }, 100);
+                }
+                return;
+            }
+            // PER-POPUP marker, not per-node: React REUSES the popup DOM
+            // across hovers, so a node-level "done" flag left the PREVIOUS
+            // page's zones over the new image — misaligned, seemingly
+            // frozen, exactly the reported shift (2026-08-27). A stale box
+            // is removed and the marker carries the popup's sequence.
+            if (inner.getAttribute("data-wv-zones") === String(seq)) return;
+            inner.setAttribute("data-wv-zones", String(seq));
+            try { const old0 = inner.querySelector(".wv-preview-linkzones"); if (old0) old0.remove(); } catch (_) {}
+            const Cu = (Components as any).utils;
+            const app = Cu.waiveXrays(pv._iframeWindow.PDFViewerApplication);
+            const pageIndex = popup.destinationPosition.pageIndex;
+            const page = Cu.waiveXrays(await app.pdfDocument.getPage(pageIndex + 1));
+            const anns = Cu.waiveXrays(await page.getAnnotations());
+            // External URLs only (intake decision): a.url is the resolved URI
+            // action target in pdf.js; internal dests stay inert.
+            const links = anns.filter((a: any) => a && a.subtype === "Link" && a.url);
+            if (!links.length) return;
+            // REPLICATE the renderer's scale exactly (pdf-renderer.js
+            // renderPreviewPage: scale = dpr * extraScale, capped by the
+            // max-canvas-pixels budget) — the image is NOT "the page at
+            // width/pageWidth": the canvas is rendered at THIS scale, then
+            // trimmed and divided by dpr. If upstream changes this formula
+            // the zones drift again; the provenance comment is the tripwire.
+            const iwin = pv._iframeWindow;
+            const viewer = Cu.waiveXrays(iwin.PDFViewerApplication).pdfViewer;
+            const dpr = iwin.devicePixelRatio || 1;
+            const cur = viewer._currentScale;
+            const extraScale = cur > 1 ? 1 + (cur - 1) * 1.8 : cur;
+            // Waive after EVERY await/content call — promise resolution
+            // re-Xrays (the 2026-08-27 scan lesson).
+            const vp1 = Cu.waiveXrays(page.getViewport(Cu.cloneInto({ scale: 1 }, iwin)));
+            let scale = dpr * extraScale;
+            const maxScale = Math.sqrt(viewer.maxCanvasPixels / (vp1.width * vp1.height));
+            if (scale > maxScale) scale = maxScale;
+            const vpS = Cu.waiveXrays(page.getViewport(Cu.cloneInto({ scale }, iwin)));
+            // Trim origin from the ONE known correspondence: the destination
+            // dot's centre is at popup.x/y in final image coords AND at a
+            // computable viewport point.
+            const dr = popup.destinationPosition.rects && popup.destinationPosition.rects[0];
+            if (!dr) return;   // no dest rect -> no anchor to derive the trim from
+            const dpt = Cu.waiveXrays(vpS.convertToViewportPoint((dr[0] + dr[2]) / 2, (dr[1] + dr[3]) / 2));
+            const tx = dpt[0] - popup.x * dpr;
+            const ty = dpt[1] - popup.y * dpr;
+            const cssRatioX = img.clientWidth / popup.width;
+            const cssRatioY = img.clientHeight / popup.height;
+            // The zones live INSIDE the scroll container so they travel with
+            // the image when the user scrolls the preview.
+            const cs = idoc.defaultView.getComputedStyle(inner);
+            if (cs.position === "static") (inner as any).style.position = "relative";
+            const box = idoc.createElement("div");
+            box.className = "wv-preview-linkzones";
+            box.style.cssText = "position:absolute;left:0;top:0;width:" + img.clientWidth
+                + "px;height:" + img.clientHeight + "px;pointer-events:none;z-index:2;";
+            for (const a of links) {
+                const vpR = Cu.waiveXrays(vpS.convertToViewportRectangle(Cu.cloneInto([a.rect[0], a.rect[1], a.rect[2], a.rect[3]], iwin)));
+                const r = this._wvPreviewMapRect([vpR[0], vpR[1], vpR[2], vpR[3]], tx, ty, dpr, cssRatioX, cssRatioY);
+                if (r.width <= 0 || r.height <= 0) continue;
+                const z = idoc.createElement("div");
+                z.className = "wv-preview-linkzone";
+                z.title = a.url;
+                z.style.cssText = "position:absolute;pointer-events:auto;cursor:pointer;"
+                    + "left:" + r.left + "px;top:" + r.top + "px;"
+                    + "width:" + r.width + "px;height:" + r.height + "px;";
+                const url = String(a.url);
+                z.addEventListener("click", (ev: any) => {
+                    try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+                    try { Zotero.launchURL(url); } catch (_) {}
+                });
+                box.appendChild(z);
+            }
+            // A faster hover may have replaced this popup during the awaits.
+            if (seq !== pv._wvPrevZonesSeq || inner.getAttribute("data-wv-zones") !== String(seq)) return;
+            if (box.childElementCount) inner.appendChild(box);
+        } catch (e) { Zotero.debug("[Weavero] _wvPreviewInjectZones err: " + e); }
     }
 }
 

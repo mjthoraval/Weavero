@@ -1,4 +1,4 @@
-/* global describe, it, before, after, expect, Zotero */
+/* global describe, it, before, after, expect, Zotero, Components */
 
 // In-Zotero tests for the note-editor bare-URL DECORATION (the injected
 // ProseMirror plugin, `note-editor-inject.js`) and its pref gating, plus the
@@ -137,6 +137,60 @@ describe("Weavero — note-editor bare-URL decoration", () => {
         applyPrefsToDecoration();
         expect(await waitFor(() => decoCount(edoc) >= 3 || null, 8000),
             "restored when Editor on").to.equal(true);
+    });
+
+    // Issue #37 regression guard ("Search in notes does not find anything",
+    // root-caused 2026-08-27): our injected plugin returns DecorationSets from
+    // a DIFFERENT prosemirror-view copy than the page's. The page bundle's
+    // DecorationGroup.from() mixes multi-plugin sets via
+    //   m instanceof DecorationSet ? m : m.members
+    // and a cross-bundle set without a `members` getter plants `undefined` in
+    // the group -- every view update then throws ("this.members[t] is
+    // undefined") the moment the findbar's search plugin adds its highlight
+    // set, so search painted NOTHING in any note while linkify was installed.
+    // This drives the REAL findbar on the decorated fixture note and requires
+    // search highlights and linkify decorations to coexist -- it fails on the
+    // pre-fix code (zero .find spans, console TypeErrors).
+    it("findbar search paints highlights alongside linkify decorations (issue #37)", async function () {
+        this.timeout(30000);
+        expect(edoc, "decorated editor").to.be.ok;
+        const iw = edoc.defaultView;
+        const pm = edoc.querySelector(".ProseMirror");
+        pm.focus();
+        pm.dispatchEvent(new iw.KeyboardEvent("keydown",
+            { key: "f", code: "KeyF", ctrlKey: true, bubbles: true }));
+        const input = await waitFor(() => edoc.querySelector(".findbar input"), 8000);
+        expect(input, "findbar opened by Ctrl+F").to.be.ok;
+        // React-controlled input: go through the native value setter so the
+        // change event actually fires the search plugin's setSearchTerm.
+        const setter = Object.getOwnPropertyDescriptor(
+            Components.utils.waiveXrays(iw).HTMLInputElement.prototype, "value").set;
+        setter.call(Components.utils.waiveXrays(input), "example");
+        input.dispatchEvent(new iw.Event("input", { bubbles: true }));
+        // "example" occurs twice, once INSIDE a linkified span -- the search
+        // set and our set must compose into one working DecorationGroup.
+        const found = await waitFor(
+            () => edoc.querySelectorAll(".ProseMirror .find, .ProseMirror .find-selected").length >= 2
+                || null, 10000);
+        expect(found, "search match highlights rendered").to.equal(true);
+        expect(decoCount(edoc), "linkify decorations survive the search")
+            .to.be.at.least(3);
+        input.dispatchEvent(new iw.KeyboardEvent("keydown",
+            { key: "Escape", bubbles: true }));
+    });
+
+    // The chrome side re-evals the inject bundle into open editors when the
+    // page's version is older than the CURRENT bundle's -- it parses that
+    // version out of the built text (a hardcoded chrome-side floor is how the
+    // v5 fix would have been locked out of every open editor). Keep the
+    // literal greppable.
+    it("built inject bundle carries a chrome-parseable INJECT_V >= 5", async function () {
+        const root = String(wv._rootURI || "");
+        expect(root, "plugin rootURI").to.be.ok;
+        const txt = await Zotero.File.getContentsFromURLAsync(root + "note-editor-inject.js");
+        const m = /INJECT_V\s*=\s*(\d+)/.exec(txt) || /__wvNoteInjectV\s*=\s*(\d+)/.exec(txt);
+        expect(m, "INJECT_V literal parseable from built bundle").to.be.ok;
+        expect(Number(m[1]), "issue-#37 fix version or later").to.be.at.least(5);
     });
 
     // Items-tree note-item title linkify (feature A). Best-effort: skips (not

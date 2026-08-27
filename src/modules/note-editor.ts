@@ -240,6 +240,15 @@ class _NoteEditorMixin {
                 if (!root) return;
                 const resp = await fetch(root + "note-editor-inject.js");
                 (this as any)._wvNoteInjectCode = await resp.text();
+                // The bundle's own INJECT_V, read out of the built text so
+                // chrome and page can never disagree by a forgotten hand
+                // bump (the gate below used to hardcode `>= 4`, which would
+                // have kept v5's issue-#37 fix out of every open editor).
+                // 0 when unparseable -> the gate falls back to re-eval,
+                // which is always correct, just not free.
+                const m = /INJECT_V\s*=\s*(\d+)/.exec((this as any)._wvNoteInjectCode)
+                    || /__wvNoteInjectV\s*=\s*(\d+)/.exec((this as any)._wvNoteInjectCode);
+                (this as any)._wvNoteInjectCodeV = m ? Number(m[1]) : 0;
             }
             // Liveness gate after the await: a reload mid-fetch would have a
             // DEAD instance inject its (older) bundle (issue #27 bug class).
@@ -269,7 +278,8 @@ class _NoteEditorMixin {
                     // script (plugin was updated while the editor stayed open)
                     // -- the page-side installer dedups, so re-eval is safe.
                     const pageV = wj && Number(wj.__wvNoteInjectV || 0);
-                    if (wj && typeof wj.__wvInstallNoteLinkify === "function" && pageV >= 4) {
+                    const codeV = Number((this as any)._wvNoteInjectCodeV || 0) || Infinity;
+                    if (wj && typeof wj.__wvInstallNoteLinkify === "function" && pageV >= codeV) {
                         const r = String(wj.__wvInstallNoteLinkify());
                         // Repaint after a fresh install so decorations appear
                         // immediately (not only on the next edit).

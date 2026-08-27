@@ -251,7 +251,7 @@ native machinery.
 | Trigger | Required | Recommended |
 |---|---|---|
 | Any `src/` edit | Level 0 | — |
-| Before any commit / build | Level 0 + the targeted specs for what changed | — |
+| Before any commit / build | Level 0 only (typecheck). NOTE: there is no partial spec runner — ANY `npm test` boots the full temp-profile Zotero, so “just the new spec” IS a full suite run and waits for validation like the rest | — |
 | After the user validates a feature batch (and before any push/release) | Level 1 (full suite) | — (the runner's temp-profile Zotero competes with the instance under test — never run it while live testing is ongoing) |
 | After installing a dev build | Level 3 probe of the changed feature | — |
 | Touched tabs/windows/reader lifecycle | Levels 1 + 3 | tear-off/merge hand pass |

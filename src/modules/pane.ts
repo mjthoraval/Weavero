@@ -992,6 +992,172 @@ class _PaneMixin {
         } catch (e) {}
     }
 
+    /** Shift+click on Advanced Search (the funnel toolbar button or the menu
+     *  item) opens it in a NEW main window (user request 2026-09-01). Plain
+     *  click and Ctrl+Shift+F stay native. Z10-only by construction: the
+     *  standalone advancedSearch.xhtml window was removed upstream, and on
+     *  Z9 the native control already opens a separate window, so the wiring
+     *  is skipped when the in-main command is absent.
+     *
+     *  DOCUMENT-level capture, deliberately: the menuitem forwards its
+     *  command to `cmd_zotero_advancedSearch` in its own default handling,
+     *  and the funnel button's listener lives inside the quick-search custom
+     *  element — neither can be pre-empted from the element itself (a
+     *  same-element listener added later runs after the attribute handler). */
+    _wvWireAdvSearchNewWindow(win: any) {
+        try {
+            if (!win || !win.document) return;
+            const doc: any = win.document;
+            const TAG = (this as any)._wvWireTag();
+            if (doc._wvAdvSearchWinWire === TAG) return;
+            const old = doc._wvAdvSearchWinHandler;
+            if (old) {
+                try { doc.removeEventListener("command", old, true); } catch (_) {}
+                try { doc.removeEventListener("click", old, true); } catch (_) {}
+            }
+            doc._wvAdvSearchWinWire = TAG;
+            if (!doc.getElementById("cmd_zotero_advancedSearch")) return;
+            const isTarget = (t: any) => {
+                try {
+                    if (!t) return false;
+                    if (t.id === "menu_advancedSearch") return true;
+                    // The menuitem FORWARDS its command to the <command>
+                    // element in its default handling, and preventDefault on
+                    // the menuitem event does not stop that -- intercepting
+                    // only the menuitem opened BOTH the in-main pane and the
+                    // new window (MJT 2026-09-01). Catch the forwarded event
+                    // too; the reentry guard collapses the pair. The
+                    // Ctrl+Shift+F key stays native (accel is pressed, and
+                    // the interceptor requires shift ALONE).
+                    if (t.id === "cmd_zotero_advancedSearch") return true;
+                    // ONLY Zotero's funnel — never Weavero's own filter funnel.
+                    return !!(t.closest && t.closest("#zotero-tb-search-advanced-button"));
+                } catch (_) { return false; }
+            };
+            const handler = (e: any) => {
+                try {
+                    if (!e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+                    if (e.type === "click" && e.button !== 0) return;
+                    if (!isTarget(e.target)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                    try {
+                        const p = e.target.closest && e.target.closest("menupopup");
+                        if (p && p.hidePopup) p.hidePopup();
+                    } catch (_) {}
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow();
+                } catch (_) {}
+            };
+            doc._wvAdvSearchWinHandler = handler;
+            doc.addEventListener("command", handler, true);
+            doc.addEventListener("click", handler, true);
+        } catch (e) {}
+    }
+
+    /** Open a fresh main window and, once its pane is ready, open the
+     *  advanced-search pane there. Bounded polls only; on a miss the new
+     *  window stays open (still useful) and the failure is logged. */
+    async _wvAdvSearchOpenNewWindow() {
+        try {
+            // click + synthesized command can both reach the interceptor for
+            // one gesture -- collapse them.
+            const now = Date.now();
+            if (now - ((this as any)._wvAdvSearchLastOpen || 0) < 500) return;
+            (this as any)._wvAdvSearchLastOpen = now;
+            // Direct watcher spawn so we hold the HANDLE from t=0 (the
+            // window itself is up in ~160ms; polling getMainWindows at 100ms
+            // was most of the perceived latency -- "It should be faster",
+            // measured 2026-09-01). Same pending flag + clean session state
+            // as _wvOpenEmptyMainWindow.
+            (this as any)._wvPendingDevWindow = true;
+            try { (this as any)._wvClearSessionPaneState(); } catch (_) {}
+            const { AppConstants } = ChromeUtils.importESModule(
+                "resource://gre/modules/AppConstants.sys.mjs");
+            let nw: any = null;
+            try {
+                nw = Services.ww.openWindow(null, AppConstants.BROWSER_CHROME_URL,
+                    "_blank", "chrome,all,dialog=no,resizable=yes", null);
+            } catch (e) { (this as any)._wvPendingDevWindow = false; throw e; }
+            const mw: any = Zotero.getMainWindow();
+            const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
+            const t0 = Date.now();
+            // Gate on a FUNCTIONAL items view, not just ZoteroPane + deck:
+            // toggleAdvancedSearchState reaches itemsView.setFilter, and
+            // calling at deck-exists time (~160ms) THROWS and leaves the pane
+            // closed (measured: itemsView ready ~860ms, deck open ~975ms).
+            while (Date.now() - t0 < 15000) {
+                try {
+                    const iv = nw && nw.ZoteroPane && nw.ZoteroPane.itemsView;
+                    if (iv && typeof iv.setFilter === "function"
+                            && nw.document
+                            && nw.document.getElementById("zotero-advanced-search-pane-deck")) {
+                        break;
+                    }
+                    if (nw && nw.closed) return;
+                } catch (_) {}
+                await new Promise(r => setT(r, 25));
+            }
+            // Gesture-initiated: if the bg-restore contract happens to be
+            // active (startup, or a stuck flag), this window is the USER'S
+            // choice -- claim it so the contract redirects instead of
+            // fighting the raise (same rule as a mousedown claim).
+            try {
+                if ((this as any)._wvBgRestoreOn) {
+                    (nw as any)._wvBgUserClaimed = true;
+                    (this as any)._wvBgUserChosenWin = nw;
+                }
+            } catch (_) {}
+            try { nw.focus(); } catch (_) {}
+            try { await nw.ZoteroPane.toggleAdvancedSearchState("open"); }
+            catch (e) { Zotero.debug("[Weavero] advsearch-new-window open err: " + e); }
+            // FOCUS PARITY with the in-main open (native focuses the pane's
+            // conditions menu). The toggle DOES focus it, but the window's
+            // still-running init pulls focus back (items tree / quick
+            // search), so the pane looked unfocused ("should focus the same
+            // place as when opened in the main window", MJT 2026-09-01).
+            // Re-assert until it sticks, bounded.
+            try {
+                const deck = nw.document.getElementById("zotero-advanced-search-pane-deck");
+                const pane = deck && deck.pane;
+                if (pane) {
+                    // SETTLE-AND-HOLD, not first-success: breaking on the
+                    // first :focus-within let the window's late init steal
+                    // focus right back (the conditions menu "flickered,
+                    // finally not selected"), and OS focus sometimes never
+                    // transferred at all (window opened BEHIND) -- both
+                    // MJT 2026-09-01. Done only after ~600ms of continuous
+                    // window+pane focus; bounded at 6s.
+                    // OS focus is BEST-EFFORT and bounded (it needs a user
+                    // gesture; retrying forever fights pane.focus() — each
+                    // window.focus() resets the internal focus the previous
+                    // iteration just set, measured live). Pane-internal focus
+                    // is the stability criterion.
+                    const t1 = Date.now();
+                    let stable = 0, osTries = 0;
+                    while (Date.now() - t1 < 6000 && stable < 6) {
+                        try {
+                            if (nw.closed) return;
+                            if (!nw.document.hasFocus() && osTries < 10) {
+                                osTries++;
+                                nw.focus();
+                            }
+                            if (pane.matches(":focus-within")) {
+                                stable++;
+                            }
+                            else {
+                                stable = 0;
+                                pane.focus();
+                            }
+                        } catch (_) {}
+                        await new Promise(r => setT(r, 100));
+                    }
+                }
+            } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchOpenNewWindow err: " + e); }
+    }
+
     _wvWireMainNewTabShortcut(win: any) {
         try {
             if (!win || (win as any)._wvMainNewTabKeyWired) return;

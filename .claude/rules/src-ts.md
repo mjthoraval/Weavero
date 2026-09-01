@@ -36,6 +36,11 @@ name to a Zotero object, window, or document.
   go stale across reloads. Async-setup continuations: liveness-check after
   every await; callbacks self-neutralize; long-lived per-window wiring uses a
   numeric `_wv*Wired` version stamp + stored handler refs.
+- TIMER HOSTS are closures over windows too: a `win.setTimeout` chain dies
+  silently when `win` closes, and a lifecycle flag it was due to clear
+  sticks forever (bg-restore teardown, 2026-09-01 — every later window
+  open got fought). Long-lived tick loops re-resolve a live window per
+  schedule (global setTimeout fallback), never bind the host once.
 - Wraps installed on LONG-LIVED Zotero objects (itemsView, rowProvider,
   windows) stamp themselves with `this._wvWireTag()` — the BUILD version —
   never a boolean and never a hand-bumped constant. A foreign stamp means

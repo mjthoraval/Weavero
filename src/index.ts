@@ -4303,6 +4303,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvPatchItemDetailsTabSelect(w); } catch (e) {}
                 try { (this as any)._wvWireMainNewTabShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireNewWindowShortcut(w); } catch (e) {}
+                try { (this as any)._wvWireAdvSearchNewWindow(w); } catch (e) {}
                 try { (this as any)._wvWireColumnPickerMark(w); } catch (e) {}
                 try { (this as any)._wvWireItemsCrossWindowDrop(w); } catch (e) {}
             }
@@ -4410,6 +4411,7 @@ class WeaveroPlugin {
             // theirs at strip build).
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireNewWindowShortcut(_window); } catch (e) {}
+            try { (this as any)._wvWireAdvSearchNewWindow(_window); } catch (e) {}
             try { (this as any)._wvWireColumnPickerMark(_window); } catch (e) {}
             try { (this as any)._wvWireItemsCrossWindowDrop(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).

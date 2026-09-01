@@ -5841,12 +5841,18 @@ class _ReaderPanelsMixin {
      *  The bookmark pin and this one share every mechanism except where the new
      *  anchor is written — which is exactly the thing that must not be shared,
      *  since an outline id means nothing to the bookmark store. */
-    _wvOutlineShowDomEntryPin(reader: any, entry: any, target: any, persist?: boolean) {
+    /** Returns TRUE only when a pin was really drawn. A stale anchor (the
+     *  pinned element is no longer in the document) must be reported, not
+     *  swallowed: clicking such an entry used to do nothing at all and left
+     *  the user hunting for a pin that could never appear ("Pinned spot
+     *  currently selected does not show any pin. Where is it?", MJT
+     *  2026-09-01). */
+    _wvOutlineShowDomEntryPin(reader: any, entry: any, target: any, persist?: boolean): boolean {
         try {
-            if (!entry || !target) return;
+            if (!entry || !target) return false;
             const ir = reader._internalReader;
             const pv = ir && (ir._primaryView || ir._lastView);
-            if (!pv) return;
+            if (!pv) return false;
             const commit = async (a: any) => {
                 try {
                     const att = this._wvReaderAtt(reader);
@@ -5859,16 +5865,31 @@ class _ReaderPanelsMixin {
                         entry.id, withAnchor, entry.title);
                     entry.position = withAnchor;
                     entry.resolvedPosition = withAnchor;
+                    // Re-file at the document-order slot for the NEW spot.
+                    // The PDF pin drag has done this from the start
+                    // (_wvOutlineShowEntryPin -> _wvOutlineReplaceByPosition);
+                    // the DOM commit only wrote the position, so a dragged
+                    // EPUB/snapshot pin kept its old place in the list (MJT
+                    // 2026-09-01, "it did not get moved in the order").
+                    try {
+                        const idoc2 = reader._iframeWindow && reader._iframeWindow.document;
+                        if (idoc2) {
+                            await this._wvOutlineReplaceByPosition(reader, idoc2,
+                                att.libraryID, att.itemKey, entry.id);
+                        }
+                    } catch (_) {}
                 } catch (e) { Zotero.debug("[Weavero] outline pin commit err: " + e); }
             };
             const iwin = pv._iframeWindow;
             const doc = pv._iframeDocument || (iwin && iwin.document);
-            if (!iwin || !doc || !doc.body) return;
+            if (!iwin || !doc || !doc.body) return false;
             const range = this._wvDomRangeForAnchor(pv, { position: target, href: entry.href });
-            if (!range) return;
-            this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm: entry, commit, persist: !!persist,
-                mediaOffset: target && target.mediaOffset });
+            if (!range) return false;
+            return !!this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm: entry, commit, persist: !!persist,
+                mediaOffset: target && target.mediaOffset,
+                endAffinity: !!(target && target.wvEnd) });
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineShowDomEntryPin err: " + e); }
+        return false;
     }
 
     /** Apply the current-section marker. Shared by the page-based (PDF) and
@@ -5914,6 +5935,13 @@ class _ReaderPanelsMixin {
             // sit anywhere — and picking "the last row in the list that is
             // above the line" let one such entry hold the marker for the whole
             // rest of the book (observed on the EPUB, 2026-08-24).
+            // THE SAME READING LINE AS EVERYWHERE ELSE (a quarter down the
+            // view): the PDF spy uses it, and outline clicks LAND their
+            // target there. Comparing against the viewport TOP instead made
+            // the marker lag a whole section behind the click that had just
+            // placed a heading at the line (MJT 2026-09-01, snapshot).
+            const spyWin = pv._iframeWindow;
+            const line = ((spyWin && spyWin.innerHeight) || 800) * this._wvOutlineSpyLine;
             let best: any = null, bestTop = -Infinity;
             let firstResolved: any = null, firstTop = Infinity;
             for (let i = 0; i < rows.length; i++) {
@@ -5931,8 +5959,8 @@ class _ReaderPanelsMixin {
                 try { top = range.getBoundingClientRect().top; } catch (_) { continue; }
                 if (!Number.isFinite(top)) continue;
                 if (top < firstTop) { firstTop = top; firstResolved = row; }
-                // +1 tolerance: an entry flush with the edge counts as passed.
-                if (top <= 1 && top > bestTop) { bestTop = top; best = row; }
+                // +1 tolerance: an entry flush with the line counts as passed.
+                if (top <= line + 1 && top > bestTop) { bestTop = top; best = row; }
             }
             // Above the first heading nothing has been passed; show that first
             // heading rather than nothing, matching the PDF rule.
@@ -6080,6 +6108,10 @@ class _ReaderPanelsMixin {
      *  reference_weavero_reader_xray_method_wrap). */
     _wvOutlineSpyWire(reader: any, idoc: any) {
         try {
+            // Entries are {t: scroll target, s: stamp holder, k: stamp key}.
+            // WINDOW targets stamp the READER, not the window: expandos on a
+            // content window are Xray-compartment state we should not rely
+            // on, and the reader outlives the view rebuilds anyway.
             const targets: any[] = [];
             try {
                 const ir = reader && reader._internalReader;
@@ -6087,18 +6119,34 @@ class _ReaderPanelsMixin {
                 const w2 = pv && pv._iframeWindow;
                 const vc = w2 && w2.document
                     && w2.document.getElementById("viewerContainer");
-                if (vc) targets.push(vc);
+                if (vc) {
+                    targets.push({ t: vc, s: vc, k: "vc" });
+                }
+                else if (w2 && (reader._type || "pdf") !== "pdf") {
+                    // DOM VIEWS (snapshot, EPUB) have NO #viewerContainer --
+                    // the content document scrolls itself, so the only scroll
+                    // feed is the content window. Without this the spy was
+                    // never wired there at all: the picker computed the right
+                    // section at every position while the marker sat frozen on
+                    // whatever was current when the panel rendered (MJT,
+                    // 2026-09-01, snapshot; measured across five scroll
+                    // positions).
+                    targets.push({ t: w2, s: reader, k: "win" });
+                }
             } catch (_) {}
             try {
                 // Reading Mode scrolls its own SDT iframe, not the base view.
                 if (this._wvReadingModeActive(reader)) {
                     const sdtv = this._wvOutlineRmView(reader);
                     const iwin = sdtv && sdtv._iframeWindow;
-                    if (iwin) targets.push(iwin);
+                    if (iwin) targets.push({ t: iwin, s: reader, k: "rm" });
                 }
             } catch (_) {}
-            for (const t of targets) {
-                const tt = t as any;
+            for (const ent of targets) {
+                const t: any = ent.t;
+                const tt: any = ent.s;
+                const pKey = "_wvOlSpyPlugin_" + ent.k;
+                const hKey = "_wvOlSpyHandler_" + ent.k;
                 // The scroll target OUTLIVES the plugin: a reload leaves
                 // the previous instance's listener attached but dead,
                 // and a boolean stamp then skips re-wiring forever --
@@ -6109,9 +6157,9 @@ class _ReaderPanelsMixin {
                 // lifetime, not the container's, so it names the plugin
                 // instance and the old handler is swapped out
                 // (mistakes ledger 2026-08-19, same family).
-                if (tt._wvOlSpyPlugin === this && tt._wvOlSpyHandler) continue;
-                if (tt._wvOlSpyHandler) {
-                    try { t.removeEventListener("scroll", tt._wvOlSpyHandler); } catch (e) {}
+                if (tt[pKey] === this && tt[hKey]) continue;
+                if (tt[hKey]) {
+                    try { t.removeEventListener("scroll", tt[hKey]); } catch (e) {}
                 }
                 const readerRef = reader;
                 let tick: any = null;
@@ -6129,8 +6177,8 @@ class _ReaderPanelsMixin {
                     }, 150);
                 };
                 t.addEventListener("scroll", handler, { passive: true });
-                tt._wvOlSpyHandler = handler;
-                tt._wvOlSpyPlugin = this;
+                tt[hKey] = handler;
+                tt[pKey] = this;
             }
         } catch (_) {}
     }
@@ -6448,6 +6496,7 @@ class _ReaderPanelsMixin {
                 if (dom.cfi) {
                     rec.location = { cfi: dom.cfi };
                     if (dom.mediaOffset) rec.location.mediaOffset = dom.mediaOffset;
+                    if (dom.wvEnd) rec.location.wvEnd = true;
                 }
                 if (dom.sortIndex) rec.sortIndex = dom.sortIndex;
                 Promise.resolve(this._bmReaderAdd(att.libraryID, att.itemKey, rec, { allowDuplicate: true }))
@@ -7799,13 +7848,16 @@ class _ReaderPanelsMixin {
                 d.style.cssText = css; container.appendChild(d); return d;
             };
             const bar = mkDiv("position:absolute;display:flex;gap:6px;padding:4px 6px;"
-                + "background:rgba(40,40,40,.95);border:1px solid rgba(127,127,127,.5);"
+                + "border:1px solid rgba(127,127,127,.5);"
                 + "border-radius:6px;pointer-events:auto;z-index:2;");
+            bar.style.setProperty("background-color", "rgba(40,40,40,.95)", "important");
             const mkBtn = (label: string, bg: string) => {
                 const b: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
                 b.textContent = label;
-                b.style.cssText = "font:12px sans-serif;color:#fff;background:" + bg
-                    + ";border:none;border-radius:4px;padding:3px 8px;cursor:pointer;";
+                b.style.cssText = "font:12px sans-serif;color:#fff;"
+                    + "border:none;border-radius:4px;padding:3px 8px;cursor:pointer;";
+                // Same theme-reset trap as the pin caret / highlight painter.
+                b.style.setProperty("background-color", bg, "important");
                 bar.appendChild(b); return b;
             };
             const saveBtn = mkBtn("Save Region", "#2e7d32");
@@ -7815,8 +7867,9 @@ class _ReaderPanelsMixin {
             const handles: any = {};
             const mkHandle = (which: string) => {
                 const h = mkDiv("position:absolute;width:14px;height:14px;border-radius:50%;"
-                    + "background:#4072e5;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);"
+                    + "border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);"
                     + "cursor:grab;pointer-events:auto;z-index:3;transform:translate(-50%,-50%);");
+                h.style.setProperty("background-color", "#4072e5", "important");
                 handles[which] = h; return h;
             };
             mkHandle("start"); mkHandle("end");
@@ -7825,8 +7878,9 @@ class _ReaderPanelsMixin {
                 const rects = [...range.getClientRects()];
                 if (!rects.length) return;
                 for (const r of rects) {
-                    const d = mkDiv("position:absolute;background:rgba(64,114,229,.28);"
+                    const d = mkDiv("position:absolute;"
                         + "border-radius:2px;pointer-events:none;");
+                    d.style.setProperty("background-color", "rgba(64,114,229,.28)", "important");
                     d.style.left = (r.left + iw.scrollX) + "px";
                     d.style.top = (r.top + iw.scrollY) + "px";
                     d.style.width = r.width + "px";
@@ -9357,7 +9411,14 @@ class _ReaderPanelsMixin {
             if ((reader._type || "pdf") !== "pdf") {
                 const pvD = pv;
                 if (target && target.anchor === "point") {
-                    this._wvOutlineShowDomEntryPin(reader, node, target);
+                    if (!this._wvOutlineShowDomEntryPin(reader, node, target)) {
+                        // Anchor gone: say it plainly. A snapshot can render
+                        // differently across loads (this one lost every inline
+                        // <svg>, and the pin's selector was the bare tag
+                        // "svg"), so the target genuinely is not there.
+                        this._wvReaderPanelNote(idoc,
+                            "This pin's target is no longer in the document — the page rendered differently. Drag a new pin to re-anchor it.");
+                    }
                 } else if (pvD && (wvPlacedDom || !this._wvDomNativeSpotlights(pvD))) {
                     // Parity with the PDF panel: navigating a heading entry
                     // flashes its anchored text. Exact anchors only (selector
@@ -9369,6 +9430,10 @@ class _ReaderPanelsMixin {
                         const rng = this._wvDomRangeForAnchor(pvD,
                             { position: target, href: node && node.href });
                         if (rng) this._wvDomHighlightRange(pvD, rng);
+                        else if (target && (target.type || target.value)) {
+                            this._wvReaderPanelNote(idoc,
+                                "This entry's target is no longer in the document.");
+                        }
                     } catch (_) {}
                 }
             }
@@ -13555,7 +13620,39 @@ class _ReaderPanelsMixin {
                     const Cu = (Components as any).utils;
                     if (Cu && pv._iframeWindow) arg = Cu.cloneInto(pos, pv._iframeWindow);
                 } catch (_) {}
-                return pv.toDisplayedRange(arg);
+                let rng: any = null;
+                try { rng = pv.toDisplayedRange(arg); } catch (_) { rng = null; }
+                if (rng) return rng;
+                // FALLBACKS, in order of confidence. Upstream resolves only
+                // its own selector shape and throws on invalid CSS; an entry
+                // whose page re-rendered would otherwise be lost forever.
+                const doc = pv._iframeDocument || (pv._iframeWindow && pv._iframeWindow.document);
+                if (!doc) return null;
+                // 1. a CSS value, or the spare path. A FragmentSelector whose
+                //    value is NOT an epubcfi is an anchor the dev.7-11 builds
+                //    corrupted (CSS path under a CFI type) -- salvage it as
+                //    the path it actually is, so those entries keep working.
+                const cssCandidates: string[] = [];
+                try {
+                    const v = String(pos.value || "");
+                    const isCfi = v.indexOf("epubcfi(") === 0;
+                    if (v && (pos.type === "CssSelector" || !isCfi)) cssCandidates.push(v);
+                    if (pos.wvPath) cssCandidates.push(String(pos.wvPath));
+                } catch (_) {}
+                for (const cand of cssCandidates) {
+                    try {
+                        const el = doc.querySelector(cand);
+                        if (el) { const r = doc.createRange(); r.selectNode(el); return r; }
+                    } catch (_) { /* invalid selector: try the next */ }
+                }
+                // 2. media identity hint (svg -> img swaps, moved figures)
+                try {
+                    if (pos.wvHint) {
+                        const el = this._wvDomFindByHint(doc, pos.wvHint);
+                        if (el) { const r = doc.createRange(); r.selectNode(el); return r; }
+                    }
+                } catch (_) {}
+                return null;
             }
         } catch (_) {}
         return null;
@@ -19995,11 +20092,109 @@ class _ReaderPanelsMixin {
     /** Document-coordinate point a DOM pin's TIP targets for a resolved
      *  range: top-centre of the rect, unless a media fractional offset says
      *  where inside the (rigid) image the pin belongs. */
+    /** The LINE rect a text pin should sit on. A range that selects a whole
+     *  element (which every path-resolved anchor now does) has a bounding box
+     *  spanning all its lines, so the pin landed mid-block and the caret bar
+     *  ran the full height of a three-line reference ("the vertical bar is too
+     *  high", MJT 2026-09-01). The first client rect is the first LINE box --
+     *  exactly what a caret marks. Media anchors keep their own rect. */
+    _wvDomPinLineRect(range: any, rT: any, wantMedia: boolean, endAffinity?: boolean): any {
+        if (wantMedia) return rT;
+        try {
+            if (!range) return rT;
+            const doc = range.startContainer && range.startContainer.ownerDocument;
+            if (!doc) return rT;
+            const charRect = (tn: any, off: number) => {
+                const len = String(tn.textContent || "").length;
+                if (!len) return null;
+                // End affinity (or an offset at the node's very end): the
+                // caret sits AFTER the previous character -- measure that
+                // char and hand back a zero-width rect at its RIGHT edge, so
+                // a line-end pin stays on ITS line instead of jumping to the
+                // start of the next one (same offset, different caret).
+                const wantEnd = !!endAffinity || off >= len;
+                const a = Math.max(0, Math.min(wantEnd ? off - 1 : off, len - 1));
+                const r2 = doc.createRange();
+                r2.setStart(tn, a);
+                r2.setEnd(tn, Math.min(len, a + 1));
+                const rr = r2.getBoundingClientRect();
+                if (!rr || rr.height <= 4) return null;
+                if (wantEnd) {
+                    return { left: rr.right, right: rr.right, top: rr.top,
+                        bottom: rr.bottom, width: 0, height: rr.height };
+                }
+                return rr;
+            };
+            // 1. The range starts INSIDE text: that character is the position.
+            const sc = range.startContainer;
+            if (sc && sc.nodeType === 3) {
+                const r = charRect(sc, range.startOffset);
+                if (r) return r;
+            }
+            // 2. The range SELECTS an element (every path-resolved anchor
+            //    does): take the first character of its text. getClientRects()
+            //    is no help here -- for a <li> it returns the 67px block box
+            //    FIRST and the line boxes after it, so rects[0] is the whole
+            //    block (measured 2026-09-01).
+            let host: any = null;
+            try {
+                const kid = sc && sc.childNodes && sc.childNodes[range.startOffset];
+                if (kid && kid.nodeType === 1) host = kid;
+            } catch (_) {}
+            if (!host) host = (sc && sc.nodeType === 1) ? sc : (sc && sc.parentElement);
+            if (host) {
+                const w = doc.createTreeWalker(host, 4 /* TEXT */);
+                while (w.nextNode()) {
+                    const tn: any = w.currentNode;
+                    if (!String(tn.textContent || "").trim().length) continue;
+                    const r = charRect(tn, 0);
+                    if (r) return r;
+                }
+            }
+        } catch (_) {}
+        return rT;
+    }
+
+    /** Create-or-update the caret bar that marks a TEXT pin's exact position.
+     *  Shared by the initial draw and the drag snap: a pin dragged from an
+     *  image onto text starts with no caret (media pins have none), so the
+     *  drag has to be able to CREATE one, not just move it (MJT 2026-09-01).
+     *  The colour is set !important -- the snapshot theme layer forces every
+     *  element's background transparent. */
+    _wvPinCaretEnsure(doc: any, x: number, y: number, h: number): any {
+        try {
+            let c: any = doc.querySelector(".wv-reader-pin-caret");
+            if (!c) {
+                c = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                c.className = "wv-reader-pin-caret";
+                c.style.cssText = "position:absolute;z-index:2147483645;pointer-events:none;"
+                    + "width:2px;border-radius:1px;opacity:.9;transform:translate(-50%,0);"
+                    + "transition:opacity .18s ease-out,left .15s ease-out,top .15s ease-out;";
+                c.style.setProperty("background-color", "#e05a2b", "important");
+                doc.body.appendChild(c);
+            }
+            c.style.left = x + "px";
+            c.style.top = y + "px";
+            c.style.height = Math.max(8, Math.round(h)) + "px";
+            c.style.opacity = ".9";
+            return c;
+        } catch (_) { return null; }
+    }
+
+    _wvPinCaretRemove(doc: any) {
+        try { const c = doc.querySelector(".wv-reader-pin-caret"); if (c) c.remove(); } catch (_) {}
+    }
+
     _wvDomPinDocPoint(r: any, sx: number, sy: number, off?: any): { x: number, y: number } {
         if (off && typeof off.rx === "number" && typeof off.ry === "number") {
             return { x: r.left + off.rx * r.width + sx, y: r.top + off.ry * r.height + sy };
         }
-        return { x: r.left + (r.width / 2) + sx, y: r.top + sy };
+        // LEFT edge, not centre: the rect is a single character now (see
+        // _wvDomPinLineRect) and a text position is a caret BETWEEN
+        // characters. Centring put the bar through the middle of the letter
+        // (MJT 2026-09-01, "in the middle of the letter"). Media pins above
+        // keep their fractional in-image point.
+        return { x: r.left + sx, y: r.top + sy };
     }
 
     _wvReaderDrawDomPin(iwin: any, doc: any, range: any, opts?: any): boolean {
@@ -20010,11 +20205,25 @@ class _ReaderPanelsMixin {
             // all-zero one means the anchor did not resolve to laid-out
             // content, and a pin at the origin would be a lie.
             if (!r || (r.width === 0 && r.height === 0 && r.top === 0 && r.left === 0)) return false;
-            const rT = this._wvDomPinTargetRect(range, !!(opts && opts.mediaOffset));
+            const rTfull = this._wvDomPinTargetRect(range, !!(opts && opts.mediaOffset));
+            const rT = this._wvDomPinLineRect(range, rTfull, !!(opts && opts.mediaOffset),
+                !!(opts && opts.endAffinity));
             const pt0 = this._wvDomPinDocPoint(rT, iwin.scrollX || 0, iwin.scrollY || 0, opts && opts.mediaOffset);
             const docX = pt0.x;
             const docY = pt0.y;
             try { const old = doc.querySelector(".wv-reader-pin"); if (old) old.remove(); } catch (_) {}
+            try { const oc = doc.querySelector(".wv-reader-pin-caret"); if (oc) oc.remove(); } catch (_) {}
+            // CARET BAR at the anchored text position (MJT 2026-09-01: "the
+            // pin is on the line above ... add a vertical bar at the position
+            // in the text"). The pin's TIP marks the top of the anchored line,
+            // so the body necessarily overhangs the line above; the bar spans
+            // the line itself and removes the ambiguity about which line — and
+            // which character — the entry is attached to. Text anchors only:
+            // an in-image pin already points at its own spot.
+            let caret: any = null;
+            if (!(opts && opts.mediaOffset) && rT && rT.height) {
+                caret = this._wvPinCaretEnsure(doc, docX, docY, rT.height);
+            }
             const pin: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
             pin.className = "wv-reader-pin";
             const PIN_H = 32;
@@ -20049,9 +20258,13 @@ class _ReaderPanelsMixin {
                         pin.style.transition = "opacity .25s,transform .25s";
                         pin.style.opacity = "0";
                         pin.style.transform = "translate(-50%,-118%) scale(.6)";
+                        if (caret) caret.style.opacity = "0";
                     } catch (_) {}
                 }, 2200);
-                killT = w.setTimeout(() => { try { pin.remove(); } catch (_) {} }, 2520);
+                killT = w.setTimeout(() => {
+                    try { pin.remove(); } catch (_) {}
+                    try { if (caret) caret.remove(); } catch (_) {}
+                }, 2520);
             };
             const disarm = () => {
                 clearT();
@@ -20059,6 +20272,7 @@ class _ReaderPanelsMixin {
                     pin.style.transition = "none";
                     pin.style.opacity = "1";
                     pin.style.transform = "translate(-50%,-100%) scale(1)";
+                    if (caret) caret.style.opacity = ".9";
                 } catch (_) {}
             };
             // A pin offered for ADJUSTMENT must not fade: it was drawn so the
@@ -20094,6 +20308,7 @@ class _ReaderPanelsMixin {
                         if (ev.target && pin.contains && pin.contains(ev.target)) return;
                         doc.removeEventListener("pointerdown", away, true);
                         pin.remove();
+                        try { if (caret) caret.remove(); } catch (_) {}
                     } catch (_) {}
                 };
                 try { doc.addEventListener("pointerdown", away, true); } catch (_) {}
@@ -20207,11 +20422,24 @@ class _ReaderPanelsMixin {
                 try {
                     const rc2 = anchor.range && anchor.range.getBoundingClientRect();
                     if (rc2 && (rc2.width || rc2.height || rc2.top || rc2.left)) {
-                        const rT2 = this._wvDomPinTargetRect(anchor.range, !!anchor.mediaOffset);
+                        const rT2full = this._wvDomPinTargetRect(anchor.range, !!anchor.mediaOffset);
+                        const rT2 = this._wvDomPinLineRect(anchor.range, rT2full || rc2, !!anchor.mediaOffset,
+                            !!anchor.wvEnd);
                         const pt2 = this._wvDomPinDocPoint(rT2 || rc2, iwin.scrollX || 0, iwin.scrollY || 0, anchor.mediaOffset);
                         pin.style.transition = "left .15s ease-out, top .15s ease-out";
                         pin.style.left = pt2.x + "px";
                         pin.style.top = pt2.y + "px";
+                        // The caret marks the SNAPPED text position. A drag can
+                        // CHANGE the anchor kind in both directions: image ->
+                        // text needs a caret created (the image pin never had
+                        // one), text -> image needs it gone.
+                        try {
+                            const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                            if (anchor.mediaOffset) { if (P) P._wvPinCaretRemove(doc); }
+                            else if (P && rT2 && rT2.height) {
+                                P._wvPinCaretEnsure(doc, pt2.x, pt2.y, rT2.height);
+                            }
+                        } catch (_) {}
                         iwin.setTimeout(() => {
                             try { pin.style.transition = "opacity .18s ease-out,transform .18s ease-out"; } catch (_) {}
                         }, 200);
@@ -20238,6 +20466,9 @@ class _ReaderPanelsMixin {
                             // image point haunts every later placement.
                             if (anchor.mediaOffset) updates.location.mediaOffset = anchor.mediaOffset;
                             else delete updates.location.mediaOffset;
+                            // Affinity follows the same overwrite-or-clear rule.
+                            if (anchor.wvEnd) updates.location.wvEnd = true;
+                            else delete updates.location.wvEnd;
                         }
                         if (anchor.sortIndex) updates.sortIndex = anchor.sortIndex;
                         await this._bmReaderUpdatePosition(att.libraryID, att.itemKey, bm.id, updates);
@@ -20308,7 +20539,8 @@ class _ReaderPanelsMixin {
             const range = pv.toDisplayedRange(arg);
             if (!range) return false;
             return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist,
-                mediaOffset: position && position.mediaOffset });
+                mediaOffset: position && position.mediaOffset,
+                endAffinity: !!(position && position.wvEnd) });
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderShowSnapshotPin err: " + e);
             return false;
@@ -20372,7 +20604,8 @@ class _ReaderPanelsMixin {
             if (!pr) return false;
             const range: any = (typeof pr.toRange === "function") ? pr.toRange() : pr;
             return this._wvReaderDrawDomPin(iwin, doc, range, { reader, bm, persist: !!persist,
-                mediaOffset: bm && ((bm.location && bm.location.mediaOffset) || bm.mediaOffset) });
+                mediaOffset: bm && ((bm.location && bm.location.mediaOffset) || bm.mediaOffset),
+                endAffinity: !!(bm && ((bm.location && bm.location.wvEnd) || bm.wvEnd)) });
         } catch (e) {
             Zotero.debug("[Weavero] _wvReaderShowEpubPin err: " + e);
             return false;
@@ -20468,6 +20701,15 @@ class _ReaderPanelsMixin {
                     manchor.mediaOffset = off;
                     if (manchor.selector) manchor.selector.mediaOffset = off;
                     if (manchor.position && manchor.position !== manchor.selector) manchor.position.mediaOffset = off;
+                    // Identity hint travels with the offset: if the path ever
+                    // stops matching (figures re-rendered, svg -> img), the
+                    // pin is recovered from what the element IS.
+                    const hint = this._wvDomMediaHint(media);
+                    if (hint) {
+                        manchor.wvHint = hint;
+                        if (manchor.selector) manchor.selector.wvHint = hint;
+                        if (manchor.position && manchor.position !== manchor.selector) manchor.position.wvHint = hint;
+                    }
                 }
             } catch (_) {}
             return manchor;
@@ -20493,8 +20735,9 @@ class _ReaderPanelsMixin {
             // inside a figure must keep anchoring to its own text.
             try {
                 const hitEl = idc.elementFromPoint(cx, cy);
-                const media0 = hitEl && hitEl.closest
+                let media0 = hitEl && hitEl.closest
                     ? hitEl.closest("img, svg, video, canvas, picture, image") : null;
+                try { if (media0 && media0.closest(".wv-reader-pin, .wv-pin-ghost")) media0 = null; } catch (_) {}
                 if (media0) {
                     const a0 = this._wvDomMediaAnchorAt(pv, idc, media0, cx, cy);
                     if (a0) return a0;
@@ -20521,9 +20764,10 @@ class _ReaderPanelsMixin {
                 // same point (REPLACED-BODY, a full-document DIV) produced
                 // either an un-resolvable CFI or one spanning 195,000px.
                 const el = idc.elementFromPoint(cx, cy);
-                const media = el && el.closest
+                let media = el && el.closest
                     ? el.closest("img, svg, video, canvas, picture, figure, image")
                     : null;
+                try { if (media && media.closest(".wv-reader-pin, .wv-pin-ghost")) media = null; } catch (_) {}
                 if (media) {
                     const manchor = this._wvDomMediaAnchorAt(pv, idc, media, cx, cy);
                     if (manchor) return manchor;
@@ -20540,15 +20784,34 @@ class _ReaderPanelsMixin {
                 let nearDist = Infinity;
                 if (near) {
                     try {
+                        // Measure with a CHARACTER rect, never the collapsed
+                        // range: at a line-break offset Gecko's collapsed rect
+                        // reports the END OF THE PREVIOUS LINE (measured
+                        // 2026-09-01: caret found 12px away, collapsed rect
+                        // 915px away at the far line end). That inflated
+                        // nearDist let any media within ~900px win the
+                        // contest -- including the pin's own SVG.
+                        const tlen = String(near.offsetNode.nodeValue || "").length;
+                        const a0 = Math.max(0, Math.min(near.offset, tlen - 1));
                         const r0 = idc.createRange();
-                        r0.setStart(near.offsetNode, near.offset); r0.collapse(true);
+                        r0.setStart(near.offsetNode, a0);
+                        r0.setEnd(near.offsetNode, Math.min(tlen, a0 + 1));
                         const rc0 = r0.getBoundingClientRect();
-                        nearDist = Math.hypot(rc0.left - cx, rc0.top + rc0.height / 2 - cy);
+                        const nx = Math.max(rc0.left, Math.min(cx, rc0.right));
+                        nearDist = Math.hypot(nx - cx, rc0.top + rc0.height / 2 - cy);
                     } catch (_) {}
                 }
                 try {
                     let bestM: any = null;
                     for (const m of idc.querySelectorAll("img, svg, video, canvas, picture, image")) {
+                        // NEVER Weavero's own overlays. pointer-events:none
+                        // protects the elementFromPoint paths (2026-08-24) but
+                        // not this enumeration -- the pin's SVG sits exactly
+                        // at the drop point and won at distance 0, so every
+                        // margin drop anchored to the pin itself ("the pin can
+                        // be placed in arbitrary place in the margin", MJT
+                        // 2026-09-01).
+                        try { if (m.closest && m.closest(".wv-reader-pin, .wv-pin-ghost")) continue; } catch (_) {}
                         const r = m.getBoundingClientRect();
                         if (!r.width || !r.height) continue;
                         if (cy < r.top - 24 || cy > r.bottom + 24) continue;
@@ -20568,11 +20831,144 @@ class _ReaderPanelsMixin {
             const rng = idc.createRange();
             rng.setStart(node, offset);
             rng.setEnd(node, offset);
-            return this._wvDomAnchorFromRange(pv, rng);
+            const a = this._wvDomAnchorFromRange(pv, rng);
+            // CARET AFFINITY. A line-end caret and the next line-start caret
+            // are the SAME offset; rendering always chose the char after the
+            // offset, so a pin dropped right of a line's last character drew
+            // at the start of the following line, and one at the very end of
+            // a text node clamped a char short ("right of the last character
+            // ... is not possible", MJT 2026-09-01). Decide from the DROP
+            // POINT which side was meant and stamp it on the anchor -- the
+            // renderer honours it via opts.endAffinity.
+            try {
+                if (a) {
+                    const len = String(node.textContent || "").length;
+                    let end = false;
+                    if (offset >= len && len > 0) end = true;
+                    else if (offset > 0 && offset < len) {
+                        const m = (o1: number) => {
+                            const r2 = idc.createRange();
+                            r2.setStart(node, o1); r2.setEnd(node, o1 + 1);
+                            return r2.getBoundingClientRect();
+                        };
+                        const rp = m(offset - 1), rn = m(offset);
+                        if (rp && rn && Math.abs(rp.top - rn.top) > (rp.height || 12) / 2) {
+                            const dp = Math.hypot(rp.right - cx, rp.top + rp.height / 2 - cy);
+                            const dn = Math.hypot(rn.left - cx, rn.top + rn.height / 2 - cy);
+                            end = dp < dn;
+                        }
+                    }
+                    if (end) {
+                        a.wvEnd = true;
+                        if (a.selector) a.selector.wvEnd = true;
+                        if (a.position && a.position !== a.selector) a.position.wvEnd = true;
+                    }
+                }
+            } catch (_) {}
+            return a;
         } catch (e) {
             Zotero.debug("[Weavero] _wvDomAnchorFromContentPoint err: " + e);
             return null;
         }
+    }
+
+    // ---- Robust DOM anchors (2026-09-01) -----------------------------------
+    // Upstream's `toSelector` emits a TAG-BASED selector, which fails us twice:
+    //   * it can be non-unique -- an in-image pin came back as the bare tag
+    //     "svg", which matches the FIRST svg anywhere in the document, and
+    //     resolved to nothing at all once the page rendered its figures as
+    //     <img> data-URIs instead ("Where is it?", MJT 2026-09-01);
+    //   * it can be INVALID CSS when the saved HTML has colon tag names
+    //     (`xhtml:span`, upstream-bugs #15), where it throws outright.
+    // Weavero therefore keeps its own index path (no tag names at all, so
+    // neither problem can arise) and, for media, an identity hint to recover
+    // the element when the path shifts. Both ride INSIDE the standard
+    // CssSelector shape, so upstream's own `toDisplayedRange` still resolves
+    // our entries -- portability is preserved.
+
+    /** `body > *:nth-child(3) > *:nth-child(2)` — tag-free, always valid,
+     *  unique by construction. */
+    _wvDomIndexPath(el: any): string | null {
+        try {
+            if (!el || el.nodeType !== 1) return null;
+            const doc = el.ownerDocument;
+            const parts: string[] = [];
+            let n: any = el;
+            while (n && n.nodeType === 1 && n !== doc.body && n !== doc.documentElement) {
+                const parent = n.parentElement;
+                if (!parent) break;
+                let i = 1;
+                for (let c = parent.firstElementChild; c && c !== n; c = c.nextElementSibling) i++;
+                parts.unshift("*:nth-child(" + i + ")");
+                n = parent;
+                if (parts.length > 40) break;   // pathological depth guard
+            }
+            if (!parts.length) return null;
+            return "body > " + parts.join(" > ");
+        } catch (_) { return null; }
+    }
+
+    /** Identity hint for a media element: what it IS, independent of where it
+     *  sits. `src` is kept as a short tail (data-URIs are enormous). */
+    _wvDomMediaHint(el: any): any {
+        try {
+            if (!el || el.nodeType !== 1) return null;
+            const src = String(el.getAttribute("src") || el.getAttribute("data-src") || "");
+            const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            return {
+                tag: String(el.localName || "").toLowerCase(),
+                srcTail: src ? src.slice(-48) : "",
+                alt: String(el.getAttribute("alt") || "").slice(0, 40),
+                w: r ? Math.round(r.width) : 0,
+                h: r ? Math.round(r.height) : 0,
+            };
+        } catch (_) { return null; }
+    }
+
+    /** Recover a media element from its hint: same src tail wins outright,
+     *  else same alt, else the closest match on rendered size among elements
+     *  of any media kind (the page may have swapped <svg> for <img>). */
+    _wvDomFindByHint(doc: any, hint: any): any {
+        try {
+            if (!doc || !hint) return null;
+            const cands = [...doc.querySelectorAll("img, svg, canvas, picture, video, image")]
+                .filter((c: any) => { try { return !(c.closest && c.closest(".wv-reader-pin, .wv-pin-ghost")); } catch (_) { return true; } });
+            if (!cands.length) return null;
+            if (hint.srcTail) {
+                const bySrc = cands.find((c: any) => {
+                    const v = String(c.getAttribute("src") || c.getAttribute("data-src") || "");
+                    return v && v.slice(-48) === hint.srcTail;
+                });
+                if (bySrc) return bySrc;
+            }
+            if (hint.alt) {
+                const byAlt = cands.find((c: any) => String(c.getAttribute("alt") || "").slice(0, 40) === hint.alt);
+                if (byAlt) return byAlt;
+            }
+            if (hint.w > 8 && hint.h > 8) {
+                let best: any = null, bestD = Infinity;
+                for (const c of cands) {
+                    try {
+                        const r = c.getBoundingClientRect();
+                        if (!r || r.width < 4 || r.height < 4) continue;
+                        const d = Math.abs(r.width - hint.w) + Math.abs(r.height - hint.h);
+                        if (d < bestD) { bestD = d; best = c; }
+                    } catch (_) {}
+                }
+                // Only accept a close match: a wildly different size is a
+                // different figure, and a wrong pin is worse than none.
+                if (best && bestD <= Math.max(24, (hint.w + hint.h) * 0.15)) return best;
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    /** True when `value` resolves, in this document, to exactly `el`. */
+    _wvDomSelectorHits(doc: any, value: string, el: any): boolean {
+        try {
+            if (!doc || !value || !el) return false;
+            return doc.querySelector(value) === el;
+        } catch (_) { return false; }   // invalid selector (colon tag names)
     }
 
     /** The stored anchor for a resolved Range: selector for both families,
@@ -20595,6 +20991,54 @@ class _ReaderPanelsMixin {
             try {
                 const selr = pv.toSelector(rng);
                 if (selr) out.selector = JSON.parse(JSON.stringify(selr));
+            } catch (_) { /* invalid tag names throw here -- upstream #15 */ }
+            // HARDEN the selector: upstream's tag-based value may be missing,
+            // non-unique, or invalid CSS. Our index path is none of those, and
+            // it lands in the same `value` field so upstream still resolves it.
+            try {
+                let el: any = rng.startContainer;
+                if (el && el.nodeType === 3) el = el.parentElement;
+                // A selectNode() range starts on the PARENT with the child's
+                // index as the offset -- pathing that parent would anchor one
+                // level too high (measured: an image anchor resolved to its
+                // wrapper). Prefer the single element the range selects.
+                try {
+                    const kids = rng.startContainer && rng.startContainer.childNodes;
+                    const only = kids && kids[rng.startOffset];
+                    if (only && only.nodeType === 1
+                            && rng.endContainer === rng.startContainer
+                            && rng.endOffset === rng.startOffset + 1) {
+                        el = only;
+                    }
+                } catch (_) {}
+                if (el && el.nodeType === 1) {
+                    const doc = el.ownerDocument;
+                    const path = this._wvDomIndexPath(el);
+                    const isCss = !out.selector || out.selector.type === "CssSelector";
+                    if (!isCss) {
+                        // EPUB: upstream returns a FragmentSelector whose value
+                        // is an epubcfi. Testing that as a CSS selector always
+                        // "fails", and the dev.7 code then OVERWROTE the CFI
+                        // with a CSS path while leaving type=FragmentSelector --
+                        // an anchor nothing can resolve, so a dragged EPUB pin
+                        // snapped back to its old spot on the next click (MJT
+                        // 2026-09-01). Non-CSS anchors are canonical: keep the
+                        // value untouched and carry the path as a SPARE.
+                        if (path) out.selector.wvPath = path;
+                    }
+                    else {
+                        const cur = out.selector && out.selector.value;
+                        const good = cur && this._wvDomSelectorHits(doc, cur, el);
+                        if (!good && path && this._wvDomSelectorHits(doc, path, el)) {
+                            if (out.selector) out.selector.value = path;
+                            else out.selector = { type: "CssSelector", value: path };
+                            out.wvPathUsed = true;
+                        }
+                        else if (path && out.selector) {
+                            out.selector.wvPath = path;   // spare for later drift
+                        }
+                    }
+                }
             } catch (_) {}
             if (typeof pv.getCFI === "function") {
                 const cfi = pv.getCFI(rng);

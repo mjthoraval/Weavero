@@ -10145,8 +10145,19 @@ class _TabsMixin {
             } catch (e) {}
             // Lifetime mirrors the shepherd: poll the guard, then tear down.
             let ticks = 0;
-            const w0: any = Zotero.getMainWindow();
-            const setT = (w0 && w0.setTimeout) ? w0.setTimeout.bind(w0) : setTimeout;
+            // The timer host is RE-RESOLVED every tick: binding setTimeout to
+            // the start-time main window let the whole teardown chain die
+            // when THAT window closed mid-restore, leaving _wvBgRestoreOn
+            // stuck true forever -- every later window open got fought
+            // ("went to the back again, with several flickering", MJT
+            // 2026-09-01; the stuck flag was measured live).
+            const setT = (fn: any, ms: number) => {
+                try {
+                    const wLive: any = Zotero.getMainWindow();
+                    if (wLive && wLive.setTimeout && !wLive.closed) { wLive.setTimeout(fn, ms); return; }
+                } catch (_) {}
+                try { setTimeout(fn, ms); } catch (_) {}
+            };
             const tick = () => {
                 ticks++;
                 const hu = (this as any)._wvBgRestoreHoldUntil || 0;

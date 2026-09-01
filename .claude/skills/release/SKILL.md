@@ -84,7 +84,9 @@ verify: release exists with `weavero.xpi` attached, and the rolling
 ## 6. Hand-edit the release notes
 
 Auto-notes put chores under "### undefined" — always rewrite: user-facing
-"New" / "Fixed" / "Internal" sections in plain language. `gh release edit
+sections in plain language with the icon headers (kept from the pre-squash
+auto-notes era; restored across v0.18.6+ on 2026-08-28):
+`### 🚀 New` / `### 🩹 Fixed` / `### ⚙️ Internal`. `gh release edit
 vX.Y.Z --notes-file …`.
 
 ## 7. Aftermath

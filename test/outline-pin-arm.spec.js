@@ -104,9 +104,11 @@ describe("Weavero — media pin fractional placement", () => {
 
     const rect = { left: 100, top: 200, width: 400, height: 300 };
 
-    it("no offset -> top-centre (the text-anchor contract, unchanged)", () => {
+    // LEFT edge since 2026-09-01: a text position is a caret between
+    // characters -- centring put the bar through the middle of the glyph.
+    it("no offset -> top-LEFT (the caret contract)", () => {
         const pt = wv._wvDomPinDocPoint(rect, 10, 20);
-        assert.equal(pt.x, 100 + 200 + 10);
+        assert.equal(pt.x, 100 + 10);
         assert.equal(pt.y, 200 + 20);
     });
 
@@ -116,9 +118,9 @@ describe("Weavero — media pin fractional placement", () => {
         assert.equal(pt.y, 200 + 0.25 * 300 + 20);
     });
 
-    it("a malformed offset falls back to top-centre, never NaN", () => {
+    it("a malformed offset falls back to the caret point, never NaN", () => {
         const pt = wv._wvDomPinDocPoint(rect, 0, 0, { rx: "0.5" });
-        assert.equal(pt.x, 300);
+        assert.equal(pt.x, 100);
         assert.equal(pt.y, 200);
         assert.isFalse(Number.isNaN(pt.x) || Number.isNaN(pt.y));
     });

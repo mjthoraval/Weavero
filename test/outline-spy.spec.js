@@ -32,7 +32,7 @@ describe("Weavero — outline scroll-spy", () => {
                     ? { pageNumber: loc.pageIndex + 1, top: loc.topY }
                     : undefined,
             } },
-            document: { getElementById: () => null },
+            document: { getElementById: (/** @type {string} */ _id) => /** @type {any} */ (null) },
         } } },
     });
 
@@ -283,5 +283,140 @@ describe("Weavero — outline scroll-spy", () => {
         buildRows([{ title: "Ch 5", position: { pageIndex: 50 } }]);
         wv._wvOutlineSpyUpdate(stubReader(5), doc);
         assert.isNull(currentLabel(), "nothing at or before page 5");
+    });
+});
+
+// DOM VIEWS: the spy must WIRE to a scroll feed there too. Snapshots and
+// EPUBs have no #viewerContainer -- the content window scrolls the
+// document itself -- so the pre-2026-09-01 wire found no target and never
+// attached a listener: the picker computed the right section at every
+// position while the marker sat frozen (MJT, live on a snapshot; five
+// scroll positions, marker unmoved). Window targets stamp the READER.
+describe("Weavero — outline scroll-spy wiring (DOM views)", () => {
+    let wv;
+
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvOutlineSpyWire !== "function") this.skip();
+    });
+
+    const stubWin = () => {
+        const listeners = [];
+        return {
+            _listeners: listeners,
+            document: { getElementById: (/** @type {string} */ _id) => /** @type {any} */ (null) },
+            addEventListener: (type, fn) => listeners.push(type),
+            removeEventListener: () => {},
+        };
+    };
+
+    it("wires the CONTENT WINDOW when there is no #viewerContainer (snapshot/EPUB)", () => {
+        const win = stubWin();
+        const reader = {
+            _type: "snapshot",
+            _internalReader: { _primaryView: { _iframeWindow: win } },
+        };
+        const idoc = Zotero.getMainWindow().document.implementation
+            .createHTMLDocument("wv-spy-wire");
+        wv._wvOutlineSpyWire(reader, idoc);
+        assert.include(win._listeners, "scroll", "content window got the scroll feed");
+        assert.isFunction(reader._wvOlSpyHandler_win, "handler stamped on the READER");
+        assert.equal(reader._wvOlSpyPlugin_win, wv, "plugin stamp for reload safety");
+    });
+
+    it("is idempotent for the same plugin instance", () => {
+        const win = stubWin();
+        const reader = {
+            _type: "epub",
+            _internalReader: { _primaryView: { _iframeWindow: win } },
+        };
+        const idoc = Zotero.getMainWindow().document.implementation
+            .createHTMLDocument("wv-spy-wire2");
+        wv._wvOutlineSpyWire(reader, idoc);
+        wv._wvOutlineSpyWire(reader, idoc);
+        assert.equal(win._listeners.filter((t) => t === "scroll").length, 1,
+            "one listener, not one per render pass");
+    });
+
+    it("PDF readers still wire the viewerContainer, not the window", () => {
+        const win = stubWin();
+        const vcListeners = [];
+        const vc = {
+            addEventListener: (type) => vcListeners.push(type),
+            removeEventListener: () => {},
+        };
+        win.document.getElementById = (id) => (id === "viewerContainer" ? vc : null);
+        const reader = {
+            _type: "pdf",
+            _internalReader: { _primaryView: { _iframeWindow: win } },
+        };
+        const idoc = Zotero.getMainWindow().document.implementation
+            .createHTMLDocument("wv-spy-wire3");
+        wv._wvOutlineSpyWire(reader, idoc);
+        assert.include(vcListeners, "scroll", "pdf keeps its container feed");
+        assert.notInclude(win._listeners, "scroll", "and does not double-wire the window");
+    });
+});
+
+// The DOM picker's reading line: a quarter down the view, the same line
+// outline clicks land their target on. Compared against the viewport TOP
+// (pre-2026-09-01) the marker lagged one section behind every click.
+describe("Weavero \u2014 DOM spy reading line (1/4)", () => {
+    let wv, origRange;
+
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvOutlineSpyPickDom !== "function") this.skip();
+        origRange = wv._wvDomRangeForAnchor;
+    });
+
+    after(function () {
+        if (origRange) wv._wvDomRangeForAnchor = origRange;
+    });
+
+    // rows whose entries resolve to fixed viewport tops via a stubbed
+    // range resolver; innerHeight 1000 -> the line sits at y=250.
+    const build = (tops) => {
+        const doc = Zotero.getMainWindow().document.implementation
+            .createHTMLDocument("wv-dom-spy-line");
+        const list = doc.createElement("div");
+        list.className = "wv-outline-list";
+        doc.body.appendChild(list);
+        const byId = {};
+        tops.forEach(([title, top], i) => {
+            const row = /** @type {any} */ (doc.createElement("div"));
+            row.className = "wv-outline-row";
+            row.textContent = title;
+            row._wvOl = { entry: { id: "e" + i, title } };
+            byId["e" + i] = top;
+            list.appendChild(row);
+        });
+        wv._wvDomRangeForAnchor = (_pv, en) => ({
+            getBoundingClientRect: () => ({ top: byId[en.id], height: 20, width: 100 }),
+        });
+        const reader = {
+            _type: "snapshot",
+            _internalReader: { _primaryView: { _iframeWindow: { innerHeight: 1000 } } },
+        };
+        return { list, reader };
+    };
+
+    it("counts a heading as reached at the quarter line, not the top edge", () => {
+        // "Second" sits at 200 -> above the 250 line -> it is the current one.
+        const { list, reader } = build([["First", -900], ["Second", 200], ["Third", 700]]);
+        const picked = wv._wvOutlineSpyPickDom(reader, list);
+        assert.equal(picked.textContent, "Second");
+    });
+
+    it("a heading still below the line does not take the marker", () => {
+        const { list, reader } = build([["First", -900], ["Second", 400], ["Third", 900]]);
+        const picked = wv._wvOutlineSpyPickDom(reader, list);
+        assert.equal(picked.textContent, "First", "400 > line(250): not reached yet");
+    });
+
+    it("above every heading, the first resolvable row holds the marker", () => {
+        const { list, reader } = build([["First", 600], ["Second", 900]]);
+        const picked = wv._wvOutlineSpyPickDom(reader, list);
+        assert.equal(picked.textContent, "First");
     });
 });

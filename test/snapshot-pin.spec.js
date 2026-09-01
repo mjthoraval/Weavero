@@ -49,10 +49,11 @@ describe("Weavero — snapshot position pin", () => {
             w.scrollX = 30; w.scrollY = 500;
             wv._wvReaderDrawDomPin(w, d, stubRange(RECT));
             const pin = d.querySelector(".wv-reader-pin");
-            // left = rect.left + width/2 + scrollX ; top = rect.top + scrollY
-            // (style properties, not cssText substrings: the serializer
-            // normalizes "left:150px" to "left: 150px")
-            assert.equal(pin.style.left, "150px");
+            // left = rect.left + scrollX ; top = rect.top + scrollY
+            // (LEFT edge since 2026-09-01: a text position is a caret between
+            // characters. Style properties, not cssText substrings: the
+            // serializer normalizes "left:150px" to "left: 150px")
+            assert.equal(pin.style.left, "130px");
             assert.equal(pin.style.top, "700px");
         });
 

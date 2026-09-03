@@ -5950,14 +5950,35 @@ class _ReaderPanelsMixin {
                 if (!en || en.url) continue;
                 const key = String(en.id != null ? en.id : "idx-" + i);
                 let range = cache.get(key);
-                if (range === undefined) {
-                    range = this._wvDomRangeForAnchor(pv, en) || null;
+                // A MISS is cached with a timestamp and RETRIED after a
+                // cool-down, never kept forever: a spy pass that fires
+                // before the view's content loads (a restored tab right
+                // after restart, an EPUB section not yet streamed in)
+                // resolved nothing, and permanently cached nulls left the
+                // current-section highlight dead for the whole session
+                // (found by the outline restart protocol, 2026-09-03).
+                // Successful ranges stay cached until the re-render clear.
+                const retryMs = (this as any)._wvSpyMissRetryMs || 3000;
+                // Legacy `null` (cached by a pre-fix build, alive across a
+                // hot upgrade) is retried immediately.
+                if (range === undefined || range === null
+                    || (range._wvMissAt && Date.now() - range._wvMissAt > retryMs)) {
+                    const fresh = this._wvDomRangeForAnchor(pv, en) || null;
+                    range = fresh || { _wvMissAt: Date.now() };
                     cache.set(key, range);
                 }
-                if (!range) continue;
-                let top;
-                try { top = range.getBoundingClientRect().top; } catch (_) { continue; }
-                if (!Number.isFinite(top)) continue;
+                if (range._wvMissAt) continue;
+                let top = null;
+                try { top = range.getBoundingClientRect().top; } catch (_) {}
+                if (!Number.isFinite(top)) {
+                    // A cached range that stops yielding a rect (dead
+                    // cross-compartment object after a plugin reload, node
+                    // detached by the view) degrades to a MISS and gets
+                    // re-resolved after the cool-down — `continue` alone
+                    // kept it skipped forever (same incident, 2026-09-03).
+                    cache.set(key, { _wvMissAt: Date.now() });
+                    continue;
+                }
                 if (top < firstTop) { firstTop = top; firstResolved = row; }
                 // +1 tolerance: an entry flush with the line counts as passed.
                 if (top <= line + 1 && top > bestTop) { bestTop = top; best = row; }

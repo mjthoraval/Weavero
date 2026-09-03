@@ -45,6 +45,16 @@ scripts.
   changes (windows.json debounce is 400 ms; Zotero's session save is
   debounced 5 min but written on tab churn by plugins' `Session.debounceSave`
   calls, so anchor tabs may lose the last few minutes after a hard crash).
+- **Curated outlines (per document family)**: for a snapshot AND an EPUB tab
+  with a curated outline (`<data dir>/weavero/outlines.json`), after restart:
+  the store is title-identical, the reader's Outline tab renders the CURATED
+  view (a renamed entry is the tell — re-extraction would show the original
+  title), clicking an entry still navigates (anchors/hrefs resolve against
+  the restored document), and the scroll-spy current-section highlight comes
+  alive once content loads. The spy check needs patience by design: entries
+  that fail to resolve while sections stream in are retried on a ~3 s
+  cool-down (`outline-spy-cache.spec.js` locks that rule — the 2026-09-03
+  run found permanently-poisoned misses leaving the highlight dead).
 
 ## Running a cycle
 

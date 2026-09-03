@@ -36,6 +36,14 @@ name to a Zotero object, window, or document.
   go stale across reloads. Async-setup continuations: liveness-check after
   every await; callbacks self-neutralize; long-lived per-window wiring uses a
   numeric `_wv*Wired` version stamp + stored handler refs.
+- XUL `popupshowing`/`popuphidden` BUBBLE: every handler on a menu that can
+  contain a submenu (native Move To / Copy To, Weavero's own Copy As / Add
+  Bookmark) early-returns unless `ev.target === menu`, and a cleanup
+  listener is never `{once: true}` on such a menu (a bubbled submenu close
+  consumes it). Otherwise a submenu closing on cursor-move strips the
+  injected entries — or removes the whole open menu — mid-hover (issue #8,
+  fixed v0.11.4 in pane.ts only; every entry added since without the guard
+  regressed it, swept 2026-09-03). Guard: test/menu-bubble-guard.spec.js.
 - TIMER HOSTS are closures over windows too: a `win.setTimeout` chain dies
   silently when `win` closes, and a lifecycle flag it was due to clear
   sticks forever (bg-restore teardown, 2026-09-01 — every later window

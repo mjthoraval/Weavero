@@ -3463,6 +3463,7 @@ class WeaveroPlugin {
                 : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) (this as any)._wvWireItemCountBreakdown(w);
             for (const w of wins) (this as any)._wvWireLastViewCloseGuard(w);
+            for (const w of wins) (this as any)._wvWireQuickCopyMultiTab(w);
         } catch (e) { Zotero.debug("[Weavero] item-count init err: " + e); }
         // Consolidate multi-open-in-new-window into one tabbed reader window
         // (when reader-window tabs are active). Per-window; also re-applied on
@@ -4648,6 +4649,8 @@ class WeaveroPlugin {
             try { (this as any)._wvWireItemCountBreakdown(_window); } catch (e) {}
             // Issue #29: only let close-automation see a document's LAST view.
             try { (this as any)._wvWireLastViewCloseGuard(_window); } catch (e) {}
+            // Quick-copy shortcuts honour the tab multi-selection.
+            try { (this as any)._wvWireQuickCopyMultiTab(_window); } catch (e) {}
         } catch(e) {
             Zotero.debug("[Weavero] onMainWindowLoad init err: " + e);
         }
@@ -4665,6 +4668,7 @@ class WeaveroPlugin {
         try { (this as any)._wvUnwireLoadURIHook(_window); } catch (e) {}
         try { (this as any)._wvUnwireItemCountBreakdown(_window); } catch (e) {}
         try { (this as any)._wvUnwireLastViewCloseGuard(_window); } catch (e) {}
+        try { (this as any)._wvUnwireQuickCopyMultiTab(_window); } catch (e) {}
         try {
             // Window-close upkeep, only when managed windows are in play:
             //  • re-anchor — if the closing window was the anchor, the new
@@ -4877,6 +4881,7 @@ class WeaveroPlugin {
             for (const w of Zotero.getMainWindows()) {
                 (this as any)._wvUnwireItemCountBreakdown(w);
                 (this as any)._wvUnwireLastViewCloseGuard(w);
+                (this as any)._wvUnwireQuickCopyMultiTab(w);
             }
         } catch (e) {}
         // 0. FINAL store capture, then freeze — teardown below dismantles

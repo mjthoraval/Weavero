@@ -324,11 +324,18 @@ In rough priority order:
    references with a tolerance. (Pattern: pdf.js reftests.) Manual-eye
    verification remains the fallback where rendering is
    platform-dependent.
-6. **Automated plugin-compatibility tier** — the suite currently runs
-   with Weavero alone in the temp profile, so CI never exercises
-   coexistence. Plan: a separate spec (own CI job, so the core suite
-   stays hermetic) whose `before()` installs pinned companion XPIs via
-   `AddonManager`. **Default Attachment** (PikaPei) is the best first
+6. **Automated plugin-compatibility tier** — PHASE 1 SHIPPED 2026-09-02:
+   `npm run test:compat` (test/compat-plugins/run.js) verifies vendored
+   sha256-pinned companion XPIs, then runs the FULL suite with them
+   installed; test/plugin-compat.spec.js (env-gated, self-skips in plain
+   `npm test` — the core run stays hermetic; the scaffold discards the
+   temp profile per run, so nothing leaks between modes) covers Default
+   Attachment: real-XPI install, the mappings pref-shape tripwire,
+   wrapper composition both ways, clean console. First full run: 412
+   green. Remaining phases (Annotation Markdown, Reading List, Better
+   Notes smoke): the maintainer's scope note. Original plan for the open
+   phases: a separate spec whose `before()` installs pinned companion
+   XPIs via `AddonManager`. **Default Attachment** (PikaPei) is the best first
    candidate: a 41 KB XPI, no network or UI dependencies, and it patches
    a method Weavero also patches — exactly the class of conflict CI
    cannot currently see. Testing it by hand already caught a real bug

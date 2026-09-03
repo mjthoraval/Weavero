@@ -1,0 +1,35 @@
+{
+  "default-attachment": {
+    "file": "default-attachment-1.0.0.xpi",
+    "version": "1.0.0",
+    "addonID": "default-attachment@zotero-plugin",
+    "sha256": "e9ed74af462b9d0740e67552a70305491d99e0eb4681d6942f45365ab469341d",
+    "source": "https://github.com/PikaPei/zotero-default-attachment/releases/tag/v1.0.0",
+    "note": "strict_max_version 9.* \u2014 beta builds ignore max-version, stable enforces; the spec skips with a clear message if the install is version-blocked",
+    "repo": "PikaPei/zotero-default-attachment"
+  },
+  "zotero-reading-list": {
+    "file": "zotero-reading-list-1.5.22.xpi",
+    "version": "1.5.22",
+    "addonID": "reading-list@hotmail.com",
+    "sha256": "cb5502f5b9280fd5b9d87f74dad0c2b9c4704f2f0908b55b21dcc9f5d572415b",
+    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.5.22",
+    "repo": "Dominic-DallOsto/zotero-reading-list"
+  },
+  "zotero-annotation-markdown": {
+    "file": "zotero-annotation-markdown-0.6.2.xpi",
+    "version": "0.6.2",
+    "addonID": "zotero-annotation-markdown@34028312.qq.com",
+    "sha256": "0307e81e5f8d1c441bdd4ad23b066a218b12fda7660f58dc67fc7529c6d38043",
+    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.6.2",
+    "repo": "qrkks/zotero-annotation-markdown"
+  },
+  "better-notes": {
+    "file": "better-notes-3.3.3.xpi",
+    "version": "3.3.3",
+    "addonID": "Knowledge4Zotero@windingwind.com",
+    "sha256": "48d426018338becd78c71f85159c36c03bbe3f6299ab5a564099e23790b01c1e",
+    "source": "https://github.com/windingwind/zotero-better-notes/releases/tag/v3.3.3",
+    "repo": "windingwind/zotero-better-notes"
+  }
+}

@@ -16695,7 +16695,24 @@ class _ReaderMixin {
                     try {
                         while (copyAsPop.firstChild) copyAsPop.removeChild(copyAsPop.firstChild);
                         const lp: any = (Zotero as any).Weavero?.plugin || this;
-                        if (lp._wvBuildCopyAsSubmenu) lp._wvBuildCopyAsSubmenu(doc, copyAsPop, () => Zotero.Items.get(targetItemID()));
+                        // Copies act on the WHOLE strip multi-selection when the
+                        // right-clicked tab is part of it (like Move/Close —
+                        // 2026-09-03: only the clicked tab's citation copied),
+                        // else on the single target tab's item.
+                        if (lp._wvBuildCopyAsSubmenu) lp._wvBuildCopyAsSubmenu(doc, copyAsPop, () => {
+                            try {
+                                const ids = lp._wvWTMultiSelTargets
+                                    ? lp._wvWTMultiSelTargets(win, win._wvWTCtxTabId) : null;
+                                if (ids && ids.length > 1 && win._wvWT) {
+                                    const items = ids
+                                        .map((id: any) => (win._wvWT.tabs || []).find((x: any) => x.id === id))
+                                        .map((t: any) => (t && t.itemID != null) ? Zotero.Items.get(t.itemID) : null)
+                                        .filter(Boolean);
+                                    if (items.length) return items;
+                                }
+                            } catch (e) {}
+                            return Zotero.Items.get(targetItemID());
+                        });
                     } catch (e) {}
                 });
 

@@ -6838,14 +6838,20 @@ class _TabsMixin {
      *  (by their `data-wv-*` markers / known labels); `_wvTabMenuItemKey`
      *  resolves a popup child to one of these keys. */
     _wvTabMenuOrder(): string[] {
+        // Grouped by KIND (user request 2026-09-03, screenshot): item /
+        // document actions first (what the tab shows), then tab-management
+        // actions (what the tab is), then the close cluster, then copies.
+        // Item actions were previously interleaved between Move Tab and
+        // Duplicate Tab.
         return [
             "showInLibrary",
-            "removeFromGroup",
-            "moveTab",
             "viewOnline",
             "showFile",
             "externalViewer",
             "openNotes",
+            "removeFromGroup",
+            "groupTab",
+            "moveTab",
             "duplicate",
             "pin",
             "sep1",
@@ -6871,6 +6877,7 @@ class _TabsMixin {
             if (el.getAttribute("data-wv-tab-viewonline") === "1") return "viewOnline";
             if (el.getAttribute("data-wv-tab-showfile") === "1") return "showFile";
             if (el.getAttribute("data-wv-tab-external") === "1") return "externalViewer";
+            if (el.classList && el.classList.contains("wv-grouptabs")) return "groupTab";
             const label = el.getAttribute("label") || "";
             const S = (k: string, fb: string) => { try { return Zotero.getString(k); } catch (e) { return fb; } };
             if (label === S("general.showInLibrary", "Show in Library")) return "showInLibrary";

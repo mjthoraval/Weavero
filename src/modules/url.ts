@@ -1136,52 +1136,64 @@ export const urlMethods = {
 
     /** Populate a <menupopup> `sub` with the "Copy As" entries (Citation /
      *  Bibliography / Citation Key / Select Link / Open Link / Online Library
-     *  Link / BBT) for the single item returned by `getItem()` — the same set the
-     *  items-list "Copy As" submenu builds, reused for the reader-/note-window tab
-     *  menus so every window's tab menu matches. Citation-style entries operate on
-     *  the item's top-level parent (citing an attachment cites its parent). */
-    _wvBuildCopyAsSubmenu(doc: any, sub: any, getItem: () => any) {
+     *  Link / BBT) for the item(s) returned by `getItems()` — one item or an
+     *  array — the same set the items-list "Copy As" submenu builds, reused for
+     *  the reader-/note-window tab menus so every window's tab menu matches.
+     *  Multi-selected tabs pass the whole selection (2026-09-03: copies acted
+     *  on the clicked tab only while Move/Close/Pin took the selection).
+     *  Citation-style entries operate on each item's top-level parent (citing
+     *  an attachment cites its parent), duplicates collapsed. */
+    _wvBuildCopyAsSubmenu(doc: any, sub: any, getItems: () => any) {
         const self: any = this;
-        // The "cite-able" item: the regular parent for an attachment, else self.
-        const citeItem = () => {
+        const targetItems = (): any[] => {
             try {
-                const it: any = getItem();
-                if (!it) return null;
-                if (it.isAttachment && it.isAttachment() && it.parentID) return Zotero.Items.get(it.parentID);
-                return it;
-            } catch (e) { return null; }
+                const r: any = getItems();
+                return (Array.isArray(r) ? r : [r]).filter(Boolean);
+            } catch (e) { return []; }
         };
-        const add = (label: string, action: (arr: any[]) => void, itemFn?: () => any) => {
+        // The "cite-able" items: the regular parent for an attachment, else the
+        // item itself; duplicates (two attachments of one parent) collapsed.
+        const citeItems = (): any[] => {
+            const out: any[] = []; const seen = new Set();
+            for (const it of targetItems()) {
+                let ci: any = it;
+                try {
+                    if (it.isAttachment && it.isAttachment() && it.parentID) ci = Zotero.Items.get(it.parentID);
+                } catch (e) {}
+                if (ci && !seen.has(ci.id)) { seen.add(ci.id); out.push(ci); }
+            }
+            return out;
+        };
+        const add = (label: string, action: (arr: any[]) => void, itemsFn?: () => any[]) => {
             const mi = doc.createXULElement("menuitem");
             mi.setAttribute("label", label);
             mi.addEventListener("command", (e: any) => {
                 try { e.stopPropagation(); } catch (er) {}
-                try { const it = (itemFn || getItem)(); if (it) action([it]); } catch (er) { Zotero.debug("[Weavero] reader copy-as cmd err: " + er); }
+                try { const arr = (itemsFn || targetItems)(); if (arr && arr.length) action(arr); } catch (er) { Zotero.debug("[Weavero] reader copy-as cmd err: " + er); }
             });
             sub.appendChild(mi);
             return mi;
         };
         const sep = () => sub.appendChild(doc.createXULElement("menuseparator"));
         try {
-            add("Citation", (a) => self._copyCitationOrBibliography(a, true), citeItem);
-            add("Bibliography", (a) => self._copyCitationOrBibliography(a, false), citeItem);
-            const ci = citeItem();
-            if (ci && self._anyHasCitationKey && self._anyHasCitationKey([ci])) {
-                add("Citation Key", (a) => self._copyCitationKeys(a), citeItem);
+            add("Citation", (a) => self._copyCitationOrBibliography(a, true), citeItems);
+            add("Bibliography", (a) => self._copyCitationOrBibliography(a, false), citeItems);
+            const cis = citeItems();
+            if (cis.length && self._anyHasCitationKey && self._anyHasCitationKey(cis)) {
+                add("Citation Key", (a) => self._copyCitationKeys(a), citeItems);
             }
             sep();
             add("Select Link", (a) => self._copyCombinedSelectLink(a, {}));
-            const it0: any = getItem();
-            if (it0 && self._buildOpenLink && self._buildOpenLink(it0)) {
+            if (targetItems().some((it: any) => self._buildOpenLink && self._buildOpenLink(it))) {
                 add("Open Link", (a) => self._copyItemLinks(a, "open"));
             }
-            if (ci && self._anyHasWebURL && self._anyHasWebURL([ci])) {
-                add("Online Library Link", (a) => self._copyOnlineLibraryLinks(a), citeItem);
+            if (cis.length && self._anyHasWebURL && self._anyHasWebURL(cis)) {
+                add("Online Library Link", (a) => self._copyOnlineLibraryLinks(a), citeItems);
             }
             if (self._isBetterBibTeXActive && self._isBetterBibTeXActive()) {
                 sep();
-                add("[BBT] BibTeX", (a) => self._copyExportToClipboard(a, BBT_BIBTEX_TRANSLATOR_ID), citeItem);
-                add("[BBT] BibLaTeX", (a) => self._copyExportToClipboard(a, BBT_BIBLATEX_TRANSLATOR_ID), citeItem);
+                add("[BBT] BibTeX", (a) => self._copyExportToClipboard(a, BBT_BIBTEX_TRANSLATOR_ID), citeItems);
+                add("[BBT] BibLaTeX", (a) => self._copyExportToClipboard(a, BBT_BIBLATEX_TRANSLATOR_ID), citeItems);
             }
         } catch (e) { Zotero.debug("[Weavero] _wvBuildCopyAsSubmenu err: " + e); }
     },

@@ -170,7 +170,7 @@ const MARKER_SAVE_OPTS = { skipDateModifiedUpdate: true };
  *  then calls methods that may have been renamed, throws, and silently
  *  degrades to upstream behaviour. Cost me a debugging round on
  *  2026-08-03; a version stamp forces a clean unwire+rewire instead. */
-const WIRE_VERSION = 9;   // 9: hoist + ▷ marker; 8: reparent guard; 7: plural
+const WIRE_VERSION = 10;  // 10: menu bubble-up guard (#8); 9: hoist + ▷ marker; 8: reparent guard
 
 // Reentrancy latch for the getAttachments hoist: the automatic-winner
 // computation itself calls getAttachments, and the wrap must serve THAT
@@ -1559,7 +1559,12 @@ class _AttachmentsMixin {
             }
             const ID = "wv-itemmenu-open-by-default";
 
-            const onShowing = () => {
+            const onShowing = (ev: any) => {
+                // Ignore popup events bubbled from descendant submenus (the
+                // native Add to Collection etc., and Weavero's own Copy As):
+                // a submenu's popuphidden stripped this entry mid-hover
+                // (issue #8 family, swept 2026-09-03).
+                if (!ev || ev.target !== menu) return;
                 try {
                     const old = doc.getElementById(ID);
                     if (old) old.remove();
@@ -1681,7 +1686,8 @@ class _AttachmentsMixin {
                     Zotero.debug("[Weavero] open-by-default popupshowing err: " + e);
                 }
             };
-            const onHidden = () => {
+            const onHidden = (ev: any) => {
+                if (!ev || ev.target !== menu) return;   // bubble-up guard, see onShowing
                 try { const el = doc.getElementById(ID); if (el) el.remove(); } catch (e) {}
             };
 

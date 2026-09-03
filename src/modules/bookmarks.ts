@@ -4130,8 +4130,11 @@ class _BookmarksMixin {
             }, BM_MENU_NEWFOLDER_ICON);
             const host = wvPopupHost(doc);
             host.appendChild(menu);
+            // Not {once}: the Add Bookmark submenu's popuphidden BUBBLES here —
+            // a once-listener both removed the OPEN menu on hover-off and burnt
+            // itself, leaking the node (issue #8 family, 2026-09-03).
             menu.addEventListener("popuphidden",
-                () => { try { menu.remove(); } catch (e) {} }, { once: true });
+                (ev: any) => { try { if (ev.target === menu) menu.remove(); } catch (e) {} });
             menu.openPopupAtScreen(screenX, screenY, true);
         } catch (e) {
             Zotero.debug("[Weavero] _bmRowContextMenu err: " + e);
@@ -4187,8 +4190,9 @@ class _BookmarksMixin {
             }, BM_MENU_NEWFOLDER_ICON);
             const host = wvPopupHost(doc);
             host.appendChild(menu);
+            // Bubble-guarded, not {once} — see _bmRowContextMenu (issue #8 family).
             menu.addEventListener("popuphidden",
-                () => { try { menu.remove(); } catch (e) {} }, { once: true });
+                (ev: any) => { try { if (ev.target === menu) menu.remove(); } catch (e) {} });
             menu.openPopupAtScreen(screenX, screenY, true);
         } catch (e) {
             Zotero.debug("[Weavero] _bmFolderContextMenu err: " + e);
@@ -4216,8 +4220,9 @@ class _BookmarksMixin {
             }, BM_MENU_NEWFOLDER_ICON);
             const host = wvPopupHost(doc);
             host.appendChild(menu);
+            // Bubble-guarded, not {once} — see _bmRowContextMenu (issue #8 family).
             menu.addEventListener("popuphidden",
-                () => { try { menu.remove(); } catch (e) {} }, { once: true });
+                (ev: any) => { try { if (ev.target === menu) menu.remove(); } catch (e) {} });
             menu.openPopupAtScreen(screenX, screenY, true);
         } catch (e) {
             Zotero.debug("[Weavero] _bmEmptyContextMenu err: " + e);
@@ -4267,7 +4272,12 @@ class _BookmarksMixin {
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };
-            const onShowing = () => {
+            const onShowing = (ev: any) => {
+                // Ignore popup events bubbled up from descendant submenus
+                // (native Move To / Copy To): their close stripped the
+                // Bookmark entry mid-hover — issue #8 pattern, regressed
+                // here when this entry was added (reported 2026-09-03).
+                if (!ev || ev.target !== menu) return;
                 try {
                     const stale = doc.getElementById(ID);
                     if (stale) stale.remove();
@@ -4319,7 +4329,8 @@ class _BookmarksMixin {
                     Zotero.debug("[Weavero] collection bookmark popupshowing err: " + e);
                 }
             };
-            const onHidden = () => {
+            const onHidden = (ev: any) => {
+                if (!ev || ev.target !== menu) return;   // bubble-up guard, see onShowing
                 try { const el = doc.getElementById(ID); if (el) el.remove(); } catch (e) {}
             };
             menu.addEventListener("popupshowing", onShowing);

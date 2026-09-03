@@ -1,6 +1,6 @@
 {
   "name": "weavero",
-  "version": "0.19.5",
+  "version": "0.19.6-dev.5",
   "private": true,
   "description": "A Zotero plugin with filters, clickable links, bookmarks, tabs management and other improvements.",
   "homepage": "https://github.com/mjthoraval/Weavero",
@@ -18,7 +18,9 @@
     "start": "zotero-plugin serve",
     "prebuild": "npm run typecheck",
     "release": "zotero-plugin release",
-    "test:unit": "mocha --node-option import=tsx \"test/unit/**/*.unit.ts\""
+    "test:unit": "mocha --node-option import=tsx \"test/unit/**/*.unit.ts\"",
+    "test:compat": "node test/compat-plugins/run.js",
+    "test:compat:check": "node test/compat-plugins/run.js --check"
   },
   "config": {
     "addonName": "Weavero",

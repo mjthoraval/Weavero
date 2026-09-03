@@ -1015,6 +1015,14 @@ class _PaneMixin {
                 try { doc.removeEventListener("command", old, true); } catch (_) {}
                 try { doc.removeEventListener("click", old, true); } catch (_) {}
             }
+            const oldCtx = doc._wvAdvSearchCtxHandler;
+            if (oldCtx) {
+                try { doc.removeEventListener("contextmenu", oldCtx, true); } catch (_) {}
+            }
+            // Rebuild the popup on rewire — its command listeners close over
+            // the OLD build's labels otherwise (entries resolve the live
+            // plugin at command time, but a stale DOM node is still stale).
+            try { const p0 = doc.getElementById("wv-advsearch-context"); if (p0) p0.remove(); } catch (_) {}
             doc._wvAdvSearchWinWire = TAG;
             if (!doc.getElementById("cmd_zotero_advancedSearch")) return;
             const isTarget = (t: any) => {
@@ -1053,7 +1061,54 @@ class _PaneMixin {
             doc._wvAdvSearchWinHandler = handler;
             doc.addEventListener("command", handler, true);
             doc.addEventListener("click", handler, true);
+            // Right-click on the funnel → discoverability menu for the same
+            // two actions (user request 2026-09-03). The button has NO native
+            // context menu (verified live: no context attr, no popup child),
+            // so this shadows nothing.
+            const ctx = (e: any) => {
+                try {
+                    const t = e.target;
+                    if (!(t && t.closest && t.closest("#zotero-tb-search-advanced-button"))) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live && !live._wvDestroyed) live._wvAdvSearchContextMenu(win, e);
+                } catch (_) {}
+            };
+            doc._wvAdvSearchCtxHandler = ctx;
+            doc.addEventListener("contextmenu", ctx, true);
         } catch (e) {}
+    }
+
+    /** The funnel's right-click menu: the plain open and the new-window open
+     *  (the Shift+click action, made discoverable). Built lazily once per
+     *  window; entries resolve the live plugin at command time. */
+    _wvAdvSearchContextMenu(win: any, event: any) {
+        try {
+            const doc = win.document;
+            let popup: any = doc.getElementById("wv-advsearch-context");
+            if (!popup) {
+                popup = doc.createXULElement("menupopup");
+                popup.id = "wv-advsearch-context";
+                const mk = (label: string, hint: string | null, onCmd: () => void) => {
+                    const mi = doc.createXULElement("menuitem");
+                    mi.setAttribute("label", label);
+                    if (hint) mi.setAttribute("acceltext", hint);
+                    mi.addEventListener("command", () => { try { onCmd(); } catch (_) {} });
+                    popup.appendChild(mi);
+                    return mi;
+                };
+                mk("Open Advanced Search", null, () => {
+                    try { win.ZoteroPane.toggleAdvancedSearchState("open"); } catch (_) {}
+                });
+                mk("Open in New Window", "Shift+Click", () => {
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow();
+                });
+                (doc.querySelector("popupset") || doc.documentElement).appendChild(popup);
+            }
+            popup.openPopupAtScreen(event.screenX, event.screenY, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchContextMenu err: " + e); }
     }
 
     /** Open a fresh main window and, once its pane is ready, open the
@@ -1528,6 +1583,114 @@ class _PaneMixin {
      *  Copy-Item-Link pref is off or the link doesn't apply (e.g. a
      *  linked-URL attachment with no file). No-op on Zotero builds
      *  without `MenuManager.registerMenu`. */
+    /** Items for a main-window tab context-menu action that honours the
+     *  Weavero tab MULTI-selection: when `tabID` is part of a >1-tab
+     *  selection, the items of ALL selected tabs (tab-bar order, duplicate
+     *  tabs of one item collapsed); else null — the caller falls back to
+     *  the single clicked tab. Split out of `_registerTabContextMenu` so
+     *  the resolution is testable (Guard: test/copy-as-multi.spec.js). */
+    _wvTabCtxTargetItems(win: any, tabID: any) {
+        try {
+            if (!win || !tabID || tabID === "zotero-pane") return null;
+            const tgts = this._wvTabMultiSelTargets
+                ? this._wvTabMultiSelTargets(win, tabID) : null;
+            if (!tgts || tgts.length <= 1) return null;
+            const Z: any = win.Zotero_Tabs;
+            const items: any[] = []; const seen = new Set();
+            for (const id of tgts) {
+                const t = Z && Z._tabs && Z._tabs.find((x: any) => x.id === id);
+                if (!t || t.id === "zotero-pane" || t.type === "library") continue;
+                const itemID = t.data && t.data.itemID;
+                if (itemID == null) continue;
+                const it: any = Zotero.Items.get(itemID);
+                if (it && !seen.has(it.id)) { seen.add(it.id); items.push(it); }
+            }
+            return items.length ? items : null;
+        } catch (e) { return null; }
+    }
+
+    /** Per-window wrap of `ZoteroPane.copySelectedItemsToClipboard` — the
+     *  quick-copy shortcuts (Ctrl+Shift+A citation / Ctrl+Shift+C
+     *  bibliography). Upstream's `getSelectedItems` returns ONLY the active
+     *  tab's item for reader/note tabs (zoteroPane.js `case 'reader'`), so
+     *  with several tabs multi-selected the shortcut copied one citation
+     *  (reported 2026-09-03). When the ACTIVE tab is part of a >1-tab
+     *  Weavero multi-selection, feed ALL selected tabs' items through the
+     *  ORIGINAL native logic (note formats, bibliography filtering, export
+     *  mode all stay upstream's) by shadowing the two getters it reads
+     *  synchronously at call top. Library tab active → untouched: the
+     *  items-tree selection governs, as natively.
+     *  Guard: test/copy-as-multi.spec.js. */
+    _wvWireQuickCopyMultiTab(win: any) {
+        try {
+            const ZP: any = win && win.ZoteroPane;
+            if (!ZP || typeof ZP.copySelectedItemsToClipboard !== "function") return;
+            const tag = (this as any)._wvWireTag();
+            if (ZP._wvQuickCopyWired === tag) return;
+            // Foreign stamp = wrapped by another build. The member is an
+            // OWN-prop function with no prototype fallback, so restore the
+            // saved original (kept on the host) before wiring fresh.
+            if (ZP._wvOrigCopySelectedToClipboard) {
+                ZP.copySelectedItemsToClipboard = ZP._wvOrigCopySelectedToClipboard;
+            }
+            const orig = ZP.copySelectedItemsToClipboard;
+            ZP._wvOrigCopySelectedToClipboard = orig;
+            ZP.copySelectedItemsToClipboard = function (asCitations?: any) {
+                // Saved-and-restored, NEVER deleted: getSelectedItems /
+                // getSortedItems are themselves own props of ZoteroPane —
+                // delete would destroy them with no prototype fallback.
+                let savedSel: any = null, savedSort: any = null, shadowed = false;
+                try {
+                    // Live plugin at event time — closures go stale on reload.
+                    const lp: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    const ZT: any = win.Zotero_Tabs;
+                    if (lp && ZT && ZT.selectedID && ZT.selectedID !== "zotero-pane"
+                        && lp._wvTabCtxTargetItems) {
+                        const tabItems = lp._wvTabCtxTargetItems(win, ZT.selectedID);
+                        if (tabItems && tabItems.length > 1) {
+                            // Upstream's per-tab routing (`case 'reader'`):
+                            // an attachment cites its parent; notes stay.
+                            const ids: any[] = []; const seen = new Set();
+                            for (let it of tabItems) {
+                                try {
+                                    if (it.isAttachment && it.isAttachment() && it.parentItem) it = it.parentItem;
+                                } catch (e) {}
+                                if (it && !seen.has(it.id)) { seen.add(it.id); ids.push(it.id); }
+                            }
+                            if (ids.length > 1) {
+                                savedSel = this.getSelectedItems;
+                                savedSort = this.getSortedItems;
+                                this.getSelectedItems = (asIDs: any) => (asIDs ? ids.slice() : Zotero.Items.get(ids));
+                                this.getSortedItems = (asIDs: any) => (asIDs ? ids.slice() : Zotero.Items.get(ids));
+                                shadowed = true;
+                            }
+                        }
+                    }
+                } catch (e) { Zotero.debug("[Weavero] quick-copy multi-tab err: " + e); }
+                try {
+                    return orig.apply(this, arguments);
+                }
+                finally {
+                    if (shadowed) {
+                        try { this.getSelectedItems = savedSel; } catch (e) {}
+                        try { this.getSortedItems = savedSort; } catch (e) {}
+                    }
+                }
+            };
+            ZP._wvQuickCopyWired = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireQuickCopyMultiTab err: " + e); }
+    }
+
+    _wvUnwireQuickCopyMultiTab(win: any) {
+        try {
+            const ZP: any = win && win.ZoteroPane;
+            if (!ZP || !ZP._wvOrigCopySelectedToClipboard) return;
+            ZP.copySelectedItemsToClipboard = ZP._wvOrigCopySelectedToClipboard;
+            delete ZP._wvOrigCopySelectedToClipboard;
+            delete ZP._wvQuickCopyWired;
+        } catch (e) {}
+    }
+
     _registerTabContextMenu() {
         try {
             if (!((Zotero as any).MenuManager
@@ -1545,41 +1708,61 @@ class _PaneMixin {
             // attachment itself. Each child sets its own label + visibility in
             // onShowing (MenuManager builds submenu children lazily on hover,
             // with the same context).
-            const bibItemOf = (ctx) => {
-                const item = ctx && ctx.items && ctx.items[0];
-                if (!item) return null;
-                if (item.isRegularItem && item.isRegularItem()) return item;
-                const parent = item.parentItem
-                    || (item.parentItemID && Zotero.Items.get(item.parentItemID));
-                return (parent && parent.isRegularItem && parent.isRegularItem()) ? parent : null;
+            // Copies act on the WHOLE tab multi-selection when the clicked tab
+            // is part of it (matching Move/Close/Pin/Duplicate — 2026-09-03:
+            // "Citation" copied only the clicked tab), else the clicked tab.
+            const tabItemsOf = (ctx) => {
+                try {
+                    const win: any = ctx && ctx.menuElem && ctx.menuElem.ownerDocument
+                        && ctx.menuElem.ownerDocument.defaultView;
+                    const multi = self._wvTabCtxTargetItems
+                        ? self._wvTabCtxTargetItems(win, ctx && ctx.tabID) : null;
+                    if (multi && multi.length) return multi;
+                } catch (e) {}
+                const one = ctx && ctx.items && ctx.items[0];
+                return one ? [one] : [];
+            };
+            const bibItemsOf = (ctx) => {
+                const out: any[] = []; const seen = new Set();
+                for (const item of tabItemsOf(ctx)) {
+                    let bib: any = null;
+                    if (item.isRegularItem && item.isRegularItem()) bib = item;
+                    else {
+                        const parent = item.parentItem
+                            || (item.parentItemID && Zotero.Items.get(item.parentItemID));
+                        if (parent && parent.isRegularItem && parent.isRegularItem()) bib = parent;
+                    }
+                    if (bib && !seen.has(bib.id)) { seen.add(bib.id); out.push(bib); }
+                }
+                return out;
             };
             const citeEntry = (label, asCitations) => ({
                 menuType: "menuitem",
                 onShowing: (_ev, ctx) => {
                     try {
-                        if (!bibItemOf(ctx)) { ctx.setVisible(false); return; }
+                        if (!bibItemsOf(ctx).length) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
                         ctx.menuElem.setAttribute("label", label);
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 onCommand: (_ev, ctx) => {
-                    const bib = bibItemOf(ctx);
-                    if (bib) self._copyCitationOrBibliography([bib], asCitations);
+                    const bibs = bibItemsOf(ctx);
+                    if (bibs.length) self._copyCitationOrBibliography(bibs, asCitations);
                 },
             });
             const citationKeyEntry = {
                 menuType: "menuitem",
                 onShowing: (_ev, ctx) => {
                     try {
-                        const bib = bibItemOf(ctx);
-                        if (!bib || !self._itemCitationKey(bib)) { ctx.setVisible(false); return; }
+                        const bibs = bibItemsOf(ctx);
+                        if (!bibs.some((b) => self._itemCitationKey(b))) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
                         ctx.menuElem.setAttribute("label", "Citation Key");
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 onCommand: (_ev, ctx) => {
-                    const bib = bibItemOf(ctx);
-                    if (bib) self._copyCitationKeys([bib]);
+                    const bibs = bibItemsOf(ctx);
+                    if (bibs.length) self._copyCitationKeys(bibs);
                 },
             };
             const linkEntry = (kind) => ({
@@ -1587,36 +1770,37 @@ class _PaneMixin {
                 onShowing: (_ev, ctx) => {
                     try {
                         if (!self._getEnableCopyItemLink()) { ctx.setVisible(false); return; }
-                        const item = ctx.items && ctx.items[0];
-                        const link = item && (kind === "open"
-                            ? self._buildOpenLink(item) : self._buildSelectLink(item));
-                        if (!link) { ctx.setVisible(false); return; }
+                        const items = tabItemsOf(ctx);
+                        const linkable = items.some((it) => !!(kind === "open"
+                            ? self._buildOpenLink(it) : self._buildSelectLink(it)));
+                        if (!linkable) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
                         let label = kind === "open" ? "Open Link" : "Select Link";
-                        if (kind === "open" && self._isExternalOpenTarget(item)) {
+                        if (kind === "open" && items.length === 1
+                            && self._isExternalOpenTarget(items[0])) {
                             label += " (external app)";
                         }
                         ctx.menuElem.setAttribute("label", label);
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 onCommand: (_ev, ctx) => {
-                    const item = ctx.items && ctx.items[0];
-                    if (item) self._copyItemLinks([item], kind);
+                    const items = tabItemsOf(ctx);
+                    if (items.length) self._copyItemLinks(items, kind);
                 },
             });
             const onlineLinkEntry = {
                 menuType: "menuitem",
                 onShowing: (_ev, ctx) => {
                     try {
-                        const bib = bibItemOf(ctx);
-                        if (!bib || !self._buildItemWebURL(bib)) { ctx.setVisible(false); return; }
+                        const bibs = bibItemsOf(ctx);
+                        if (!bibs.some((b) => self._buildItemWebURL(b))) { ctx.setVisible(false); return; }
                         ctx.setVisible(true);
                         ctx.menuElem.setAttribute("label", "Online Library Link");
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 onCommand: (_ev, ctx) => {
-                    const bib = bibItemOf(ctx);
-                    if (bib) self._copyOnlineLibraryLinks([bib]);
+                    const bibs = bibItemsOf(ctx);
+                    if (bibs.length) self._copyOnlineLibraryLinks(bibs);
                 },
             };
             const bbtEntry = (label, translatorID) => ({
@@ -1625,7 +1809,7 @@ class _PaneMixin {
                     try {
                         // Re-check BBT on every show so enabling/disabling the
                         // plugin adds/removes these entries immediately.
-                        if (!self._isBetterBibTeXActive() || !bibItemOf(ctx)) {
+                        if (!self._isBetterBibTeXActive() || !bibItemsOf(ctx).length) {
                             ctx.setVisible(false); return;
                         }
                         ctx.setVisible(true);
@@ -1633,8 +1817,8 @@ class _PaneMixin {
                     } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
                 },
                 onCommand: (_ev, ctx) => {
-                    const bib = bibItemOf(ctx);
-                    if (bib) self._copyExportToClipboard([bib], translatorID);
+                    const bibs = bibItemsOf(ctx);
+                    if (bibs.length) self._copyExportToClipboard(bibs, translatorID);
                 },
             });
             const copyAsChildren: any[] = [
@@ -1959,8 +2143,9 @@ class _PaneMixin {
                     try {
                         const lp2: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         const order: string[] = (lp2 && lp2._wvTabMenuOrder) ? lp2._wvTabMenuOrder() : [];
-                        const TOP = new Set(["removeFromGroup", "moveTab", "viewOnline",
-                                             "showFile", "externalViewer", "openNotes"]);
+                        const TOP = new Set(["viewOnline", "showFile", "externalViewer",
+                                             "openNotes", "removeFromGroup", "groupTab",
+                                             "moveTab"]);
                         const found: any = {};
                         for (const ch of Array.from(popup.children) as any[]) {
                             const k = (lp2 && lp2._wvTabMenuItemKey) ? lp2._wvTabMenuItemKey(ch) : null;

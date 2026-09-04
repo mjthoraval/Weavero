@@ -7891,11 +7891,28 @@ class _ReaderPanelsMixin {
             const cancelBtn = mkBtn("Cancel", "#555");
             const hls: any[] = [];
             const handles: any = {};
+            // Text-selection-style handles, SAME design as the PDF editor
+            // (_wvRegionEditorOpen): a thin vertical bar spanning the line at
+            // the range edge, with a round knob ABOVE the line at the start
+            // and BELOW at the end. The plain mid-line floating circles this
+            // replaces sat on the glyphs and read "strange" — the identical
+            // 2026-07-21 PDF complaint, re-reported for DOM views by MJT
+            // 2026-09-04 ("do the same anchors as in the PDF reader").
+            const HANDLE_COL = "#4072e5";
             const mkHandle = (which: string) => {
-                const h = mkDiv("position:absolute;width:14px;height:14px;border-radius:50%;"
-                    + "border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5);"
-                    + "cursor:grab;pointer-events:auto;z-index:3;transform:translate(-50%,-50%);");
-                h.style.setProperty("background-color", "#4072e5", "important");
+                const atStart = which === "start";
+                const h = mkDiv("position:absolute;width:2px;margin-left:-1px;"
+                    + "box-shadow:0 0 0 .5px rgba(255,255,255,.6);"
+                    + "cursor:ew-resize;touch-action:none;pointer-events:auto;z-index:3;");
+                h.style.setProperty("background-color", HANDLE_COL, "important");
+                const knob: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                knob.className = "wv-epub-region-knob";
+                knob.style.cssText = "position:absolute;left:50%;margin-left:-6px;width:12px;height:12px;"
+                    + "border-radius:50%;border:2px solid #fff;box-shadow:0 1px 2px rgba(0,0,0,.5);"
+                    + (atStart ? "top:0;margin-top:-12px;" : "bottom:0;margin-bottom:-12px;");
+                // Same theme-reset trap as the bar/buttons.
+                knob.style.setProperty("background-color", HANDLE_COL, "important");
+                h.appendChild(knob);
                 handles[which] = h; return h;
             };
             mkHandle("start"); mkHandle("end");
@@ -7914,10 +7931,14 @@ class _ReaderPanelsMixin {
                     hls.push(d);
                 }
                 const first = rects[0], last = rects[rects.length - 1];
+                // Handle bars span the line height at the range edges (PDF
+                // editor parity); the knobs hang off their top/bottom ends.
                 handles.start.style.left = (first.left + iw.scrollX) + "px";
-                handles.start.style.top = (first.top + first.height / 2 + iw.scrollY) + "px";
+                handles.start.style.top = (first.top + iw.scrollY) + "px";
+                handles.start.style.height = Math.max(8, first.height) + "px";
                 handles.end.style.left = (last.right + iw.scrollX) + "px";
-                handles.end.style.top = (last.top + last.height / 2 + iw.scrollY) + "px";
+                handles.end.style.top = (last.top + iw.scrollY) + "px";
+                handles.end.style.height = Math.max(8, last.height) + "px";
                 // The bar sits FULLY above the region (measured height, not
                 // the old fixed -34px guess that a taller bar overflowed
                 // straight onto the text being edited); no room above —

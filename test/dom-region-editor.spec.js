@@ -109,6 +109,30 @@ describe("Weavero — DOM-view region editor", () => {
         finally { restore(); }
     });
 
+    // PDF-editor handle parity (MJT 2026-09-04): line-height bars with a
+    // round knob above the line at the start / below at the end — not the
+    // old mid-line floating circles that sat on the glyphs.
+    it("handles are edge bars with end knobs, matching the PDF editor", () => {
+        const { d, range, pv, reader } = fixture();
+        const restore = silenceNote();
+        try {
+            wv._wvDomRegionEditorOpen(reader, d, range, {
+                editorId: "spec-6", noteWord: "title", onCommit: () => {},
+            });
+            const knobs = /** @type {any[]} */ ([...d.querySelectorAll(".wv-epub-region-knob")]);
+            assert.lengthOf(knobs, 2, "one knob per handle");
+            const bars = knobs.map((k) => /** @type {any} */ (k.parentElement));
+            for (const b of bars) {
+                assert.equal(b.style.width, "2px", "thin edge bar, not a circle");
+                assert.equal(b.style.cursor, "ew-resize");
+            }
+            assert.equal(knobs[0].style.marginTop, "-12px", "start knob hangs ABOVE the line");
+            assert.equal(knobs[1].style.marginBottom, "-12px", "end knob hangs BELOW the line");
+            pv._wvRegionEditor.destroy();
+        }
+        finally { restore(); }
+    });
+
     it("in a RENDERED doc the bar never overlaps the region", async function () {
         const win = Zotero.getMainWindow();
         const host = /** @type {any} */ (win.document.createElementNS("http://www.w3.org/1999/xhtml", "iframe"));

@@ -7868,7 +7868,12 @@ class _ReaderPanelsMixin {
                 const d: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
                 d.style.cssText = css; container.appendChild(d); return d;
             };
+            // width:max-content is load-bearing: the containing block is the
+            // 0-width `container` div, so shrink-to-fit resolves to
+            // MIN-content — every button wrapped to word-width and the bar
+            // grew ~2x tall (MJT 2026-09-04, snapshot Edit Region).
             const bar = mkDiv("position:absolute;display:flex;gap:6px;padding:4px 6px;"
+                + "width:max-content;white-space:nowrap;"
                 + "border:1px solid rgba(127,127,127,.5);"
                 + "border-radius:6px;pointer-events:auto;z-index:2;");
             bar.style.setProperty("background-color", "rgba(40,40,40,.95)", "important");
@@ -7913,8 +7918,19 @@ class _ReaderPanelsMixin {
                 handles.start.style.top = (first.top + first.height / 2 + iw.scrollY) + "px";
                 handles.end.style.left = (last.right + iw.scrollX) + "px";
                 handles.end.style.top = (last.top + last.height / 2 + iw.scrollY) + "px";
-                bar.style.left = Math.max(4, first.left + iw.scrollX) + "px";
-                bar.style.top = Math.max(4, first.top + iw.scrollY - 34) + "px";
+                // The bar sits FULLY above the region (measured height, not
+                // the old fixed -34px guess that a taller bar overflowed
+                // straight onto the text being edited); no room above —
+                // e.g. region at document top, where the old Math.max(4,…)
+                // clamp parked it ON the selection — flips it below the
+                // last rect instead (MJT 2026-09-04).
+                const barH = bar.offsetHeight || 34;
+                const barW = bar.offsetWidth || 220;
+                let barTop = first.top + iw.scrollY - barH - 8;
+                if (barTop < 4) barTop = last.bottom + iw.scrollY + 12;
+                const docW = (doc.documentElement && doc.documentElement.scrollWidth) || iw.innerWidth;
+                bar.style.left = Math.max(4, Math.min(first.left + iw.scrollX, docW - barW - 4)) + "px";
+                bar.style.top = barTop + "px";
             };
             const destroy = () => {
                 try { container.remove(); } catch (_) {}

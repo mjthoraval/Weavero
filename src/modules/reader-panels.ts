@@ -7970,7 +7970,13 @@ class _ReaderPanelsMixin {
                 const committed = range;
                 destroy();
                 try {
-                    Promise.resolve(opts.onCommit(committed, text || null, !!withText)).catch(() => {});
+                    Promise.resolve(opts.onCommit(committed, text || null, !!withText))
+                        // Re-flash the saved region, PDF-editor parity (its
+                        // commit tail does _wvOutlineHighlightInPlace) — the
+                        // save otherwise gives no visual confirmation on
+                        // DOM views (MJT 2026-09-04).
+                        .then(() => { try { this._wvDomHighlightRange(pv, committed); } catch (_) {} })
+                        .catch(() => {});
                 } catch (_) {}
             };
             const onKey = (ev: any) => {

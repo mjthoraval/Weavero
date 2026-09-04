@@ -174,6 +174,29 @@ describe("Weavero — DOM-view region editor", () => {
         finally { restore(); try { host.remove(); } catch (e) {} }
     });
 
+    // PDF-editor parity (MJT 2026-09-04): saving flashes the saved region as
+    // confirmation — the PDF commit tail does _wvOutlineHighlightInPlace, the
+    // DOM commit must invoke the DOM painter with the committed range.
+    it("Save re-flashes the saved region (PDF-editor parity)", async () => {
+        const { d, range, reader } = fixture();
+        const restore = silenceNote();
+        let flashed = null;
+        wv._wvDomHighlightRange = (_pv, r) => { flashed = r; };
+        try {
+            wv._wvDomRegionEditorOpen(reader, d, range, {
+                editorId: "spec-7", noteWord: "title", onCommit: () => {},
+            });
+            const btn = /** @type {HTMLElement} */ ([...d.querySelectorAll(".wv-epub-region-editor button")]
+                .find((b) => b.textContent === "Save Region"));
+            btn.click();
+            await new Promise((r) => setTimeout(r, 0));
+            assert.isOk(flashed, "highlight painter invoked after save");
+            assert.equal(String(flashed.toString()), "quick brown fox",
+                "flashed the COMMITTED range");
+        }
+        finally { restore(); delete wv._wvDomHighlightRange; }
+    });
+
     it("Cancel closes without committing", () => {
         const { d, range, reader } = fixture();
         const restore = silenceNote();

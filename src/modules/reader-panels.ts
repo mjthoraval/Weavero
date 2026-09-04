@@ -7732,6 +7732,9 @@ class _ReaderPanelsMixin {
             return this._wvRegionEditorOpen(reader, idoc, e.resolvedPosition || e.position, {
                 editorId: ref.id,
                 noteWord: "title",
+                // Point-anchored entries seed the editor from the title's
+                // text on the page (see the seeding block in the editor).
+                seedTitle: (e && e.title) || null,
                 // Outline commit. With text: rename first, then stamp the
                 // position with that title as `regionTitle`, so the two stay
                 // in sync (no spurious "Re-detect from Title" afterward).
@@ -8060,6 +8063,35 @@ class _ReaderPanelsMixin {
      *  Save-Region-and-Text, the re-read text — is written back) and
      *  `opts.editorId` (one editor at a time per view). `base` is the current
      *  {pageIndex, rects} being reshaped. */
+    /** Seed char range for the PDF region editor. Stored rects when they
+     *  cover glyph centres; else `seedTitle` found near the stored point —
+     *  a POINT-anchored entry (embedded destination / extraction point kept
+     *  as a zero-area rect) covers no glyphs, and the old nearest-glyph
+     *  fallback opened the editor on ONE LETTER (MJT 2026-09-04). The
+     *  1-char nearest-glyph seed stays as the last resort.
+     *  Guard: test/region-editor-seed.spec.js. */
+    async _wvRegionEditorSeedRange(pv: any, chars: any[], pageIndex: number, base: any,
+            seedTitle?: string | null): Promise<{ start: number, end: number }> {
+        let range = (base && base.rects) ? wvCharRangeFromRects(chars, base.rects) : null;
+        if (!range && seedTitle) {
+            try {
+                const r0 = (base && base.rects && base.rects[0]) || [0, 0, 0, 0];
+                const res: any = await this._wvOutlineRecoverRect(pv, pageIndex, r0[0], r0[1], String(seedTitle));
+                const rr = res && ((res.rects && res.rects.length) ? res.rects : [res.rect]);
+                // Same page only — `chars` belongs to `pageIndex`.
+                if (res && res.pageIndex === pageIndex && rr && rr.length) {
+                    range = wvCharRangeFromRects(chars, rr);
+                }
+            } catch (_) {}
+        }
+        if (!range) {
+            const r0 = (base && base.rects && base.rects[0]) || [0, 0, 0, 0];
+            const near = wvGetClosestOffset(chars, r0);
+            range = { start: near, end: near };
+        }
+        return range;
+    }
+
     async _wvRegionEditorOpen(reader: any, idoc: any, base: any, opts: any) {
         try {
             const ir = reader._internalReader;
@@ -8075,14 +8107,8 @@ class _ReaderPanelsMixin {
             if (!Array.isArray(chars) || !chars.length) {
                 this._wvReaderPanelNote(idoc, "This page has no selectable text to snap to."); return;
             }
-            // Seed the char range from the current region; fall back to the glyph
-            // nearest the stored point (a coarse region) as a 1-char seed.
-            let range = (base && base.rects) ? wvCharRangeFromRects(chars, base.rects) : null;
-            if (!range) {
-                const r0 = (base && base.rects && base.rects[0]) || [0, 0, 0, 0];
-                const near = wvGetClosestOffset(chars, r0);
-                range = { start: near, end: near };
-            }
+            const range = await this._wvRegionEditorSeedRange(
+                pv, chars, pageIndex, base, opts && opts.seedTitle);
             let start = range.start, end = range.end;
 
             const pageView = app.pdfViewer._pages[pageIndex];

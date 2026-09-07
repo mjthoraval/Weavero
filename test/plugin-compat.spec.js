@@ -403,7 +403,13 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
             const am = Cu.waiveXrays(reader._internalReader._annotationManager);
             const a = (am._annotations || []).find(x => String(x.id) === ann.key);
             assert.isOk(a, "content-side annotation object");
-            pv._onSetAnnotationPopup({ rect: [50, 50, 200, 80], annotation: a });
+            // cloneInto is LOAD-BEARING: a chrome-created plain object is
+            // unreadable to the content-side React code, so the popup never
+            // renders and the waitFor times out (run-5 capture, 2026-09-07 —
+            // the live verification always used cloneInto).
+            pv._onSetAnnotationPopup(Cu.cloneInto(
+                { rect: [50, 50, 200, 80], annotation: a },
+                reader._iframeWindow, { cloneFunctions: false }));
             const idoc = reader._iframeWindow.document;
             const popup = await waitFor(() => {
                 const el = idoc.querySelector(".annotation-popup");
@@ -423,7 +429,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
             try {
                 const xdir = Services.env.get("WV_COMPAT_XPI_DIR");
                 if (xdir) {
-                    await IOUtils.writeUTF8(PathUtils.join(xdir, "..", "last-errors.log"),
+                    await IOUtils.writeUTF8(PathUtils.join(PathUtils.parent(xdir), "last-errors.log"),
                         new Date().toISOString() + " " + msg + "\n", { mode: "appendOrCreate" });
                 }
             } catch (e2) {}

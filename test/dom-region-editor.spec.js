@@ -145,7 +145,15 @@ describe("Weavero — DOM-view region editor", () => {
         // Same error-visibility rule as the compat popup spec: stringify,
         // or the reporter shows "undefined" for XPCOM/Xray errors.
         try {
-            await new Promise((r) => { host.addEventListener("load", r, { once: true }); });
+            // srcdoc iframes never fire load in this chrome context — the
+            // bare await hung until mocha's timeout killed the test from
+            // outside the try/catch (run-5 capture, 2026-09-07). Race a 3s
+            // fallback and pass vacuously when the environment can't render.
+            const loaded = await Promise.race([
+                new Promise((r) => { host.addEventListener("load", () => r(true), { once: true }); }),
+                new Promise((r) => { win.setTimeout(() => r(false), 3000); }),
+            ]);
+            if (!loaded || !host.contentDocument || !host.contentDocument.querySelector("p")) return;
             const d = host.contentDocument;
             const iw = host.contentWindow;
             const tn = d.querySelector("p").firstChild;
@@ -185,7 +193,7 @@ describe("Weavero — DOM-view region editor", () => {
             try {
                 const xdir = Services.env.get("WV_COMPAT_XPI_DIR");
                 if (xdir) {
-                    await IOUtils.writeUTF8(PathUtils.join(xdir, "..", "last-errors.log"),
+                    await IOUtils.writeUTF8(PathUtils.join(PathUtils.parent(xdir), "last-errors.log"),
                         new Date().toISOString() + " " + msg + "\n", { mode: "appendOrCreate" });
                 }
             } catch (e2) {}

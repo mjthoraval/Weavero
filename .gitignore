@@ -20,3 +20,4 @@ update-beta.json
 
 # Local Zotero binary path for the scaffold tester (machine-specific).
 .env
+test/compat-plugins/last-errors.log

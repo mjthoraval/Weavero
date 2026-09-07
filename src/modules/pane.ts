@@ -6049,14 +6049,27 @@ class _PaneMixin {
                     // the window controls — the 'separation' (MJT 2026-09-07).
                     ".wv-pm-drag-spacer { flex: 0 0 40px; width: 40px;",
                     "  -moz-window-dragging: drag; }",
+                    // EXACT declarations of the main window's hamburger
+                    // (_ensureCompactTitleBarStyles) — size, colour, opacity
+                    // treatment and the 16px SVG, so the two windows match
+                    // pixel-for-pixel (MJT 2026-09-07 design pass).
                     ".wv-hamburger-btn {",
                     "  display: flex; align-items: center; justify-content: center;",
-                    "  flex: 0 0 auto; width: 28px; height: 28px; align-self: center;",
-                    "  padding: 0; border: none; border-radius: 5px;",
-                    "  background: transparent; color: inherit;",
+                    "  width: 28px; height: 28px; align-self: center;",
+                    "  padding: 0; margin: 0;",
+                    "  border: none; appearance: none; -moz-appearance: none;",
+                    "  border-radius: 5px;",
+                    "  background: transparent;",
+                    "  color: currentColor; opacity: 0.65;",
+                    "  cursor: default;",
                     "  -moz-window-dragging: no-drag;",
+                    "  flex: 0 0 28px;",
                     "}",
-                    ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); }",
+                    ".wv-hamburger-btn svg {",
+                    "  width: 16px; height: 16px;",
+                    "  fill: currentColor;",
+                    "}",
+                    ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); opacity: 1; }",
                     ".wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
                     ".titlebar-buttonbox { -moz-window-dragging: no-drag; }",
                     "#wv-hamburger-popup { min-width: 147px; }",

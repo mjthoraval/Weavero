@@ -15836,9 +15836,11 @@ class _ReaderMixin {
             // Firefox-style TOP entries: New Tab / New Reader Window /
             // New Main Window (user request 2026-07-13). "New Tab" opens
             // this window's picker (reader: the + button; main: the
-            // Ctrl+T picker). Skipped for windows where they make no sense
-            // (the Plugins Manager viewer, 2026-09-07).
-            if (!(opts && opts.noTopEntries)) try {
+            // Ctrl+T picker). `opts.mirrorOnly` (the Plugins Manager viewer,
+            // 2026-09-07) skips these AND the promoted Plugins/Settings/Exit
+            // cluster below — the hamburger then holds NOTHING but this
+            // window's own menubar, mirrored.
+            if (!(opts && opts.mirrorOnly)) try {
                 const mkTop = (label: string, fn: () => void, accel?: string) => {
                     const mi: any = doc.createXULElement("menuitem");
                     mi.setAttribute("label", label);
@@ -16028,10 +16030,20 @@ class _ReaderMixin {
                         try { el.hidden = true; el.setAttribute("data-wv-hamburger-promoted", "true"); } catch (e2) {}
                     }
                 };
-                appendPromoted({ ids: ["menu_addons"], sepBefore: true });                 // Plugins
-                appendPromoted({ ids: ["menu_EditPreferencesItem"], sepBefore: true });    // Settings
-                for (const src of sources.filter(isAppMenu)) appendMirrorSubmenu(src);     // Tools ▸ Help ▸
-                appendPromoted({ ids: ["menu_fileQuitItemWin", "menu_fileQuitItemUnix"], sepBefore: true }); // Exit
+                // mirrorOnly windows get no promotions: these resolve into
+                // the MAIN window's items when absent locally, which is how
+                // Plugins/Settings/Exit leaked into the Plugins Manager's
+                // hamburger (MJT 2026-09-07 — "Exit" quitting Zotero from a
+                // viewer window being the worst of it).
+                if (!(opts && opts.mirrorOnly)) {
+                    appendPromoted({ ids: ["menu_addons"], sepBefore: true });                 // Plugins
+                    appendPromoted({ ids: ["menu_EditPreferencesItem"], sepBefore: true });    // Settings
+                    for (const src of sources.filter(isAppMenu)) appendMirrorSubmenu(src);     // Tools ▸ Help ▸
+                    appendPromoted({ ids: ["menu_fileQuitItemWin", "menu_fileQuitItemUnix"], sepBefore: true }); // Exit
+                }
+                else {
+                    for (const src of sources.filter(isAppMenu)) appendMirrorSubmenu(src);
+                }
             } catch (e2) { Zotero.debug("[Weavero][hamburger] promote err: " + e2); }
             // Mount the popup. Prefer an existing <popupset>; fall back to
             // documentElement so it's at least in the doc.

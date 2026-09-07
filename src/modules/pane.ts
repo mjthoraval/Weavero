@@ -6105,7 +6105,7 @@ class _PaneMixin {
             dragSpacer.className = "wv-pm-drag-spacer";
             toolbox.appendChild(dragSpacer);
             const btn = this._wvEnsureHamburger
-                ? this._wvEnsureHamburger(win, toolbox, dragSpacer, { noTopEntries: true }) : null;
+                ? this._wvEnsureHamburger(win, toolbox, dragSpacer, { mirrorOnly: true }) : null;
             // Caption buttons — main-window markup; the shared skin
             // absolute-positions the box at the top right.
             const bb = cdoc.createXULElement("hbox");

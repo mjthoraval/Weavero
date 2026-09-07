@@ -6005,10 +6005,14 @@ class _PaneMixin {
         } catch (e) {}
     }
 
-    /** basicViewer chrome for the Plugins Manager: collapse the menubar row
-     *  and host its File/Edit/View menus in a chrome menupopup the content-
-     *  side ☰ button opens (the <menu> nodes are MOVED, not cloned, so
-     *  every command/key stays wired). Skipped on macOS — the menubar lives
+    /** basicViewer chrome for the Plugins Manager: draw into the titlebar the
+     *  way every main Zotero window does (titlebar.js's `customtitlebar`
+     *  switch), so the menubar row BECOMES the top bar — Z icon left, the
+     *  File/Edit/View menus in place, and the main window's own caption
+     *  buttons (min/max/restore/close) top right. All styling comes from the
+     *  shared skin: the toolbox already carries `menubar-container`, and the
+     *  `.titlebar-*` classes are in zotero-platform CSS, which basicViewer
+     *  loads (verified 10.0.2-beta.7). Skipped on macOS — the menubar lives
      *  in the system bar there. Reversed by _teardownPluginsSearch. */
     _wvPMSetupChrome(this: any, win: any, _doc: any) {
         try {
@@ -6016,20 +6020,36 @@ class _PaneMixin {
             if (win._wvPMChrome) return;
             const cdoc = win.document;
             const toolbar = cdoc.getElementById("toolbar-menubar");
-            const menubar = cdoc.getElementById("main-menubar");
-            if (!toolbar || !menubar) return;
-            const menus = ["fileMenu", "edit-menu", "view-menu"]
-                .map((id) => cdoc.getElementById(id)).filter(Boolean);
-            if (!menus.length) return;
-            const popup = cdoc.createXULElement("menupopup");
-            popup.id = "wv-pm-menupopup";
-            for (const m of menus) popup.appendChild(m);   // move, keep wiring
-            const popupset = cdoc.createXULElement("popupset");
-            popupset.id = "wv-pm-popupset";
-            popupset.appendChild(popup);
-            cdoc.documentElement.appendChild(popupset);
-            toolbar.collapsed = true;
-            win._wvPMChrome = { toolbar, menubar, menus, popup, popupset };
+            const toolbox = toolbar && toolbar.parentElement;   // .menubar-container
+            if (!toolbar || !toolbox) return;
+            cdoc.documentElement.setAttribute("customtitlebar", "true");
+            // Z icon, main-window behaviour (dblclick closes).
+            const iconBox = cdoc.createXULElement("hbox");
+            iconBox.id = "wv-pm-titlebar-icon";
+            iconBox.className = "titlebar-icon-container";
+            const icon: any = cdoc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+            icon.className = "titlebar-icon";
+            icon.addEventListener("dblclick", (ev: any) => { if (ev.button === 0) win.close(); });
+            iconBox.appendChild(icon);
+            toolbox.insertBefore(iconBox, toolbar);
+            // Caption buttons — the main window's markup verbatim
+            // (zoteroPane.xhtml .titlebar-buttonbox); max/restore visibility
+            // follows the root's persisted `sizemode` via the shared skin.
+            const bb = cdoc.createXULElement("hbox");
+            bb.id = "wv-pm-buttonbox";
+            bb.className = "titlebar-buttonbox titlebar-color";
+            const mkBtn = (cls: string, fn: () => void) => {
+                const b = cdoc.createXULElement("toolbarbutton");
+                b.className = "titlebar-button " + cls;
+                b.addEventListener("command", fn);
+                bb.appendChild(b);
+            };
+            mkBtn("titlebar-min", () => { try { win.minimize(); } catch (e) {} });
+            mkBtn("titlebar-max", () => { try { win.maximize(); } catch (e) {} });
+            mkBtn("titlebar-restore", () => { try { win.restore(); } catch (e) {} });
+            mkBtn("titlebar-close", () => { try { win.close(); } catch (e) {} });
+            toolbox.appendChild(bb);
+            win._wvPMChrome = { toolbox, toolbar, iconBox, bb };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
     }
 
@@ -6037,14 +6057,9 @@ class _PaneMixin {
         try {
             const c = win && win._wvPMChrome;
             if (!c) return;
-            // Menus return BEFORE the menubar's commandset/keyset block so a
-            // re-shown menubar keeps its original order.
-            const anchor = c.menubar.querySelector("commandset, keyset");
-            for (const m of c.menus) {
-                try { c.menubar.insertBefore(m, anchor || null); } catch (e) {}
-            }
-            try { c.popupset.remove(); } catch (e) {}
-            c.toolbar.collapsed = false;
+            try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
+            try { c.iconBox.remove(); } catch (e) {}
+            try { c.bb.remove(); } catch (e) {}
             delete win._wvPMChrome;
         } catch (e) {}
     }
@@ -6128,6 +6143,12 @@ class _PaneMixin {
         try {
             if (!this._getEnablePluginsSearch || !this._getEnablePluginsSearch()) return;
             this._wvWireViewerOpen();
+            // Keep the "Recent Updates" sidebar category permanently visible
+            // (MJT 2026-09-07): aboutaddons hides it behind
+            // `extensions.ui.recent-updates.hidden` (default true) and only
+            // the gear menu ever reveals it. A plain platform pref — set via
+            // Services.prefs, not Zotero.Prefs.
+            try { Services.prefs.setBoolPref("extensions.ui.recent-updates.hidden", false); } catch (e) {}
             if (this._wvPMObserver) return;
             const self = this;
             const tryInject = (w: any) => { try { self._wvPMMaybeInject(w); } catch (e) {} };
@@ -6150,6 +6171,9 @@ class _PaneMixin {
     _teardownPluginsSearch(this: any) {
         try {
             this._wvUnwireViewerOpen();
+            // Guarded per the cleared-pref trap (a user-value-only pref that
+            // is cleared can refuse re-creation until restart).
+            try { Services.prefs.clearUserPref("extensions.ui.recent-updates.hidden"); } catch (e) {}
             if (this._wvPMObserver) {
                 try { Services.obs.removeObserver(this._wvPMObserver, "domwindowopened"); } catch (e) {}
                 this._wvPMObserver = null;
@@ -6216,33 +6240,6 @@ class _PaneMixin {
             wrap.style.cssText = "position: sticky; top: 0; z-index: 1; padding: 10px 16px 8px;"
                 + " background: var(--background-color, Window);"
                 + " display: flex; gap: 8px; align-items: center;";
-            // ☰ — opens the chrome File/Edit/View menus (moved off the
-            // menubar row by _wvPMSetupChrome; non-Mac only).
-            if (!(Zotero as any).isMac) {
-                const burger = doc.createElement("button");
-                burger.id = "wv-pm-hamburger";
-                burger.textContent = "☰";
-                burger.setAttribute("title", "Menu");
-                burger.style.cssText = "font-size: 16px; padding: 5px 10px; border-radius: 6px;"
-                    + " cursor: pointer; color: inherit;"
-                    + " border: 1px solid color-mix(in srgb, currentColor 30%, transparent);"
-                    + " background: color-mix(in srgb, currentColor 6%, transparent);";
-                burger.addEventListener("click", (e: any) => {
-                    try {
-                        e.preventDefault();
-                        const popup = win.document.getElementById("wv-pm-menupopup");
-                        if (!popup) return;
-                        // Content-doc anchor -> screen coords (the browser is
-                        // non-remote, so mozInnerScreen* is trustworthy here).
-                        const r = burger.getBoundingClientRect();
-                        const cw: any = doc.defaultView;
-                        (popup as any).openPopupAtScreen(
-                            Math.round(cw.mozInnerScreenX + r.left),
-                            Math.round(cw.mozInnerScreenY + r.bottom + 2), true);
-                    } catch (er) {}
-                });
-                wrap.appendChild(burger);
-            }
             const input = doc.createElement("input");
             input.type = "search";
             input.placeholder = "Search installed plugins  (Ctrl+F)";
@@ -6288,6 +6285,12 @@ class _PaneMixin {
                             if (!box && m) m.insertBefore(wrap, m.firstChild);
                             apply();   // keep the filter applied as cards (re)render
                             self._wvPMDecorateCards(doc);   // version + updated meta lines
+                            // Already-open managers initialized before the
+                            // recent-updates pref flip — unhide directly.
+                            try {
+                                const rb: any = doc.querySelector('button[name="recent-updates"]');
+                                if (rb && rb.hidden) rb.hidden = false;
+                            } catch (e) {}
                         } else if (box) {
                             box.remove();   // detail view → nothing to search
                         }

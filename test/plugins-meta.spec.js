@@ -38,6 +38,13 @@ describe("Weavero — Plugins Manager card meta", () => {
 		});
 	});
 
+	it("keeps the Recent Updates category permanently visible (pref flipped)", function () {
+		if (!wv._getEnablePluginsSearch || !wv._getEnablePluginsSearch()) this.skip();
+		assert.isFalse(
+			Services.prefs.getBoolPref("extensions.ui.recent-updates.hidden", true),
+			"aboutaddons hides the category behind this pref by default");
+	});
+
 	describe("_wvPMDecorateCards", () => {
 		const mkDoc = (cards) => {
 			const d = Zotero.getMainWindow().document.implementation

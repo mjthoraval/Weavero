@@ -7481,12 +7481,27 @@ class _ReaderPanelsMixin {
             trace.live = !!targetPoint;
             trace.target = !!target;
             if (!target) { trace.out = entries.length; return entries.length; }
+            // Insert after the LAST entry that compares BEFORE the target —
+            // not before the first entry that compares after. The difference
+            // matters when the list already holds ONE misplaced entry: with
+            // first-after-wins, a single early misfile (a sidebar pin stuck
+            // mid-list) captured every later insertion at its slot, in both
+            // directions, and the errors compounded (MJT 2026-09-07, Rizuan
+            // snapshot: sidebar pins mid-list, main pins piling before
+            // them). Last-before is immune to any single outlier.
+            let lastBefore = -1;
             for (let i = 0; i < entries.length; i++) {
                 const pt = this._wvOutlineDomPoint(pv, entries[i]);
                 if (!pt) continue;
                 trace.resolved++;
-                if (this._wvOutlineDomPointAfter(pt, target)) { trace.after = i; trace.out = i; return i; }
+                if (this._wvOutlineDomPointAfter(target, pt)) { lastBefore = i; }
             }
+            // Nothing resolved at all -> append (the documented contract:
+            // an unresolvable world must not drag the entry to the top).
+            if (trace.resolved === 0) { trace.out = entries.length; return entries.length; }
+            trace.after = lastBefore;
+            trace.out = lastBefore + 1;
+            return lastBefore + 1;
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineDomOrderIndex err: " + e); }
         trace.out = entries.length;
         return entries.length;

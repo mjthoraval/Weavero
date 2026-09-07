@@ -5960,9 +5960,174 @@ class _PaneMixin {
     // page inside a basicViewer window, with no way to filter a long plugin
     // list. Inject a search box above the cards; Ctrl+F focuses it.
 
+    /** Relative "updated …" wording for a plugin card. ≥14 days switches to
+     *  the absolute date inline — "82 days ago" reads worse than the date.
+     *  Guard: test/plugins-meta.spec.js. */
+    _wvPMRelTime(this: any, when: number): { rel: string, abs: string } {
+        const d = new Date(when);
+        const abs = d.toLocaleString();
+        const age = Date.now() - when;
+        const MIN = 60000, H = 3600000, DAY = 86400000;
+        let rel;
+        if (!(when > 0)) { rel = "unknown"; }
+        else if (age < MIN) rel = "just now";
+        else if (age < H) rel = Math.floor(age / MIN) + " min ago";
+        else if (age < DAY) { const h = Math.floor(age / H); rel = h + (h === 1 ? " hour ago" : " hours ago"); }
+        else if (age < 14 * DAY) { const dd = Math.floor(age / DAY); rel = dd + (dd === 1 ? " day ago" : " days ago"); }
+        else rel = d.toLocaleDateString();
+        return { rel, abs };
+    }
+
+    /** Version + last-update meta line under each plugin card's name (list
+     *  view only — the detail view already shows the version natively).
+     *  Steady-state no-op: text/title are written only on change, so the
+     *  MutationObserver that calls this cannot loop. */
+    _wvPMDecorateCards(this: any, doc: any) {
+        try {
+            for (const card of doc.querySelectorAll("addon-list addon-card")) {
+                const addon = (card as any).addon;
+                if (!addon) continue;
+                const nc = card.querySelector(".addon-name-container");
+                if (!nc || !nc.parentElement) continue;
+                let meta: any = card.querySelector(".wv-pm-meta");
+                if (!meta) {
+                    meta = doc.createElement("div");
+                    meta.className = "wv-pm-meta";
+                    meta.style.cssText = "font-size: 12px; opacity: .65; margin: 1px 0 2px;";
+                    nc.insertAdjacentElement("afterend", meta);
+                }
+                const t = this._wvPMRelTime(addon.updateDate ? addon.updateDate.getTime
+                    ? addon.updateDate.getTime() : Number(addon.updateDate) : 0);
+                const txt = "v" + (addon.version || "?") + " · updated " + t.rel;
+                if (meta.textContent !== txt) meta.textContent = txt;
+                if (meta.getAttribute("title") !== t.abs) meta.setAttribute("title", t.abs);
+            }
+        } catch (e) {}
+    }
+
+    /** basicViewer chrome for the Plugins Manager: collapse the menubar row
+     *  and host its File/Edit/View menus in a chrome menupopup the content-
+     *  side ☰ button opens (the <menu> nodes are MOVED, not cloned, so
+     *  every command/key stays wired). Skipped on macOS — the menubar lives
+     *  in the system bar there. Reversed by _teardownPluginsSearch. */
+    _wvPMSetupChrome(this: any, win: any, _doc: any) {
+        try {
+            if ((Zotero as any).isMac) return;
+            if (win._wvPMChrome) return;
+            const cdoc = win.document;
+            const toolbar = cdoc.getElementById("toolbar-menubar");
+            const menubar = cdoc.getElementById("main-menubar");
+            if (!toolbar || !menubar) return;
+            const menus = ["fileMenu", "edit-menu", "view-menu"]
+                .map((id) => cdoc.getElementById(id)).filter(Boolean);
+            if (!menus.length) return;
+            const popup = cdoc.createXULElement("menupopup");
+            popup.id = "wv-pm-menupopup";
+            for (const m of menus) popup.appendChild(m);   // move, keep wiring
+            const popupset = cdoc.createXULElement("popupset");
+            popupset.id = "wv-pm-popupset";
+            popupset.appendChild(popup);
+            cdoc.documentElement.appendChild(popupset);
+            toolbar.collapsed = true;
+            win._wvPMChrome = { toolbar, menubar, menus, popup, popupset };
+        } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
+    }
+
+    _wvPMTeardownChrome(this: any, win: any) {
+        try {
+            const c = win && win._wvPMChrome;
+            if (!c) return;
+            // Menus return BEFORE the menubar's commandset/keyset block so a
+            // re-shown menubar keeps its original order.
+            const anchor = c.menubar.querySelector("commandset, keyset");
+            for (const m of c.menus) {
+                try { c.menubar.insertBefore(m, anchor || null); } catch (e) {}
+            }
+            try { c.popupset.remove(); } catch (e) {}
+            c.toolbar.collapsed = false;
+            delete win._wvPMChrome;
+        } catch (e) {}
+    }
+
+    /** Wrap `Zotero.openInViewer` so the Plugins Manager opens as a NORMAL
+     *  window instead of a dialog: upstream hard-codes `dialog=yes`, which on
+     *  Windows strips minimize/maximize from the title bar (user ask
+     *  2026-09-07: "same control buttons as on the main window"). Only the
+     *  aboutaddons URI is rerouted — everything else goes to the original.
+     *  Mirrors upstream's dedupe-and-focus and onLoad plumbing
+     *  (zotero.js `openInViewer`, verified 10.0.2-beta.7). */
+    _wvWireViewerOpen(this: any) {
+        try {
+            const Z: any = Zotero as any;
+            const tag = this._wvWireTag();
+            if (Z._wvViewerOpenWired === tag) return;
+            if (Z._wvOrigOpenInViewer) Z.openInViewer = Z._wvOrigOpenInViewer;
+            const orig = Z.openInViewer;
+            if (typeof orig !== "function") return;
+            Z._wvOrigOpenInViewer = orig;
+            Z.openInViewer = function (uri: any, options: any) {
+                try {
+                    const lp: any = Z.Weavero && Z.Weavero.plugin;
+                    if (lp && typeof uri === "string" && uri.includes("extensions/aboutaddons")) {
+                        return lp._wvPMOpenViewerNonDialog(uri, options, orig, this);
+                    }
+                } catch (e) {}
+                return orig.apply(this, arguments);
+            };
+            Z._wvViewerOpenWired = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvWireViewerOpen err: " + e); }
+    }
+
+    _wvUnwireViewerOpen(this: any) {
+        try {
+            const Z: any = Zotero as any;
+            if (!Z._wvOrigOpenInViewer) return;
+            Z.openInViewer = Z._wvOrigOpenInViewer;
+            delete Z._wvOrigOpenInViewer;
+            delete Z._wvViewerOpenWired;
+        } catch (e) {}
+    }
+
+    _wvPMOpenViewerNonDialog(this: any, uri: string, options: any, orig: any, thisArg: any) {
+        // Same shape as upstream, only `dialog=no` differs.
+        const viewerWins = Services.wm.getEnumerator("zotero:basicViewer");
+        // @ts-ignore - enumerator is iterable in Zotero's Gecko
+        for (const existingWin of viewerWins as any) {
+            if (existingWin.viewerOriginalURI === uri
+                    && existingWin.viewerUserContextId === (options && options.userContextId)) {
+                existingWin.focus();
+                return existingWin;
+            }
+        }
+        const ww: any = Components.classes["@mozilla.org/embedcomp/window-watcher;1"]
+            .getService(Components.interfaces.nsIWindowWatcher);
+        const arg: any = { uri, options: Object.assign({}, options, { onLoad: undefined }) };
+        arg.wrappedJSObject = arg;
+        const win: any = ww.openWindow(null, "chrome://zotero/content/standalone/basicViewer.xhtml",
+            null, "chrome,dialog=no,resizable,centerscreen,menubar,scrollbars", arg);
+        if (options && options.onLoad) {
+            const func = function () {
+                win.removeEventListener("load", func);
+                win.setTimeout(() => {
+                    try {
+                        const browser = win.document.documentElement.getElementsByTagName("browser")[0];
+                        const innerFunc = function () {
+                            browser.removeEventListener("pageshow", innerFunc);
+                            try { options.onLoad(browser.contentDocument); } catch (e) {}
+                        };
+                        browser.addEventListener("pageshow", innerFunc);
+                    } catch (e) {}
+                });
+            };
+            win.addEventListener("load", func);
+        }
+        return win;
+    }
+
     _registerPluginsSearch(this: any) {
         try {
             if (!this._getEnablePluginsSearch || !this._getEnablePluginsSearch()) return;
+            this._wvWireViewerOpen();
             if (this._wvPMObserver) return;
             const self = this;
             const tryInject = (w: any) => { try { self._wvPMMaybeInject(w); } catch (e) {} };
@@ -5984,6 +6149,7 @@ class _PaneMixin {
 
     _teardownPluginsSearch(this: any) {
         try {
+            this._wvUnwireViewerOpen();
             if (this._wvPMObserver) {
                 try { Services.obs.removeObserver(this._wvPMObserver, "domwindowopened"); } catch (e) {}
                 this._wvPMObserver = null;
@@ -5992,11 +6158,13 @@ class _PaneMixin {
             while (en.hasMoreElements()) {
                 const w: any = en.getNext();
                 try {
+                    this._wvPMTeardownChrome(w);
                     const br = w.document && w.document.querySelector("browser");
                     const cd = br && br.contentDocument;
                     if (!cd) continue;
                     const box = cd.getElementById("wv-pm-searchbox");
                     if (box) box.remove();
+                    for (const m of cd.querySelectorAll(".wv-pm-meta")) m.remove();
                     if (cd._wvPMKeyHandler) {
                         try { cd.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
                         try { w.document.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
@@ -6039,16 +6207,46 @@ class _PaneMixin {
             if (doc.getElementById("wv-pm-searchbox")) return;
             const main = doc.getElementById("main") || doc.body;
             if (!main) return;
+            const self = this;
+            this._wvPMSetupChrome(win, doc);   // menubar -> hamburger popup (non-Mac)
             const wrap = doc.createElement("div");
             wrap.id = "wv-pm-searchbox";
             // z-index 1: above the scrolling cards, but BELOW the page's own
             // popups (the gear menu opens over the bar, not under it).
             wrap.style.cssText = "position: sticky; top: 0; z-index: 1; padding: 10px 16px 8px;"
-                + " background: var(--background-color, Window);";
+                + " background: var(--background-color, Window);"
+                + " display: flex; gap: 8px; align-items: center;";
+            // ☰ — opens the chrome File/Edit/View menus (moved off the
+            // menubar row by _wvPMSetupChrome; non-Mac only).
+            if (!(Zotero as any).isMac) {
+                const burger = doc.createElement("button");
+                burger.id = "wv-pm-hamburger";
+                burger.textContent = "☰";
+                burger.setAttribute("title", "Menu");
+                burger.style.cssText = "font-size: 16px; padding: 5px 10px; border-radius: 6px;"
+                    + " cursor: pointer; color: inherit;"
+                    + " border: 1px solid color-mix(in srgb, currentColor 30%, transparent);"
+                    + " background: color-mix(in srgb, currentColor 6%, transparent);";
+                burger.addEventListener("click", (e: any) => {
+                    try {
+                        e.preventDefault();
+                        const popup = win.document.getElementById("wv-pm-menupopup");
+                        if (!popup) return;
+                        // Content-doc anchor -> screen coords (the browser is
+                        // non-remote, so mozInnerScreen* is trustworthy here).
+                        const r = burger.getBoundingClientRect();
+                        const cw: any = doc.defaultView;
+                        (popup as any).openPopupAtScreen(
+                            Math.round(cw.mozInnerScreenX + r.left),
+                            Math.round(cw.mozInnerScreenY + r.bottom + 2), true);
+                    } catch (er) {}
+                });
+                wrap.appendChild(burger);
+            }
             const input = doc.createElement("input");
             input.type = "search";
             input.placeholder = "Search installed plugins  (Ctrl+F)";
-            input.style.cssText = "width: 100%; box-sizing: border-box; padding: 7px 12px;"
+            input.style.cssText = "flex: 1; box-sizing: border-box; padding: 7px 12px;"
                 + " font-size: 14px; border-radius: 6px; color: inherit;"
                 + " border: 1px solid color-mix(in srgb, currentColor 30%, transparent);"
                 + " background: color-mix(in srgb, currentColor 6%, transparent);";
@@ -6089,6 +6287,7 @@ class _PaneMixin {
                             const m = doc.getElementById("main") || doc.body;
                             if (!box && m) m.insertBefore(wrap, m.firstChild);
                             apply();   // keep the filter applied as cards (re)render
+                            self._wvPMDecorateCards(doc);   // version + updated meta lines
                         } else if (box) {
                             box.remove();   // detail view → nothing to search
                         }

@@ -15710,7 +15710,7 @@ class _ReaderMixin {
         } catch (e) { return null; }
     }
 
-    _wvEnsureHamburger(win, stripEl, beforeEl) {
+    _wvEnsureHamburger(win, stripEl, beforeEl, opts?: any) {
         try {
             if (!win || !win.document || !stripEl) return null;
             const doc = win.document;
@@ -15836,8 +15836,9 @@ class _ReaderMixin {
             // Firefox-style TOP entries: New Tab / New Reader Window /
             // New Main Window (user request 2026-07-13). "New Tab" opens
             // this window's picker (reader: the + button; main: the
-            // Ctrl+T picker).
-            try {
+            // Ctrl+T picker). Skipped for windows where they make no sense
+            // (the Plugins Manager viewer, 2026-09-07).
+            if (!(opts && opts.noTopEntries)) try {
                 const mkTop = (label: string, fn: () => void, accel?: string) => {
                     const mi: any = doc.createXULElement("menuitem");
                     mi.setAttribute("label", label);

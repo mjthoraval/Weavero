@@ -6005,51 +6005,53 @@ class _PaneMixin {
         } catch (e) {}
     }
 
-    /** basicViewer chrome for the Plugins Manager: draw into the titlebar the
-     *  way every main Zotero window does (titlebar.js's `customtitlebar`
-     *  switch), so the menubar row BECOMES the top bar — Z icon left, the
-     *  File/Edit/View menus in place, and the main window's own caption
-     *  buttons (min/max/restore/close) top right. All styling comes from the
-     *  shared skin: the toolbox already carries `menubar-container`, and the
-     *  `.titlebar-*` classes are in zotero-platform CSS, which basicViewer
-     *  loads (verified 10.0.2-beta.7). Skipped on macOS — the menubar lives
-     *  in the system bar there. Reversed by _teardownPluginsSearch. */
+    /** basicViewer chrome for the Plugins Manager (final shape, MJT
+     *  2026-09-07 after two iterations): the NATIVE title bar stays — window
+     *  name + OS min/max/close (real buttons courtesy of the dialog=no
+     *  reroute) — and the menubar row below it slims down to a ☰ at the top
+     *  right, the same spot the main window's hamburger occupies. The
+     *  hamburger is the SHARED builder (`_wvEnsureHamburger`, reader.ts):
+     *  it cascades the LIVE File/Edit/View popups, so every command and
+     *  shortcut keeps working. The menus collapse via height-0 (NOT
+     *  display:none — the popups must stay renderable, same lesson as the
+     *  compact title bar's Alt-reveal). Skipped on macOS. */
     _wvPMSetupChrome(this: any, win: any, _doc: any) {
         try {
             if ((Zotero as any).isMac) return;
             if (win._wvPMChrome) return;
             const cdoc = win.document;
             const toolbar = cdoc.getElementById("toolbar-menubar");
-            const toolbox = toolbar && toolbar.parentElement;   // .menubar-container
-            if (!toolbar || !toolbox) return;
-            cdoc.documentElement.setAttribute("customtitlebar", "true");
-            // Z icon, main-window behaviour (dblclick closes).
-            const iconBox = cdoc.createXULElement("hbox");
-            iconBox.id = "wv-pm-titlebar-icon";
-            iconBox.className = "titlebar-icon-container";
-            const icon: any = cdoc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-            icon.className = "titlebar-icon";
-            icon.addEventListener("dblclick", (ev: any) => { if (ev.button === 0) win.close(); });
-            iconBox.appendChild(icon);
-            toolbox.insertBefore(iconBox, toolbar);
-            // Caption buttons — the main window's markup verbatim
-            // (zoteroPane.xhtml .titlebar-buttonbox); max/restore visibility
-            // follows the root's persisted `sizemode` via the shared skin.
-            const bb = cdoc.createXULElement("hbox");
-            bb.id = "wv-pm-buttonbox";
-            bb.className = "titlebar-buttonbox titlebar-color";
-            const mkBtn = (cls: string, fn: () => void) => {
-                const b = cdoc.createXULElement("toolbarbutton");
-                b.className = "titlebar-button " + cls;
-                b.addEventListener("command", fn);
-                bb.appendChild(b);
-            };
-            mkBtn("titlebar-min", () => { try { win.minimize(); } catch (e) {} });
-            mkBtn("titlebar-max", () => { try { win.maximize(); } catch (e) {} });
-            mkBtn("titlebar-restore", () => { try { win.restore(); } catch (e) {} });
-            mkBtn("titlebar-close", () => { try { win.close(); } catch (e) {} });
-            toolbox.appendChild(bb);
-            win._wvPMChrome = { toolbox, toolbar, iconBox, bb };
+            const items = cdoc.getElementById("menubar-items");
+            if (!toolbar || !items) return;
+            if (!cdoc.getElementById("wv-pm-chrome-styles")) {
+                const style = cdoc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+                style.id = "wv-pm-chrome-styles";
+                style.textContent = [
+                    "#menubar-items[wv-pm-hidden='true'] {",
+                    "  height: 0 !important; min-height: 0 !important;",
+                    "  overflow: hidden !important;",
+                    "}",
+                    // Same geometry as the main-window/reader hamburger
+                    // (those rules are scoped to their own strips).
+                    ".wv-hamburger-btn {",
+                    "  display: flex; align-items: center; justify-content: center;",
+                    "  flex: 0 0 auto; width: 28px; height: 28px; align-self: center;",
+                    "  margin: 0 4px 0 auto; padding: 0;",
+                    "  border: none; border-radius: 5px;",
+                    "  background: transparent; color: inherit;",
+                    "}",
+                    ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); }",
+                    ".wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
+                    "#wv-hamburger-popup { min-width: 147px; }",
+                    "#wv-hamburger-popup > menu,",
+                    "#wv-hamburger-popup > menuitem { padding-inline: 12px; }",
+                ].join("\n");
+                (cdoc.documentElement || cdoc).appendChild(style);
+            }
+            items.setAttribute("wv-pm-hidden", "true");
+            const btn = this._wvEnsureHamburger
+                ? this._wvEnsureHamburger(win, toolbar, null, { noTopEntries: true }) : null;
+            win._wvPMChrome = { toolbar, items, btn };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
     }
 
@@ -6057,9 +6059,9 @@ class _PaneMixin {
         try {
             const c = win && win._wvPMChrome;
             if (!c) return;
-            try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
-            try { c.iconBox.remove(); } catch (e) {}
-            try { c.bb.remove(); } catch (e) {}
+            try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
+            try { this._wvRemoveHamburger(win); } catch (e) {}
+            try { const st = win.document.getElementById("wv-pm-chrome-styles"); if (st) st.remove(); } catch (e) {}
             delete win._wvPMChrome;
         } catch (e) {}
     }

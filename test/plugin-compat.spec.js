@@ -23,6 +23,19 @@
 //      cleared — our wrap is intact underneath,
 //   5. the run adds no error-console entries mentioning either plugin.
 
+
+// Resolve a pinned companion XPI by NAME PREFIX, not exact filename — pin
+// bumps rename the file (PINS.json is the authority), and a hardcoded name
+// broke the AM phase's before-all on the 0.6.2→0.6.3 bump (2026-09-07).
+async function wvCompatXpiPath(prefix) {
+	const dir = Services.env.get("WV_COMPAT_XPI_DIR");
+	if (!dir) throw new Error("WV_COMPAT_XPI_DIR not set");
+	const kids = await IOUtils.getChildren(dir);
+	const hit = kids.find(k => PathUtils.filename(k).startsWith(prefix) && k.endsWith(".xpi"));
+	if (!hit) throw new Error("no pinned XPI matching " + prefix + "* in " + dir);
+	return hit;
+}
+
 describe("Weavero — plugin compat: Default Attachment (real XPI)", function () {
     // Real AddonManager installs + item writes: generous budget.
     this.timeout(60000);
@@ -47,7 +60,7 @@ describe("Weavero — plugin compat: Default Attachment (real XPI)", function ()
         addon = await AddonManager.getAddonByID(DA_ID);
         if (!addon) {
             const file = Zotero.File.pathToFile(
-                PathUtils.join(dir, "default-attachment-1.0.0.xpi"));
+                await wvCompatXpiPath("default-attachment-"));
             const install = await AddonManager.getInstallForFile(file);
             try {
                 await install.install();
@@ -164,7 +177,7 @@ describe("Weavero — plugin compat: Zotero Reading List (real XPI)", function (
         addon = await AddonManager.getAddonByID(RL_ID);
         if (!addon) {
             const file = Zotero.File.pathToFile(
-                PathUtils.join(dir, "zotero-reading-list-1.5.22.xpi"));
+                await wvCompatXpiPath("zotero-reading-list-"));
             const install = await AddonManager.getInstallForFile(file);
             await install.install();
             addon = await AddonManager.getAddonByID(RL_ID);
@@ -284,7 +297,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         addon = await AddonManager.getAddonByID(AM_ID);
         if (!addon) {
             const file = Zotero.File.pathToFile(
-                PathUtils.join(dir, "zotero-annotation-markdown-0.6.2.xpi"));
+                await wvCompatXpiPath("zotero-annotation-markdown-"));
             const install = await AddonManager.getInstallForFile(file);
             await install.install();
             addon = await AddonManager.getAddonByID(AM_ID);
@@ -379,26 +392,47 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         // The popup renders only with the sidebar CLOSED, and only a
         // direct _onSetAnnotationPopup drives it reliably (synthetic
         // clicks are untrusted; reference_zotero_reader_annotation_popup).
-        try { reader._internalReader.toggleSidebar(false); } catch (e) {}
-        await sleep(600);
-        const Cu = Components.utils;
-        const pv = Cu.waiveXrays(reader._internalReader._primaryView);
-        const am = Cu.waiveXrays(reader._internalReader._annotationManager);
-        const a = (am._annotations || []).find(x => String(x.id) === ann.key);
-        assert.isOk(a, "content-side annotation object");
-        pv._onSetAnnotationPopup({ rect: [50, 50, 200, 80], annotation: a });
-        const idoc = reader._iframeWindow.document;
-        const popup = await waitFor(() => {
-            const el = idoc.querySelector(".annotation-popup");
-            return el && el.querySelector(".comment") ? el : null;
-        }, 15000, "in-view annotation popup");
-        const preview = await waitFor(
-            () => popup.querySelector(".wv-md-preview"), 15000,
-            "Weavero preview inside the popup");
-        assert.include(preview.textContent, "bold",
-            "markdown rendered by WEAVERO in the popup (not raw, not yielded)");
-        try { pv._onSetAnnotationPopup(); } catch (e) {}
-        try { reader._internalReader.toggleSidebar(true); } catch (e) {}
+        // Error-visibility wrapper: this reporter renders an async failure
+        // whose .message is undefined (XPCOM/Xray exceptions) as a bare
+        // "undefined" — stringify whatever flies (2026-09-07).
+        try {
+            try { reader._internalReader.toggleSidebar(false); } catch (e) {}
+            await sleep(600);
+            const Cu = Components.utils;
+            const pv = Cu.waiveXrays(reader._internalReader._primaryView);
+            const am = Cu.waiveXrays(reader._internalReader._annotationManager);
+            const a = (am._annotations || []).find(x => String(x.id) === ann.key);
+            assert.isOk(a, "content-side annotation object");
+            pv._onSetAnnotationPopup({ rect: [50, 50, 200, 80], annotation: a });
+            const idoc = reader._iframeWindow.document;
+            const popup = await waitFor(() => {
+                const el = idoc.querySelector(".annotation-popup");
+                return el && el.querySelector(".comment") ? el : null;
+            }, 15000, "in-view annotation popup");
+            const preview = await waitFor(
+                () => popup.querySelector(".wv-md-preview"), 15000,
+                "Weavero preview inside the popup");
+            assert.include(preview.textContent, "bold",
+                "markdown rendered by WEAVERO in the popup (not raw, not yielded)");
+        }
+        catch (e) {
+            // The reporter prints NO message for failures (verified run 3) —
+            // self-report to a repo-local file, the live-suite discipline.
+            const msg = "[popup spec] " + String(e)
+                + (e && e.stack ? " @ " + String(e.stack).split("\n").slice(0, 3).join(" | ") : "");
+            try {
+                const xdir = Services.env.get("WV_COMPAT_XPI_DIR");
+                if (xdir) {
+                    await IOUtils.writeUTF8(PathUtils.join(xdir, "..", "last-errors.log"),
+                        new Date().toISOString() + " " + msg + "\n", { mode: "appendOrCreate" });
+                }
+            } catch (e2) {}
+            throw new Error(msg);
+        }
+        finally {
+            try { Components.utils.waiveXrays(reader._internalReader._primaryView)._onSetAnnotationPopup(); } catch (e) {}
+            try { reader._internalReader.toggleSidebar(true); } catch (e) {}
+        }
     });
 
     it("no error-console entries mention the plugin", function () {
@@ -467,7 +501,7 @@ describe("Weavero — plugin compat: Better Notes (real XPI)", function () {
         addon = await AddonManager.getAddonByID(BN_ID);
         if (!addon) {
             const file = Zotero.File.pathToFile(
-                PathUtils.join(dir, "better-notes-3.3.3.xpi"));
+                await wvCompatXpiPath("better-notes-"));
             const install = await AddonManager.getInstallForFile(file);
             await install.install();
             addon = await AddonManager.getAddonByID(BN_ID);

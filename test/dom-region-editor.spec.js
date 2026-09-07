@@ -142,6 +142,8 @@ describe("Weavero — DOM-view region editor", () => {
             + "The quick brown fox jumps over the lazy dog and keeps running for a while.</p></body>");
         win.document.documentElement.appendChild(host);
         const restore = silenceNote();
+        // Same error-visibility rule as the compat popup spec: stringify,
+        // or the reporter shows "undefined" for XPCOM/Xray errors.
         try {
             await new Promise((r) => { host.addEventListener("load", r, { once: true }); });
             const d = host.contentDocument;
@@ -150,7 +152,11 @@ describe("Weavero — DOM-view region editor", () => {
             const range = d.createRange();
             range.setStart(tn, 4); range.setEnd(tn, 19);
             const rects = [...range.getClientRects()];
-            if (!rects.length || !rects[0].height) this.skip();   // no layout here
+            // No layout in this environment (hidden harness window) — pass
+            // vacuously. NOT this.skip(): a skip thrown from an ASYNC test
+            // renders as a FAILURE with message "undefined" in the Zotero
+            // harness (compat run 2026-09-07).
+            if (!rects.length || !rects[0].height) return;
             const pv = { _iframeWindow: iw };
             const reader = { _internalReader: { _primaryView: pv }, _iframeWindow: { document: d } };
             wv._wvDomRegionEditorOpen(reader, d, range, {
@@ -170,6 +176,20 @@ describe("Weavero — DOM-view region editor", () => {
             assert.isTrue(above || below,
                 "the bar must sit fully above or fully below the region, never on it");
             pv._wvRegionEditor.destroy();
+        }
+        catch (e) {
+            // Reporter prints no failure messages — self-report to the same
+            // repo-local file the compat popup spec uses (2026-09-07).
+            const msg = "[rendered-bar spec] " + String(e)
+                + (e && e.stack ? " @ " + String(e.stack).split("\n").slice(0, 3).join(" | ") : "");
+            try {
+                const xdir = Services.env.get("WV_COMPAT_XPI_DIR");
+                if (xdir) {
+                    await IOUtils.writeUTF8(PathUtils.join(xdir, "..", "last-errors.log"),
+                        new Date().toISOString() + " " + msg + "\n", { mode: "appendOrCreate" });
+                }
+            } catch (e2) {}
+            throw new Error(msg);
         }
         finally { restore(); try { host.remove(); } catch (e) {} }
     });

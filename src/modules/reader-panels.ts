@@ -9316,7 +9316,26 @@ class _ReaderPanelsMixin {
             const rng = this._wvDomRangeForAnchor(pv, anchor);
             const rc = rng && rng.getBoundingClientRect();
             if (!rc || (!rc.width && !rc.height)) return null;
-            iwin.scrollTo(0, Math.max(0, Math.round(rc.top + iwin.scrollY
+            // NESTED SCROLLERS (MJT 2026-09-07): a pin inside a snapshot's
+            // independently scrolling region (#sidebar_right on Annual
+            // Reviews) never came into view — the main-window scroll cannot
+            // move content that lives in an inner scroller. Give every
+            // scrollable ancestor its own ¼-from-top landing, innermost
+            // first, then re-measure for the main-window scroll.
+            try {
+                const startEl = rng.startContainer.nodeType === 3
+                    ? rng.startContainer.parentElement : rng.startContainer;
+                for (let n: any = startEl; n && n !== doc.body && n !== doc.documentElement; n = n.parentElement) {
+                    const cs = iwin.getComputedStyle(n);
+                    if (/(auto|scroll)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 10) {
+                        const scR = n.getBoundingClientRect();
+                        const tR = rng.getBoundingClientRect();
+                        n.scrollTop += Math.round((tR.top - scR.top) - n.clientHeight * 0.25);
+                    }
+                }
+            } catch (_) {}
+            const rc2 = rng.getBoundingClientRect();
+            iwin.scrollTo(0, Math.max(0, Math.round(rc2.top + iwin.scrollY
                 - (iwin.innerHeight || 800) * 0.25)));
             return rng;
         } catch (_) { return null; }

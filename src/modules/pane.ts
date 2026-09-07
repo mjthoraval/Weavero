@@ -6031,17 +6031,34 @@ class _PaneMixin {
                     "  height: 0 !important; min-height: 0 !important;",
                     "  overflow: hidden !important;",
                     "}",
-                    // Same geometry as the main-window/reader hamburger
-                    // (those rules are scoped to their own strips).
+                    // The menus' own toolbar gives up its row entirely — the
+                    // drawn title bar replaces it.
+                    "#toolbar-menubar { flex: 0 0 0 !important; width: 0 !important;",
+                    "  overflow: hidden !important; }",
+                    // The toolbox row IS the title bar: draggable everywhere
+                    // except the interactive pieces; in-flow content stops
+                    // 138px short of the right edge, where the shared skin
+                    // absolute-positions the caption buttons.
+                    ".menubar-container { padding-right: 138px;",
+                    "  -moz-window-dragging: drag; }",
+                    ".wv-pm-title { align-self: center; margin-inline-start: 4px;",
+                    "  font-size: 12px; white-space: nowrap; overflow: hidden;",
+                    "  text-overflow: ellipsis; -moz-window-dragging: drag; }",
+                    ".wv-pm-drag-flex { flex: 1 1 auto; -moz-window-dragging: drag; }",
+                    // The main window's 40px spacer between the hamburger and
+                    // the window controls — the 'separation' (MJT 2026-09-07).
+                    ".wv-pm-drag-spacer { flex: 0 0 40px; width: 40px;",
+                    "  -moz-window-dragging: drag; }",
                     ".wv-hamburger-btn {",
                     "  display: flex; align-items: center; justify-content: center;",
                     "  flex: 0 0 auto; width: 28px; height: 28px; align-self: center;",
-                    "  margin: 0 4px 0 auto; padding: 0;",
-                    "  border: none; border-radius: 5px;",
+                    "  padding: 0; border: none; border-radius: 5px;",
                     "  background: transparent; color: inherit;",
+                    "  -moz-window-dragging: no-drag;",
                     "}",
                     ".wv-hamburger-btn:hover { background-color: rgba(127,127,127,0.18); }",
                     ".wv-hamburger-btn:active { background-color: rgba(127,127,127,0.30); }",
+                    ".titlebar-buttonbox { -moz-window-dragging: no-drag; }",
                     "#wv-hamburger-popup { min-width: 147px; }",
                     "#wv-hamburger-popup > menu,",
                     "#wv-hamburger-popup > menuitem { padding-inline: 12px; }",
@@ -6049,9 +6066,50 @@ class _PaneMixin {
                 (cdoc.documentElement || cdoc).appendChild(style);
             }
             items.setAttribute("wv-pm-hidden", "true");
+            const toolbox = toolbar.parentElement;   // .menubar-container -> the title bar row
+            cdoc.documentElement.setAttribute("customtitlebar", "true");
+            const NS_HTML = "http://www.w3.org/1999/xhtml";
+            // Left side: Z icon (dblclick closes, native titlebar behaviour)
+            // + the window's name — the native-design half the drawn bar
+            // must keep (MJT 2026-09-07).
+            const iconBox = cdoc.createXULElement("hbox");
+            iconBox.id = "wv-pm-titlebar-icon";
+            iconBox.className = "titlebar-icon-container";
+            const icon: any = cdoc.createElementNS(NS_HTML, "div");
+            icon.className = "titlebar-icon";
+            icon.addEventListener("dblclick", (ev: any) => { if (ev.button === 0) win.close(); });
+            iconBox.appendChild(icon);
+            toolbox.insertBefore(iconBox, toolbar);
+            const titleEl: any = cdoc.createElementNS(NS_HTML, "div");
+            titleEl.className = "wv-pm-title";
+            titleEl.textContent = cdoc.title || "Plugins Manager";
+            toolbox.insertBefore(titleEl, toolbar);
+            // Right side: [flex drag area][☰][40px drag spacer][caption buttons]
+            const dragFlex: any = cdoc.createElementNS(NS_HTML, "div");
+            dragFlex.className = "wv-pm-drag-flex";
+            toolbox.appendChild(dragFlex);
+            const dragSpacer: any = cdoc.createElementNS(NS_HTML, "div");
+            dragSpacer.className = "wv-pm-drag-spacer";
+            toolbox.appendChild(dragSpacer);
             const btn = this._wvEnsureHamburger
-                ? this._wvEnsureHamburger(win, toolbar, null, { noTopEntries: true }) : null;
-            win._wvPMChrome = { toolbar, items, btn };
+                ? this._wvEnsureHamburger(win, toolbox, dragSpacer, { noTopEntries: true }) : null;
+            // Caption buttons — main-window markup; the shared skin
+            // absolute-positions the box at the top right.
+            const bb = cdoc.createXULElement("hbox");
+            bb.id = "wv-pm-buttonbox";
+            bb.className = "titlebar-buttonbox titlebar-color";
+            const mkBtn = (cls: string, fn: () => void) => {
+                const b = cdoc.createXULElement("toolbarbutton");
+                b.className = "titlebar-button " + cls;
+                b.addEventListener("command", fn);
+                bb.appendChild(b);
+            };
+            mkBtn("titlebar-min", () => { try { win.minimize(); } catch (e) {} });
+            mkBtn("titlebar-max", () => { try { win.maximize(); } catch (e) {} });
+            mkBtn("titlebar-restore", () => { try { win.restore(); } catch (e) {} });
+            mkBtn("titlebar-close", () => { try { win.close(); } catch (e) {} });
+            toolbox.appendChild(bb);
+            win._wvPMChrome = { toolbar, items, btn, iconBox, titleEl, dragFlex, dragSpacer, bb };
         } catch (e) { Zotero.debug("[Weavero] _wvPMSetupChrome err: " + e); }
     }
 
@@ -6059,8 +6117,12 @@ class _PaneMixin {
         try {
             const c = win && win._wvPMChrome;
             if (!c) return;
+            try { win.document.documentElement.removeAttribute("customtitlebar"); } catch (e) {}
             try { c.items.removeAttribute("wv-pm-hidden"); } catch (e) {}
             try { this._wvRemoveHamburger(win); } catch (e) {}
+            for (const k of ["iconBox", "titleEl", "dragFlex", "dragSpacer", "bb"]) {
+                try { if (c[k]) c[k].remove(); } catch (e) {}
+            }
             try { const st = win.document.getElementById("wv-pm-chrome-styles"); if (st) st.remove(); } catch (e) {}
             delete win._wvPMChrome;
         } catch (e) {}

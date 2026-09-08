@@ -4821,6 +4821,10 @@ class _FilterMixin {
             win.setTimeout(() => this._setupItemsListFilter(win), 1000);
             return;
         }
+        // Collapse-to-quick-search rides on this window pass because it wraps
+        // the per-window ZoteroPane; it is independent of the filter panel
+        // below and self-guards on Zotero 9 (no advanced-search deck).
+        this._wvInstallCollapseToQuickSearch(win);
         // Orphan sweep at plugin startup (MJT 2026-08-20: after a
         // plugin reload, the PREVIOUS instance's mode menupopup
         // lingered and rendered as an inline text strip at the
@@ -5719,6 +5723,10 @@ class _FilterMixin {
     }
 
     _teardownItemsListFilterIn(targetWin: any) {
+        // Give the collapse button back to Zotero before anything else: a
+        // disabled plugin must not leave the native control routed through
+        // our wrapper.
+        this._wvUninstallCollapseToQuickSearch(targetWin);
         // Close the filter popup FIRST. Its contents are built on
         // `popupshowing`, so a popup still open when the plugin is
         // torn down keeps the outgoing build's DOM -- after an update
@@ -15457,6 +15465,171 @@ class _FilterMixin {
      *  that already use icons (eraser/highlight/etc.) — only the
      *  `<img>` itself needs sizing CSS, which `_injectReaderStyles`
      *  adds to the iframe. */
+
+    /** Map an Advanced Search back to the quick search that would produce it,
+     *  or null when it isn't expressible.
+     *
+     *  Only the three shapes `ZoteroPane.openAdvancedSearchFromQuickSearch`
+     *  itself seeds are recognised (read out of 10.0.2-beta.7 live and
+     *  cross-checked against upstream main 2026-09-04):
+     *
+     *    fields            N x  anyField contains <word>
+     *    titleCreatorYear  resultLevel item + N x titleCreatorYear contains <word>
+     *    everything        N x [groupStart, joinMode any, anyField contains X,
+     *                           fulltextContent contains X, groupEnd]
+     *
+     *  Anything else -- a stray creator/tag condition, a date range, a
+     *  top-level `joinMode any` -- is a search the quick search cannot say,
+     *  so collapse has to keep its native meaning rather than silently
+     *  narrowing the user's results.
+     */
+    _wvQuickSearchFromAdvanced(search: any): { text: string; mode: string } | null {
+        let conds: any[];
+        try { conds = search && search.toJSON().conditions; }
+        catch (e) { return null; }
+        if (!Array.isArray(conds) || !conds.length) return null;
+
+        // A value carrying a double quote cannot round-trip through
+        // SearchConditions.parseSearchString, so refuse it rather than emit
+        // text that would reparse into a different search.
+        const word = (v: any): string | null => (typeof v === "string" && v
+            && !v.includes('"') ? (/\s/.test(v) ? '"' + v + '"' : v) : null);
+        const is = (c: any, name: string, op: string) =>
+            !!c && c.condition === name && c.operator === op;
+
+        const words: string[] = [];
+        if (is(conds[0], "groupStart", "true")) {
+            if (conds.length % 5 !== 0) return null;
+            for (let i = 0; i < conds.length; i += 5) {
+                const gs = conds[i], jm = conds[i + 1], af = conds[i + 2],
+                    ft = conds[i + 3], ge = conds[i + 4];
+                if (!is(gs, "groupStart", "true") || !is(jm, "joinMode", "any")
+                    || !is(af, "anyField", "contains")
+                    || !is(ft, "fulltextContent", "contains")
+                    || !is(ge, "groupEnd", "true")) return null;
+                // Both halves of the group must carry the same word, or this
+                // is a hand-built search that merely resembles the seeded one.
+                if (af.value !== ft.value) return null;
+                const t = word(af.value);
+                if (!t) return null;
+                words.push(t);
+            }
+            return { text: words.join(" "), mode: "everything" };
+        }
+
+        if (is(conds[0], "resultLevel", "item")) {
+            if (conds.length < 2) return null;
+            for (let i = 1; i < conds.length; i++) {
+                if (!is(conds[i], "titleCreatorYear", "contains")) return null;
+                const t = word(conds[i].value);
+                if (!t) return null;
+                words.push(t);
+            }
+            return { text: words.join(" "), mode: "titleCreatorYear" };
+        }
+
+        for (const c of conds) {
+            if (!is(c, "anyField", "contains")) return null;
+            const t = word(c.value);
+            if (!t) return null;
+            words.push(t);
+        }
+        return { text: words.join(" "), mode: "fields" };
+    }
+
+    /** Collapse an expressible Advanced Search back to the quick search that
+     *  says the same thing. Returns false when the caller must fall through
+     *  to Zotero's native collapse (hide the editor, keep filtering).
+     *
+     *  ORDER MATTERS. Zotero clears the advanced-search channel inside
+     *  `_refreshAdvancedSearchPane`, which `setAdvancedSearchState` runs as
+     *  part of closing -- so passing `skipRefresh` would leave the advanced
+     *  filter applied on top of the quick search. Instead the quick-search
+     *  text is seeded onto the rows FIRST, without a refresh of its own, and
+     *  the close's single refresh applies both changes at once. Refreshing
+     *  twice would flash the whole unfiltered library in between (17.9k rows
+     *  on MJT's library). This mirrors `openAdvancedSearchFromQuickSearch`,
+     *  which plays the same trick in the forward direction.
+     *
+     *  The two channels return identical rows -- measured 2026-09-08 against
+     *  the real library, same items AND same order for `fields` (992) and
+     *  `titleCreatorYear` (179 of 17937) -- so the swap is invisible by
+     *  construction rather than by luck.
+     */
+    async _wvCollapseAdvancedToQuickSearch(win: any): Promise<boolean> {
+        const doc = win && win.document;
+        const ZP = win && win.ZoteroPane;
+        if (!doc || !ZP || !ZP.itemsView) return false;
+        const deck: any = doc.getElementById("zotero-advanced-search-pane-deck");
+        // Only a temporary search collapses this way: the saved-search editor
+        // has its own unsaved-changes prompt, which must not be bypassed.
+        if (!deck || deck.state !== "open"
+            || deck.selectedSearchType !== "temporary") return false;
+        // `pane.search` tracks the editor rows on every input/command
+        // (advancedSearchPane wires updateSearch to both), so this is the live
+        // state including unsubmitted edits, not the last submitted search.
+        const qs = this._wvQuickSearchFromAdvanced(deck.pane && deck.pane.search);
+        if (!qs) return false;
+        const searchBox: any = doc.getElementById("zotero-tb-search");
+        if (!searchBox) return false;
+
+        if (Zotero.Prefs.get("search.quicksearch-mode") !== qs.mode) {
+            Zotero.Prefs.set("search.quicksearch-mode", qs.mode);
+        }
+        for (const row of ZP.itemsView.collectionTreeRows) {
+            try { row.setSearch(qs.text); } catch (e) {}
+        }
+        searchBox.value = qs.text;
+        // Closing runs updateMode() -- flipping the textbox deck back to the
+        // input and re-labelling the placeholder for the restored mode -- and
+        // exactly one items-view refresh.
+        await ZP.setAdvancedSearchState("closed");
+        return true;
+    }
+
+    /** Wrap `ZoteroPane.toggleAdvancedSearchState` so the collapse button
+     *  returns to the quick search whenever the search can say the same
+     *  thing. Zotero 9 has no in-window advanced search, so this no-ops
+     *  there. Idempotent: a repeated setup pass must not stack wrappers. */
+    _wvInstallCollapseToQuickSearch(win: any) {
+        try {
+            const doc = win && win.document;
+            const ZP = win && win.ZoteroPane;
+            if (!doc || !ZP) return;
+            if (!doc.getElementById("zotero-advanced-search-pane-deck")) return;
+            if (typeof ZP.toggleAdvancedSearchState !== "function"
+                || typeof ZP.setAdvancedSearchState !== "function") return;
+            if (ZP._wvOrigToggleAdvancedSearchState) return;
+            const orig = ZP.toggleAdvancedSearchState;
+            ZP._wvOrigToggleAdvancedSearchState = orig;
+            const self: any = this;
+            ZP.toggleAdvancedSearchState = async function (state: string) {
+                try {
+                    if (state === "collapsed"
+                        && Zotero.Prefs.get(
+                            "weavero.collapseAdvancedToQuickSearch") !== false
+                        && await self._wvCollapseAdvancedToQuickSearch(win)) {
+                        return undefined;
+                    }
+                }
+                catch (e) {
+                    Zotero.debug("[Weavero] collapse-to-quick-search: " + e);
+                }
+                return orig.call(this, state);
+            };
+        }
+        catch (e) {}
+    }
+
+    _wvUninstallCollapseToQuickSearch(win: any) {
+        try {
+            const ZP = win && win.ZoteroPane;
+            if (!ZP || !ZP._wvOrigToggleAdvancedSearchState) return;
+            ZP.toggleAdvancedSearchState = ZP._wvOrigToggleAdvancedSearchState;
+            delete ZP._wvOrigToggleAdvancedSearchState;
+        }
+        catch (e) {}
+    }
 }
 
 const _filterDescriptors = Object.getOwnPropertyDescriptors(_FilterMixin.prototype);

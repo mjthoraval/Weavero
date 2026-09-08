@@ -1,9 +1,11 @@
 /* global describe, it, before, assert, Zotero */
 
 // Plugins Manager card meta line (2026-09-07): every list-view card shows
-// "v<version> · updated <relative>" under the plugin name, absolute date-time
-// as the hover title. Written only on change so the observer that re-runs the
-// decoration on every re-render can never loop.
+// "<author> · v<version> · updated <relative>" under the plugin name — the
+// detail view's own Author / Version / Last Updated order (author added
+// 2026-09-08) — absolute date-time as the hover title. Written only on change
+// so the observer that re-runs the decoration on every re-render can never
+// loop.
 
 describe("Weavero — Plugins Manager card meta", () => {
 	let wv;
@@ -66,15 +68,38 @@ describe("Weavero — Plugins Manager card meta", () => {
 		};
 		const DAY = 86400000;
 
-		it("adds the meta line with version + relative time, under the name", () => {
-			const d = mkDoc([{ version: "1.2.3", updateDate: new Date(Date.now() - 3 * DAY) }]);
+		it("adds the meta line with author + version + relative time, under the name", () => {
+			const d = mkDoc([{ version: "1.2.3", creator: { name: "mobench" },
+				updateDate: new Date(Date.now() - 3 * DAY) }]);
 			wv._wvPMDecorateCards(d);
 			const meta = d.querySelector(".wv-pm-meta");
 			assert.isOk(meta, "meta line created");
-			assert.equal(meta.textContent, "v1.2.3 · updated 3 days ago");
+			assert.equal(meta.textContent, "mobench · v1.2.3 · updated 3 days ago",
+				"the detail view's order: Author, Version, Last Updated");
 			assert.isOk(meta.getAttribute("title"), "absolute time as tooltip");
 			assert.equal(meta.previousElementSibling.className, "addon-name-container",
 				"sits under the name, above the description");
+		});
+
+		it("starts at the version when the plugin declares no author", () => {
+			const when = new Date(Date.now() - 3 * DAY);
+			const d = mkDoc([
+				{ version: "1.2.3", updateDate: when },                       // no creator at all
+				{ version: "2.0", creator: { name: "  " }, updateDate: when },  // blank name
+			]);
+			wv._wvPMDecorateCards(d);
+			const metas = [...d.querySelectorAll(".wv-pm-meta")].map((m) => m.textContent);
+			assert.deepEqual(metas, ["v1.2.3 · updated 3 days ago", "v2.0 · updated 3 days ago"],
+				"no dangling separator, no 'undefined'");
+		});
+
+		it("shows the author exactly as the detail view does: plain text, email kept, no link", () => {
+			const d = mkDoc([{ version: "1.0.1-dev.4", updateDate: new Date(Date.now() - 3 * DAY),
+				creator: { name: "Guilherme Pires <mail@gpir.es>", url: "https://example.org/" } }]);
+			wv._wvPMDecorateCards(d);
+			const meta = d.querySelector(".wv-pm-meta");
+			assert.equal(meta.textContent, "Guilherme Pires <mail@gpir.es> · v1.0.1-dev.4 · updated 3 days ago");
+			assert.isNull(meta.querySelector("a"), "the homepage link belongs to the detail view");
 		});
 
 		it("is idempotent and updates in place on change (observer-safe)", () => {

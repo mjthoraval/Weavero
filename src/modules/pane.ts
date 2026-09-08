@@ -5978,8 +5978,13 @@ class _PaneMixin {
         return { rel, abs };
     }
 
-    /** Version + last-update meta line under each plugin card's name (list
-     *  view only — the detail view already shows the version natively).
+    /** Author + version + last-update meta line under each plugin card's
+     *  name (list view only — the detail view shows all three natively, in
+     *  this same order: Author, Version, Last Updated). The author is
+     *  `addon.creator.name`, exactly what the detail view's Author row
+     *  renders (aboutaddons.js `.addon-detail-row-author`); plugins that
+     *  declare none start at the version. Plain text on purpose — the detail
+     *  view already carries the homepage link.
      *  Steady-state no-op: text/title are written only on change, so the
      *  MutationObserver that calls this cannot loop. */
     _wvPMDecorateCards(this: any, doc: any) {
@@ -5998,7 +6003,8 @@ class _PaneMixin {
                 }
                 const t = this._wvPMRelTime(addon.updateDate ? addon.updateDate.getTime
                     ? addon.updateDate.getTime() : Number(addon.updateDate) : 0);
-                const txt = "v" + (addon.version || "?") + " · updated " + t.rel;
+                const author = (addon.creator && addon.creator.name ? String(addon.creator.name) : "").trim();
+                const txt = (author ? author + " · " : "") + "v" + (addon.version || "?") + " · updated " + t.rel;
                 if (meta.textContent !== txt) meta.textContent = txt;
                 if (meta.getAttribute("title") !== t.abs) meta.setAttribute("title", t.abs);
             }

@@ -15541,6 +15541,19 @@ class _FilterMixin {
      *  says the same thing. Returns false when the caller must fall through
      *  to Zotero's native collapse (hide the editor, keep filtering).
      *
+     *  Requested and argued in
+     *  https://forums.zotero.org/discussion/133103 -- the funnel button
+     *  EXPANDS a quick search into the editor, so collapse should be its
+     *  inverse. Upstream declined the general case (dstillman: it would be
+     *  unpredictable for collapse to behave differently only when the
+     *  conditions happen to be unedited) and offered a narrower revert that
+     *  had not been implemented as of 2026-09-08. The rule here is not
+     *  "unedited" but "expressible", which is a property of the search
+     *  itself and so cannot change under the user. The geometry backs it:
+     *  the funnel and collapse buttons overlap across 21 of their 28px,
+     *  measured in the live window, so a second click in the same spot is
+     *  read as undoing the first.
+     *
      *  ORDER MATTERS. Zotero clears the advanced-search channel inside
      *  `_refreshAdvancedSearchPane`, which `setAdvancedSearchState` runs as
      *  part of closing -- so passing `skipRefresh` would leave the advanced
@@ -15551,10 +15564,25 @@ class _FilterMixin {
      *  on MJT's library). This mirrors `openAdvancedSearchFromQuickSearch`,
      *  which plays the same trick in the forward direction.
      *
-     *  The two channels return identical rows -- measured 2026-09-08 against
-     *  the real library, same items AND same order for `fields` (992) and
-     *  `titleCreatorYear` (179 of 17937) -- so the swap is invisible by
-     *  construction rather than by luck.
+     *  The swap is invisible for queries whose every word clears the note
+     *  index: measured 2026-09-08 against the real library, quick and
+     *  advanced returned the same items in the same ORDER for `fields`
+     *  (992) and `titleCreatorYear` (179 of 17937).
+     *
+     *  It is NOT invisible in general, and the difference is upstream's, not
+     *  ours: the quick search only matches note CONTENT for a word that is
+     *  quoted or long enough for the note index, while the `anyField`
+     *  conditions that `openAdvancedSearchFromQuickSearch` seeds carry no
+     *  such guard. So EXPANDING already widens the search -- `Test are a`
+     *  gave 863 hits as a quick search and 866 as the expansion, the three
+     *  extras all notes. Reported as
+     *  https://forums.zotero.org/discussion/133658 ; details and the
+     *  retire-when in work/zotero-upstream-bugs.md. Consequence: collapsing
+     *  after expanding lands back on exactly the pre-expand view, but
+     *  collapsing a HAND-BUILT `anyField` search can narrow the list by that
+     *  same difference. That is the quick search being what it is, not a
+     *  fault in the swap -- but do not restore the old claim that the two
+     *  channels are equivalent until 133658 is fixed.
      */
     async _wvCollapseAdvancedToQuickSearch(win: any): Promise<boolean> {
         const doc = win && win.document;

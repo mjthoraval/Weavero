@@ -7458,13 +7458,16 @@ class _ReaderPanelsMixin {
     }
 
     /** Document-order index for a DOM view, by resolving each anchor against
-     *  the LIVE document and comparing boundary points.
+     *  the LIVE document and comparing boundary points: the slot right after
+     *  the LAST entry lying before the target (the loop comment says why not
+     *  "before the first entry lying after it").
      *
      *  An entry that will not resolve — a stale selector, or an EPUB section
-     *  not currently rendered in paginated mode — is SKIPPED, never used as a
-     *  break: one unresolvable entry must not drag the insertion point to the
-     *  top. When nothing after the selection resolves the entry appends, which
-     *  is the honest answer rather than a guessed position. */
+     *  not currently rendered in paginated mode — is SKIPPED: it neither
+     *  counts as a predecessor nor stops the scan, so one unresolvable entry
+     *  cannot drag the insertion point anywhere. When nothing resolves at all
+     *  the entry appends, which is the honest answer rather than a guessed
+     *  position. Guards: test/outline-order.spec.js, test/outline-dom-order.spec.js. */
     _wvOutlineDomOrderIndex(entries: any[], pos: any, pv: any, targetPoint?: any): number {
         // Persistent bounded trace — an entry intermittently appended instead
         // of inserting in document order (2026-08-26), and the state at THAT

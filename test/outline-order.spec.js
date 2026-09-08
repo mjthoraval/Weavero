@@ -120,21 +120,27 @@ describe("Weavero — outline document-order insertion", () => {
         });
     });
 
+    // Since 2026-09-07 (outlier-immune insertion, test/outline-dom-order.spec.js)
+    // the DOM path files the entry right after the LAST resolvable predecessor,
+    // so an unorderable entry between the true neighbours ends up AFTER the new
+    // one. What these two lock is that such an entry is invisible to the scan.
     describe("entries that will not resolve", () => {
-        it("skips them instead of breaking on them", () => {
-            // A stale selector sits BEFORE the true insertion point. If it were
-            // treated as a break the entry would land at index 1, above content
-            // it actually follows.
+        it("neither count as a predecessor nor stop the scan", () => {
+            // A stale selector sits between the true predecessor (a) and the
+            // true successor (c). Counting it as a predecessor would file the
+            // entry after it (index 2); aborting on it would append (index 3).
             const entries = [entryAt("a"), entryAt("gone"), entryAt("c")];
             const { gap } = wv._wvOutlineDocOrderGap(entries, sel("b"), pv);
-            assert.equal(gap, 2, "the unresolvable entry must be skipped, not break the scan");
+            assert.equal(gap, 1, "right after a, the last RESOLVABLE predecessor");
         });
 
         it("does not compare points from a different document", () => {
-            // An entry resolving into another document is not orderable here.
+            // An entry resolving into another document is not orderable here:
+            // it must read as "not a predecessor" (index 1), never as one
+            // (index 2), and never as a thrown WrongDocumentError (append, 3).
             const entries = [entryAt("a"), entryAt("OTHERDOC"), entryAt("d")];
             const { gap } = wv._wvOutlineDocOrderGap(entries, sel("c"), pv);
-            assert.equal(gap, 2, "cross-document point skipped, so d is the break");
+            assert.equal(gap, 1, "cross-document point skipped; a is the last predecessor");
         });
     });
 

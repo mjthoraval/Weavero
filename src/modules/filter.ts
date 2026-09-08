@@ -15483,11 +15483,30 @@ class _FilterMixin {
      *  so collapse has to keep its native meaning rather than silently
      *  narrowing the user's results.
      */
-    _wvQuickSearchFromAdvanced(search: any): { text: string; mode: string } | null {
+    _wvQuickSearchFromAdvanced(search: any): { text: string; mode: string | null } | null {
         let conds: any[];
         try { conds = search && search.toJSON().conditions; }
         catch (e) { return null; }
-        if (!Array.isArray(conds) || !conds.length) return null;
+        if (!Array.isArray(conds)) return null;
+
+        // A search that filters NOTHING is expressible as an EMPTY quick
+        // search, so opening the editor on an empty box and collapsing it
+        // hands the empty box back instead of stranding the user on the
+        // "Advanced Search" label (MJT 2026-09-08). Covers the pane's own
+        // default -- `resultLevel item` + `title contains ""`, what
+        // advancedSearchPane seeds from `set search(null)` -- an empty
+        // condition list, and a half-built row whose value is still blank.
+        // `contains ""` ONLY: `is ""` matches items with an empty field and
+        // `doesNotContain ""` matches none, so both are real filters that
+        // must not be thrown away. `mode: null` means "no mode of its own",
+        // leaving the user's quick-search mode untouched.
+        const structural = (c: any) => c.condition === "resultLevel"
+            || c.condition === "joinMode" || c.condition === "groupStart"
+            || c.condition === "groupEnd";
+        if (conds.every((c: any) => structural(c)
+                || (c.operator === "contains" && c.value === ""))) {
+            return { text: "", mode: null };
+        }
 
         // A value carrying a double quote cannot round-trip through
         // SearchConditions.parseSearchString, so refuse it rather than emit
@@ -15601,7 +15620,8 @@ class _FilterMixin {
         const searchBox: any = doc.getElementById("zotero-tb-search");
         if (!searchBox) return false;
 
-        if (Zotero.Prefs.get("search.quicksearch-mode") !== qs.mode) {
+        // An empty search carries no mode of its own -- leave the user's alone.
+        if (qs.mode && Zotero.Prefs.get("search.quicksearch-mode") !== qs.mode) {
             Zotero.Prefs.set("search.quicksearch-mode", qs.mode);
         }
         for (const row of ZP.itemsView.collectionTreeRows) {

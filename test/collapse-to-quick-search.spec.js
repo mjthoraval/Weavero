@@ -105,7 +105,43 @@ describe("Weavero — Advanced Search to Quick Search mapping", () => {
         expect(wv._wvQuickSearchFromAdvanced(seeded("fields", ['say "hi"'])))
             .to.equal(null);
 
-        expect(wv._wvQuickSearchFromAdvanced(new Zotero.Search())).to.equal(null);
         expect(wv._wvQuickSearchFromAdvanced(null)).to.equal(null);
+    });
+
+    // A search that filters nothing IS expressible -- as the empty quick
+    // search. Without this, opening Advanced Search on an empty box and
+    // collapsing it stranded the user on the "Advanced Search" label with no
+    // way back to the search box short of the close button.
+    it("maps a search that filters nothing to an empty quick search", () => {
+        const empty = { text: "", mode: null };
+
+        // What advancedSearchPane seeds from `set search(null)` -- i.e. what
+        // you get by clicking the funnel with an empty quick search box.
+        const paneDefault = /** @type {any} */ (new Zotero.Search());
+        paneDefault.addCondition("resultLevel", "item");
+        paneDefault.addCondition("title", "contains", "");
+        expect(wv._wvQuickSearchFromAdvanced(paneDefault)).to.deep.equal(empty);
+
+        // A row whose field was changed but whose value is still blank.
+        const halfBuilt = /** @type {any} */ (new Zotero.Search());
+        halfBuilt.addCondition("resultLevel", "item");
+        halfBuilt.addCondition("creator", "contains", "");
+        expect(wv._wvQuickSearchFromAdvanced(halfBuilt)).to.deep.equal(empty);
+
+        expect(wv._wvQuickSearchFromAdvanced(new Zotero.Search()))
+            .to.deep.equal(empty);
+    });
+
+    it("does not treat an empty value as blank for other operators", () => {
+        // `is ""` matches items whose field IS empty, and `doesNotContain ""`
+        // matches none -- both are real filters, so collapsing must not
+        // silently discard them.
+        const isEmpty = /** @type {any} */ (new Zotero.Search());
+        isEmpty.addCondition("title", "is", "");
+        expect(wv._wvQuickSearchFromAdvanced(isEmpty)).to.equal(null);
+
+        const notContains = /** @type {any} */ (new Zotero.Search());
+        notContains.addCondition("title", "doesNotContain", "");
+        expect(wv._wvQuickSearchFromAdvanced(notContains)).to.equal(null);
     });
 });

@@ -67,6 +67,15 @@ name to a Zotero object, window, or document.
   generation (`reader._wv*ArmGen` — `reader` survives reloads) and checks
   generation + live plugin instance on its FIRST event, self-detaching when
   stale. Never arm without both checks.
+- INJECTED DOM outlives the build that injected it: on a hot reload the
+  OLD build's teardown runs (whatever it knew to remove), then the NEW
+  build injects into what is left. An "if it exists, skip" guard on an
+  injected `<style>`/box therefore keeps the previous build's rules alive
+  (2026-09-09: the Plugins Manager clear-× min-size fix was invisible in
+  the open window because dev.20's stylesheet was still there). Injection
+  REPLACES what it owns; teardown removes everything it injects; a guard
+  spec re-injects after a simulated teardown. Guard:
+  `test/plugins-search.spec.js`.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).

@@ -8078,16 +8078,29 @@ class _ReaderPanelsMixin {
             const wireHandle = (h: any, which: "start" | "end") => {
                 h.addEventListener("pointerdown", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); h.setPointerCapture(e.pointerId); } catch (_) {}
-                    // One paint per frame, however many pointer events land
-                    // in between (a high-rate mouse delivers 100+ a second).
-                    let paintQueued = false;
+                    // At most one paint per ~frame, however many pointer
+                    // events land in between (a high-rate mouse delivers
+                    // 100+ a second) -- but NOT via requestAnimationFrame:
+                    // rAF is suspended whenever the content frame is hidden
+                    // or its docShell inactive, and a drag whose repaint
+                    // waits on it looks frozen. Paint synchronously when a
+                    // frame has passed, else leave one trailing paint on the
+                    // CHROME window's timer (never throttled).
+                    const mwT: any = Zotero.getMainWindow();
+                    let lastPaint = 0, trailing: any = null;
                     const schedulePaint = () => {
-                        if (paintQueued) return;
-                        paintQueued = true;
-                        const raf = (typeof iw.requestAnimationFrame === "function")
-                            ? iw.requestAnimationFrame.bind(iw)
-                            : (fn: any) => iw.setTimeout(fn, 16);
-                        raf(() => { paintQueued = false; try { paint(); } catch (_) {} });
+                        const now = Date.now();
+                        if (now - lastPaint >= 16) {
+                            lastPaint = now;
+                            try { paint(); } catch (_) {}
+                            return;
+                        }
+                        if (trailing) return;
+                        trailing = mwT.setTimeout(() => {
+                            trailing = null;
+                            lastPaint = Date.now();
+                            try { paint(); } catch (_) {}
+                        }, 16 - (now - lastPaint));
                     };
                     const onMove = (me: any) => {
                         try {

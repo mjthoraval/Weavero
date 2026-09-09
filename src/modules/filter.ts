@@ -219,19 +219,13 @@ const _ATTACHMENT_FILE_TYPES_DATA = [
       icon: "chrome://zotero/skin/item-type/16/light/attachment-video.svg" },
     { value: "attachmentWebLink",    label: "Web Link",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-web-link.svg" },
-    // Inline SVG (two overlapping horizontal rounded-rect "chain"
-    // links) so the icon reads as a horizontal chain and visually
-    // distinguishes "Linked File" from "Web Link" and the content-
-    // type entries. `stroke="context-stroke"` resolves through
-    // `.wv-filter-svg`'s `-moz-context-properties` rule to
-    // currentColor, so the icon themes with the surrounding text.
+    // Zotero's own linked-file item icon (a page with the chain badge),
+    // the sibling of the row's PDF/EPUB/snapshot icons and what the items
+    // tree shows for a linked file. The previous inline two-link chain
+    // read as the same glyph as the Has Link tile in the top row
+    // (`_makeLinkTileSvg`; MJT 2026-09-09). Guard: test/filter-icons.spec.js.
     { value: "attachmentLinkedFile", label: "Linked File",
-      icon: "data:image/svg+xml;utf8,"
-        + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'"
-        + " fill='none' stroke='context-stroke' stroke-width='1.3'>"
-        + "<rect x='0.85' y='5.65' width='7.3' height='4.7' rx='2.35'/>"
-        + "<rect x='7.85' y='5.65' width='7.3' height='4.7' rx='2.35'/>"
-        + "</svg>" },
+      icon: "chrome://zotero/skin/item-type/16/light/attachment-link.svg" },
     { value: "attachmentFile",       label: "Other File",
       icon: "chrome://zotero/skin/16/universal/attachment.svg" },
 ];

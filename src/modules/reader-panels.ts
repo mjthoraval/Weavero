@@ -5892,6 +5892,41 @@ class _ReaderPanelsMixin {
         return false;
     }
 
+    /** Draw a DOM entry's pin, retrying briefly when its anchor does not
+     *  resolve YET. EPUB sections are mounted lazily (epub-view.ts
+     *  `SectionRenderer.mount`; `toDisplayedRange` resolves a CFI only in
+     *  a mounted section) and the native navigate that mounts the target
+     *  section is asynchronous, so right after a jump into an unmounted
+     *  section the anchor is not there yet -- not gone. A snapshot is one
+     *  static document: no retry there, an unresolved anchor is honestly
+     *  gone and the note shows at once. A later outline click cancels the
+     *  retry (2026-09-09, with the PDF pin's immediate-or-wait change). */
+    _wvOutlineShowDomEntryPinWhenReady(reader: any, idoc: any, node: any, target: any, tries?: number, navT?: any) {
+        const n = tries || 0;
+        const stamp = n === 0 ? reader._wvOutlineNavTime : navT;
+        if (n > 0 && reader._wvOutlineNavTime !== stamp) return;   // superseded
+        let shown = false;
+        try { shown = !!this._wvOutlineShowDomEntryPin(reader, node, target); } catch (_) {}
+        if (shown) return;
+        if ((reader && reader._type) === "epub" && n < 10) {
+            const w: any = Zotero.getMainWindow();
+            const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
+            st(() => {
+                try {
+                    const lp = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (lp) lp._wvOutlineShowDomEntryPinWhenReady(reader, idoc, node, target, n + 1, stamp);
+                } catch (_) {}
+            }, 150);
+            return;
+        }
+        // Anchor gone: say it plainly. A snapshot can render differently
+        // across loads (this one lost every inline <svg>, and the pin's
+        // selector was the bare tag "svg"), so the target genuinely is
+        // not there.
+        this._wvReaderPanelNote(idoc,
+            "This pin's target is no longer in the document — the page rendered differently. Drag a new pin to re-anchor it.");
+    }
+
     /** Apply the current-section marker. Shared by the page-based (PDF) and
      *  range-based (DOM) pickers so they can never drift in behaviour. */
     _wvOutlineSpyMark(idoc: any, list: any, best: any) {
@@ -6718,11 +6753,19 @@ class _ReaderPanelsMixin {
                 Promise.resolve(this._wvOutlineSetEntryPosition(libraryID, itemKey, id, pos))
                     .then(() => this._wvOutlineReplaceByPosition(reader, idoc, libraryID, itemKey, id)).catch(() => {});
             };
-            const w: any = Zotero.getMainWindow();
-            const run = () => { try { this._wvReaderShowPin(reader, position, undefined, { onMove }); } catch (_) {} };
-            // A short beat lets a just-navigated page finish rendering (the pin
-            // no-ops if its page view isn't built yet).
-            if (w && w.setTimeout) w.setTimeout(run, 200); else run();
+            // Draw NOW when pdf.js already has the page view built -- the
+            // usual case, the target being in or near the viewport -- and
+            // only otherwise wait, for readiness rather than a fixed beat.
+            // The old unconditional 200 ms made every PDF pin click lag the
+            // snapshot/EPUB pin, which draws at once (MJT 2026-09-09). The
+            // wait stops if another outline click lands meanwhile.
+            const navT = reader._wvOutlineNavTime;
+            const opts = { onMove, stillWanted: () => reader._wvOutlineNavTime === navT };
+            if (this._wvPdfPageViewReady(reader, position.pageIndex)) {
+                try { this._wvReaderShowPin(reader, position, undefined, opts); } catch (_) {}
+            } else {
+                this._wvShowPinWhenReady(reader, position, undefined, 0, opts);
+            }
         } catch (_) {}
     }
 
@@ -6756,9 +6799,12 @@ class _ReaderPanelsMixin {
             // The Done button rides ON the pin (re-created with it on every drag),
             // so approval is obvious and right where the eye is.
             const showOpts = { onMove, persist: true, approve: { label: "Done", onClick: commit } };
-            const w: any = Zotero.getMainWindow();
-            const run = () => { try { this._wvReaderShowPin(reader, tgt, undefined, showOpts); } catch (_) {} };
-            if (w && w.setTimeout) w.setTimeout(run, 200); else run();
+            // Same immediate-or-wait rule as _wvOutlineShowEntryPin.
+            if (this._wvPdfPageViewReady(reader, tgt.pageIndex)) {
+                try { this._wvReaderShowPin(reader, tgt, undefined, showOpts); } catch (_) {}
+            } else {
+                this._wvShowPinWhenReady(reader, tgt, undefined, 0, showOpts);
+            }
         } catch (e) { Zotero.debug("[Weavero] _wvOutlineEditPinPosition err: " + e); }
     }
 
@@ -9550,14 +9596,7 @@ class _ReaderPanelsMixin {
             if ((reader._type || "pdf") !== "pdf") {
                 const pvD = pv;
                 if (target && target.anchor === "point") {
-                    if (!this._wvOutlineShowDomEntryPin(reader, node, target)) {
-                        // Anchor gone: say it plainly. A snapshot can render
-                        // differently across loads (this one lost every inline
-                        // <svg>, and the pin's selector was the bare tag
-                        // "svg"), so the target genuinely is not there.
-                        this._wvReaderPanelNote(idoc,
-                            "This pin's target is no longer in the document — the page rendered differently. Drag a new pin to re-anchor it.");
-                    }
+                    this._wvOutlineShowDomEntryPinWhenReady(reader, idoc, node, target);
                 } else if (pvD && (wvPlacedDom || !this._wvDomNativeSpotlights(pvD))) {
                     // Parity with the PDF panel: navigating a heading entry
                     // flashes its anchored text. Exact anchors only (selector
@@ -19687,25 +19726,37 @@ class _ReaderPanelsMixin {
     /** Drop the pin once a (possibly just-opened) reader's primary view has
      *  rendered the target page. Used after "Open in New Window" so the pin
      *  shows in the new window too; polls briefly, then gives up. */
-    _wvShowPinWhenReady(reader: any, position: any, bmId?: string, tries?: number) {
+    _wvShowPinWhenReady(reader: any, position: any, bmId?: string, tries?: number, opts?: any) {
         const n = tries || 0;
         try {
-            const ir = reader && reader._internalReader;
-            const pv = ir && (ir._primaryView || ir._lastView);
-            const win = pv && pv._iframeWindow;
-            const app = win && win.PDFViewerApplication;
-            const pageIndex = (position && position.pageIndex) || 0;
-            const pageView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex];
-            if (pageView && pageView.div && pageView.viewport) {
-                this._wvReaderShowPin(reader, position, bmId);
+            // A poll outlives the click that started it: a later click must
+            // win, never a stale pin drawn seconds after the user moved on.
+            if (opts && typeof opts.stillWanted === "function" && !opts.stillWanted()) return;
+            if (this._wvPdfPageViewReady(reader, (position && position.pageIndex) || 0)) {
+                this._wvReaderShowPin(reader, position, bmId, opts);
                 return;
             }
         } catch (_) {}
         if (n < 40) {
             const w: any = Zotero.getMainWindow();
             const st: any = (w && w.setTimeout) ? w.setTimeout.bind(w) : setTimeout;
-            st(() => this._wvShowPinWhenReady(reader, position, bmId, n + 1), 150);
+            st(() => this._wvShowPinWhenReady(reader, position, bmId, n + 1, opts), 150);
         }
+    }
+
+    /** True once pdf.js has built the page view a pin would be drawn into
+     *  (`_wvReaderShowPin` positions inside the page div with its viewport
+     *  and no-ops without them). Built for every page in or near the
+     *  viewport, so after a jump within the rendered range it is true at
+     *  once; only a jump to a far page has to wait. */
+    _wvPdfPageViewReady(reader: any, pageIndex: number): boolean {
+        try {
+            const ir = reader && reader._internalReader;
+            const pv = ir && (ir._primaryView || ir._lastView);
+            const app = pv && pv._iframeWindow && pv._iframeWindow.PDFViewerApplication;
+            const pageView = app && app.pdfViewer && app.pdfViewer._pages && app.pdfViewer._pages[pageIndex || 0];
+            return !!(pageView && pageView.div && pageView.viewport);
+        } catch (_) { return false; }
     }
 
     /** True while upstream "Reading Mode" is showing its SDT overlay for either

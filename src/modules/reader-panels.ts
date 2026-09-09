@@ -7687,8 +7687,11 @@ class _ReaderPanelsMixin {
                         "Couldn\u2019t find that text in the document \u2014 the region is unchanged.");
                     return;
                 }
+                // Through the verified anchor builder, not raw toSelector:
+                // on a page with duplicate ids the raw selector resolved to
+                // the whole section (MJT 2026-09-09, register #17).
                 let selr: any = null;
-                try { selr = pv.toSelector(found); } catch (_) {}
+                try { const a = this._wvDomAnchorFromRange(pv, found); selr = a && a.selector; } catch (_) {}
                 if (!selr) {
                     this._wvReaderPanelNote(idoc, "Couldn\u2019t anchor to that text.");
                     return;
@@ -7775,10 +7778,12 @@ class _ReaderPanelsMixin {
                     noteWord: "title",
                     onCommit: (rangeNew: any, text: string | null, withText: boolean) => {
                         // The outline stores a SELECTOR on both DOM families
-                        // (same shape as add-from-selection — see
-                        // _wvDomAnchorFromRange), derived from the LIVE range.
+                        // (same shape as add-from-selection), derived from the
+                        // LIVE range through the verified builder -- raw
+                        // toSelector anchored a heading region to its whole
+                        // section on a duplicate-id page (MJT 2026-09-09).
                         let selr: any = null;
-                        try { selr = pvD.toSelector(rangeNew); } catch (_) {}
+                        try { const a = this._wvDomAnchorFromRange(pvD, rangeNew); selr = a && a.selector; } catch (_) {}
                         if (!selr) return;
                         const precise = JSON.parse(JSON.stringify(selr));
                         let chain: Promise<any> = Promise.resolve();
@@ -21272,6 +21277,86 @@ class _ReaderPanelsMixin {
         } catch (_) { return false; }   // invalid selector (colon tag names)
     }
 
+    /** True when resolving `selector` through the view gives back `rng` --
+     *  same text and the same box. The only trustworthy test of a stored
+     *  anchor; a selector that resolves elsewhere is lossy however it was
+     *  produced. Guard: test/dom-anchor-roundtrip.spec.js. */
+    _wvDomSelectorRoundTrips(pv: any, selector: any, rng: any): boolean {
+        try {
+            if (!pv || typeof pv.toDisplayedRange !== "function" || !selector || !rng) return false;
+            let arg = selector;
+            try {
+                const iw = pv._iframeWindow;
+                const Cu = (Components as any).utils;
+                if (iw && Cu) arg = Cu.cloneInto(selector, iw);
+            } catch (_) {}
+            const back = pv.toDisplayedRange(arg);
+            if (!back) return false;
+            if (String(back.toString()) !== String(rng.toString())) return false;
+            const a = back.getBoundingClientRect(), b = rng.getBoundingClientRect();
+            if (!a || !b) return true;
+            return Math.abs(a.left - b.left) <= 1 && Math.abs(a.top - b.top) <= 1
+                && Math.abs(a.right - b.right) <= 1 && Math.abs(a.bottom - b.bottom) <= 1;
+        } catch (_) { return false; }
+    }
+
+    /** upstream `textPositionFromRange` (dom/common/lib/selector.ts): offsets
+     *  into the concatenated `nodeValue`s of EVERY text node under `root`, in
+     *  NodeIterator order -- what `textPositionToRange` consumes. Range ends
+     *  on element boundaries are moved into the nearest text node inside the
+     *  range, as upstream's `moveRangeEndsIntoTextNodes` does. */
+    _wvTextPositionFromRange(rng: any, root: any): any {
+        try {
+            const doc = root.ownerDocument;
+            const it = doc.createNodeIterator(root, 4 /* SHOW_TEXT */);
+            let pos = 0, start: number | undefined, end: number | undefined;
+            for (let node = it.nextNode(); node; node = it.nextNode()) {
+                const len = (node.nodeValue || "").length;
+                if (start === undefined) {
+                    if (node === rng.startContainer) start = pos + rng.startOffset;
+                    else if (rng.comparePoint(node, 0) >= 0) start = pos;
+                }
+                if (end === undefined) {
+                    if (node === rng.endContainer) end = pos + rng.endOffset;
+                    else if (rng.comparePoint(node, len) > 0) end = pos;
+                }
+                pos += len;
+            }
+            if (start === undefined) return null;
+            if (end === undefined) end = pos;
+            if (end < start) return null;
+            return { type: "TextPositionSelector", start, end };
+        } catch (_) { return null; }
+    }
+
+    /** upstream `toSelector` with the ONE difference that matters: the
+     *  container selector is Weavero's verified index path instead of
+     *  `getUniqueSelectorContaining`'s id shortcut. Same target rule (the
+     *  single wrapped child, else the common ancestor's element), same
+     *  "no refinement when the range is the element's whole text" rule. */
+    _wvDomRebuildSelector(pv: any, rng: any): any {
+        try {
+            const doc = rng.commonAncestorContainer && rng.commonAncestorContainer.ownerDocument;
+            if (!doc) return null;
+            let targetNode: any = rng.commonAncestorContainer;
+            if (rng.startContainer === rng.endContainer && rng.startOffset === rng.endOffset - 1
+                    && rng.startContainer.nodeType === 1) {
+                targetNode = rng.startContainer.childNodes[rng.startOffset];
+            }
+            const targetElement: any = targetNode && (targetNode.nodeType === 1 ? targetNode : targetNode.parentElement);
+            if (!targetElement) return null;
+            const path = this._wvDomIndexPath(targetElement);
+            if (!path || !this._wvDomSelectorHits(doc, path, targetElement)) return null;
+            const sel: any = { type: "CssSelector", value: path };
+            if (String(rng.toString()).trim() !== String(targetElement.textContent || "").trim()) {
+                const tp = this._wvTextPositionFromRange(rng, targetElement);
+                if (!tp) return null;
+                sel.refinedBy = tp;
+            }
+            return sel;
+        } catch (_) { return null; }
+    }
+
     /** The stored anchor for a resolved Range: selector for both families,
      *  CFI additionally on EPUB, plus the location sort key. */
     _wvDomAnchorFromRange(pv: any, rng: any): any {
@@ -21283,7 +21368,7 @@ class _ReaderPanelsMixin {
             // FIRST querySelector match is a different element — one pin
             // anchored visually at the top ordered as DOM-last because the
             // first match was a floating footer widget (2026-08-26).
-            const out: any = { position: null, cfi: null, selector: null, sortIndex: null, range: rng };
+            const out: any = { position: null, cfi: null, selector: null, sortIndex: null, range: rng, exact: false };
             // The SELECTOR is computed for both view families. Bookmarks keep
             // the CFI on EPUB (their anchor everywhere else), but an outline
             // entry stores a selector on BOTH — the same shape the
@@ -21293,6 +21378,31 @@ class _ReaderPanelsMixin {
                 const selr = pv.toSelector(rng);
                 if (selr) out.selector = JSON.parse(JSON.stringify(selr));
             } catch (_) { /* invalid tag names throw here -- upstream #15 */ }
+            // ROUND-TRIP the selector before trusting it. Upstream's
+            // getUniqueSelectorContaining returns `#id` the moment an element
+            // has an id, without testing uniqueness; on a page with DUPLICATE
+            // ids (Annual Reviews: the section <div id="sec5"> and the
+            // heading's <a id="sec5">) that selector resolves to the first
+            // match -- a heading anchor came back as the whole 10 005-char
+            // section, on Reset to Original and on Save Region alike (MJT
+            // 2026-09-09). A selector that resolves to a DIFFERENT range is
+            // rebuilt: verified index path + text-position refinement, in
+            // upstream's own offset semantics (upstream register #17).
+            try {
+                if (out.selector && out.selector.type === "CssSelector") {
+                    out.exact = this._wvDomSelectorRoundTrips(pv, out.selector, rng);
+                    if (!out.exact) {
+                        const rebuilt = this._wvDomRebuildSelector(pv, rng);
+                        if (rebuilt) {
+                            const ok = this._wvDomSelectorRoundTrips(pv, rebuilt, rng);
+                            if (ok || !this._wvDomSelectorRoundTrips(pv, out.selector, rng)) {
+                                out.selector = rebuilt;
+                                out.exact = ok;
+                            }
+                        }
+                    }
+                }
+            } catch (_) {}
             // HARDEN the selector: upstream's tag-based value may be missing,
             // non-unique, or invalid CSS. Our index path is none of those, and
             // it lands in the same `value` field so upstream still resolves it.
@@ -21329,7 +21439,10 @@ class _ReaderPanelsMixin {
                     }
                     else {
                         const cur = out.selector && out.selector.value;
-                        const good = cur && this._wvDomSelectorHits(doc, cur, el);
+                        // An exact round-trip is correct whatever element it
+                        // targets (a range spanning elements anchors to their
+                        // common ancestor + text offsets, not to `el`).
+                        const good = out.exact || (cur && this._wvDomSelectorHits(doc, cur, el));
                         if (!good && path && this._wvDomSelectorHits(doc, path, el)) {
                             if (out.selector) out.selector.value = path;
                             else out.selector = { type: "CssSelector", value: path };

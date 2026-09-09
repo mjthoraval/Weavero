@@ -86,6 +86,45 @@ describe("Weavero — snapshot position pin", () => {
         });
     });
 
+    // Navigating to ANOTHER outline entry supersedes a showing pin -- the
+    // PDF reader has cleared before every jump since 2026-07-29; the DOM
+    // branch only replaced a pin with the next pin, so a text/heading click
+    // left the old pin and its caret bar standing (MJT 2026-09-09).
+    describe("superseding", () => {
+        const pvFor = (d) => ({ _iframeDocument: d, _iframeWindow: { document: d } });
+
+        it("_wvClearStalePin removes a DOM pin AND its caret bar", () => {
+            const d = freshDoc();
+            assert.isTrue(wv._wvReaderDrawDomPin(stubWin(), d, stubRange(RECT)));
+            wv._wvPinCaretEnsure(d, 100, 200, 16);
+            assert.isOk(d.querySelector(".wv-reader-pin"));
+            assert.isOk(d.querySelector(".wv-reader-pin-caret"));
+            wv._wvClearStalePin(pvFor(d));
+            assert.isNull(d.querySelector(".wv-reader-pin"), "pin gone");
+            assert.isNull(d.querySelector(".wv-reader-pin-caret"), "caret bar gone with it");
+        });
+
+        it("keeps a pin that is mid-edit (carries the approve button), caret included", () => {
+            const d = freshDoc();
+            assert.isTrue(wv._wvReaderDrawDomPin(stubWin(), d, stubRange(RECT)));
+            wv._wvPinCaretEnsure(d, 100, 200, 16);
+            const approve = d.createElement("div");
+            approve.className = "wv-reader-pin-approve";
+            d.querySelector(".wv-reader-pin").appendChild(approve);
+            wv._wvClearStalePin(pvFor(d));
+            assert.isOk(d.querySelector(".wv-reader-pin"), "a tentative position edit is never wiped");
+            assert.isOk(d.querySelector(".wv-reader-pin-caret"));
+        });
+
+        it("is a no-op on a view with nothing showing, and on the PDF-shaped view", () => {
+            const d = freshDoc();
+            wv._wvClearStalePin(pvFor(d));
+            wv._wvClearStalePin({ _iframeWindow: { document: d } });
+            wv._wvClearStalePin(null);
+            assert.isNull(d.querySelector(".wv-reader-pin"));
+        });
+    });
+
     describe("the snapshot resolver", () => {
         const readerWith = (view) => ({ _type: "snapshot", _internalReader: { _primaryView: view } });
         const viewFor = (d, w, range) => ({

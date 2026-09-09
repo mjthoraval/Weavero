@@ -9401,6 +9401,8 @@ class _ReaderPanelsMixin {
                 try {
                     const irH = reader._internalReader;
                     const pvH = irH && (irH._primaryView || irH._lastView);
+                    // A TOC jump supersedes a showing pin, as in the PDF path.
+                    if (pvH) this._wvClearStalePin(pvH);
                     const rngH = pvH && this._wvDomQuarterPlace(pvH, { href: node.href });
                     if (rngH) {
                         if (this._getEnableOutlineTextHighlight()) this._wvDomHighlightRange(pvH, rngH);
@@ -9527,6 +9529,13 @@ class _ReaderPanelsMixin {
             // the view doesn't scroll vertically (paginated EPUB).
             let wvPlacedDom = false;
             if ((reader._type || "pdf") !== "pdf") {
+                // Every jump supersedes the previous entry's pin -- the PDF
+                // branches above clear before navigating, the DOM branch
+                // only ever REPLACED a pin with the next pin, so a text or
+                // heading click left the old marker (and its caret bar)
+                // standing (MJT 2026-09-09). Clearing first also means a
+                // point entry whose anchor has rotted shows no stale pin.
+                if (pv) this._wvClearStalePin(pv);
                 try {
                     wvPlacedDom = !!this._wvDomQuarterPlace(pv, { position: target, href: node && node.href });
                 } catch (_) {}
@@ -19286,9 +19295,17 @@ class _ReaderPanelsMixin {
      *  position edit. */
     _wvClearStalePin(pv: any) {
         try {
-            const pd = pv && pv._iframeWindow && pv._iframeWindow.document;
+            // DOM views (snapshot / EPUB) expose `_iframeDocument`; the PDF
+            // view only its iframe window. Same pin class in both, but a DOM
+            // pin also owns a caret bar -- it goes with the pin (MJT
+            // 2026-09-09: in the snapshot the previous pin stayed on screen
+            // after clicking another entry, unlike the PDF reader).
+            const pd = pv && (pv._iframeDocument || (pv._iframeWindow && pv._iframeWindow.document));
             const pin = pd && pd.querySelector(".wv-reader-pin");
-            if (pin && !pin.querySelector(".wv-reader-pin-approve")) pin.remove();
+            if (!pin) return;
+            if (pin.querySelector(".wv-reader-pin-approve")) return;   // tentative edit: keep it
+            pin.remove();
+            this._wvPinCaretRemove(pd);
         } catch (_) {}
     }
 

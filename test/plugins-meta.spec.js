@@ -120,10 +120,17 @@ describe("Weavero — Plugins Manager card meta", () => {
 					homepageURL: "https://github.com/windingwind/zotero-actions-tags#readme" },
 				{ version: "1.0", creator: { name: "MJThoraval" }, updateDate: when,
 					homepageURL: "https://github.com/mjthoraval/Weavero" },
+				// The name part decides: an email suffix is not a different identity.
+				{ version: "0.6.3", creator: { name: "qrkks <34028312@qq.com>" }, updateDate: when,
+					updateURL: "https://raw.githubusercontent.com/qrkks/zotero-annotation-markdown/main/updates.json" },
 			]);
 			wv._wvPMDecorateCards(d);
 			const metas = [...d.querySelectorAll(".wv-pm-meta")].map((m) => m.textContent);
-			assert.deepEqual(metas, ["windingwind · v2.6.1 · updated 3 days ago", "MJThoraval · v1.0 · updated 3 days ago"]);
+			assert.deepEqual(metas, [
+				"windingwind · v2.6.1 · updated 3 days ago",
+				"MJThoraval · v1.0 · updated 3 days ago",
+				"qrkks <34028312@qq.com> · v0.6.3 · updated 3 days ago",
+			]);
 		});
 
 		it("an author-less plugin shows the owner alone in brackets", () => {

@@ -6027,7 +6027,9 @@ class _PaneMixin {
                     ? addon.updateDate.getTime() : Number(addon.updateDate) : 0);
                 const author = (addon.creator && addon.creator.name ? String(addon.creator.name) : "").trim();
                 const owner = this._wvPMGitHubOwner(addon);
-                const who = owner && owner.toLowerCase() !== author.toLowerCase()
+                // Compare on the name part: "qrkks <34028312@qq.com>" IS qrkks.
+                const authorName = author.replace(/\s*<[^>]*>\s*$/, "").trim();
+                const who = owner && owner.toLowerCase() !== authorName.toLowerCase()
                     ? (author ? author + " " : "") + "[" + owner + "]"
                     : author;
                 const txt = (who ? who + " · " : "") + "v" + (addon.version || "?") + " · updated " + t.rel;

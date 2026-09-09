@@ -15595,13 +15595,15 @@ class _FilterMixin {
      *  such guard. So EXPANDING already widens the search -- `Test are a`
      *  gave 863 hits as a quick search and 866 as the expansion, the three
      *  extras all notes. Reported as
-     *  https://forums.zotero.org/discussion/133658 ; details and the
-     *  retire-when in work/zotero-upstream-bugs.md. Consequence: collapsing
-     *  after expanding lands back on exactly the pre-expand view, but
-     *  collapsing a HAND-BUILT `anyField` search can narrow the list by that
-     *  same difference. That is the quick search being what it is, not a
-     *  fault in the swap -- but do not restore the old claim that the two
-     *  channels are equivalent until 133658 is fixed.
+     *  https://forums.zotero.org/discussion/133658 and answered by dstillman
+     *  (2026-09-08): BY DESIGN -- unquoted single letters are ignored by the
+     *  quick search to avoid scans while typing, while Advanced Search runs
+     *  them explicitly. Consequence: collapsing after expanding lands back on
+     *  exactly the pre-expand view, but collapsing a HAND-BUILT `anyField`
+     *  search can narrow the list by that same difference. That is the quick
+     *  search being what it is, not a fault in the swap -- and since the
+     *  difference is deliberate, never restore the old claim that the two
+     *  channels are equivalent.
      */
     async _wvCollapseAdvancedToQuickSearch(win: any): Promise<boolean> {
         const doc = win && win.document;

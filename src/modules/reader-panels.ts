@@ -8091,8 +8091,22 @@ class _ReaderPanelsMixin {
                     };
                     const onMove = (me: any) => {
                         try {
-                            const caret = doc.caretPositionFromPoint
-                                ? doc.caretPositionFromPoint(me.clientX, me.clientY) : null;
+                            // Hit-test THROUGH the editor's own overlay: the
+                            // pointer rides on the knob while dragging, and
+                            // caretPositionFromPoint under the knob answers
+                            // with the knob (an element in a container at the
+                            // very end of the body -- the runaway range of the
+                            // 2026-09-09 hang, and once rejected, a region
+                            // that only moved when the pointer escaped the
+                            // knob). Hidden elements are not hit-tested; the
+                            // flip happens inside one task, so it never paints.
+                            let caret: any = null;
+                            const vis = container.style.visibility;
+                            try {
+                                container.style.visibility = "hidden";
+                                caret = doc.caretPositionFromPoint
+                                    ? doc.caretPositionFromPoint(me.clientX, me.clientY) : null;
+                            } finally { container.style.visibility = vis; }
                             // Text carets only, bounded size; otherwise keep
                             // the last good region (see _wvDomRegionCandidate).
                             const cand = this._wvDomRegionCandidate(range, caret, which);

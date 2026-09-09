@@ -105,6 +105,22 @@ describe("Weavero — Plugins Manager search box", () => {
 		assert.equal(clear.getAttribute("title"), "Clear");
 	});
 
+	it("re-injecting after a teardown replaces the rules instead of keeping a stale sheet", () => {
+		// A hot reload injects the NEW build into a window the OLD build
+		// styled. dev.21's min-size fix stayed invisible until the <style>
+		// was replaced, not skipped.
+		const { d } = fixture();
+		const stale = d.getElementById("wv-pm-search-styles");
+		stale.textContent = "#wv-pm-clear { color: red; }";
+		d.getElementById("wv-pm-searchbox").remove();   // what the teardown does
+		wv._wvPMInject({ document: d, MutationObserver: Zotero.getMainWindow().MutationObserver,
+			location: { href: "chrome://zotero/content/standalone/basicViewer.xhtml" } }, d);
+		const sheets = d.querySelectorAll("#wv-pm-search-styles");
+		assert.lengthOf(sheets, 1, "one sheet, not two");
+		assert.notInclude(sheets[0].textContent, "color: red", "the stale rules are gone");
+		assert.include(sheets[0].textContent, "min-width: 0", "the current rules are in");
+	});
+
 	it("resets about:addons' button min-size so the × stays 20px, not a 6.3em slab", () => {
 		const { d } = fixture();
 		const css = d.getElementById("wv-pm-search-styles").textContent;

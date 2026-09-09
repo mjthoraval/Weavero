@@ -6299,6 +6299,10 @@ class _PaneMixin {
                     if (!cd) continue;
                     const box = cd.getElementById("wv-pm-searchbox");
                     if (box) box.remove();
+                    // The rules go with the box: the next build's injection
+                    // must not inherit a stale stylesheet (dev.21, 2026-09-09).
+                    const st = cd.getElementById("wv-pm-search-styles");
+                    if (st) st.remove();
                     for (const m of cd.querySelectorAll(".wv-pm-meta")) m.remove();
                     if (cd._wvPMKeyHandler) {
                         try { cd.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
@@ -6361,7 +6365,13 @@ class _PaneMixin {
             // styles every <button> with min-width 6.3em / min-height 32px,
             // and min-* beats width/height -- without the resets the × was a
             // 94px-wide hover slab (MJT 2026-09-09).
-            if (!doc.getElementById("wv-pm-search-styles")) {
+            // Always REPLACE the rules: a hot reload re-injects into a window
+            // whose <style> came from the previous build (the teardown
+            // removes it too, but belt and braces -- dev.21's min-size fix
+            // was invisible in the open window until the rules were replaced).
+            {
+                const stale = doc.getElementById("wv-pm-search-styles");
+                if (stale) { try { stale.remove(); } catch (e) {} }
                 const style = doc.createElement("style");
                 style.id = "wv-pm-search-styles";
                 style.textContent = [

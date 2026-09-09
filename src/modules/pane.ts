@@ -6349,14 +6349,50 @@ class _PaneMixin {
             wrap.style.cssText = "position: sticky; top: 0; z-index: 1; padding: 10px 16px 8px;"
                 + " background: var(--background-color, Window);"
                 + " display: flex; gap: 8px; align-items: center;";
+            // Gecko draws no clear affordance on <input type=search>, so the
+            // box is input + a × INSIDE its right edge, the quick search's
+            // contract (search-textbox.css / searchTextbox.js): same
+            // close-12.svg in currentColor, shown only while there is text,
+            // click clears and keeps focus in the field. Static rules live in
+            // a <style> because an inline `display` would beat the UA's
+            // [hidden] rule and the button could never hide.
+            if (!doc.getElementById("wv-pm-search-styles")) {
+                const style = doc.createElement("style");
+                style.id = "wv-pm-search-styles";
+                style.textContent = [
+                    "#wv-pm-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);",
+                    "  width: 20px; height: 20px; padding: 0; margin: 0; border: 0; border-radius: 4px;",
+                    "  background: none; color: inherit; cursor: default; opacity: .7;",
+                    "  display: flex; align-items: center; justify-content: center; }",
+                    "#wv-pm-clear:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }",
+                    "#wv-pm-clear[hidden] { display: none; }",
+                    "#wv-pm-clear > img { width: 12px; height: 12px; -moz-context-properties: fill; fill: currentColor; }",
+                ].join("\n");
+                (doc.head || doc.documentElement).appendChild(style);
+            }
+            const field = doc.createElement("div");
+            field.id = "wv-pm-field";
+            field.style.cssText = "position: relative; flex: 1; display: flex;";
             const input = doc.createElement("input");
             input.type = "search";
             input.placeholder = "Search installed plugins  (Ctrl+F)";
-            input.style.cssText = "flex: 1; box-sizing: border-box; padding: 7px 12px;"
+            input.style.cssText = "flex: 1; box-sizing: border-box; padding: 7px 32px 7px 12px;"
                 + " font-size: 14px; border-radius: 6px; color: inherit;"
                 + " border: 1px solid color-mix(in srgb, currentColor 30%, transparent);"
                 + " background: color-mix(in srgb, currentColor 6%, transparent);";
-            wrap.appendChild(input);
+            field.appendChild(input);
+            const clear = doc.createElement("button");
+            clear.type = "button";
+            clear.id = "wv-pm-clear";
+            clear.title = "Clear";
+            clear.setAttribute("aria-label", "Clear");
+            const xIcon = doc.createElement("img");
+            xIcon.src = "resource://content-accessible/close-12.svg";
+            xIcon.alt = "";
+            clear.appendChild(xIcon);
+            field.appendChild(clear);
+            wrap.appendChild(field);
+            const syncClear = () => { try { clear.hidden = !input.value; } catch (e) {} };
             const apply = () => {
                 try {
                     const q = String(input.value || "").trim().toLowerCase();
@@ -6369,8 +6405,18 @@ class _PaneMixin {
                         card.hidden = !!q && !txt.toLowerCase().includes(q);
                     }
                 } catch (e) {}
+                syncClear();
             };
+            syncClear();
             input.addEventListener("input", apply);
+            // mousedown would move focus to the button; keep it in the field
+            // so the user can keep typing after clearing.
+            clear.addEventListener("mousedown", (e: any) => { try { e.preventDefault(); } catch (er) {} });
+            clear.addEventListener("click", () => {
+                input.value = "";
+                apply();
+                try { input.focus(); } catch (e) {}
+            });
             input.addEventListener("keydown", (e: any) => {
                 if (e.key === "Escape" && input.value) {
                     e.preventDefault(); e.stopPropagation();

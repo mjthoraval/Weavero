@@ -219,13 +219,23 @@ const _ATTACHMENT_FILE_TYPES_DATA = [
       icon: "chrome://zotero/skin/item-type/16/light/attachment-video.svg" },
     { value: "attachmentWebLink",    label: "Web Link",
       icon: "chrome://zotero/skin/item-type/16/light/attachment-web-link.svg" },
-    // Zotero's own linked-file item icon (a page with the chain badge),
-    // the sibling of the row's PDF/EPUB/snapshot icons and what the items
-    // tree shows for a linked file. The previous inline two-link chain
-    // read as the same glyph as the Has Link tile in the top row
-    // (`_makeLinkTileSvg`; MJT 2026-09-09). Guard: test/filter-icons.spec.js.
+    // Zotero's own linked-file item icon -- the page outline with the chain
+    // badge that the items tree shows for a linked file -- taken from the
+    // DARK variant (item-type/16/dark/attachment-link.svg: transparent
+    // page, no white slab) and recoloured through `context-fill`, so it
+    // themes with the text like the other monochrome tiles. The fold keeps
+    // Zotero's reduced opacity. History: a hand-drawn two-link chain read
+    // as the same glyph as the Has Link tile (`_makeLinkTileSvg`), then
+    // the LIGHT item-type file showed a white-filled page on the dark
+    // popup (MJT 2026-09-09, "the transparent page icon, same as Zotero,
+    // with the link glyph"). Guard: test/filter-icons.spec.js.
     { value: "attachmentLinkedFile", label: "Linked File",
-      icon: "chrome://zotero/skin/item-type/16/light/attachment-link.svg" },
+      icon: "data:image/svg+xml;utf8,"
+        + "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'>"
+        + "<path opacity='0.3' fill='context-fill' d='M10 1.70697V5H13.293L10 1.70697Z'/>"
+        + "<path fill='context-fill' d='M6 14H3V1H9V6H14V10H15V5.293L9.707 0L2 0V15H6V14ZM10 1.707L13.293 5H10V1.707Z'/>"
+        + "<path fill='context-fill' fill-rule='evenodd' clip-rule='evenodd' d='M9.5 11C10.3178 11 11.0439 11.3927 11.5 11.9998C11.9561 11.3927 12.6822 11 13.5 11C14.8807 11 16 12.1193 16 13.5C16 14.8807 14.8807 16 13.5 16C12.6822 16 11.9561 15.6073 11.5 15.0002C11.0439 15.6073 10.3178 16 9.5 16C8.11929 16 7 14.8807 7 13.5C7 12.1193 8.11929 11 9.5 11ZM10.9146 13H9.5C9.22386 13 9 13.2239 9 13.5C9 13.7761 9.22386 14 9.5 14H10.9146C10.7087 14.5826 10.1531 15 9.5 15C8.67157 15 8 14.3284 8 13.5C8 12.6716 8.67157 12 9.5 12C10.1531 12 10.7087 12.4174 10.9146 13ZM12.0854 14H13.5C13.7761 14 14 13.7761 14 13.5C14 13.2239 13.7761 13 13.5 13H12.0854C12.2913 12.4174 12.8469 12 13.5 12C14.3284 12 15 12.6716 15 13.5C15 14.3284 14.3284 15 13.5 15C12.8469 15 12.2913 14.5826 12.0854 14Z'/>"
+        + "</svg>" },
     { value: "attachmentFile",       label: "Other File",
       icon: "chrome://zotero/skin/16/universal/attachment.svg" },
 ];

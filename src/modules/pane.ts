@@ -5978,13 +5978,35 @@ class _PaneMixin {
         return { rel, abs };
     }
 
+    /** GitHub owner behind a plugin, from the URLs the addon exposes, in
+     *  order of authority: homepage, update URL, install source. Only
+     *  github.com / raw.githubusercontent.com count — gitee, S3, vanity
+     *  domains and file: installs give nothing. Surveyed 2026-09-09 over 28
+     *  installed plugins: 9 declare no author at all, and 8 of the other 19
+     *  declare one that differs from the owner (a real name behind a handle,
+     *  an org, a spelling variant), so the owner is extra information, not a
+     *  substitute. Guard: test/plugins-meta.spec.js. */
+    _wvPMGitHubOwner(this: any, addon: any): string {
+        try {
+            const urls = [addon.homepageURL, addon.updateURL, addon.sourceURI && addon.sourceURI.spec];
+            for (const u of urls) {
+                const m = /^https?:\/\/(?:www\.)?(?:github\.com|raw\.githubusercontent\.com)\/([^\/?#]+)/i.exec(String(u || ""));
+                if (m && m[1]) return m[1];
+            }
+        } catch (e) {}
+        return "";
+    }
+
     /** Author + version + last-update meta line under each plugin card's
      *  name (list view only — the detail view shows all three natively, in
      *  this same order: Author, Version, Last Updated). The author is
      *  `addon.creator.name`, exactly what the detail view's Author row
-     *  renders (aboutaddons.js `.addon-detail-row-author`); plugins that
-     *  declare none start at the version. Plain text on purpose — the detail
-     *  view already carries the homepage link.
+     *  renders (aboutaddons.js `.addon-detail-row-author`), followed by the
+     *  GitHub owner in brackets when that adds information (MJT 2026-09-09):
+     *  `Will Shanks [wshanks]`, `[retorquere]` for an author-less plugin,
+     *  plain `windingwind` when the two coincide. Plugins with neither start
+     *  at the version. Plain text on purpose — the detail view already
+     *  carries the homepage link.
      *  Steady-state no-op: text/title are written only on change, so the
      *  MutationObserver that calls this cannot loop. */
     _wvPMDecorateCards(this: any, doc: any) {
@@ -6004,7 +6026,11 @@ class _PaneMixin {
                 const t = this._wvPMRelTime(addon.updateDate ? addon.updateDate.getTime
                     ? addon.updateDate.getTime() : Number(addon.updateDate) : 0);
                 const author = (addon.creator && addon.creator.name ? String(addon.creator.name) : "").trim();
-                const txt = (author ? author + " · " : "") + "v" + (addon.version || "?") + " · updated " + t.rel;
+                const owner = this._wvPMGitHubOwner(addon);
+                const who = owner && owner.toLowerCase() !== author.toLowerCase()
+                    ? (author ? author + " " : "") + "[" + owner + "]"
+                    : author;
+                const txt = (who ? who + " · " : "") + "v" + (addon.version || "?") + " · updated " + t.rel;
                 if (meta.textContent !== txt) meta.textContent = txt;
                 if (meta.getAttribute("title") !== t.abs) meta.setAttribute("title", t.abs);
             }

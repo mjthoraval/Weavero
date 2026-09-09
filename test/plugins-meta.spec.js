@@ -93,6 +93,58 @@ describe("Weavero — Plugins Manager card meta", () => {
 				"no dangling separator, no 'undefined'");
 		});
 
+		// GitHub owner in brackets (2026-09-09): the manifest author and the
+		// repository owner are different kinds of label (real name vs handle,
+		// org, spelling variant), so the owner is appended when it adds
+		// information and dropped when it merely repeats the author.
+		it("appends the GitHub owner in brackets when it differs from the author", () => {
+			const when = new Date(Date.now() - 3 * DAY);
+			const d = mkDoc([
+				{ version: "4.2.2", creator: { name: "Will Shanks" }, updateDate: when,
+					updateURL: "https://raw.githubusercontent.com/wshanks/Zutilo/release/deploy/updates.json" },
+				{ version: "0.5.1", creator: { name: "Wakam Chang" }, updateDate: when,
+					homepageURL: "https://github.com/SciImage/zotero-attachment-scanner" },
+			]);
+			wv._wvPMDecorateCards(d);
+			const metas = [...d.querySelectorAll(".wv-pm-meta")].map((m) => m.textContent);
+			assert.deepEqual(metas, [
+				"Will Shanks [wshanks] · v4.2.2 · updated 3 days ago",
+				"Wakam Chang [SciImage] · v0.5.1 · updated 3 days ago",
+			]);
+		});
+
+		it("drops the bracket when the owner merely repeats the author (case-insensitive)", () => {
+			const when = new Date(Date.now() - 3 * DAY);
+			const d = mkDoc([
+				{ version: "2.6.1", creator: { name: "windingwind" }, updateDate: when,
+					homepageURL: "https://github.com/windingwind/zotero-actions-tags#readme" },
+				{ version: "1.0", creator: { name: "MJThoraval" }, updateDate: when,
+					homepageURL: "https://github.com/mjthoraval/Weavero" },
+			]);
+			wv._wvPMDecorateCards(d);
+			const metas = [...d.querySelectorAll(".wv-pm-meta")].map((m) => m.textContent);
+			assert.deepEqual(metas, ["windingwind · v2.6.1 · updated 3 days ago", "MJThoraval · v1.0 · updated 3 days ago"]);
+		});
+
+		it("an author-less plugin shows the owner alone in brackets", () => {
+			const d = mkDoc([{ version: "9.0.63", updateDate: new Date(Date.now() - 3 * DAY),
+				updateURL: "https://github.com/retorquere/zotero-better-bibtex/releases/download/release/updates.json" }]);
+			wv._wvPMDecorateCards(d);
+			assert.equal(d.querySelector(".wv-pm-meta").textContent, "[retorquere] · v9.0.63 · updated 3 days ago");
+		});
+
+		it("owner comes from the homepage first, then the update URL, then the install source; other hosts give nothing", () => {
+			assert.equal(wv._wvPMGitHubOwner({ homepageURL: "https://github.com/muisedestiny/zotero-style#readme",
+				updateURL: "https://raw.giteeusercontent.com/MuiseDestiny/plugins/raw/master/update.json" }), "muisedestiny");
+			assert.equal(wv._wvPMGitHubOwner({ homepageURL: "https://www.beaverapp.ai",
+				updateURL: "https://github.com/jlegewie/beaver-zotero/releases/download/release/update.json" }), "jlegewie");
+			assert.equal(wv._wvPMGitHubOwner({ homepageURL: null, updateURL: "https://invalid.localhost/no-updates.json",
+				sourceURI: { spec: "https://github.com/introfini/mcp-server-zotero-dev/releases/download/v1/x.xpi" } }), "introfini");
+			assert.equal(wv._wvPMGitHubOwner({ updateURL: "https://zotero-download.s3.amazonaws.com/tmp/make-it-red/updates-2.0.json",
+				sourceURI: { spec: "file:///D:/Downloads/toggle-bars.xpi" } }), "", "S3 + local file: no owner");
+			assert.equal(wv._wvPMGitHubOwner({}), "");
+		});
+
 		it("shows the author exactly as the detail view does: plain text, email kept, no link", () => {
 			const d = mkDoc([{ version: "1.0.1-dev.4", updateDate: new Date(Date.now() - 3 * DAY),
 				creator: { name: "Guilherme Pires <mail@gpir.es>", url: "https://example.org/" } }]);

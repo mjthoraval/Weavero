@@ -97,12 +97,20 @@ describe("Weavero — Plugins Manager search box", () => {
 		assert.isTrue(clear.hidden, "and the × goes away with the text");
 	});
 
-	it("uses the quick search's own clear icon, in currentColor", () => {
-		const { clear } = fixture();
+	it("uses the quick search's own clear icon, in currentColor, with no hover background or fade", () => {
+		const { d, clear } = fixture();
 		const img = clear.querySelector("img");
 		assert.isOk(img);
 		assert.include(img.getAttribute("src"), "close-12.svg", "search-textbox.css .textbox-search-clear");
 		assert.equal(clear.getAttribute("title"), "Clear");
+		// Zotero's .textbox-search-clear: opacity 1, transparent in every
+		// state, 12px glyph in a 14px slot on a 28px field -- scaled to this
+		// 33px field that is a 14px glyph in a 16px slot (MJT 2026-09-09).
+		const css = d.getElementById("wv-pm-search-styles").textContent;
+		assert.notMatch(css, /opacity/, "no fade");
+		assert.notMatch(css, /color-mix/, "no hover tint");
+		assert.match(css, /#wv-pm-clear:hover[^{]*\{[^}]*background:\s*none/, "hover stays transparent");
+		assert.match(css, /#wv-pm-clear\s*>\s*img\s*\{[^}]*width:\s*14px/, "glyph scaled to the field");
 	});
 
 	it("re-injecting after a teardown replaces the rules instead of keeping a stale sheet", () => {

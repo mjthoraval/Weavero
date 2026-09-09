@@ -6375,14 +6375,19 @@ class _PaneMixin {
                 const style = doc.createElement("style");
                 style.id = "wv-pm-search-styles";
                 style.textContent = [
+                    // Measured on the main window's quick search (2026-09-09):
+                    // field 28px, glyph 12px in a 14px slot, opacity 1, no
+                    // background in any state, cursor default. This field is
+                    // 33px, so the same proportions give a 14px glyph in a
+                    // 16px slot.
                     "#wv-pm-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);",
-                    "  width: 20px; height: 20px; min-width: 0; min-height: 0; max-width: 20px; max-height: 20px;",
-                    "  padding: 0; margin: 0; border: 0; border-radius: 4px;",
-                    "  background: none; color: inherit; cursor: default; opacity: .7;",
+                    "  width: 16px; height: 16px; min-width: 0; min-height: 0; max-width: 16px; max-height: 16px;",
+                    "  padding: 0; margin: 0; border: 0; border-radius: 0;",
+                    "  background: none; color: inherit; cursor: default;",
                     "  display: flex; align-items: center; justify-content: center; }",
-                    "#wv-pm-clear:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }",
+                    "#wv-pm-clear:hover, #wv-pm-clear:active { background: none; }",
                     "#wv-pm-clear[hidden] { display: none; }",
-                    "#wv-pm-clear > img { width: 12px; height: 12px; -moz-context-properties: fill; fill: currentColor; }",
+                    "#wv-pm-clear > img { width: 14px; height: 14px; -moz-context-properties: fill; fill: currentColor; }",
                 ].join("\n");
                 (doc.head || doc.documentElement).appendChild(style);
             }

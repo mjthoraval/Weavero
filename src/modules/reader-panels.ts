@@ -7914,6 +7914,29 @@ class _ReaderPanelsMixin {
      *  its own anchor (bookmark CFI, outline selector) from the LIVE
      *  committed Range in `opts.onCommit(range, text, withText)`. `seed` is
      *  the current region as a Range in the view's content document. */
+    /** The region editor's next range for a handle drag, or null to keep the
+     *  last good one. TEXT-node carets only: over a margin or between blocks
+     *  `caretPositionFromPoint` answers with an ELEMENT boundary (a DIV at
+     *  offset 0, measured on the Rizuan snapshot), and a handle set there
+     *  jumps the region to that container's edge -- a region running to the
+     *  end of that body spans 7,518 client rects / 92 KB of text, and the
+     *  editor repainted one div per rect on EVERY mouse event, so Zotero hung
+     *  for seconds per move (MJT 2026-09-09, "when resizing the outline text
+     *  region"). The rect cap backs that up: a region is lines, not pages.
+     *  Guard: test/region-editor-candidate.spec.js. */
+    _wvDomRegionCandidate(range: any, caret: any, which: "start" | "end", maxRects?: number): any {
+        try {
+            if (!caret || !caret.offsetNode || caret.offsetNode.nodeType !== 3) return null;
+            const cand = range.cloneRange();
+            if (which === "start") cand.setStart(caret.offsetNode, caret.offset);
+            else cand.setEnd(caret.offsetNode, caret.offset);
+            if (cand.collapsed) return null;
+            if (cand.getClientRects().length > (maxRects || 400)) return null;
+            if (!String(cand.toString()).trim()) return null;
+            return cand;
+        } catch (_) { return null; }
+    }
+
     _wvDomRegionEditorOpen(reader: any, idoc: any, seed: any, opts: any) {
         try {
             const pv = reader._internalReader
@@ -7984,19 +8007,24 @@ class _ReaderPanelsMixin {
             };
             mkHandle("start"); mkHandle("end");
             const paint = () => {
-                for (const d of hls.splice(0)) { try { d.remove(); } catch (_) {} }
                 const rects = [...range.getClientRects()];
                 if (!rects.length) return;
-                for (const r of rects) {
-                    const d = mkDiv("position:absolute;"
-                        + "border-radius:2px;pointer-events:none;");
-                    d.style.setProperty("background-color", "rgba(64,114,229,.28)", "important");
+                // Reuse the highlight divs in place -- destroying and
+                // recreating them on every move was half of the 2026-09-09
+                // hang (the other half was the runaway range itself).
+                while (hls.length > rects.length) { try { hls.pop().remove(); } catch (_) {} }
+                rects.forEach((r, i) => {
+                    let d = hls[i];
+                    if (!d) {
+                        d = mkDiv("position:absolute;border-radius:2px;pointer-events:none;");
+                        d.style.setProperty("background-color", "rgba(64,114,229,.28)", "important");
+                        hls.push(d);
+                    }
                     d.style.left = (r.left + iw.scrollX) + "px";
                     d.style.top = (r.top + iw.scrollY) + "px";
                     d.style.width = r.width + "px";
                     d.style.height = r.height + "px";
-                    hls.push(d);
-                }
+                });
                 const first = rects[0], last = rects[rects.length - 1];
                 // Handle bars span the line height at the range edges (PDF
                 // editor parity); the knobs hang off their top/bottom ends.
@@ -8050,18 +8078,27 @@ class _ReaderPanelsMixin {
             const wireHandle = (h: any, which: "start" | "end") => {
                 h.addEventListener("pointerdown", (e: any) => {
                     try { e.preventDefault(); e.stopPropagation(); h.setPointerCapture(e.pointerId); } catch (_) {}
+                    // One paint per frame, however many pointer events land
+                    // in between (a high-rate mouse delivers 100+ a second).
+                    let paintQueued = false;
+                    const schedulePaint = () => {
+                        if (paintQueued) return;
+                        paintQueued = true;
+                        const raf = (typeof iw.requestAnimationFrame === "function")
+                            ? iw.requestAnimationFrame.bind(iw)
+                            : (fn: any) => iw.setTimeout(fn, 16);
+                        raf(() => { paintQueued = false; try { paint(); } catch (_) {} });
+                    };
                     const onMove = (me: any) => {
                         try {
                             const caret = doc.caretPositionFromPoint
                                 ? doc.caretPositionFromPoint(me.clientX, me.clientY) : null;
-                            if (!caret || !caret.offsetNode) return;
-                            const cand = range.cloneRange();
-                            if (which === "start") cand.setStart(caret.offsetNode, caret.offset);
-                            else cand.setEnd(caret.offsetNode, caret.offset);
-                            // Reject crossed or empty regions; keep the last good one.
-                            if (cand.collapsed || !String(cand.toString()).trim()) return;
+                            // Text carets only, bounded size; otherwise keep
+                            // the last good region (see _wvDomRegionCandidate).
+                            const cand = this._wvDomRegionCandidate(range, caret, which);
+                            if (!cand) return;
                             range = cand;
-                            paint();
+                            schedulePaint();
                         } catch (_) {}
                     };
                     const onUp = () => {

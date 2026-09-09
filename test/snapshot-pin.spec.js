@@ -116,6 +116,26 @@ describe("Weavero — snapshot position pin", () => {
             assert.isOk(d.querySelector(".wv-reader-pin-caret"));
         });
 
+        it("_wvDomClearHighlight takes the previous entry's flash boxes down at once", () => {
+            // The reverse case: a PIN click draws no highlight, so the
+            // previous text entry's flash lingered beside the new pin until
+            // its own 2 s fade (MJT 2026-09-09, second report).
+            const d = freshDoc();
+            const timers = [];
+            const win = { scrollX: 0, scrollY: 0,
+                setTimeout: (fn, ms) => { timers.push(ms); return timers.length; },
+                clearTimeout: (id) => { timers.push("cleared:" + id); } };
+            const pv = { _iframeDocument: d, _iframeWindow: win };
+            const range = { getClientRects: () => [RECT], getBoundingClientRect: () => RECT };
+            wv._wvDomHighlightRange(pv, range);
+            assert.isAbove(d.querySelectorAll(".wv-dom-heading-flash").length, 0, "flash drawn");
+            assert.isOk(pv._wvDomHlTimer, "fade scheduled");
+            wv._wvDomClearHighlight(pv);
+            assert.lengthOf(d.querySelectorAll(".wv-dom-heading-flash"), 0, "gone now, not in 2 s");
+            assert.isNull(pv._wvDomHlTimer, "and the fade timer is cancelled");
+            assert.include(timers, "cleared:" + 1);
+        });
+
         it("is a no-op on a view with nothing showing, and on the PDF-shaped view", () => {
             const d = freshDoc();
             wv._wvClearStalePin(pvFor(d));

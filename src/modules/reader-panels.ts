@@ -9401,8 +9401,8 @@ class _ReaderPanelsMixin {
                 try {
                     const irH = reader._internalReader;
                     const pvH = irH && (irH._primaryView || irH._lastView);
-                    // A TOC jump supersedes a showing pin, as in the PDF path.
-                    if (pvH) this._wvClearStalePin(pvH);
+                    // A TOC jump supersedes a showing pin or flash, as in the PDF path.
+                    if (pvH) { this._wvClearStalePin(pvH); this._wvDomClearHighlight(pvH); }
                     const rngH = pvH && this._wvDomQuarterPlace(pvH, { href: node.href });
                     if (rngH) {
                         if (this._getEnableOutlineTextHighlight()) this._wvDomHighlightRange(pvH, rngH);
@@ -9535,7 +9535,10 @@ class _ReaderPanelsMixin {
                 // heading click left the old marker (and its caret bar)
                 // standing (MJT 2026-09-09). Clearing first also means a
                 // point entry whose anchor has rotted shows no stale pin.
-                if (pv) this._wvClearStalePin(pv);
+                // Same for the previous entry's text flash: a pin click drew
+                // nothing that would replace it, so it lingered beside the
+                // new pin until its own fade (MJT 2026-09-09, second report).
+                if (pv) { this._wvClearStalePin(pv); this._wvDomClearHighlight(pv); }
                 try {
                     wvPlacedDom = !!this._wvDomQuarterPlace(pv, { position: target, href: node && node.href });
                 } catch (_) {}
@@ -13603,6 +13606,24 @@ class _ReaderPanelsMixin {
      *  Boxes live in the content doc like the pins do, positioned in
      *  DOCUMENT coordinates so mid-flight smooth scrolling cannot smear
      *  them. */
+    /** Take the DOM flash boxes down NOW rather than at their 2 s fade: any
+     *  outline click dismisses the previous entry's marker, highlight or
+     *  pin alike, as the PDF panel does by repainting on every click (MJT
+     *  2026-09-09: a pin click left the previous entry's blue flash showing
+     *  beside the new pin). Pairs with `_wvClearStalePin`. */
+    _wvDomClearHighlight(pv: any) {
+        try {
+            const iwin = pv && pv._iframeWindow;
+            const doc = pv && (pv._iframeDocument || (iwin && iwin.document));
+            if (!doc) return;
+            if (pv._wvDomHlTimer) {
+                try { iwin.clearTimeout(pv._wvDomHlTimer); } catch (_) {}
+                pv._wvDomHlTimer = null;
+            }
+            for (const el of [...doc.querySelectorAll(".wv-dom-heading-flash")]) el.remove();
+        } catch (_) {}
+    }
+
     _wvDomHighlightRange(pv: any, range: any, gen?: number) {
         try {
             const iwin = pv && pv._iframeWindow;

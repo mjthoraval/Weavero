@@ -45,6 +45,28 @@ describe("Weavero — region editor candidate range", () => {
 		assert.isNull(wv._wvDomRegionCandidate(seed(), null, "end"));
 	});
 
+	describe("_wvDomLeafRects (shared by the flash and the editor)", () => {
+		const R = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+		const stub = (rects) => ({ getClientRects: () => rects });
+
+		it("keeps line boxes, drops the element box that contains them", () => {
+			const line1 = R(10, 10, 200, 16), line2 = R(10, 26, 180, 16), box = R(8, 8, 204, 36);
+			const out = wv._wvDomLeafRects(stub([box, line1, line2]));
+			assert.deepEqual(out, [line1, line2], "the container slab is gone, lines stay in order");
+		});
+
+		it("dedupes a line box reported twice (the snapshot heading case)", () => {
+			const line = R(10, 10, 200, 16);
+			assert.lengthOf(wv._wvDomLeafRects(stub([line, R(10, 10, 200, 16)])), 1);
+		});
+
+		it("ignores empty rects and survives a range that cannot be measured", () => {
+			assert.lengthOf(wv._wvDomLeafRects(stub([R(0, 0, 0, 0), R(5, 5, 10, 0)])), 0);
+			assert.deepEqual(wv._wvDomLeafRects({}), []);
+			assert.deepEqual(wv._wvDomLeafRects(null), []);
+		});
+	});
+
 	it("caps the region's size in client rects (a region is lines, not pages)", () => {
 		// A range-shaped stub: the helper only needs these members.
 		const big = (n) => ({

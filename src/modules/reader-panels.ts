@@ -8007,7 +8007,7 @@ class _ReaderPanelsMixin {
             };
             mkHandle("start"); mkHandle("end");
             const paint = () => {
-                const rects = [...range.getClientRects()];
+                const rects = this._wvDomLeafRects(range);
                 if (!rects.length) return;
                 // Reuse the highlight divs in place -- destroying and
                 // recreating them on every move was half of the 2026-09-09
@@ -8016,8 +8016,20 @@ class _ReaderPanelsMixin {
                 rects.forEach((r, i) => {
                     let d = hls[i];
                     if (!d) {
-                        d = mkDiv("position:absolute;border-radius:2px;pointer-events:none;");
-                        d.style.setProperty("background-color", "rgba(64,114,229,.28)", "important");
+                        // The navigation flash's recipe (2026-08-26): solid
+                        // selection blue MULTIPLIED onto the page keeps the
+                        // glyphs crisp. The old alpha-over rgba(64,114,229,.28)
+                        // sat on the text like a film, and a paragraph's
+                        // contiguous line boxes fused into a slab (MJT
+                        // 2026-09-09, "highlighted on top of the text"). On
+                        // the BODY, not in the overlay container: a z-indexed
+                        // container is an isolated group and the blend would
+                        // stop at its transparent backdrop.
+                        d = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+                        d.style.cssText = "position:absolute;z-index:2147483644;pointer-events:none;border-radius:2px;";
+                        d.style.setProperty("background-color", "#B9DBFF", "important");
+                        d.style.setProperty("mix-blend-mode", "multiply", "important");
+                        doc.body.appendChild(d);
                         hls.push(d);
                     }
                     d.style.left = (r.left + iw.scrollX) + "px";
@@ -8050,6 +8062,7 @@ class _ReaderPanelsMixin {
             };
             const destroy = () => {
                 try { container.remove(); } catch (_) {}
+                for (const d of hls.splice(0)) { try { d.remove(); } catch (_) {} }   // they live on the body
                 try { doc.removeEventListener("keydown", onKey, true); } catch (_) {}
                 if (pv._wvRegionEditor && pv._wvRegionEditor._id === opts.editorId) pv._wvRegionEditor = null;
             };
@@ -13709,6 +13722,39 @@ class _ReaderPanelsMixin {
      *  Boxes live in the content doc like the pins do, positioned in
      *  DOCUMENT coordinates so mid-flight smooth scrolling cannot smear
      *  them. */
+    /** The LINE boxes of a Range, and only those -- what every Weavero
+     *  highlight on a DOM view paints (the navigation flash and the region
+     *  editor share this since 2026-09-09).
+     *  A range over an ELEMENT (an href target) reports the element's
+     *  border box PLUS each line's box; painting both stacks the colour --
+     *  a big pale box with darker lines inside ("Why 2 boxes?",
+     *  2026-08-26). Drop any rect that fully contains another.
+     *  Then DEDUPE near-identical siblings -- a snapshot heading's range
+     *  reported every line box TWICE (measured: 4 rects for 2 lines, exact
+     *  duplicates), and multiply applied twice per line is precisely the
+     *  "deeper blue" (2026-08-26). A rect that overlaps an already-kept rect
+     *  by more than half its own area is the same line again.
+     *  Guard: test/region-editor-candidate.spec.js. */
+    _wvDomLeafRects(range: any): any[] {
+        try {
+            let rects: any[] = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0);
+            rects = rects.filter(a => !rects.some(b => b !== a
+                && a.left <= b.left + 1 && a.right >= b.right - 1
+                && a.top <= b.top + 1 && a.bottom >= b.bottom - 1
+                && (a.width > b.width + 2 || a.height > b.height + 2)));
+            const kept: any[] = [];
+            for (const a of rects) {
+                const dup = kept.some(b => {
+                    const ox = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+                    const oy = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+                    return ox * oy > 0.5 * a.width * a.height;
+                });
+                if (!dup) kept.push(a);
+            }
+            return kept;
+        } catch (_) { return []; }
+    }
+
     /** Take the DOM flash boxes down NOW rather than at their 2 s fade: any
      *  outline click dismisses the previous entry's marker, highlight or
      *  pin alike, as the PDF panel does by repainting on every click (MJT
@@ -13735,32 +13781,7 @@ class _ReaderPanelsMixin {
             const seq = gen != null ? gen : (pv._wvDomHlSeq = (pv._wvDomHlSeq || 0) + 1);
             for (const el of [...doc.querySelectorAll(".wv-dom-heading-flash")]) el.remove();
             if (pv._wvDomHlTimer) { try { iwin.clearTimeout(pv._wvDomHlTimer); } catch (_) {} }
-            let rects = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0);
-            // A range over an ELEMENT (an href target) reports the element's
-            // border box PLUS each line's box; painting both stacks the alpha
-            // — a big pale box with darker lines inside ("Why 2 boxes?",
-            // 2026-08-26). Keep only the leaf rects: drop any rect that fully
-            // contains another. Matches the per-line look of the PDF flash.
-            rects = rects.filter(a => !rects.some(b => b !== a
-                && a.left <= b.left + 1 && a.right >= b.right - 1
-                && a.top <= b.top + 1 && a.bottom >= b.bottom - 1
-                && (a.width > b.width + 2 || a.height > b.height + 2)));
-            // DEDUPE near-identical siblings — a snapshot heading's range
-            // reported every line box TWICE (measured: 4 rects for 2 lines,
-            // exact duplicates), and multiply applied twice per line is
-            // precisely the "deeper blue" (2026-08-26). A rect that overlaps
-            // an already-kept rect by more than half its own area is the same
-            // line again, not new coverage.
-            const kept: any[] = [];
-            for (const a of rects) {
-                const dup = kept.some(b => {
-                    const ox = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
-                    const oy = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-                    return ox * oy > 0.5 * a.width * a.height;
-                });
-                if (!dup) kept.push(a);
-            }
-            rects = kept;
+            const rects = this._wvDomLeafRects(range);
             if (!rects.length) return;
             for (const r of rects.slice(0, 40)) {
                 const box: any = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");

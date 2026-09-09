@@ -6357,13 +6357,17 @@ class _PaneMixin {
             // close-12.svg in currentColor, shown only while there is text,
             // click clears and keeps focus in the field. Static rules live in
             // a <style> because an inline `display` would beat the UA's
-            // [hidden] rule and the button could never hide.
+            // [hidden] rule and the button could never hide. about:addons
+            // styles every <button> with min-width 6.3em / min-height 32px,
+            // and min-* beats width/height -- without the resets the × was a
+            // 94px-wide hover slab (MJT 2026-09-09).
             if (!doc.getElementById("wv-pm-search-styles")) {
                 const style = doc.createElement("style");
                 style.id = "wv-pm-search-styles";
                 style.textContent = [
                     "#wv-pm-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);",
-                    "  width: 20px; height: 20px; padding: 0; margin: 0; border: 0; border-radius: 4px;",
+                    "  width: 20px; height: 20px; min-width: 0; min-height: 0; max-width: 20px; max-height: 20px;",
+                    "  padding: 0; margin: 0; border: 0; border-radius: 4px;",
                     "  background: none; color: inherit; cursor: default; opacity: .7;",
                     "  display: flex; align-items: center; justify-content: center; }",
                     "#wv-pm-clear:hover { opacity: 1; background: color-mix(in srgb, currentColor 12%, transparent); }",

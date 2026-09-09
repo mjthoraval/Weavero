@@ -104,4 +104,11 @@ describe("Weavero — Plugins Manager search box", () => {
 		assert.include(img.getAttribute("src"), "close-12.svg", "search-textbox.css .textbox-search-clear");
 		assert.equal(clear.getAttribute("title"), "Clear");
 	});
+
+	it("resets about:addons' button min-size so the × stays 20px, not a 6.3em slab", () => {
+		const { d } = fixture();
+		const css = d.getElementById("wv-pm-search-styles").textContent;
+		assert.match(css, /#wv-pm-clear\s*\{[^}]*min-width:\s*0/, "min-width beats width; must be reset");
+		assert.match(css, /#wv-pm-clear\s*\{[^}]*min-height:\s*0/);
+	});
 });

@@ -2518,9 +2518,14 @@ class _FilterMixin {
         // one kind is excluded — an all-on scope is the default
         // no-op and wouldn't justify installing our patches by
         // itself.
+        // All FOUR kinds: the four-type split (2026-08-19) added `note`
+        // to the scope but not here, so an Apply-to dropdown with only
+        // Notes unticked never activated the group and did nothing
+        // (found writing the scope x mode live cases, 2026-09-10).
         if (group.quickSearchScope
             && (group.quickSearchScope.annotation === false
                 || group.quickSearchScope.attachment === false
+                || group.quickSearchScope.note === false
                 || group.quickSearchScope.parent === false)) return true;
         return false;
     }

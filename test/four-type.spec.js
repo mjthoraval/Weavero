@@ -82,6 +82,21 @@ describe("Weavero — four-type classification", function () {
         });
     });
 
+    describe("quick-search Apply-to scope activation", function () {
+        // The four-type split added `note` to the scope but not to
+        // _isGroupActive, so a dropdown with only Notes unticked never
+        // activated the group and did nothing (2026-09-10).
+        it("every single-kind exclusion activates the group, all-on does not", function () {
+            for (const k of ["parent", "attachment", "note", "annotation"]) {
+                const g = plugin()._emptyFilterGroup();
+                g.quickSearchScope = { parent: true, attachment: true, note: true, annotation: true };
+                assert.isFalse(plugin()._isGroupActive(g), "all-on is the no-op default");
+                g.quickSearchScope[k] = false;
+                assert.isTrue(plugin()._isGroupActive(g), k + " off must activate the group");
+            }
+        });
+    });
+
     describe("Standalone Note ↔ Item Note OR pair", function () {
         it("both includes ON: any note passes the per-row filter", function () {
             const g = Object.assign(plugin()._emptyFilterGroup(),

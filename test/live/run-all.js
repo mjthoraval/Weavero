@@ -28,8 +28,15 @@
         || "D:\\MyData\\Code\\Zotero\\Weavero\\GitHub\\test\\live\\";
     const PROFILE = Zotero._wvLiveProfile === "full" ? "full" : "core";
 
+    // capMs is the budget after which a suite counts as timed out. The
+    // runner NEVER starts the next suite while the previous one still
+    // reports "running": two suites driving one items list corrupt each
+    // other's checks AND each other's restores (2026-09-10: search-modes
+    // overran its 8-minute cap, interactions started on top of it, 54
+    // checks failed for no defect, and sync.autoSync was left off). Past
+    // the cap the runner keeps waiting up to 3x cap, then abandons the run.
     const SUITES = [
-        { file: "search-modes.js", global: "_wvModes", capMs: 8 * 60000 },
+        { file: "search-modes.js", global: "_wvModes", capMs: 20 * 60000 },
         { file: "interactions.js", global: "_wvInteract", capMs: 8 * 60000 },
         { file: "reader-filter.js", global: "_wvReaderFilter", capMs: 6 * 60000 },
         { file: "multi-window.js", global: "_wvMultiWin", capMs: 6 * 60000 },
@@ -74,6 +81,21 @@
                         && Date.now() - t0 < s.capMs) {
                         await sleep(2000);
                     }
+                    // Over budget but still running: keep waiting rather
+                    // than overlap; give up on the whole run at 3x cap.
+                    let overran = false;
+                    while (Zotero[s.global] && Zotero[s.global].status === "running"
+                        && Date.now() - t0 < 3 * s.capMs) {
+                        overran = true;
+                        await sleep(5000);
+                    }
+                    if (Zotero[s.global] && Zotero[s.global].status === "running") {
+                        entry.summary = { status: "abandoned: still running after " + Math.round((Date.now() - t0) / 60000) + " min" };
+                        entry.timedOut = true;
+                        RUN.abandonedAt = s.file;
+                        break;
+                    }
+                    if (overran) entry.overranCapMs = Date.now() - t0;
                     // Let the suite's finally (restore + certification) land
                     // before summarising — status flips to "done" BEFORE the
                     // finally runs, and the cleanup is stability-gated, so a

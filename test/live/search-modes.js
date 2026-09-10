@@ -287,7 +287,10 @@
                 // in _isGroupActive), so the dropdown silently did nothing.
                 "all but note":    { parent: true,  attachment: true,  note: false, annotation: true },
             };
+            // Chip variants on ONE mode only: every case costs ~12 s and the
+            // first run overran the runner's cap (2026-09-10).
             const WITH_CHIP = ["parent only", "annotation only", "all but note"];
+            const CHIP_MODE = "fields";
             const kindOf = (it) => it.isRegularItem() ? "parent"
                 : it.isAnnotation() ? "annotation"
                 : it.isNote() ? "note"
@@ -317,7 +320,7 @@
                 Zotero.Prefs.set("search.quicksearch-mode", mode.key);
                 await sleep(400);
                 for (const [name, scope] of Object.entries(SCOPES)) {
-                    for (const chip of (WITH_CHIP.includes(name) ? [false, true] : [false])) {
+                    for (const chip of (WITH_CHIP.includes(name) && mode.key === CHIP_MODE ? [false, true] : [false])) {
                         const tag = mode.key + " × Apply to " + name + (chip ? " + chip" : "");
                         const gt = await scopedGroundTruth(mode.cond, scope, chip);
                         await search(""); await clearChip();

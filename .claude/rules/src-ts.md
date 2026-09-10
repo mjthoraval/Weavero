@@ -50,14 +50,26 @@ name to a Zotero object, window, or document.
   open got fought). Long-lived tick loops re-resolve a live window per
   schedule (global setTimeout fallback), never bind the host once.
 - Wraps installed on LONG-LIVED Zotero objects (itemsView, rowProvider,
-  windows) stamp themselves with `this._wvWireTag()` — the BUILD version —
-  never a boolean and never a hand-bumped constant. A foreign stamp means
-  "wired by another build": peel the own-prop wrapper with `delete` (wrapped
-  members must have a live prototype fallback) and wire fresh. Booleans
-  shipped the hot-upgrade filter death (2026-08-25: stamps survived the
-  upgrade, the new instance skipped wiring, the filter went silently dead
-  until restart); a hand-bumped constant re-breaks on the first release that
-  forgets the bump. Guard: `test/wire-stamps.spec.js`.
+  windows) stamp themselves with `this._wvWireTag()` — build version PLUS a
+  per-instance nonce — never a boolean and never a hand-bumped constant. A
+  foreign stamp means "wired by another INSTANCE": peel the own-prop wrapper
+  with `delete` (wrapped members must have a live prototype fallback) and
+  wire fresh. Booleans shipped the hot-upgrade filter death (2026-08-25:
+  stamps survived the upgrade, the new instance skipped wiring, the filter
+  went silently dead until restart); build-only stamps shipped the SAME
+  death on a same-build reload (2026-09-10: install + plugin_reload, the
+  new instance found its own build tag and skipped, `setFilter`'s re-apply
+  kept running on the dead instance — clearing a quick search dropped the
+  chip; every bridge verification after a reload had run on a half-dead
+  filter). Guard: `test/wire-stamps.spec.js`.
+- Inside a wrapper installed ON a host object (`rp._refresh = async
+  function (...) {…}`, `iv.setFilter = …`), `this` is the HOST, not the
+  plugin: never call `this._wv…` there — resolve the live plugin
+  (`Zotero.Weavero && Zotero.Weavero.plugin`) at call time. A refactor
+  that replaced an inline test with `this._wvIsStructuralRow(row)` inside
+  the row provider's refresh threw "not a function" on every search
+  refresh for six weeks, swallowed by a catch (found 2026-09-10 only
+  because a debug-storage run happened to show "cleanup err").
 - ONE-SHOT ARMED LISTENERS on content documents (the select-region and
   pin-placement arms) are the same failure family: the listener closures
   survive plugin reloads on the content doc, and a stale arm CONSUMES the

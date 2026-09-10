@@ -175,7 +175,16 @@
                 try { rp().collapseAllRows(); } catch (e) {}
                 await stable();
                 await search(TERM);
-                const searchOnly = topIDs().size;
+                const searchOnlyIDs = topIDs();
+                const searchOnly = searchOnlyIDs.size;
+                // On a small library every hit may already be of the chip's
+                // type (dev library: 23/23 journal articles for "drop" in
+                // titleCreatorYear), and then the chip has nothing to
+                // narrow -- not a defect.
+                const nonChipHits = [...searchOnlyIDs].filter(id => {
+                    const it = Zotero.Items.get(id);
+                    return !(it && it.isRegularItem() && it.itemType === CHIP);
+                }).length;
                 await applyChip();
                 await faSettle();
                 const A = topIDs();
@@ -190,9 +199,9 @@
                 const B = topIDs();
 
                 const dA = diff(A, gt), dB = diff(B, gt);
-                check(mode.key + ": chip narrows the search result",
-                    A.size < searchOnly,
-                    { searchOnly, withChip: A.size });
+                check(mode.key + ": chip narrows the search result (or had nothing to narrow)",
+                    nonChipHits === 0 ? A.size === searchOnly : A.size < searchOnly,
+                    { searchOnly, withChip: A.size, nonChipHits });
                 // A view must never invent rows. Missing rows are the known
                 // open bug; EXTRA rows would be a new and worse defect.
                 check(mode.key + ": search-then-chip shows nothing spurious",
@@ -327,16 +336,31 @@
                         try { rp().collapseAllRows(); } catch (e) {}
                         await stable();
                         await search(TERM);
-                        await applyChip(g => {
+                        // H.applyChip, NOT this suite's zero-argument
+                        // `applyChip` (which always applies the chip and
+                        // ignores a mutate -- the first two runs of these
+                        // cases measured the chip, not the scope).
+                        await H.applyChip(g => {
                             g.quickSearchScope = Object.assign({}, scope);
                             if (chip) g.itemType = [CHIP];
-                        });
+                        }, { post: 500, stable: TUNE });
                         await faSettle();
                         const got = topIDs();
                         const d = diff(got, gt);
                         check(tag + ": shows nothing spurious", d.extra === 0, d);
                         check(tag + ": matches ground truth", d.missing === 0 && d.extra === 0, d);
                         observe(tag, { got: got.size, expected: gt.size,
+                            // Diagnostics: what the PLUGIN saw at snapshot time
+                            // (a wrong `got` with the right scope here means the
+                            // apply ignored it; a wrong scope means the harness
+                            // wrote it somewhere the plugin does not read).
+                            active: lp._isFilterActive(lp._filterState),
+                            patched: !!(rp()._wvOrigGetRow),
+                            applying: !!lp._filterApplying, swapping: !!lp._collectionSwapping,
+                            faHold: !!lp._wvFAHold,
+                            scopeSeen: JSON.stringify((lp._activeGroup() || {}).quickSearchScope),
+                            chipSeen: JSON.stringify((lp._activeGroup() || {}).itemType),
+                            mode: Zotero.Prefs.get("search.quicksearch-mode"),
                             scopeButtonMarked: (() => { try { const b = zp.document.querySelector(".wv-qs-scope-btn"); return b ? b.getAttribute("data-modified") : null; } catch (e) { return "err"; } })() });
                     }
                 }

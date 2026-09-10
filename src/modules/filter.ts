@@ -1218,7 +1218,17 @@ class _FilterMixin {
                                 // verbatim and out of seenIds (whose ids are
                                 // itemIDs — a Library id could also collide
                                 // with a real item's id).
-                                if (this._wvIsStructuralRow(row)
+                                // `this` here is the ROW PROVIDER (this
+                                // is its patched refresh), not the plugin:
+                                // the 2026-07-31 refactor wrote
+                                // `this._wvIsStructuralRow` and the whole
+                                // dedupe pass has thrown "not a function"
+                                // on every search refresh since, swallowed
+                                // by the catch below as "cleanup err"
+                                // (found 2026-09-10 in the search-clear
+                                // debug log).
+                                const lpS: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                                if ((lpS && lpS._wvIsStructuralRow(row))
                                     || typeof row.ref.isRegularItem !== "function") {
                                     kept.push(row);
                                     continue;

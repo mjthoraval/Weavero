@@ -12750,7 +12750,20 @@ class _FilterMixin {
      *  _handleSelectionChange, _cacheState, _expandMatchParents) and wire
      *  fresh. Guard: test/wire-stamps.spec.js. */
     _wvWireTag(): string {
-        return "wv@" + ((this as any)._version || "dev");
+        // INSTANCE-keyed, not just build-keyed (2026-09-10): a same-build
+        // reload -- install followed by the bridge's plugin_reload, or two
+        // reloads -- creates a new instance that finds ITS OWN tag on the
+        // wraps and skips wiring, so setFilter & co. keep calling into the
+        // torn-down instance. Found by the live suites: clearing a quick
+        // search dropped the chip (75 -> 153 rows) because the wrap's
+        // post-refresh re-apply ran on the dead instance. The nonce is
+        // minted once per instance; the build prefix stays for readable
+        // stamps. Guard: test/wire-stamps.spec.js.
+        const self: any = this;
+        if (!self._wvInstanceNonce) {
+            self._wvInstanceNonce = Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+        }
+        return "wv@" + (self._version || "dev") + "#" + self._wvInstanceNonce;
     }
 
     _wvPatchSelectionChangeForCapture(itemsView: any) {

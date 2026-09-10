@@ -45,6 +45,30 @@ describe("Weavero — wire stamps are build-keyed (hot-upgrade rewiring)", () =>
         if (wv._version) assert.include(tag, String(wv._version));
     });
 
+    // 2026-09-10: build-keyed was not enough. A SAME-build reload (install,
+    // then the bridge's plugin_reload; or two reloads) creates a new
+    // instance that finds its own build tag on the wraps, skips wiring, and
+    // leaves setFilter & co. bound to the torn-down instance -- the live
+    // suites caught it as "clearing the quick search drops the chip". The
+    // tag is now instance-keyed: same build, new instance, new tag.
+    it("a second instance of the same build gets a different tag", () => {
+        const twin = Object.create(Object.getPrototypeOf(wv));
+        twin._version = wv._version;
+        const a = wv._wvWireTag(), b = twin._wvWireTag();
+        assert.notStrictEqual(a, b, "same build, different instance, different tag");
+        assert.strictEqual(wv._wvWireTag(), a, "stable within an instance");
+        if (wv._version) assert.include(b, String(wv._version), "the build stays readable in the stamp");
+    });
+
+    it("a same-build stamp from ANOTHER instance is peeled like a foreign build's", () => {
+        const twinTag = "wv@" + (wv._version || "dev") + "#deadbeef";
+        const stale = plantStale(iv, "_handleSelectionChange", "_wvSelChangeWired", twinTag);
+        wv._wvPatchSelectionChangeForCapture(iv);
+        assert.notStrictEqual(iv._handleSelectionChange, stale,
+            "the dead instance's wrapper must not be trusted");
+        assert.strictEqual(iv._wvSelChangeWired, wv._wvWireTag());
+    });
+
     const plantStale = (obj, member, stampKey, stampValue) => {
         const stale = function _wvStaleFromOldBuild() {
             throw new Error("stale wrapper ran");

@@ -15572,10 +15572,14 @@ class _FilterMixin {
      *  conditions happen to be unedited) and offered a narrower revert that
      *  had not been implemented as of 2026-09-08. The rule here is not
      *  "unedited" but "expressible", which is a property of the search
-     *  itself and so cannot change under the user. The geometry backs it:
-     *  the funnel and collapse buttons overlap across 21 of their 28px,
-     *  measured in the live window, so a second click in the same spot is
-     *  read as undoing the first.
+     *  itself and so cannot change under the user. The rule stands on that
+     *  alone. A geometry argument once measured here (funnel and collapse
+     *  buttons overlapping across 21 of 28px, "a second click in the same
+     *  spot undoes the first") holds only WITH Weavero: it is Weavero's own
+     *  filter button that shifts the row so the collapse button lands where
+     *  the funnel was. In stock Zotero the funnel's spot is taken by the
+     *  close X instead (MJT 2026-09-10) -- so it argues nothing upstream and
+     *  must not be posted to 133103.
      *
      *  ORDER MATTERS. Zotero clears the advanced-search channel inside
      *  `_refreshAdvancedSearchPane`, which `setAdvancedSearchState` runs as

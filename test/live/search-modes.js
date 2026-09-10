@@ -43,11 +43,17 @@
 
     const TERM = "drop";
     const CHIP = "journalArticle";
-    const MODES = [
-        { key: "titleCreatorYear", cond: "quicksearch-titleCreatorYear" },
-        { key: "fields", cond: "quicksearch-fields" },
-        { key: "everything", cond: "quicksearch-everything" },
-    ];
+    // The scope menu's modes, read from Zotero's own quick-search element
+    // (`_searchModes`, the object its menu is built from) so a mode added
+    // upstream is tested the day it appears; the 10.0.2-beta.9 list is the
+    // fallback. NOTE: `quicksearch-titleCreatorYearNote` is a search
+    // CONDITION (the citation dialog's), not a scope-menu mode -- it is not
+    // in this list on purpose (checked against the source 2026-09-10).
+    const qsEl = zp.document.getElementById("zotero-tb-search");
+    const MODE_KEYS = (qsEl && qsEl._searchModes && Object.keys(qsEl._searchModes).length)
+        ? Object.keys(qsEl._searchModes)
+        : ["titleCreatorYear", "fields", "everything"];
+    const MODES = MODE_KEYS.map(key => ({ key, cond: "quicksearch-" + key }));
 
     // This suite's historical paddings/guards, passed explicitly.
     const TUNE = { guard: 250 };
@@ -209,6 +215,52 @@
                     unionCoversGroundTruth:
                         [...gt].every(x => A.has(x) || B.has(x)),
                 });
+            }
+
+            // ---- SCOPE MENU switch under an active search + chip ----
+            // The loop above starts every mode from a clean view. A user
+            // changes scope WITH a term and a chip live, through the menu
+            // next to the box: Zotero's handler sets the pref, updates the
+            // mode and re-fires the search. The view must land on the NEW
+            // mode's ground truth for every ordered pair -- the transition
+            // is where a stale-generation bug would show (2026-09-10).
+            // Driven through the menuitem's `doCommand()`, the trusted
+            // path: synthetic clicks on XUL menus are ignored.
+            R.modes = MODE_KEYS;
+            const gtByMode = {};
+            for (const m of MODES) gtByMode[m.key] = await groundTruth(m.cond);
+            const menuItem = (key) => qsEl && qsEl.searchModePopup
+                && qsEl.searchModePopup.querySelector('menuitem[value="' + key + '"]');
+            check("scope menu exposes every mode", MODES.every(m => !!menuItem(m.key)),
+                { modes: MODE_KEYS, missing: MODES.filter(m => !menuItem(m.key)).map(m => m.key) });
+            for (const from of MODES) {
+                for (const to of MODES) {
+                    if (from.key === to.key) continue;
+                    const tag = from.key + " → " + to.key + " via the scope menu";
+                    await search(""); await clearChip();
+                    try { rp().collapseAllRows(); } catch (e) {}
+                    await stable();
+                    Zotero.Prefs.set("search.quicksearch-mode", from.key);
+                    await sleep(400);
+                    await search(TERM);
+                    await applyChip();
+                    await faSettle();
+                    const before = topIDs();
+                    const mi = menuItem(to.key);
+                    if (!mi) { check(tag + ": menu item present", false, {}); continue; }
+                    mi.doCommand();
+                    await sleep(600);
+                    await faSettle();
+                    await stable();
+                    const got = topIDs();
+                    const d = diff(got, gtByMode[to.key]);
+                    check(tag + ": pref switched",
+                        Zotero.Prefs.get("search.quicksearch-mode") === to.key);
+                    check(tag + ": shows nothing spurious", d.extra === 0, d);
+                    check(tag + ": matches the new mode's ground truth",
+                        d.missing === 0 && d.extra === 0, d);
+                    observe(tag, { before: before.size, after: got.size, expected: gtByMode[to.key].size });
+                }
             }
 
             // ---- ADVANCED SEARCH x chip -----------------------------

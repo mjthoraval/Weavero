@@ -188,7 +188,12 @@
                 // ---- quick search per mode ----
                 const sb = zp.document.getElementById("zotero-tb-search");
                 const TERM = "the";
-                for (const mode of ["titleCreatorYear", "fields", "everything"]) {
+                // Modes from Zotero's own element (the object its scope menu
+                // is built from), beta.9's three as the fallback.
+                const SCOPE_MODES = (sb && sb._searchModes && Object.keys(sb._searchModes).length)
+                    ? Object.keys(sb._searchModes) : ["titleCreatorYear", "fields", "everything"];
+                W.scopeModes = SCOPE_MODES;
+                for (const mode of SCOPE_MODES) {
                     Zotero.Prefs.set("search.quicksearch-mode", mode, true);
                     await sleep(300);
                     const applyRes = await measure(async () => {
@@ -203,6 +208,38 @@
                     await sleep(400);
                 }
                 Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+
+                // ---- scope switch under an active chip + search (menu path) ----
+                // What a user does: term typed, chip on, then a different scope
+                // from the menu. Zotero's handler sets the pref and re-fires the
+                // search; time that re-apply per switch (2026-09-10). Driven via
+                // the menuitem's doCommand() -- synthetic clicks on XUL menus
+                // are ignored.
+                {
+                    const item = (k) => sb && sb.searchModePopup
+                        && sb.searchModePopup.querySelector('menuitem[value="' + k + '"]');
+                    if (SCOPE_MODES.every(k => !!item(k))) {
+                        await applyGroup(g => { g.itemType = ["journalArticle"]; })();
+                        await sleep(500);
+                        sb.value = TERM; sb.dispatchEvent(new Event("command"));
+                        await sleep(800);
+                        let cur = Zotero.Prefs.get("search.quicksearch-mode", true) || "fields";
+                        for (const k of SCOPE_MODES) {
+                            if (k === cur) continue;
+                            const name = "scope switch " + cur + "→" + k + " under chip";
+                            W.ops[name] = await measure(async () => { item(k).doCommand(); }, name);
+                            cur = k;
+                            await sleep(400);
+                        }
+                        sb.value = ""; sb.dispatchEvent(new Event("command"));
+                        await sleep(500);
+                        W.ops["clear chip after scope switches"] = await measure(clearAll(), "clear chip after scope switches");
+                        Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+                        await sleep(300);
+                    } else {
+                        W.ops["scope switch under chip"] = "skipped: scope menu not built for every mode";
+                    }
+                }
 
                 // ---- combined: chip + search (the invariant-bearing path) ----
                 await measure(applyGroup(g => { g.itemType = ["journalArticle"]; }), "combined chip apply");

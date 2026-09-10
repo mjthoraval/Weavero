@@ -12428,29 +12428,19 @@ class _FilterMixin {
      *  parent is collapsed, so checking it would false-positive on
      *  almost every collapsed view. */
     _wvSearchCoverageIncomplete(rp: any): boolean {
-        return this._wvSearchCoverageMissing(rp) !== "";
-    }
-
-    /** The coverage defect as a SIGNATURE -- "m:<missing parent ids>|s:<n
-     *  unjustified top rows>", "" when complete -- so the quiescence
-     *  repair can budget per problem rather than per term: the live suite
-     *  searches one term all along, and a per-term budget spent on one
-     *  case refused the next case's different missing row (2026-09-10). */
-    _wvSearchCoverageMissing(rp: any): string {
         try {
-            if (!rp || !rp._rows) return "";
+            if (!rp || !rp._rows) return false;
             const sm = rp.searchMode || rp._searchMode;
-            if (!sm) return "";
+            if (!sm) return false;
             const pIDs = rp.searchParentIDs || rp._searchParentIDs;
-            if (!pIDs || typeof pIDs.has !== "function" || !pIDs.size) return "";
+            if (!pIDs || typeof pIDs.has !== "function" || !pIDs.size) return false;
             const have = new Set();
             for (const row of rp._rows) {
                 if (row && row.ref && row.ref.id != null) have.add(row.ref.id);
             }
             // (a) MISSING: a parent Zotero said to show has no row.
-            const missing: number[] = [];
             for (const id of pIDs) {
-                if (!have.has(id)) missing.push(id);
+                if (!have.has(id)) return true;
             }
             // (b) STALE: a TOP-LEVEL row that the live search does not
             //     justify at all. Measured 9 Aug 2026 on the `prewetting`
@@ -12466,7 +12456,6 @@ class _FilterMixin {
             //     Annotations toggles), whereas a top-level row always
             //     needs a justification while a search is active.
             const sIDs = rp.searchItemIDs || rp._searchItemIDs;
-            let stale = 0;
             if (sIDs && typeof sIDs.has === "function") {
                 const rows = rp._rows;
                 for (let i = 0; i < rows.length; i++) {
@@ -12474,14 +12463,12 @@ class _FilterMixin {
                     if (!row || !row.ref || row.ref.id == null) continue;
                     if ((row.level || 0) !== 0) continue;
                     const id = row.ref.id;
-                    if (!sIDs.has(id) && !pIDs.has(id)) stale++;
+                    if (!sIDs.has(id) && !pIDs.has(id)) return true;
                 }
             }
-            if (!missing.length && !stale) return "";
-            missing.sort((a, b) => a - b);
-            return "m:" + missing.join(",") + "|s:" + stale;
+            return false;
         }
-        catch (e) { return ""; }
+        catch (e) { return false; }
     }
 
     /** LAST-WRITER-AT-QUIESCENCE: one authoritative re-apply after a live
@@ -12601,10 +12588,10 @@ class _FilterMixin {
                     // external apply reaches; bounded per term so a
                     // deterministic omission cannot loop.
                     try {
-                        const cov = this._wvSearchCoverageMissing(rp);
-                        if (cov && this._wvCoverageRepairAllowed(String(sb.value) + "|" + cov)) {
+                        if (this._wvSearchCoverageIncomplete(rp)
+                                && this._wvCoverageRepairAllowed(String(sb.value))) {
                             dbg("[Weavero][filter] final apply: search coverage incomplete ("
-                                + sig + "; " + cov + ") -- re-issuing the search");
+                                + sig + ") -- re-issuing the search");
                             const wasViaR = (this as any)._wvViaSetFilter;
                             (this as any)._wvViaSetFilter = true;      // no Order-B re-route
                             try { iv.setFilter("search", String(sb.value)); }
@@ -12636,11 +12623,10 @@ class _FilterMixin {
     }
 
     /** Budget for the quiescence-time coverage repair: at most two
-     *  re-issued searches per KEY (term + missing-row signature) within a
-     *  minute. A new key resets it -- a different missing set is a
-     *  different problem -- while a deterministic omission (rows Zotero
-     *  will never build) costs two extra refreshes and then stops.
-     *  Guard: test/search-coverage-repair.spec.js. */
+     *  re-issued searches per term within a minute. A new term resets it;
+     *  a deterministic omission (rows Zotero will never build) therefore
+     *  costs two extra refreshes and then stops. Guard:
+     *  test/search-coverage-repair.spec.js. */
     _wvCoverageRepairAllowed(term: string): boolean {
         const now = Date.now();
         const st: any = (this as any)._wvCovRepair;

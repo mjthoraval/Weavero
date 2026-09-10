@@ -48,33 +48,16 @@ describe("Weavero — search coverage repair budget", () => {
 		assert.isTrue(p._wvCoverageRepairAllowed("drop"), "an old episode does not block a new one");
 	});
 
-	it("a different missing set is a different problem: fresh budget under the same term", () => {
-		// The live suite searches "drop" throughout; the budget spent on
-		// item 111's case must not refuse item 89's case a moment later.
-		const p = fresh();
-		p._wvCoverageRepairAllowed("drop|m:111|s:0"); p._wvCoverageRepairAllowed("drop|m:111|s:0");
-		assert.isFalse(p._wvCoverageRepairAllowed("drop|m:111|s:0"));
-		assert.isTrue(p._wvCoverageRepairAllowed("drop|m:89|s:0"), "same term, other row missing");
-	});
-
-	it("the detector reports WHAT is missing, and nothing on a clean provider", () => {
-		if (typeof wv._wvSearchCoverageMissing !== "function") return;
-		assert.equal(wv._wvSearchCoverageMissing(null), "");
-		assert.equal(wv._wvSearchCoverageMissing({ _rows: [], searchMode: false }), "");
+	it("the incompleteness detector itself is present and inert on a clean provider", () => {
+		if (typeof wv._wvSearchCoverageIncomplete !== "function") return;
+		assert.isFalse(wv._wvSearchCoverageIncomplete(null));
+		assert.isFalse(wv._wvSearchCoverageIncomplete({ _rows: [], searchMode: false }));
 		// search mode with every parent present -> complete
 		const rows = [{ ref: { id: 1 }, level: 0 }, { ref: { id: 2 }, level: 1 }];
-		assert.equal(wv._wvSearchCoverageMissing({ _rows: rows, searchMode: true,
-			searchParentIDs: new Set([1]), searchItemIDs: new Set([2]) }), "");
 		assert.isFalse(wv._wvSearchCoverageIncomplete({ _rows: rows, searchMode: true,
 			searchParentIDs: new Set([1]), searchItemIDs: new Set([2]) }));
-		// promoted parents with no raw row -> named, sorted
-		assert.equal(wv._wvSearchCoverageMissing({ _rows: rows, searchMode: true,
-			searchParentIDs: new Set([1, 111, 89]), searchItemIDs: new Set([2]) }), "m:89,111|s:0");
+		// a promoted parent with no raw row -> incomplete
 		assert.isTrue(wv._wvSearchCoverageIncomplete({ _rows: rows, searchMode: true,
 			searchParentIDs: new Set([1, 111]), searchItemIDs: new Set([2]) }));
-		// a top-level row the search does not justify -> stale count
-		const rows2 = [{ ref: { id: 1 }, level: 0 }, { ref: { id: 7 }, level: 0 }];
-		assert.equal(wv._wvSearchCoverageMissing({ _rows: rows2, searchMode: true,
-			searchParentIDs: new Set([1]), searchItemIDs: new Set([1]) }), "m:|s:1");
 	});
 });

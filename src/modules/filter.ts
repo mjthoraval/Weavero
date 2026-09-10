@@ -12571,38 +12571,7 @@ class _FilterMixin {
                         (this as any)._wvFATimer = setT(tick, 200);
                         return;
                     }
-                    // QUIESCENT -- but is Zotero's own row set COMPLETE for
-                    // the live search? A parent in `searchParentIDs` with
-                    // no raw row cannot be shown by any keep, however
-                    // correct: it was never built. Seen 2026-09-10 (live
-                    // search-modes, `everything` mode, chip then search,
-                    // 3 runs of 3): parents whose only "drop" hit is their
-                    // PDF's full text -- item 111, Manzello & Yang 2002 --
-                    // promoted by Zotero (in searchParentIDs) yet absent
-                    // from `_rows`, so the chip-first view was one row
-                    // short while `_rowIsPrimary` said true. The stale-keep
-                    // retry already knows the repair (re-issue the search so
-                    // Zotero rebuilds its rows) but only inside its own
-                    // 4 s episode, which this state never enters. Do it
-                    // here, at the one point every search event and every
-                    // external apply reaches; bounded per term so a
-                    // deterministic omission cannot loop.
-                    try {
-                        if (this._wvSearchCoverageIncomplete(rp)
-                                && this._wvCoverageRepairAllowed(String(sb.value))) {
-                            dbg("[Weavero][filter] final apply: search coverage incomplete ("
-                                + sig + ") -- re-issuing the search");
-                            const wasViaR = (this as any)._wvViaSetFilter;
-                            (this as any)._wvViaSetFilter = true;      // no Order-B re-route
-                            try { iv.setFilter("search", String(sb.value)); }
-                            finally { (this as any)._wvViaSetFilter = wasViaR; }
-                            // The setFilter wrap arms a fresh episode (search
-                            // event); this one ends here.
-                            (this as any)._wvFAHold = false;
-                            return;
-                        }
-                    } catch (e) {}
-                    // Apply exactly once per distinct state.
+                    // QUIESCENT. Apply exactly once per distinct state.
                     if ((this as any)._wvFALastSig === sig) {
                         (this as any)._wvFAHold = false;                // done
                         return;
@@ -12620,24 +12589,6 @@ class _FilterMixin {
             };
             (this as any)._wvFATimer = setT(tick, 200);
         } catch (e) {}
-    }
-
-    /** Budget for the quiescence-time coverage repair: at most two
-     *  re-issued searches per term within a minute. A new term resets it;
-     *  a deterministic omission (rows Zotero will never build) therefore
-     *  costs two extra refreshes and then stops. Guard:
-     *  test/search-coverage-repair.spec.js. */
-    _wvCoverageRepairAllowed(term: string): boolean {
-        const now = Date.now();
-        const st: any = (this as any)._wvCovRepair;
-        if (!st || st.term !== term || now - st.at > 60000) {
-            (this as any)._wvCovRepair = { term, tries: 1, at: now };
-            return true;
-        }
-        if (st.tries >= 2) return false;
-        st.tries++;
-        st.at = now;
-        return true;
     }
 
     _wvScheduleStaleKeepRetry() {

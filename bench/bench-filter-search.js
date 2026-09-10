@@ -241,6 +241,36 @@
                     }
                 }
 
+                // ---- Weavero "Apply to" scope under a live search ----
+                // The dropdown next to the box: narrowing the search to one
+                // row kind (and widening back) with a term typed, per native
+                // mode -- the same group write + cascade apply the checkbox
+                // handler performs (2026-09-10).
+                for (const mode of SCOPE_MODES) {
+                    Zotero.Prefs.set("search.quicksearch-mode", mode, true);
+                    await sleep(300);
+                    sb.value = TERM; sb.dispatchEvent(new Event("command"));
+                    await sleep(800);
+                    const narrow = (scope) => async () => {
+                        const g = p._activeGroup() || p._emptyFilterGroup();
+                        g.quickSearchScope = scope;
+                        await p._applyItemsListFilter({ cascade: true });
+                    };
+                    W.ops["apply-to parent only under search " + mode] = await measure(
+                        narrow({ parent: true, attachment: false, note: false, annotation: false }), "apply-to parent only " + mode);
+                    await sleep(400);
+                    W.ops["apply-to annotation only under search " + mode] = await measure(
+                        narrow({ parent: false, attachment: false, note: false, annotation: true }), "apply-to annotation only " + mode);
+                    await sleep(400);
+                    W.ops["apply-to widen back under search " + mode] = await measure(
+                        narrow({ parent: true, attachment: true, note: true, annotation: true }), "apply-to widen " + mode);
+                    await sleep(400);
+                    sb.value = ""; sb.dispatchEvent(new Event("command"));
+                    await sleep(400);
+                    await measure(clearAll(), "clear after apply-to " + mode);
+                }
+                Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+
                 // ---- combined: chip + search (the invariant-bearing path) ----
                 await measure(applyGroup(g => { g.itemType = ["journalArticle"]; }), "combined chip apply");
                 W.ops["search fields UNDER an active chip"] = await measure(async () => {

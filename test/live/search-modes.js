@@ -263,6 +263,82 @@
                 }
             }
 
+            // ---- WEAVERO "APPLY TO" scope x native mode -------------
+            // The dropdown next to the box (Parent / Attachment / Note /
+            // Annotation) drops matched rows of a kind toggled off; a row
+            // survives when it, an ancestor or a descendant of an
+            // in-scope kind is in Zotero's strict match set, and ancestors
+            // of survivors stay as context. Oracle from the DB: a top-level
+            // row is expected iff some row in its tree of an in-scope kind
+            // matches `quicksearch-<mode>`; with the chip, only trees whose
+            // top is a regular item of the chip's type. State is written the
+            // way the dropdown's checkbox handler writes it (scope key +
+            // cascade apply). MJT 2026-09-10: "the 4 scopes from the Weavero
+            // plugin, and their interactions with the 3 native scopes".
+            const SCOPES = {
+                "all four":        { parent: true,  attachment: true,  note: true,  annotation: true },
+                "parent only":     { parent: true,  attachment: false, note: false, annotation: false },
+                "attachment only": { parent: false, attachment: true,  note: false, annotation: false },
+                "note only":       { parent: false, attachment: false, note: true,  annotation: false },
+                "annotation only": { parent: false, attachment: false, note: false, annotation: true },
+                "children only":   { parent: false, attachment: true,  note: true,  annotation: true },
+                // Only Notes off: the one shape that did NOT activate the
+                // group before dev.34 (the four-type split forgot `note`
+                // in _isGroupActive), so the dropdown silently did nothing.
+                "all but note":    { parent: true,  attachment: true,  note: false, annotation: true },
+            };
+            const WITH_CHIP = ["parent only", "annotation only", "all but note"];
+            const kindOf = (it) => it.isRegularItem() ? "parent"
+                : it.isAnnotation() ? "annotation"
+                : it.isNote() ? "note"
+                : it.isAttachment() ? "attachment" : null;
+            const topOf = (it) => { let p = it; while (p && p.parentItemID) p = Zotero.Items.get(p.parentItemID); return p; };
+            async function scopedGroundTruth(cond, scope, chip) {
+                const s = new Zotero.Search();
+                s.libraryID = Zotero.Libraries.userLibraryID;
+                s.addCondition(cond, "contains", TERM);
+                const ids = await s.search();
+                const items = await Zotero.Items.getAsync(ids);
+                await Zotero.Items.loadDataTypes(items);
+                const gt = new Set();
+                for (const it of items) {
+                    if (!it) continue;
+                    const k = kindOf(it);
+                    if (!k || scope[k] === false) continue;
+                    const top = topOf(it);
+                    if (!top) continue;
+                    if (chip && !(top.isRegularItem() && top.itemType === CHIP)) continue;
+                    gt.add(top.id);
+                }
+                return gt;
+            }
+            R.applyToScopes = Object.keys(SCOPES);
+            for (const mode of MODES) {
+                Zotero.Prefs.set("search.quicksearch-mode", mode.key);
+                await sleep(400);
+                for (const [name, scope] of Object.entries(SCOPES)) {
+                    for (const chip of (WITH_CHIP.includes(name) ? [false, true] : [false])) {
+                        const tag = mode.key + " × Apply to " + name + (chip ? " + chip" : "");
+                        const gt = await scopedGroundTruth(mode.cond, scope, chip);
+                        await search(""); await clearChip();
+                        try { rp().collapseAllRows(); } catch (e) {}
+                        await stable();
+                        await search(TERM);
+                        await applyChip(g => {
+                            g.quickSearchScope = Object.assign({}, scope);
+                            if (chip) g.itemType = [CHIP];
+                        });
+                        await faSettle();
+                        const got = topIDs();
+                        const d = diff(got, gt);
+                        check(tag + ": shows nothing spurious", d.extra === 0, d);
+                        check(tag + ": matches ground truth", d.missing === 0 && d.extra === 0, d);
+                        observe(tag, { got: got.size, expected: gt.size,
+                            scopeButtonMarked: (() => { try { const b = zp.document.querySelector(".wv-qs-scope-btn"); return b ? b.getAttribute("data-modified") : null; } catch (e) { return "err"; } })() });
+                    }
+                }
+            }
+
             // ---- ADVANCED SEARCH x chip -----------------------------
             await search(""); await clearChip();
             try { rp().collapseAllRows(); } catch (e) {}

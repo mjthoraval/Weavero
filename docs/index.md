@@ -30,7 +30,7 @@ Bookmark items, collections, searches, and URLs from a collections-pane dropdown
 
 ## Reader outline
 
-The reader's Outline tab becomes editable: rename entries, add your own (text selections, page anchors, pinned spots), drag to reorder or nest, and switch between the document's original outline and your curated **Weavero outline**. The outline also **highlights the section you're currently reading** as you scroll — embedded, extracted, and Weavero outlines alike — marking the deepest entry visible in your tree without ever expanding or collapsing it for you.
+The reader's Outline tab becomes editable: rename entries, add your own (text selections, page anchors, pinned spots), drag to reorder or nest, and switch between the document's original outline and your curated **Weavero outline**. The outline also **highlights the section you're currently reading** as you scroll — embedded, extracted, and Weavero outlines alike — marking the deepest entry visible in your tree without ever expanding or collapsing it for you. Entries show their page number; right-click the Outline tab to hide the numbers for one document, or turn them off globally in Preferences.
 
 ## Tabs and windows
 
@@ -40,7 +40,7 @@ Pinned tabs, named colour-coded **tab groups**, multi-select tabs, and a structu
 
 ## Extras
 
-Items-tree columns for annotation / tag / related counts, an *Added By* badge for annotations in group libraries with per-user colours, a Firefox-style hidden title bar, *Open in External Viewer*, and an experimental PDF outline text highlight.
+Items-tree columns for annotation / tag / related counts, an *Added By* badge for annotations in group libraries with per-user colours, a Firefox-style hidden title bar, *Open in External Viewer*, a Plugins Manager with a search box (Ctrl+F) and cards showing author, GitHub owner, version and last update in a normal resizable window, and an experimental PDF outline text highlight.
 
 ## Install
 

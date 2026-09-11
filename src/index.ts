@@ -879,6 +879,15 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
+    /** Global default for the "p. N" labels in the Outline tab (issue #42).
+     *  Default ON. A per-document override (`_wvOutlineFileSettings`) wins;
+     *  `_wvOutlinePagesShown` resolves the two. */
+    _getOutlinePageNumbers() {
+        try {
+            const v = Zotero.Prefs.get("weavero.outlinePageNumbers");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
     /** Master switch for inline markdown rendering inside the popup.
      *  Default true. When false: _commentHasIconableContent ignores markdown
      *  marks (so the icon doesn't appear on markdown-only comments) and
@@ -2105,6 +2114,9 @@ class WeaveroPlugin {
                 "readerItemPane",
                 // PDF reader outline heading-highlight — on by default.
                 "enableOutlineTextHighlight",
+                // "p. N" labels in the Outline tab (issue #42) — on by default;
+                // a per-document override lives in outlines.json `settings`.
+                "outlinePageNumbers",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
                 // Default attachment/note to open — ON, but INERT until the user
@@ -5595,6 +5607,7 @@ Zotero.Weavero = {
                 // idle readers with a class-only half-strip and a dead
                 // Outline tab).
                 try { _Weavero._wvWireOutlineTakeoverPrefWatch(); } catch (e) {}
+                try { _Weavero._wvWireOutlinePagesPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.

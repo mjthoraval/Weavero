@@ -40,7 +40,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 15;   // v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 16;   // v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -2632,6 +2632,8 @@ class _ReaderPanelsMixin {
             for (const [ev, ref, stamp] of [
                 ["click", "_wvOutlineTabClickH", "_wvOutlineTabWired"],
                 ["dblclick", "_wvOutlineTabDblH", "_wvOutlineTabWired"],
+                ["auxclick", "_wvOutlineTabCtxH", "_wvOutlineTabWired"],
+                ["contextmenu", "_wvOutlineTabCtxPdH", "_wvOutlineTabWired"],
                 ["input", "_wvOutlineSearchH", "_wvOutlineTabWired"],
                 ["keydown", "_wvOutlineSearchKeyH", "_wvOutlineTabWired"],
                 ["click", "_wvOutlineSearchClickH", "_wvOutlineTabWired"],
@@ -2782,6 +2784,8 @@ class _ReaderPanelsMixin {
             if ((idoc as any)._wvOutlineTabWired !== RP_BM_CTX_WIRE_V) {
                 try { if ((idoc as any)._wvOutlineTabClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineTabClickH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineTabDblH) idoc.removeEventListener("dblclick", (idoc as any)._wvOutlineTabDblH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineTabCtxH) idoc.removeEventListener("auxclick", (idoc as any)._wvOutlineTabCtxH, true); } catch (_) {}
+                try { if ((idoc as any)._wvOutlineTabCtxPdH) idoc.removeEventListener("contextmenu", (idoc as any)._wvOutlineTabCtxPdH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineSearchH) idoc.removeEventListener("input", (idoc as any)._wvOutlineSearchH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineSearchKeyH) idoc.removeEventListener("keydown", (idoc as any)._wvOutlineSearchKeyH, true); } catch (_) {}
                 try { if ((idoc as any)._wvOutlineSearchClickH) idoc.removeEventListener("click", (idoc as any)._wvOutlineSearchClickH, true); } catch (_) {}
@@ -2837,11 +2841,42 @@ class _ReaderPanelsMixin {
                         }
                     } catch (_) {}
                 };
+                // Right-click the Outline tab = per-document display options
+                // (issue #42: page numbers). The reader's FocusManager
+                // suppresses `contextmenu` in the sidebar, so the trigger is
+                // `auxclick` button 2 (same as the source chip); the
+                // contextmenu handler only cancels the native menu on the
+                // exempt paths. Gated on the takeover being active -- with
+                // the native outline showing there are no "p. N" labels.
+                const tabCtxH = (e: any) => {
+                    try {
+                        if (e.button !== 2) return;
+                        const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (!P) return;
+                        const t = e.target;
+                        const tab = t && t.closest && t.closest("#viewOutline");
+                        if (!tab) return;
+                        const container = idoc.getElementById("sidebarContainer");
+                        if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) return;
+                        e.preventDefault(); e.stopPropagation();
+                        P._wvOutlineShowTabMenu(reader, idoc, tab);
+                    } catch (_) {}
+                };
+                const tabCtxPdH = (e: any) => {
+                    try {
+                        const t = e.target;
+                        if (t && t.closest && t.closest("#viewOutline")) e.preventDefault();
+                    } catch (_) {}
+                };
                 (idoc as any)._wvOutlineTabClickH = tabClickH;
                 (idoc as any)._wvOutlineTabDblH = tabDblH;
+                (idoc as any)._wvOutlineTabCtxH = tabCtxH;
+                (idoc as any)._wvOutlineTabCtxPdH = tabCtxPdH;
                 (idoc as any)._wvOutlineTabWired = RP_BM_CTX_WIRE_V;
                 idoc.addEventListener("click", tabClickH, true);
                 idoc.addEventListener("dblclick", tabDblH, true);
+                idoc.addEventListener("auxclick", tabCtxH, true);
+                idoc.addEventListener("contextmenu", tabCtxPdH, true);
                 // Native sidebar SEARCH -> Weavero outline filter. The native
                 // outline view filters itself on `outlineQuery` (reader
                 // sidebar.js recursiveSearch); the takeover replaced that view,
@@ -4393,6 +4428,8 @@ class _ReaderPanelsMixin {
         // page, else pageIndex+1), NOT the PDF's `_pageLabels` table -- so the
         // outline's "p. N" always agrees with the bookmark rows'.
         const att = this._wvReaderAtt(reader);
+        // "p. N" labels: per-document override, else the global pref (#42).
+        const showPages = this._wvOutlinePagesShown(att);
         const expandedSet: Set<string> = reader._wvOutlineExpanded || (reader._wvOutlineExpanded = new Set());
         const keyOf = (entry: any, i: number) => curatedView ? String(entry.id) : ("idx-" + i);
         let hideBelow = Infinity;
@@ -4458,8 +4495,9 @@ class _ReaderPanelsMixin {
                     row.appendChild(tic);
                 }
             }
-            // Page number at the right (position entries only; URL entries have none).
-            const pi = (!entry.url && entry.position && Number.isInteger(entry.position.pageIndex))
+            // Page number at the right (position entries only; URL entries have
+            // none; hidden per document or globally -- see `showPages`).
+            const pi = (showPages && !entry.url && entry.position && Number.isInteger(entry.position.pageIndex))
                 ? entry.position.pageIndex : null;
             if (pi != null) {
                 const pg = idoc.createElementNS(NS, "span");
@@ -9381,6 +9419,122 @@ class _ReaderPanelsMixin {
             menu.style.top = (r.bottom + 2) + "px";
             this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
         } catch (_) {}
+    }
+
+    /** Whether the Outline tab shows "p. N" labels for this attachment:
+     *  the per-document override (`outlines.json` -> settings[key].pageNumbers)
+     *  when it is a boolean, else the global `weavero.outlinePageNumbers`
+     *  pref (default on). `att` may be null (no attachment -> global). */
+    _wvOutlinePagesShown(att: any): boolean {
+        try {
+            if (att && att.libraryID != null && att.itemKey) {
+                const s = this._wvOutlineFileSettings(att.libraryID, att.itemKey);
+                if (s && typeof s.pageNumbers === "boolean") return s.pageNumbers;
+            }
+        } catch (_) {}
+        try { return this._getOutlinePageNumbers(); } catch (_) { return true; }
+    }
+
+    /** Set the "p. N" labels for one document (issue #42). The per-document
+     *  record only ever holds a DEPARTURE from the global default: picking
+     *  the default value removes it (so "use the global setting" needs no
+     *  row of its own -- user choice 2026-09-11). Resolves to the new
+     *  effective state. */
+    async _wvOutlineSetPageNumbers(att: any, shown: boolean): Promise<boolean> {
+        const globalOn = this._getOutlinePageNumbers();
+        await this._wvOutlineSetFileSettings(att.libraryID, att.itemKey,
+            { pageNumbers: shown === globalOn ? undefined : shown });
+        return this._wvOutlinePagesShown(att);
+    }
+
+    /** Flip the labels for one document (same departure-only rule). */
+    async _wvOutlineTogglePageNumbers(att: any): Promise<boolean> {
+        return this._wvOutlineSetPageNumbers(att, !this._wvOutlinePagesShown(att));
+    }
+
+    /** Right-click menu on the sidebar's Outline TAB (issue #42), in the
+     *  annotations sort-menu format (`_wvShowAnnSortMenu`): a heading, one
+     *  row per state ("Show" / "Hide") with a leading tick on the document's
+     *  current state and "(default)" on whichever the Settings pane selects.
+     *  User choice 2026-09-11, after a toggle row and a checkbox row both read
+     *  ambiguously. Same menu element / dismiss wiring as the source-chip
+     *  menu. */
+    _wvOutlineShowTabMenu(reader: any, idoc: any, anchor: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const att = this._wvReaderAtt(reader);
+            if (!att || att.libraryID == null || !att.itemKey) return;
+            const shown = this._wvOutlinePagesShown(att);
+            const globalOn = this._getOutlinePageNumbers();
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const rerender = () => {
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (P) P._wvReaderRenderOutline(reader, idoc);
+                } catch (_) {}
+            };
+            const row = (label: string, ticked: boolean, value: boolean) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.textContent = ticked ? "✓" : "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => {
+                    close();
+                    this._wvOutlineSetPageNumbers(att, value).then(rerender, rerender);
+                });
+                menu.appendChild(it);
+            };
+            const hd = idoc.createElementNS(NS_HTML_RP, "div");
+            hd.className = "wv-ctx-heading";
+            hd.textContent = "Page numbers";
+            menu.appendChild(hd);
+            row("Show" + (globalOn ? " (default)" : ""), shown, true);
+            row("Hide" + (globalOn ? "" : " (default)"), !shown, false);
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
+        } catch (e) { Zotero.debug("[Weavero] outline tab menu err: " + e); }
+    }
+
+    /** Propagate `weavero.outlinePageNumbers` flips to every OPEN reader's
+     *  outline at once (same lifetime pattern as the takeover pref watch:
+     *  versioned on the Zotero holder, resolves the live plugin). */
+    _wvWireOutlinePagesPrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvOutlinePagesPrefObs) {
+                if (g._wvOutlinePagesPrefObsVer === tag) return;
+                try { Zotero.Prefs.unregisterObserver(g._wvOutlinePagesPrefObs); } catch (_) {}
+                delete g._wvOutlinePagesPrefObs;
+            }
+            g._wvOutlinePagesPrefObsVer = tag;
+            g._wvOutlinePagesPrefObs = Zotero.Prefs.registerObserver(
+                "weavero.outlinePageNumbers",
+                () => {
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp) return;
+                        for (const r of (Zotero.Reader._readers || [])) {
+                            try {
+                                const idoc = r._iframeWindow && r._iframeWindow.document;
+                                if (!idoc) continue;
+                                const sc = idoc.getElementById("sidebarContainer");
+                                if (sc && sc.classList.contains(RP_OUTLINE_TAB_ON)) lp._wvReaderRenderOutline(r, idoc);
+                            } catch (_) {}
+                        }
+                    } catch (_) {}
+                },
+            );
+        } catch (e) { Zotero.debug("[Weavero] outline pages pref watch err: " + e); }
     }
 
     /** Source-switch menu (used when >1 source exists -- Phase 3). Mirrors the

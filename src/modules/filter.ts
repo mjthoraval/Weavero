@@ -5455,10 +5455,6 @@ class _FilterMixin {
                             try {
                                 this._collectionSwapping = false;
                                 this._filterApplying = false;
-                                this._wvViaSetFilter = true;
-                                try { this._applyItemsListFilter({ cascade: true }); }
-                                finally { this._wvViaSetFilter = false; }
-                                this._patchIsSelectable();
                                 this._patchExpandMatchParents();
                                 this._patchHideContextAttachments();
                                 // Zotero's `_refresh` refreshes every
@@ -5472,7 +5468,33 @@ class _FilterMixin {
                                 // every attachment through. Re-refresh
                                 // those containers now that the new
                                 // search state is in place.
+                                //
+                                // UNPATCHED, and BEFORE the apply below.
+                                // `_refreshContainer(i)` is Zotero's
+                                // index-based helper: it reads
+                                // `isContainer` / `isContainerOpen` /
+                                // `getLevel` / `getRow` through whatever
+                                // sits on the row provider but splices
+                                // `_rows` directly. With the filter's
+                                // keep[] translation installed those
+                                // reads resolve a DIFFERENT row than the
+                                // raw index being spliced: the close
+                                // loop eats unrelated rows until the
+                                // watermark trips, and the re-open is
+                                // skipped because the translated row
+                                // already reads as open. That is how a
+                                // promoted full-text parent (item 89,
+                                // search-modes 86/88) vanished from
+                                // `_rows` on every everything-mode
+                                // search landing under a chip
+                                // (2026-09-10). The in-refresh apply
+                                // (rp._refresh wrapper) has usually
+                                // re-installed the patches by now, so
+                                // pause them explicitly; the apply that
+                                // follows computes keep[] against the
+                                // FINAL rows.
                                 try {
+                                    this._pauseFilterPatches();
                                     const rp2: any = itemsView
                                         && itemsView.rowProvider;
                                     if (rp2 && rp2._rows
@@ -5509,35 +5531,28 @@ class _FilterMixin {
                                         try { rp2.refreshRowMap(); } catch (e) {}
                                     }
                                 } catch (e) {}
-                                // KEEP IS NOW STALE. Everything above —
-                                // _refreshContainer on every open parent,
-                                // then _expandMatchParents — MUTATES
-                                // `_rows` AFTER the apply computed `keep`
-                                // against the pre-mutation array. The
-                                // watermark then disagrees with
-                                // `_rows.length` and `getRow` falls back to
-                                // passing indices through UNTRANSLATED, so
-                                // the view renders UNFILTERED while the
-                                // chip still shows as active. Measured
-                                // 2026-08-07 on clearing a quick search
-                                // with a chip on: 18 782 rows shown where
-                                // the chip alone gives 15 326, watermark
-                                // 18 780 vs 18 782 rows, and any later
-                                // apply restored it. Re-apply once the row
-                                // mutations above are done.
-                                //
-                                // 2026-08-08: instrumenting the apply path
-                                // showed this block is NOT on the failing
-                                // path at all -- a helper called from here
-                                // never fired during a reproduction. The
-                                // apply that would have refreshed the
-                                // watermark is instead DROPPED by the
-                                // `_filterApplying` guard (traced:
+                                // Apply AFTER the row mutations above, so
+                                // keep[] is computed against the final
+                                // array. Until 2026-09-10 the apply ran
+                                // first and the container loop then
+                                // mutated `_rows` behind it: the
+                                // watermark disagreed with `_rows.length`
+                                // and `getRow` fell through UNTRANSLATED
+                                // (measured 2026-08-07 on clearing a quick
+                                // search with a chip on: 18 782 rows shown
+                                // where the chip alone gives 15 326).
+                                this._wvViaSetFilter = true;
+                                try { this._applyItemsListFilter({ cascade: true }); }
+                                finally { this._wvViaSetFilter = false; }
+                                this._patchIsSelectable();
+                                // Belt-and-braces arm for the watermark
+                                // drift: 2026-08-08 instrumentation showed
+                                // the visible drop came from the
+                                // `_filterApplying` bounce (traced:
                                 // `cascade=false applying=true wm 18780
-                                // rows 18782`), so the repair lives at that
-                                // bounce site now. Kept as a belt-and-braces
-                                // arm: it is a no-op unless the watermark
-                                // genuinely disagrees.
+                                // rows 18782`), which is repaired at that
+                                // site; this retry is a no-op unless the
+                                // watermark genuinely disagrees.
                                 try { this._wvScheduleStaleKeepRetry(); }
                                 catch (e) {}
                                 // Authoritative final pass once the search

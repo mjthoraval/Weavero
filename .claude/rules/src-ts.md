@@ -70,6 +70,19 @@ name to a Zotero object, window, or document.
   the row provider's refresh threw "not a function" on every search
   refresh for six weeks, swallowed by a catch (found 2026-09-10 only
   because a debug-storage run happened to show "cleanup err").
+- Zotero's INDEX-BASED row helpers (`_refreshContainer`, `_toggleOpenState`,
+  `expandRows`, `_expandMatchParents`, the notify paths that walk
+  `_rowMap`) read `getRow` / `isContainer*` / `getLevel` through the row
+  provider but splice `_rows` DIRECTLY. Never call one while the filter's
+  keep[] translation is installed: `_pauseFilterPatches()` first (or the
+  `_wvFilterSelfCall` SELF flag, as the cascade branch does), mutate, THEN
+  `_applyItemsListFilter` so keep[] is computed against the final rows.
+  The setFilter wrapper ran its container re-refresh AFTER the apply for a
+  month: the translated reads resolved a different row than the raw index
+  being spliced, the close loop ate unrelated top-level rows, and every
+  everything-mode search landing under a chip lost a full-text-only
+  parent (search-modes 86/88, 2026-09-10). Guard:
+  `test/setfilter-order.spec.js` + live `search-modes` scope-menu cases.
 - ONE-SHOT ARMED LISTENERS on content documents (the select-region and
   pin-placement arms) are the same failure family: the listener closures
   survive plugin reloads on the content doc, and a stale arm CONSUMES the

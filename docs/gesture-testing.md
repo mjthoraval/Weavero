@@ -93,6 +93,30 @@ stays while hovered). Then, at the mouse:
       while off-page, and on release the bookmark is **unchanged**
       (cancels back to its original spot).
 
+## Outline tab menu (after touching the Outline-tab wiring / page labels)
+
+Page numbers ("p. N") in Weavero's Outline tab, issue #42. Open a PDF
+with an outline, switch the sidebar to **Outline** (Weavero takeover
+active), then:
+
+- [ ] **Right-click the Outline tab button** → a menu in the annotations
+      sort-menu format opens under it: heading **PAGE NUMBERS**, rows
+      **✓ Show (default)** and **Hide**. (Left-click and double-click keep
+      their native meanings: switch tab, expand/collapse all.)
+- [ ] **Click "Hide"** → the labels disappear at once, the menu closes.
+      Right-click again → the tick is on **Hide**; "(default)" stays on
+      **Show**.
+- [ ] **Switch to another document** → its labels are still shown (the
+      choice is per document). Back to the first → still hidden, also
+      after closing and reopening the tab, and after a Zotero restart.
+- [ ] **Click "Show (default)"** → labels return; `weavero/outlines.json`
+      no longer carries a `settings` entry for the document (picking the
+      default drops the record).
+- [ ] **Preferences → Reader outline → uncheck "Show page numbers"** →
+      every open reader's outline drops the labels without a tab
+      round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
+      document switched to Show from there still shows them.
+
 ## Popups (after touching popup code)
 
 Run `test/popups.spec.js` first, then by hand:

@@ -515,6 +515,11 @@ class _BookmarksMixin {
                 const j = JSON.parse(text);
                 if (j && typeof j === "object" && j.outlines && typeof j.outlines === "object") {
                     root = { producer: "weavero", schemaVersion: j.schemaVersion || 1, outlines: j.outlines };
+                    // Per-document DISPLAY settings (issue #42: page numbers)
+                    // ride in the same file under their own key, so a view
+                    // preference never creates a curated doc and survives
+                    // "Reset to Original", which deletes the doc.
+                    if (j.settings && typeof j.settings === "object") root.settings = j.settings;
                 }
             } catch (_) {}
             if (!root) root = { producer: "weavero", schemaVersion: 1, outlines: {} };
@@ -581,6 +586,34 @@ class _BookmarksMixin {
     _wvOutlineHasCurated(libraryID: number, itemKey: string): boolean {
         const d = this._wvOutlineDoc(libraryID, itemKey);
         return !!(d && Array.isArray(d.entries));
+    }
+
+    /** Per-document display settings ({ pageNumbers?: boolean }) or null.
+     *  Independent of the curated doc: `outlines.json` -> `settings[key]`.
+     *  Sync; {} -> null until `_wvOutlineInit` has loaded. */
+    _wvOutlineFileSettings(libraryID: number, itemKey: string): any {
+        if (!this._wvOutlineRoot) { try { this._wvOutlineInit(); } catch (_) {} return null; }
+        const s = this._wvOutlineRoot.settings;
+        const v = s && typeof s === "object" ? s[this._bmReaderKey(libraryID, itemKey)] : null;
+        return v && typeof v === "object" ? v : null;
+    }
+
+    /** Merge `patch` into the document's display settings and persist. A key
+     *  set to `undefined` is removed; an emptied record is dropped from the
+     *  file, so "use the global setting" leaves no trace. */
+    async _wvOutlineSetFileSettings(libraryID: number, itemKey: string, patch: any): Promise<any> {
+        await this._wvOutlineInit();
+        const root = this._wvOutlineRoot;
+        if (!root.settings || typeof root.settings !== "object") root.settings = {};
+        const key = this._bmReaderKey(libraryID, itemKey);
+        const cur = (root.settings[key] && typeof root.settings[key] === "object") ? root.settings[key] : {};
+        for (const k of Object.keys(patch || {})) {
+            if (patch[k] === undefined) delete cur[k]; else cur[k] = patch[k];
+        }
+        if (Object.keys(cur).length) root.settings[key] = cur; else delete root.settings[key];
+        if (!Object.keys(root.settings).length) delete root.settings;
+        await this._wvOutlinePersist();
+        return root.settings ? (root.settings[key] || null) : null;
     }
 
     /** Snapshot a plain getOutline2 tree into a curated outline

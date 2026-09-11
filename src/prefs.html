@@ -655,9 +655,9 @@
 
       <separator class="thin"/>
       <label><html:h3>Plugins Manager</html:h3></label>
-      <checkbox label="Search box in the Plugins Manager" native="true"
+      <checkbox label="Plugins Manager extras (search box, card details, normal window)" native="true"
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
-      <html:p class="wv-desc">Filter the installed-plugins list as you type; Ctrl+F focuses the box.</html:p>
+      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize and the main window&#8217;s title-bar layout, and Recent Updates always visible.</html:p>
     </vbox>
   </groupbox>
 
@@ -712,6 +712,9 @@
     <checkbox label="Highlight the heading text when clicking an outline entry" native="true"
       preference="extensions.zotero.weavero.enableOutlineTextHighlight"/>
     <html:p class="wv-desc">Flashes the actual heading text on click, in PDFs, EPUBs and snapshots; for embedded PDF outlines Weavero finds the heading on the page. Best-effort matching — scanned pages or unusual fonts may just jump without a highlight.</html:p>
+    <checkbox label="Show page numbers next to outline entries" native="true"
+      preference="extensions.zotero.weavero.outlinePageNumbers"/>
+    <html:p class="wv-desc">The “p. N” label at the right of each entry. Right-click the Outline tab in a reader to show or hide them for that document only.</html:p>
   </groupbox>
 
   <!-- ============================ Debug (collapsible, very bottom) -->

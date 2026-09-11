@@ -117,6 +117,22 @@ active), then:
       round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
       document switched to Show from there still shows them.
 
+## Items-list width (after touching the table CSS or registering columns)
+
+The items-list header must not size the centre pane (2026-09-11: with three
+Weavero columns the header's intrinsic width exceeded the pane's share, the
+side panes were squeezed, column drags moved the centre pane, and titles on
+the ellipsis boundary blinked). Show a dozen columns including Weavero's
+Annotations / Tags / Related, then:
+
+- [ ] **Narrow the window** until the items pane is at roughly its minimum
+      → the collections pane and item pane keep their splitter widths;
+      columns shrink inside the items pane instead.
+- [ ] **Drag a column separator** (e.g. Creator | Year) → only that pair of
+      columns changes; the centre pane and the other columns stay put.
+- [ ] **Watch truncated titles** for a few seconds at that width → no
+      blinking between "Tes…" and "Test12"-style renderings.
+
 ## Popups (after touching popup code)
 
 Run `test/popups.spec.js` first, then by hand:

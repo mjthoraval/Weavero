@@ -441,6 +441,27 @@ export const PLUGIN_CSS = [
     ":root.wv-ui-dark .wv-tree-rel-icon:hover {",
     "  background: rgba(255, 255, 255, 0.08);",
     "}",
+    // The items-list HEADER must never size the centre pane. It is a
+    // nowrap flex row whose intrinsic width is the sum of its cells'
+    // label widths plus every fixed-width column (Weavero adds three:
+    // Annotations 30 + Tags 44 + Related 30 = 104 px). Zotero's
+    // `#zotero-items-pane-container` is `flex: 1 1 auto`, so once that
+    // intrinsic width exceeds the pane's share of the window the pane
+    // follows the HEADER instead of the splitters: the side panes are
+    // squeezed below their stored widths, every column drag moves the
+    // centre pane and every other column, and the table's own
+    // ResizeObserver -> _updateWidth -> fractional --scrollbar-width
+    // padding -> header width -> pane width loop makes titles on the
+    // ellipsis boundary blink (MJT 2026-09-11, "Test12"; not reproducible
+    // without Weavero, whose columns push the threshold past the user's
+    // window width). Inline-size containment drops the header's intrinsic
+    // contribution; it is already overflow:hidden, so nothing visible
+    // changes while everything fits. Both tree ids: beta.4 renamed
+    // item-tree-main-default to item-tree-main.
+    "#item-tree-main-default .virtualized-table-header,",
+    "#item-tree-main .virtualized-table-header {",
+    "  contain: inline-size;",
+    "}",
     // Items-list custom column header icons. iconPath plugs the
     // icon URL into a `<span class=\"icon icon-bg\" style=\"background-
     // image: url(...)\">` inside the header cell. The Zotero SVGs

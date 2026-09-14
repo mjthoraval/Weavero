@@ -83,6 +83,15 @@ name to a Zotero object, window, or document.
   everything-mode search landing under a chip lost a full-text-only
   parent (search-modes 86/88, 2026-09-10). Guard:
   `test/setfilter-order.spec.js` + live `search-modes` scope-menu cases.
+- NOTIFIER OBSERVERS registered on the Zotero global are long-lived
+  hooks like the wraps: stamp them with `this._wvWireTag()` and
+  re-register on a mismatch. `_wvWireFilterCacheInvalidator` guarded on
+  `if (g._wvFilterCacheObsID) return;`, so after every hot reload the
+  PREVIOUS BUILD's `notify` stayed registered and no edit to that
+  observer took effect until a full restart (2026-09-14: a new
+  post-edit re-apply did nothing while the method was demonstrably on
+  the live instance; only a stamped re-register fixed it). Same rule as
+  the pref watchers (`_wvOutlineTakeoverPrefObs`), which already do it.
 - SNAPSHOTS captured by a wrap are only valid for the operation that
   captured them. `_wvBaseSearchIDs` (captured in the `getItems` wrap) is
   stamped with `_wvRefreshSeq`, and the `_refresh` wrap re-applies it only

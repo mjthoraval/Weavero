@@ -1004,6 +1004,7 @@ class _FilterMixin {
                 : (rp && rp.collectionTreeRow ? [rp.collectionTreeRow] : []);
             for (const ctr of ctrs) this._patchOneCtrGetItems(ctr);
             this._patchRefreshForChevrons(rp);
+            this._patchNotifyForFilter(rp);
         } catch (e) { dbg("[Weavero] _patchRefreshForReveals err: " + e); }
     }
 
@@ -1112,6 +1113,54 @@ class _FilterMixin {
             };
             ctr._wvGetItemsRevealPatched = true;
         } catch (e) { dbg("[Weavero] _patchOneCtrGetItems err: " + e); }
+    }
+
+    /** Wrap the row provider's `notify` so the filter is recomputed AFTER
+     *  Zotero has finished its own row work for a data change.
+     *
+     *  Why not a timer: an edit under an active chip leaves the row's
+     *  verdict stale, and re-applying on a fixed delay is a race. Zotero's
+     *  notifier work is async, so a 350ms (or 1050ms) re-apply can land
+     *  BEFORE it and have its keep[] discarded by the rebuild that
+     *  follows; a retype changes no row COUNT, so neither the watermark
+     *  nor the tree observer notices, and the row stays visible until some
+     *  unrelated apply. Probing by hand "fixed" it and the suite kept
+     *  failing -- instrumentation masking a race (2026-09-14, found by
+     *  filter-matrix section D). `notify` resolving IS the completion
+     *  signal, so the debounced re-apply is armed from here.
+     *
+     *  Stamped + peelable like every other wrap on a long-lived host. */
+    _patchNotifyForFilter(rp: any) {
+        try {
+            if (!rp || typeof rp.notify !== "function") return;
+            const tag = this._wvWireTag();
+            if (rp._wvNotifyForFilterPatched === tag) return;
+            if (rp._wvOrigNotifyForFilter) {
+                rp.notify = rp._wvOrigNotifyForFilter;
+                delete rp._wvOrigNotifyForFilter;
+                delete rp._wvNotifyForFilterPatched;
+            }
+            const origNotify = rp.notify;
+            rp._wvOrigNotifyForFilter = origNotify;
+            rp.notify = async function (...args: any[]) {
+                const result = await origNotify.apply(this, args);
+                try {
+                    // `this` is the ROW PROVIDER here, never the plugin.
+                    const plugin: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    if (plugin && plugin._isFilterActive
+                        && plugin._isFilterActive(plugin._filterState)) {
+                        plugin._wvScheduleReapplyAfterDataChange();
+                    }
+                } catch (e) {
+                    Zotero.debug("[Weavero][filter] post-notify reapply arm err: " + e);
+                }
+                return result;
+            };
+            rp._wvNotifyForFilterPatched = tag;
+        } catch (e) {
+            dbg("[Weavero][filter] _patchNotifyForFilter err: " + e);
+        }
     }
 
     /** Wrap `rp._refresh` so chevron maps get recomputed and the tree
@@ -13110,7 +13159,22 @@ class _FilterMixin {
     _wvWireFilterCacheInvalidator() {
         try {
             const g: any = Zotero;
-            if (g._wvFilterCacheObsID) return;
+            // VERSION-STAMPED, like every other long-lived hook. This
+            // observer lives on the Zotero global and survives plugin
+            // reloads, so the old `if (id) return;` guard kept the
+            // PREVIOUS BUILD's `notify` registered: every edit to this
+            // observer was invisible until a full restart. Found
+            // 2026-09-14, when the post-edit re-apply below did nothing
+            // after install + reload while the method itself was
+            // demonstrably present on the live instance.
+            const tag = this._wvWireTag();
+            if (g._wvFilterCacheObsID) {
+                if (g._wvFilterCacheObsVer === tag) return;
+                try { Zotero.Notifier.unregisterObserver(g._wvFilterCacheObsID); }
+                catch (e) {}
+                delete g._wvFilterCacheObsID;
+            }
+            g._wvFilterCacheObsVer = tag;
             const obs = {
                 notify: (_ev: string, type: string, ids: any[]) => {
                     try {
@@ -13125,12 +13189,98 @@ class _FilterMixin {
                         if (type === "item" || type === "item-tag") {
                             wvEvictFacets(ids);
                         }
+                        // Nulling the caches is not enough: keep[] still
+                        // describes the PREVIOUS data. An item retyped
+                        // under an itemType chip kept its row until some
+                        // unrelated apply came along (found 2026-09-14 by
+                        // filter-matrix section D: `_rowIsPrimary` already
+                        // answered false while the row stayed visible and
+                        // the count never moved).
+                        if (lp) lp._wvScheduleReapplyAfterDataChange();
                     } catch (e) { try { WV_FACETS.clear(); } catch (e2) {} }
                 },
             };
             g._wvFilterCacheObsID = Zotero.Notifier.registerObserver(obs,
                 ["item", "item-tag", "tag", "collection", "collection-item", "search"],
                 "weavero-filter-cache", 90);
+        } catch (e) {}
+    }
+
+    /** Recompute the visible rows after a data change that can move a
+     *  verdict. Debounced: one edit fires several notifications and a
+     *  sync fires hundreds, so the timer coalesces them into a single
+     *  apply after the traffic stops.
+     *
+     *  FOCUSED WINDOW ONLY, deliberately. `_applyItemsListFilterInner`
+     *  resolves its working window with `Zotero.getMainWindow()`, so an
+     *  apply "aimed" at a background window lands in the foreground one
+     *  (measured 2026-08-07: the target was A, the rows moved in B) --
+     *  and stealing focus to fix a background window would be worse than
+     *  the staleness. Other windows recompute on their next apply
+     *  (chip, search, collection switch), which is what they did for
+     *  every edit before this hook existed.
+     *
+     *  TIMER HOST: re-resolved per schedule, never captured -- a
+     *  `win.setTimeout` chain dies silently when that window closes. */
+    _wvScheduleReapplyAfterDataChange() {
+        try {
+            const self: any = this;
+            if (self._wvDestroyed) return;
+            const win: any = Zotero.getMainWindow();
+            const st = (win && !win.closed && win.setTimeout)
+                ? win.setTimeout.bind(win) : setTimeout;
+            const ct = (win && !win.closed && win.clearTimeout)
+                ? win.clearTimeout.bind(win) : clearTimeout;
+            if (self._wvDataChangeTimer) {
+                try { ct(self._wvDataChangeTimer); } catch (e) {}
+            }
+            const pass = (n: number) => {
+                try {
+                    const lp: any = (Zotero as any).Weavero
+                        && (Zotero as any).Weavero.plugin;
+                    if (!lp) return;
+                    if (n === 0) lp._wvDataChangeTimer = null;
+                    if (!lp._isFilterActive || !lp._isFilterActive(lp._filterState)) return;
+                    // AUTHORITATIVE, like the setFilter wrapper's re-apply.
+                    // An edit fires a burst of notifications, and the
+                    // applies they provoke bounce off the in-flight guards
+                    // (`_filterApplying`, the observer-suppression window),
+                    // so keep[] is never rebuilt: measured 2026-09-14 with
+                    // three apply CALLS and the retyped row still shown,
+                    // while one forced apply dropped it. This timer fires
+                    // 350ms after the traffic stops, so nothing legitimate
+                    // is in flight; the verdict caches are re-nulled here
+                    // because an apply that raced the notify may have
+                    // repopulated them from pre-edit data.
+                    lp._wvVerdictCache = null;
+                    lp._wvLastApplySig = null;
+                    lp._filterApplying = false;
+                    lp._suppressTreeObserverUntil = 0;
+                    lp._applyItemsListFilter({ cascade: true });
+                    // LADDER OF CONFIRMING PASSES. Zotero's work for a
+                    // data change does not end when `notify` resolves:
+                    // deferred row work lands afterwards, rebuilds
+                    // `_rows` and discards the keep[] just computed. A
+                    // retype changes no row COUNT, so neither the
+                    // watermark nor the tree observer notices, and the
+                    // stale row then sits there indefinitely -- measured
+                    // 2026-09-14: stable at the wrong 76 rows for six
+                    // seconds, corrected by one apply issued afterwards.
+                    // Passes at 350/800/1600/3000ms reach the quiet
+                    // window whenever that tail finishes; they are
+                    // debounced per edit burst, and an apply that finds
+                    // nothing to change is cheap.
+                    if (n < 3) {
+                        const w2: any = Zotero.getMainWindow();
+                        const st2 = (w2 && !w2.closed && w2.setTimeout)
+                            ? w2.setTimeout.bind(w2) : setTimeout;
+                        st2(() => pass(n + 1), n === 0 ? 450 : (n === 1 ? 800 : 1400));
+                    }
+                } catch (e) {
+                    Zotero.debug("[Weavero][filter] post-edit reapply err: " + e);
+                }
+            };
+            self._wvDataChangeTimer = st(() => pass(0), 350);
         } catch (e) {}
     }
 
@@ -13141,6 +13291,7 @@ class _FilterMixin {
                 try { Zotero.Notifier.unregisterObserver(g._wvFilterCacheObsID); } catch (e) {}
             }
             delete g._wvFilterCacheObsID;
+            delete g._wvFilterCacheObsVer;
         } catch (e) {}
     }
 

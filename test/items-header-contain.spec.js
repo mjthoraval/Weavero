@@ -34,14 +34,20 @@ describe("Weavero — items-list header contributes no intrinsic width", () => {
     });
 
     it("its max-content width is its padding, not the sum of its columns", () => {
-        const cells = hdr.querySelectorAll(":scope > .cell").length;
-        assert.isAbove(cells, 3, "a populated header");
+        // A fresh test profile shows Zotero's three default columns and none
+        // of Weavero's opt-in ones, so the bar is "a real header", not a rich
+        // one (the first run of this guard asserted >3 and failed at 3).
+        const cells = [...hdr.querySelectorAll(":scope > .cell")];
+        assert.isAtLeast(cells.length, 2, "a populated header");
+        const sum = cells.reduce((t, c) => t + c.getBoundingClientRect().width, 0);
+        assert.isAbove(sum, 100, "columns actually occupy width: " + sum);
         hdr.style.width = "max-content";
         void hdr.offsetWidth;
         const w = hdr.getBoundingClientRect().width;
         hdr.style.width = prevWidth;
-        // Pre-fix this was hundreds of px (one label width per column plus
-        // the fixed columns); contained, only padding remains.
+        // Pre-fix this was the sum above (one label width per column plus the
+        // fixed columns); contained, only padding remains.
         assert.isBelow(w, 40, "intrinsic width collapsed by containment: " + w);
+        assert.isBelow(w, sum / 2, "intrinsic width is not the column sum " + sum);
     });
 });

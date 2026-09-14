@@ -19,6 +19,13 @@ paths:
   during which the library changed is not evidence (`itemsChangedDuringRun`).
   Reset `search.quicksearch-mode` to `fields` before and after — a polluted
   mode produces phantom failures.
+- A spec runs in a FRESH TEMP PROFILE, not the dev one: no user column
+  choices (the items tree shows Zotero's three defaults, none of Weavero's
+  opt-in columns), no collections, no stored widths, no saved searches.
+  Never assert on profile-specific state — `assert.isAbove(cells, 3)` in
+  the header-containment guard passed on dev (12 columns) and failed at 3
+  on both `npm test` and CI (2026-09-14). Assert the INVARIANT, and derive
+  the comparison from what the run itself measures.
 - Instrumentation masks races: verify timing-family fixes with plain loops
   only.
 - Restart/session testing: `test/restart/snapshot.js` (canonical)

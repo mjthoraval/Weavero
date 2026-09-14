@@ -312,6 +312,13 @@
         zotero: Zotero.version,
         weavero: null,
         results: [],
+        // C/D coverage, added 2026-09-14. The matrix only ever compared
+        // STEADY states, while every filter bug of Aug-Sep 2026 lived in a
+        // transition (chip-then-search, search-then-chip, the chip lost on
+        // clearing a search after a reload, the saved search inheriting the
+        // previous view's match set) or in a live item edit.
+        sequences: [],
+        mutations: [],
         status: "running",
         // Per-configuration SPEED report (2026-08-18): the matrix has always
         // captured per-case timing (syncMs, the _wvFilterPerf ring phases,
@@ -347,12 +354,26 @@
         },
         summary() {
             const fails = this.results.filter(r => !r.MATCH);
+            const seqFails = this.sequences.filter(s => !s.MATCH);
+            const mutFails = this.mutations.filter(m => !m.PASS);
             return {
                 status: this.status,
                 zotero: this.zotero,
                 weavero: this.weavero,
-                ran: this.results.length,
-                passed: this.results.filter(r => r.MATCH).length,
+                // ran/passed cover all three groups so the runner's digest
+                // cannot show green while a sequence or mutation failed.
+                ran: this.results.length + this.sequences.length + this.mutations.length,
+                passed: this.results.filter(r => r.MATCH).length
+                    + this.sequences.filter(s => s.MATCH).length
+                    + this.mutations.filter(m => m.PASS).length,
+                cases: this.results.length,
+                sequences: this.sequences.length + " ran, "
+                    + this.sequences.filter(s => s.MATCH).length + " matched",
+                mutations: this.mutations.length + " ran, "
+                    + this.mutations.filter(m => m.PASS).length + " passed",
+                // Library writes: the CASES phase must be clean for its
+                // timings to mean anything; section D writes on purpose.
+                itemsChangedDuringCases: this.itemsChangedDuringCases,
                 buildEngaged: this.results.filter(r => r.build && r.build.engaged).length,
                 // Paint data is only collected while the window is visible;
                 // occluded runs legitimately report none (see paintRecorder).
@@ -369,7 +390,14 @@
                     cascade: f.cascade.rows + "/" + f.cascade.open,
                     build: f.build.rows + "/" + f.build.open,
                     bothEngagedFalse: !f.cascade.engaged && !f.build.engaged,
-                })),
+                })).concat(seqFails.map(s => ({
+                    name: "sequence: " + s.name,
+                    path: s.path && (s.path.rows + "/" + s.path.open + "/" + s.path.grey),
+                    direct: s.direct && (s.direct.rows + "/" + s.direct.open + "/" + s.direct.grey),
+                }))).concat(mutFails.map(m => ({
+                    name: "mutation: " + m.name,
+                    expected: m.expected, got: m.got,
+                }))),
             };
         },
         /** Per-phase timings, slowest first by user-perceived paint time.
@@ -630,6 +658,221 @@
                 rec.native = await runNative(name, rec.seeded);   // same clock + same seed
                 R.results.push(rec);
             }
+
+            // Certify the TIMED phase before section D starts writing.
+            R.itemsChangedDuringCases = await syncControl.itemsChangedSince(startedSql);
+
+            /* ---- C. SEQUENCES: a PATH must land where the DIRECT
+             * configuration lands.
+             *
+             * Until 2026-09-14 this file compared only STEADY states, yet
+             * every filter bug of Aug-Sep 2026 lived in a TRANSITION:
+             * chip-then-search vs search-then-chip, the chip lost when a
+             * quick search was cleared after a plugin reload, the parents
+             * dropped when a search landed under a chip, the saved search
+             * that inherited the previous view's match set. A path that
+             * ends somewhere the direct configuration never goes is the
+             * signature of all of them.
+             *
+             * Verdict = rows + expansion + dimming. Selection is recorded
+             * but NOT judged: whether a transition should preserve a
+             * selection the direct apply never had is the open product
+             * question in work/filter-open-items.md (DECIDE). */
+            const applyNow = async () => {
+                await sleep(SETTLE);                       // rule 1
+                lp._applyItemsListFilter({ cascade: true });
+                await stable();
+                await sleep(300);
+            };
+            const toBase = async () => {
+                reset();
+                await applyNow();
+                await search("");
+                try { rp().collapseAllRows(); } catch (e) {}
+                await stable();
+                await sleep(400);
+            };
+            const SEQUENCES = [
+                {
+                    name: "chip -> a DIFFERENT chip == that chip alone",
+                    path: async () => {
+                        reset(); G().itemType = ["journalArticle"]; await applyNow();
+                        reset(); G().itemType = ["book"]; await applyNow();
+                    },
+                    direct: async () => {
+                        reset(); G().itemType = ["book"]; await applyNow();
+                    },
+                },
+                {
+                    name: "chip -> ADD a second dimension == both at once",
+                    path: async () => {
+                        reset(); G().itemType = ["journalArticle"]; await applyNow();
+                        G().hasAttachment = true; await applyNow();
+                    },
+                    direct: async () => {
+                        reset(); G().itemType = ["journalArticle"]; G().hasAttachment = true;
+                        await applyNow();
+                    },
+                },
+                {
+                    name: "two dimensions -> DROP one == the other alone",
+                    path: async () => {
+                        reset(); G().itemType = ["journalArticle"]; G().hasAttachment = true;
+                        await applyNow();
+                        G().hasAttachment = null; await applyNow();
+                    },
+                    direct: async () => {
+                        reset(); G().itemType = ["journalArticle"]; await applyNow();
+                    },
+                },
+                {
+                    name: "chip -> search -> CLEAR the search == chip alone",
+                    path: async () => {
+                        reset(); G().itemType = ["journalArticle"]; await applyNow();
+                        await search("drop");
+                        await search("");
+                        await stable(); await sleep(400);
+                    },
+                    direct: async () => {
+                        reset(); G().itemType = ["journalArticle"]; await applyNow();
+                    },
+                    /* EXPANSION IS PATH-DEPENDENT HERE, BY DESIGN. A quick
+                     * search expands the parents of matching children, and
+                     * clearing it does NOT collapse them again -- that is
+                     * Zotero's own behaviour, measured without Weavero on
+                     * the real library 2026-09-14 (17 932 rows -> 40 470 on
+                     * searching "the", still 39 682 after clearing). The
+                     * first run of this sequence flagged it as a failure
+                     * (path 75 rows/17 open vs direct 75/0) when rows, ids
+                     * and dimming were identical. So the contract here is
+                     * the visible ROW SET, and the expansion delta is
+                     * recorded instead of judged. */
+                    allowExpansionDrift: true,
+                },
+                {
+                    name: "search -> chip -> CLEAR the chip == search alone",
+                    path: async () => {
+                        await search("drop");
+                        reset(); G().itemType = ["journalArticle"]; await applyNow();
+                        reset(); await applyNow();
+                    },
+                    direct: async () => {
+                        reset(); await applyNow();
+                        await search("drop");
+                    },
+                },
+            ];
+            for (const seq of SEQUENCES) {
+                const rec = { name: seq.name };
+                try {
+                    await toBase();
+                    await seq.path();
+                    rec.path = snapshot();
+                    await toBase();
+                    await seq.direct();
+                    rec.direct = snapshot();
+                    rec.MATCH = rec.path.idsHash === rec.direct.idsHash
+                        && rec.path.greyHash === rec.direct.greyHash
+                        && (seq.allowExpansionDrift
+                            || rec.path.openHash === rec.direct.openHash);
+                    rec.selectionDiffers = rec.path.selHash !== rec.direct.selHash;
+                    rec.expansionDiffers = rec.path.openHash !== rec.direct.openHash;
+                }
+                catch (e) { rec.MATCH = false; rec.error = String(e); }
+                R.sequences.push(rec);
+            }
+            await toBase();
+
+            /* ---- D. MUTATIONS while a filter is live.
+             *
+             * An item edited under an active filter re-enters Zotero's
+             * notifier path, which refreshes containers by `_rowMap` INDEX
+             * while Weavero's keep[] translation is installed -- the same
+             * family as the 2026-09-11 items-pane bug, and never covered:
+             * everything above is steady-state. Writes are confined to ONE
+             * temporary item, erased below; sync is already disabled for
+             * the run, and the timed phase was certified above. */
+            let tempItem = null;
+            try {
+                reset(); G().itemType = ["journalArticle"]; await applyNow();
+                const inView = (id) => {
+                    const p = rp(); const n = p.getRowCount();
+                    for (let i = 0; i < n; i++) {
+                        let r;
+                        try { r = p.getRow(i); } catch (e) { continue; }
+                        if (r && r.ref && r.ref.id === id) return true;
+                    }
+                    return false;
+                };
+                /* A data change puts the view through a TRANSIENT: Zotero
+                 * rebuilds `_rows`, during which the filter falls through
+                 * untranslated (measured: 108 unfiltered rows for ~200ms
+                 * after an add), and Weavero re-applies once `notify`
+                 * resolves. `stable()` can return INSIDE that transient --
+                 * the row count is briefly steady at the WRONG value --
+                 * which is what made this section report failures while
+                 * the product converged in under 600ms (2026-09-14).
+                 * Require the count to agree across two consecutive
+                 * settles, capped so a genuinely stuck view still fails. */
+                const settleAfterEdit = async () => {
+                    await sleep(600);
+                    for (let i = 0; i < 12; i++) {
+                        const before = rp().getRowCount();
+                        await stable();
+                        await H.faSettle();
+                        await sleep(500);
+                        if (rp().getRowCount() === before) return;
+                    }
+                };
+                // The chip's own row count, captured while it is known
+                // good: every mutation below must land on a FILTERED view,
+                // never on the untranslated fall-through (where "the item
+                // is visible" is true because everything is).
+                const filteredRows = rp().getRowCount();
+                const mut = async (name, fn, expected) => {
+                    const rec = { name, expected, filteredRows };
+                    try {
+                        await fn();
+                        await settleAfterEdit();
+                        rec.got = inView(tempItem.id);
+                        rec.rows = rp().getRowCount();
+                        // Within one row of the chip-only count: the
+                        // temporary item is the only thing that may join or
+                        // leave the view during this section.
+                        rec.filtered = Math.abs(rec.rows - filteredRows) <= 1;
+                        rec.PASS = rec.got === expected && rec.filtered;
+                    }
+                    catch (e) { rec.PASS = false; rec.error = String(e); }
+                    R.mutations.push(rec);
+                };
+                tempItem = new Zotero.Item("journalArticle");
+                tempItem.libraryID = Zotero.Libraries.userLibraryID;
+                tempItem.setField("title", "WV live mutation " + Date.now().toString(36));
+                await mut("a NEW journalArticle appears under an itemType chip",
+                    async () => { await tempItem.saveTx(); }, true);
+                await mut("changing its type to book REMOVES it",
+                    async () => {
+                        tempItem.setType(Zotero.ItemTypes.getID("book"));
+                        await tempItem.saveTx();
+                    }, false);
+                await mut("changing the type back RESTORES it",
+                    async () => {
+                        tempItem.setType(Zotero.ItemTypes.getID("journalArticle"));
+                        await tempItem.saveTx();
+                    }, true);
+                await mut("trashing it REMOVES it",
+                    async () => { tempItem.deleted = true; await tempItem.saveTx(); }, false);
+                await mut("restoring it from the trash BRINGS IT BACK",
+                    async () => { tempItem.deleted = false; await tempItem.saveTx(); }, true);
+            }
+            catch (e) {
+                R.mutations.push({ name: "section D setup", PASS: false, error: String(e) });
+            }
+            finally {
+                try { if (tempItem && tempItem.id) await tempItem.eraseTx(); } catch (e) {}
+                try { await toBase(); } catch (e) {}
+            }
+
             R.status = "done";
             // SELF-REPORT: write the full analysis to disk so no agent or
             // human needs to poll the run or pull JSON through the bridge

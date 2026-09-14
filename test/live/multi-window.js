@@ -197,12 +197,102 @@
                 { A_watermark: a3.watermark, B_watermark: b3.watermark });
 
             await clearIn(winB);
+
+            /* --- 4. QUICK SEARCH x windows (gap closed 2026-09-14) -------
+             * This axis had never been combined, although the search path
+             * is where every filter bug of Aug-Sep 2026 lived. The risk is
+             * specific and structural: a quick search ARMS Weavero's
+             * final-apply and stale-keep schedulers, and those resolve
+             * their working window with `Zotero.getMainWindow()` -- the
+             * FOCUSED window at the moment the timer fires, which need not
+             * be the window that was searched. So the sequence below
+             * deliberately searches in A, then works in B, then focuses A
+             * again and waits for A's schedulers to fire while checking
+             * that B never moves. */
+            const searchIn = async (win, text) => {
+                await focusWin(win);
+                const sb = win.document.getElementById("zotero-tb-search");
+                if (!sb) return false;
+                sb.value = text;
+                // rule 3: `command`, never `input` -- and built from the
+                // TARGET window, so it is that window's event.
+                sb.dispatchEvent(new win.Event("command", { bubbles: true }));
+                await sleep(600);
+                await stableIn(win);
+                try { await LH.make(win).faSettle(); } catch (e) {}
+                await sleep(400);
+                return true;
+            };
+
+            const base4A = snapOf(winA), base4B = snapOf(winB);
+            const searched = await searchIn(winA, "drop");
+            const a4 = snapOf(winA), b4 = snapOf(winB);
+            check("quick search in A narrows A",
+                searched && a4.idsHash !== base4A.idsHash,
+                { before: base4A.rows, after: a4.rows });
+            check("quick search in A leaves B UNTOUCHED",
+                b4.idsHash === base4B.idsHash && b4.open === base4B.open,
+                { B_before: base4B.rows + "/" + base4B.open,
+                  B_after: b4.rows + "/" + b4.open });
+
+            await applyIn(winB, (g) => { g.itemType = ["journalArticle"]; });
+            const a5 = snapOf(winA), b5 = snapOf(winB);
+            check("a chip in B while A's search is live leaves A's result intact",
+                a5.idsHash === a4.idsHash,
+                { A_before: a4.rows, A_after: a5.rows });
+            check("B's chip applies to B, not to A's searched view",
+                b5.idsHash !== b4.idsHash && b5.idsHash !== a5.idsHash,
+                { A: a5.rows, B: b5.rows });
+
+            // A's schedulers fire on a timer; give them a focused A to fire into.
+            await focusWin(winA);
+            await sleep(2500);
+            const b6 = snapOf(winB);
+            check("A's search schedulers do not re-apply into B",
+                b6.idsHash === b5.idsHash && b6.watermark === b5.watermark,
+                { B_before: b5.rows + "/" + b5.watermark,
+                  B_after: b6.rows + "/" + b6.watermark });
+
+            await applyIn(winA, (g) => { g.itemType = ["journalArticle"]; });
+            const a7 = snapOf(winA), b7 = snapOf(winB);
+            check("search + chip in A narrows A further than the search alone",
+                a7.rows <= a5.rows,
+                { searchOnly: a5.rows, searchPlusChip: a7.rows });
+            check("B keeps its own chip-only result while A combines both",
+                b7.idsHash === b5.idsHash,
+                { B_before: b5.rows, B_after: b7.rows });
+
+            await searchIn(winA, "");
+            const a8 = snapOf(winA), b8 = snapOf(winB);
+            check("clearing A's search leaves A's CHIP applied",
+                a8.rows < base4A.rows && a8.idsHash !== base4A.idsHash,
+                { base: base4A.rows, after: a8.rows });
+            check("clearing A's search leaves B untouched",
+                b8.idsHash === b5.idsHash,
+                { B_before: b5.rows, B_after: b8.rows });
+
+            await clearIn(winA);
+            await clearIn(winB);
             R.status = "done";
         }
         catch (e) {
             R.status = "error: " + e;
         }
         finally {
+            // Section 4 can leave a search live in either window; a suite
+            // that returns with a quick search still in the box poisons
+            // whatever runs next (the runner's own mode reset does not
+            // clear the BOX).
+            for (const w of [winB, winA]) {
+                try {
+                    const sb = w && w.document.getElementById("zotero-tb-search");
+                    if (sb && sb.value) {
+                        sb.value = "";
+                        sb.dispatchEvent(new w.Event("command", { bubbles: true }));
+                        await sleep(800);
+                    }
+                } catch (e) {}
+            }
             try { if (winB) await clearIn(winB); } catch (e) {}
             try { if (winB) winB.close(); } catch (e) {}
             await sleep(1500);

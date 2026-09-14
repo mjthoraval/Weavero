@@ -341,6 +341,65 @@
                 observe("multi-library skipped", { reason: "no group library row found" });
             }
 
+            // C. SAVED SEARCH selected right after another view: the context
+            //    marking must come from the search's OWN results. Weavero's
+            //    `_refresh` wrap re-applied a base-search snapshot captured
+            //    under the PREVIOUS view (a fresh collection-tree row is not
+            //    wrapped yet when its first refresh runs), so a saved search
+            //    showed 17 of 18 results dimmed as context rows (MJT
+            //    2026-09-14). Two temporary saved searches: A leaves an EMPTY
+            //    base behind, B's results must still all be matches. Both are
+            //    erased below; sync is off for the run.
+            {
+                const lib = Zotero.Libraries.userLibraryID;
+                const mk = async (name, value) => {
+                    const s = new Zotero.Search();
+                    s.libraryID = lib;
+                    s.name = "WV live: " + name + " " + Date.now().toString(36);
+                    s.addCondition("title", "contains", value);
+                    const id = await s.saveTx();
+                    return { s, id };
+                };
+                let A = null, B = null;
+                try {
+                    A = await mk("empty base", "zzqx-no-such-title-zzqx");
+                    B = await mk("results", "e");
+                    await sleep(1200);
+                    await cv().selectByID("S" + A.id);
+                    await sleep(1200); await zp.itemsView.waitForLoad(); await stable();
+                    const emptyRows = rp().getRowCount();
+                    await cv().selectByID("S" + B.id);
+                    await sleep(1200); await zp.itemsView.waitForLoad(); await stable();
+                    const results = new Set(await B.s.search());
+                    const sids = rp().searchItemIDs || rp()._searchItemIDs || new Set();
+                    let topResults = 0, missingFromSids = 0, markedContext = 0;
+                    const n = rp().getRowCount();
+                    for (let i = 0; i < n; i++) {
+                        const row = rp().getRow(i); const it = row && row.ref;
+                        if (!it || rp().getLevel(i) !== 0 || !results.has(it.id)) continue;
+                        topResults++;
+                        if (!sids.has(it.id)) missingFromSids++;
+                        const el = win.document.querySelector(
+                            "#item-tree-main-default-row-" + i + ", #item-tree-main-row-" + i);
+                        if (el && el.classList.contains("context-row")) markedContext++;
+                    }
+                    check("saved search after another view: its results are matches, not context rows",
+                        emptyRows === 0 && topResults > 0 && missingFromSids === 0 && markedContext === 0,
+                        { emptyRows, topResults, missingFromSids, markedContext,
+                          sids: sids.size, results: results.size });
+                }
+                catch (e) {
+                    check("saved search after another view: its results are matches, not context rows",
+                        false, { error: String(e) });
+                }
+                finally {
+                    try { if (B) await B.s.eraseTx(); } catch (e) {}
+                    try { if (A) await A.s.eraseTx(); } catch (e) {}
+                    try { await cv().selectLibrary(lib); } catch (e) {}
+                    await sleep(800);
+                }
+            }
+
             R.status = "done";
         }
         catch (e) {

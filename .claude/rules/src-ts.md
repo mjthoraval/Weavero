@@ -83,6 +83,13 @@ name to a Zotero object, window, or document.
   everything-mode search landing under a chip lost a full-text-only
   parent (search-modes 86/88, 2026-09-10). Guard:
   `test/setfilter-order.spec.js` + live `search-modes` scope-menu cases.
+- SNAPSHOTS captured by a wrap are only valid for the operation that
+  captured them. `_wvBaseSearchIDs` (captured in the `getItems` wrap) is
+  stamped with `_wvRefreshSeq`, and the `_refresh` wrap re-applies it only
+  when the stamps match; a fresh collection-tree row is wrapped INSIDE the
+  refresh so the stamp exists. Before that, switching to a saved search
+  re-applied the previous view's ids and dimmed 17 of 18 results as
+  context rows (2026-09-14). Guard: live `interactions.js` section C.
 - ONE-SHOT ARMED LISTENERS on content documents (the select-region and
   pin-placement arms) are the same failure family: the listener closures
   survive plugin reloads on the content doc, and a stale arm CONSUMES the

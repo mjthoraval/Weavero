@@ -1034,6 +1034,10 @@ class _FilterMixin {
                     if (plugin) {
                         plugin._wvBaseSearchIDs = new Set(
                             baseItems.map((it: any) => it && it.id));
+                        // Stamp which refresh captured it (see the
+                        // `_refresh` wrap: a base from another view
+                        // must never be re-applied).
+                        plugin._wvBaseSearchIDsSeq = plugin._wvRefreshSeq || 0;
                         // Proactively replace `rp._searchItemIDs` with
                         // the fresh base set right here, BEFORE the
                         // `_refresh` body that called us continues
@@ -1180,6 +1184,33 @@ class _FilterMixin {
                     } catch (e) {}
                     dbg("[Weavero][_refresh] start, rows="
                         + (this._rows ? this._rows.length : "?"));
+                    // The base-search snapshot is only meaningful when
+                    // captured DURING this refresh. A collection switch
+                    // hands `_refresh` a FRESH collection-tree row whose
+                    // `getItems` is not wrapped yet (the wrap lands
+                    // post-swap), so nothing captured a base and the
+                    // reset below stamped the PREVIOUS view's ids onto
+                    // the new rows: a saved search showed 17 of 18
+                    // results as context rows (MJT 2026-09-14). Wrap
+                    // every row now, and stamp the refresh so the
+                    // post-refresh reset can tell a fresh base from a
+                    // stale one.
+                    try {
+                        const lpR: any = (Zotero as any).Weavero
+                            && (Zotero as any).Weavero.plugin;
+                        if (lpR) {
+                            lpR._wvRefreshSeq = (lpR._wvRefreshSeq || 0) + 1;
+                            const rowsR: any[] = Array.isArray(this.collectionTreeRows)
+                                ? this.collectionTreeRows
+                                : (this.collectionTreeRow ? [this.collectionTreeRow] : []);
+                            for (const ctrR of rowsR) {
+                                if (ctrR && !ctrR._wvGetItemsRevealPatched
+                                    && typeof lpR._patchOneCtrGetItems === "function") {
+                                    lpR._patchOneCtrGetItems(ctrR);
+                                }
+                            }
+                        }
+                    } catch (e) {}
                     const result = await origRefresh.apply(this, args);
                     dbg("[Weavero][_refresh] orig done, rows="
                         + (this._rows ? this._rows.length : "?"));
@@ -1313,9 +1344,18 @@ class _FilterMixin {
                         // before Zotero's own reassignment) pass
                         // every revealed-child through the filter
                         // unconditionally.
+                        // ONLY a base captured by THIS refresh may
+                        // replace Zotero's fresh set; a stale one
+                        // (captured under a previous collection) is
+                        // dropped so every consumer falls back to the
+                        // live `searchItemIDs` (2026-09-14).
                         if (plugin && plugin._wvBaseSearchIDs) {
-                            this._searchItemIDs = new Set(
-                                plugin._wvBaseSearchIDs);
+                            if (plugin._wvBaseSearchIDsSeq === plugin._wvRefreshSeq) {
+                                this._searchItemIDs = new Set(
+                                    plugin._wvBaseSearchIDs);
+                            } else {
+                                plugin._wvBaseSearchIDs = null;
+                            }
                         }
                         // Same gate as in the chev handler — never
                         // run the QS-only compute when the Weavero

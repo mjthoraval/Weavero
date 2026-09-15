@@ -109,6 +109,22 @@ function wvFacetEntry(id: number) {
     if (!e) { e = {}; WV_FACETS.set(id, e); }
     return e;
 }
+/** Persistent, bounded trace of the filter's apply pipeline
+ *  (`Zotero._wvFilterTrace`, last 400 events). Baked into the build on
+ *  purpose: the stale-row-after-edit bug (2026-09-14) failed only inside
+ *  the live suite and PASSED under every bridge probe that wrapped a
+ *  method to watch it -- instrumentation masking a race. A ring buffer
+ *  the code writes itself costs nothing to keep and lets a failing check
+ *  attach the notify / apply / bounce sequence to its own report. */
+function wvTrace(ev: string, data?: any) {
+    try {
+        const g: any = Zotero;
+        const ring: any[] = g._wvFilterTrace || (g._wvFilterTrace = []);
+        ring.push(Object.assign({ t: Date.now(), ev }, data || {}));
+        if (ring.length > 400) ring.splice(0, ring.length - 400);
+    } catch (e) {}
+}
+
 function wvEvictFacets(ids: any[]) {
     try {
         for (const raw of (ids || [])) {
@@ -1143,7 +1159,9 @@ class _FilterMixin {
             const origNotify = rp.notify;
             rp._wvOrigNotifyForFilter = origNotify;
             rp.notify = async function (...args: any[]) {
+                wvTrace("rp.notify", { ev: args[0], type: args[1], n: (args[2] && args[2].length) || 0, rows: this._rows ? this._rows.length : -1 });
                 const result = await origNotify.apply(this, args);
+                wvTrace("rp.notify-done", { rows: this._rows ? this._rows.length : -1 });
                 try {
                     // `this` is the ROW PROVIDER here, never the plugin.
                     const plugin: any = (Zotero as any).Weavero
@@ -1263,6 +1281,7 @@ class _FilterMixin {
                     const result = await origRefresh.apply(this, args);
                     dbg("[Weavero][_refresh] orig done, rows="
                         + (this._rows ? this._rows.length : "?"));
+                    wvTrace("rp._refresh-done", { rows: this._rows ? this._rows.length : -1 });
                     // Defensive: Zotero's `_refresh` sometimes leaves
                     // `_rows` with rows whose tree position doesn't
                     // match their actual parent — typically after a
@@ -12240,6 +12259,7 @@ class _FilterMixin {
                 const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                 if (!P || P !== this) return;                  // stale instance
                 (this as any)._wvCascadeRetryTimer = null;
+                wvTrace("cascade-retry", { expired: Date.now() > (this as any)._wvCascadeRetryUntil });
                 if (Date.now() > (this as any)._wvCascadeRetryUntil) return;
                 if (this._filterApplying
                     || ((this as any)._suppressTreeObserverUntil
@@ -12285,6 +12305,7 @@ class _FilterMixin {
             // matching children stay collapsed -- two chips clicked in quick
             // succession showed 2 closed book rows instead of the expanded
             // annotations (2026-08-04). Park the intent and retry shortly.
+            wvTrace("bounce-suppress", { cascade: !!(opts && opts.cascade) });
             if (opts && opts.cascade) this._wvScheduleCascadeRetry();
             return;
         }
@@ -12315,6 +12336,7 @@ class _FilterMixin {
             //
             // But a deliberate CASCADE apply must not be silently
             // swallowed — same reasoning as the suppression guard above.
+            wvTrace("bounce-applying", { cascade: !!(opts && opts.cascade) });
             if (opts && opts.cascade) this._wvScheduleCascadeRetry();
             // A NON-cascade bounce is usually safe to drop (the comment
             // above), but not when it was the only apply that would have
@@ -12351,10 +12373,12 @@ class _FilterMixin {
                 // items that match the search directly. See
                 // _wvFilterTargetsChildren for the measurements.
                 && this._wvFilterTargetsChildren()) {
+                wvTrace("reroute-setFilter");
                 _iv.setFilter("search", _live);
                 return;
             }
         } catch (e) {}
+        wvTrace("apply", { cascade: !!(opts && opts.cascade), via: !!(this as any)._wvViaSetFilter });
         this._filterApplying = true;
         this._filterApplyDirty = false;
         this._filterApplyDirtyCascade = !!(opts && opts.cascade);
@@ -13178,6 +13202,7 @@ class _FilterMixin {
             const obs = {
                 notify: (_ev: string, type: string, ids: any[]) => {
                     try {
+                        wvTrace("notify", { ev: _ev, type, n: (ids && ids.length) || 0 });
                         const lp: any = (Zotero as any).Weavero
                             && (Zotero as any).Weavero.plugin;
                         if (lp) {
@@ -13240,6 +13265,7 @@ class _FilterMixin {
                         && (Zotero as any).Weavero.plugin;
                     if (!lp) return;
                     if (n === 0) lp._wvDataChangeTimer = null;
+                    wvTrace("pass", { n, active: !!(lp._isFilterActive && lp._isFilterActive(lp._filterState)) });
                     if (!lp._isFilterActive || !lp._isFilterActive(lp._filterState)) return;
                     // AUTHORITATIVE, like the setFilter wrapper's re-apply.
                     // An edit fires a burst of notifications, and the
@@ -14526,6 +14552,25 @@ class _FilterMixin {
                         dbg("[Weavero][keep+] id=" + rid
                             + " lvl=" + rlvl);
                     }
+                    // Watched ids (Zotero._wvTraceWatchIDs, set by a
+                    // live check) get the verdicts and the calling rule
+                    // in the persistent trace ring -- the only way the
+                    // 2026-09-14 stale-row-after-edit bug could be seen,
+                    // since every bridge probe made it disappear.
+                    const watch: any = (Zotero as any)._wvTraceWatchIDs;
+                    if (watch && rid != null && watch.has(rid)) {
+                        let rule = "?";
+                        try { rule = String(new Error().stack || "").split("\n")[2] || "?"; } catch (e) {}
+                        wvTrace("keep-row", {
+                            id: rid, lvl: rlvl, type: r.ref.itemType,
+                            primary: isPrimary(r.ref), match: hasMatch(r.ref),
+                            // the caller's line:col -- the rule that admitted it
+                            rule: rule.slice(-14),
+                            fresh: !!(this._wvRecentlyAddedItemIDs
+                                && this._wvRecentlyAddedItemIDs.has
+                                && this._wvRecentlyAddedItemIDs.has(rid)),
+                        });
+                    }
                 } catch (e) {}
             }
             keepSet.add(i);
@@ -15058,6 +15103,7 @@ class _FilterMixin {
         // so resolving a (filtered-space) selection index yields the wrong
         // item -- see the capture helper for what that cost.
         rp._wvKeepRowsLen = keepRowsLen;
+        wvTrace("keep", { keep: keep.length, raw: keepRowsLen });
 
         dbg("[Weavero][filter] kept " + keep.length
             + " of " + total + " rows");

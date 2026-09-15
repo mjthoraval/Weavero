@@ -832,10 +832,29 @@
                 const mut = async (name, fn, expected) => {
                     const rec = { name, expected, filteredRows };
                     try {
+                        // Per-mutation trace window (the plugin's own ring
+                        // buffer, Zotero._wvFilterTrace): kept on a failure
+                        // so the report carries the notify / apply /
+                        // bounce sequence instead of a bare verdict.
+                        Zotero._wvFilterTrace = [];
+                        const t0 = Date.now();
                         await fn();
                         await settleAfterEdit();
                         rec.got = inView(tempItem.id);
                         rec.rows = rp().getRowCount();
+                        if (rec.got !== expected) {
+                            const p = rp();
+                            rec.diag = {
+                                raw: p._rows.length, watermark: p._wvKeepRowsLen,
+                                patched: !!p._wvOrigGetRow,
+                                active: lp._isFilterActive(lp._filterState),
+                                primary: lp._rowIsPrimary(tempItem, lp._filterState),
+                                type: tempItem.itemType,
+                                sel: zp.getSelectedItems().map(i => i.id),
+                            };
+                            rec.trace = (Zotero._wvFilterTrace || []).slice(-160)
+                                .map(e => Object.assign({ ms: e.t - t0 }, e, { t: undefined }));
+                        }
                         // Within one row of the chip-only count: the
                         // temporary item is the only thing that may join or
                         // leave the view during this section.
@@ -849,7 +868,32 @@
                 tempItem.libraryID = Zotero.Libraries.userLibraryID;
                 tempItem.setField("title", "WV live mutation " + Date.now().toString(36));
                 await mut("a NEW journalArticle appears under an itemType chip",
-                    async () => { await tempItem.saveTx(); }, true);
+                    async () => {
+                        await tempItem.saveTx();
+                        // The plugin's keep pass traces verdicts for watched ids.
+                        Zotero._wvTraceWatchIDs = new Set([tempItem.id]);
+                    }, true);
+                /* FRESH-ITEM GRACE WINDOW, by design. The keep pass force-
+                 * includes any item created in the last 10 s
+                 * (`_wvRecentlyAddedItemIDs`, RECENT_WINDOW_MS) so a
+                 * just-created item that does not match the chip is not
+                 * hidden from under the user while Zotero has it selected
+                 * in the item pane. A retype INSIDE that window therefore
+                 * keeps the row on purpose -- which is exactly what this
+                 * check hit for five builds (2026-09-14/15) while the same
+                 * steps run with an older item passed: the plugin's own
+                 * trace ring finally named the rule (keep-row with
+                 * primary=false, match=false). Assert the window first,
+                 * then wait it out before judging the real edits. */
+                await mut("inside the fresh-item grace window a non-matching retype KEEPS the row (by design)",
+                    async () => {
+                        tempItem.setType(Zotero.ItemTypes.getID("book"));
+                        await tempItem.saveTx();
+                    }, true);
+                tempItem.setType(Zotero.ItemTypes.getID("journalArticle"));
+                await tempItem.saveTx();
+                await settleAfterEdit();
+                await sleep(10500);                    // RECENT_WINDOW_MS + margin
                 await mut("changing its type to book REMOVES it",
                     async () => {
                         tempItem.setType(Zotero.ItemTypes.getID("book"));
@@ -869,6 +913,7 @@
                 R.mutations.push({ name: "section D setup", PASS: false, error: String(e) });
             }
             finally {
+                delete Zotero._wvTraceWatchIDs;
                 try { if (tempItem && tempItem.id) await tempItem.eraseTx(); } catch (e) {}
                 try { await toBase(); } catch (e) {}
             }

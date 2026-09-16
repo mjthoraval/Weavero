@@ -85,21 +85,44 @@
 		for (const id of ids) { if (openIDs.has(id)) continue; if (!Zotero.Items.get(id)) continue; out.push(id); openIDs.add(id); if (out.length >= n) break; }
 		return out;
 	}
-	const P = await pickAttachments("application/pdf", 16);
+	const P = await pickAttachments("application/pdf", 21);
 	const E = await pickAttachments("application/epub+zip", 1);
 	const S = await pickAttachments("text/html", 2);
 	const N = await pickNotes(4);
-	if (P.length < 16) throw new Error("need 16 PDF attachments with files not already open, found " + P.length);
+	if (P.length < 21) throw new Error("need 21 PDF attachments with files not already open, found " + P.length);
 	if (N.length < 4) throw new Error("need 4 notes, found " + N.length);
+	const D = P.slice(16);   // five PDFs reserved for the duplicates matrix
 	say("items: " + P.length + " PDFs, " + E.length + " EPUB, " + S.length + " snapshots, " + N.length + " notes");
 
 	// ---------------------------------------------------------- helpers
+	const title = (id) => { try { const it = Zotero.Items.get(id); return it.getDisplayTitle ? it.getDisplayTitle() : (it.getField("title") || ""); } catch (e) { return ""; } };
 	const tabOf = (Z, itemID, type) => { const ts = Z._tabs.filter(t => t.data && t.data.itemID === itemID && (!type || String(t.type).startsWith(type))); return ts.length ? ts[ts.length - 1] : null; };
-	async function openReaderTab(itemID) {
+	// `Zotero.Reader.open` has no window parameter: it lands in the most
+	// recently focused main window (after the managed window spawns, that is
+	// W2). Focus the target first; if the tab still lands elsewhere, close the
+	// stray and add an unloaded copy to the intended window instead.
+	async function openReaderTab(itemID, win) {
+		win = win || W1;
+		const Z = win.Zotero_Tabs;
+		try { win.focus(); } catch (e) {}
+		await sleep(150);
+		const before = new Set(Z._tabs.map(t => t.id));
 		await Zotero.Reader.open(itemID, null, { openInWindow: false, allowDuplicate: true });
 		await sleep(350);
-		const t = tabOf(Z1, itemID, "reader");
+		let t = Z._tabs.find(x => !before.has(x.id) && x.data && x.data.itemID === itemID);
+		if (!t) {
+			for (const w of Zotero.getMainWindows()) {
+				if (w === win) continue;
+				const stray = w.Zotero_Tabs._tabs.filter(x => x.data && x.data.itemID === itemID && String(x.type).startsWith("reader"));
+				const s = stray[stray.length - 1];
+				if (s && s._wvFixtureSeen !== true) { try { w.Zotero_Tabs.close(s.id); } catch (e) {} say("stray reader tab for " + itemID + " landed in another window; closed it"); }
+			}
+			Z.add({ type: "reader-unloaded", title: title(itemID), data: { itemID }, select: false });
+			await sleep(150);
+			t = Z._tabs[Z._tabs.length - 1];
+		}
 		if (!t) throw new Error("reader tab not found for " + itemID);
+		t._wvFixtureSeen = true;
 		return t.id;
 	}
 	async function openNoteTab(itemID) {
@@ -146,7 +169,6 @@
 	// -------------------------------------------------------- W2 managed
 	const before = new Set(Zotero.getMainWindows());
 	lp._wvDevSpawnQueue = lp._wvDevSpawnQueue || [];
-	const title = (id) => { try { const it = Zotero.Items.get(id); return it.getDisplayTitle ? it.getDisplayTitle() : (it.getField("title") || ""); } catch (e) { return ""; } };
 	lp._wvDevSpawnQueue.push({
 		kind: "main-dev",
 		tabs: [
@@ -210,6 +232,50 @@
 	try { R4.moveTo(100, 420); R4.resizeTo(900, 600); } catch (e) {}
 	await sleep(500);
 	say("reader windows: " + readerWins().map(w => ((w._wvWT && w._wvWT.tabs) || []).length + " tab(s)").join(", "));
+
+	// ------------------------------------------------- duplicates matrix
+	// The same item open twice (or three times) in every configuration Weavero
+	// distinguishes -- each has bitten once (docs/restart-testing.md, the
+	// "duplicate" rows): copies are independent per-tab members, only the
+	// DESIGNATED copy of a pinned item is pinned, the claim pass must not grab
+	// a copy, the restore must not re-stamp the ungrouped copy, the main
+	// window may hold a copy of a reader window's own document.
+	const unloadedTab = (Z, itemID, type) => { try { Z.add({ type: type + "-unloaded", title: title(itemID), data: { itemID }, select: false }); } catch (e) { say("unloaded add failed " + itemID + ": " + e); } };
+	const gF = group("F", "cyan");
+	const gG = group("G", "gray");
+	// (a) same window, BOTH copies in one group, plus a third copy in W2 ungrouped
+	{ const t1 = await openReaderTab(D[0]); const t2 = await openReaderTab(D[0]);
+	  lp._wvTabGroupAddTab(W1, t1, gF.id); lp._wvTabGroupAddTab(W1, t2, gF.id);
+	  unloadedTab(Z2, D[0], "reader"); }
+	// (b) same window, copies in DIFFERENT groups
+	{ const t1 = await openReaderTab(D[1]); const t2 = await openReaderTab(D[1]);
+	  lp._wvTabGroupAddTab(W1, t1, gF.id); lp._wvTabGroupAddTab(W1, t2, gG.id); }
+	// (c) same window, both ungrouped: one loaded, one unloaded
+	await openReaderTab(D[2]); unloadedTab(Z1, D[2], "reader");
+	// (d) pinned copy + plain copy (only the designated copy is pinned)
+	await openReaderTab(D[3]); lp._pinTabByCommand(W1, Zotero.Items.get(D[3])); await openReaderTab(D[3]);
+	// (e) a member of the PARKED group RTF-E open again, ungrouped
+	await openReaderTab(P[5]);
+	// (f) the SELECTED note (N1) open a second time in W1, and in reader window R1
+	unloadedTab(Z1, N[0], "note");
+	await lp._wvWTMountTab(R1, N[0], { select: false, await: true, allowDuplicate: true });
+	// (g) main window + reader-window EXTRA (P11 is an extra of R1)
+	await openReaderTab(P[10]);
+	// (h) main window + reader-window NATIVE document (R3's single document)
+	await openReaderTab(P[12]);
+	// (i) across reader windows: the same extra in R1 and R2
+	await lp._wvWTMountTab(R1, D[4], { select: false, await: true });
+	await lp._wvWTMountTab(R2, D[4], { select: false, await: true, allowDuplicate: true });
+	// (j) the orphan window's only tab also open in W2
+	unloadedTab(Z2, P[14], "reader");
+	// (k) EPUB and snapshot duplicates in W1
+	if (E[0]) unloadedTab(Z1, E[0], "reader");
+	if (S[0]) unloadedTab(Z1, S[0], "reader");
+	// (l) W2's SELECTED tab is the cross-window duplicate copy of an RTF-A member
+	{ const t = tabOf(Z2, P[1]); if (t) { try { Z2.select(t.id); } catch (e) {} } }
+	await sleep(700);
+	try { lp._applyTabGroups(W1); lp._applyTabGroups(W2); lp._wvWTRenderStrip(R1); lp._wvWTRenderStrip(R2); lp._wvWTPersistSaveDebounced(); } catch (e) {}
+	say("duplicates matrix: W1 " + Z1._tabs.length + " tabs, W2 " + Z2._tabs.length + " tabs, R1 " + R1._wvWT.tabs.length + ", R2 " + R2._wvWT.tabs.length);
 
 	// ----------------------------------------------------------- session
 	const sess = await lp._wvTabSessionSaveAs(O.prefix + " session");

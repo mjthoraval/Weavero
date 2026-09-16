@@ -70,7 +70,15 @@ checked, or the dev bridge.
    collapsed / parked groups, pinned tabs in both window kinds, note tabs
    (selected, background, grouped, in a reader window), same- and
    cross-window duplicates, an EPUB and snapshot tabs, a custom reader
-   sidebar, moved windows, an active named session, a reader window focused.
+   sidebar, moved windows, an active named session, a reader window focused --
+   and a DUPLICATES matrix: the same item open twice or three times in every
+   configuration Weavero distinguishes (both copies in one group, in different
+   groups, one grouped, neither, across main windows, main + reader-window
+   extra, main + a reader window's own document, same reader window, across
+   reader windows, a pinned copy beside a plain one, a note twice and in a
+   reader window, a parked group's member reopened, the selected tab being a
+   copy, EPUB and snapshot copies). Duplicates were behind a run of fixes in
+   June-July 2026 and again on 2026-09-16.
    `Zotero._wvFixtureOpts = { reset: true }` closes everything first. The
    report's **COVERAGE** section lists what the before-workspace contained and
    flags any essential element at zero, so a green run on a thin workspace
@@ -162,13 +170,21 @@ rows a given run actually exercised.
 | Single-document reader window recorded by neither side (8cda060) | R3 | reader windows missing |
 | Same-window duplicate of a group member pulled into the group at restore by the boot re-stamp (found by this protocol's first full run, 2026-09-16; fixed in 0.19.9) | P1 open twice in W1, one copy in RTF-A | group stamps as a multiset; tab order |
 | Orphan reader window (native tab closed) not recreated | R4 | reader window + orphan flag |
-| Same-window and cross-window duplicates collapsed or lost (ac40523) | P1 twice in W1; P11 twice in R2; P2 in W1 and W2 | multiset diff (a set diff never saw them) |
+| Duplicate copies counted as group members / in the open count (0331362, ac40523: copies are independent per-tab members) | D0 twice in RTF-F plus a third copy in W2; D1 in RTF-F and RTF-G | group members deduped; stamps as a multiset; per-position signature |
+| Claim pass grabbed a duplicate copy of a member, first-come per item key (16fd19d; tab-groups.ts "move-mess") | P2 in W1 (RTF-A) and W2 (ungrouped); W2's selected tab is that copy | stamps as a multiset; selected copy by position |
+| Every copy of a pinned item marked pinned, mirrors multiplied (150d399, bad3a8f, 8717ee9) | D3 pinned once and open again plain | pinned multiset per window; visible mirror count |
+| Focused reader window reopened twice at restore (677edbf) | R3's document also open as a tab in W1; R1 focused at quit | EXTRA window fails |
+| New Main Window opened with the whole session's tabs, i.e. duplicates of everything (49451a1) | W2 | tabs ADDED to a window fails |
+| Same-window and cross-window duplicates collapsed or lost (ac40523) | P1 twice in W1; P11 twice in R2; P2 in W1 and W2; note N1 twice in W1 and in R1; D4 in R1 and R2; the orphan's document in W2; EPUB and snapshot twice | multiset diff (a set diff never saw them) |
 | Restored note editors without Weavero's link wiring (97ba936) | loaded note tab | `noteEditors[].wired` |
 | Reader-window tab order: extras mounted after the native tab (order field) | R1's note tab moved first | tab order per window |
 | Stale legacy store resurrecting long-closed windows (b3ac95d) | any | EXTRA window after restart fails |
 | Spawned window mirroring the whole session (ff6e998, e0236d2) | W2 | tabs ADDED to a window fails |
 | Anchor window restored at the geometry of whichever main window closed LAST (Zotero persists one XUL geometry for all main windows; found by the `loadingAtQuit` leg 2026-09-16, fixed in 0.19.9) | W2 with its own geometry, W1 maximized | whole geometry object per main window |
 | Quit while the reader restore is still in flight dropped the unrestored reader window from the store and the active session absorbed the loss (found by the two-quick-restarts leg 2026-09-16, fixed in 0.19.9) | four reader windows, second restart 6–10 s after boot | reader windows missing; sessions digest |
+| A reader window's document also open as a main-window tab: Zotero's `Reader.open` redirected the window reopen to that tab, selecting and loading it in the main window (found by the duplicates matrix + two quick restarts, 2026-09-16; fixed in 0.19.9 with `allowDuplicate` on every restore-time window reopen) | R3's document also open in W1; the orphan's document open in W2 | selected tab per window; reader windows missing |
+| An explicitly ungrouped copy of an old group's member was claimed into that group at restore (item-key fallback of the claim pass; found by the duplicates matrix 2026-09-16, fixed in 0.19.9: a null stored stamp marks the restored tab kept-out) | D4 in R1 and R2 while a pre-existing group lists it as a member; every ungrouped copy | per-position signature; stamps as a multiset |
+| A background main window's deferred selection was lost by a quit before its first activation (the capture saved the library tab; found 2026-09-16, fixed in 0.19.9) | W2 with a selected reader tab, quick second restart | selected tab per window, deferred item counted |
 | Startup error emptied Zotero's session (forums 133542, upstream) | any main window | "Empty Zotero session" leg: tabs rebuilt from Weavero's store |
 | Crash loses the last seconds (debounced stores) | any | `noQuit` leg |
 | Curated outlines of EPUB / snapshot tabs (2026-09-03 leg) | EPUB and snapshot tabs in W1 and R1 | tab presence here; the outline checks stay in that leg |

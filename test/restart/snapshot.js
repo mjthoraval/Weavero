@@ -77,6 +77,10 @@ for (const w of Zotero.getMainWindows()) {
 		}),
 		managed: !!w._wvManagedWindow,
 		pinnedMirrors,
+		// A BACKGROUND main window defers its saved selection to its first
+		// activation (the library tab shows until then); the deferred item is
+		// the effective selection for the diff.
+		deferredSelect: ikey(w._wvDeferredSelectItemID) || null,
 	});
 }
 const en = Services.wm.getEnumerator("zotero:reader");

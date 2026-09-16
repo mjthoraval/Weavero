@@ -14,6 +14,13 @@ the historically lossy combinations:
   COLLAPSED group.
 - **2 reader windows**: one with 4 tabs (2 grouped PDFs + an ungrouped
   snapshot + a note tab), one with a same-window DUPLICATE (same item twice).
+- **Duplicates, the full matrix** (fixture.js section "duplicates matrix"):
+  the same item twice in one main window (both in a group / in different
+  groups / one grouped / neither / one pinned), three times across windows,
+  in a main window and as a reader-window extra or native document, in one
+  reader window twice, across two reader windows, a note twice and in a
+  reader window, a parked group's member reopened, the selected tab being a
+  copy, EPUB and snapshot copies.
 - **Duplicates across windows**: open one member of each group again,
   ungrouped, in the other main window (this is what the startup claim pass
   used to grab).

@@ -223,8 +223,22 @@
 		const { missing, added } = multiDiff(bk, ak);
 		if (missing.length) FAIL.push(label + ": tabs missing: " + missing.join(", "));
 		if (added.length) FAIL.push(label + ": tabs ADDED (spawn mirror / stale store): " + added.join(", "));
+		// Position-wise signature (key + group + pin per slot): two copies of one
+		// item are indistinguishable by key, so a stamp or pin that MOVED from
+		// one copy to the other is only visible per position.
+		const posSig = t => tabKey(t) + "|" + (t.grp || "") + "|" + (t.pinned ? "P" : "");
 		if (!missing.length && !added.length && J(bk) !== J(ak)) FAIL.push(label + ": tab ORDER changed");
-		const bs = bm.tabs.find(t => t.sel), as = am.tabs.find(t => t.sel);
+		else if (!missing.length && !added.length && J(bm.tabs.map(posSig)) !== J(am.tabs.map(posSig))) FAIL.push(label + ": a group stamp or pin moved to another copy of the same item (per-position signature changed)");
+		let bs = bm.tabs.find(t => t.sel), as = am.tabs.find(t => t.sel);
+		// Deferred selection (background main window): the saved tab is not
+		// selected until the window is activated; count the deferred item as
+		// the effective selection on either side.
+		const effSel = (m, t) => (m.deferredSelect && (!t || String(t.type || "") === "library")) ? { type: "reader", key: m.deferredSelect, deferred: true } : t;
+		bs = effSel(bm, bs); as = effSel(am, as);
+		const bsi = bm.tabs.findIndex(t => t.sel), asi = am.tabs.findIndex(t => t.sel);
+		if ((bs && tabKey(bs)) === (as && tabKey(as)) && bsi !== asi && bsi >= 0 && !(bs && bs.deferred) && !(as && as.deferred)) {
+			((pending.legs && pending.legs.loadingAtQuit) ? WARN : FAIL).push(label + ": the selected tab is a different COPY of " + tabKey(bs) + " (position " + bsi + " -> " + asi + ")");
+		}
 		if ((bs && tabKey(bs)) !== (as && tabKey(as))) {
 			// Under loadingAtQuit the selection was changed a few hundred ms
 			// before the quit; if Zotero's own quit save still carried the
@@ -271,6 +285,10 @@
 		if (missing.length) FAIL.push(label + ": tabs missing: " + missing.join(", "));
 		if (added.length) FAIL.push(label + ": tabs ADDED: " + added.join(", "));
 		if (!missing.length && !added.length && J(bk) !== J(ak)) FAIL.push(label + ": tab ORDER changed");
+		else if (!missing.length && !added.length) {
+			const posSig = t => tabKey(t) + "|" + (t.grp || "") + "|" + (t.pinned ? "P" : "");
+			if (J(br.tabs.map(posSig)) !== J(ar.tabs.map(posSig))) FAIL.push(label + ": a group stamp or pin moved to another copy of the same item (per-position signature changed)");
+		}
 		// An orphan is recreated with its first tab as the NEW native tab (by
 		// design): orphan -> anchored is fine; anchored -> orphan is a loss.
 		if (!br.orphan && ar.orphan) FAIL.push(label + ": native tab lost, window came back as an orphan");
@@ -376,6 +394,32 @@
 		push("note tabs in reader windows", readerTabs.filter(t => t.type === "note").length);
 		push("same-window duplicates", sameWin);
 		push("cross-window duplicates", cross);
+		// Duplicate CONFIGURATIONS (each has bitten once): classify every pair of
+		// copies of the same item by where the copies live and how they differ.
+		{
+			const wins = [...s.mains.map(m => ({ kind: "main", tabs: m.tabs })), ...s.readers.map(r => ({ kind: "reader", tabs: r.tabs }))];
+			const copies = new Map();
+			wins.forEach((w, wi) => w.tabs.forEach(t => { if (!t.key) return; if (!copies.has(t.key)) copies.set(t.key, []); copies.get(t.key).push({ wi, kind: w.kind, t }); }));
+			const pairs = [];
+			for (const arr of copies.values()) for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++) pairs.push([arr[i], arr[j]]);
+			const n = f => pairs.filter(f).length;
+			const sameMain = p => p[0].kind === "main" && p[1].kind === "main" && p[0].wi === p[1].wi;
+			push("dup pairs: same main window, both in ONE group", n(p => sameMain(p) && p[0].t.grp && p[0].t.grp === p[1].t.grp));
+			push("dup pairs: same main window, in DIFFERENT groups", n(p => sameMain(p) && p[0].t.grp && p[1].t.grp && p[0].t.grp !== p[1].t.grp));
+			push("dup pairs: same main window, one grouped one not", n(p => sameMain(p) && (!!p[0].t.grp !== !!p[1].t.grp)));
+			push("dup pairs: same main window, neither grouped", n(p => sameMain(p) && !p[0].t.grp && !p[1].t.grp));
+			push("dup pairs: across main windows", n(p => p[0].kind === "main" && p[1].kind === "main" && p[0].wi !== p[1].wi));
+			push("dup pairs: main window + reader-window extra", n(p => p[0].kind !== p[1].kind && !(p[0].t.native || p[1].t.native)));
+			push("dup pairs: main window + reader-window NATIVE document", n(p => p[0].kind !== p[1].kind && (p[0].t.native || p[1].t.native)));
+			push("dup pairs: same reader window", n(p => p[0].kind === "reader" && p[1].kind === "reader" && p[0].wi === p[1].wi));
+			push("dup pairs: across reader windows", n(p => p[0].kind === "reader" && p[1].kind === "reader" && p[0].wi !== p[1].wi));
+			push("dup pairs: one copy pinned, one plain", n(p => !!p[0].t.pinned !== !!p[1].t.pinned));
+			push("dup pairs: notes", n(p => String(p[0].t.type || "").startsWith("note") || p[0].t.ct === "note"));
+			push("items open three times or more", [...copies.values()].filter(a => a.length > 2).length);
+			push("selected tab is a copy of a duplicated item", wins.reduce((a, w) => a + w.tabs.filter(t => t.sel && (copies.get(t.key) || []).length > 1).length, 0));
+			const openKeys = new Set([...copies.keys()]);
+			push("parked-group members open elsewhere", (s.groups || []).filter(g => g.saved).reduce((a, g) => a + (g.members || []).filter(k => openKeys.has(k)).length, 0));
+		}
 		push("EPUB tabs", [...mainTabs, ...readerTabs].filter(t => t.ct === "application/epub+zip").length);
 		push("snapshot (HTML) tabs", [...mainTabs, ...readerTabs].filter(t => t.ct === "text/html").length);
 		push("reader sidebar open at a custom width", s.readers.filter(r => r.sb && r.sb.open && r.sb.width !== 240).length);

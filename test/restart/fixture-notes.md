@@ -16,6 +16,8 @@ the historically lossy combinations:
 - **A selected note tab** in the anchor window (the chronic native-restore
   drop) and a background note tab in the managed window.
 - **A pinned tab** in a reader window.
+- **A single-document reader window** (plain "open in new window", no
+  extra tabs) — lost on every restart until 0.19.9.
 - Distinctive **window geometry** (move a reader window; second monitor if
   available) and a reader **sidebar** opened at a custom width.
 - One **named tab-session** active.

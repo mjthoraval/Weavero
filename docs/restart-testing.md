@@ -64,10 +64,12 @@ Zotero: **Tools → Developer → Run JavaScript** with *Run as async function*
 checked, or the dev bridge.
 
 1. **Build a workspace worth testing** — your real one, or the reference
-   fixture in `test/restart/fixture-notes.md`. Add one **single-document
-   torn-off reader window** (a window with exactly one tab): those are left to
-   Zotero's own session and are the one case still under suspicion
-   (2026-08-05, lost across two quick restarts).
+   fixture in `test/restart/fixture-notes.md`. Keep one **single-document
+   reader window** (a window with exactly one tab) in it: until 0.19.9 that
+   window was recorded by neither Zotero's session (Weavero's restore takeover
+   empties it at quit) nor Weavero's store (its capture skipped windows with
+   no extra tabs), and was lost on every restart -- the first run of this
+   script found it (2026-09-16).
 2. **Run `cycle.js`.** It backs up `<profile>/session.json` and
    `<data dir>/weavero/*.json` into `<data dir>/weavero/restart-test/backup-<stamp>/`,
    writes `before.json`, turns on startup logging (`debug.store`), and

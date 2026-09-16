@@ -8337,10 +8337,15 @@ class _ReaderMixin {
                 if (!realTabs.length) return null;
                 const native = st.tabs.find((t: any) => t.native && t.itemID != null);
                 if (native) {
-                    // ANCHORED window: Zotero restores the native tab; we persist
-                    // only the EXTRAS (skip if none — Zotero handles it alone).
+                    // ANCHORED window: the native tab plus any EXTRAS. A window
+                    // with NO extras is captured too (`extras: []`): since the
+                    // restore takeover (7cc2345, 2026-07-02) Zotero's quit save
+                    // records no reader windows at all, so "skip if none --
+                    // Zotero handles it alone" left a single-document window
+                    // recorded by NEITHER side and lost on every restart (found
+                    // by test/restart/cycle.js on 2026-09-16; MJT's 2026-08-05
+                    // vanished window was this, not the rapid restart).
                     const extraTabs = st.tabs.filter((t: any) => !t.native && t.itemID != null);
-                    if (!extraTabs.length) return null;
                     // Persist each tab's group stamp (`wvGroupId`) so reader-window
                     // group membership is restored DETERMINISTICALLY — not rebuilt by
                     // the lossy claim pass (first-come per item-key drops a duplicate
@@ -8501,9 +8506,14 @@ class _ReaderMixin {
                     await this._wvWTLoadRestoreMap();
                     if (!this._wvWTRestoreActive) return;
                     const entry = this._wvWTRestoreMap && this._wvWTRestoreMap[nativeItemID];
-                    if (!entry || !Array.isArray(entry.extras) || !entry.extras.length) return;
+                    // An entry with NO extras is a single-document window (captured
+                    // since 2026-09-16): nothing to mount, but its geometry and
+                    // sidebar still apply and the entry must be consumed so the
+                    // restore-done accounting does not wait out the 30-s backstop.
+                    if (!entry) return;
+                    const extrasIn: any[] = Array.isArray(entry.extras) ? entry.extras : [];
                     try { delete this._wvWTRestoreMap[nativeItemID]; } catch (e) {}   // consume once
-                    try { (this as any)._wvTrace && (this as any)._wvTrace("restore: reader window adopt item " + nativeItemID + " + " + entry.extras.length + " extra(s)"); } catch (e) {}
+                    try { (this as any)._wvTrace && (this as any)._wvTrace("restore: reader window adopt item " + nativeItemID + " + " + extrasIn.length + " extra(s)"); } catch (e) {}
                     // Multi-monitor placement + shared sidebar state, saved at quit.
                     try { this._wvApplyWindowGeom(win, entry.geom); } catch (e) {}
                     try {
@@ -8518,7 +8528,7 @@ class _ReaderMixin {
                     // Normalize both persisted shapes:
                     //   v1: extras = [itemID, ...]            → pinned:false
                     //   v2: extras = [{ itemID, pinned }, ...]
-                    const norm = entry.extras
+                    const norm = extrasIn
                         .map((e: any) => (e && typeof e === "object")
                             ? { itemID: e.itemID, pinned: !!e.pinned, grp: e.grp || null }
                             : { itemID: e, pinned: false, grp: null })

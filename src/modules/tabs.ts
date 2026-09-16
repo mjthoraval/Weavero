@@ -8868,7 +8868,12 @@ class _TabsMixin {
             if (sBase === "library" || selSt.id === "zotero-pane") wantID = "zotero-pane";
             else {
                 const iid = selSt.data && selSt.data.itemID;
-                const t = iid != null && Z._tabs.find((x: any) => x.data && x.data.itemID === iid);
+                // By POSITION first (2026-09-16, duplicates matrix): with the same
+                // item open twice the first tab of that item is not necessarily
+                // the one that was selected.
+                const si = (entry.tabs || []).indexOf(selSt);
+                const atPos = (si >= 0 && Z._tabs[si] && Z._tabs[si].data && Z._tabs[si].data.itemID === iid) ? Z._tabs[si] : null;
+                const t = atPos || (iid != null && Z._tabs.find((x: any) => x.data && x.data.itemID === iid));
                 if (t) wantID = t.id;
             }
             if (wantID && Z.selectedID !== wantID) {
@@ -8948,7 +8953,14 @@ class _TabsMixin {
             const anchor: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
             if (!anchor || !anchor.Zotero_Tabs) return;
             const Z = anchor.Zotero_Tabs;
-            const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+            // COPY-AWARE (2026-09-16): the same item open twice must come back twice.
+            // `live` counts copies per item; `liveHasCopy` walks the saved list and
+            // answers per COPY (Better Notes closed one of two copies of a note at
+            // startup and the item-level check saw nothing missing).
+            const live = new Map<any, number>();
+            for (const t0 of Z._tabs) { const id0 = t0 && t0.data && t0.data.itemID; if (id0 != null) live.set(id0, (live.get(id0) || 0) + 1); }
+            const seenCopies = new Map<any, number>();
+            const liveHasCopy = (id: any) => { seenCopies.set(id, (seenCopies.get(id) || 0) + 1); return (live.get(id) || 0) >= (seenCopies.get(id) || 0); };
             // Pick the saved pane list that best OVERLAPS the anchor's live tabs
             // (majority of its items already present). No majority → the file is
             // stale/ambiguous (e.g. after a crash) — repairing would splice
@@ -8969,7 +8981,7 @@ class _TabsMixin {
             for (let i = 0; i < saved.length; i++) {
                 const st = saved[i];
                 const iid = st && st.data && st.data.itemID;
-                if (iid == null || live.has(iid)) continue;   // (a same-window dup pair is matched once — acceptable)
+                if (iid == null || liveHasCopy(iid)) continue;   // per copy, not per item
                 const base = String(st.type || "").replace(/-(unloaded|loading)$/, "");
                 if (base !== "reader" && base !== "note") continue;
                 try {
@@ -8982,14 +8994,28 @@ class _TabsMixin {
                     // on ("restart from the library tab ends on a note tab",
                     // 2026-07-04). Selection is enforced below from Weavero's
                     // OWN store, captured atomically at quit-request.
-                    const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    // Insert at the first SAVED position of this item whose live slot
+                    // does not hold it: when one of two copies was closed, the
+                    // survivor slid into the earlier slot and a re-add at the later
+                    // saved index shuffled the order (2026-09-16).
+                    let at = i;
+                    for (let j = 0; j < saved.length; j++) {
+                        const sj = saved[j];
+                        if (!(sj && sj.data && sj.data.itemID === iid)) continue;
+                        const lt = Z._tabs[j];
+                        if (!(lt && lt.data && lt.data.itemID === iid)) { at = j; break; }
+                    }
+                    const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(at, Z._tabs.length), data: st.data, select: false });
                     // No stamp in the store = explicitly ungrouped: keep it out of the item-key claim (2026-09-16).
                     try { const nt = addedTab && addedTab.id ? Z._tabs.find((x: any) => x.id === addedTab.id) : null; if (nt && !(st.data && st.data.wvGroupId)) nt._wvGroupExcluded = true; } catch (e) {}
-                    live.add(iid);
+                    live.set(iid, (live.get(iid) || 0) + 1);
                     added++;
-                    (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") at index " + i);
+                    (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") at index " + at);
                 } catch (e) {}
             }
+            // A re-add can put a COPY back before the surviving one: re-assert the
+            // captured selection by position now that the list is complete.
+            if (added) { try { (this as any)._wvEnforceAnchorSelectionFromStore("post-reconcile"); } catch (e) {} }
             (this as any)._wvTrace(added
                 ? ("reconcile: restored " + added + " tab(s) the native anchor restore dropped")
                 : "reconcile: anchor matches the saved session");
@@ -9060,12 +9086,19 @@ class _TabsMixin {
                     : (w._wvManagedWindow && (entry.wvWinId == null || w._wvWindowId === entry.wvWinId)));
                 if (!win || !win.Zotero_Tabs) continue;
                 const Z = win.Zotero_Tabs;
-                const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+                // COPY-AWARE (2026-09-16): the same item open twice must come back twice.
+            // `live` counts copies per item; `liveHasCopy` walks the saved list and
+            // answers per COPY (Better Notes closed one of two copies of a note at
+            // startup and the item-level check saw nothing missing).
+            const live = new Map<any, number>();
+            for (const t0 of Z._tabs) { const id0 = t0 && t0.data && t0.data.itemID; if (id0 != null) live.set(id0, (live.get(id0) || 0) + 1); }
+            const seenCopies = new Map<any, number>();
+            const liveHasCopy = (id: any) => { seenCopies.set(id, (seenCopies.get(id) || 0) + 1); return (live.get(id) || 0) >= (seenCopies.get(id) || 0); };
                 let added = 0;
                 for (let i = 0; i < entry.tabs.length; i++) {
                     const st = entry.tabs[i];
                     const iid = st && st.data && st.data.itemID;
-                    if (iid == null || live.has(iid)) continue;
+                    if (iid == null || liveHasCopy(iid)) continue;   // per copy, not per item
                     const base = String(st.type || "").replace(/-(unloaded|loading)$/, "");
                     if (base !== "reader" && base !== "note") continue;
                     try {
@@ -9074,7 +9107,7 @@ class _TabsMixin {
                         const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
                     // No stamp in the store = explicitly ungrouped: keep it out of the item-key claim (2026-09-16).
                     try { const nt = addedTab && addedTab.id ? Z._tabs.find((x: any) => x.id === addedTab.id) : null; if (nt && !(st.data && st.data.wvGroupId)) nt._wvGroupExcluded = true; } catch (e) {}
-                        live.add(iid);
+                        live.set(iid, (live.get(iid) || 0) + 1);
                         added++;
                         (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") in managed window");
                     } catch (e) {}
@@ -9149,7 +9182,14 @@ class _TabsMixin {
             try { if (entry.geom) (this as any)._wvApplyWindowGeom(win, entry.geom); } catch (e) {}
             const f = (this as any)._wvBootFocusedEntry;
             const anchorFocused = !f || f.kind === "anchor";   // default to anchor
-            const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
+            // COPY-AWARE (2026-09-16): the same item open twice must come back twice.
+            // `live` counts copies per item; `liveHasCopy` walks the saved list and
+            // answers per COPY (Better Notes closed one of two copies of a note at
+            // startup and the item-level check saw nothing missing).
+            const live = new Map<any, number>();
+            for (const t0 of Z._tabs) { const id0 = t0 && t0.data && t0.data.itemID; if (id0 != null) live.set(id0, (live.get(id0) || 0) + 1); }
+            const seenCopies = new Map<any, number>();
+            const liveHasCopy = (id: any) => { seenCopies.set(id, (seenCopies.get(id) || 0) + 1); return (live.get(id) || 0) >= (seenCopies.get(id) || 0); };
             let added = 0, restamped = 0, deferItem = null, selectNow = null, deferIndex: any = null;
             // Boot stamp map: quit-time (itemID -> groupID) truth for members whose
             // tabs haven't arrived yet -- Zotero's native session restore streams
@@ -9180,7 +9220,7 @@ class _TabsMixin {
                 const st = entry.tabs[i];
                 const iid = st && st.data && st.data.itemID;
                 if (iid == null) continue;
-                if (live.has(iid)) {
+                if (liveHasCopy(iid)) {
                     // NATIVELY-restored tab: Zotero's restoreState hooks rebuild
                     // `data` fresh and DROP the group stamp, so these tabs sat
                     // ungrouped until the claim pass after the restore guard
@@ -9225,7 +9265,7 @@ class _TabsMixin {
                     const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
                     // No stamp in the store = explicitly ungrouped: keep it out of the item-key claim (2026-09-16).
                     try { const nt = addedTab && addedTab.id ? Z._tabs.find((x: any) => x.id === addedTab.id) : null; if (nt && !(st.data && st.data.wvGroupId)) nt._wvGroupExcluded = true; } catch (e) {}
-                    live.add(iid);
+                    live.set(iid, (live.get(iid) || 0) + 1);
                     added++;   // entry KEPT in bootMap — this tab can still be replaced by native restore
                     if (st.selected) { if (anchorFocused) selectNow = iid; else deferItem = iid; deferIndex = i; }
                 } catch (e) {}

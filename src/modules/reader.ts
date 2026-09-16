@@ -8330,7 +8330,11 @@ class _ReaderMixin {
                                 }
                             } catch (e) {}
                         };
-                        try { w.setTimeout(reassert, 900); w.setTimeout(reassert, 3000); } catch (e) {}
+                        // A third pass at 8 s: a note deck built in steps (anchor,
+                        // mount, drop, reveal) with Better Notes initialising its
+                        // editor came back 80 px taller after the 3-s pass
+                        // (2026-09-16, extended fixture, two quick restarts).
+                        try { w.setTimeout(reassert, 900); w.setTimeout(reassert, 3000); w.setTimeout(reassert, 8000); } catch (e) {}
                     };
                     if (Math.abs(dx) < 8 && Math.abs(dy) < 8) { finish(); return; }
                     w.moveTo(w.screenX + dx / dpr, w.screenY + dy / dpr);
@@ -9167,7 +9171,9 @@ class _ReaderMixin {
                 const en = Services.wm.getEnumerator("zotero:reader");
                 while (en.hasMoreElements()) {
                     const w: any = en.getNext();
-                    if (!before.has(w) && w._wvWT && w._wvWT.tabs && w._wvWT.tabs.length) return w;
+                    // By ITEM (2026-09-16): another window opening at the same
+                    // moment must not be taken for this anchor's window.
+                    if (!before.has(w) && w._wvWT && w._wvWT.tabs && w._wvWT.tabs.some((t: any) => t.native && t.itemID === anchorID)) return w;
                 }
             }
             return null;
@@ -9299,13 +9305,22 @@ class _ReaderMixin {
             // Tight poll so we hide content before the anchor renders. Wait until
             // reader.xhtml itself is loaded (#zotero-reader present), not just the
             // window shell (about:blank), or the hide wouldn't stick.
+            // Resolve the window BY ITEM: during a restore several reader windows
+            // open at once, and "any new reader window" picked another item's
+            // window -- the note was mounted into it, its own document closed as
+            // the throwaway anchor, and the real anchor window stayed as a stray
+            // (2026-09-16, note deck + duplicates matrix). The ReaderWindow
+            // instance for anchorID names its window.
+            const ownerOf = (id: any) => {
+                try {
+                    const r: any = (((Zotero as any).Reader && (Zotero as any).Reader._readers) || []).find((x: any) => x.itemID === id && x._window && !before.has(x._window)
+                        && x._window.document && x._window.document.documentElement.getAttribute("windowtype") === "zotero:reader");
+                    return r ? r._window : null;
+                } catch (e) { return null; }
+            };
             for (let i = 0; i < 200; i++) {                  // ~4s at 20ms
-                const en = Services.wm.getEnumerator("zotero:reader");
-                while (en.hasMoreElements()) {
-                    const w: any = en.getNext();
-                    if (before.has(w)) continue;
-                    try { if (w.document && w.document.getElementById("zotero-reader")) { win = w; break; } } catch (e) {}
-                }
+                const w: any = ownerOf(anchorID);
+                try { if (w && w.document && w.document.getElementById("zotero-reader")) { win = w; } } catch (e) {}
                 if (win) break;
                 await new Promise((r) => setTimeout(r, 20));
             }

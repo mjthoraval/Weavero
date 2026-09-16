@@ -159,6 +159,14 @@
 	// lazy restore is expected, a transient load state is not a difference.
 	const tabKey = (t) => String(t.type || "").replace(/-(unloaded|loading)$/, "") + ":" + (t.key || "?");
 	const sameGeom = (a, b) => a && b && ["x", "y", "w", "h", "st"].every(k => a[k] === b[k]);
+	// A window MINIMIZED at capture time reports Windows' off-screen parking
+	// coordinates (snapshot stores x/y as null) and a 160x28 box: nothing to
+	// compare against, and the restore legitimately brings it back at its
+	// pre-minimize size. Warn instead of fail (seen 2026-09-16, third cycle).
+	const geomCheck = (label, bg, ag) => {
+		if (bg && bg.x == null) { WARN.push(label + ": geometry not comparable, window minimized at capture -> " + J(ag)); return; }
+		if (!sameGeom(bg, ag)) FAIL.push(label + ": geometry " + J(bg) + " -> " + J(ag));
+	};
 
 	// main windows: by name, then by position
 	const afterMains = after.mains.slice();
@@ -182,7 +190,7 @@
 			if ((bt.grp || null) !== (at.grp || null)) FAIL.push(label + ": group stamp of " + tabKey(bt) + " " + bt.grp + " -> " + at.grp);
 			if (bt.page != null && at.page != null && bt.page !== at.page) WARN.push(label + ": page of " + tabKey(bt) + " " + bt.page + " -> " + at.page);
 		});
-		if (!sameGeom(bm.geom, am.geom)) FAIL.push(label + ": geometry " + J(bm.geom) + " -> " + J(am.geom));
+		geomCheck(label, bm.geom, am.geom);
 		if (J(bm.collection) !== J(am.collection)) FAIL.push(label + ": collection " + J(bm.collection) + " -> " + J(am.collection));
 		if (J(bm.itemPane) !== J(am.itemPane)) WARN.push(label + ": item pane " + J(bm.itemPane) + " -> " + J(am.itemPane));
 		if (!missing.length && !added.length) OK.push(label + ": " + bk.length + " tabs, order, selection, geometry");
@@ -215,7 +223,7 @@
 			if (!!bt.sel !== !!at.sel) FAIL.push(label + ": selected flag of " + tabKey(bt) + " changed");
 			if (bt.page != null && at.page != null && bt.page !== at.page) WARN.push(label + ": page of " + tabKey(bt) + " " + bt.page + " -> " + at.page);
 		});
-		if (!sameGeom(br.geom, ar.geom)) FAIL.push(label + ": geometry " + J(br.geom) + " -> " + J(ar.geom));
+		geomCheck(label, br.geom, ar.geom);
 		if (J(br.sb) !== J(ar.sb)) WARN.push(label + ": sidebar " + J(br.sb) + " -> " + J(ar.sb));
 		if (!missing.length && !added.length) OK.push(label + ": " + bk.length + " tabs (" + ar.tabs.filter(t => t.lazy).length + " lazy), pins, groups, geometry");
 	});

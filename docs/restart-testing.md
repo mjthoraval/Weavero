@@ -104,6 +104,14 @@ a changed reader page, sidebar or item-pane state, and error-console entries.
   last ~1 s of Weavero's stores (400 ms debounce) and, for the anchor window,
   whatever Zotero's own session save had not flushed.
 - **Troubleshooting Mode**: see the section below.
+- **Empty Zotero session** (the upstream bug of forums 133542, fixed in
+  10.0.3-beta.1 but present in 10.0.2: a startup error made the quit save
+  overwrite `session.json` with an empty state). Quit Zotero, overwrite
+  `<profile>/session.json` with `{"windows":[]}`, start it again: Weavero
+  must rebuild the anchor window's tabs from its own `windows.json`
+  (`restore: anchor tabs rebuilt from store — N tab(s)` in the trace) and
+  reopen every reader window. 2026-09-16: 20 tabs + 2 reader windows came
+  back from an emptied session.
 - **Timing**: `report.md` carries quit → process start and quit → first
   paint (Gecko's startup info) plus the settle wait. `test/restart/probe.sh
   <port>` still exists for a port-level down/up timeline if you want one.

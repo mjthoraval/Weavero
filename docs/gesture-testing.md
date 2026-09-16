@@ -132,6 +132,18 @@ Annotations / Tags / Related, then:
       columns changes; the centre pane and the other columns stay put.
 - [ ] **Watch truncated titles** for a few seconds at that width → no
       blinking between "Tes…" and "Test12"-style renderings.
+- [ ] **Narrow the window to ~1000 px with a dozen columns shown** → at
+      its minimum the FIRST column (whichever it is: Title, or Creator
+      once moved first) still shows about as much text as the other
+      squeezed columns do (its floor is Zotero's 30 px plus the 36 px of
+      twisty slot and type icon its text sits behind); below 930 px Zotero
+      stacks the item pane by itself. Then drag the first separator hard
+      to the left → the first column stops at 66 px and no other column
+      moves.
+- [ ] **Move another column first** (drag its header to the left edge, or
+      right-click the header → Move Column) → the floor follows: the new
+      first column stops at 66 px, the previous one shrinks to 30 px like
+      any other. Move it back → same, reversed.
 
 ## Popups (after touching popup code)
 

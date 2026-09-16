@@ -30,7 +30,13 @@ measure any plugin that touches the reader sidebar or the tab system.
   combined chip+search path — in window A and, when a second main window is
   open, window B. Read-only; restores selection, filter state and the
   quicksearch mode; self-reports to `Zotero._wvBenchFS` with an
-  `itemsChangedDuringRun` certification. Supersedes `bench-weavero-ui.js`'s
+  `itemsChangedDuringRun` certification. **Native leg** (opt-in): predefine
+  `Zotero._wvBenchNative = true` before loading and the run ends by
+  disabling Weavero, repeating the quick-search ops on window A with the
+  same watcher, and re-enabling Weavero (waiting for the new instance to
+  wire). Read `Zotero._wvBenchFS.vsNative()` for Weavero/native per mode
+  with ratios. It disables Weavero only — isolate other plugins by hand
+  if the comparison must be plugin-free. Supersedes `bench-weavero-ui.js`'s
   filter numbers: that script's fixed 5s poll simply returned `-1` on a
   real library (measured 2026-08-25 — the apply takes ~1s on 17,932 visible
   rows and the poll design cannot see completion). Machine baselines live
@@ -191,6 +197,15 @@ full-text/DB work; a chip filters already-loaded rows), so the native
 numbers bound the comparison rather than equal it. On this library,
 Weavero's filter applies (1474 ms headline, 1570 ms median, 2382 ms
 worst) sit at or below the native search's own narrowing time.
+
+**Same-session native comparison (2026-09-16, 48k-item library, 17.9k
+collapsed rows, Zotero 10.0.3-beta.1, only Weavero + the bridge active):**
+search "the" first row change, Weavero 0.19.8-dev.12 vs native —
+titleCreatorYear 4127 / 3110 ms (+33%), fields 3656 / 3073 (+19%),
+everything 3863 / 3030 (+27%). Clears are single-shot and noisy in both
+directions (native everything-clear once read 6399 ms). Rows differ by ~6%
+(38 030 vs 40 470: Weavero hides context attachment rows by design). This
+is what the native leg above automates; those two runs were ad-hoc.
 
 ### Reader sidebar / PDF scrolling (2026-07, Zotero 10 beta, 200-annotation fixture)
 

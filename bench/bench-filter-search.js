@@ -38,13 +38,100 @@
             && "wv@" + (Zotero.Weavero.plugin._version || "?")) || "NOT LOADED",
         status: "running",
         windows: {},
+        // Filled by the native leg (`Zotero._wvBenchNative = true`): the same
+        // quick-search ops with Weavero DISABLED, on window A, same order.
+        native: null,
+        /** Weavero vs native per mode, firstChangeMs and the ratio. Only the
+         *  search ops have a native counterpart -- a chip has none. */
+        vsNative() {
+            const A = this.windows.A, N = this.native;
+            if (!A || !A.ops || !N || !N.ops) return "run with Zotero._wvBenchNative = true";
+            const out = {};
+            for (const k of Object.keys(N.ops)) {
+                const w = A.ops[k], n = N.ops[k];
+                if (!w || !n || !w.apply || !n.apply) continue;
+                const r = (x, y) => (x != null && y) ? Math.round((x / y) * 100) / 100 : null;
+                out[k] = {
+                    apply: { weavero: w.apply.firstChangeMs, native: n.apply.firstChangeMs,
+                        ratio: r(w.apply.firstChangeMs, n.apply.firstChangeMs),
+                        rows: w.apply.toRows + " vs " + n.apply.toRows },
+                    clear: { weavero: w.clear.firstChangeMs, native: n.clear.firstChangeMs,
+                        ratio: r(w.clear.firstChangeMs, n.clear.firstChangeMs) },
+                };
+            }
+            return out;
+        },
     };
     Zotero._wvBenchFS = R;
-    const p = Zotero.Weavero && Zotero.Weavero.plugin;
+    // `let`: the native leg disables and re-enables Weavero, which tears the
+    // instance down and creates a new one -- the finally below must clear
+    // filters on the LIVE instance, never on the corpse.
+    let p = Zotero.Weavero && Zotero.Weavero.plugin;
     if (!p) { R.status = "error: Weavero not loaded"; return "no plugin"; }
 
     const LOOPS = 3;
     const median = (a) => { const v = [...a].sort((x, y) => x - y); return v[Math.floor(v.length / 2)]; };
+
+    /** Row-count watcher, ONE definition for both the Weavero pass and the
+     *  native leg (a copy would let the two drift and make the comparison
+     *  lie). Sample every 50ms until 5 equal samples follow at least one
+     *  change (or the 90s ceiling). */
+    function mkMeasure(win, label, rp, sleep, profiling) {
+        return async function measure(fire, opName) {
+            const out = { applyPromiseMs: null, firstChangeMs: null,
+                settledMs: null, fromRows: rp().getRowCount(), toRows: null };
+            const t0 = win.performance.now();
+            const done = Promise.resolve()
+                .then(fire)
+                .then(() => { out.applyPromiseMs = Math.round(win.performance.now() - t0); })
+                .catch(e => { out.err = String(e); });
+            let last = out.fromRows, lastChangeAt = null, stable = 0;
+            while (win.performance.now() - t0 < 90000) {
+                await sleep(50);
+                let n = last;
+                try { n = rp().getRowCount(); } catch (e) {}
+                if (n !== last) {
+                    if (out.firstChangeMs === null) {
+                        out.firstChangeMs = Math.round(win.performance.now() - t0);
+                    }
+                    lastChangeAt = win.performance.now();
+                    last = n; stable = 0;
+                } else if (lastChangeAt !== null && ++stable >= 5) break;
+                // No change at all: give the op 10s to produce one, then
+                // accept "no visible change" (a filter matching all).
+                // NOT 3s: a real-library search can take longer than
+                // that to its first change, and bailing reads as
+                // "no change" when the truth is "slow".
+                if (lastChangeAt === null && win.performance.now() - t0 > 10000
+                    && out.applyPromiseMs !== null) break;
+            }
+            await done;
+            out.settledMs = lastChangeAt === null ? null
+                : Math.round(lastChangeAt - t0);
+            out.toRows = last;
+            if (profiling && opName) {
+                // Marker spans fire -> now; startTime is the SAME
+                // clock the profiler samples (this window's
+                // performance.now()).
+                try {
+                    ChromeUtils.addProfilerMarker(
+                        "WV " + opName + " [" + label + "]",
+                        { startTime: t0 }, JSON.stringify({
+                            firstChangeMs: out.firstChangeMs,
+                            settledMs: out.settledMs,
+                            rows: out.fromRows + "->" + out.toRows }));
+                } catch (e) {}
+            }
+            return out;
+        };
+    }
+
+    /** Zotero's quick-search modes, read from its own search element (the
+     *  object the scope menu is built from); beta.9's three as the fallback. */
+    function scopeModesOf(sb) {
+        return (sb && sb._searchModes && Object.keys(sb._searchModes).length)
+            ? Object.keys(sb._searchModes) : ["titleCreatorYear", "fields", "everything"];
+    }
 
     (async () => {
         const startedSql = Zotero.Date.dateToSQL(new Date(), true);
@@ -94,56 +181,7 @@
                 try { win.focus(); } catch (e) {}
                 await sleep(700);
 
-                /** Watch the row count while `fire` runs; sample every 50ms
-                 *  until 5 equal samples follow at least one change (or the
-                 *  90s ceiling). */
-                async function measure(fire, opName) {
-                    const out = { applyPromiseMs: null, firstChangeMs: null,
-                        settledMs: null, fromRows: rp().getRowCount(), toRows: null };
-                    const t0 = win.performance.now();
-                    const done = Promise.resolve()
-                        .then(fire)
-                        .then(() => { out.applyPromiseMs = Math.round(win.performance.now() - t0); })
-                        .catch(e => { out.err = String(e); });
-                    let last = out.fromRows, lastChangeAt = null, stable = 0;
-                    while (win.performance.now() - t0 < 90000) {
-                        await sleep(50);
-                        let n = last;
-                        try { n = rp().getRowCount(); } catch (e) {}
-                        if (n !== last) {
-                            if (out.firstChangeMs === null) {
-                                out.firstChangeMs = Math.round(win.performance.now() - t0);
-                            }
-                            lastChangeAt = win.performance.now();
-                            last = n; stable = 0;
-                        } else if (lastChangeAt !== null && ++stable >= 5) break;
-                        // No change at all: give the op 10s to produce one, then
-                        // accept "no visible change" (a filter matching all).
-                        // NOT 3s: a real-library search can take longer than
-                        // that to its first change, and bailing reads as
-                        // "no change" when the truth is "slow".
-                        if (lastChangeAt === null && win.performance.now() - t0 > 10000
-                            && out.applyPromiseMs !== null) break;
-                    }
-                    await done;
-                    out.settledMs = lastChangeAt === null ? null
-                        : Math.round(lastChangeAt - t0);
-                    out.toRows = last;
-                    if (profiling && opName) {
-                        // Marker spans fire -> now; startTime is the SAME
-                        // clock the profiler samples (this window's
-                        // performance.now()).
-                        try {
-                            ChromeUtils.addProfilerMarker(
-                                "WV " + opName + " [" + label + "]",
-                                { startTime: t0 }, JSON.stringify({
-                                    firstChangeMs: out.firstChangeMs,
-                                    settledMs: out.settledMs,
-                                    rows: out.fromRows + "->" + out.toRows }));
-                        } catch (e) {}
-                    }
-                    return out;
-                }
+                const measure = mkMeasure(win, label, rp, sleep, profiling);
 
                 const applyGroup = (mutate) => async () => {
                     const g = p._emptyFilterGroup(); mutate(g);
@@ -190,8 +228,7 @@
                 const TERM = "the";
                 // Modes from Zotero's own element (the object its scope menu
                 // is built from), beta.9's three as the fallback.
-                const SCOPE_MODES = (sb && sb._searchModes && Object.keys(sb._searchModes).length)
-                    ? Object.keys(sb._searchModes) : ["titleCreatorYear", "fields", "everything"];
+                const SCOPE_MODES = scopeModesOf(sb);
                 W.scopeModes = SCOPE_MODES;
                 for (const mode of SCOPE_MODES) {
                     Zotero.Prefs.set("search.quicksearch-mode", mode, true);
@@ -297,6 +334,70 @@
                 await Zotero.File.putContentsAsync(path, JSON.stringify(data));
                 R.profilePath = path;
                 R.profileNote = "open at https://profiler.firefox.com; each op is a 'WV ...' marker";
+            }
+
+            // ---- NATIVE LEG (opt-in: predefine `Zotero._wvBenchNative = true`) ----
+            // The same quick-search ops on window A with Weavero DISABLED,
+            // so the overhead is measured in the same session, same view,
+            // same watcher, instead of from a number remembered from another
+            // day (2026-09-16: the first side-by-side put Weavero's search
+            // apply at +19..33% over native). Weavero is re-enabled in the
+            // finally and the run waits for the new instance to wire before
+            // the outer restore touches it. Other plugins are NOT touched:
+            // isolate them by hand if the comparison must be plugin-free.
+            if (Zotero._wvBenchNative === true) {
+                const win = Zotero.getMainWindows()[0];
+                const zp = win.ZoteroPane, iv = zp.itemsView;
+                const rp = () => iv.rowProvider || iv;
+                const sleep = (ms) => new Promise(r => win.setTimeout(r, ms));
+                const { AddonManager } = ChromeUtils.importESModule(
+                    "resource://gre/modules/AddonManager.sys.mjs");
+                const addon = await AddonManager.getAddonByID("weavero@mjthoraval");
+                const N = R.native = { ops: {}, status: "running" };
+                try {
+                    await addon.disable();
+                    await sleep(4000);
+                    N.weaveroGone = !(Zotero.Weavero && Zotero.Weavero.plugin);
+                    const sb = zp.document.getElementById("zotero-tb-search");
+                    sb.value = ""; sb.dispatchEvent(new Event("command"));
+                    await sleep(2000);
+                    // Same starting point as the Weavero pass: a collapsed view.
+                    try { rp().collapseAllRows(); } catch (e) {}
+                    await sleep(1500);
+                    N.baselineRows = rp().getRowCount();
+                    const measure = mkMeasure(win, "native", rp, sleep, false);
+                    const TERM = "the";
+                    for (const mode of scopeModesOf(sb)) {
+                        Zotero.Prefs.set("search.quicksearch-mode", mode, true);
+                        await sleep(300);
+                        const applyRes = await measure(async () => {
+                            sb.value = TERM;
+                            sb.dispatchEvent(new Event("command"));
+                        }, "native search " + mode + " apply");
+                        const clearRes = await measure(async () => {
+                            sb.value = "";
+                            sb.dispatchEvent(new Event("command"));
+                        }, "native search " + mode + " clear");
+                        N.ops["search " + mode] = { apply: applyRes, clear: clearRes };
+                        await sleep(400);
+                    }
+                    Zotero.Prefs.set("search.quicksearch-mode", "fields", true);
+                    N.status = "done";
+                } catch (e) {
+                    N.status = "error: " + e;
+                } finally {
+                    try { await addon.enable(); } catch (e) { N.enableError = String(e); }
+                    // Wait for the NEW instance to wire itself to this view
+                    // (stamped setFilter wrap) before anything else runs.
+                    let live = null;
+                    for (let i = 0; i < 60; i++) {
+                        await sleep(500);
+                        live = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (live && iv._wvSetFilterWrapped === live._wvWireTag()) break;
+                    }
+                    N.weaveroRestored = !!(live && iv._wvSetFilterWrapped === live._wvWireTag());
+                    if (live) p = live;
+                }
             }
             R.status = "done";
         } catch (e) {

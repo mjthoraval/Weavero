@@ -462,6 +462,32 @@ export const PLUGIN_CSS = [
     "#item-tree-main .virtualized-table-header {",
     "  contain: inline-size;",
     "}",
+    // The FIRST column's minimum leaves as much TEXT visible as any other
+    // column shows at Zotero's 30-px minimum. The twisty slot (16) and the
+    // item-type icon (16 + a 4-px gap) are rendered in whichever column has
+    // the lowest ordinal (`itemTree._renderCell`, `isFirstColumn`: the row
+    // cell gets Zotero's `first-column` class, the header cell is simply the
+    // first child), so with Creator moved first it is Creator that shrinks
+    // to its icon (MJT, 2026-09-16) -- this is not a Title rule. Text starts
+    // 36 px in (measured 2026-09-16; Zotero's own allowance,
+    // --first-column-extra-width, is 28), so at 30 px the first column shows
+    // the icon and nothing else while its neighbours still show 30 px of
+    // text. 30 + 36 = 66 (after an 80-px floor chosen by eye and a bare 30
+    // were both rejected). Header and rows get the same floor so they stay
+    // aligned.
+    //
+    // PAIRED with `_wvPatchFirstColumnMinWidth` (filter.ts): Zotero's
+    // resizer clamps a drag at the column MODEL's minWidth + COLUMN_PADDING
+    // (16), never at CSS. A CSS floor alone lets a drag assign the column
+    // less than the floor while the cell holds -- over-constrained row,
+    // every other column squeezed (real-drag trace, 2026-09-16). 50 + 16 =
+    // 66. Change one, change the other.
+    "#item-tree-main-default .virtualized-table-header > .cell:first-child,",
+    "#item-tree-main-default .row > .cell.first-column,",
+    "#item-tree-main .virtualized-table-header > .cell:first-child,",
+    "#item-tree-main .row > .cell.first-column {",
+    "  min-width: 66px !important;",
+    "}",
     // Items-list custom column header icons. iconPath plugs the
     // icon URL into a `<span class=\"icon icon-bg\" style=\"background-
     // image: url(...)\">` inside the header cell. The Zotero SVGs

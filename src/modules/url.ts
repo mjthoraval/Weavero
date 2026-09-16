@@ -1332,7 +1332,57 @@ export const urlMethods = {
             // fall through
         }
         try { Zotero.launchURL(url); }
-        catch (e) { Zotero.debug("[Weavero] _launchURL fallback err: " + e); }
+        catch (e) {
+            // 10.0.2 STABLE (Gecko 140.15.0esr) ships a `Zotero.launchURL`
+            // that throws NS_ERROR_ILLEGAL_VALUE for every non-HTTP scheme
+            // -- 140.15 made loadURI's triggering principal mandatory and
+            // upstream only added it in 10.0.3-beta.1 (30f26d6b3, forums
+            // 133709). Until then, every mailto:/obsidian:// click on the
+            // default (confirm) path died in this catch. Do what the fix
+            // does. Retire when strict_min_version >= 10.0.3.
+            if (!this._wvLaunchNonHttpWithPrincipal(url)) {
+                Zotero.debug("[Weavero] _launchURL fallback err: " + e);
+            }
+        }
+    },
+
+    /** Launch a NON-HTTP URL through the external protocol service WITH a
+     *  triggering principal -- the exact call `Zotero.launchURL` makes from
+     *  10.0.3-beta.1 on, and what 10.0.2's copy is missing on Gecko 140.15
+     *  (upstream 30f26d6b3, forums 133709). Returns true when dispatched,
+     *  false when this URL is not the shim's business (http/https, the
+     *  schemes upstream refuses, zotero://) or no OS handler exists -- the
+     *  caller then logs the original error as before.
+     *
+     *  `svcOverride` is for the guard spec (test/app-link-launch.spec.js):
+     *  a fake service records what it was handed instead of opening an app.
+     *
+     *  RETIRE WHEN strict_min_version >= 10.0.3: every supported build then
+     *  carries the principal itself and this becomes a dead branch. */
+    _wvLaunchNonHttpWithPrincipal(url, svcOverride?) {
+        try {
+            if (!url || typeof url !== "string") return false;
+            const m = /^([a-z][a-z0-9+.-]+):/i.exec(url);
+            if (!m) return false;
+            const scheme = m[1].toLowerCase();
+            if (["http", "https", "javascript", "data", "chrome", "resource", "zotero"]
+                .includes(scheme)) return false;
+            const svc = svcOverride
+                || (this as any)._wvLaunchSvcOverride
+                || Components.classes["@mozilla.org/uriloader/external-protocol-service;1"]
+                    .getService(Components.interfaces.nsIExternalProtocolService);
+            const found: any = {};
+            svc.getProtocolHandlerInfoFromOS(scheme, found);
+            if (!found.value) return false;
+            svc.loadURI(
+                Services.io.newURI(url, null, null),
+                Services.scriptSecurityManager.getSystemPrincipal(),
+            );
+            return true;
+        } catch (e) {
+            Zotero.debug("[Weavero] _wvLaunchNonHttpWithPrincipal err: " + e);
+            return false;
+        }
     },
 
     /** Sync the per-scheme `network.protocol-handler.warn-external.<x>`

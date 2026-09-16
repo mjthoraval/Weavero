@@ -1006,6 +1006,9 @@ class _FilterMixin {
             const iv: any = win && win.ZoteroPane
                 && win.ZoteroPane.itemsView;
             const rp: any = iv && iv.rowProvider;
+            // Runs on every setup / apply / collection swap; the method's own
+            // hooks cover reorders, toggles and column rebuilds in between.
+            this._wvPatchFirstColumnMinWidth(iv);
             // Zotero 10.0-beta.21 removed `ItemTree#collectionTreeRow` in
             // favour of `collectionTreeRows[]` + `viewMode` (upstream
             // 1d97f6448, "Replace ItemTree#collectionTreeRow with a validated
@@ -1129,6 +1132,127 @@ class _FilterMixin {
             };
             ctr._wvGetItemsRevealPatched = true;
         } catch (e) { dbg("[Weavero] _patchOneCtrGetItems err: " + e); }
+    }
+
+    /** Keep the FIRST visible column's MODEL minimum in step with the 66-px
+     *  CSS floor (constants.ts, where the number is derived). The twisty
+     *  slot and the item-type icon belong to whichever column has the
+     *  lowest ordinal (`itemTree._renderCell`, `isFirstColumn`), not to the
+     *  Title: with Creator moved first it is Creator that shrinks to its
+     *  icon (MJT, 2026-09-16). Zotero's resizer clamps a drag at
+     *  `column.minWidth + COLUMN_PADDING` (16) and never looks at CSS; with
+     *  a floor alone a drag past it kept assigning the column less while
+     *  the cell held, the row went over-constrained and every other column
+     *  got squeezed (real-drag trace, 2026-09-16). 50 + 16 = 66: the clamp
+     *  and the floor agree, and the pair trades width with a constant sum
+     *  all the way down.
+     *
+     *  Zotero's columns define no minWidth of their own (the resizer falls
+     *  back to COLUMN_MIN_WIDTH 20), so "original" is usually the absent
+     *  property: a flag records the patch and restore deletes the key
+     *  rather than writing `undefined` into a model Zotero reads with `||`.
+     *
+     *  Which column is first changes under three hooks, each re-running
+     *  this method: `Columns#_updateVirtualizedTable` (the tail of
+     *  setOrder / restoreDefaultOrder / toggleHidden: a header drag, the
+     *  "Move column" menu, hiding the first column), `ItemTree#_resetColumns`
+     *  (the column objects are REBUILT on every `itemtree/refresh`
+     *  notification, i.e. any plugin registering or removing a column) and
+     *  `_patchRefreshForReveals` (setup / apply / collection swap). A column
+     *  that stops being first is released at once. Both wraps are stamped
+     *  own properties over prototype methods; teardown deletes them.
+     *  Idempotent. */
+    _wvPatchFirstColumnMinWidth(iv: any) {
+        try {
+            const tree = iv && iv.tree;
+            const colsObj = tree && tree._columns;
+            const cols: any[] = colsObj
+                && (typeof colsObj.getAsArray === "function"
+                    ? colsObj.getAsArray() : colsObj._columns);
+            if (!cols) return;
+            let first: any = null;
+            for (const c of cols) {
+                if (c && !c.hidden && (!first || c.ordinal < first.ordinal)) first = c;
+            }
+            for (const c of cols) {
+                if (c && c._wvMinWidthPatched && c !== first) this._wvRestoreColumnMinWidth(c);
+            }
+            if (first && !first._wvMinWidthPatched) {
+                first._wvHadMinWidth = Object.prototype.hasOwnProperty.call(first, "minWidth");
+                first._wvOrigMinWidth = first.minWidth;
+                first._wvMinWidthPatched = true;
+                first.minWidth = 50;
+            }
+            const tag = this._wvWireTag();
+            const reapply = (view: any) => {
+                try {
+                    const lp = Zotero.Weavero && Zotero.Weavero.plugin;
+                    if (lp && typeof lp._wvPatchFirstColumnMinWidth === "function") {
+                        lp._wvPatchFirstColumnMinWidth(view);
+                    }
+                } catch (e) {}
+            };
+            // Order / visibility changes. A rebuilt Columns instance carries
+            // no wrap and is re-wrapped on the next pass.
+            if (colsObj && typeof colsObj._updateVirtualizedTable === "function"
+                && colsObj._wvUpdateWrapVer !== tag) {
+                const cproto = Object.getPrototypeOf(colsObj);
+                const origUpd = colsObj._wvOrigUpdateVT
+                    || ((cproto && typeof cproto._updateVirtualizedTable === "function")
+                        ? cproto._updateVirtualizedTable : colsObj._updateVirtualizedTable);
+                colsObj._wvOrigUpdateVT = origUpd;
+                colsObj._wvUpdateWrapVer = tag;
+                colsObj._updateVirtualizedTable = function (...args: any[]) {
+                    const r = origUpd.apply(this, args);
+                    reapply(iv);
+                    return r;
+                };
+            }
+            // Column rebuild.
+            if (typeof iv._resetColumns === "function" && iv._wvResetColumnsWrapVer !== tag) {
+                const proto = Object.getPrototypeOf(iv);
+                const orig = iv._wvOrigResetColumns
+                    || ((proto && typeof proto._resetColumns === "function")
+                        ? proto._resetColumns : iv._resetColumns);
+                iv._wvOrigResetColumns = orig;
+                iv._wvResetColumnsWrapVer = tag;
+                iv._resetColumns = async function (...args: any[]) {
+                    const r = await orig.apply(this, args);
+                    reapply(this);
+                    return r;
+                };
+            }
+        } catch (e) {}
+    }
+
+    _wvRestoreColumnMinWidth(c: any) {
+        if (!c || !c._wvMinWidthPatched) return;
+        if (c._wvHadMinWidth) c.minWidth = c._wvOrigMinWidth;
+        else delete c.minWidth;
+        delete c._wvOrigMinWidth;
+        delete c._wvHadMinWidth;
+        delete c._wvMinWidthPatched;
+    }
+
+    _wvUnpatchFirstColumnMinWidth(iv: any) {
+        try {
+            if (iv && iv._wvResetColumnsWrapVer) {
+                delete iv._resetColumns;
+                delete iv._wvOrigResetColumns;
+                delete iv._wvResetColumnsWrapVer;
+            }
+            const tree = iv && iv.tree;
+            const colsObj = tree && tree._columns;
+            if (colsObj && colsObj._wvUpdateWrapVer) {
+                delete colsObj._updateVirtualizedTable;
+                delete colsObj._wvOrigUpdateVT;
+                delete colsObj._wvUpdateWrapVer;
+            }
+            const cols: any[] = colsObj
+                && (typeof colsObj.getAsArray === "function"
+                    ? colsObj.getAsArray() : colsObj._columns);
+            if (cols) for (const c of cols) this._wvRestoreColumnMinWidth(c);
+        } catch (e) {}
     }
 
     /** Wrap the row provider's `notify` so the filter is recomputed AFTER
@@ -5902,6 +6026,8 @@ class _FilterMixin {
                 delete itemsView._wvOrigSelectItems;
                 delete itemsView._wvSelectItemsWrapVer;
             }
+            // The first column's model minimum (paired with the CSS floor).
+            try { this._wvUnpatchFirstColumnMinWidth(itemsView); } catch (e) {}
             const rp = itemsView && itemsView.rowProvider;
             if (rp && rp._wvOrigGetRow) {
                 // Delete the own-property monkey-patches so the

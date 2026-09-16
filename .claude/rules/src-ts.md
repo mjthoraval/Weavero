@@ -128,6 +128,18 @@ name to a Zotero object, window, or document.
 - Chrome XML docs sanitize innerHTML SVG — build via `createElementNS`.
   Icons: viewBox must equal rendered size (1-px strokes blur otherwise);
   copy Zotero artwork verbatim where possible.
+- A CSS `min-width` on an items-tree column is never alone: pair it with
+  the column MODEL's `minWidth` (CSS = model + COLUMN_PADDING 16). Zotero's
+  resizer clamps a drag at the model value and never reads CSS; a floor
+  without its twin let a drag squeeze every other column (dev.13,
+  2026-09-16). The twisty + icon prefix belongs to the FIRST column (lowest
+  ordinal), not to the Title, so target it positionally (`:first-child`
+  header, `.first-column` rows) and re-evaluate on
+  `Columns#_updateVirtualizedTable` (reorder / toggle) and
+  `ItemTree#_resetColumns` (the objects are rebuilt on every
+  `itemtree/refresh` notification); restore by deleting the key when the
+  column had none (Zotero's columns have none). Guard:
+  `test/items-header-contain.spec.js`.
 
 ## fix: commits name their guard
 

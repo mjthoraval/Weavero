@@ -336,6 +336,29 @@
 	else OK.push("tab-sessions store digest identical");
 	if ((before.activeSession || null) !== (after.activeSession || null)) FAIL.push("active session " + before.activeSession + " -> " + after.activeSession);
 	if (before.savedWindows != null && before.savedWindows !== after.savedWindows) FAIL.push("saved (parked) windows " + before.savedWindows + " -> " + after.savedWindows);
+	else if (before.savedWindowsDigest && J(before.savedWindowsDigest) !== J(after.savedWindowsDigest)) FAIL.push("saved (parked) windows digest " + J(before.savedWindowsDigest) + " -> " + J(after.savedWindowsDigest));
+	// Standalone note windows: Weavero owns window restore, so a note window
+	// open at quit must be back.
+	{
+		const nw = multiDiff(before.noteWindows || [], after.noteWindows || []);
+		if (nw.missing.length) FAIL.push("standalone note window(s) missing after restart: " + nw.missing.join(", "));
+		if (nw.added.length) WARN.push("standalone note window(s) added after restart: " + nw.added.join(", "));
+		if ((before.noteWindows || []).length && !nw.missing.length) OK.push("standalone note window(s) restored: " + (before.noteWindows || []).join(", "));
+	}
+	// Per-item reader state (page, split view) as persisted by Zotero: a
+	// restart must not move a reading position or drop a split.
+	{
+		const bs = before.readerStates || {}, as = after.readerStates || {};
+		let checked = 0;
+		for (const k of Object.keys(bs)) {
+			const b = bs[k], a = as[k];
+			if (!a) { WARN.push("reader state file gone after restart for " + k); continue; }
+			checked++;
+			if (b.pageIndex != null && a.pageIndex != null && b.pageIndex !== a.pageIndex) FAIL.push("reading position of " + k + ": page " + b.pageIndex + " -> " + a.pageIndex);
+			if ((b.splitType || null) !== (a.splitType || null)) FAIL.push("split view of " + k + ": " + b.splitType + " -> " + a.splitType);
+		}
+		if (checked) OK.push("reader state (page, split) kept for " + checked + " item(s)");
+	}
 	// Focus under automation is not evidence either way (a bridge eval, the
 	// IDE in front, an occluded window): report it, judge it by eye
 	// (docs/gesture-testing.md, focus rules).
@@ -422,6 +445,18 @@
 		}
 		push("EPUB tabs", [...mainTabs, ...readerTabs].filter(t => t.ct === "application/epub+zip").length);
 		push("snapshot (HTML) tabs", [...mainTabs, ...readerTabs].filter(t => t.ct === "text/html").length);
+		push("reader windows whose own document is an EPUB", s.readers.filter(r => r.tabs.some(t => t.native && t.ct === "application/epub+zip")).length);
+		push("reader windows whose own document is a snapshot", s.readers.filter(r => r.tabs.some(t => t.native && t.ct === "text/html")).length);
+		push("pinned tabs in a managed main window", s.mains.filter(m => m.managed).reduce((a, m) => a + m.tabs.filter(t => t.pinned).length, 0));
+		// Under Weavero a note opened "in its own window" becomes a single-note
+		// reader deck (a reader window whose only tab is the note), so count
+		// those; native zotero:note windows are listed too if any exist.
+		push("standalone note windows (note decks + native note windows)", s.readers.filter(r => r.tabs.length && r.tabs.every(t => t.type === "note" || t.ct === "note")).length + (s.noteWindows || []).length);
+		push("items with a persisted reading position past page 1", Object.values(s.readerStates || {}).filter(x => x.pageIndex > 0).length);
+		// Zotero's per-item state file carries page/scale/scroll only; a split
+		// view is not persisted by Zotero for tabs, so it cannot survive a
+		// restart under anyone -- listed, never essential.
+		push("items with a split view (Zotero does not persist it)", Object.values(s.readerStates || {}).filter(x => x.splitType).length, false);
 		push("reader sidebar open at a custom width", s.readers.filter(r => r.sb && r.sb.open && r.sb.width !== 240).length);
 		push("windows moved (x > 0)", [...s.mains, ...s.readers].filter(w => w.geom && w.geom.x != null && w.geom.x > 0).length);
 		push("maximized windows", [...s.mains, ...s.readers].filter(w => w.geom && w.geom.st === 1).length);

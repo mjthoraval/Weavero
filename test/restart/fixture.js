@@ -86,11 +86,11 @@
 		return out;
 	}
 	const P = await pickAttachments("application/pdf", 21);
-	const E = await pickAttachments("application/epub+zip", 1);
-	const S = await pickAttachments("text/html", 2);
-	const N = await pickNotes(4);
+	const E = await pickAttachments("application/epub+zip", 2);
+	const S = await pickAttachments("text/html", 3);
+	const N = await pickNotes(5);
 	if (P.length < 21) throw new Error("need 21 PDF attachments with files not already open, found " + P.length);
-	if (N.length < 4) throw new Error("need 4 notes, found " + N.length);
+	if (N.length < 5) throw new Error("need 5 notes, found " + N.length);
 	const D = P.slice(16);   // five PDFs reserved for the duplicates matrix
 	say("items: " + P.length + " PDFs, " + E.length + " EPUB, " + S.length + " snapshots, " + N.length + " notes");
 
@@ -276,6 +276,38 @@
 	await sleep(700);
 	try { lp._applyTabGroups(W1); lp._applyTabGroups(W2); lp._wvWTRenderStrip(R1); lp._wvWTRenderStrip(R2); lp._wvWTPersistSaveDebounced(); } catch (e) {}
 	say("duplicates matrix: W1 " + Z1._tabs.length + " tabs, W2 " + Z2._tabs.length + " tabs, R1 " + R1._wvWT.tabs.length + ", R2 " + R2._wvWT.tabs.length);
+
+	// ------------------------------------------ the remaining window kinds
+	// R5: an EPUB as a reader window's OWN document; R6: a snapshot as one.
+	const R5 = await openReaderWindow(E[1] || E[0]);
+	try { R5.moveTo(700, 80); R5.resizeTo(760, 640); } catch (e) {}
+	const R6 = await openReaderWindow(S[2] || S[0]);
+	try { R6.moveTo(760, 380); R6.resizeTo(760, 560); } catch (e) {}
+	// A pinned tab in the MANAGED window (pins are per item, designated per window).
+	try { const t7 = tabOf(Z2, P[6]); if (t7) lp._pinTabByCommand(W2, Zotero.Items.get(P[6])); } catch (e) { say("pin in W2 failed: " + e); }
+	// A saved-and-closed (parked) window: a two-tab reader window filed away.
+	try {
+		const R7 = await openReaderWindow(P[15]);
+		await lp._wvWTMountTab(R7, S[0], { select: false, await: true, allowDuplicate: true });
+		await sleep(400);
+		await lp._wvSaveAndCloseWindow(R7, true);
+		await sleep(600);
+		say("saved-and-closed a 2-tab reader window");
+	} catch (e) { say("save-and-close failed: " + e); }
+	// A standalone NOTE WINDOW (not a tab).
+	try { await W1.ZoteroPane.openNote(N[4], { openInWindow: true }); await sleep(900); say("note window opened"); } catch (e) { say("note window failed: " + e); }
+	// Reading position and split view: navigate two loaded PDFs and split one,
+	// so the per-item reader state (Zotero's .zotero-reader-state) is non-default.
+	try {
+		const nat = R1._wvWT.tabs.find(t => t.native);
+		if (nat && nat.reader) nat.reader.navigate({ pageIndex: 3 });
+		const rw1 = (Zotero.Reader._readers || []).find(r => r.itemID === P[0] && r._internalReader);
+		if (rw1) rw1.navigate({ pageIndex: 2 });
+		const rw2 = (Zotero.Reader._readers || []).find(r => r.itemID === P[2] && r._internalReader);
+		if (rw2 && rw2._internalReader && !rw2._internalReader.splitType) rw2._internalReader.toggleVerticalSplit();
+		await sleep(2500);   // let the reader persist its state
+		say("reading positions set (R1 native p4, P1 p3), vertical split on P3");
+	} catch (e) { say("reading position / split failed: " + e); }
 
 	// ----------------------------------------------------------- session
 	const sess = await lp._wvTabSessionSaveAs(O.prefix + " session");

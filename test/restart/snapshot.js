@@ -116,12 +116,55 @@ while (en.hasMoreElements()) {
 // Named tab-sessions: which one is ACTIVE (tracked) — a lossy restore used to
 // propagate into it (b3b9faf).
 try { snap.activeSession = lp._wvTabSessionGetActiveId ? lp._wvTabSessionGetActiveId() : null; } catch (e) {}
-// Saved (parked) windows store — count only, as a digest.
+// Saved (parked) windows store — count plus a per-window digest.
 try {
 	const p = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "saved-windows.json");
-	if (await IOUtils.exists(p)) { const d = JSON.parse(await IOUtils.readUTF8(p)); snap.savedWindows = Array.isArray(d) ? d.length : ((d.windows || d.saved || []).length); }
-	else snap.savedWindows = 0;
+	if (await IOUtils.exists(p)) {
+		const d = JSON.parse(await IOUtils.readUTF8(p));
+		const arr = Array.isArray(d) ? d : (d.windows || d.saved || []);
+		snap.savedWindows = arr.length;
+		snap.savedWindowsDigest = arr.map(w => (w.kind || "?") + ":" + (w.name || "") + ":" + (w.count != null ? w.count : (w.tabs || []).length)).sort();
+	}
+	else { snap.savedWindows = 0; snap.savedWindowsDigest = []; }
 } catch (e) { snap.savedWindows = null; }
+// Standalone NOTE windows (windowtype zotero:note): their items.
+snap.noteWindows = [];
+try {
+	const en2 = Services.wm.getEnumerator("zotero:note");
+	while (en2.hasMoreElements()) {
+		const w = en2.getNext();
+		let id = null;
+		try { id = w.arguments && w.arguments[0] && (w.arguments[0].itemID || w.arguments[0].id); } catch (e) {}
+		if (id == null) { try { const ne = w.document.querySelector("note-editor"); id = ne && (ne.item || ne._item) && (ne.item || ne._item).id; } catch (e) {} }
+		snap.noteWindows.push(id != null ? ikey(id) : "?");
+	}
+	snap.noteWindows.sort();
+} catch (e) {}
+// Per-item READER STATE as Zotero persists it (.zotero-reader-state in the
+// attachment's storage folder): page, split view. Weavero restores tabs
+// lazily, so the file is what a restored tab will show when opened.
+snap.readerStates = {};
+try {
+	const seen = new Set();
+	const ids = [];
+	for (const w of Zotero.getMainWindows()) for (const t of w.Zotero_Tabs._tabs) if (t.data && t.data.itemID) ids.push(t.data.itemID);
+	const en3 = Services.wm.getEnumerator("zotero:reader");
+	while (en3.hasMoreElements()) { const w = en3.getNext(); for (const t of ((w._wvWT && w._wvWT.tabs) || [])) if (t.itemID) ids.push(t.itemID); }
+	for (const id of ids) {
+		const k = ikey(id);
+		if (!k || seen.has(k)) continue;
+		seen.add(k);
+		try {
+			const it = Zotero.Items.get(id);
+			if (!it || !it.isAttachment || !it.isAttachment()) continue;
+			const dir = Zotero.Attachments.getStorageDirectory(it).path;
+			const f = PathUtils.join(dir, ".zotero-reader-state");
+			if (!(await IOUtils.exists(f))) continue;
+			const st = JSON.parse(await IOUtils.readUTF8(f));
+			snap.readerStates[k] = { pageIndex: st.pageIndex != null ? st.pageIndex : null, splitType: st.splitType || null, scale: st.scale != null ? st.scale : null };
+		} catch (e) {}
+	}
+} catch (e) {}
 snap.groups = lp._tabGroupsGet().map(g => ({
 	id: g.id, name: g.name, color: g.color,
 	saved: !!g.saved, collapsed: !!g.collapsed,

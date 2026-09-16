@@ -78,7 +78,10 @@ checked, or the dev bridge.
    reader windows, a pinned copy beside a plain one, a note twice and in a
    reader window, a parked group's member reopened, the selected tab being a
    copy, EPUB and snapshot copies). Duplicates were behind a run of fixes in
-   June-July 2026 and again on 2026-09-16.
+   June-July 2026 and again on 2026-09-16. It also opens an EPUB and a
+   snapshot as reader windows' own documents, pins a tab in the managed
+   window, files a two-tab reader window away with Save and Close, opens a
+   note in its own window, moves two reading positions and splits one view.
    `Zotero._wvFixtureOpts = { reset: true }` closes everything first. The
    report's **COVERAGE** section lists what the before-workspace contained and
    flags any essential element at zero, so a green run on a thin workspace
@@ -188,6 +191,14 @@ rows a given run actually exercised.
 | Startup error emptied Zotero's session (forums 133542, upstream) | any main window | "Empty Zotero session" leg: tabs rebuilt from Weavero's store |
 | Crash loses the last seconds (debounced stores) | any | `noQuit` leg |
 | Curated outlines of EPUB / snapshot tabs (2026-09-03 leg) | EPUB and snapshot tabs in W1 and R1 | tab presence here; the outline checks stay in that leg |
+| Reader windows whose own document is an EPUB or a snapshot (never in the July fixture) | R5 (EPUB), R6 (snapshot) | reader windows missing; native content type in coverage |
+| Pinned tab in a managed main window | W2 pins one of its tabs | pinned multiset per window; mirror count |
+| Saved-and-closed (parked) window store (2d8cda0) | a two-tab reader window filed away with Save and Close | saved-windows digest (kind, name, count) |
+| Standalone note window (opened in its own window, not a tab) | N5 opened in a note window | note windows by item, fails when missing |
+| Reading position of a tab (Zotero's per-item reader state; a split view is not persisted by Zotero for tabs) | R1's document at page 4, P1 at page 3 | page index per item from `.zotero-reader-state` |
+| Companion plugins present (Better BibTeX, Better Notes) | both installed on the dev profile | companion plugin active after restart |
+| Better Notes closes one of two copies of a note open twice at startup and Weavero's anchor repair judged tabs per ITEM, so the copy stayed lost (found with the companions installed 2026-09-16; fixed in 0.19.9: repair per copy) | N1 open twice in W1, Better Notes active | tab multiset per window |
+| Note deck restore took another item's window for its throwaway anchor while several reader windows opened at once: the note was mounted there, that window's own document closed, the real anchor window left as a stray (found 2026-09-16; fixed in 0.19.9: the anchor window is resolved by item) | note deck + four reader windows restored concurrently | reader windows missing; extra window fails |
 
 ## How the restore works (as of 0.15.3)
 

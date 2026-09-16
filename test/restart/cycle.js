@@ -155,7 +155,9 @@
 	// ------------------------------------------------------------------ DIFF
 	const FAIL = [], WARN = [], OK = [];
 	const J = (x) => JSON.stringify(x);
-	const tabKey = (t) => t.type + ":" + (t.key || "?");
+	// `reader-unloaded` / `note-loading` are the same tab as `reader` / `note`:
+	// lazy restore is expected, a transient load state is not a difference.
+	const tabKey = (t) => String(t.type || "").replace(/-(unloaded|loading)$/, "") + ":" + (t.key || "?");
 	const sameGeom = (a, b) => a && b && ["x", "y", "w", "h", "st"].every(k => a[k] === b[k]);
 
 	// main windows: by name, then by position

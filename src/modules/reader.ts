@@ -8311,8 +8311,26 @@ class _ReaderMixin {
                     // then maximize instead of resizing.
                     const finish = () => {
                         try {
-                            if (geom.st === 1) { w.maximize && w.maximize(); return; }
-                            if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+                            if (geom.st === 1) { w.maximize && w.maximize(); }
+                            else if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
+                        } catch (e) {}
+                        // Re-assert once: Zotero sizes a freshly opened window
+                        // from its persisted XUL geometry (the LAST closed window
+                        // of that kind), and that can land after our first
+                        // resize -- a reader window restored during a quick
+                        // second restart came back at the other window's
+                        // 1000x700 (2026-09-16, two-quick-restarts leg).
+                        try {
+                            w.setTimeout(() => {
+                                try {
+                                    if (w.closed) return;
+                                    if (geom.st === 1) { if (w.windowState !== 1 && w.maximize) w.maximize(); return; }
+                                    if (geom.w > 200 && geom.h > 150
+                                            && (Math.abs(w.outerWidth - geom.w) > 8 || Math.abs(w.outerHeight - geom.h) > 8)) {
+                                        w.resizeTo(geom.w, geom.h);
+                                    }
+                                } catch (e) {}
+                            }, 900);
                         } catch (e) {}
                     };
                     if (Math.abs(dx) < 8 && Math.abs(dy) < 8) { finish(); return; }
@@ -8490,6 +8508,9 @@ class _ReaderMixin {
             if (this._wvWTRestoreMap && Object.keys(this._wvWTRestoreMap).length === 0) {
                 this._wvWTRestoreActive = false;
                 try { (this as any)._wvTrace && (this as any)._wvTrace("restore: all reader entries consumed"); } catch (e) {}
+                // Session tracking held its captures while the reader restore
+                // was in flight (sessions.ts) -- take the settled workspace now.
+                try { (this as any)._wvTabSessionTrackingUpdate && (this as any)._wvTabSessionTrackingUpdate(); } catch (e) {}
             }
         } catch (e) {}
     }

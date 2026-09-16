@@ -676,14 +676,26 @@ class _TabGroupsMixin {
                     if (Date.now() - ((this as any)._wvBootStampMapAt || 0) > 120000) {
                         (this as any)._wvBootStampMap = null;
                     } else {
+                        // Count-aware (2026-09-16): stamp unstamped copies of an
+                        // item only until as many copies carry the group as did
+                        // at quit (`n`). A deliberate ungrouped duplicate of a
+                        // member stays out; a replaced tab object still gets its
+                        // stamp back because the replacement lowers the count.
+                        const stampedNow = new Map<any, number>();
+                        for (const t of Z_Tabs._tabs) {
+                            const iid = t && t.data && t.data.itemID;
+                            const rec = iid != null ? bm.get(iid) : null;
+                            if (rec && this._wvTabGroupStamp(t) === rec.grp) stampedNow.set(iid, (stampedNow.get(iid) || 0) + 1);
+                        }
                         for (let i = 1; i < Z_Tabs._tabs.length; i++) {
                             const t = Z_Tabs._tabs[i];
                             const iid = t && t.data && t.data.itemID;
-                            if (iid == null || !bm.has(iid)) continue;
-                            if (!this._wvTabGroupStamp(t)) {
-                                this._wvTabGroupSetStamp(t, bm.get(iid));
-                                this._wvTGDbg("boot-stamp: " + t.id + " -> " + String(bm.get(iid)).slice(-6) + " on arrival");
-                            }
+                            const rec = iid != null ? bm.get(iid) : null;
+                            if (!rec || this._wvTabGroupStamp(t)) continue;
+                            if ((stampedNow.get(iid) || 0) >= rec.n) continue;   // enough copies grouped: this one is a duplicate on purpose
+                            this._wvTabGroupSetStamp(t, rec.grp);
+                            stampedNow.set(iid, (stampedNow.get(iid) || 0) + 1);
+                            this._wvTGDbg("boot-stamp: " + t.id + " -> " + String(rec.grp).slice(-6) + " on arrival");
                             // Entry deliberately KEPT: native restore can replace
                             // this tab object again during the restore window.
                         }
@@ -932,10 +944,18 @@ class _TabGroupsMixin {
                 // restored isn't dropped before the claim pass re-stamps it).
                 if (!reopening && !(this as any)._wvTabGroupRestoreGuard && !tearingDown
                         && this._wvTabGroupHomeWin(g.id) === win) {
+                    // One entry per ITEM: two stamped tabs of the same item (a
+                    // duplicate grouped twice) are one member, not two (the
+                    // 2026-09-16 protocol run saw a key listed twice).
                     const openKeys: any[] = [];
+                    const seenKeys = new Set<string>();
                     for (const om of openMembers) {
                         const k = (this as any)._tabPinKey(om.tab);
-                        if (k) openKeys.push({ libraryID: k.libraryID, itemKey: k.itemKey });
+                        if (!k) continue;
+                        const dk = k.libraryID + ":" + k.itemKey;
+                        if (seenKeys.has(dk)) continue;
+                        seenKeys.add(dk);
+                        openKeys.push({ libraryID: k.libraryID, itemKey: k.itemKey });
                     }
                     const cur = g.members || [];
                     // Churn grace: a member whose stamped tab JUST closed stays

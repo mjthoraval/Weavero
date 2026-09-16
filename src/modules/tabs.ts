@@ -9113,6 +9113,14 @@ class _TabsMixin {
             const win: any = (Zotero.getMainWindows() || []).find((w: any) => !w._wvManagedWindow);
             if (!win || !win.Zotero_Tabs) return;
             const Z = win.Zotero_Tabs;
+            // The anchor's GEOMETRY is Weavero's to restore too (2026-09-16,
+            // restart protocol `loadingAtQuit` leg): Zotero sizes every main
+            // window from ONE persisted XUL geometry, written by whichever main
+            // window closed LAST at quit -- with a managed window open, the
+            // anchor came back at the managed window's 1100x750 instead of
+            // maximized. Same helper as reader windows (moves in device
+            // pixels, then maximizes when the saved state says so).
+            try { if (entry.geom) (this as any)._wvApplyWindowGeom(win, entry.geom); } catch (e) {}
             const f = (this as any)._wvBootFocusedEntry;
             const anchorFocused = !f || f.kind === "anchor";   // default to anchor
             const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
@@ -9125,9 +9133,22 @@ class _TabsMixin {
             // consumes this map on every tab-arrival mutation, so each member is
             // stamped the moment its tab exists -- no tab ever sits outside its
             // group. Anchor-window only; expires after 2 minutes.
+            // Value = { grp, n }: n is how many COPIES of the item were stamped
+            // at quit. The consumer re-stamps unstamped copies only up to n, so
+            // a deliberate ungrouped duplicate of a member (the same item open
+            // twice, one copy in the group) is not pulled into the group on
+            // arrival -- the first full restart-protocol run did exactly that
+            // (2026-09-16: the duplicate joined RTF-A and the members list
+            // gained a second key); the 2026-07-02 claim-pass fix covered the
+            // cross-window copy, this map hit the same-window one.
             const bootMap: Map<any, any> = new Map();
             for (const st0 of entry.tabs) {
-                try { if (st0 && st0.data && st0.data.itemID != null && st0.data.wvGroupId) bootMap.set(st0.data.itemID, st0.data.wvGroupId); } catch (e) {}
+                try {
+                    if (!(st0 && st0.data && st0.data.itemID != null && st0.data.wvGroupId)) continue;
+                    const cur = bootMap.get(st0.data.itemID);
+                    if (cur && cur.grp === st0.data.wvGroupId) cur.n++;
+                    else if (!cur) bootMap.set(st0.data.itemID, { grp: st0.data.wvGroupId, n: 1 });
+                } catch (e) {}
             }
             for (let i = 0; i < entry.tabs.length; i++) {
                 const st = entry.tabs[i];
@@ -9144,8 +9165,19 @@ class _TabsMixin {
                     try {
                         const gid = st.data.wvGroupId;
                         if (gid) {
-                            const lt = Z._tabs.find((x: any) => x.data && x.data.itemID === iid
-                                && !(this as any)._wvTabGroupStamp(x));
+                            // Count-aware (2026-09-16): when Zotero's own restore
+                            // round-trips the stamp, the grouped copy arrives
+                            // stamped and the only UNSTAMPED tab of this item is
+                            // a deliberate ungrouped duplicate -- the old "first
+                            // unstamped copy" search grouped it. Re-stamp only
+                            // while fewer live copies carry the group than the
+                            // store saved for it.
+                            const rec = bootMap.get(iid);
+                            const wanted = rec && rec.grp === gid ? rec.n : 1;
+                            const have = Z._tabs.filter((x: any) => x.data && x.data.itemID === iid
+                                && (this as any)._wvTabGroupStamp(x) === gid).length;
+                            const lt = have < wanted ? Z._tabs.find((x: any) => x.data && x.data.itemID === iid
+                                && !(this as any)._wvTabGroupStamp(x)) : null;
                             if (lt) { (this as any)._wvTabGroupSetStamp(lt, gid); restamped++; }
                             // KEEP the entry: stamping this tab is not the end of
                             // the story -- Zotero's native restore REPLACES these
@@ -10373,6 +10405,41 @@ class _TabsMixin {
                 for (const gid of (rec.parkedGroupIds || [])) unparkIds.push(gid);
                 this._wvTrace && this._wvTrace("quit-flush: merged closed-in-series " + rec.entry.kind);
             }
+            // RESTORE STILL IN FLIGHT (2026-09-16, restart protocol, two quick
+            // restarts): a reader window whose store entry has not been
+            // consumed yet has no strip and no tabs to capture -- its window
+            // may not even exist -- so the live capture drops it and the quit
+            // overwrites the store without it (a 4-tab reader window lost at a
+            // quit 8 s after boot; the active session absorbed the loss). Keep
+            // the BOOT entry of every unconsumed reader / orphan window and of
+            // every managed window still queued to spawn. Same idea as
+            // upstream's 2 Sep fix ("don't clear the saved session if startup
+            // fails"), one level down: don't drop what has not been restored.
+            try {
+                const bootDoc: any = (this as any)._wvBootWindowStoreDoc;
+                const map: any = (this as any)._wvWTRestoreMap || {};
+                const pending = new Set(Object.keys(map).map(k => Number(k)));
+                const headOf = (en: any) => en && (en.kind === "reader" ? en.nativeItemID
+                    : (en.kind === "reader-orphan" && en.tabs && en.tabs[0] ? en.tabs[0].itemID : null));
+                const liveHeads = new Set(live.map(headOf).filter((x: any) => x != null));
+                if ((this as any)._wvWTRestoreActive && pending.size && bootDoc && Array.isArray(bootDoc.windows)) {
+                    for (const en of bootDoc.windows) {
+                        const head = headOf(en);
+                        if (head == null || !pending.has(head) || liveHeads.has(head)) continue;
+                        live.push(en);
+                        liveHeads.add(head);
+                        this._wvTrace && this._wvTrace("quit-flush: kept unrestored " + en.kind + " entry for item " + head);
+                    }
+                }
+                for (const q of ((this as any)._wvDevSpawnQueue || [])) {
+                    if (!q || q.kind !== "main-dev" || !Array.isArray(q.tabs) || q.tabs.length < 2) continue;
+                    const qIds = new Set(ids(q));
+                    const represented = live.some((en: any) => en.kind === "main-dev" && ids(en).some((i: any) => qIds.has(i)));
+                    if (represented) continue;
+                    live.push(q);
+                    this._wvTrace && this._wvTrace("quit-flush: kept queued managed window (" + q.tabs.length + " tabs)");
+                }
+            } catch (e) {}
             if (unparkIds.length) {
                 // The park was a misclassified quit-teardown close — the window is
                 // in the store and restores next launch, so its groups stay LIVE.

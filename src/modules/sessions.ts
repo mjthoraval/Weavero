@@ -485,6 +485,12 @@ class _TabSessionsMixin {
             // churn after that re-triggers tracking normally.
             if ((this as any)._wvTabGroupRestoreGuard) return;
             if ((this as any)._wvQuitting) return;
+            // The group guard lifts after ~3 s, but reader windows can still be
+            // reopening (their entries unconsumed) well past that; a tracking
+            // capture in between shrank the active session by the window that
+            // had not arrived yet (2026-09-16, two-quick-restarts leg). The
+            // reader restore re-arms tracking when it completes.
+            if ((this as any)._wvWTRestoreActive) return;
             if (this._wvTabSessionTrackTimer) {
                 try { clearTimeout(this._wvTabSessionTrackTimer); } catch (e) {}
             }

@@ -28,10 +28,12 @@ paths:
   the comparison from what the run itself measures.
 - Instrumentation masks races: verify timing-family fixes with plain loops
   only.
-- Restart/session testing: `test/restart/snapshot.js` (canonical)
-  before AND after, diff per-tab keys; in the sessions UI expand via the
-  twisty ONLY — clicking the row switches sessions (destructive). Full
-  protocol: `docs/restart-testing.md`.
+- Restart/session testing: `test/restart/cycle.js` (canonical) — run it
+  once (backup + before snapshot + restart) and once more after the restart
+  (settle + after snapshot + diff + verdict, `restart-test/report.md`);
+  `snapshot.js` is its capture. In the sessions UI expand via the twisty
+  ONLY — clicking the row switches sessions (destructive). Full protocol:
+  `docs/restart-testing.md`.
 - Long live runs (matrix, benches): make the script SELF-REPORTING — it
   writes its full analysis to a file on finish (filter-matrix writes
   `<data dir>/weavero/filter-matrix-report.json`). Launch once, read the

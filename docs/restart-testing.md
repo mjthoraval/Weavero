@@ -56,31 +56,64 @@ scripts.
   cool-down (`outline-spy-cache.spec.js` locks that rule — the 2026-09-03
   run found permanently-poisoned misses leaving the highlight dead).
 
-## Running a cycle
+## Running a cycle — one script, run twice
 
-Requires a way to execute privileged JS in Zotero — Tools → Developer → Run
-JavaScript works; an MCP/RDP dev bridge makes it scriptable.
+`test/restart/cycle.js` does the whole cycle; `snapshot.js` is the capture it
+uses and still runs on its own. It needs a way to execute privileged JS in
+Zotero: **Tools → Developer → Run JavaScript** with *Run as async function*
+checked, or the dev bridge.
 
-1. **Backup** `<profile>/session.json` and `<data dir>/weavero/*.json`.
-2. Build a workspace worth testing (or use `test/restart/fixture-notes.md`
-   for the reference fixture: 2 main windows + 2 reader windows + 3 groups +
-   notes + duplicates + a pinned tab + a collapsed group + a named session).
-3. Enable startup logging: `Zotero.Prefs.set("debug.store", true)`.
-4. Run `test/restart/snapshot.js` (Run JavaScript, async) → save the JSON as
-   `before.json`.
-5. Optionally start `test/restart/probe.sh <port>` to timestamp the process
-   down/up transitions.
-6. Restart: `Zotero.Utilities.Internal.quit(true)`.
-7. After the workspace settles (~15–30 s), run `snapshot.js` again → `after.json`.
-8. Diff the two JSON files. Windows are matched by name/content; tabs by
-   `libraryID:itemKey`; expect only `lazy`/`-unloaded` differences.
-   **Compare the whole `geom` object, `x`/`y` included** — a window can come
-   back the right size, maximized, and on the wrong MONITOR. A diff that
-   checked only `w`/`h`/`st` passed the anchor window landing on the other
-   screen (2026-08-21); it was caught by looking at the screen, not the data.
-9. Read the restore trace: filter the debug log for `[Weavero][trace]`
-   (timings for every restore phase), and `<data dir>/weavero/trace-quit.json`
-   for the quit-side breadcrumbs of the PREVIOUS session.
+1. **Build a workspace worth testing** — your real one, or the reference
+   fixture in `test/restart/fixture-notes.md`. Add one **single-document
+   torn-off reader window** (a window with exactly one tab): those are left to
+   Zotero's own session and are the one case still under suspicion
+   (2026-08-05, lost across two quick restarts).
+2. **Run `cycle.js`.** It backs up `<profile>/session.json` and
+   `<data dir>/weavero/*.json` into `<data dir>/weavero/restart-test/backup-<stamp>/`,
+   writes `before.json`, turns on startup logging (`debug.store`), and
+   restarts Zotero. If the repo is not at the default path, set
+   `Zotero._wvRestartOpts = { root: "<path>\\test\\restart\\" }` first.
+3. **Wait for Zotero to come back**, then **run `cycle.js` again.** It waits
+   for the restore to settle (two identical window/tab digests 3 s apart, up to
+   90 s), writes `after.json`, diffs, and prints the verdict. The same report
+   is in `restart-test/report.md`; one line per cycle is appended to
+   `restart-test/history.log`.
+
+The diff FAILs on: a missing window or tab, a changed tab order, a different
+selected tab, a changed group stamp / pin / group definition, any change to the
+**whole geometry object** (`x`/`y` included — a window that comes back the
+right size on the wrong monitor is a failure; an eye-diff passed exactly that
+on 2026-08-21), a changed tab-sessions digest, a different focused window, a
+loaded note editor without Weavero's link wiring, or a companion plugin
+(Better BibTeX, Better Notes) inactive. It WARNs on: added tabs or windows,
+a changed reader page, sidebar or item-pane state, and error-console entries.
+`lazy` / unloaded tabs are expected after a restart and never flagged.
+
+### Legs
+
+- **Two quick restarts** (the 2026-08-05 case): set
+  `Zotero._wvRestartOpts = { restarts: 2 }` before the first run. The run
+  after the first restart restarts *again* at once, without a snapshot; the
+  run after the second restart produces the report.
+- **Crash restore**: set `Zotero._wvRestartOpts = { noQuit: true }`. The
+  first run writes `before.json` and prints the PID with a
+  `Stop-Process -Id <pid> -Force` line; kill the process that way (no clean
+  quit), start Zotero by hand, run `cycle.js` again. Expected losses are the
+  last ~1 s of Weavero's stores (400 ms debounce) and, for the anchor window,
+  whatever Zotero's own session save had not flushed.
+- **Troubleshooting Mode**: see the section below.
+- **Timing**: `report.md` carries quit → process start and quit → first
+  paint (Gecko's startup info) plus the settle wait. `test/restart/probe.sh
+  <port>` still exists for a port-level down/up timeline if you want one.
+
+### Reading a failure
+
+`before.json` / `after.json` are the evidence. To decide save-side vs
+restore-side, read the backup's `session.json` (what Zotero saved at the
+previous quit) and `<data dir>/weavero/windows.json`. The restore trace is in
+Debug Output filtered on `[Weavero][trace]` (a timing line per restore
+phase); the quit-side breadcrumbs of the previous session are in
+`<data dir>/weavero/trace-quit.json`.
 
 ## How the restore works (as of 0.15.3)
 

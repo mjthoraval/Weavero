@@ -11,7 +11,8 @@ const ikey = (iid) => {
 	try { const it = iid && Zotero.Items.get(iid); return it ? (it.libraryID + ":" + it.key) : null; }
 	catch (e) { return null; }
 };
-const snap = { t: Date.now(), focused: null, mains: [], readers: [], groups: null, sessions: null, plugins: {} };
+const snap = { t: Date.now(), zotero: Zotero.version, weavero: lp._version || null, focused: null, mains: [], readers: [], groups: null, sessions: null, plugins: {}, errors: [] };
+try { snap.errors = (Zotero.getErrors(true) || []).map(e => String(e).slice(0, 200)); } catch (e) {}
 try { snap.focused = lp._wvWindowStoreFocusDescriptor(); } catch (e) {}
 for (const w of Zotero.getMainWindows()) {
 	// Library-view state + item pane, per window.
@@ -93,6 +94,11 @@ snap.noteEditors = [];
 for (const w of Zotero.getMainWindows()) {
 	for (const ne of w.document.querySelectorAll("note-editor")) {
 		try {
+			// Only editors that HOLD a note: a blank editor (a hidden
+			// attachment-note pane with nothing assigned) has a populated
+			// default body but nothing to wire, and read as a false "not
+			// wired" on 2026-09-16.
+			if (!(ne.item || ne._item)) continue;
 			const iframe = ne.querySelector("iframe#editor-view") || ne.querySelector("iframe");
 			const idoc = iframe && iframe.contentDocument;
 			if (!idoc || !idoc.body || !idoc.body.childElementCount) continue;   // not loaded

@@ -197,10 +197,13 @@ meaningless under Xvfb. These run by hand, guided by in-repo scripts:
   (post-re-enable: every surface back **exactly once** — duplicates are
   the classic reinstall bug).
 - **Restart / session reliability** — [docs/restart-testing.md](docs/restart-testing.md)
-  with `test/restart/snapshot.js`: snapshot the full per-tab workspace
-  before quit and after restart, diff the JSON (tabs keyed by
-  `libraryID:itemKey`). In the sessions UI, expand saved sessions via the
-  twisty only — clicking the row *switches* sessions.
+  with `test/restart/cycle.js`, one script run twice: before (backup +
+  snapshot + restart) and after (settle + snapshot + diff + verdict). Tabs
+  are keyed by `libraryID:itemKey`; the diff fails on any lost window, tab,
+  order, selection, group, pin or geometry (`x`/`y` included). Legs: two
+  quick restarts, crash (kill, no clean quit), Troubleshooting Mode. In the
+  sessions UI, expand saved sessions via the twisty only — clicking the row
+  *switches* sessions.
 - **Hand-only gesture matrix** — [docs/gesture-testing.md](docs/gesture-testing.md):
   real drags (tab tear-off, slot-precise drops, group chips, cross-window
   item drag-and-drop), OS focus rules after moves, and — on Windows —

@@ -8314,24 +8314,23 @@ class _ReaderMixin {
                             if (geom.st === 1) { w.maximize && w.maximize(); }
                             else if (geom.w > 200 && geom.h > 150) w.resizeTo(geom.w, geom.h);
                         } catch (e) {}
-                        // Re-assert once: Zotero sizes a freshly opened window
-                        // from its persisted XUL geometry (the LAST closed window
-                        // of that kind), and that can land after our first
-                        // resize -- a reader window restored during a quick
-                        // second restart came back at the other window's
-                        // 1000x700 (2026-09-16, two-quick-restarts leg).
-                        try {
-                            w.setTimeout(() => {
-                                try {
-                                    if (w.closed) return;
-                                    if (geom.st === 1) { if (w.windowState !== 1 && w.maximize) w.maximize(); return; }
-                                    if (geom.w > 200 && geom.h > 150
-                                            && (Math.abs(w.outerWidth - geom.w) > 8 || Math.abs(w.outerHeight - geom.h) > 8)) {
-                                        w.resizeTo(geom.w, geom.h);
-                                    }
-                                } catch (e) {}
-                            }, 900);
-                        } catch (e) {}
+                        // Re-assert twice (0.9 s and 3 s): Zotero sizes a freshly
+                        // opened window from its persisted XUL geometry (the LAST
+                        // closed window of that kind), and that can land after our
+                        // first resize -- a reader window restored during a quick
+                        // second restart came back at the other window's size even
+                        // with one re-assert (2026-09-16, duplicates matrix).
+                        const reassert = () => {
+                            try {
+                                if (w.closed) return;
+                                if (geom.st === 1) { if (w.windowState !== 1 && w.maximize) w.maximize(); return; }
+                                if (geom.w > 200 && geom.h > 150
+                                        && (Math.abs(w.outerWidth - geom.w) > 8 || Math.abs(w.outerHeight - geom.h) > 8)) {
+                                    w.resizeTo(geom.w, geom.h);
+                                }
+                            } catch (e) {}
+                        };
+                        try { w.setTimeout(reassert, 900); w.setTimeout(reassert, 3000); } catch (e) {}
                     };
                     if (Math.abs(dx) < 8 && Math.abs(dy) < 8) { finish(); return; }
                     w.moveTo(w.screenX + dx / dpr, w.screenY + dy / dpr);
@@ -8559,7 +8558,7 @@ class _ReaderMixin {
                     try {
                         const st0 = win._wvWT;
                         const nat = st0 && st0.tabs && st0.tabs.find((t: any) => t.native);
-                        if (nat) { nat.pinned = !!entry.nativePinned; if (entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; }
+                        if (nat) { nat.pinned = !!entry.nativePinned; if (entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; else { delete nat.wvGroupId; nat._wvGroupExcluded = true; } }
                     } catch (e) {}
                     // Track the tab ids in RESTORE order [native, ...extras] so the
                     // saved activeIndex resolves correctly even after we cluster
@@ -8587,7 +8586,10 @@ class _ReaderMixin {
                                 try {
                                     const st1 = win._wvWT;
                                     const t = st1 && st1.tabs.find((x: any) => x.id === newId);
-                                    if (t) { t.pinned = ex.pinned; if (ex.grp) t.wvGroupId = ex.grp; }
+                                    // A null stored stamp is EXPLICIT: keep the tab out of the
+                                    // item-key claim (an ungrouped copy of an old group's member
+                                    // was claimed into it at restore, 2026-09-16, duplicates matrix).
+                                    if (t) { t.pinned = ex.pinned; if (ex.grp) t.wvGroupId = ex.grp; else { delete t.wvGroupId; t._wvGroupExcluded = true; } }
                                 } catch (e2) {}
                             } else {
                                 restoreOrderIds.push(null);
@@ -8733,7 +8735,13 @@ class _ReaderMixin {
                     });
                     if (inFlight) return;
                     (this as any)._wvTrace && (this as any)._wvTrace("restore: preemptive reader-window reopen for item " + itemID);
-                    await (Zotero as any).Reader.open(itemID, null, { title: meta.title, openInWindow: true, secondViewState: meta.secondViewState });
+                    // allowDuplicate: a WINDOW reopen must never be redirected.
+                    // Without it Zotero's Reader.open selects an existing main-
+                    // window TAB of the same item (even an unloaded one) instead
+                    // of opening the window -- the managed window's selection
+                    // jumped to a copy of the orphan window's document during a
+                    // quick second restart (2026-09-16, duplicates matrix).
+                    await (Zotero as any).Reader.open(itemID, null, { title: meta.title, openInWindow: true, allowDuplicate: true, secondViewState: meta.secondViewState });
                 } catch (e) { Zotero.debug("[Weavero] preemptive reader reopen err (" + itemID + "): " + e); }
             }));
         } catch (e) { Zotero.debug("[Weavero] _wvPreemptReaderWindowReopen err: " + e); }
@@ -8790,7 +8798,7 @@ class _ReaderMixin {
                     const it: any = Zotero.Items.get(itemID);
                     if (it && typeof it.isNote === "function" && it.isNote()) { consume(itemID); continue; } // note-heads persist as orphans
                     try { (this as any)._wvTrace && (this as any)._wvTrace("restore: unclaimed reader entry for item " + itemID + " — reopening window"); } catch (e) {}
-                    await (Zotero as any).Reader.open(itemID, null, { openInWindow: true });
+                    await (Zotero as any).Reader.open(itemID, null, { openInWindow: true, allowDuplicate: true });   // never redirect a window reopen to a main-window tab copy (2026-09-16)
                 } catch (e) { Zotero.debug("[Weavero] unclaimed reader restore err (" + itemID + "): " + e); }
             }
             // Entries consumed by skipping above may have been the last ones.
@@ -8826,7 +8834,7 @@ class _ReaderMixin {
                                 }
                             } catch (e) {}
                             // Stamp the note-head's group (deterministic membership).
-                            try { const nat = win._wvWT && win._wvWT.tabs.find((t: any) => t.native); if (nat && entry && entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; } catch (e) {}
+                            try { const nat = win._wvWT && win._wvWT.tabs.find((t: any) => t.native); if (nat && entry) { if (entry.nativeGrp) nat.wvGroupId = entry.nativeGrp; else { delete nat.wvGroupId; nat._wvGroupExcluded = true; } } } catch (e) {}
                             for (const ex of extras) {
                                 try {
                                     if (ex && ex.itemID != null && Zotero.Items.exists(ex.itemID)) {
@@ -8838,7 +8846,7 @@ class _ReaderMixin {
                                             ? await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: true, select: false, await: true })
                                             : this._wvWTAddLazyReaderTab(win, ex.itemID);
                                         // Restore this extra's group stamp.
-                                        try { if (ex.grp) { const t = win._wvWT && win._wvWT.tabs.find((x: any) => x.id === exId); if (t) t.wvGroupId = ex.grp; } } catch (e2) {}
+                                        try { const t = win._wvWT && win._wvWT.tabs.find((x: any) => x.id === exId); if (t) { if (ex.grp) t.wvGroupId = ex.grp; else { delete t.wvGroupId; t._wvGroupExcluded = true; } } } catch (e2) {}
                                     }
                                 } catch (e) {}
                             }
@@ -9077,7 +9085,7 @@ class _ReaderMixin {
                 for (const ex of extras) {
                     try {
                         const newId = await this._wvWTMountTab(win, ex.itemID, { allowDuplicate: true, select: false, await: true });
-                        try { const st = win._wvWT; const t = st && st.tabs.find((x: any) => x.id === newId); if (t) t.pinned = !!ex.pinned; } catch (e) {}
+                        try { const st = win._wvWT; const t = st && st.tabs.find((x: any) => x.id === newId); if (t) { t.pinned = !!ex.pinned; if (ex.grp) t.wvGroupId = ex.grp; else { delete t.wvGroupId; t._wvGroupExcluded = true; } } } catch (e) {}
                         closeMainTab(ex.itemID);
                     } catch (e) { Zotero.debug("[Weavero] pullback mount err: " + e); }
                 }

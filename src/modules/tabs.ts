@@ -7449,7 +7449,7 @@ class _TabsMixin {
                         const selRec = group.tabs.find((t) => t && t.selected && t.data && t.data.itemID != null);
                         if (!isFocusTarget && selRec) {
                             restoreTabs = group.tabs.map((t) => (t && t.selected) ? { ...t, selected: false } : t);
-                            (this as any)._wvDeferSelect(win, selRec.data.itemID);
+                            (this as any)._wvDeferSelect(win, selRec.data.itemID, group.tabs.indexOf(selRec));
                             (this as any)._wvTrace("restore: deferred selected-tab load in background window "
                                 + ((this as any)._wvWindowName ? (this as any)._wvWindowName(win) : ""));
                         }
@@ -7489,6 +7489,12 @@ class _TabsMixin {
                     } catch (e2) {}
                     try { tabs.restoreState(restoreTabs); }    // re-add this dev window's own tabs
                     catch (e) { Zotero.debug("[Weavero] dev restore err: " + e); }
+                    // Tabs restored WITHOUT a stamp are explicitly ungrouped: keep them out of
+                    // the item-key claim (restoreState adds them asynchronously) (2026-09-16).
+                    try {
+                        const flag = () => { try { for (const t of (tabs._tabs || [])) if (t && t.data && t.data.itemID != null && !t.data.wvGroupId && !(this as any)._wvTabGroupStamp(t)) t._wvGroupExcluded = true; } catch (e) {} };
+                        win.setTimeout(flag, 300); win.setTimeout(flag, 1500);
+                    } catch (e) {}
                     // Session reconstruct carries this window's library-view state
                     // (collection + items-tree columns/sort); the dev "New Window"
                     // path leaves wvMainState unset, so this is a no-op there.
@@ -7793,6 +7799,21 @@ class _TabsMixin {
      *  window's full `Zotero_Tabs.getState()` (same shape Zotero's own pane
      *  session uses), so restore round-trips via `Zotero_Tabs.restoreState`.
      *  Cheap + synchronous → safe to call from the quit observer. */
+    /** A background main window whose saved selection is still DEFERRED (not
+     *  activated since the restore) shows the library tab as selected; a quit
+     *  in that state saved the library and the real selection was lost
+     *  (2026-09-16, two-quick-restarts leg). Write the deferred item as the
+     *  selected tab of a captured state. */
+    _wvApplyDeferredSelectionToState(w: any, tabs: any[]) {
+        try {
+            const dsel = w && w._wvDeferredSelectItemID;
+            if (!tabs || dsel == null) return tabs;
+            const idx = tabs.findIndex((t: any) => t && t.data && t.data.itemID === dsel);
+            if (idx >= 0) tabs.forEach((t: any, i: number) => { if (t) t.selected = (i === idx); });
+        } catch (e) {}
+        return tabs;
+    }
+
     _wvWindowStoreCaptureDevWindows() {
         const groups: any[] = [];
         try {
@@ -7808,6 +7829,7 @@ class _TabsMixin {
                 try {
                     const Z = w.Zotero_Tabs;
                     tabs = Z && (Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
+                    tabs = this._wvApplyDeferredSelectionToState(w, tabs);
                 } catch (e) {}
                 if (!tabs || tabs.length < 2) continue;   // library tab only → nothing to restore
                 // Persist the window's stable id so its items-tree column layout
@@ -7887,7 +7909,7 @@ class _TabsMixin {
             const w: any = (Zotero.getMainWindows() || [])[0];
             if (!w || !w.Zotero_Tabs) return null;
             const Z = w.Zotero_Tabs;
-            const tabs = Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState();
+            const tabs = this._wvApplyDeferredSelectionToState(w, Z._wvGetStateFull ? Z._wvGetStateFull() : Z.getState());
             if (!tabs || tabs.length < 2) return null;
             let wvMainState: any;
             try {
@@ -8960,7 +8982,9 @@ class _TabsMixin {
                     // on ("restart from the library tab ends on a note tab",
                     // 2026-07-04). Selection is enforced below from Weavero's
                     // OWN store, captured atomically at quit-request.
-                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    // No stamp in the store = explicitly ungrouped: keep it out of the item-key claim (2026-09-16).
+                    try { const nt = addedTab && addedTab.id ? Z._tabs.find((x: any) => x.id === addedTab.id) : null; if (nt && !(st.data && st.data.wvGroupId)) nt._wvGroupExcluded = true; } catch (e) {}
                     live.add(iid);
                     added++;
                     (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") at index " + i);
@@ -9047,7 +9071,9 @@ class _TabsMixin {
                     try {
                         await Zotero.Items.getAsync(iid);
                         if (!Zotero.Items.exists(iid)) continue;
-                        Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                        const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    // No stamp in the store = explicitly ungrouped: keep it out of the item-key claim (2026-09-16).
+                    try { const nt = addedTab && addedTab.id ? Z._tabs.find((x: any) => x.id === addedTab.id) : null; if (nt && !(st.data && st.data.wvGroupId)) nt._wvGroupExcluded = true; } catch (e) {}
                         live.add(iid);
                         added++;
                         (this as any)._wvTrace("reconcile: re-added dropped " + base + " tab (item " + iid + ") in managed window");
@@ -9124,7 +9150,7 @@ class _TabsMixin {
             const f = (this as any)._wvBootFocusedEntry;
             const anchorFocused = !f || f.kind === "anchor";   // default to anchor
             const live = new Set(Z._tabs.map((t: any) => t.data && t.data.itemID).filter((x: any) => x != null));
-            let added = 0, restamped = 0, deferItem = null, selectNow = null;
+            let added = 0, restamped = 0, deferItem = null, selectNow = null, deferIndex: any = null;
             // Boot stamp map: quit-time (itemID -> groupID) truth for members whose
             // tabs haven't arrived yet -- Zotero's native session restore streams
             // tabs in asynchronously, so a single-shot re-stamp grouped only the
@@ -9196,10 +9222,12 @@ class _TabsMixin {
                 try {
                     await Zotero.Items.getAsync(iid);
                     if (!Zotero.Items.exists(iid)) continue;
-                    Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    const addedTab: any = Z.add({ type: base + "-unloaded", title: st.title || "", index: Math.min(i, Z._tabs.length), data: st.data, select: false });
+                    // No stamp in the store = explicitly ungrouped: keep it out of the item-key claim (2026-09-16).
+                    try { const nt = addedTab && addedTab.id ? Z._tabs.find((x: any) => x.id === addedTab.id) : null; if (nt && !(st.data && st.data.wvGroupId)) nt._wvGroupExcluded = true; } catch (e) {}
                     live.add(iid);
                     added++;   // entry KEPT in bootMap — this tab can still be replaced by native restore
-                    if (st.selected) { if (anchorFocused) selectNow = iid; else deferItem = iid; }
+                    if (st.selected) { if (anchorFocused) selectNow = iid; else deferItem = iid; deferIndex = i; }
                 } catch (e) {}
             }
             // Publish the map for _applyTabGroups. It stays armed for the WHOLE
@@ -9213,9 +9241,13 @@ class _TabsMixin {
                 (this as any)._wvTrace("restore: boot stamp map armed for " + bootMap.size + " member tab(s)");
             }
             if (selectNow != null) {
-                try { const t = Z._tabs.find((x: any) => x.data && x.data.itemID === selectNow); if (t) Z.select(t.id); } catch (e) {}
+                try {
+                    const atIdx = (deferIndex != null && Z._tabs[deferIndex] && Z._tabs[deferIndex].data && Z._tabs[deferIndex].data.itemID === selectNow) ? Z._tabs[deferIndex] : null;
+                    const t = atIdx || Z._tabs.find((x: any) => x.data && x.data.itemID === selectNow);
+                    if (t) Z.select(t.id);
+                } catch (e) {}
             } else if (deferItem != null) {
-                try { (this as any)._wvDeferSelect(win, deferItem); } catch (e) {}
+                try { (this as any)._wvDeferSelect(win, deferItem, deferIndex); } catch (e) {}
             }
             (this as any)._wvTrace("restore: anchor tabs rebuilt from store — " + added + " tab(s)"
                 + (restamped ? ", " + restamped + " native tab(s) re-stamped into groups" : "")
@@ -9666,10 +9698,15 @@ class _TabsMixin {
      *  user is actually looking at. Instead the background window keeps its
      *  library tab; the saved selection fires on the window's first `activate`
      *  (the user looks at it) — or from the post-settle idle loader. */
-    _wvDeferSelect(win: any, itemID: any) {
+    _wvDeferSelect(win: any, itemID: any, index?: any) {
         try {
             if (!win || itemID == null) return;
             win._wvDeferredSelectItemID = itemID;
+            // Which COPY: with the same item open twice, the first tab of that
+            // item is not necessarily the one that was selected. The saved
+            // position wins when the tab there still holds the item
+            // (2026-09-16, duplicates matrix).
+            win._wvDeferredSelectIndex = (typeof index === "number" && index >= 0) ? index : null;
             // Re-arm cleanly: the previous listener was {once} and may have fired.
             if (win._wvDeferredSelectFire) { try { win.removeEventListener("activate", win._wvDeferredSelectFire); } catch (e) {} }
             const self = this;
@@ -9679,10 +9716,12 @@ class _TabsMixin {
                     if (iid == null) return;
                     win._wvDeferredSelectItemID = null;
                     const Z = win.Zotero_Tabs;
-                    const t = Z && Z._tabs.find((x: any) => x.data && x.data.itemID === iid);
+                    const di = win._wvDeferredSelectIndex;
+                    const atIndex = (di != null && Z && Z._tabs[di] && Z._tabs[di].data && Z._tabs[di].data.itemID === iid) ? Z._tabs[di] : null;
+                    const t = atIndex || (Z && Z._tabs.find((x: any) => x.data && x.data.itemID === iid));
                     if (t && Z.selectedID !== t.id) {
                         Z.select(t.id);
-                        self._wvTrace("deferred select: loading " + t.type + " in " + self._wvWindowName(win));
+                        self._wvTrace("deferred select: loading " + t.type + " in " + self._wvWindowName(win) + (atIndex ? " (by position " + di + ")" : ""));
                     }
                 } catch (e) {}
             };
@@ -10423,9 +10462,13 @@ class _TabsMixin {
                     : (en.kind === "reader-orphan" && en.tabs && en.tabs[0] ? en.tabs[0].itemID : null));
                 const liveHeads = new Set(live.map(headOf).filter((x: any) => x != null));
                 if ((this as any)._wvWTRestoreActive && pending.size && bootDoc && Array.isArray(bootDoc.windows)) {
-                    for (const en of bootDoc.windows) {
+                    for (let en of bootDoc.windows) {
                         const head = headOf(en);
                         if (head == null || !pending.has(head) || liveHeads.has(head)) continue;
+                        // Keep the BOOT entry's geometry: an unadopted window that
+                        // already exists still has Zotero's persisted size (the
+                        // last closed reader window's), not its own -- reading
+                        // it live handed R2 R1's 1000x700 (2026-09-16).
                         live.push(en);
                         liveHeads.add(head);
                         this._wvTrace && this._wvTrace("quit-flush: kept unrestored " + en.kind + " entry for item " + head);

@@ -578,7 +578,7 @@ class _TabSessionsMixin {
                 const en = Services.wm.getEnumerator("zotero:reader");
                 while (en.hasMoreElements()) before.add(en.getNext());
             } catch (e) {}
-            await Zotero.Reader.open(first.id, loc, { openInWindow: true });
+            await Zotero.Reader.open(first.id, loc, { openInWindow: true, allowDuplicate: true });   // a window reopen must not be redirected to a main-window tab copy (2026-09-16)
             // Placement (2026-07-15): find the window this open created and
             // restore its saved geometry — without this every reader window
             // reconstructed on a session switch opened at the default size.

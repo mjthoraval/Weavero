@@ -3237,6 +3237,16 @@ class _TabGroupsMixin {
     /** Set/clear a tab's group-id stamp. Pass null/"" to clear. */
     _wvTabGroupSetStamp(tab: any, groupID: any) {
         if (!tab) return;
+        // Diagnostic (2026-09-16): a kept-out tab must not be stamped by any
+        // automatic path; record who does it (drag/menu joins clear the flag
+        // first, so they never trip this).
+        if (groupID && (tab as any)._wvGroupExcluded) {
+            try {
+                const st = String(new Error().stack || "").split(String.fromCharCode(10)).slice(1, 5)
+                    .map((l: string) => String(l).split("@")[0].slice(0, 50)).join(" < ");
+                (this as any)._wvTrace && (this as any)._wvTrace("stamp on KEPT-OUT tab item " + (tab.itemID != null ? tab.itemID : (tab.data && tab.data.itemID)) + " -> " + String(groupID).slice(-6) + " via " + st);
+            } catch (e) {}
+        }
         // An explicit CLEAR is user intent (ungroup / remove from group): drop
         // this item from the boot stamp map so the restore-window re-stamper
         // can't undo the user's action.
@@ -3264,6 +3274,12 @@ class _TabGroupsMixin {
                 const g = this._tabGroupsGet().find((x: any) => !(x as any).saved && x.id === gid);
                 if (g) return g;
             }
+            // A tab KEPT OUT of groups (explicitly ungrouped: removed by the
+            // user, or restored from the store with no stamp) is not a legacy
+            // pre-stamp tab -- the item-key fallback must not claim it. A reader
+            // window's ungrouped copy of an old group's member was re-stamped
+            // through this fallback on every render (2026-09-16).
+            if ((tab as any)._wvGroupExcluded) return null;
             const k = this._wvTabGroupDeckKey(tab);
             return k ? this._tabGroupOfKey(k.libraryID, k.itemKey) : null;
         } catch (e) { return null; }

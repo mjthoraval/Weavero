@@ -11,10 +11,34 @@ const ikey = (iid) => {
 	try { const it = iid && Zotero.Items.get(iid); return it ? (it.libraryID + ":" + it.key) : null; }
 	catch (e) { return null; }
 };
+// Content type of the tab's item: tells EPUB / snapshot / PDF / note apart for
+// the coverage summary (the outline leg of 2026-09-03 needs EPUB + snapshot).
+const ctOf = (iid) => {
+	try {
+		const it = iid && Zotero.Items.get(iid);
+		if (!it) return null;
+		if (it.isNote && it.isNote()) return "note";
+		return (it.isAttachment && it.isAttachment()) ? (it.attachmentContentType || null) : null;
+	} catch (e) { return null; }
+};
 const snap = { t: Date.now(), zotero: Zotero.version, weavero: lp._version || null, focused: null, mains: [], readers: [], groups: null, sessions: null, plugins: {}, errors: [] };
 try { snap.errors = (Zotero.getErrors(true) || []).map(e => String(e).slice(0, 200)); } catch (e) {}
 try { snap.focused = lp._wvWindowStoreFocusDescriptor(); } catch (e) {}
+// Pinned main-window tabs: the PREF is the persisted truth (`weavero.pinnedTabs`,
+// {libraryID,itemKey}); the first tab of that item in bar order is the
+// designated pinned one. `win._wvPinnedTabIDs` (the decorated tab ids) can lag
+// a restore by a moment, so it is recorded separately as `pinDecorated`.
+const pinnedKeys = (() => { try { return new Set(lp._pinnedTabsGet().map(p => p.libraryID + ":" + p.itemKey)); } catch (e) { return new Set(); } })();
 for (const w of Zotero.getMainWindows()) {
+	const designatedPin = new Set(), seenPin = new Set();
+	for (const t of w.Zotero_Tabs._tabs) {
+		const k = ikey(t.data && t.data.itemID);
+		if (k && pinnedKeys.has(k) && !seenPin.has(k)) { seenPin.add(k); designatedPin.add(t.id); }
+	}
+	// Pinned tabs must be VISIBLE, not merely present (docs/restart-testing.md):
+	// count the rendered mirrors with a non-zero box.
+	let pinnedMirrors = 0;
+	try { pinnedMirrors = [...w.document.querySelectorAll("#wv-pinned-mirrors .wv-pinned-mirror")].filter(m => m.getBoundingClientRect().width > 0).length; } catch (e) {}
 	// Library-view state + item pane, per window.
 	let libState = null, itemPane = null;
 	try { const ms = lp._wvTabSessionCaptureMainState(w); libState = ms && ms.collection || null; } catch (e) {}
@@ -41,11 +65,18 @@ for (const w of Zotero.getMainWindows()) {
 			return {
 				type: t.type,
 				key: ikey(t.data && t.data.itemID),
+				ct: ctOf(t.data && t.data.itemID),
 				grp: lp._wvTabGroupStamp(t) || null,
 				sel: w.Zotero_Tabs.selectedID === t.id,
+				// Lost pins = 78ea810. `pinned` from the pref (persisted truth),
+				// `pinDecorated` from the live designated-id set.
+				pinned: designatedPin.has(t.id),
+				pinDecorated: !!(w._wvPinnedTabIDs instanceof Set && w._wvPinnedTabIDs.has(t.id)),
 				page,
 			};
 		}),
+		managed: !!w._wvManagedWindow,
+		pinnedMirrors,
 	});
 }
 const en = Services.wm.getEnumerator("zotero:reader");
@@ -65,15 +96,28 @@ while (en.hasMoreElements()) {
 			return {
 				type: t.type || "pdf",
 				key: ikey(t.itemID),
+				ct: ctOf(t.itemID),
 				grp: t.wvGroupId || null,
 				pinned: !!t.pinned,
 				sel: st.activeId === t.id,
 				lazy: !t.reader,   // lazy after restart is EXPECTED (minimal reloads)
+				native: !!t.native,
 				page,
 			};
 		}),
+		// No native tab left = ORPHAN window (Weavero recreates it wholesale).
+		orphan: !((st && st.tabs) || []).some(t => t.native),
 	});
 }
+// Named tab-sessions: which one is ACTIVE (tracked) — a lossy restore used to
+// propagate into it (b3b9faf).
+try { snap.activeSession = lp._wvTabSessionGetActiveId ? lp._wvTabSessionGetActiveId() : null; } catch (e) {}
+// Saved (parked) windows store — count only, as a digest.
+try {
+	const p = PathUtils.join(Zotero.DataDirectory.dir, "weavero", "saved-windows.json");
+	if (await IOUtils.exists(p)) { const d = JSON.parse(await IOUtils.readUTF8(p)); snap.savedWindows = Array.isArray(d) ? d.length : ((d.windows || d.saved || []).length); }
+	else snap.savedWindows = 0;
+} catch (e) { snap.savedWindows = null; }
 snap.groups = lp._tabGroupsGet().map(g => ({
 	id: g.id, name: g.name, color: g.color,
 	saved: !!g.saved, collapsed: !!g.collapsed,

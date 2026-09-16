@@ -1,5 +1,9 @@
 # Reference fixture for restart testing
 
+`test/restart/fixture.js` BUILDS this workspace (run it before cycle.js; see
+docs/restart-testing.md). The list below is the human-readable description of
+what it creates, kept so a hand-built workspace can match it.
+
 Build this workspace (or an equivalent) before running a cycle — it covers
 the historically lossy combinations:
 

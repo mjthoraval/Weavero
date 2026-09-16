@@ -63,13 +63,19 @@ uses and still runs on its own. It needs a way to execute privileged JS in
 Zotero: **Tools → Developer → Run JavaScript** with *Run as async function*
 checked, or the dev bridge.
 
-1. **Build a workspace worth testing** — your real one, or the reference
-   fixture in `test/restart/fixture-notes.md`. Keep one **single-document
-   reader window** (a window with exactly one tab) in it: until 0.19.9 that
-   window was recorded by neither Zotero's session (Weavero's restore takeover
-   empties it at quit) nor Weavero's store (its capture skipped windows with
-   no extra tabs), and was lost on every restart -- the first run of this
-   script found it (2026-09-16).
+1. **Build the workspace.** Run `test/restart/fixture.js` first (same way as
+   cycle.js): it adds, on top of whatever is open, every tab-related feature
+   the protocol must see survive -- two main windows, four reader windows
+   (multi-tab, same-window duplicate, single document, orphan), live /
+   collapsed / parked groups, pinned tabs in both window kinds, note tabs
+   (selected, background, grouped, in a reader window), same- and
+   cross-window duplicates, an EPUB and snapshot tabs, a custom reader
+   sidebar, moved windows, an active named session, a reader window focused.
+   `Zotero._wvFixtureOpts = { reset: true }` closes everything first. The
+   report's **COVERAGE** section lists what the before-workspace contained and
+   flags any essential element at zero, so a green run on a thin workspace
+   cannot pass for a full one. `fixture-notes.md` is the human-readable
+   description of the same workspace.
 2. **Run `cycle.js`.** It backs up `<profile>/session.json` and
    `<data dir>/weavero/*.json` into `<data dir>/weavero/restart-test/backup-<stamp>/`,
    writes `before.json`, turns on startup logging (`debug.store`), and
@@ -103,6 +109,12 @@ a changed reader page, sidebar or item-pane state, and error-console entries.
   quit), start Zotero by hand, run `cycle.js` again. Expected losses are the
   last ~1 s of Weavero's stores (400 ms debounce) and, for the anchor window,
   whatever Zotero's own session save had not flushed.
+- **Plugin reload before the restart**: `{ reloadFirst: true }` hot-reloads
+  Weavero, then captures and restarts -- a reload once rewrote windows.json
+  with a single entry (July run 2).
+- **Tab mid-load at quit**: `{ loadingAtQuit: true }` selects an unloaded
+  reader tab of the anchor window and quits 150 ms later, so the session is
+  saved while that tab is `reader-loading` (the type Zotero once dropped).
 - **Troubleshooting Mode**: see the section below.
 - **Empty Zotero session** (the upstream bug of forums 133542, fixed in
   10.0.3-beta.1 but present in 10.0.2: a startup error made the quit save
@@ -124,6 +136,42 @@ previous quit) and `<data dir>/weavero/windows.json`. The restore trace is in
 Debug Output filtered on `[Weavero][trace]` (a timing line per restore
 phase); the quit-side breadcrumbs of the previous session are in
 `<data dir>/weavero/trace-quit.json`.
+
+## Every tab loss so far, and what catches it now
+
+Each row is a defect met during Weavero's development (commit in brackets),
+the fixture element that reproduces its precondition, and the cycle.js check
+that fails if it comes back. The COVERAGE section of a report tells you which
+rows a given run actually exercised.
+
+| Loss (commit) | Fixture element | Check |
+|---|---|---|
+| Selected note tab dropped: mid-load `note-loading` type serialized, `restoreState` skipped it (9f9eaa9) | W1's selected tab is a note; `loadingAtQuit` leg | tab multiset + selected tab |
+| Selected note tab dropped by the native anchor restore, item not yet in the cache (de3052c) | selected note tab in W1 | tab multiset + selected tab; note-link wiring |
+| Duplicate claimed into another window's group by the startup claim pass (16fd19d) | RTF-A member also open ungrouped in W2 | group stamps as a multiset of key\|group |
+| Reader window lost wholesale at quit: teardown ran the user-close path, group parked (79f2e93) | R1 multi-tab with group RTF-D | reader window matched by tab overlap; group `saved` flag |
+| Only one of two saved reader windows natively reopened, `Items.exists` race (ee26914) | R1 and R2 both multi-tab | reader windows missing |
+| Plugin reload rewrote windows.json with one entry (July run 2) | `reloadFirst` leg | everything |
+| Active session absorbed a lossy restore (b3b9faf) | "RTF session" saved and active | sessions digest + active session id |
+| Pinned tabs lost across restart (78ea810) | pinned tab in W1, pinned extra in R1 | pinned multiset per window |
+| Window restored on the wrong monitor / at off-screen minimized coordinates (f7be1ef, b3ac95d) | W2, R1..R4 moved; W1 maximized | whole geometry object, x/y included |
+| Reader sidebar state and focused window not restored (ce42d3e) | R1 sidebar open at 320 px; R1 focused at quit | sidebar equality; focused descriptor |
+| Managed window lost 3 of 5 tabs: `restoreState` aborts wholesale on one error (de3052c) | W2 with 5 tabs incl. a note | tab multiset per window, windows matched by name |
+| Better Notes closed a note tab in a secondary window and failed to recreate it (824583d) | background note tab in W2 | tab multiset; companion plugin active |
+| Group definitions lost or mutated: collapsed state, parked groups, reader-window groups, groups with a note; group deleted by a window close or a move (5528bc9, 590317a) | RTF-B collapsed, RTF-E parked, RTF-D in R1, RTF-A with a note | group name/colour/saved/collapsed/members |
+| Single-document reader window recorded by neither side (8cda060) | R3 | reader windows missing |
+| Same-window duplicate of a group member pulled into the group at restore by the boot re-stamp (found by this protocol's first full run, 2026-09-16; fixed in 0.19.9) | P1 open twice in W1, one copy in RTF-A | group stamps as a multiset; tab order |
+| Orphan reader window (native tab closed) not recreated | R4 | reader window + orphan flag |
+| Same-window and cross-window duplicates collapsed or lost (ac40523) | P1 twice in W1; P11 twice in R2; P2 in W1 and W2 | multiset diff (a set diff never saw them) |
+| Restored note editors without Weavero's link wiring (97ba936) | loaded note tab | `noteEditors[].wired` |
+| Reader-window tab order: extras mounted after the native tab (order field) | R1's note tab moved first | tab order per window |
+| Stale legacy store resurrecting long-closed windows (b3ac95d) | any | EXTRA window after restart fails |
+| Spawned window mirroring the whole session (ff6e998, e0236d2) | W2 | tabs ADDED to a window fails |
+| Anchor window restored at the geometry of whichever main window closed LAST (Zotero persists one XUL geometry for all main windows; found by the `loadingAtQuit` leg 2026-09-16, fixed in 0.19.9) | W2 with its own geometry, W1 maximized | whole geometry object per main window |
+| Quit while the reader restore is still in flight dropped the unrestored reader window from the store and the active session absorbed the loss (found by the two-quick-restarts leg 2026-09-16, fixed in 0.19.9) | four reader windows, second restart 6–10 s after boot | reader windows missing; sessions digest |
+| Startup error emptied Zotero's session (forums 133542, upstream) | any main window | "Empty Zotero session" leg: tabs rebuilt from Weavero's store |
+| Crash loses the last seconds (debounced stores) | any | `noQuit` leg |
+| Curated outlines of EPUB / snapshot tabs (2026-09-03 leg) | EPUB and snapshot tabs in W1 and R1 | tab presence here; the outline checks stay in that leg |
 
 ## How the restore works (as of 0.15.3)
 

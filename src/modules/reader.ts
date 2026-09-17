@@ -13622,6 +13622,17 @@ class _ReaderMixin {
 
                 let timer = null;
                 const observer = new innerWin.MutationObserver((muts) => {
+                    // The observer outlives the inner window by one tick: when
+                    // the reader tab closes, the teardown mutations arrive after
+                    // the docshell is gone and `innerWin.setTimeout` throws
+                    // NS_ERROR_NOT_INITIALIZED (one console error per reader
+                    // close, one per reload, with or without companions — found
+                    // by the AM 0.7.1 compat run, 2026-09-17). A dead window has
+                    // nothing left to scan; bail before touching its timers.
+                    let dead = false;
+                    try { dead = !innerWin || innerWin.closed || !innerDoc || !innerDoc.defaultView; }
+                    catch (e) { dead = true; }
+                    if (dead) { try { observer.disconnect(); } catch (e) {} return; }
                     // Immediate orphan sweep on any childList mutation that
                     // removed nodes — covers annotation deletion. The full
                     // re-scan (positioning, badge creation) stays on the
@@ -13638,8 +13649,10 @@ class _ReaderMixin {
                         try { this._sweepStaleOverlays(innerDoc, reader); }
                         catch(e) { Zotero.debug("[Weavero] sweep error: " + e); }
                     }
-                    if (timer) innerWin.clearTimeout(timer);
-                    timer = innerWin.setTimeout(() => {
+                    try { if (timer) innerWin.clearTimeout(timer); } catch (e) { timer = null; return; }
+                    // The window can still die between the check and the call.
+                    const later = (fn, ms) => { try { return innerWin.setTimeout(fn, ms); } catch (e) { return null; } };
+                    timer = later(() => {
                         timer = null;
                         try { this._processTextAnnotations(innerDoc); }
                         catch(e) { Zotero.debug("[Weavero] inner scan error: " + e); }

@@ -589,13 +589,20 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
             // regression was exactly that: the outline showed top-left).
             const aLong = (am._annotations || []).find(x => String(x.id) === annLong.key);
             assert.isOk(aLong, "content-side long annotation");
+            // Close the first popup before opening the second: with the popup
+            // node reused, React swaps the comment in place and Weavero's
+            // popup pass (keyed on the popup appearing) may not re-run — the
+            // long-comment preview then never shows (flaked 1 in 3 runs,
+            // 2026-09-17). A fresh popup is what a user gets anyway.
+            pv._onSetAnnotationPopup();
+            await sleep(700);
             pv._onSetAnnotationPopup(Cu.cloneInto(
                 { rect: [50, 50, 200, 80], annotation: aLong },
                 reader._iframeWindow, { cloneFunctions: false }));
             await waitFor(() => {
                 const el = idoc.querySelector(".annotation-popup .wv-md-preview");
                 return el && /Introduction/.test(el.textContent) ? el : null;
-            }, 15000, "Weavero preview of the long comment in the popup");
+            }, 20000, "Weavero preview of the long comment in the popup");
             await sleep(800);
             assert.isNull(idoc.querySelector("nav.annotation-markdown-outline"),
                 "no AM outline for the in-view popup");

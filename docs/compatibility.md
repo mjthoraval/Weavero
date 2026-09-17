@@ -90,8 +90,12 @@ Cosmetic only — no effect on what's displayed or selected.
 (AM) renders annotation comments as Markdown/LaTeX in the reader. Weavero
 makes links in those same comments clickable. Both can be enabled together;
 Weavero detects AM per-document and **yields** the rendering AM will claim,
-then fills the gaps AM leaves. Verified against **AM v0.5.1 + Weavero
-v0.16.2-dev** on Zotero 10-beta (2026-07-20).
+then fills the gaps AM leaves. Since AM v0.6.1 the bridge is explicit on
+AM's side as well (its architecture notes document a "Weavero bridge"):
+AM keeps `zotero://` links live and routes their clicks to Weavero, and
+adopts Weavero's link colours. Verified against **AM v0.7.1 + Weavero
+v0.19.10-dev.1** on Zotero 10.0.3-beta.2 (2026-09-17); the automated
+plugin-compat tier pins AM 0.7.1 (`npm run test:compat`).
 
 ### Where each plugin renders (both enabled)
 
@@ -106,20 +110,37 @@ the sidebar open, selecting an annotation shows it in the sidebar instead.
 
 ### Link types — what becomes clickable
 
-| Link form in the comment | AM (v0.5.x) | With Weavero |
+| Link form in the comment | AM (v0.6.1+) | With Weavero |
 |---|---|---|
-| Bare web URL (`https://` / `http://`) | Linkified (added in v0.5.0) | Yields to AM; renders if AM off |
+| Bare web URL (`https://` / `http://`) | Linkified (since v0.5.0); opened by AM (`Zotero.launchURL`) | Recolours the anchor; renders itself if AM off |
 | Schemeless `www.` (e.g. `www.zotero.org`) | Linkified → `http://…` (markdown-it linkify) | Linkified → launches as `https://…`; yields to AM. Added in Weavero dev.96 (bare domains without `www` stay plain in both) |
 | Markdown web link `[text](https://…)` | Rendered | Yields to AM |
 | `mailto:` | Linkified | Yields to AM |
-| Markdown link to `zotero://` / app schemes | **Stripped → dead anchor** (AM keeps only web/mailto) | **Rescued** — Weavero rebuilds the anchor so it clicks |
-| Bare `zotero://` URL | Not linkified | Rendered by Weavero |
+| Markdown link to `zotero://select` / `open` / `open-pdf` / `note` | **Live anchor** (since v0.6.1); a click is handed to Weavero's `handleZoteroURI` — exactly once, verified | Recolours it; nothing to rescue any more |
+| Bare `zotero://` URL | Linkified (markdown-it linkify with the `zotero:` scheme) and routed to Weavero the same way | Recolours it |
+| Markdown link to an app scheme (`obsidian://`, …) | **Stripped → dead anchor** (still outside AM's safe-URI list) | **Rescued** when the scheme is enabled in Weavero; AM's opener then launches it (Weavero's "open app links without confirmation" preference does not apply inside AM previews) |
 | Raw HTML `<a>` | Not rendered (`html:false`) | — (neither renders HTML links) |
 | LaTeX `\href{}` | Not rendered (KaTeX `trust:false`) | — |
 
-Weavero also **recolours** AM's own links to match its scheme colours
-(web / `zotero://` / app), controlled by the `weavero.recolorAmLinks`
-preference (default on).
+**Colours.** With `weavero.recolorAmLinks` on (default), AM adds
+`annotation-markdown-weavero-link-colors` to its preview and reads
+Weavero's `--wv-link-http` / `--wv-link-zotero` / `--wv-link-app`
+variables, and Weavero tags AM's anchors `wv-am-recolored` — one palette
+across the sidebar, the in-view popup and the item pane. With the
+preference off, AM drops the class and its links fall back to Zotero's
+`LinkText`; Weavero's own rescued links keep Weavero's colours. Cosmetic
+AM edge (v0.7.1): a dead app-scheme anchor is still coloured as an app
+link by AM's `a` selector.
+
+### AM 0.6–0.7 features on the shared sidebar (verified 2026-09-17, AM v0.7.1)
+
+| AM feature | With Weavero |
+|---|---|
+| **Fast comment editor** (v0.6.0) | Coexists. The empty-comment card shows Zotero's native editor; Weavero's "Add comment" fallback stays down; editing does not trigger Weavero rendering. |
+| **Floating outline** (v0.7.0) — a `<nav>` portal beside the sidebar for the selected preview with ≥ 2 headings | Mounts on selection; **hides while Weavero's Bookmarks tab is active** and returns on the Annotations tab; follows the sidebar offset when Weavero's sort bar is shown; clears when Weavero's funnel hides the annotation and returns when the filter is cleared. Any focus change that deselects the annotation (Weavero's filter popup, Zotero's own search box) removes it — Zotero's selection rule, not either plugin's. Entry clicks scroll the sidebar only. |
+| **Long-annotation positioning** (v0.7.0) — scroll-target marker on a selected row taller than the viewport | Marker present; the row parks at the 2 px inset with Weavero's sidebar chrome in place. |
+| **Outline vs the in-view popup** (v0.7.1 fix) | No outline appears for the in-view popup (sidebar closed); Weavero still renders that popup. |
+| **Disable AM without restarting** | AM removes its previews (v0.5.1+). Weavero takes the cards over **after the reader is reopened** — Weavero's AM detection is cached per document, so reopen the tab (the same reload rule as for link-type preferences). |
 
 ### Annotation types (verified 2026-07-20, AM v0.5.2)
 
@@ -155,6 +176,14 @@ These were surfaced during Weavero interop testing and fixed by AM's author:
 - **v0.5.1** — disabling AM now removes its rendered previews from open
   readers (they had previously persisted until restart).
   [Reported as issue #1](https://github.com/qrkks/zotero-annotation-markdown/issues/1).
+- **v0.6.1** — keeps `zotero://select|open|open-pdf|note` links live and
+  routes their clicks to `Zotero.Weavero.plugin.handleZoteroURI()`
+  (falls back to `Zotero.launchURL`).
+- **v0.6.2** — adopts Weavero's link colours in its previews, honouring
+  `weavero.recolorAmLinks`.
+- **v0.7.0 / v0.7.1** — floating outline and long-annotation positioning;
+  0.7.1 keeps the outline hidden while the sidebar is closed (in-view
+  popup) or on another sidebar tab.
 
 **Known remaining AM edge case (v0.5.1):** if AM had rendered in a reader
 tab that was later *closed*, disabling AM afterwards throws

@@ -879,6 +879,16 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
+    /** Global default for the annotations-list funnel (issue #43): whether
+     *  an annotation TYPE shows in the reader's sidebar list. Default ON. A
+     *  per-document departure (`listHide` in ann-order.json) wins;
+     *  `_wvAnnListHidden` resolves the two. */
+    _getAnnListShow(type: string) {
+        try {
+            const v = Zotero.Prefs.get("weavero.annListShow" + type.charAt(0).toUpperCase() + type.slice(1));
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
     /** Global default for the "p. N" labels in the Outline tab (issue #42).
      *  Default ON. A per-document override (`_wvOutlineFileSettings`) wins;
      *  `_wvOutlinePagesShown` resolves the two. */
@@ -2117,6 +2127,11 @@ class WeaveroPlugin {
                 // "p. N" labels in the Outline tab (issue #42) — on by default;
                 // a per-document override lives in outlines.json `settings`.
                 "outlinePageNumbers",
+                // Annotations-list funnel (issue #43): which types the reader's
+                // Annotations tab lists by default — all on; a per-document
+                // departure lives in ann-order.json `listHide`.
+                "annListShowHighlight", "annListShowUnderline", "annListShowNote",
+                "annListShowImage", "annListShowInk", "annListShowText",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
                 // Default attachment/note to open — ON, but INERT until the user

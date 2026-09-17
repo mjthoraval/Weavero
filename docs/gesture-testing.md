@@ -117,6 +117,40 @@ active), then:
       round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
       document switched to Show from there still shows them.
 
+## Annotations-list funnel (after touching the sidebar funnel / list filter)
+
+Issue #43: hide annotation types from the reader's sidebar list while they
+stay on the page. Open a PDF with at least one highlight and one ink
+stroke, Annotations tab active.
+
+- [ ] **A funnel sits right of the sidebar search magnifier** (same look as
+      the Bookmarks tab's funnel). It is absent on the Bookmarks, Outline and
+      Thumbnails tabs.
+- [ ] **Click the magnifier** -> the search input opens on its own line under
+      the toolbar, full width, the funnel stays where it was; typing filters
+      the list; Escape closes the line; whatever sat under the toolbar (sort
+      bar or list) moved down and moves back.
+- [ ] **Click the funnel -> click the Ink chip** -> ink rows leave the list,
+      the ink strokes stay drawn on the page, the chip shows the excluded
+      style, the funnel gets the accent dot, the footer reads "This document
+      only" with "Use as default" / "Back to default".
+- [ ] **Select All in the sidebar (Ctrl/Cmd+A)** -> no ink annotation is
+      selected; arrow keys skip them.
+- [ ] **Click an ink stroke on the page** -> it selects on the page; the list
+      shows no row for it (expected: hidden means hidden).
+- [ ] **Reopen the tab / restart** -> ink still hidden in this document; a
+      different document lists ink.
+- [ ] **Use as default** -> footer reads "Default for all documents";
+      Preferences -> Reader annotations list shows Ink unchecked; another
+      document now hides ink too. **Back to default** on a document that
+      departs restores the default set there.
+- [ ] **Toolbar funnel excludes Highlights** while the list hides Ink -> the
+      list shows neither; clearing the toolbar funnel brings highlights back
+      and ink stays hidden (the list never re-shows what the toolbar funnel
+      removed).
+- [ ] **In-view popup** for a hidden ink annotation (sidebar closed, click
+      the stroke) still renders.
+
 ## Items-list width (after touching the table CSS or registering columns)
 
 The items-list header must not size the centre pane (2026-09-11: with three

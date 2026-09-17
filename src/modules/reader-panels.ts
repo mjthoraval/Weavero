@@ -259,6 +259,41 @@ const RP_POPUP_CSS = [
     // the tabs-menu file-type button uses; signals "opens a popup" so
     // the affordance matches Zotero's native filter buttons.
     "." + RP_FILTER_BTN_CLASS + " .wv-rf-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;margin-left:1px;}",
+    // Annotations-list funnel (issue #43): host in the sidebar toolbar's
+    // `.end` slot, shown only while the NATIVE Annotations view is active
+    // (Weavero's Bookmarks/Outline tabs strip `.active` from #viewAnnotations
+    // and React drops the search box on the other views). The button reuses
+    // the bookmarks-funnel classes so the two funnels are one visual family.
+    ".wv-al-actions{display:none;align-items:center;gap:2px;}",
+    "#sidebarContainer:has(#viewAnnotations.active) .wv-al-actions{display:flex;}",
+    // The native search box expands to a 130-px input INSIDE `.end`; with a
+    // funnel beside it that squeezes to nothing, so the OPEN input drops to
+    // its own line under the toolbar (the Bookmarks tab's search row is the
+    // precedent, MJT 2026-09-17). The box stays put as the magnifier; only
+    // the input and the clear button leave the flow, and whatever follows the
+    // toolbar (Weavero's sort bar or the content) moves down to make room.
+    // `#sidebarContainer` is natively position:absolute with top/bottom
+    // insets -- it IS the containing block for the absolute input. Never
+    // re-position it: a `position:relative` here collapsed its height to the
+    // toolbar's 40 px and blanked the whole list (dev.2, 2026-09-17).
+    // The toolbar's `.end` slot is display:block natively, so the funnel
+    // host would stack under the magnifier; lay the slot out as a row.
+    // React re-appends its SearchBox AFTER the foreign hosts on every render,
+    // so DOM order is [funnel host][bookmarks host][search box]; `order`
+    // keeps the magnifier first regardless (dev.3 came up funnel-left).
+    "#sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end{display:flex;flex-direction:row;align-items:center;gap:2px;}",
+    "#sidebarContainer .sidebar-toolbar .end > .search-box{order:0;}",
+    "#sidebarContainer .sidebar-toolbar .end > .wv-al-actions{order:1;}",
+    "#sidebarContainer .sidebar-toolbar .end > .wv-bm-sidebar-actions{order:2;}",
+    "#sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end .search-box.expanded{border:0;background:transparent;}",
+    "#sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end .search-box.expanded input{position:absolute;left:8px;right:8px;top:40px;width:auto;max-width:none;height:24px;box-sizing:border-box;padding:2px 24px 2px 6px;border:var(--material-border-quinary);border-radius:5px;background:var(--material-background);z-index:5;}",
+    "#sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end .search-box.expanded > .btn:not(.magnifier){position:absolute;top:44px;right:12px;z-index:6;}",
+    "#sidebarContainer:has(.wv-al-actions):has(.search-box.expanded) > .sidebar-toolbar + *{margin-top:30px;}",
+    // Popup footer: where this document stands relative to the default.
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-label{flex:1;opacity:.7;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn:hover{background:rgba(127,127,127,.15);}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active{position:relative;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
@@ -854,7 +889,8 @@ const RP_SORTINDEX_ALGO = 8;
 // Wire version for the annotation-manager render wrapper (annotations-tab
 // sort). BUMP on any change to the content-side wrapper -- a reload must
 // unhook the stale closure and re-hook.
-const WV_ANNSORT_WIRE_V = 2;
+const WV_ANNSORT_WIRE_V = 3;   // v3: list-hide marking (issue #43)
+const WV_ANNLIST_WRAP_V = 1;   // per-view setAnnotations wrap (issue #43)
 // Flag lines that sit OUT OF BAND in the PDF's content stream -- running heads,
 // footers, marginalia. Zotero's sortIndex keys on a character's index in that
 // stream, which for body text tracks reading order but for page furniture does
@@ -1676,6 +1712,7 @@ class _ReaderPanelsMixin {
             this._wvReaderEnsureOutlinePanel(reader, idoc);
             this._wvEnsureSpringDragEnd(reader, idoc);
             this._wvAnnSortEnsure(reader, idoc);
+            this._wvAnnListEnsure(reader, idoc);
             if (didRewire) {
                 // Restore whichever of OUR panels the user had active before the
                 // teardown, so a hot update doesn't bounce them to the native
@@ -1792,6 +1829,19 @@ class _ReaderPanelsMixin {
                 // arrangement otherwise; wire v2, 2026-08-03).
                 "    var rk = window.__wvAnnRank || {};" +
                 "    var arr = m._annotations;" +
+                // List-hide (issue #43): ride Zotero's own `_hidden` so the
+                // sidebar, Select All, Shift-range and the arrow keys all
+                // treat the type as absent; the page gets them back through
+                // the per-view setAnnotations wrap (_wvAnnListWireViews).
+                // setFilter() recomputes `_hidden` and ends in render(), so
+                // this re-marks on every native pass; un-hiding is a
+                // setFilter() re-run (see _wvAnnListApply).
+                "    var lh = window.__wvAnnListHide || null;" +
+                "    for (var j = 0; j < arr.length; j++) {" +
+                "      var an = arr[j];" +
+                "      if (lh && lh[an.type]) { an._hidden = true; an._wvListHidden = true; }" +
+                "      else if (an._wvListHidden) { delete an._wvListHidden; }" +
+                "    }" +
                 "    var dec = arr.map(function (a, i) {" +
                 "      var r = rk[a.id]; if (r == null) r = Infinity;" +
                 "      return [r, a.sortIndex, i, a];" +
@@ -2071,7 +2121,11 @@ class _ReaderPanelsMixin {
             const e = d && d.orders && d.orders[libraryID + ":" + itemKey];
             if (Array.isArray(e)) return { mode: "manual", dir: "asc", keys: e };
             if (e && typeof e === "object") {
-                return { mode: e.mode || "position", dir: e.dir, keys: Array.isArray(e.keys) ? e.keys : [] };
+                const out: any = { mode: e.mode || "position", dir: e.dir, keys: Array.isArray(e.keys) ? e.keys : [] };
+                // Annotations-list departure (issue #43): only present when the
+                // document differs from the global default.
+                if (Array.isArray(e.listHide)) out.listHide = e.listHide.slice();
+                return out;
             }
         } catch (_) {}
         return null;
@@ -2085,11 +2139,18 @@ class _ReaderPanelsMixin {
     async _wvAnnOrderWrite(this: any, libraryID: number, itemKey: string, entry: any) {
         try {
             if (!this._wvAnnOrderDoc) this._wvAnnOrderDoc = { version: 1, orders: {} };
-            this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = {
+            const prev = this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey];
+            const next: any = {
                 mode: entry.mode || "position",
                 dir: entry.dir,
                 keys: Array.isArray(entry.keys) ? entry.keys.slice() : [],
             };
+            // `listHide`: an array sets the departure, null clears it, and
+            // undefined (a sort write) keeps whatever the entry had -- a sort
+            // change must never drop the list choice (issue #43).
+            if (Array.isArray(entry.listHide)) next.listHide = entry.listHide.slice();
+            else if (entry.listHide !== null && prev && typeof prev === "object" && Array.isArray(prev.listHide)) next.listHide = prev.listHide.slice();
+            this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = next;
             const path = this._wvAnnOrderPath();
             try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
             await IOUtils.writeUTF8(path, JSON.stringify(this._wvAnnOrderDoc),
@@ -2100,7 +2161,7 @@ class _ReaderPanelsMixin {
                 for (const r of (Zotero.Reader._readers || [])) {
                     try {
                         const idoc = r._iframeWindow && r._iframeWindow.document;
-                        if (idoc) this._wvAnnSortEnsure(r, idoc);
+                        if (idoc) { this._wvAnnSortEnsure(r, idoc); this._wvAnnListEnsure(r, idoc); }
                     } catch (_) {}
                 }
             } catch (_) {}
@@ -2512,6 +2573,7 @@ class _ReaderPanelsMixin {
             rm("." + RP_BM_VIEW_CLASS);
             rm("." + RP_OUTLINE_VIEW_CLASS);
             rm(".wv-bm-sidebar-actions");
+            rm(".wv-al-actions");
             rm(".wv-bm-chip-popup");
             // Clear our active-tab classes so the restore re-applies cleanly.
             if (sc) { sc.classList.remove(RP_BM_TAB_ON); sc.classList.remove(RP_OUTLINE_TAB_ON); }
@@ -10580,6 +10642,360 @@ class _ReaderPanelsMixin {
         }
     }
 
+    // ---- Annotations-list funnel (issue #43) --------------------------------
+    // Hides annotation TYPES from the sidebar list while the page keeps
+    // drawing them. Rides Zotero's own `_hidden` flag (set in the render
+    // wrapper `_wvAnnSortWire` installs), so Select All, Shift-range and the
+    // arrow keys treat list-hidden annotations as absent -- Zotero's own model
+    // of "what the list shows" -- and re-adds them on the page through a wrap
+    // of each view's setAnnotations (reader.js hands the views the `!_hidden`
+    // subset). The list is a SLAVE of the toolbar funnel: that one removes
+    // annotations from the reader outright, so this filter can only narrow
+    // what it left (MJT, 2026-09-17). Persistence: a per-document DEPARTURE in
+    // ann-order.json (`listHide`), else the six global
+    // `weavero.annListShow<Type>` prefs (Preferences > Reader annotations
+    // list). Exclude-only chips on purpose: the global default has to be a set
+    // of hidden types, and upstream's own sketch for this (zotero/zotero#2770)
+    // is per-type checkmarks.
+
+    _wvAnnListTypes(): string[] {
+        return ["highlight", "underline", "note", "image", "ink", "text"];
+    }
+
+    _wvAnnListPrefName(type: string): string {
+        return "weavero.annListShow" + type.charAt(0).toUpperCase() + type.slice(1);
+    }
+
+    /** Types hidden by the global default (pref false). */
+    _wvAnnListGlobalHidden(): string[] {
+        const out: string[] = [];
+        for (const t of this._wvAnnListTypes()) {
+            try { if (!this._getAnnListShow(t)) out.push(t); } catch (_) {}
+        }
+        return out;
+    }
+
+    /** Effective hidden set for a reader: the document's departure if it has
+     *  one, else the global default. */
+    _wvAnnListHidden(reader: any): string[] {
+        try {
+            const att = this._wvReaderAtt(reader);
+            const e = att && att.libraryID != null && att.itemKey
+                ? this._wvAnnOrderEntry(att.libraryID, att.itemKey) : null;
+            if (e && Array.isArray(e.listHide)) return e.listHide.slice();
+        } catch (_) {}
+        return this._wvAnnListGlobalHidden();
+    }
+
+    _wvAnnListIsDeparture(reader: any): boolean {
+        try {
+            const att = this._wvReaderAtt(reader);
+            const e = att && att.libraryID != null && att.itemKey
+                ? this._wvAnnOrderEntry(att.libraryID, att.itemKey) : null;
+            return !!(e && Array.isArray(e.listHide));
+        } catch (_) { return false; }
+    }
+
+    /** Store the document's hidden set -- as a departure only: a set equal to
+     *  the global default removes the record (the outline page-numbers rule,
+     *  user choice 2026-09-11). `null` = back to the default. */
+    async _wvAnnListSetHidden(reader: any, hidden: string[] | null) {
+        const att = this._wvReaderAtt(reader);
+        if (!att || att.libraryID == null || !att.itemKey) return;
+        const same = (a: string[], b: string[]) =>
+            a.length === b.length && a.every(x => b.indexOf(x) >= 0);
+        const cur = this._wvAnnOrderEntry(att.libraryID, att.itemKey)
+            || { mode: "position", dir: undefined, keys: [] };
+        const next: any = { mode: cur.mode, dir: cur.dir, keys: cur.keys };
+        next.listHide = (hidden && !same(hidden, this._wvAnnListGlobalHidden())) ? hidden.slice() : null;
+        await this._wvAnnOrderWrite(att.libraryID, att.itemKey, next);
+    }
+
+    /** Make this document's set the global default and drop its departure. */
+    async _wvAnnListUseAsDefault(reader: any) {
+        const hidden = this._wvAnnListHidden(reader);
+        for (const t of this._wvAnnListTypes()) {
+            try { Zotero.Prefs.set(this._wvAnnListPrefName(t), hidden.indexOf(t) < 0); } catch (_) {}
+        }
+        await this._wvAnnListSetHidden(reader, null);
+    }
+
+    /** Push the effective set to the content side and re-run the native
+     *  filter, so `_hidden` is recomputed from Zotero's own criteria and the
+     *  render wrapper re-marks with the new set (un-hiding needs exactly
+     *  that reset). Signature-gated: the scan calls this every pass. */
+    _wvAnnListApply(reader: any, force?: boolean) {
+        try {
+            const hidden = this._getEnableFilters() ? this._wvAnnListHidden(reader) : [];
+            const sig = hidden.slice().sort().join(",");
+            if (!force && (reader as any).__wvAnnListSig === sig) return;
+            // The signature is recorded ONLY once the push actually landed.
+            // A reopened tab is scanned before its annotation manager exists;
+            // recording the sig there cached a state that was never applied,
+            // and the retry on the next scan early-returned -- a document with
+            // a stored departure came back listing everything (dev.4,
+            // 2026-09-17). Leave the sig unset so the scan tries again.
+            const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+            if (!iw) return;
+            const wired = this._wvAnnSortWire(reader);
+            this._wvAnnListWireViews(reader);
+            const ir = reader._internalReader;
+            const am = ir && ir._annotationManager
+                && (Components as any).utils.waiveXrays(ir._annotationManager);
+            if (!wired || !am || typeof am.setFilter !== "function") return;
+            const obj: any = {};
+            for (const t of hidden) obj[t] = true;
+            iw.__wvAnnListHide = hidden.length
+                ? (Components as any).utils.cloneInto(obj, reader._iframeWindow) : null;
+            (reader as any).__wvAnnListSig = sig;
+            // setFilter recomputes `_hidden` from Zotero's own criteria and
+            // ends in render(), where the wrapper re-marks -- the only way to
+            // UN-hide a type as well.
+            try { Promise.resolve(am.setFilter(am._filter)).catch(() => {}); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnListApply err: " + e); }
+    }
+
+    /** Content-side wrap of each view's setAnnotations: reader.js hands the
+     *  views `annotations.filter(x => !x._hidden)`, so list-hidden annotations
+     *  would vanish from the page too; append them back. Per-view stamp --
+     *  views are recreated on split/reload, so this runs on every scan. */
+    _wvAnnListWireViews(reader: any) {
+        try {
+            const ir = reader && reader._internalReader;
+            const amRaw = ir && ir._annotationManager;
+            if (!amRaw) return;
+            const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
+            if (!iw || typeof iw.eval !== "function") return;
+            for (const v of [ir._primaryView, ir._secondaryView]) {
+                if (!v) continue;
+                const vw: any = (Components as any).utils.waiveXrays(v);
+                if (vw.__wvListWrapV === WV_ANNLIST_WRAP_V) continue;
+                iw.__wvV = v; iw.__wvAM = amRaw;
+                iw.eval("(function(){" +
+                    "var v = window.__wvV, m = window.__wvAM; delete window.__wvV; delete window.__wvAM;" +
+                    "if (v.__wvOrigSetAnnotations) { v.setAnnotations = v.__wvOrigSetAnnotations; }" +
+                    "v.__wvOrigSetAnnotations = v.setAnnotations;" +
+                    "v.setAnnotations = function (anns) {" +
+                    "  try {" +
+                    "    if (window.__wvAnnListHide && m && m._annotations && anns && anns.filter) {" +
+                    "      var extra = m._annotations.filter(function (a) { return a._wvListHidden && anns.indexOf(a) < 0; });" +
+                    "      if (extra.length) anns = anns.concat(extra);" +
+                    "    }" +
+                    "  } catch (e) {}" +
+                    "  return v.__wvOrigSetAnnotations.call(v, anns);" +
+                    "};" +
+                    "v.__wvListWrapV = " + WV_ANNLIST_WRAP_V + ";" +
+                    "})()");
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnListWireViews err: " + e); }
+    }
+
+    /** Per-scan entry: button + state, gated on the Filters master like the
+     *  toolbar funnel. */
+    _wvAnnListEnsure(reader: any, idoc: any) {
+        try {
+            if (!this._getEnableFilters()) { this._wvAnnListTeardown(reader, idoc); return; }
+            this._wvAnnOrderEnsureLoaded(reader);
+            this._wvWireAnnListPrefWatch();
+            this._wvAnnListEnsureButton(reader, idoc);
+            this._wvAnnListApply(reader);
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsure err: " + e); }
+    }
+
+    _wvAnnListTeardown(reader: any, idoc: any) {
+        try { for (const el of idoc.querySelectorAll(".wv-al-actions")) el.remove(); } catch (_) {}
+        try {
+            if ((reader as any).__wvAnnListSig) {
+                (reader as any).__wvAnnListSig = null;
+                this._wvAnnListApply(reader, true);   // pushes the empty set and resets `_hidden`
+            }
+        } catch (_) {}
+    }
+
+    _wvAnnListEnsureButton(reader: any, idoc: any) {
+        try {
+            const end = idoc.querySelector("#sidebarContainer .sidebar-toolbar .end");
+            if (!end) return;
+            let host: any = end.querySelector(".wv-al-actions");
+            if (!host) {
+                host = idoc.createElementNS(NS_HTML_RP, "div");
+                host.className = "wv-al-actions";
+                const btn = idoc.createElementNS(NS_HTML_RP, "button");
+                btn.className = "wv-bm-filter-btn wv-al-btn";
+                btn.setAttribute("type", "button");
+                btn.setAttribute("title", "Show in list");
+                btn.setAttribute("aria-label", "Show in list");
+                // Same funnel artwork as the bookmarks funnel (stem clipped
+                // in the accent colour), own clipPath id so the two buttons
+                // can coexist in one document.
+                btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none">'
+                    + '<clipPath id="wv-al-stem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
+                    + '<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
+                    + '<path clip-path="url(#wv-al-stem)" fill="' + WV_FUNNEL_STEM_COLOR + '" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
+                    + '</svg>';
+                const chev = idoc.createElementNS(NS_HTML_RP, "span");
+                chev.className = "wv-bm-filter-chev";
+                chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
+                btn.appendChild(chev);
+                btn.addEventListener("click", (e: any) => {
+                    try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (P) P._wvAnnListTogglePopup(reader, idoc, btn);
+                });
+                host.appendChild(btn);
+                const bm = end.querySelector(".wv-bm-sidebar-actions");
+                if (bm) end.insertBefore(host, bm); else end.appendChild(host);
+            }
+            const btn = host.querySelector(".wv-al-btn");
+            if (btn) btn.classList.toggle("wv-bm-filter-active", this._wvAnnListHidden(reader).length > 0);
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsureButton err: " + e); }
+    }
+
+    _wvAnnListTogglePopup(reader: any, idoc: any, anchorBtn: any) {
+        const cur: any = idoc.getElementById(RP_FILTER_POPUP_ID);
+        if (cur && cur.dataset && cur.dataset.wvKind === "list") { this._wvCloseReaderFilterPopup(idoc); return; }
+        this._wvOpenReaderFilterPopup(reader, idoc, anchorBtn, {
+            kind: "list",
+            render: (r: any, d: any, p: any) => this._wvRenderAnnListPopup(r, d, p),
+        });
+        try { anchorBtn.classList.add("wv-bm-filter-open"); } catch (_) {}
+    }
+
+    /** Popup body: one row of type chips (every type, not only those present:
+     *  the choice is a display rule and must be visible for a type that has no
+     *  annotation yet -- add an ink stroke later, it stays hidden), then where
+     *  this document stands relative to the default. */
+    _wvRenderAnnListPopup(reader: any, idoc: any, popup: any) {
+        while (popup.firstChild) popup.firstChild.remove();
+        try { popup.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
+        const mk = (tag: string, cls?: string) => {
+            const el = idoc.createElementNS(NS_HTML_RP, tag);
+            if (cls) el.className = cls;
+            return el;
+        };
+        const hidden = this._wvAnnListHidden(reader);
+        const departure = this._wvAnnListIsDeparture(reader);
+        const stack = mk("div", "wv-rf-stack");
+        popup.appendChild(stack);
+        const head = mk("div", "wv-rf-head");
+        const title = mk("div", "wv-rf-title");
+        title.textContent = "Show in List";
+        head.appendChild(title);
+        const allBtn = mk("button", "wv-filter-clear-btn");
+        allBtn.type = "button";
+        allBtn.textContent = "Show all";
+        allBtn.title = "Show every annotation type in the list";
+        allBtn.style.visibility = hidden.length ? "" : "hidden";
+        allBtn.addEventListener("click", async (e: any) => {
+            e.stopPropagation();
+            await this._wvAnnListSetHidden(reader, []);
+            this._wvAnnListAfterChange(reader, idoc, popup);
+        });
+        head.appendChild(allBtn);
+        stack.appendChild(head);
+
+        const sec = mk("div", "wv-filter-section wv-al-section");
+        const opts = mk("div", "wv-filter-options");
+        const grp = mk("div", "wv-filter-or-inline");
+        const present = new Set<string>();
+        for (const a of this._wvReaderAnnotations(reader)) {
+            try { if (a.annotationType) present.add(a.annotationType); } catch (_) {}
+        }
+        for (const def of this._ANNOTATION_TYPES) {
+            const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
+            btn.type = "button";
+            const isHidden = hidden.indexOf(def.value) >= 0;
+            btn.title = def.label + (isHidden
+                ? " -- hidden from the list; click to show" : " -- click to hide from the list (stays on the page)");
+            if (isHidden) btn.dataset.excluded = "true";
+            if (!present.has(def.value)) btn.dataset.inactive = "true";
+            const img: any = mk("img");
+            img.className = "wv-filter-svg";
+            img.src = this._wvReaderIconUri(def.icon) || def.icon;
+            btn.appendChild(img);
+            btn.addEventListener("click", async (e: any) => {
+                e.stopPropagation();
+                const cur = this._wvAnnListHidden(reader);
+                const next = cur.indexOf(def.value) >= 0
+                    ? cur.filter(t => t !== def.value) : cur.concat([def.value]);
+                await this._wvAnnListSetHidden(reader, next);
+                this._wvAnnListAfterChange(reader, idoc, popup);
+            });
+            grp.appendChild(btn);
+        }
+        opts.appendChild(grp);
+        sec.appendChild(opts);
+        stack.appendChild(sec);
+
+        const foot = mk("div", "wv-al-foot");
+        const lb = mk("span", "wv-al-foot-label");
+        if (!departure) {
+            lb.textContent = "Default for all documents";
+            foot.appendChild(lb);
+        } else {
+            lb.textContent = "This document only";
+            foot.appendChild(lb);
+            const useBtn = mk("button", "wv-al-foot-btn");
+            useBtn.type = "button";
+            useBtn.textContent = "Use as default";
+            useBtn.title = "Make this the default for every document (Preferences > Reader annotations list)";
+            useBtn.addEventListener("click", async (e: any) => {
+                e.stopPropagation();
+                await this._wvAnnListUseAsDefault(reader);
+                this._wvAnnListAfterChange(reader, idoc, popup);
+            });
+            const backBtn = mk("button", "wv-al-foot-btn");
+            backBtn.type = "button";
+            backBtn.textContent = "Back to default";
+            backBtn.title = "Forget this document's choice and follow the default";
+            backBtn.addEventListener("click", async (e: any) => {
+                e.stopPropagation();
+                await this._wvAnnListSetHidden(reader, null);
+                this._wvAnnListAfterChange(reader, idoc, popup);
+            });
+            foot.appendChild(useBtn);
+            foot.appendChild(backBtn);
+        }
+        stack.appendChild(foot);
+    }
+
+    _wvAnnListAfterChange(reader: any, idoc: any, popup: any) {
+        try { this._wvAnnListApply(reader, true); } catch (_) {}
+        try { this._wvAnnListEnsureButton(reader, idoc); } catch (_) {}
+        try { if (popup && popup.isConnected) this._wvRenderAnnListPopup(reader, idoc, popup); } catch (_) {}
+    }
+
+    /** Propagate a global-default flip (Preferences, or "Use as default") to
+     *  every open reader -- same lifetime pattern as the outline page-numbers
+     *  watch: stamped on the Zotero holder, resolves the live plugin. */
+    _wvWireAnnListPrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvAnnListPrefObs) {
+                if (g._wvAnnListPrefObsVer === tag) return;
+                for (const id of g._wvAnnListPrefObs) { try { Zotero.Prefs.unregisterObserver(id); } catch (_) {} }
+                delete g._wvAnnListPrefObs;
+            }
+            g._wvAnnListPrefObsVer = tag;
+            g._wvAnnListPrefObs = this._wvAnnListTypes().map(t => Zotero.Prefs.registerObserver(
+                this._wvAnnListPrefName(t),
+                () => {
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp) return;
+                        for (const r of (Zotero.Reader._readers || [])) {
+                            try {
+                                const idoc = r._iframeWindow && r._iframeWindow.document;
+                                if (idoc) lp._wvAnnListEnsure(r, idoc);
+                            } catch (_) {}
+                        }
+                    } catch (_) {}
+                },
+            ));
+        } catch (e) { Zotero.debug("[Weavero] _wvWireAnnListPrefWatch err: " + e); }
+    }
+
     _wvToggleReaderFilterPopup(reader: any, idoc: any, anchorBtn: any) {
         if (idoc.getElementById(RP_FILTER_POPUP_ID)) {
             this._wvCloseReaderFilterPopup(idoc);
@@ -10616,6 +11032,7 @@ class _ReaderPanelsMixin {
             if (p) p.remove();
         } catch (_) {}
         if (this._wvReaderFilterDismiss) {
+            try { const a = this._wvReaderFilterDismiss.anchorBtn; if (a && a.classList) a.classList.remove("wv-bm-filter-open"); } catch (_) {}
             try {
                 const { docs, wins, onDown, onKey, swallowLoneAlt, onTab } = this._wvReaderFilterDismiss;
                 for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }
@@ -10632,8 +11049,15 @@ class _ReaderPanelsMixin {
         }
     }
 
-    _wvOpenReaderFilterPopup(reader: any, idoc: any, anchorBtn: any) {
+    _wvOpenReaderFilterPopup(reader: any, idoc: any, anchorBtn: any, opts?: any) {
         try {
+            // One popup id, two bodies: the toolbar funnel (default) and the
+            // annotations-list funnel (`kind: "list"`, issue #43) share the
+            // chrome, the dismissal wiring and the Tab cycle; only the
+            // renderer differs.
+            const kind = (opts && opts.kind) || "filter";
+            const render = (opts && typeof opts.render === "function")
+                ? opts.render : (r: any, d: any, p: any) => this._wvRenderReaderFilterPopup(r, d, p);
             this._wvEnsureReaderPanelStyles(idoc);
             // FULL close (element AND dismiss listeners) before a fresh open.
             // A bare element.remove() here orphaned the previous dismiss set:
@@ -10662,11 +11086,12 @@ class _ReaderPanelsMixin {
 
             const popup = idoc.createElementNS(NS_HTML_RP, "div");
             popup.id = RP_FILTER_POPUP_ID;
+            popup.dataset.wvKind = kind;
             if (sbWidth > 0) {
                 popup.style.width = sbWidth + "px";
                 popup.style.maxWidth = "none";
             }
-            this._wvRenderReaderFilterPopup(reader, idoc, popup);
+            render(reader, idoc, popup);
             (idoc.body || idoc.documentElement).appendChild(popup);
             // POPUP-WIDE Tab cycling. The reader's focus-manager
             // preventDefaults EVERY Tab at window capture and moves focus to
@@ -10811,7 +11236,7 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
             };
             for (const w of wins) { try { w.addEventListener("keydown", onTab, true); } catch (_) {} }
-            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt, onTab };
+            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt, onTab, anchorBtn };
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenReaderFilterPopup err: " + e);
         }

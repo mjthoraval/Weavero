@@ -717,6 +717,24 @@
     <html:p class="wv-desc">The “p. N” label at the right of each entry. Right-click the Outline tab in a reader to show or hide them for that document only.</html:p>
   </groupbox>
 
+  <!-- ============================ Reader annotations list -->
+  <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
+    <label><html:h2>Reader annotations list</html:h2></label>
+    <html:p class="wv-desc">Which annotation types the reader&#8217;s Annotations tab lists by default. A hidden type stays visible on the page; only the sidebar list omits it. The funnel next to the sidebar search box sets this for one document.</html:p>
+    <checkbox label="Highlights" native="true"
+      preference="extensions.zotero.weavero.annListShowHighlight"/>
+    <checkbox label="Underlines" native="true"
+      preference="extensions.zotero.weavero.annListShowUnderline"/>
+    <checkbox label="Notes" native="true"
+      preference="extensions.zotero.weavero.annListShowNote"/>
+    <checkbox label="Images" native="true"
+      preference="extensions.zotero.weavero.annListShowImage"/>
+    <checkbox label="Ink" native="true"
+      preference="extensions.zotero.weavero.annListShowInk"/>
+    <checkbox label="Text" native="true"
+      preference="extensions.zotero.weavero.annListShowText"/>
+  </groupbox>
+
   <!-- ============================ Debug (collapsible, very bottom) -->
   <html:details class="wv-collapsible">
     <html:summary class="wv-sec-summary"><html:h2>Debug</html:h2></html:summary>

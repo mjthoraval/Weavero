@@ -24,7 +24,9 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     let db;
 
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
-    const PANE = ["autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "compactTitleBar",
+    const PANE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
+        "annListShowText", "annListShowUnderline",
+        "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
         "enableAnnSort", "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableAppLinks",
@@ -45,7 +47,9 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs"];
 
     // Getters written as `v === undefined ? true : !!v`.
-    const DEFAULT_TRUE = ["enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
+    const DEFAULT_TRUE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
+        "annListShowText", "annListShowUnderline",
+        "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
         "enableFilters", "enableGroupLibraryGlyph", "enableIconAppLinks", "enableIconMarkdown", "enableIconUrls",

@@ -9,12 +9,13 @@
     "repo": "PikaPei/zotero-default-attachment"
   },
   "zotero-reading-list": {
-    "file": "zotero-reading-list-1.5.22.xpi",
-    "version": "1.5.22",
+    "file": "zotero-reading-list-1.7.0.xpi",
+    "version": "1.7.0",
     "addonID": "reading-list@hotmail.com",
-    "sha256": "cb5502f5b9280fd5b9d87f74dad0c2b9c4704f2f0908b55b21dcc9f5d572415b",
-    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.5.22",
-    "repo": "Dominic-DallOsto/zotero-reading-list"
+    "sha256": "15ebdaf441e620168458d84c1b29e9b72a291debdea0f59d8d21052f62839670",
+    "source": "https://github.com/Dominic-DallOsto/zotero-reading-list/releases/tag/v1.7.0",
+    "repo": "Dominic-DallOsto/zotero-reading-list",
+    "note": "1.6/1.7 added optional read-status<->tag synchronisation and configurable shortcuts; the Read_Status Extra line and the statuses pref are unchanged (checked in the 1.7.0 bundle, 2026-09-17)"
   },
   "zotero-annotation-markdown": {
     "file": "zotero-annotation-markdown-0.7.1.xpi",

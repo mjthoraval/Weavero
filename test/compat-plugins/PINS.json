@@ -17,11 +17,11 @@
     "repo": "Dominic-DallOsto/zotero-reading-list"
   },
   "zotero-annotation-markdown": {
-    "file": "zotero-annotation-markdown-0.6.3.xpi",
-    "version": "0.6.3",
+    "file": "zotero-annotation-markdown-0.7.1.xpi",
+    "version": "0.7.1",
     "addonID": "zotero-annotation-markdown@34028312.qq.com",
-    "sha256": "d82114e4bc86282dc5c10be3f71b01aec67bb8a33042316441826fc63581a953",
-    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.6.3",
+    "sha256": "9fda4f1336e7bbafce0191b30ece88c80aa828d61a0909938b30ef5e12f01ad3",
+    "source": "https://github.com/qrkks/zotero-annotation-markdown/releases/tag/v0.7.1",
     "repo": "qrkks/zotero-annotation-markdown"
   },
   "better-notes": {

@@ -248,12 +248,64 @@ describe("Weavero — plugin compat: Zotero Reading List (real XPI)", function (
 //   * but LINKIFY INSIDE — AM's markdown-it has linkify off, so bare URLs
 //     in its preview are dead text unless Weavero colourises them
 //     (a.wv-link-* anchors inside .annotation-markdown-rendered).
+// Since AM 0.6.1/0.6.2 the bridge is EXPLICIT on AM's side too (their
+// docs/en/architecture.md "Third-party Reader plugin interoperability"):
+//   * AM keeps zotero://select|open|open-pdf|note links as LIVE anchors and
+//     routes their clicks to Zotero.Weavero.plugin.handleZoteroURI(),
+//   * AM's preview carries `annotation-markdown-weavero-link-colors` and
+//     consumes --wv-link-http/-zotero/-app while `weavero.recolorAmLinks`
+//     is on; Weavero only RECOLOURS those anchors (never re-wraps).
+// AM 0.7.0 added a floating outline (a <nav> portal under the reader body,
+// shown for the selected preview with >= 2 headings) and a scroll-target
+// marker for rows taller than the sidebar viewport. Both live on the same
+// sidebar Weavero decorates (sort bar, Bookmarks tab, funnel), so the cases
+// below pin the coexistence rules found live on 0.7.1 (2026-09-17).
 // This locks both against the REAL plugin end-to-end in a live reader.
 describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function () {
     this.timeout(90000);
 
-    let wv, addon, win, att, ann, reader;
+    let wv, addon, win, att, ann, annLong, reader;
     const AM_ID = "zotero-annotation-markdown@34028312.qq.com";
+    // Zotero selects sidebar rows on the pointer/mouse path, not on a bare
+    // click(); AM's link opener also keys on mousedown and treats a click
+    // with detail 0 as keyboard activation. Real-mouse semantics throughout.
+    const fireMouse = (el) => {
+        const w = el.ownerDocument.defaultView;
+        for (const t of ["pointerdown", "mousedown", "mouseup", "click"]) {
+            el.dispatchEvent(new w.MouseEvent(t, { bubbles: true, cancelable: true, button: 0,
+                buttons: (t === "mousedown" || t === "pointerdown") ? 1 : 0, detail: 1, view: w }));
+        }
+    };
+    const cardOf = (idoc, key) => idoc.querySelector(
+        "#annotationsView .annotation[data-sidebar-annotation-id=\"" + key + "\"]");
+    const selectCard = async (idoc, key) => {
+        const c = cardOf(idoc, key);
+        if (!c) return null;
+        fireMouse(c.querySelector("header") || c);
+        await sleep(900);
+        return c.classList.contains("selected") ? c : null;
+    };
+    // Preferences that shape a card (recolorAmLinks, link types) are read at
+    // RENDER time; a flip shows on the next render, so reopen the reader
+    // (the manual protocol's reload rule) and hand the new instance back.
+    const reopenReader = async () => {
+        try { if (reader && reader.tabID) win.Zotero_Tabs.close(reader.tabID); } catch (e) {}
+        await sleep(800);
+        await Zotero.Reader.open(att.id, null, { allowDuplicate: false });
+        reader = await waitFor(
+            () => Zotero.Reader._readers.find(r => r.itemID === att.id
+                && r._internalReader && r._iframeWindow),
+            30000, "reader (reopened)");
+        try { reader._internalReader.toggleSidebar(true); } catch (e) {}
+        try { reader._internalReader.setSidebarView("annotations"); } catch (e) {}
+        const idoc = reader._iframeWindow.document;
+        await waitFor(() => {
+            const c = cardOf(idoc, annLong.key);
+            const p = c && c.querySelector(".annotation-markdown-rendered:not([data-annotation-markdown-placeholder='true'])");
+            return p && p.textContent.trim() ? p : null;
+        }, 30000, "AM preview after reopen");
+        return idoc;
+    };
     const gated = () => {
         try { return Services.env.get("WV_COMPAT_TIER") === "1"; }
         catch (e) { return false; }
@@ -324,6 +376,27 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
         a.annotationPosition = JSON.stringify({ pageIndex: 0, rects: [[10, 10, 60, 20]] });
         await a.saveTx();
         ann = a;
+        // Long comment: a zotero:// markdown link (AM >= 0.6.1 keeps it live
+        // and routes it to Weavero) and five headings (AM >= 0.7.0 outline),
+        // padded so the row is taller than the sidebar viewport.
+        const para = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod "
+            + "tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, "
+            + "quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.";
+        const b = /** @type {any} */ (new Zotero.Item("annotation"));
+        b.libraryID = att.libraryID;
+        b.parentID = att.id;
+        b.annotationType = "highlight";
+        b.annotationText = "compat fixture long";
+        b.annotationComment = "# Introduction\n\n" + para + "\n\n## Method\n\n" + para
+            + "\n\n## Results\n\n" + para + "\n\n### Details\n\n" + para
+            + "\n\n## Discussion\n\n" + para
+            + "\n\n[Open the attachment](zotero://select/library/items/" + att.key + ")";
+        b.annotationColor = "#ffd400";
+        b.annotationPageLabel = "1";
+        b.annotationSortIndex = "00000|000040|00000";
+        b.annotationPosition = JSON.stringify({ pageIndex: 0, rects: [[10, 40, 60, 50]] });
+        await b.saveTx();
+        annLong = b;
 
         await Zotero.Reader.open(att.id, null, { allowDuplicate: false });
         reader = await waitFor(
@@ -342,6 +415,7 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
             }
         } catch (e) {}
         try { if (ann) await ann.eraseTx(); } catch (e) {}
+        try { if (annLong) await annLong.eraseTx(); } catch (e) {}
         try { if (att) await att.eraseTx(); } catch (e) {}
     });
 
@@ -383,6 +457,96 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
             "example.org/wv-compat");
     });
 
+    it("AM keeps the zotero:// markdown link LIVE; Weavero only recolours it", async function () {
+        const idoc = reader._iframeWindow.document;
+        const preview = await waitFor(() => {
+            const c = cardOf(idoc, annLong.key);
+            const p = c && c.querySelector(".annotation-markdown-rendered:not([data-annotation-markdown-placeholder='true'])");
+            return p && p.querySelector("a[href^='zotero://']") ? p : null;
+        }, 30000, "AM preview with a live zotero:// anchor");
+        const anchors = [...preview.querySelectorAll("a")];
+        const z = anchors.filter(a => String(a.getAttribute("href") || "").startsWith("zotero://"));
+        assert.lengthOf(z, 1, "exactly one zotero anchor — no rescue duplicate");
+        assert.isTrue(z[0].classList.contains("wv-am-recolored") && z[0].classList.contains("wv-link-zotero"),
+            "Weavero recoloured AM's own anchor: " + z[0].className);
+        assert.isFalse(z[0].classList.contains("wv-link"), "not re-wrapped as a Weavero link");
+        assert.isNull(preview.querySelector("a a, .wv-link a"), "no nested anchors");
+    });
+
+    it("AM's preview carries the Weavero colour bridge and drops it when recolorAmLinks is off", async function () {
+        this.timeout(120000);
+        const cls = "annotation-markdown-weavero-link-colors";
+        const previewIn = (idoc) => {
+            const c = cardOf(idoc, annLong.key);
+            return c && c.querySelector(".annotation-markdown-rendered:not([data-annotation-markdown-placeholder='true'])");
+        };
+        let idoc = reader._iframeWindow.document;
+        assert.isTrue(previewIn(idoc).classList.contains(cls), "bridge class on with the pref on (default)");
+        const zoteroAnchor = (d) => previewIn(d).querySelector("a[href^='zotero://']");
+        const colourOn = idoc.defaultView.getComputedStyle(zoteroAnchor(idoc)).color;
+        const wvZotero = idoc.defaultView.getComputedStyle(idoc.documentElement)
+            .getPropertyValue("--wv-link-zotero").trim();
+        assert.isOk(wvZotero, "Weavero exposes --wv-link-zotero on the reader document");
+        try {
+            Zotero.Prefs.set("weavero.recolorAmLinks", false);
+            idoc = await reopenReader();
+            assert.isFalse(previewIn(idoc).classList.contains(cls), "bridge class dropped after the reload");
+            const a = zoteroAnchor(idoc);
+            assert.isOk(a, "AM still keeps the zotero anchor live");
+            assert.isFalse(a.classList.contains("wv-am-recolored"), "Weavero does not recolour either");
+            assert.notEqual(idoc.defaultView.getComputedStyle(a).color, colourOn,
+                "colour changes when the bridge is off");
+        }
+        finally {
+            Zotero.Prefs.set("weavero.recolorAmLinks", true);
+        }
+        idoc = await reopenReader();
+        assert.isTrue(previewIn(idoc).classList.contains(cls), "bridge class restored after the reload");
+    });
+
+    it("a click on AM's zotero:// anchor reaches Weavero's URI handler exactly once", async function () {
+        const idoc = reader._iframeWindow.document;
+        const c = cardOf(idoc, annLong.key);
+        const a = c && c.querySelector(".annotation-markdown-rendered a[href^='zotero://']");
+        assert.isOk(a, "anchor present");
+        let calls = 0;
+        const orig = wv.handleZoteroURI;
+        wv.handleZoteroURI = function () { calls++; return Promise.resolve(); };
+        try {
+            fireMouse(a);
+            await sleep(500);
+        }
+        finally {
+            wv.handleZoteroURI = orig;
+        }
+        assert.equal(calls, 1, "AM's opener hands the URI to Weavero once (mousedown path); nothing else re-opens it");
+    });
+
+    it("AM's floating outline mounts for the selected long comment and hides under Weavero's Bookmarks tab", async function () {
+        const idoc = reader._iframeWindow.document;
+        const nav = () => idoc.querySelector("nav.annotation-markdown-outline");
+        try { reader._internalReader.toggleSidebar(true); } catch (e) {}
+        try { reader._internalReader.setSidebarView("annotations"); } catch (e) {}
+        await sleep(300);
+        const card = await selectCard(idoc, annLong.key);
+        assert.isOk(card, "long comment card selected");
+        const outline = await waitFor(nav, 10000, "AM outline nav");
+        assert.isAtLeast(outline.querySelectorAll(".annotation-markdown-outline-item").length, 2);
+        // Tall row: AM's scroll-target marker rides on the selected row and
+        // parks it at the 2px inset even with Weavero's chrome in the sidebar.
+        const scroller = [...idoc.querySelectorAll("#annotationsView, #annotationsView *")].find(
+            e => /^(auto|scroll|overlay)$/.test(idoc.defaultView.getComputedStyle(e).overflowY));
+        if (scroller && card.getBoundingClientRect().height > scroller.clientHeight) {
+            assert.isTrue(card.hasAttribute("data-annotation-markdown-scroll-target"), "tall-row marker");
+        }
+        const bmTab = idoc.querySelector(".wv-bm-reader-tab");
+        if (!bmTab) this.skip();   // reader bookmarks disabled in this profile
+        bmTab.click();
+        await waitFor(() => !nav(), 5000, "outline hidden while Weavero's Bookmarks tab is active");
+        idoc.querySelector("#viewAnnotations").click();
+        await waitFor(nav, 5000, "outline back on the Annotations tab");
+    });
+
     it("in-PDF annotation popup: Weavero renders it (AM never claims popups)", async function () {
         // The 2026-07-19 regression: AM's findCommentNodes only claims
         // comments under an annotation-row ancestor; the in-view popup has
@@ -420,6 +584,21 @@ describe("Weavero — plugin compat: Annotation Markdown (real XPI)", function (
                 "Weavero preview inside the popup");
             assert.include(preview.textContent, "bold",
                 "markdown rendered by WEAVERO in the popup (not raw, not yielded)");
+            // AM 0.7.1: no floating outline while the sidebar is closed, even
+            // when the popup's annotation is the one with headings (the 0.7.0
+            // regression was exactly that: the outline showed top-left).
+            const aLong = (am._annotations || []).find(x => String(x.id) === annLong.key);
+            assert.isOk(aLong, "content-side long annotation");
+            pv._onSetAnnotationPopup(Cu.cloneInto(
+                { rect: [50, 50, 200, 80], annotation: aLong },
+                reader._iframeWindow, { cloneFunctions: false }));
+            await waitFor(() => {
+                const el = idoc.querySelector(".annotation-popup .wv-md-preview");
+                return el && /Introduction/.test(el.textContent) ? el : null;
+            }, 15000, "Weavero preview of the long comment in the popup");
+            await sleep(800);
+            assert.isNull(idoc.querySelector("nav.annotation-markdown-outline"),
+                "no AM outline for the in-view popup");
         }
         catch (e) {
             // The reporter prints NO message for failures (verified run 3) —

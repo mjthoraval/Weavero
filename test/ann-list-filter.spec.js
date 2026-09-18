@@ -334,7 +334,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.equal(popup.querySelector(".wv-al-scope").textContent, "This Document Only");
         const note = popup.querySelector(".wv-al-scope-note");
         assert.isOk(note, "the default is stated where it is overridden");
-        assert.include(note.textContent, "default hides 1 here");
+        assert.include(note.textContent, "Default hides 1 here");
         wv._wvCloseReaderFilterPopup(idoc);
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
@@ -365,12 +365,20 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         }
         assert.isFalse(chip(popup, "Highlight").classList.contains("wv-al-def-chip"),
             "a type the default leaves alone stays unmarked");
-        // The marking is the FILL, and it must not erase the exclude red
-        // diagonal (a background IMAGE) or the chip stops saying which way the
-        // filter points.
-        const cs = idoc.defaultView.getComputedStyle(chip(popup, "Image"));
-        assert.include(cs.backgroundColor.replace(/\s/g, ""), "95,178,54", "green fill");
+        // The marking owns no property the state uses: it is a pseudo-element
+        // bar under the chip, so an excluded default chip still paints the
+        // exclude red (background image + border) exactly as an ordinary
+        // excluded chip does.
+        const view = idoc.defaultView;
+        const marked = chip(popup, "Image");
+        const cs = view.getComputedStyle(marked);
+        const bar = view.getComputedStyle(marked, "::after");
+        assert.include(bar.backgroundColor.replace(/\s/g, ""), "95,178,54", "green underline");
         assert.include(cs.backgroundImage, "220, 72, 72", "the exclude red still paints the chip");
+        assert.include(cs.borderColor.replace(/\s/g, ""), "220,72,72", "and its red border");
+        const plain = view.getComputedStyle(chip(popup, "Highlight"));
+        assert.notInclude(cs.backgroundColor, "95, 178, 54", "the fill is the state's, not the marking's");
+        assert.notEqual(cs.backgroundColor, plain.backgroundColor, "excluded still differs from neutral");
         wv._wvCloseReaderFilterPopup(idoc);
 
         // A document that OVERRIDES the default still shows what the default

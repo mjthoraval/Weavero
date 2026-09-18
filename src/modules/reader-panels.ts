@@ -337,16 +337,16 @@ const RP_POPUP_CSS = [
     // kind -- so the default parameters stay readable, including in a document
     // that overrides them (MJT, 2026-09-18). The chip's own include/exclude
     // painting still shows through inside the ring.
-    // The mark is the chip's FILL (MJT, 2026-09-18: a green ring around an
-    // excluded chip duplicated its red border). `background-color` only, never
-    // the `background` shorthand: the exclude state paints its red diagonal as
-    // a background IMAGE, which the shorthand would erase -- this way the chip
-    // still says which way the filter points (red diagonal + red border, or
-    // the include blue's border and inner ring) on top of the green.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip{background-color:rgba(95,178,54,0.20);}",
-    // Hover: the state rules' own :hover is one pseudo-class stronger than the
-    // rule above, so without this the green would drop out under the pointer.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip:hover{background-color:rgba(95,178,54,0.30);}",
+    // The mark is a green UNDERLINE drawn by a pseudo-element, so it owns no
+    // property the chip's own state uses (MJT, 2026-09-18, after two rounds:
+    // a ring duplicated the exclude border, a fill fought the include blue).
+    // Background, border and box-shadow therefore stay entirely the state's --
+    // selected chips read as selected, excluded ones as excluded, and the bar
+    // underneath says "the default sets this" on top of either.
+    // `::before` is taken (the coloured-tag dot), `::after` is free.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip{position:relative;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip::after{content:\"\";position:absolute;",
+    "  left:3px;right:3px;bottom:0;height:2px;border-radius:1px;background:rgba(95,178,54,0.95);pointer-events:none;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip[data-inactive=\"true\"]{opacity:.75;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn:hover{background:rgba(127,127,127,.15);}",
@@ -11469,7 +11469,7 @@ class _ReaderPanelsMixin {
                     } catch (_) {}
                 }
                 const note = mk("div", "wv-al-scope-note");
-                note.textContent = n ? "default hides " + n + " here" : "default hides none here";
+                note.textContent = n ? "Default hides " + n + " here" : "Default hides none here";
                 note.title = "What the default would leave out in this document";
                 noteEl = note;
             }

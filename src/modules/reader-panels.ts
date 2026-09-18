@@ -319,29 +319,36 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-count.wv-al-count-on{opacity:1;font-weight:600;}",
     // The scope badge carries the same green as the funnel's bowl when it is
     // the default, so the two cues agree at a glance.
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-scope{background:rgba(127,127,127,0.18);border-radius:6px;padding:5px 6px;margin:1px 0;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-scope{display:flex;flex-direction:column;align-items:stretch;gap:3px;background:rgba(127,127,127,0.18);border-radius:6px;padding:5px 6px;margin:1px 0;}",
+    // The scope label and its buttons share ONE line that never breaks (MJT,
+    // 2026-09-18: "Back to Default" was wrapping away from "Use as Default").
+    // What gives instead is the label, which ellipsises, and the note, which
+    // moved to its own line below -- at 340 px the three of them plus two
+    // buttons cannot fit side by side.
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope-line{flex-wrap:nowrap;min-width:0;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btns{display:flex;flex-wrap:nowrap;gap:6px;margin-left:auto;flex:0 0 auto;}",
     // Green block while this IS the default, the same green as the funnel's
     // bowl, so the two cues agree without adding another control.
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-scope.wv-al-is-default{background:rgba(95,178,54,0.16);}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope{white-space:nowrap;opacity:.8;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope-note{white-space:nowrap;opacity:.55;font-style:italic;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope{white-space:nowrap;opacity:.8;overflow:hidden;text-overflow:ellipsis;min-width:0;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope-note{opacity:.55;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
     // Every chip the GLOBAL DEFAULT sets carries the funnel's green, in every
     // reader, and is rendered even where this document has nothing of that
     // kind -- so the default parameters stay readable, including in a document
     // that overrides them (MJT, 2026-09-18). The chip's own include/exclude
     // painting still shows through inside the ring.
-    // The mark rides OUTSIDE the chip (outline), never its background: the
-    // include blue and the exclude red diagonal are the chip's own state and
-    // must stay readable underneath. `:not(:focus-visible)` keeps the keyboard
-    // focus ring winning -- this rule outranks the popup's focus style.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip:not(:focus-visible){outline:1.5px solid rgba(95,178,54,0.85);outline-offset:1px;}",
-    // A default chip with no state of its own in THIS document (the document
-    // overrides the default, or the default's other direction) still shows the
-    // green as a fill, since there is no state paint to preserve.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip:not([data-selected=\"true\"]):not([data-excluded=\"true\"]){background:rgba(95,178,54,0.16);}",
+    // The mark is the chip's FILL (MJT, 2026-09-18: a green ring around an
+    // excluded chip duplicated its red border). `background-color` only, never
+    // the `background` shorthand: the exclude state paints its red diagonal as
+    // a background IMAGE, which the shorthand would erase -- this way the chip
+    // still says which way the filter points (red diagonal + red border, or
+    // the include blue's border and inner ring) on top of the green.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip{background-color:rgba(95,178,54,0.20);}",
+    // Hover: the state rules' own :hover is one pseudo-class stronger than the
+    // rule above, so without this the green would drop out under the pointer.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip:hover{background-color:rgba(95,178,54,0.30);}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip[data-inactive=\"true\"]{opacity:.75;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-row .wv-al-foot-btn:first-of-type{margin-left:auto;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn:hover{background:rgba(127,127,127,.15);}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active,.wv-al-btn.wv-rf-active{position:relative;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after,.wv-al-btn.wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
@@ -11436,13 +11443,19 @@ class _ReaderPanelsMixin {
         // Row 2 -- where the setting applies, and how to move it.
         const filteredByDefault = !departure
             && Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
-        const scopeRow = mk("div", "wv-al-foot-row wv-al-foot-scope" + (filteredByDefault ? " wv-al-is-default" : ""));
+        const scopeRow = mk("div", "wv-al-foot-scope" + (filteredByDefault ? " wv-al-is-default" : ""));
+        // One line: the scope label on the left, its buttons on the right,
+        // never wrapped. The note (what the default would do here) gets its
+        // own line underneath -- see the CSS.
+        const scopeLine = mk("div", "wv-al-foot-row wv-al-scope-line");
+        const btns = mk("div", "wv-al-foot-btns");
+        let noteEl: any = null;
         const scope = mk("span", "wv-al-scope");
         scope.textContent = departure ? "This Document Only" : "Default for All Documents";
         scope.title = departure
             ? "This document has its own filter; other documents follow the default."
             : "This filter is the default every document starts from.";
-        scopeRow.appendChild(scope);
+        scopeLine.appendChild(scope);
         if (departure) {
             // What the default would do here, so it stays visible in the one
             // place where it is being overridden.
@@ -11455,10 +11468,10 @@ class _ReaderPanelsMixin {
                         if (!this._wvReaderPluginMatch(defState, a) || !this._wvReaderNativeMatch(a, nat)) n++;
                     } catch (_) {}
                 }
-                const note = mk("span", "wv-al-scope-note");
+                const note = mk("div", "wv-al-scope-note");
                 note.textContent = n ? "default hides " + n + " here" : "default hides none here";
                 note.title = "What the default would leave out in this document";
-                scopeRow.appendChild(note);
+                noteEl = note;
             }
         }
         if (departure) {
@@ -11480,8 +11493,8 @@ class _ReaderPanelsMixin {
                 await this._wvAnnPaneBackToDefault(reader);
                 this._wvAnnListAfterChange(reader, idoc, popup);
             });
-            scopeRow.appendChild(useBtn);
-            scopeRow.appendChild(backBtn);
+            btns.appendChild(useBtn);
+            btns.appendChild(backBtn);
         }
         else if (defaultFilters) {
             // Following a default that filters: the way out of it lives next
@@ -11495,8 +11508,11 @@ class _ReaderPanelsMixin {
                 await this._wvAnnPaneClearDefault(reader, idoc);
                 this._wvAnnListAfterChange(reader, idoc, popup);
             });
-            scopeRow.appendChild(clearDef);
+            btns.appendChild(clearDef);
         }
+        if (btns.childNodes.length) scopeLine.appendChild(btns);
+        scopeRow.appendChild(scopeLine);
+        if (noteEl) scopeRow.appendChild(noteEl);
         foot.appendChild(scopeRow);
         stack.appendChild(foot);
     }

@@ -365,10 +365,11 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         }
         assert.isFalse(chip(popup, "Highlight").classList.contains("wv-al-def-chip"),
             "a type the default leaves alone stays unmarked");
-        // The marking rides outside the chip: the exclude red underneath must
-        // survive it, or the chip stops saying which way the filter points.
+        // The marking is the FILL, and it must not erase the exclude red
+        // diagonal (a background IMAGE) or the chip stops saying which way the
+        // filter points.
         const cs = idoc.defaultView.getComputedStyle(chip(popup, "Image"));
-        assert.include(cs.outlineColor.replace(/\s/g, ""), "95,178,54", "green ring outside the chip");
+        assert.include(cs.backgroundColor.replace(/\s/g, ""), "95,178,54", "green fill");
         assert.include(cs.backgroundImage, "220, 72, 72", "the exclude red still paints the chip");
         wv._wvCloseReaderFilterPopup(idoc);
 

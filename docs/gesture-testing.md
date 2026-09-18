@@ -187,13 +187,17 @@ stroke, Annotations tab active.
       the stroke) still renders.
 - [ ] **Use as Default** -> the CHIPS DO NOT MOVE (an included chip stays
       included; it must never turn into the equivalent set of exclusions), the
-      footer flips to "default for all documents", the two buttons give way to
-      **Clear Default**, the funnel's bowl turns GREEN (the default itself now
-      filters — distinct from the blue dot, which means this pane is filtered
-      right now), and Preferences -> Reader annotations pane shows the matching
-      types unchecked. Another document follows. **Back to Default** on a
-      departing document restores it; **Clear Default** returns every document
-      to showing everything.
+      footer flips to "Default for All Documents", **Use as Default** gives
+      way to **Clear Default**, the funnel gets a GREEN LINE underneath (a
+      default other than "show everything" exists; the chips the default sets
+      carry the same line, in every document), the blue dot goes (the dot
+      means this document DEPARTS from the default, not that a filter is
+      active), and Preferences -> Reader annotations pane shows the matching
+      types unchecked. Another document follows. Add a chip on top -> dot AND
+      line. **Back to Default** (header, beside Clear) restores a departing
+      document; **Clear Default** returns every document to showing
+      everything. Alt+click **Use as Default** ADDS this document's chips to
+      the existing default instead of replacing it.
 - [ ] **Zotero's own selector** (colours / tags at the foot of the pane) is
       GONE by default while the funnel is enabled. Settings -> Reader
       annotations pane -> "Keep Zotero's colour and tag selector" brings it

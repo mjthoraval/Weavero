@@ -321,7 +321,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "hidden again");
     });
 
-    it("the funnel's cues: dot = this document departs from the default, green line = it follows a filtering default", async function () {
+    it("the funnel's cues: green line = a filtering default exists, dot = this document departs from it", async function () {
         const idoc = reader._iframeWindow.document;
         const btn = () => idoc.querySelector("#sidebarContainer .wv-al-btn");
         const cues = () => {
@@ -357,10 +357,15 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.deepEqual(cues(), { dot: false, green: true, bowlGone: true }, "following, nothing to hide");
 
         // Clear over a filtering default: away from the base state -> dot,
-        // and no green, because the default is not what this document uses.
+        // and the green stays, because the default still exists (MJT,
+        // 2026-09-18: "just add the blue dot on top of the green underline").
         await wv._wvAnnPaneClear(reader);
         assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is recorded");
-        assert.deepEqual(cues(), { dot: true, green: false, bowlGone: true }, "cleared over a default");
+        assert.deepEqual(cues(), { dot: true, green: true, bowlGone: true }, "cleared over a default");
+
+        // A filter on top of the default: the same two marks.
+        await setPane({ colorsExcl: ["#ffd400"] });
+        assert.deepEqual(cues(), { dot: true, green: true, bowlGone: true }, "own filter on top of a default");
 
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
@@ -377,6 +382,17 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
         assert.equal(popup.querySelector(".wv-al-foot-count").textContent, "Every annotation shown");
         assert.equal(popup.querySelector(".wv-al-scope").textContent, "This Document Only");
+        // Back to Default sits in the HEADER beside Clear (the same kind of
+        // reset), not in the footer; Use as Default stays in the footer.
+        const back = popup.querySelector(".wv-rf-head .wv-al-back-btn");
+        assert.isOk(back, "Back to Default in the header");
+        assert.equal(back.style.visibility, "", "shown while the document departs");
+        assert.equal(popup.querySelector(".wv-rf-head .wv-filter-clear-btn:not(.wv-al-back-btn)").style.visibility, "hidden",
+            "Clear hidden: nothing is set in this document");
+        assert.deepEqual([...popup.querySelectorAll(".wv-al-foot-btn")].map(b => b.textContent), ["Use as Default"]);
+        const x = popup.querySelector(".wv-rf-head .wv-filter-clear-icon");
+        assert.equal(x.title, "Back to Default and Close", "the red x follows Back to Default in the pane scope");
+        assert.equal(x.style.visibility, "", "shown while the document departs");
         const note = popup.querySelector(".wv-al-scope-note");
         assert.isOk(note, "the default is stated where it is overridden");
         assert.include(note.textContent, "Default: not Ink \u00b7 hides 1 here");
@@ -385,7 +401,7 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnPaneBackToDefault(reader);
     });
 
-    it("the default's chips are marked and seeded while the document follows it, named in the footer where it does not", async function () {
+    it("the default's chips stay marked and seeded in every document, and the footer names the default where the document departs", async function () {
         const idoc = reader._iframeWindow.document;
         const openPane = async () => {
             if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
@@ -426,14 +442,18 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.notEqual(cs.backgroundColor, plain.backgroundColor, "excluded still differs from neutral");
         wv._wvCloseReaderFilterPopup(idoc);
 
-        // A document that OVERRIDES the default: no green anywhere on the
-        // chips (a mark there read as an active filter, MJT 2026-09-18), no
-        // seeded strangers, and the footer names the default instead.
+        // A document that DEPARTS from the default (Clear here) keeps the
+        // default's chips underlined and seeded -- the mark is a fact about
+        // the default -- while the chips carry this document's own (empty)
+        // state, and the footer names the default too.
         await wv._wvAnnPaneClear(reader);
         assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is recorded");
         popup = await openPane();
-        assert.equal(popup.querySelectorAll(".wv-al-def-chip").length, 0, "no default marking in an overriding document");
-        assert.isNotOk(chip(popup, "Image"), "and no chip for a type the document does not have");
+        const img = chip(popup, "Image");
+        assert.isOk(img, "still rendered where the document departs from the default");
+        assert.isTrue(img.classList.contains("wv-al-def-chip"), "still underlined");
+        assert.notEqual(img.dataset.excluded, "true", "this document's state is what the chip paints");
+        assert.equal(img.dataset.inactive, "true", "and it reads as absent from this document");
         const note = popup.querySelector(".wv-al-scope-note");
         assert.isOk(note, "the default is named in the footer");
         assert.include(note.textContent, "Default: not Image, not Note");

@@ -170,6 +170,12 @@ const RP_POPUP_CSS = [
     "  color:inherit;cursor:pointer;padding:3px 8px;border-radius:10px;",
     "  border:1px solid rgba(127,127,127,0.4);background:rgba(127,127,127,0.10);}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-clear-btn:hover{background:rgba(127,127,127,0.22);}",
+    // Pane scope: "Back to Default" sits in the header beside Clear -- the
+    // two are the same kind of reset (MJT, 2026-09-18). It takes Clear's
+    // auto margin so the pair hugs the right edge together. Measured fit at
+    // the 340-px popup: title 127 + 91 + 42 + 24 + three 8-px gaps = 309 of
+    // 318.
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-back-btn+.wv-filter-clear-btn{margin-left:0;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-clear-icon{background:rgba(127,127,127,0.18);border:none;padding:0;",
     "  color:rgb(220,72,72);cursor:pointer;width:24px;height:24px;border-radius:50%;position:relative;",
     "  display:inline-block;font-size:0;}",
@@ -11489,22 +11495,22 @@ class _ReaderPanelsMixin {
             // Blue dot = this pane is filtered right now. Green bowl = the
             // DEFAULT itself hides something, so every document starts that
             // way; the two are independent and can show together.
-            // TWO CUES, one axis (MJT's rule, 2026-09-18, third revision):
+            // TWO INDEPENDENT CUES (MJT's final rule, 2026-09-18):
+            //   green underline  a default other than "show everything"
+            //                    exists -- the same mark the chips carry, a
+            //                    fact about the setting, shown in every
+            //                    document;
             //   blue dot         this document DEPARTS from the default --
-            //                    its own filter, or Clear over a default that
-            //                    filters. Not "a filter is active": a document
+            //                    its own filter on top of it, or Clear over
+            //                    it. Not "a filter is active": a document
             //                    sitting on the default is in its base state,
-            //                    however much the default hides;
-            //   green underline  this document FOLLOWS a default other than
-            //                    "show everything" -- the same mark the chips
-            //                    carry, with the same meaning.
-            // The two never show together: a document is either at the
-            // default or away from it. What the filter hides is the tooltip's
-            // business.
+            //                    however much the default hides.
+            // Both together = a filter applied on top of the default. What
+            // the filter hides is the tooltip's business.
             const departs = this._wvAnnListIsDeparture(reader);
             const defaultModified = Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
             btn.classList.toggle("wv-rf-active", departs);
-            btn.classList.toggle("wv-al-def-on", !departs && defaultModified);
+            btn.classList.toggle("wv-al-def-on", defaultModified);
             const img = btn.querySelector("img.wv-filter-svg");
             if (img && img.getAttribute("src") !== RP_FUNNEL_DATA_URI) img.setAttribute("src", RP_FUNNEL_DATA_URI);
             const hidden = this._wvAnnPaneHiddenKeys(reader).length;
@@ -11587,9 +11593,9 @@ class _ReaderPanelsMixin {
                         if (!this._wvReaderPluginMatch(defState, a) || !this._wvReaderNativeMatch(a, nat)) n++;
                     } catch (_) {}
                 }
-                // The overriding document does not mark the default's chips
-                // (a mark there read as an active filter), so the default is
-                // NAMED here instead, plus what it would leave out.
+                // Name the default where the document departs from it, plus
+                // what it would leave out here; the underlined chips above
+                // show the same thing chip by chip.
                 const parts = this._wvAnnPaneDescribe(defState);
                 const note = mk("div", "wv-al-scope-note");
                 note.textContent = "Default: " + (parts.length ? parts.join(", ") : "everything")
@@ -11611,17 +11617,8 @@ class _ReaderPanelsMixin {
                 await this._wvAnnListUseAsDefault(reader, !!e.altKey);
                 this._wvAnnListAfterChange(reader, idoc, popup);
             });
-            const backBtn = mk("button", "wv-al-foot-btn");
-            backBtn.type = "button";
-            backBtn.textContent = "Back to Default";
-            backBtn.title = "Forget this document's filter and follow the default";
-            backBtn.addEventListener("click", async (e: any) => {
-                e.stopPropagation();
-                await this._wvAnnPaneBackToDefault(reader);
-                this._wvAnnListAfterChange(reader, idoc, popup);
-            });
+            // Back to Default lives in the header, beside Clear.
             btns.appendChild(useBtn);
-            btns.appendChild(backBtn);
         }
         else if (defaultFilters) {
             // Following a default that filters: the way out of it lives next
@@ -11991,14 +11988,15 @@ class _ReaderPanelsMixin {
             if (pane) this._wvAnnListEnsureButton(reader, idoc);
             else this._wvReaderEnsureFilterButton(reader, idoc);
         };
-        // What the GLOBAL DEFAULT sets -- ONLY while this document follows it.
-        // The green mark then always sits on a chip that is also selected or
-        // excluded, so it can only ever mean "on, because it is the default".
-        // Marking the default's chips in a document that overrides it read as
-        // an active filter that was not applying (MJT, 2026-09-18, twice);
-        // there, the footer states the default in words instead. The reader
-        // funnel has no default, hence null there.
-        const defSt = (pane && !this._wvAnnListIsDeparture(reader)) ? this._wvAnnPaneDefaultState() : null;
+        // What the GLOBAL DEFAULT sets, in EVERY document of the pane scope
+        // (MJT's final rule, 2026-09-18, after a round where the mark was
+        // limited to documents following the default): the green underline is
+        // a fact about the default, the chip's own blue/red says whether it is
+        // active here, and the funnel's blue dot says the document departs. A
+        // filter applied on top of the default therefore keeps its underlines;
+        // so does Clear, where the underlined chips are simply not selected.
+        // The reader funnel has no default, hence null there.
+        const defSt = pane ? this._wvAnnPaneDefaultState() : null;
         const defHas = (dim: string, value: string) => !!defSt
             && (((defSt[dim] || []).indexOf(value) >= 0) || ((defSt[dim + "Excl"] || []).indexOf(value) >= 0));
         const defFlag = (key: string) => !!defSt && (defSt[key] === true || defSt[key] === false);
@@ -12031,9 +12029,7 @@ class _ReaderPanelsMixin {
         // nothing of that kind -- otherwise the default's own parameters are
         // invisible exactly where they matter (a PDF with no ink cannot show
         // that the default hides ink). Such a chip renders faded, like any
-        // value absent from the visible set. Following documents only (see
-        // `defSt`): in an overriding document such a chip would be a faded
-        // stranger with nothing to explain it.
+        // value absent from the visible set, with the underline to explain it.
         if (defSt) {
             const seed = (set: Set<string>, dim: string) => {
                 for (const v of (defSt[dim] || []).concat(defSt[dim + "Excl"] || [])) if (v) set.add(v);
@@ -12127,24 +12123,48 @@ class _ReaderPanelsMixin {
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             refreshBtn();
         });
-        // Red × — "Clear and Close": clears every filter AND dismisses.
+        // Red × -- reader scope: "Clear and Close", clears every filter AND
+        // dismisses. Pane scope: "Back to Default and Close" (MJT,
+        // 2026-09-18) -- the document follows the default again, then the
+        // popup goes; Clear stays the plain button beside it.
         const clearCloseBtn = mk("button", "wv-filter-clear-icon");
         clearCloseBtn.type = "button";
-        clearCloseBtn.title = "Clear and Close";
-        clearCloseBtn.setAttribute("aria-label", "Clear and Close");
+        clearCloseBtn.title = pane ? "Back to Default and Close" : "Clear and Close";
+        clearCloseBtn.setAttribute("aria-label", clearCloseBtn.title);
         clearCloseBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
-            await clearState();
+            if (pane) await this._wvAnnPaneBackToDefault(reader);
+            else await clearState();
             refreshBtn();
             this._wvCloseReaderFilterPopup(idoc);
         });
-        // Show Clear / Clear-and-Close only when at least one filter dimension
-        // is set. Hidden via inline visibility (preserves layout); the chip-
-        // toggle paths call `_wvRenderReaderFilterPopup` which re-runs this
-        // check so the buttons appear/disappear in lockstep with state.
+        // Show Clear only when at least one filter dimension is set; in the
+        // pane scope the × follows Back to Default instead (shown while the
+        // document departs). Hidden via inline visibility (preserves layout);
+        // the chip-toggle paths call `_wvRenderReaderFilterPopup` which
+        // re-runs this check so the buttons appear/disappear in lockstep.
         const anyActive = pane ? this._wvAnnPaneActive(reader) : this._wvReaderFilterActive(reader);
+        const paneDeparts = pane && this._wvAnnListIsDeparture(reader);
         clearBtn.style.visibility = anyActive ? "" : "hidden";
-        clearCloseBtn.style.visibility = anyActive ? "" : "hidden";
+        clearCloseBtn.style.visibility = (pane ? paneDeparts : anyActive) ? "" : "hidden";
+        if (pane) {
+            // "Back to Default" -- forget this document's own filter and
+            // follow the default again. Shown while the document departs
+            // (Clear is shown while something is set; after Clear over a
+            // default only this one remains).
+            const backBtn = mk("button", "wv-filter-clear-btn wv-al-back-btn");
+            backBtn.type = "button";
+            backBtn.textContent = "Back to Default";
+            backBtn.title = "Forget this document's filter and follow the default";
+            backBtn.setAttribute("aria-label", "Back to Default");
+            backBtn.style.visibility = paneDeparts ? "" : "hidden";
+            backBtn.addEventListener("click", async (e: any) => {
+                e.stopPropagation();
+                await this._wvAnnPaneBackToDefault(reader);
+                this._wvAnnListAfterChange(reader, idoc, popup);
+            });
+            head.appendChild(backBtn);
+        }
         head.appendChild(clearBtn);
         head.appendChild(clearCloseBtn);
         stack.appendChild(head);

@@ -12049,10 +12049,21 @@ class _ReaderPanelsMixin {
         const actTypes = new Set<string>();
         const actAddedBy = new Set<string>();
         const actModifiedBy = new Set<string>();
+        // The four tri-state tiles fade by the same rule as the chips: a
+        // tile whose property no VISIBLE annotation has would select nothing
+        // (MJT, 2026-09-18: they never greyed). Same predicates as
+        // `_wvReaderPluginMatch`, so the fade agrees with the filter.
+        const act = { hasTag: false, hasComment: false, hasRelated: false, hasLink: false };
         for (const a of visible) {
             if (a.annotationColor) actColors.add(a.annotationColor);
             if (a.annotationType) actTypes.add(a.annotationType);
-            for (const t of (a.getTags() || [])) if (t && t.tag) actTags.add(t.tag);
+            let tags: any[] = [];
+            try { tags = a.getTags() || []; } catch (_) {}
+            for (const t of tags) if (t && t.tag) actTags.add(t.tag);
+            if (tags.length) act.hasTag = true;
+            if (a.annotationComment && String(a.annotationComment).trim()) act.hasComment = true;
+            if (a.relatedItems && a.relatedItems.length) act.hasRelated = true;
+            try { if (this.hasURI(a.annotationComment || "")) act.hasLink = true; } catch (_) {}
             if (a.createdByUserID != null) actAddedBy.add(this._wvUserName(a.createdByUserID));
             if (a.lastModifiedByUserID != null) actModifiedBy.add(this._wvUserName(a.lastModifiedByUserID));
         }
@@ -12280,12 +12291,15 @@ class _ReaderPanelsMixin {
         // Tri-state icon tile (Has Related / Has Link / Has Comment):
         // click=require / Alt+click=require-absent / re-click=off.
         const mkTriTile = (cur: any, title2: string, iconBuilder: () => any, apply: (alt: boolean) => void,
-                           defOn?: boolean) => {
+                           defOn?: boolean, active?: boolean) => {
             const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
             btn.type = "button";
             btn.title = title2;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
+            // Unset and nothing visible has the property: faded, like a chip
+            // whose value is absent from the visible set.
+            else if (active === false) btn.dataset.inactive = "true";
             markDef(btn, !!defOn);
             try { const ic = iconBuilder(); if (ic) btn.appendChild(ic); } catch (_) {}
             btn.addEventListener("click", async (e: any) => {
@@ -12338,7 +12352,7 @@ class _ReaderPanelsMixin {
                 const sep = mk("div", "wv-filter-vertical-separator");
                 sep.style.marginLeft = "auto";
                 opts.appendChild(sep);
-                opts.appendChild(this._wvMakeReaderHasCommentTile(reader, idoc, popup, st, defFlag("hasComment")));
+                opts.appendChild(this._wvMakeReaderHasCommentTile(reader, idoc, popup, st, defFlag("hasComment"), act.hasComment));
             }
         });
 
@@ -12372,17 +12386,17 @@ class _ReaderPanelsMixin {
                     return img;
                 },
                 (alt: boolean) => { st.hasTag = alt ? (st.hasTag === false ? null : false) : (st.hasTag === true ? null : true); },
-                defFlag("hasTag")));
+                defFlag("hasTag"), act.hasTag));
             opts.appendChild(mkTriTile(st.hasRelated,
                 "Has Related — annotations with at least one related-item link. Alt+click to exclude.",
                 () => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(RP_RELATED_ICON) || RP_RELATED_ICON; img.style.color = "var(--accent-wood)"; return img; },
                 (alt: boolean) => { st.hasRelated = alt ? (st.hasRelated === false ? null : false) : (st.hasRelated === true ? null : true); },
-                defFlag("hasRelated")));
+                defFlag("hasRelated"), act.hasRelated));
             opts.appendChild(mkTriTile(st.hasLink,
                 "Has Link — annotations whose comment contains a URL. Alt+click to exclude.",
                 () => this._makeLinkSvg(idoc),
                 (alt: boolean) => { st.hasLink = alt ? (st.hasLink === false ? null : false) : (st.hasLink === true ? null : true); },
-                defFlag("hasLink")));
+                defFlag("hasLink"), act.hasLink));
         });
 
         // ---- Tags (coloured dot when the tag has a colour) — include via native.
@@ -13045,7 +13059,7 @@ class _ReaderPanelsMixin {
 
     /** Has Comment tile mirroring the library's: speech-bubble glyph,
      *  click=require / Alt+click=require-absent / re-click=off. */
-    _wvMakeReaderHasCommentTile(reader: any, idoc: any, popup: any, st: any, defOn?: boolean) {
+    _wvMakeReaderHasCommentTile(reader: any, idoc: any, popup: any, st: any, defOn?: boolean, active?: boolean) {
         const btn = idoc.createElementNS(NS_HTML_RP, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
@@ -13059,6 +13073,7 @@ class _ReaderPanelsMixin {
         btn.style.alignSelf = "center";
         if (st.hasComment === true) btn.dataset.selected = "true";
         else if (st.hasComment === false) btn.dataset.excluded = "true";
+        else if (active === false) btn.dataset.inactive = "true";   // nothing visible has a comment
         btn.title = "Has Comment — annotations with non-empty comment text. Alt+click to exclude.";
         // Same green marking as the chips the renderer builds itself.
         if (defOn) {

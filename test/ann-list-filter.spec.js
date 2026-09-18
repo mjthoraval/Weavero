@@ -544,6 +544,48 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnPaneBackToDefault(reader);
     });
 
+    it("the Has-* tiles fade like chips when nothing visible has the property", async function () {
+        // The fixture: one highlight and one ink, no tags, no comments, no
+        // related items, no links. Every tile is unset, so every tile fades;
+        // a set tile never fades.
+        const idoc = reader._iframeWindow.document;
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
+        if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        let popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+        const tile = (label) => [...popup.querySelectorAll(".wv-filter-opt")].find(b => (b.title || "").indexOf(label) === 0);
+        for (const label of ["Has Tag", "Has Related", "Has Link"]) {
+            assert.equal(tile(label).dataset.inactive, "true", label + " fades: nothing visible has it");
+        }
+        assert.isNotOk(tile("Has Comment"), "no comment anywhere -> the tile is not even built");
+        assert.notEqual(tile("Highlight").dataset.inactive, "true", "a present type does not fade");
+        wv._wvCloseReaderFilterPopup(idoc);
+
+        // Give the highlight a tag: Has Tag comes back to life while the
+        // others stay faded.
+        hl.addTag("wv-fade-probe");
+        await hl.saveTx();
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+        assert.notEqual(tile("Has Tag").dataset.inactive, "true", "a visible annotation has a tag");
+        assert.equal(tile("Has Related").dataset.inactive, "true", "still nothing related");
+        wv._wvCloseReaderFilterPopup(idoc);
+
+        // A SET tile never fades, even when it leaves nothing visible -- and
+        // with nothing visible the unset ones all fade, tag or no tag.
+        await setPane({ hasLink: true });
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+        assert.equal(tile("Has Link").dataset.selected, "true");
+        assert.notEqual(tile("Has Link").dataset.inactive, "true", "set: never faded");
+        assert.equal(tile("Has Tag").dataset.inactive, "true", "nothing visible now, so the tag tile fades too");
+        wv._wvCloseReaderFilterPopup(idoc);
+        hl.removeTag("wv-fade-probe");
+        await hl.saveTx();
+        await wv._wvAnnPaneClear(reader);
+    });
+
     it("no error-console entries from the feature", function () {
         const errs = (Zotero.getErrors(true) || []).map(String);
         assert.deepEqual(errs.filter(e => /_wvAnnList|_wvAnnPane/.test(e)), []);

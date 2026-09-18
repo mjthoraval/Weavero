@@ -321,43 +321,50 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "hidden again");
     });
 
-    it("the two cues are independent: dot = a filter is in force here, green = the default was changed", async function () {
+    it("the funnel's cues: dot = this document departs from the default, green line = it follows a filtering default", async function () {
         const idoc = reader._iframeWindow.document;
         const btn = () => idoc.querySelector("#sidebarContainer .wv-al-btn");
         const cues = () => {
             wv._wvAnnListEnsureButton(reader, idoc);
+            const v = idoc.defaultView;
+            const bar = v.getComputedStyle(btn(), "::before");
             return {
                 dot: btn().classList.contains("wv-rf-active"),
-                green: (btn().querySelector("img").getAttribute("src") || "").indexOf("5fb236") >= 0,
+                green: btn().classList.contains("wv-al-def-on")
+                    && bar.content !== "none" && bar.backgroundColor.indexOf("95, 178, 54") >= 0,
+                bowlGone: (btn().querySelector("img").getAttribute("src") || "").indexOf("5fb236") < 0,
             };
         };
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
         await sleep(600);
-        assert.deepEqual(cues(), { dot: false, green: false }, "nothing set anywhere");
+        assert.deepEqual(cues(), { dot: false, green: false, bowlGone: true }, "nothing set anywhere");
 
         await setPane({ typesExcl: ["ink"] });
-        assert.deepEqual(cues(), { dot: true, green: false }, "this document's own filter");
+        assert.deepEqual(cues(), { dot: true, green: false, bowlGone: true }, "this document's own filter departs from an empty default");
 
+        // Made the default: the document now sits on it -- base state, no dot,
+        // green line (MJT, 2026-09-18: "with a chip active as default, it
+        // should not show the blue dot").
         await wv._wvAnnListUseAsDefault(reader);
-        assert.deepEqual(cues(), { dot: true, green: true }, "the same filter, now the default");
+        assert.deepEqual(cues(), { dot: false, green: true, bowlGone: true }, "the same filter, now the default");
 
-        // A default aimed at a type this document does not have is still in
-        // force here, and the default is still modified (MJT, 2026-09-18).
+        // A default aimed at a type this document does not have: still the
+        // base state here, still green.
         await setPane({ typesExcl: ["image"] });
         await wv._wvAnnListUseAsDefault(reader);
         assert.equal(wv._wvAnnPaneHiddenKeys(reader).length, 0, "no image annotation in the fixture");
-        assert.deepEqual(cues(), { dot: true, green: true }, "in force even with nothing to hide");
+        assert.deepEqual(cues(), { dot: false, green: true, bowlGone: true }, "following, nothing to hide");
 
-        // Overriding a changed default to show everything: no filter is in
-        // force here, but the default is still changed.
+        // Clear over a filtering default: away from the base state -> dot,
+        // and no green, because the default is not what this document uses.
         await wv._wvAnnPaneClear(reader);
         assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is recorded");
-        assert.deepEqual(cues(), { dot: false, green: true }, "override shows everything; default still changed");
+        assert.deepEqual(cues(), { dot: true, green: false, bowlGone: true }, "cleared over a default");
 
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
-        assert.deepEqual(cues(), { dot: false, green: false }, "back to a clean slate");
+        assert.deepEqual(cues(), { dot: false, green: false, bowlGone: true }, "back to a clean slate");
     });
 
     it("a document that overrides the default is told what the default would do", async function () {

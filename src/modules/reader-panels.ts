@@ -127,20 +127,6 @@ const RP_TAG_ICON = "chrome://zotero/skin/16/universal/tag.svg";
 // cooperates with the parent IMG's `-moz-context-properties: fill` to
 // inherit the outline colour.
 const RP_FUNNEL_DATA_URI = WV_FUNNEL_DATA_URI;
-// Same funnel with a GREEN bowl, for the annotations-pane button while the
-// GLOBAL DEFAULT hides something: every document starts filtered, and that is
-// worth seeing without opening the popup. Deliberately not the blue dot --
-// that one says "this pane is filtered right now" (MJT, 2026-09-18). Green is
-// Zotero's own annotation green.
-const RP_FUNNEL_DEFAULT_COLOR = "#5fb236";
-const RP_FUNNEL_DEFAULT_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
-    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
-    + '<clipPath id="wvdefbowl"><rect x="0" y="0" width="16" height="7"/></clipPath>'
-    + '<clipPath id="wvdefstem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
-    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="context-fill"/>'
-    + '<path clip-path="url(#wvdefbowl)" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="' + RP_FUNNEL_DEFAULT_COLOR + '"/>'
-    + '<path clip-path="url(#wvdefstem)" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="' + WV_FUNNEL_STEM_COLOR + '"/>'
-    + '</svg>');
 
 // Person glyph for Added By / Modified By chips — the same Font Awesome
 // "user" icon the reader uses for annotation authors (IconUser). Inline so
@@ -351,6 +337,12 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn:hover{background:rgba(127,127,127,.15);}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active,.wv-al-btn.wv-rf-active{position:relative;}",
+    // The pane funnel's "following a default" cue: the same green underline
+    // the chips carry, so one mark means one thing everywhere (MJT,
+    // 2026-09-18; it replaced a green-tinted bowl). `::after` is the dot.
+    ".wv-al-btn.wv-al-def-on{position:relative;}",
+    ".wv-al-btn.wv-al-def-on::before{content:'';position:absolute;left:6px;right:6px;bottom:3px;height:2px;",
+    "  border-radius:1px;background:rgba(95,178,54,0.95);pointer-events:none;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after,.wv-al-btn.wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
     // The list funnel is a NATIVE `.toolbar-button`, exactly like the funnel
@@ -11492,34 +11484,31 @@ class _ReaderPanelsMixin {
             // Blue dot = this pane is filtered right now. Green bowl = the
             // DEFAULT itself hides something, so every document starts that
             // way; the two are independent and can show together.
-            // TWO INDEPENDENT CUES (MJT's rule, 2026-09-18):
-            //   blue dot     a filter is in force in THIS pane -- inherited or
-            //                the document's own, whether or not it catches
-            //                anything here,
-            //   green bowl   the GLOBAL DEFAULT has been changed away from
-            //                "show everything". That is a fact about the
-            //                setting, not about this document, so it stays
-            //                green where a document overrides it; the popup's
-            //                scope row then says what the default would do
-            //                here.
-            const active = this._wvAnnPaneActive(reader);
+            // TWO CUES, one axis (MJT's rule, 2026-09-18, third revision):
+            //   blue dot         this document DEPARTS from the default --
+            //                    its own filter, or Clear over a default that
+            //                    filters. Not "a filter is active": a document
+            //                    sitting on the default is in its base state,
+            //                    however much the default hides;
+            //   green underline  this document FOLLOWS a default other than
+            //                    "show everything" -- the same mark the chips
+            //                    carry, with the same meaning.
+            // The two never show together: a document is either at the
+            // default or away from it. What the filter hides is the tooltip's
+            // business.
             const departs = this._wvAnnListIsDeparture(reader);
             const defaultModified = Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
-            btn.classList.toggle("wv-rf-active", active);
+            btn.classList.toggle("wv-rf-active", departs);
+            btn.classList.toggle("wv-al-def-on", !departs && defaultModified);
             const img = btn.querySelector("img.wv-filter-svg");
-            if (img) {
-                const want = defaultModified ? RP_FUNNEL_DEFAULT_DATA_URI : RP_FUNNEL_DATA_URI;
-                if (img.getAttribute("src") !== want) img.setAttribute("src", want);
-            }
-            const hidden = active ? this._wvAnnPaneHiddenKeys(reader).length : 0;
+            if (img && img.getAttribute("src") !== RP_FUNNEL_DATA_URI) img.setAttribute("src", RP_FUNNEL_DATA_URI);
+            const hidden = this._wvAnnPaneHiddenKeys(reader).length;
+            const effect = hidden
+                ? " — hides " + hidden + " annotation" + (hidden === 1 ? "" : "s") + " here"
+                : " — every annotation shown";
             const lines = ["Filter Annotations Pane (the document keeps every annotation)"];
-            if (active) {
-                lines.push((departs ? "This document has its own filter" : "The default filter applies here")
-                    + (hidden
-                        ? " — hides " + hidden + " annotation" + (hidden === 1 ? "" : "s") + " here"
-                        : " — nothing to hide in this document"));
-            }
-            if (defaultModified) lines.push("The default has been changed from showing everything");
+            if (departs) lines.push("This document departs from the default" + effect);
+            else if (defaultModified) lines.push("Following the default" + effect);
             btn.setAttribute("title", lines.join("\n"));
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsureButton err: " + e); }
     }

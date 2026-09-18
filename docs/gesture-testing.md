@@ -126,14 +126,27 @@ stroke, Annotations tab active.
 - [ ] **A funnel sits right of the sidebar search magnifier** (same look as
       the Bookmarks tab's funnel). It is absent on the Bookmarks, Outline and
       Thumbnails tabs.
+- [ ] **Hover the funnel** -> background tint only, exactly like the funnel in
+      the reader's own toolbar; the funnel icon must NOT change colour
+      (synthetic events cannot drive `:hover`, so this one is hand-only).
 - [ ] **Click the magnifier** -> the search input opens on its own line under
       the toolbar, full width, the funnel stays where it was; typing filters
       the list; Escape closes the line; whatever sat under the toolbar (sort
       bar or list) moved down and moves back.
-- [ ] **Click the funnel -> click the Ink chip** -> ink rows leave the list,
-      the ink strokes stay drawn on the page, the chip shows the excluded
-      style, the funnel gets the accent dot, the footer reads "This document
-      only" with "Use as default" / "Back to default".
+- [ ] **Open the funnel** -> the popup is titled "Filter Annotations Pane",
+      opens BESIDE the sidebar (over the reader, top-aligned with the button,
+      never covering the pane), and carries every row the funnel above the
+      reader has: colours, types + Has Comment, Has Tag / Related / Link,
+      tags, people (group libraries), Added and Modified date ranges, the
+      "Alt+Click to Exclude" hint. It must NOT carry "Hide Annotations in the
+      Reader" -- that one is document scope.
+- [ ] **Alt+click Ink** -> ink rows leave the pane, the strokes stay drawn on
+      the page. **Click a colour** -> only that colour is listed, the page
+      still shows everything. **Click an active chip again** -> neutral.
+      **Clear** and the red **x** reset every row.
+- [ ] The funnel gets the accent dot while anything is set, and the footer
+      says "N of M hidden from the pane" plus "this document only" with "Use
+      as default" / "Back to default" (or "default for all documents").
 - [ ] **Select All in the sidebar (Ctrl/Cmd+A)** -> no ink annotation is
       selected; arrow keys skip them.
 - [ ] **Click an ink stroke on the page** -> it selects on the page; the list
@@ -141,7 +154,7 @@ stroke, Annotations tab active.
 - [ ] **Reopen the tab / restart** -> ink still hidden in this document; a
       different document lists ink.
 - [ ] **Use as default** -> footer reads "Default for all documents";
-      Preferences -> Reader annotations list shows Ink unchecked; another
+      Preferences -> Reader annotations pane shows Ink unchecked; another
       document now hides ink too. **Back to default** on a document that
       departs restores the default set there.
 - [ ] **Toolbar funnel excludes Highlights** while the list hides Ink -> the
@@ -150,6 +163,23 @@ stroke, Annotations tab active.
       removed).
 - [ ] **In-view popup** for a hidden ink annotation (sidebar closed, click
       the stroke) still renders.
+- [ ] **Use as Default** -> the CHIPS DO NOT MOVE (an included chip stays
+      included; it must never turn into the equivalent set of exclusions), the
+      footer flips to "default for all documents", the two buttons give way to
+      **Clear Default**, the funnel's bowl turns GREEN (the default itself now
+      filters — distinct from the blue dot, which means this pane is filtered
+      right now), and Preferences -> Reader annotations pane shows the matching
+      types unchecked. Another document follows. **Back to Default** on a
+      departing document restores it; **Clear Default** returns every document
+      to showing everything.
+- [ ] **Zotero's own selector** (colours / tags at the foot of the pane) is
+      GONE by default while the funnel is enabled. Settings -> Reader
+      annotations pane -> "Keep Zotero's colour and tag selector" brings it
+      back live.
+- [ ] **Settings -> uncheck "Filter the annotations pane"** -> the funnel
+      disappears, the pane shows every annotation again, Zotero's selector
+      comes back. Re-checking restores the funnel and the document's own
+      filter.
 
 ## Items-list width (after touching the table CSS or registering columns)
 

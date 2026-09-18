@@ -170,12 +170,10 @@ const RP_POPUP_CSS = [
     "  color:inherit;cursor:pointer;padding:3px 8px;border-radius:10px;",
     "  border:1px solid rgba(127,127,127,0.4);background:rgba(127,127,127,0.10);}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-clear-btn:hover{background:rgba(127,127,127,0.22);}",
-    // Pane scope: "Back to Default" sits in the header beside Clear -- the
-    // two are the same kind of reset (MJT, 2026-09-18). It takes Clear's
-    // auto margin so the pair hugs the right edge together. Measured fit at
-    // the 340-px popup: title 127 + 91 + 42 + 24 + three 8-px gaps = 309 of
-    // 318.
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-back-btn+.wv-filter-clear-btn{margin-left:0;}",
+    // Pane scope, while a default other than "show everything" exists:
+    // [Clear All] [Reset] [x]. Reset follows Clear All, so only the first of
+    // the group carries the auto margin (MJT, 2026-09-18).
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-clear-btn.wv-al-back-btn{margin-left:0;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-clear-icon{background:rgba(127,127,127,0.18);border:none;padding:0;",
     "  color:rgb(220,72,72);cursor:pointer;width:24px;height:24px;border-radius:50%;position:relative;",
     "  display:inline-block;font-size:0;}",
@@ -11602,7 +11600,7 @@ class _ReaderPanelsMixin {
                     + " \u00b7 " + (n ? "hides " + n + " here" : "hides none here");
                 note.title = "The default filter, which this document does not use:\n"
                     + (parts.length ? parts.join("\n") : "(shows everything)")
-                    + "\n\nBack to Default applies it here.";
+                    + "\n\nReset applies it here.";
                 noteEl = note;
             }
         }
@@ -12106,15 +12104,21 @@ class _ReaderPanelsMixin {
             // Also clear the include channel (colour/tag/author).
             await applyF({ colors: [], tags: [], authors: [] });
         };
-        // "Clear" — clears every filter but keeps the popup open.
+        // Pane scope: while a default other than "show everything" exists the
+        // header reads [Clear All] [Reset] [x -- Back to Default and Close];
+        // without one it is the reader funnel's plain [Clear] [x -- Clear and
+        // Close], since "clear" and "back to the default" are then the same
+        // thing (MJT, 2026-09-18).
+        const paneDefault = pane && Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
+        // "Clear" / "Clear All" — clears every filter but keeps the popup open.
         const clearBtn = mk("button", "wv-filter-clear-btn");
         clearBtn.type = "button";
-        clearBtn.textContent = "Clear";
-        // In the pane scope, Clear is a choice FOR THIS DOCUMENT that outranks
-        // the default -- MJT expected it to return to the default instead
-        // (2026-09-18), so the tooltip says which is which.
-        clearBtn.title = pane
-            ? "Show every annotation in this document. This document's own choice: the default stays as it is, and Back to Default follows it again."
+        clearBtn.textContent = paneDefault ? "Clear All" : "Clear";
+        // With a default in place, Clear All is a choice FOR THIS DOCUMENT
+        // that outranks the default -- MJT expected it to return to the
+        // default instead, so the tooltip says which is which.
+        clearBtn.title = paneDefault
+            ? "Show every annotation in this document. This document's own choice: the default stays as it is; Reset follows it again."
             : "Clear all filters (keep this window open)";
         clearBtn.setAttribute("aria-label", "Clear all filters");
         clearBtn.addEventListener("click", async (e: any) => {
@@ -12123,39 +12127,39 @@ class _ReaderPanelsMixin {
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
             refreshBtn();
         });
-        // Red × -- reader scope: "Clear and Close", clears every filter AND
-        // dismisses. Pane scope: "Back to Default and Close" (MJT,
-        // 2026-09-18) -- the document follows the default again, then the
-        // popup goes; Clear stays the plain button beside it.
+        // Red × -- "Clear and Close": clears every filter AND dismisses. With
+        // a pane default in place it is "Back to Default and Close" instead:
+        // the document follows the default again, then the popup goes.
         const clearCloseBtn = mk("button", "wv-filter-clear-icon");
         clearCloseBtn.type = "button";
-        clearCloseBtn.title = pane ? "Back to Default and Close" : "Clear and Close";
+        clearCloseBtn.title = paneDefault ? "Back to Default and Close" : "Clear and Close";
         clearCloseBtn.setAttribute("aria-label", clearCloseBtn.title);
         clearCloseBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
-            if (pane) await this._wvAnnPaneBackToDefault(reader);
+            if (paneDefault) await this._wvAnnPaneBackToDefault(reader);
             else await clearState();
             refreshBtn();
             this._wvCloseReaderFilterPopup(idoc);
         });
-        // Show Clear only when at least one filter dimension is set; in the
-        // pane scope the × follows Back to Default instead (shown while the
-        // document departs). Hidden via inline visibility (preserves layout);
+        // Show Clear / Clear-and-Close only when at least one filter dimension
+        // is set; with a pane default, Reset and the × follow "this document
+        // departs" instead. Hidden via inline visibility (preserves layout);
         // the chip-toggle paths call `_wvRenderReaderFilterPopup` which
         // re-runs this check so the buttons appear/disappear in lockstep.
         const anyActive = pane ? this._wvAnnPaneActive(reader) : this._wvReaderFilterActive(reader);
-        const paneDeparts = pane && this._wvAnnListIsDeparture(reader);
+        const paneDeparts = paneDefault && this._wvAnnListIsDeparture(reader);
         clearBtn.style.visibility = anyActive ? "" : "hidden";
-        clearCloseBtn.style.visibility = (pane ? paneDeparts : anyActive) ? "" : "hidden";
-        if (pane) {
-            // "Back to Default" -- forget this document's own filter and
-            // follow the default again. Shown while the document departs
-            // (Clear is shown while something is set; after Clear over a
-            // default only this one remains).
+        clearCloseBtn.style.visibility = (paneDefault ? paneDeparts : anyActive) ? "" : "hidden";
+        head.appendChild(clearBtn);
+        if (paneDefault) {
+            // "Reset" -- forget this document's own filter and follow the
+            // default again; just before the ×, shown while the document
+            // departs (after Clear All over a default only Reset and the ×
+            // remain).
             const backBtn = mk("button", "wv-filter-clear-btn wv-al-back-btn");
             backBtn.type = "button";
-            backBtn.textContent = "Back to Default";
-            backBtn.title = "Forget this document's filter and follow the default";
+            backBtn.textContent = "Reset";
+            backBtn.title = "Back to Default";
             backBtn.setAttribute("aria-label", "Back to Default");
             backBtn.style.visibility = paneDeparts ? "" : "hidden";
             backBtn.addEventListener("click", async (e: any) => {
@@ -12165,7 +12169,6 @@ class _ReaderPanelsMixin {
             });
             head.appendChild(backBtn);
         }
-        head.appendChild(clearBtn);
         head.appendChild(clearCloseBtn);
         stack.appendChild(head);
 

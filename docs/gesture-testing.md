@@ -194,10 +194,13 @@ stroke, Annotations tab active.
       means this document DEPARTS from the default, not that a filter is
       active), and Preferences -> Reader annotations pane shows the matching
       types unchecked. Another document follows. Add a chip on top -> dot AND
-      line. **Back to Default** (header, beside Clear) restores a departing
-      document; **Clear Default** returns every document to showing
-      everything. Alt+click **Use as Default** ADDS this document's chips to
-      the existing default instead of replacing it.
+      line. While a default exists the header reads **Clear All** /
+      **Reset** (tooltip "Back to Default", just before the red ×, which is
+      then "Back to Default and Close"); without one it is the plain
+      **Clear** / "Clear and Close" pair and no Reset. **Reset** restores a
+      departing document; **Clear Default** returns every document to
+      showing everything. Alt+click **Use as Default** ADDS this document's
+      chips to the existing default instead of replacing it.
 - [ ] **Zotero's own selector** (colours / tags at the foot of the pane) is
       GONE by default while the funnel is enabled. Settings -> Reader
       annotations pane -> "Keep Zotero's colour and tag selector" brings it

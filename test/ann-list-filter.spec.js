@@ -382,16 +382,22 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
         assert.equal(popup.querySelector(".wv-al-foot-count").textContent, "Every annotation shown");
         assert.equal(popup.querySelector(".wv-al-scope").textContent, "This Document Only");
-        // Back to Default sits in the HEADER beside Clear (the same kind of
-        // reset), not in the footer; Use as Default stays in the footer.
-        const back = popup.querySelector(".wv-rf-head .wv-al-back-btn");
-        assert.isOk(back, "Back to Default in the header");
+        // With a default in place the header reads [Clear All] [Reset] [x]:
+        // Reset (tooltip "Back to Default") just before the x, shown while
+        // the document departs; Use as Default stays in the footer.
+        const head = popup.querySelector(".wv-rf-head");
+        const back = head.querySelector(".wv-al-back-btn");
+        assert.isOk(back, "Reset in the header");
+        assert.equal(back.textContent, "Reset");
+        assert.equal(back.title, "Back to Default");
         assert.equal(back.style.visibility, "", "shown while the document departs");
-        assert.equal(popup.querySelector(".wv-rf-head .wv-filter-clear-btn:not(.wv-al-back-btn)").style.visibility, "hidden",
-            "Clear hidden: nothing is set in this document");
+        assert.equal(back.nextElementSibling.className, "wv-filter-clear-icon", "just before the red x");
+        const clearAll = head.querySelector(".wv-filter-clear-btn:not(.wv-al-back-btn)");
+        assert.equal(clearAll.textContent, "Clear All", "renamed while a default exists");
+        assert.equal(clearAll.style.visibility, "hidden", "hidden: nothing is set in this document");
         assert.deepEqual([...popup.querySelectorAll(".wv-al-foot-btn")].map(b => b.textContent), ["Use as Default"]);
-        const x = popup.querySelector(".wv-rf-head .wv-filter-clear-icon");
-        assert.equal(x.title, "Back to Default and Close", "the red x follows Back to Default in the pane scope");
+        const x = head.querySelector(".wv-filter-clear-icon");
+        assert.equal(x.title, "Back to Default and Close", "the red x follows Reset while a default exists");
         assert.equal(x.style.visibility, "", "shown while the document departs");
         const note = popup.querySelector(".wv-al-scope-note");
         assert.isOk(note, "the default is stated where it is overridden");
@@ -399,6 +405,20 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         wv._wvCloseReaderFilterPopup(idoc);
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
+
+        // No default other than "show everything": the reader funnel's plain
+        // pair, [Clear] [x -- Clear and Close], and no Reset at all.
+        await setPane({ typesExcl: ["ink"] });
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        const p2 = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+        const h2 = p2.querySelector(".wv-rf-head");
+        assert.isNotOk(h2.querySelector(".wv-al-back-btn"), "no Reset without a default");
+        assert.equal(h2.querySelector(".wv-filter-clear-btn").textContent, "Clear");
+        assert.equal(h2.querySelector(".wv-filter-clear-btn").style.visibility, "", "shown: a filter is set");
+        assert.equal(h2.querySelector(".wv-filter-clear-icon").title, "Clear and Close");
+        assert.equal(h2.querySelector(".wv-filter-clear-icon").style.visibility, "");
+        wv._wvCloseReaderFilterPopup(idoc);
+        await wv._wvAnnPaneClear(reader);
     });
 
     it("the default's chips stay marked and seeded in every document, and the footer names the default where the document departs", async function () {

@@ -140,6 +140,44 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.isFalse(wv._wvAnnListIsDeparture(reader), "equal to the default -> no record");
     });
 
+    it("a per-document filter survives the store round trip, every dimension", async function () {
+        // The earlier specs read the CACHED state, so a writer that kept
+        // only two keys passed them all while every document's own filter
+        // came back as "show everything" (2026-09-18). Write, drop the cache,
+        // re-read from the store.
+        const set = { types: [], typesExcl: ["ink"], colors: [], colorsExcl: ["#ffd400"],
+                      tags: ["alpha"], hasTag: true, dateAddedMode: "last", dateAddedN: 3, dateAddedUnit: "h" };
+        await setPane(set);
+        const written = wv._wvAnnPaneCanon(wv._wvAnnPaneState(reader));
+        wv._wvAnnPaneForget(reader);
+        const reread = wv._wvAnnPaneCanon(wv._wvAnnPaneState(reader));
+        assert.deepEqual(reread, written, "what was written is what comes back");
+        assert.isTrue(wv._wvAnnListIsDeparture(reader));
+        assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"], "and it still filters after the re-read");
+
+        // A "show everything" override over a filtering default is a real
+        // record and must survive as such.
+        await wv._wvAnnPaneClearDefault(reader, reader._iframeWindow.document);
+        await setPane({ typesExcl: ["ink"], colorsExcl: [], tags: [], hasTag: null, dateAddedMode: null, dateAddedN: 1, dateAddedUnit: "d" });
+        await wv._wvAnnListUseAsDefault(reader);
+        await wv._wvAnnPaneClear(reader);
+        wv._wvAnnPaneForget(reader);
+        assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is a record");
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneState(reader)), {}, "and it shows everything");
+        await wv._wvAnnPaneClearDefault(reader, reader._iframeWindow.document);
+        await wv._wvAnnPaneBackToDefault(reader);
+    });
+
+    it("the two older store dialects still read, and the corrupted empty pair reads as no record", function () {
+        const norm = (v) => wv._wvAnnListNormalizeStored(v);
+        assert.deepEqual(norm({ inc: ["highlight"], excl: ["ink"] }), { types: ["highlight"], typesExcl: ["ink"] });
+        assert.deepEqual(norm({ inc: [], excl: ["ink"] }), { typesExcl: ["ink"] });
+        assert.isNull(norm({ inc: [], excl: [] }), "what the broken writer left behind");
+        assert.deepEqual(norm({}), {}, "a genuine show-everything override");
+        assert.deepEqual(norm({ typesExcl: ["ink"], bogus: 1 }), { typesExcl: ["ink"] }, "unknown keys are dropped");
+        assert.isNull(norm(null));
+    });
+
     it("a sort write keeps the departure", async function () {
         await setPane({ typesExcl: ["ink"] });
         wv._wvAnnSetSort("dateModified", "desc", reader);

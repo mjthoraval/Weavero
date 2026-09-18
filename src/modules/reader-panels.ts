@@ -2183,6 +2183,43 @@ class _ReaderPanelsMixin {
         })();
     }
 
+    /** The stored per-document pane filter, in TODAY's shape (the canon
+     *  state: types/typesExcl, colors/colorsExcl, tags, people, flags,
+     *  dates), whatever dialect the file holds:
+     *    - the current shape passes through, keys the state knows only;
+     *    - `{}` is a real record: "show everything here" over a default
+     *      that filters;
+     *    - the dev.5-11 shape `{inc, excl}` (types only) maps to
+     *      types/typesExcl -- and when BOTH its lists are empty it reads as
+     *      NO record. Every filter the 0.19.10-dev.12..32 builds wrote came
+     *      back as that empty pair (found 2026-09-18: the writer copied
+     *      `inc`/`excl` out of a canon object that has neither, so a
+     *      document's own filter collapsed to "show everything" as soon as
+     *      it was read back), so the empty pair is corruption, not a choice;
+     *    - `listHide` (older still): an exclude list.
+     *  Returns null for "no record". */
+    _wvAnnListNormalizeStored(this: any, list: any): any {
+        if (!list || typeof list !== "object") return null;
+        const known = Object.keys(this._wvAnnPaneBlankState());
+        const keys = Object.keys(list);
+        if (keys.some(k => known.indexOf(k) >= 0)) {
+            const out: any = {};
+            for (const k of keys) {
+                if (known.indexOf(k) < 0) continue;
+                out[k] = Array.isArray(list[k]) ? list[k].slice() : list[k];
+            }
+            return out;
+        }
+        if (!keys.length) return {};
+        const inc = Array.isArray(list.inc) ? list.inc.slice() : [];
+        const excl = Array.isArray(list.excl) ? list.excl.slice() : [];
+        if (!inc.length && !excl.length) return null;
+        const out: any = {};
+        if (inc.length) out.types = inc;
+        if (excl.length) out.typesExcl = excl;
+        return out;
+    }
+
     /** Entry shape: {mode, dir, keys}. Legacy bare-array entries
      *  (dev.18-25) read as manual. */
     _wvAnnOrderEntry(this: any, libraryID: number, itemKey: string): any {
@@ -2192,17 +2229,14 @@ class _ReaderPanelsMixin {
             if (Array.isArray(e)) return { mode: "manual", dir: "asc", keys: e };
             if (e && typeof e === "object") {
                 const out: any = { mode: e.mode || "position", dir: e.dir, keys: Array.isArray(e.keys) ? e.keys : [] };
-                // Annotations-list departure (issue #43): {inc, excl}, the
-                // same include/exclude pair the reader funnel keeps, present
-                // only when the document differs from the global default.
-                // `listHide` is the dev-build shape (an exclude list only).
+                // Annotations-pane departure (issue #43): the canon state,
+                // present only when the document differs from the global
+                // default. Older dialects are read by the normaliser.
                 if (e.list && typeof e.list === "object") {
-                    out.list = {
-                        inc: Array.isArray(e.list.inc) ? e.list.inc.slice() : [],
-                        excl: Array.isArray(e.list.excl) ? e.list.excl.slice() : [],
-                    };
+                    const norm = this._wvAnnListNormalizeStored(e.list);
+                    if (norm) out.list = norm;
                 }
-                else if (Array.isArray(e.listHide)) out.list = { inc: [], excl: e.listHide.slice() };
+                else if (Array.isArray(e.listHide) && e.listHide.length) out.list = { typesExcl: e.listHide.slice() };
                 return out;
             }
         } catch (_) {}
@@ -2225,16 +2259,20 @@ class _ReaderPanelsMixin {
             };
             // `list`: an object sets the departure, null clears it, and
             // undefined (a sort write) keeps whatever the entry had -- a sort
-            // change must never drop the list choice (issue #43).
+            // change must never drop the list choice (issue #43). Stored in
+            // the canon shape VERBATIM: the earlier writer kept only an
+            // `inc`/`excl` pair and threw the rest of the state away (see
+            // `_wvAnnListNormalizeStored`).
             if (entry.list && typeof entry.list === "object") {
-                next.list = {
-                    inc: Array.isArray(entry.list.inc) ? entry.list.inc.slice() : [],
-                    excl: Array.isArray(entry.list.excl) ? entry.list.excl.slice() : [],
-                };
+                const norm = this._wvAnnListNormalizeStored(entry.list);
+                if (norm) next.list = norm;
             }
             else if (entry.list !== null && prev && typeof prev === "object") {
-                if (prev.list && typeof prev.list === "object") next.list = prev.list;
-                else if (Array.isArray(prev.listHide)) next.list = { inc: [], excl: prev.listHide.slice() };
+                if (prev.list && typeof prev.list === "object") {
+                    const norm = this._wvAnnListNormalizeStored(prev.list);
+                    if (norm) next.list = norm;
+                }
+                else if (Array.isArray(prev.listHide) && prev.listHide.length) next.list = { typesExcl: prev.listHide.slice() };
             }
             this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = next;
             const path = this._wvAnnOrderPath();

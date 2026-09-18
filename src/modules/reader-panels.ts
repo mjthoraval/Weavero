@@ -243,8 +243,11 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-grouphead{font-size:10px;opacity:.55;text-transform:uppercase;",
     "  letter-spacing:.04em;margin:3px 2px 1px;}",
     // Faded chip — value not present in the current filtered view (Tag Selector
-    // style). Still clickable.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt[data-inactive=\"true\"]{opacity:.35;}",
+    // style). Still clickable. .6 is the Tag Selector's own figure
+    // (_tagSelector.scss `.disabled`); the earlier .35 made a dark chip -- the
+    // black swatch, the icon tiles in the dark theme -- all but vanish on the
+    // dark popup (MJT, 2026-09-18).
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt[data-inactive=\"true\"]{opacity:.6;}",
     // Bottom "Alt+Click to exclude" hint (same as library).
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-bottom-controls{display:flex;justify-content:center;align-items:center;margin-top:4px;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-bottom-hint{font-size:10px;opacity:0.5;text-align:center;padding:4px 0;}",

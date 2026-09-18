@@ -40,7 +40,7 @@ const RP_BM_CTX_ID = "wv-bm-reader-ctxmenu";
 // Wiring version for the window-scoped context-menu listeners. Bump to force a
 // clean unhook/re-hook; a plain boolean guard let a plugin reload leave the old
 // instance's handler in place (see the comment at the bookmark ctx wiring).
-const RP_BM_CTX_WIRE_V = 16;   // v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
+const RP_BM_CTX_WIRE_V = 17;   // v17: Bookmarks-tab right-click menu (page numbers, MJT 2026-09-18); v16: Outline-tab right-click menu (#42, page numbers); v11: Tab-out stuck-check includes body (every wired-closure change MUST bump this); v10: Tab-out fallback + clear-x fix + rename-input exclusions (dev.1-7 shipped WITHOUT a bump -- existing readers kept v9 closures and none of those fixes wired; 2026-07-29); v9: Esc keeps focus in the left pane; v8: sidebar click focus; v7-5: search wiring
 // Wiring version for the reader PANEL DOM (bookmark tab/view, outline view,
 // filter buttons). A hot plugin update (install/reload WITHOUT a Zotero restart)
 // leaves an already-open reader's injected buttons wired to the DEAD instance --
@@ -2995,7 +2995,18 @@ class _ReaderPanelsMixin {
                         const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                         if (!P) return;
                         const t = e.target;
-                        const tab = t && t.closest && t.closest("#viewOutline");
+                        if (!t || !t.closest) return;
+                        // Same gesture on the Bookmarks tab, same menu shape:
+                        // its rows carry "p. N" labels too, and they hide the
+                        // same way (MJT, 2026-09-18). No takeover gate here --
+                        // the tab is Weavero's own.
+                        const bmTab = t.closest("." + RP_BM_TAB_CLASS);
+                        if (bmTab) {
+                            e.preventDefault(); e.stopPropagation();
+                            P._wvBmShowTabMenu(reader, idoc, bmTab);
+                            return;
+                        }
+                        const tab = t.closest("#viewOutline");
                         if (!tab) return;
                         const container = idoc.getElementById("sidebarContainer");
                         if (!container || !container.classList.contains(RP_OUTLINE_TAB_ON)) return;
@@ -3006,7 +3017,8 @@ class _ReaderPanelsMixin {
                 const tabCtxPdH = (e: any) => {
                     try {
                         const t = e.target;
-                        if (t && t.closest && t.closest("#viewOutline")) e.preventDefault();
+                        if (!t || !t.closest) return;
+                        if (t.closest("#viewOutline") || t.closest("." + RP_BM_TAB_CLASS)) e.preventDefault();
                     } catch (_) {}
                 };
                 (idoc as any)._wvOutlineTabClickH = tabClickH;
@@ -9643,6 +9655,116 @@ class _ReaderPanelsMixin {
             menu.style.top = (r.bottom + 2) + "px";
             this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
         } catch (e) { Zotero.debug("[Weavero] outline tab menu err: " + e); }
+    }
+
+    /** Whether the Bookmarks tab shows "p. N" labels for this attachment.
+     *  Same two-level resolution as the Outline tab: the per-document
+     *  override wins, else the global `weavero.bookmarkPageNumbers` pref
+     *  (default on). The override shares `outlines.json` -> settings[key],
+     *  which is the per-document READER-PANEL display bag (it already holds
+     *  the outline's `pageNumbers`), under its own `bmPageNumbers` key --
+     *  bookmarks.json holds bookmark RECORDS, not view settings. */
+    _wvBmPagesShown(att: any): boolean {
+        try {
+            if (att && att.libraryID != null && att.itemKey) {
+                const s = this._wvOutlineFileSettings(att.libraryID, att.itemKey);
+                if (s && typeof s.bmPageNumbers === "boolean") return s.bmPageNumbers;
+            }
+        } catch (_) {}
+        try { return this._getBookmarkPageNumbers(); } catch (_) { return true; }
+    }
+
+    /** Set the labels for one document. Departure-only, like the outline's:
+     *  choosing the global value removes the record. */
+    async _wvBmSetPageNumbers(att: any, shown: boolean): Promise<boolean> {
+        const globalOn = this._getBookmarkPageNumbers();
+        await this._wvOutlineSetFileSettings(att.libraryID, att.itemKey,
+            { bmPageNumbers: shown === globalOn ? undefined : shown });
+        return this._wvBmPagesShown(att);
+    }
+
+    /** Flip the labels for one document. */
+    async _wvBmTogglePageNumbers(att: any): Promise<boolean> {
+        return this._wvBmSetPageNumbers(att, !this._wvBmPagesShown(att));
+    }
+
+    /** Right-click menu on the sidebar's Bookmarks TAB -- the Outline tab's
+     *  menu, verbatim in shape (heading, one row per state, tick on the
+     *  document's state, "(default)" on the Settings value). */
+    _wvBmShowTabMenu(reader: any, idoc: any, anchor: any) {
+        try {
+            this._wvCloseReaderBmContextMenu(idoc);
+            const att = this._wvReaderAtt(reader);
+            if (!att || att.libraryID == null || !att.itemKey) return;
+            const shown = this._wvBmPagesShown(att);
+            const globalOn = this._getBookmarkPageNumbers();
+            const menu = idoc.createElementNS(NS_HTML_RP, "div");
+            menu.id = RP_BM_CTX_ID;
+            const close = () => this._wvCloseReaderBmContextMenu(idoc);
+            const rerender = () => {
+                try {
+                    const P: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (P) P._wvReaderRenderBmList(reader, idoc);
+                } catch (_) {}
+            };
+            const row = (label: string, ticked: boolean, value: boolean) => {
+                const it = idoc.createElementNS(NS_HTML_RP, "div");
+                it.className = "wv-ctx-item";
+                const ic = idoc.createElementNS(NS_HTML_RP, "span");
+                ic.className = "wv-ctx-ic";
+                ic.textContent = ticked ? "\u2713" : "";
+                const lb = idoc.createElementNS(NS_HTML_RP, "span");
+                lb.textContent = label;
+                it.appendChild(ic); it.appendChild(lb);
+                it.addEventListener("click", () => {
+                    close();
+                    this._wvBmSetPageNumbers(att, value).then(rerender, rerender);
+                });
+                menu.appendChild(it);
+            };
+            const hd = idoc.createElementNS(NS_HTML_RP, "div");
+            hd.className = "wv-ctx-heading";
+            hd.textContent = "Page numbers";
+            menu.appendChild(hd);
+            row("Show" + (globalOn ? " (default)" : ""), shown, true);
+            row("Hide" + (globalOn ? "" : " (default)"), !shown, false);
+            (idoc.body || idoc.documentElement).appendChild(menu);
+            const r = anchor.getBoundingClientRect();
+            menu.style.left = Math.max(6, r.left) + "px";
+            menu.style.top = (r.bottom + 2) + "px";
+            this._wvOutlineWireMenuDismiss(reader, idoc, menu, anchor, close);
+        } catch (e) { Zotero.debug("[Weavero] bookmarks tab menu err: " + e); }
+    }
+
+    /** Propagate `weavero.bookmarkPageNumbers` flips to every OPEN reader's
+     *  bookmarks list at once (the outline watch's twin). */
+    _wvWireBmPagesPrefWatch() {
+        try {
+            const g: any = Zotero;
+            const tag = this._wvWireTag();
+            if (g._wvBmPagesPrefObs) {
+                if (g._wvBmPagesPrefObsVer === tag) return;
+                try { Zotero.Prefs.unregisterObserver(g._wvBmPagesPrefObs); } catch (_) {}
+                delete g._wvBmPagesPrefObs;
+            }
+            g._wvBmPagesPrefObsVer = tag;
+            g._wvBmPagesPrefObs = Zotero.Prefs.registerObserver(
+                "weavero.bookmarkPageNumbers",
+                () => {
+                    try {
+                        const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
+                        if (!lp) return;
+                        for (const r of (Zotero.Reader._readers || [])) {
+                            try {
+                                const idoc = r._iframeWindow && r._iframeWindow.document;
+                                if (!idoc) continue;
+                                if (idoc.querySelector("." + RP_BM_TAB_CLASS)) lp._wvReaderRenderBmList(r, idoc);
+                            } catch (_) {}
+                        }
+                    } catch (_) {}
+                },
+            );
+        } catch (e) { Zotero.debug("[Weavero] bookmark pages pref watch err: " + e); }
     }
 
     /** Propagate `weavero.outlinePageNumbers` flips to every OPEN reader's
@@ -17477,7 +17599,11 @@ class _ReaderPanelsMixin {
         page.className = "wv-bm-reader-page";
         // Annotation bookmarks don't store a pageLabel; derive it live from the
         // annotation so they show "p. N" like position/text bookmarks.
-        const pageLbl = this._bmReaderPageLabel(bm);
+        // Hidden per document (Bookmarks-tab right-click) or globally
+        // (`weavero.bookmarkPageNumbers`), the same two levels as the Outline
+        // tab -- the hover card still carries the page, since it is the
+        // on-demand detail view (MJT, 2026-09-18).
+        const pageLbl = this._wvBmPagesShown(att) ? this._bmReaderPageLabel(bm) : "";
         page.textContent = pageLbl ? ("p. " + pageLbl) : "";
         // No inline rename/delete buttons on hover (user preference) —
         // both actions live in the right-click context menu instead.

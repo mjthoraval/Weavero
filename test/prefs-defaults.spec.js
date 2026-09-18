@@ -26,7 +26,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
     const PANE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
         "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "showNativeAnnSelector",
-        "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "compactTitleBar",
+        "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "bookmarkPageNumbers", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
         "enableAnnSort", "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableAppLinks",
@@ -43,12 +43,13 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableSmsScheme", "enableSpotifyScheme", "enableTabGroups", "enableTabSessions", "enableTabsAndWindows",
         "enableTabsFileTypeFilter", "enableTabsLibraryFilter", "enableTagsCountAuto", "enableTelScheme",
         "enableUriUtilities", "enableVisualExtras", "enableVscodeScheme", "enableZoomScheme", "enableZoteroLinks",
-        "itemCountBreakdown", "newMainWindow", "noteOpenInDeckWindow", "readerItemPane", "separateTaskbarButtons",
+        "itemCountBreakdown", "newMainWindow", "noteOpenInDeckWindow", "outlinePageNumbers",
+        "readerItemPane", "separateTaskbarButtons",
         "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs"];
 
     // Getters written as `v === undefined ? true : !!v`.
     const DEFAULT_TRUE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "bookmarkPageNumbers",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
@@ -60,7 +61,8 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "enableReaderViewIcons", "enableRelatedColumn", "enableRelations", "enableRightPane", "enableSelectionTarget",
         "enableTabGroups", "enableTabSessions", "enableTabsFileTypeFilter", "enableTabsLibraryFilter",
         "enableTagsCountAuto", "enableUriUtilities", "enableVisualExtras", "enableZoteroLinks", "inlineLinks",
-        "readerItemPane", "readerOutlineTakeover", "recolorAmLinks", "showLibraryBookmarksInReader", "windowIcons"];
+        "outlinePageNumbers", "readerItemPane", "readerOutlineTakeover", "recolorAmLinks",
+        "showLibraryBookmarksInReader", "windowIcons"];
 
     const defaultOf = (k) => {
         try { return db.getBoolPref("weavero." + k); }

@@ -913,6 +913,15 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return true; }
     }
+    /** Global default for the "p. N" labels in the reader's Bookmarks tab.
+     *  Default ON. A per-document override (outlines.json settings ->
+     *  `bmPageNumbers`) wins; `_wvBmPagesShown` resolves the two. */
+    _getBookmarkPageNumbers() {
+        try {
+            const v = Zotero.Prefs.get("weavero.bookmarkPageNumbers");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
     /** Master switch for inline markdown rendering inside the popup.
      *  Default true. When false: _commentHasIconableContent ignores markdown
      *  marks (so the icon doesn't appear on markdown-only comments) and
@@ -2142,6 +2151,10 @@ class WeaveroPlugin {
                 // "p. N" labels in the Outline tab (issue #42) — on by default;
                 // a per-document override lives in outlines.json `settings`.
                 "outlinePageNumbers",
+                // "p. N" labels in the reader's Bookmarks tab — on by default;
+                // its per-document override shares the outlines.json settings
+                // bag under `bmPageNumbers`.
+                "bookmarkPageNumbers",
                 // Annotations-list funnel (issue #43): which types the reader's
                 // Annotations tab lists by default — all on; a per-document
                 // departure lives in ann-order.json `listHide`.
@@ -5650,6 +5663,7 @@ Zotero.Weavero = {
                 // Outline tab).
                 try { _Weavero._wvWireOutlineTakeoverPrefWatch(); } catch (e) {}
                 try { _Weavero._wvWireOutlinePagesPrefWatch(); } catch (e) {}
+                try { _Weavero._wvWireBmPagesPrefWatch(); } catch (e) {}
                 // One-shot import of picks from PikaPei/zotero-default-attachment
                 // (guarded by weavero.defaultChildMigrated). Fire-and-forget:
                 // startup must not block on it.

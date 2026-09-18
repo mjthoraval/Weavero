@@ -25,7 +25,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
 
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
     const PANE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "showNativeAnnSelector",
         "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
@@ -48,7 +48,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
 
     // Getters written as `v === undefined ? true : !!v`.
     const DEFAULT_TRUE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",

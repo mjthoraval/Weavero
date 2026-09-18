@@ -1,17 +1,19 @@
 /* global describe, it, before, after, assert, Zotero, Services, Components, PathUtils, IOUtils */
-// Annotations-list funnel (issue #43): hide annotation TYPES from the
-// reader's sidebar list while the page keeps drawing them.
+// Annotations-pane funnel (issue #43): filter the reader's annotations pane
+// while the document keeps every annotation.
 //
 // Contract under test:
-//   * resolution — the six global `weavero.annListShow<Type>` prefs give the
-//     default hidden set; a per-document DEPARTURE in ann-order.json wins;
-//     storing a set equal to the default removes the departure (the outline
-//     page-numbers rule); a sort write must not drop the departure;
-//   * the live reader — hiding a type removes its rows from the sidebar
-//     (Zotero's own `_hidden` flag, so Select All skips them too) while the
-//     page view still holds the annotation; showing it again restores the
-//     row; the funnel button and its accent dot follow the state.
-describe("Weavero — annotations-list funnel (issue #43)", function () {
+//   * the popup is the READER FUNNEL's, scoped to the pane -- same renderer,
+//     same include/exclude gestures, every dimension (colour, type, has-*,
+//     tags, people, dates), minus the reader-only "Hide Annotations" toggle;
+//   * resolution -- the six global `weavero.annListShow<Type>` prefs give the
+//     default (a type exclude set); a per-document DEPARTURE in ann-order.json
+//     wins; a state equal to the default removes the departure (the outline
+//     page-numbers rule); a sort write must not drop it;
+//   * the live reader -- a filtered type leaves the pane (Zotero's own
+//     `_hidden`, so Select All skips it too) while the page view still holds
+//     the annotation; clearing restores it.
+describe("Weavero — annotations-pane funnel (issue #43)", function () {
     this.timeout(90000);
     let wv, win, att, hl, ink, reader;
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -38,7 +40,6 @@ describe("Weavero — annotations-list funnel (issue #43)", function () {
         return body + xref + "trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n"
             + xrefPos + "\n%%EOF\n";
     }
-    const prefsOf = (types) => Object.fromEntries(types.map(t => [t, Zotero.Prefs.get(wv._wvAnnListPrefName(t))]));
     const cards = (idoc) => [...idoc.querySelectorAll("#annotationsView .annotation[data-sidebar-annotation-id]")]
         .map(c => c.getAttribute("data-sidebar-annotation-id"));
     const pageKeys = () => {
@@ -51,10 +52,16 @@ describe("Weavero — annotations-list funnel (issue #43)", function () {
         const ir = Cu.waiveXrays(reader._internalReader);
         return (ir._state.annotations || []).filter(a => !a._hidden).map(a => String(a.id));
     };
+    /** Mutate the pane state the way a chip click does, then apply. */
+    const setPane = async (patch) => {
+        const st = wv._wvAnnPaneState(reader);
+        Object.assign(st, patch);
+        await wv._wvAnnPaneApply(reader);
+    };
 
     before(async function () {
         wv = Zotero.Weavero && Zotero.Weavero.plugin;
-        if (!wv || typeof wv._wvAnnListHidden !== "function") this.skip();
+        if (!wv || typeof wv._wvAnnPaneState !== "function") this.skip();
         win = Zotero.getMainWindow();
         const path = PathUtils.join(PathUtils.tempDir, "wv-al-" + Date.now() + ".pdf");
         await IOUtils.writeUTF8(path, minimalPDFBytes());
@@ -80,11 +87,11 @@ describe("Weavero — annotations-list funnel (issue #43)", function () {
             && r._internalReader && r._iframeWindow), 30000, "reader");
         try { reader._internalReader.toggleSidebar(true); } catch (e) {}
         try { reader._internalReader.setSidebarView("annotations"); } catch (e) {}
-        await waitFor(() => cards(reader._iframeWindow.document).length === 2, 30000, "two sidebar cards");
+        await waitFor(() => cards(reader._iframeWindow.document).length === 2, 30000, "two pane cards");
     });
 
     after(async function () {
-        try { await wv._wvAnnListSetHidden(reader, null); } catch (e) {}
+        try { await wv._wvAnnPaneBackToDefault(reader); } catch (e) {}
         for (const t of wv._wvAnnListTypes()) { try { Zotero.Prefs.set(wv._wvAnnListPrefName(t), true); } catch (e) {} }
         try { if (reader && reader.tabID) win.Zotero_Tabs.close(reader.tabID); } catch (e) {}
         try { if (hl) await hl.eraseTx(); } catch (e) {}
@@ -92,100 +99,312 @@ describe("Weavero — annotations-list funnel (issue #43)", function () {
         try { if (att) await att.eraseTx(); } catch (e) {}
     });
 
-    it("global default: all six types shown, prefs registered TRUE", function () {
-        assert.deepEqual(wv._wvAnnListGlobalHidden(), []);
-        const p = prefsOf(wv._wvAnnListTypes());
-        for (const t of wv._wvAnnListTypes()) assert.strictEqual(p[t], true, t);
+    it("global default: nothing filtered, the six prefs registered TRUE", function () {
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), {});
+        for (const t of wv._wvAnnListTypes()) {
+            assert.strictEqual(Zotero.Prefs.get(wv._wvAnnListPrefName(t)), true, t);
+        }
+        assert.isFalse(wv._wvAnnPaneActive(reader));
+        assert.deepEqual(wv._wvAnnPaneHiddenKeys(reader), []);
     });
 
-    it("a per-document set is stored only as a DEPARTURE from the default", async function () {
+    it("the state carries every dimension the reader funnel has", function () {
+        const pane = Object.keys(wv._wvAnnPaneBlankState()).sort();
+        const funnel = Object.keys(wv._wvReaderFilterState(reader)).sort();
+        for (const k of funnel) assert.include(pane, k, "pane state is missing " + k);
+        // …plus the include arrays the reader funnel delegates to Zotero.
+        for (const k of ["colors", "tags", "addedBy"]) assert.include(pane, k);
+    });
+
+    it("include and exclude resolve the way the reader funnel resolves them", async function () {
+        await setPane({ types: ["highlight"], typesExcl: [] });
+        assert.deepEqual(wv._wvAnnListHidden(reader).sort(),
+            ["image", "ink", "note", "text", "underline"], "include = list only these");
+        await setPane({ types: ["highlight", "ink"], typesExcl: ["ink"] });
+        assert.include(wv._wvAnnListHidden(reader), "ink", "an exclude wins over an include");
+        assert.notInclude(wv._wvAnnListHidden(reader), "highlight");
+        let next = wv._toggleIncludeExclude("note", [], [], false);
+        assert.deepEqual(next, { include: ["note"], exclude: [] });
+        next = wv._toggleIncludeExclude("note", next.include, next.exclude, false);
+        assert.deepEqual(next, { include: [], exclude: [] });
+        next = wv._toggleIncludeExclude("ink", [], [], true);
+        assert.deepEqual(next, { include: [], exclude: ["ink"] });
+        await wv._wvAnnPaneClear(reader);
+    });
+
+    it("a per-document state is stored only as a DEPARTURE from the default", async function () {
         assert.isFalse(wv._wvAnnListIsDeparture(reader));
-        await wv._wvAnnListSetHidden(reader, ["ink"]);
+        await setPane({ typesExcl: ["ink"] });
         assert.isTrue(wv._wvAnnListIsDeparture(reader));
-        assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"]);
-        // Equal to the default (nothing hidden) -> the record goes away.
-        await wv._wvAnnListSetHidden(reader, []);
-        assert.isFalse(wv._wvAnnListIsDeparture(reader));
-        assert.deepEqual(wv._wvAnnListHidden(reader), []);
+        await wv._wvAnnPaneClear(reader);
+        assert.isFalse(wv._wvAnnListIsDeparture(reader), "equal to the default -> no record");
     });
 
     it("a sort write keeps the departure", async function () {
-        await wv._wvAnnListSetHidden(reader, ["ink"]);
+        await setPane({ typesExcl: ["ink"] });
         wv._wvAnnSetSort("dateModified", "desc", reader);
         await sleep(600);
-        assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"], "listHide survived the sort write");
+        assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"], "the list choice survived the sort write");
         wv._wvAnnSetSort("position", "asc", reader);
         await sleep(600);
         assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"]);
-        await wv._wvAnnListSetHidden(reader, null);
+        await wv._wvAnnPaneClear(reader);
     });
 
     it("the funnel sits in the sidebar toolbar beside the search box", function () {
         const idoc = reader._iframeWindow.document;
         const host = idoc.querySelector("#sidebarContainer .sidebar-toolbar .end .wv-al-actions");
         assert.isOk(host, "host in the toolbar's end slot");
-        assert.isOk(host.querySelector("button.wv-al-btn"), "funnel button");
+        const btn = host.querySelector("button.wv-al-btn");
+        assert.isOk(btn, "funnel button");
+        assert.include(btn.className, "toolbar-button", "a native toolbar button: native hover, no icon recolour");
         assert.isOk(idoc.querySelector("#sidebarContainer .sidebar-toolbar .end .search-box"), "native search box still there");
-        assert.isFalse(host.querySelector("button.wv-al-btn").classList.contains("wv-bm-filter-active"), "no dot while nothing is hidden");
+        assert.isFalse(btn.classList.contains("wv-rf-active"), "no dot while nothing is filtered");
     });
 
-    it("hiding ink removes its row from the list, keeps it on the page, and Select All skips it", async function () {
+    it("filtering a type empties its rows from the pane, keeps them on the page, and Select All skips them", async function () {
         const idoc = reader._iframeWindow.document;
         assert.sameMembers(cards(idoc), [hl.key, ink.key], "both rows before");
-        await wv._wvAnnListSetHidden(reader, ["ink"]);
-        wv._wvAnnListApply(reader, true);
+        await setPane({ typesExcl: ["ink"] });
         await waitFor(() => cards(idoc).length === 1, 15000, "ink row gone");
         assert.deepEqual(cards(idoc), [hl.key]);
         assert.sameMembers(visibleKeys(), [hl.key], "Zotero's own visible set (Select All) excludes ink");
-        await waitFor(() => pageKeys().indexOf(ink.key) >= 0, 15000, "ink still on the page view");
-        assert.sameMembers(pageKeys(), [hl.key, ink.key], "page keeps both");
+        assert.sameMembers(pageKeys(), [hl.key, ink.key], "the page keeps both");
         const btn = idoc.querySelector("#sidebarContainer .wv-al-btn");
-        assert.isTrue(btn.classList.contains("wv-bm-filter-active"), "accent dot while a type is hidden");
+        assert.isTrue(btn.classList.contains("wv-rf-active"), "accent dot while the pane is filtered");
     });
 
-    it("the popup marks the hidden chip and reports the document as a departure", async function () {
+    it("the popup is the reader funnel's, minus the document-scope toggle", async function () {
         const idoc = reader._iframeWindow.document;
         const btn = idoc.querySelector("#sidebarContainer .wv-al-btn");
         wv._wvAnnListTogglePopup(reader, idoc, btn);
         const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
         assert.equal(popup.dataset.wvKind, "list");
-        const chips = [...popup.querySelectorAll(".wv-filter-opt")];
-        assert.equal(chips.length, 6, "one chip per type, present or not");
-        const excluded = chips.filter(c => c.dataset.excluded === "true");
-        assert.equal(excluded.length, 1);
-        assert.include(popup.querySelector(".wv-al-foot").textContent, "This document only");
-        assert.isOk(popup.querySelector(".wv-al-foot-btn"), "Use as default / Back to default offered");
+        assert.equal(popup.querySelector(".wv-rf-title").textContent, "Filter Annotations Pane");
+        assert.equal(popup.querySelectorAll(".wv-filter-opt[data-excluded='true']").length, 1,
+            "the excluded type carries the funnel's own styling");
+        assert.isOk(popup.querySelector(".wv-filter-clear-btn"), "Clear");
+        assert.isOk(popup.querySelector(".wv-filter-clear-icon"), "Clear and Close");
+        assert.isOk(popup.querySelector(".wv-filter-bottom-controls"), "the Alt+Click hint");
+        assert.isNull(popup.querySelector(".wv-rf-hideann"),
+            "no 'Hide Annotations in the Reader' — that one is document scope");
+        // The footer states two different things in two rows: the effect and
+        // the scope. Both must be readable on their own.
+        assert.include(popup.querySelector(".wv-al-foot-count").textContent, "hidden from the pane");
+        assert.equal(popup.querySelector(".wv-al-scope").textContent, "This Document Only");
+        assert.isFalse(popup.querySelector(".wv-al-foot-scope").classList.contains("wv-al-is-default"),
+            "the scope block is only tinted while it IS the default");
+        // Beside the sidebar, top-aligned with the button: it must not cover
+        // the pane it filters.
+        const pr = popup.getBoundingClientRect();
+        const br = btn.getBoundingClientRect();
+        const sr = idoc.getElementById("sidebarContainer").getBoundingClientRect();
+        assert.equal(Math.round(pr.top), Math.round(br.top), "top-aligned with the button");
+        assert.isAtLeast(Math.round(pr.left), Math.round(sr.right), "beside the sidebar, not over it");
         wv._wvCloseReaderFilterPopup(idoc);
         assert.isNull(idoc.getElementById("wv-reader-filter-popup-v2"));
     });
 
-    it("showing ink again restores the row; the default footer returns", async function () {
+    it("clearing restores the rows and the default footer", async function () {
         const idoc = reader._iframeWindow.document;
-        await wv._wvAnnListSetHidden(reader, []);
-        wv._wvAnnListApply(reader, true);
+        await wv._wvAnnPaneClear(reader);
         await waitFor(() => cards(idoc).length === 2, 15000, "ink row back");
         assert.sameMembers(visibleKeys(), [hl.key, ink.key]);
         assert.isFalse(wv._wvAnnListIsDeparture(reader));
-        const btn = idoc.querySelector("#sidebarContainer .wv-al-btn");
-        assert.isFalse(btn.classList.contains("wv-bm-filter-active"));
+        assert.isFalse(idoc.querySelector("#sidebarContainer .wv-al-btn").classList.contains("wv-rf-active"));
     });
 
-    it("'Use as default' writes the prefs and drops the departure; a pref flip re-applies live", async function () {
-        const idoc = reader._iframeWindow.document;
-        await wv._wvAnnListSetHidden(reader, ["ink"]);
+    it("'Use as Default' keeps the filter EXACTLY as it stands, chips included", async function () {
+        // The first cut normalised an include set into the equivalent exclude
+        // set: same result, but one selected chip became five excluded ones in
+        // front of the user (MJT, 2026-09-18).
+        await setPane({ types: ["highlight"], typesExcl: [] });
+        const beforeCanon = wv._wvAnnPaneCanon(wv._wvAnnPaneState(reader));
         await wv._wvAnnListUseAsDefault(reader);
-        assert.strictEqual(Zotero.Prefs.get(wv._wvAnnListPrefName("ink")), false);
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneState(reader)), beforeCanon,
+            "the document's own state is untouched");
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), beforeCanon,
+            "and the default is that same state, verbatim");
         assert.isFalse(wv._wvAnnListIsDeparture(reader), "no departure once the default matches");
-        assert.deepEqual(wv._wvAnnListHidden(reader), ["ink"]);
-        wv._wvAnnListEnsure(reader, idoc);
-        await waitFor(() => cards(idoc).length === 1, 15000, "ink hidden by the default");
-        // Flip the pref back: the watcher re-applies to the open reader.
+        // Settings still tells the truth about which types the pane leaves out.
+        assert.strictEqual(Zotero.Prefs.get(wv._wvAnnListPrefName("highlight")), true);
+        assert.strictEqual(Zotero.Prefs.get(wv._wvAnnListPrefName("ink")), false);
+    });
+
+    it("a Settings checkbox rewrites the default's type part; 'Clear Default' drops it", async function () {
+        const idoc = reader._iframeWindow.document;
+        // Continues from the previous case: the default lists only highlights.
         Zotero.Prefs.set(wv._wvAnnListPrefName("ink"), true);
-        await waitFor(() => cards(idoc).length === 2, 15000, "ink back after the pref flip");
+        await sleep(800);
+        assert.notInclude(wv._wvAnnListHidden(reader), "ink", "the checkbox won over the include set");
+        await waitFor(() => cards(idoc).length === 2, 15000, "ink listed again");
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await sleep(600);
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), {}, "default gone");
+        assert.deepEqual(wv._wvAnnListTypes().filter(t => !wv._getAnnListShow(t)), [],
+            "every checkbox back on");
+        await waitFor(() => cards(idoc).length === 2, 15000, "everything listed");
+    });
+
+    it("disabling the feature removes the funnel, unfilters the pane and restores Zotero's selector", async function () {
+        const idoc = reader._iframeWindow.document;
+        const sc = idoc.getElementById("sidebarContainer");
+        await setPane({ typesExcl: ["ink"] });
+        await waitFor(() => cards(idoc).length === 1, 15000, "ink hidden");
+        assert.isTrue(sc.classList.contains("wv-al-nonative"),
+            "Zotero's own selector is hidden while the funnel replaces it");
+        try {
+            Zotero.Prefs.set("weavero.enableAnnPaneFilter", false);
+            await waitFor(() => !idoc.querySelector(".wv-al-actions"), 15000, "funnel gone");
+            await waitFor(() => cards(idoc).length === 2, 15000, "pane unfiltered again");
+            assert.isFalse(sc.classList.contains("wv-al-nonative"), "the native selector is back");
+            assert.sameMembers(pageKeys(), [hl.key, ink.key], "the page never changed");
+        }
+        finally {
+            Zotero.Prefs.set("weavero.enableAnnPaneFilter", true);
+        }
+        await waitFor(() => !!idoc.querySelector(".wv-al-actions"), 15000, "funnel back");
+        // The document's own filter is still on record and applies again.
+        await waitFor(() => cards(idoc).length === 1, 15000, "ink hidden again");
+        await wv._wvAnnPaneClear(reader);
+    });
+
+    it("the native selector can be kept on request", async function () {
+        const idoc = reader._iframeWindow.document;
+        const sc = idoc.getElementById("sidebarContainer");
+        assert.isTrue(sc.classList.contains("wv-al-nonative"), "hidden by default");
+        try {
+            Zotero.Prefs.set("weavero.showNativeAnnSelector", true);
+            await waitFor(() => !sc.classList.contains("wv-al-nonative"), 15000, "selector shown");
+        }
+        finally {
+            Zotero.Prefs.set("weavero.showNativeAnnSelector", false);
+        }
+        await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "hidden again");
+    });
+
+    it("the two cues are independent: dot = a filter is in force here, green = the default was changed", async function () {
+        const idoc = reader._iframeWindow.document;
+        const btn = () => idoc.querySelector("#sidebarContainer .wv-al-btn");
+        const cues = () => {
+            wv._wvAnnListEnsureButton(reader, idoc);
+            return {
+                dot: btn().classList.contains("wv-rf-active"),
+                green: (btn().querySelector("img").getAttribute("src") || "").indexOf("5fb236") >= 0,
+            };
+        };
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
+        await sleep(600);
+        assert.deepEqual(cues(), { dot: false, green: false }, "nothing set anywhere");
+
+        await setPane({ typesExcl: ["ink"] });
+        assert.deepEqual(cues(), { dot: true, green: false }, "this document's own filter");
+
+        await wv._wvAnnListUseAsDefault(reader);
+        assert.deepEqual(cues(), { dot: true, green: true }, "the same filter, now the default");
+
+        // A default aimed at a type this document does not have is still in
+        // force here, and the default is still modified (MJT, 2026-09-18).
+        await setPane({ typesExcl: ["image"] });
+        await wv._wvAnnListUseAsDefault(reader);
+        assert.equal(wv._wvAnnPaneHiddenKeys(reader).length, 0, "no image annotation in the fixture");
+        assert.deepEqual(cues(), { dot: true, green: true }, "in force even with nothing to hide");
+
+        // Overriding a changed default to show everything: no filter is in
+        // force here, but the default is still changed.
+        await wv._wvAnnPaneClear(reader);
+        assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is recorded");
+        assert.deepEqual(cues(), { dot: false, green: true }, "override shows everything; default still changed");
+
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
+        assert.deepEqual(cues(), { dot: false, green: false }, "back to a clean slate");
+    });
+
+    it("a document that overrides the default is told what the default would do", async function () {
+        const idoc = reader._iframeWindow.document;
+        await setPane({ typesExcl: ["ink"] });
+        await wv._wvAnnListUseAsDefault(reader);   // default: hide ink
+        await wv._wvAnnPaneClear(reader);          // this document: show everything
+        if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
+        wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+        const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+        assert.equal(popup.querySelector(".wv-al-foot-count").textContent, "Every annotation shown");
+        assert.equal(popup.querySelector(".wv-al-scope").textContent, "This Document Only");
+        const note = popup.querySelector(".wv-al-scope-note");
+        assert.isOk(note, "the default is stated where it is overridden");
+        assert.include(note.textContent, "default hides 1 here");
+        wv._wvCloseReaderFilterPopup(idoc);
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
+    });
+
+    it("the default's own chips stay visible, and green, in every reader", async function () {
+        const idoc = reader._iframeWindow.document;
+        const openPane = async () => {
+            if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
+            wv._wvAnnListTogglePopup(reader, idoc, idoc.querySelector("#sidebarContainer .wv-al-btn"));
+            return waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "pane popup");
+        };
+        const chip = (popup, label) => [...popup.querySelectorAll(".wv-filter-opt")]
+            .find(b => (b.title || "").indexOf(label) === 0);
+
+        // The default aims at two types this fixture does not have. Without
+        // the seeding the popup would say nothing about them at all -- the
+        // default's parameters would be invisible exactly where they bite.
+        await setPane({ typesExcl: ["image", "note"] });
+        await wv._wvAnnListUseAsDefault(reader);
+        let popup = await openPane();
+        for (const label of ["Image", "Note"]) {
+            const c = chip(popup, label);
+            assert.isOk(c, label + " chip rendered although the document has none");
+            assert.isTrue(c.classList.contains("wv-al-def-chip"), label + " carries the default marking");
+            assert.include(c.title, "Part of the default filter");
+            assert.equal(c.dataset.excluded, "true", label + " shows the default's own direction");
+        }
+        assert.isFalse(chip(popup, "Highlight").classList.contains("wv-al-def-chip"),
+            "a type the default leaves alone stays unmarked");
+        wv._wvCloseReaderFilterPopup(idoc);
+
+        // A document that OVERRIDES the default still shows what the default
+        // sets -- marked, but carrying this document's own (empty) state.
+        await wv._wvAnnPaneClear(reader);
+        assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is recorded");
+        popup = await openPane();
+        const img = chip(popup, "Image");
+        assert.isOk(img, "still rendered where the document overrides the default");
+        assert.isTrue(img.classList.contains("wv-al-def-chip"));
+        assert.notEqual(img.dataset.excluded, "true", "the override's state is what the chip paints");
+        assert.equal(img.dataset.inactive, "true", "and it reads as absent from this document");
+        wv._wvCloseReaderFilterPopup(idoc);
+
+        // A tri-state flag the default sets marks its tile the same way.
+        await setPane({ hasTag: true });
+        await wv._wvAnnListUseAsDefault(reader);
+        popup = await openPane();
+        assert.isTrue(chip(popup, "Has Tag").classList.contains("wv-al-def-chip"), "Has Tag marked");
+        assert.isFalse(chip(popup, "Has Link").classList.contains("wv-al-def-chip"), "Has Link untouched");
+        wv._wvCloseReaderFilterPopup(idoc);
+
+        // The READER funnel has no default of its own: nothing is marked
+        // there, and nothing is seeded into it either.
+        const rbtn = idoc.querySelector(".wv-reader-filter-btn");
+        assert.isOk(rbtn, "the reader funnel button");
+        wv._wvToggleReaderFilterPopup(reader, idoc, rbtn);
+        const rp = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "reader popup");
+        assert.equal(rp.dataset.wvKind, "filter");
+        assert.equal(rp.querySelectorAll(".wv-al-def-chip").length, 0, "no default marking in the reader funnel");
+        assert.isNotOk([...rp.querySelectorAll(".wv-filter-opt")].find(b => (b.title || "").indexOf("Image") === 0),
+            "and no chip for a type the document does not have");
+        wv._wvCloseReaderFilterPopup(idoc);
+
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
     });
 
     it("no error-console entries from the feature", function () {
         const errs = (Zotero.getErrors(true) || []).map(String);
-        assert.deepEqual(errs.filter(e => /_wvAnnList/.test(e)), []);
+        assert.deepEqual(errs.filter(e => /_wvAnnList|_wvAnnPane/.test(e)), []);
     });
 });

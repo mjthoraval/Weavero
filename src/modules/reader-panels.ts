@@ -127,6 +127,20 @@ const RP_TAG_ICON = "chrome://zotero/skin/16/universal/tag.svg";
 // cooperates with the parent IMG's `-moz-context-properties: fill` to
 // inherit the outline colour.
 const RP_FUNNEL_DATA_URI = WV_FUNNEL_DATA_URI;
+// Same funnel with a GREEN bowl, for the annotations-pane button while the
+// GLOBAL DEFAULT hides something: every document starts filtered, and that is
+// worth seeing without opening the popup. Deliberately not the blue dot --
+// that one says "this pane is filtered right now" (MJT, 2026-09-18). Green is
+// Zotero's own annotation green.
+const RP_FUNNEL_DEFAULT_COLOR = "#5fb236";
+const RP_FUNNEL_DEFAULT_DATA_URI = "data:image/svg+xml," + encodeURIComponent(
+    '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    + '<clipPath id="wvdefbowl"><rect x="0" y="0" width="16" height="7"/></clipPath>'
+    + '<clipPath id="wvdefstem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
+    + '<path fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="context-fill"/>'
+    + '<path clip-path="url(#wvdefbowl)" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="' + RP_FUNNEL_DEFAULT_COLOR + '"/>'
+    + '<path clip-path="url(#wvdefstem)" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '" fill="' + WV_FUNNEL_STEM_COLOR + '"/>'
+    + '</svg>');
 
 // Person glyph for Added By / Modified By chips — the same Font Awesome
 // "user" icon the reader uses for annotation authors (IconUser). Inline so
@@ -254,17 +268,22 @@ const RP_POPUP_CSS = [
     "  width:8px;height:8px;margin-right:4px;border-radius:50%;background:var(--wv-tag-color,currentColor);",
     "  border:1px solid rgba(127,127,127,0.3);vertical-align:-1px;flex:0 0 auto;}",
     // ---- toolbar button ----
-    "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
+    "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg,.wv-al-btn .wv-filter-svg{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
     // Dropmarker chevron next to the funnel icon — same 8×8 inline SVG
     // the tabs-menu file-type button uses; signals "opens a popup" so
     // the affordance matches Zotero's native filter buttons.
-    "." + RP_FILTER_BTN_CLASS + " .wv-rf-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;margin-left:1px;}",
+    "." + RP_FILTER_BTN_CLASS + " .wv-rf-chev,.wv-al-btn .wv-rf-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;margin-left:1px;}",
     // Annotations-list funnel (issue #43): host in the sidebar toolbar's
     // `.end` slot, shown only while the NATIVE Annotations view is active
     // (Weavero's Bookmarks/Outline tabs strip `.active` from #viewAnnotations
     // and React drops the search box on the other views). The button reuses
     // the bookmarks-funnel classes so the two funnels are one visual family.
     ".wv-al-actions{display:none;align-items:center;gap:2px;}",
+    // Zotero's own selector (colours / tags / authors, bottom of the pane)
+    // duplicates what the pane funnel does -- and its filter hides on the page
+    // too. Hidden by default once the pane funnel is on; the Settings pane
+    // brings it back (MJT, 2026-09-18). Class-gated so the pref decides.
+    "#sidebarContainer.wv-al-nonative #annotationsView #selector{display:none;}",
     "#sidebarContainer:has(#viewAnnotations.active) .wv-al-actions{display:flex;}",
     // The native search box expands to a 130-px input INSIDE `.end`; with a
     // funnel beside it that squeezes to nothing, so the OPEN input drops to
@@ -290,13 +309,44 @@ const RP_POPUP_CSS = [
     "#sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end .search-box.expanded > .btn:not(.magnifier){position:absolute;top:44px;right:12px;z-index:6;}",
     "#sidebarContainer:has(.wv-al-actions):has(.search-box.expanded) > .sidebar-toolbar + *{margin-top:30px;}",
     // Popup footer: where this document stands relative to the default.
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11px;}",
-    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-label{flex:1;opacity:.7;}",
+    "#" + RP_FILTER_POPUP_ID + "[data-wv-kind='list']{min-width:232px;max-width:340px;width:max-content;}",
+    // Two DIFFERENT facts, two rows (MJT, 2026-09-18): what the filter leaves
+    // out right now, and where the setting applies. Run together on one line
+    // they read as a single sentence and neither is legible.
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot{display:flex;flex-direction:column;align-items:stretch;gap:5px;margin-top:7px;padding-top:6px;border-top:1px solid rgba(127,127,127,.25);font-size:11px;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-count{opacity:.75;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-count.wv-al-count-on{opacity:1;font-weight:600;}",
+    // The scope badge carries the same green as the funnel's bowl when it is
+    // the default, so the two cues agree at a glance.
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-scope{background:rgba(127,127,127,0.18);border-radius:6px;padding:5px 6px;margin:1px 0;}",
+    // Green block while this IS the default, the same green as the funnel's
+    // bowl, so the two cues agree without adding another control.
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-scope.wv-al-is-default{background:rgba(95,178,54,0.16);}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope{white-space:nowrap;opacity:.8;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-scope-note{white-space:nowrap;opacity:.55;font-style:italic;}",
+    // Every chip the GLOBAL DEFAULT sets carries the funnel's green, in every
+    // reader, and is rendered even where this document has nothing of that
+    // kind -- so the default parameters stay readable, including in a document
+    // that overrides them (MJT, 2026-09-18). The chip's own include/exclude
+    // painting still shows through inside the ring.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip{background:rgba(95,178,54,0.16);box-shadow:inset 0 0 0 1px rgba(95,178,54,0.6);}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip[data-inactive=\"true\"]{opacity:.75;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-row .wv-al-foot-btn:first-of-type{margin-left:auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn:hover{background:rgba(127,127,127,.15);}",
-    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active{position:relative;}",
-    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
+    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active,.wv-al-btn.wv-rf-active{position:relative;}",
+    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after,.wv-al-btn.wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
+    // The list funnel is a NATIVE `.toolbar-button`, exactly like the funnel
+    // above the reader: Zotero's own hover changes the BACKGROUND and leaves
+    // the icon alone. The bookmarks funnel's `.wv-bm-filter-btn:hover` sets
+    // `color: var(--fill-primary)` instead, which turned the funnel white on
+    // hover -- wrong next to the native toolbar (MJT, 2026-09-18). It also
+    // No box rule of our own either: the sidebar toolbar sizes every
+    // `.toolbar-button` at 28x28 with no padding, the same box the toolbar
+    // funnel gets, so the two are pixel-identical (a `width:auto;padding:0 2px`
+    // override made this one 33 px wide -- measured, dev.6).
     // Annotations tab icon: same blue dot while a non-default SORT is active
     // (matches the filter buttons' active cue -- user call, 2026-08-03).
     "#viewAnnotations.wv-ann-sort-on{position:relative;}",
@@ -889,8 +939,12 @@ const RP_SORTINDEX_ALGO = 8;
 // Wire version for the annotation-manager render wrapper (annotations-tab
 // sort). BUMP on any change to the content-side wrapper -- a reload must
 // unhook the stale closure and re-hook.
-const WV_ANNSORT_WIRE_V = 3;   // v3: list-hide marking (issue #43)
-const WV_ANNLIST_WRAP_V = 1;   // per-view setAnnotations wrap (issue #43)
+// Both content-side wraps (the annotation manager's render, each view's
+// setAnnotations) are stamped with `_wvWireTag()` -- build PLUS a per-instance
+// nonce -- never a constant: a constant let the PREVIOUS instance's wrapper
+// survive a hot reload while the new instance skipped re-wiring, which mixed
+// an old view wrap with a new render wrapper and dropped pane-hidden
+// annotations from the page (2026-09-18, the documented wrap-stamp rule).
 // Flag lines that sit OUT OF BAND in the PDF's content stream -- running heads,
 // footers, marginalia. Zotero's sortIndex keys on a character's index in that
 // stream, which for body text tracks reading order but for page furniture does
@@ -1146,7 +1200,7 @@ const RP_BM_CSS = [
     ".wv-bm-reader-head{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid rgba(127,127,127,.2);}",
     ".wv-bm-reader-head .wv-bm-reader-htitle{flex:1;font-weight:600;opacity:.75;font-size:11px;text-transform:uppercase;letter-spacing:.04em;}",
     ".wv-bm-reader-add{display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;border-radius:5px;color:var(--fill-secondary);}",
-    ".wv-bm-reader-add:hover{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-reader-add:hover{background-color:var(--fill-quinary);}",
     ".wv-bm-reader-add:active{background-color:var(--fill-quarternary);}",
     // Single-row header: scope toggle (segmented) on the left, + button right.
     ".wv-bm-scope-toggle{display:flex;align-items:center;gap:6px;padding:6px 8px;}",
@@ -1218,9 +1272,9 @@ const RP_BM_CSS = [
     // expanded look) — distinguishes "search is open" from "search is
     // closed but you're hovering".
     ".wv-bm-search-btn{display:flex;align-items:center;justify-content:center;border:none;background:transparent;cursor:pointer;border-radius:5px;color:var(--fill-secondary);transition:background-color 0.12s ease-out,color 0.12s ease-out;}",
-    ".wv-bm-search-btn:not(.wv-bm-search-active):hover{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-search-btn:not(.wv-bm-search-active):hover{background-color:var(--fill-quinary);}",
     ".wv-bm-search-btn:not(.wv-bm-search-active):active{background-color:var(--fill-quarternary);}",
-    ".wv-bm-search-btn.wv-bm-search-active{background-color:var(--fill-quarternary);color:var(--fill-primary);}",
+    ".wv-bm-search-btn.wv-bm-search-active{background-color:var(--fill-quarternary);}",
     // Filter funnel button — same dimensions as the search button so the
     // toolbar reads as a row of equal-sized affordances. `wv-bm-filter-open`
     // marks the popover-open state; `wv-bm-filter-active` marks "any chip
@@ -1233,9 +1287,9 @@ const RP_BM_CSS = [
     // surfaces when any chip is selected — same style/position as the
     // library filter button's `.wv-filter-tb-dot` (see constants.ts).
     ".wv-bm-filter-btn{display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;border-radius:5px;color:var(--fill-secondary);position:relative;}",
-    ".wv-bm-filter-btn:hover{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-filter-btn:hover{background-color:var(--fill-quinary);}",
     ".wv-bm-filter-btn:active{background-color:var(--fill-quarternary);}",
-    ".wv-bm-filter-btn.wv-bm-filter-open{background-color:var(--fill-quinary);color:var(--fill-primary);}",
+    ".wv-bm-filter-btn.wv-bm-filter-open{background-color:var(--fill-quinary);}",
     // Funnel icon sits at x=4..24 (padding 4 + 20-wide svg). Dot at
     // top:3, left:18 lands at icon's top-right corner — same offset
     // the library filter uses against its own 20-wide funnel icon.
@@ -1813,7 +1867,8 @@ class _ReaderPanelsMixin {
             const amRaw = ir && ir._annotationManager;
             if (!amRaw) return false;
             const am: any = (Components as any).utils.waiveXrays(amRaw);
-            if (am.__wvAnnSortWireV === WV_ANNSORT_WIRE_V) return true;
+            const tag = this._wvWireTag();
+            if (am.__wvAnnSortWireV === tag) return true;
             const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
             if (!iw || typeof iw.eval !== "function") return false;
             iw.__wvAM = amRaw;
@@ -1829,17 +1884,17 @@ class _ReaderPanelsMixin {
                 // arrangement otherwise; wire v2, 2026-08-03).
                 "    var rk = window.__wvAnnRank || {};" +
                 "    var arr = m._annotations;" +
-                // List-hide (issue #43): ride Zotero's own `_hidden` so the
+                // Pane filter (issue #43): ride Zotero's own `_hidden` so the
                 // sidebar, Select All, Shift-range and the arrow keys all
                 // treat the type as absent; the page gets them back through
                 // the per-view setAnnotations wrap (_wvAnnListWireViews).
                 // setFilter() recomputes `_hidden` and ends in render(), so
                 // this re-marks on every native pass; un-hiding is a
                 // setFilter() re-run (see _wvAnnListApply).
-                "    var lh = window.__wvAnnListHide || null;" +
+                "    var lh = window.__wvAnnListHideKeys || null;" +
                 "    for (var j = 0; j < arr.length; j++) {" +
                 "      var an = arr[j];" +
-                "      if (lh && lh[an.type]) { an._hidden = true; an._wvListHidden = true; }" +
+                "      if (lh && lh[an.id]) { an._hidden = true; an._wvListHidden = true; }" +
                 "      else if (an._wvListHidden) { delete an._wvListHidden; }" +
                 "    }" +
                 "    var dec = arr.map(function (a, i) {" +
@@ -1855,9 +1910,9 @@ class _ReaderPanelsMixin {
                 "  } catch (e) {}" +
                 "  return m.__wvOrigRender();" +
                 "};" +
-                "m.__wvAnnSortWireV = " + WV_ANNSORT_WIRE_V + ";" +
+                "m.__wvAnnSortWireV = " + JSON.stringify(tag) + ";" +
                 "})()");
-            return am.__wvAnnSortWireV === WV_ANNSORT_WIRE_V;
+            return am.__wvAnnSortWireV === tag;
         } catch (e) { return false; }
     }
 
@@ -2122,9 +2177,17 @@ class _ReaderPanelsMixin {
             if (Array.isArray(e)) return { mode: "manual", dir: "asc", keys: e };
             if (e && typeof e === "object") {
                 const out: any = { mode: e.mode || "position", dir: e.dir, keys: Array.isArray(e.keys) ? e.keys : [] };
-                // Annotations-list departure (issue #43): only present when the
-                // document differs from the global default.
-                if (Array.isArray(e.listHide)) out.listHide = e.listHide.slice();
+                // Annotations-list departure (issue #43): {inc, excl}, the
+                // same include/exclude pair the reader funnel keeps, present
+                // only when the document differs from the global default.
+                // `listHide` is the dev-build shape (an exclude list only).
+                if (e.list && typeof e.list === "object") {
+                    out.list = {
+                        inc: Array.isArray(e.list.inc) ? e.list.inc.slice() : [],
+                        excl: Array.isArray(e.list.excl) ? e.list.excl.slice() : [],
+                    };
+                }
+                else if (Array.isArray(e.listHide)) out.list = { inc: [], excl: e.listHide.slice() };
                 return out;
             }
         } catch (_) {}
@@ -2145,11 +2208,19 @@ class _ReaderPanelsMixin {
                 dir: entry.dir,
                 keys: Array.isArray(entry.keys) ? entry.keys.slice() : [],
             };
-            // `listHide`: an array sets the departure, null clears it, and
+            // `list`: an object sets the departure, null clears it, and
             // undefined (a sort write) keeps whatever the entry had -- a sort
             // change must never drop the list choice (issue #43).
-            if (Array.isArray(entry.listHide)) next.listHide = entry.listHide.slice();
-            else if (entry.listHide !== null && prev && typeof prev === "object" && Array.isArray(prev.listHide)) next.listHide = prev.listHide.slice();
+            if (entry.list && typeof entry.list === "object") {
+                next.list = {
+                    inc: Array.isArray(entry.list.inc) ? entry.list.inc.slice() : [],
+                    excl: Array.isArray(entry.list.excl) ? entry.list.excl.slice() : [],
+                };
+            }
+            else if (entry.list !== null && prev && typeof prev === "object") {
+                if (prev.list && typeof prev.list === "object") next.list = prev.list;
+                else if (Array.isArray(prev.listHide)) next.list = { inc: [], excl: prev.listHide.slice() };
+            }
             this._wvAnnOrderDoc.orders[libraryID + ":" + itemKey] = next;
             const path = this._wvAnnOrderPath();
             try { await IOUtils.makeDirectory(PathUtils.parent(path), { ignoreExisting: true }); } catch (_) {}
@@ -10666,25 +10737,169 @@ class _ReaderPanelsMixin {
         return "weavero.annListShow" + type.charAt(0).toUpperCase() + type.slice(1);
     }
 
-    /** Types hidden by the global default (pref false). */
-    _wvAnnListGlobalHidden(): string[] {
-        const out: string[] = [];
+    /** A pane-filter state with every dimension the reader funnel has. Same
+     *  field names as `_wvReaderFilterState` so the shared renderer and the
+     *  shared matchers (`_wvReaderPluginMatch` / `_wvReaderNativeMatch`) work
+     *  unchanged -- PLUS the include arrays the reader funnel delegates to
+     *  Zotero's own filter (colours / tags / people). The pane cannot use that
+     *  channel: it hides on the page too, which is the whole point of #43. */
+    _wvAnnPaneBlankState(): any {
+        return {
+            types: [], typesExcl: [],
+            colors: [], colorsExcl: [],
+            tags: [], tagsExcl: [],
+            addedBy: [], addedByExcl: [],
+            modifiedBy: [], modifiedByExcl: [],
+            hasComment: null, hasRelated: null, hasLink: null, hasTag: null,
+            dateAddedMode: null, dateAddedN: 1, dateAddedUnit: "d",
+            dateAddedFrom: null, dateAddedTo: null, dateAddedNeg: false,
+            dateModMode: null, dateModN: 1, dateModUnit: "d",
+            dateModFrom: null, dateModTo: null, dateModNeg: false,
+        };
+    }
+
+    /** The global default, stored VERBATIM (`weavero.annPaneDefault`, JSON):
+     *  "Use as Default" must leave the chips exactly as the user set them.
+     *  Normalising an include set into the equivalent exclude set produced the
+     *  same result but redrew the row -- one included chip became five
+     *  excluded ones (MJT, 2026-09-18). The six Preferences checkboxes remain
+     *  the Settings-facing view of the TYPE part and are kept in sync both
+     *  ways; a profile that has only them (or none) still resolves. */
+    _wvAnnPaneDefaultState(): any {
+        const st = this._wvAnnPaneBlankState();
+        let stored: any = null;
+        try {
+            const raw = Zotero.Prefs.get("weavero.annPaneDefault");
+            if (raw && typeof raw === "string") stored = JSON.parse(raw);
+        } catch (_) { stored = null; }
+        if (stored && typeof stored === "object") {
+            for (const k of Object.keys(st)) {
+                if (stored[k] === undefined) continue;
+                st[k] = Array.isArray(st[k]) ? (stored[k] || []).slice() : stored[k];
+            }
+            return st;
+        }
         for (const t of this._wvAnnListTypes()) {
-            try { if (!this._getAnnListShow(t)) out.push(t); } catch (_) {}
+            try { if (!this._getAnnListShow(t)) st.typesExcl.push(t); } catch (_) {}
+        }
+        return st;
+    }
+
+    /** Store a state as the global default: the JSON pref keeps its exact
+     *  shape, the six checkboxes keep showing which types the pane leaves out
+     *  (so Settings never lies). Re-entrancy-guarded -- writing the
+     *  checkboxes fires the watcher that reconciles the other direction. */
+    _wvAnnPaneSetDefault(st: any) {
+        try {
+            this._wvAnnPaneWriting = true;
+            const canon = this._wvAnnPaneCanon(st);
+            if (Object.keys(canon).length) Zotero.Prefs.set("weavero.annPaneDefault", JSON.stringify(canon));
+            else { try { Zotero.Prefs.clear("weavero.annPaneDefault"); } catch (_) { Zotero.Prefs.set("weavero.annPaneDefault", ""); } }
+            const inc = st.types || [], excl = st.typesExcl || [];
+            for (const t of this._wvAnnListTypes()) {
+                const hidden = (inc.length ? inc.indexOf(t) < 0 : false) || excl.indexOf(t) >= 0;
+                Zotero.Prefs.set(this._wvAnnListPrefName(t), !hidden);
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnPaneSetDefault err: " + e); }
+        finally { this._wvAnnPaneWriting = false; }
+    }
+
+    /** A Settings checkbox moved: rebuild the TYPE part of the default from
+     *  the checkboxes (a plain exclude set), keep every other dimension. */
+    _wvAnnPaneSyncDefaultFromPrefs() {
+        if (this._wvAnnPaneWriting) return;
+        try {
+            const st = this._wvAnnPaneDefaultState();
+            st.types = [];
+            st.typesExcl = this._wvAnnListTypes().filter(t => !this._getAnnListShow(t));
+            this._wvAnnPaneWriting = true;
+            const canon = this._wvAnnPaneCanon(st);
+            if (Object.keys(canon).length) Zotero.Prefs.set("weavero.annPaneDefault", JSON.stringify(canon));
+            else { try { Zotero.Prefs.clear("weavero.annPaneDefault"); } catch (_) { Zotero.Prefs.set("weavero.annPaneDefault", ""); } }
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnPaneSyncDefaultFromPrefs err: " + e); }
+        finally { this._wvAnnPaneWriting = false; }
+    }
+
+    /** Drop the global default entirely: every document shows everything
+     *  again unless it has a record of its own. */
+    async _wvAnnPaneClearDefault(reader: any, idoc: any) {
+        this._wvAnnPaneSetDefault(this._wvAnnPaneBlankState());
+        this._wvAnnPaneRefreshAll(reader);
+        try { if (idoc) this._wvAnnListEnsureButton(reader, idoc); } catch (_) {}
+    }
+
+    /** Re-resolve every open reader that follows the default. */
+    _wvAnnPaneRefreshAll(exceptDeparted?: any) {
+        try {
+            for (const r of (Zotero.Reader._readers || [])) {
+                try {
+                    if (!this._wvAnnListIsDeparture(r)) this._wvAnnPaneForget(r);
+                    const d = r._iframeWindow && r._iframeWindow.document;
+                    if (!d) continue;
+                    this._wvAnnListEnsureButton(r, d);
+                    this._wvAnnListApply(r, true);
+                    const op = d.getElementById(RP_FILTER_POPUP_ID);
+                    if (op && op.dataset && op.dataset.wvKind === "list") this._wvRenderReaderFilterPopup(r, d, op);
+                } catch (_) {}
+            }
+        } catch (_) {}
+    }
+
+    /** Canonical form for equality (which decides departure-vs-default) and
+     *  for storage: only the fields that differ from a blank state. */
+    _wvAnnPaneCanon(st: any): any {
+        const blank = this._wvAnnPaneBlankState();
+        const out: any = {};
+        for (const k of Object.keys(blank)) {
+            const v = st ? st[k] : undefined;
+            const b = blank[k];
+            if (Array.isArray(b)) {
+                const arr = Array.isArray(v) ? v.slice().sort() : [];
+                if (arr.length) out[k] = arr;
+            }
+            else if (v !== undefined && v !== null && v !== b) out[k] = v;
         }
         return out;
     }
 
-    /** Effective hidden set for a reader: the document's departure if it has
-     *  one, else the global default. */
-    _wvAnnListHidden(reader: any): string[] {
+    _wvAnnPaneSame(a: any, b: any): boolean {
+        return JSON.stringify(this._wvAnnPaneCanon(a)) === JSON.stringify(this._wvAnnPaneCanon(b));
+    }
+
+    /** The live state for a reader: the document's stored departure, else the
+     *  global default. Cached per reader so the popup mutates one object. */
+    _wvAnnPaneState(reader: any): any {
+        if (!this._wvAnnPaneWM) this._wvAnnPaneWM = new WeakMap();
+        let st = this._wvAnnPaneWM.get(reader);
+        if (st) return st;
+        st = this._wvAnnPaneDefaultState();
         try {
             const att = this._wvReaderAtt(reader);
             const e = att && att.libraryID != null && att.itemKey
                 ? this._wvAnnOrderEntry(att.libraryID, att.itemKey) : null;
-            if (e && Array.isArray(e.listHide)) return e.listHide.slice();
+            const stored = e && e.list && typeof e.list === "object" ? e.list : null;
+            if (stored) {
+                const blank = this._wvAnnPaneBlankState();
+                st = this._wvAnnPaneBlankState();
+                for (const k of Object.keys(blank)) {
+                    if (stored[k] === undefined) continue;
+                    st[k] = Array.isArray(blank[k]) ? (stored[k] || []).slice() : stored[k];
+                }
+            }
         } catch (_) {}
-        return this._wvAnnListGlobalHidden();
+        this._wvAnnPaneWM.set(reader, st);
+        return st;
+    }
+
+    /** Drop the cached state (a stored record changed, or the global default
+     *  moved under a document that follows it). */
+    _wvAnnPaneForget(reader: any) {
+        try { if (this._wvAnnPaneWM) this._wvAnnPaneWM.delete(reader); } catch (_) {}
+        try { (reader as any).__wvAnnListSig = null; } catch (_) {}
+    }
+
+    _wvAnnPaneActive(reader: any): boolean {
+        return Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneState(reader))).length > 0;
     }
 
     _wvAnnListIsDeparture(reader: any): boolean {
@@ -10692,42 +10907,107 @@ class _ReaderPanelsMixin {
             const att = this._wvReaderAtt(reader);
             const e = att && att.libraryID != null && att.itemKey
                 ? this._wvAnnOrderEntry(att.libraryID, att.itemKey) : null;
-            return !!(e && Array.isArray(e.listHide));
+            return !!(e && e.list && typeof e.list === "object");
         } catch (_) { return false; }
     }
 
-    /** Store the document's hidden set -- as a departure only: a set equal to
-     *  the global default removes the record (the outline page-numbers rule,
-     *  user choice 2026-09-11). `null` = back to the default. */
-    async _wvAnnListSetHidden(reader: any, hidden: string[] | null) {
-        const att = this._wvReaderAtt(reader);
-        if (!att || att.libraryID == null || !att.itemKey) return;
-        const same = (a: string[], b: string[]) =>
-            a.length === b.length && a.every(x => b.indexOf(x) >= 0);
-        const cur = this._wvAnnOrderEntry(att.libraryID, att.itemKey)
-            || { mode: "position", dir: undefined, keys: [] };
-        const next: any = { mode: cur.mode, dir: cur.dir, keys: cur.keys };
-        next.listHide = (hidden && !same(hidden, this._wvAnnListGlobalHidden())) ? hidden.slice() : null;
-        await this._wvAnnOrderWrite(att.libraryID, att.itemKey, next);
-    }
-
-    /** Make this document's set the global default and drop its departure. */
-    async _wvAnnListUseAsDefault(reader: any) {
-        const hidden = this._wvAnnListHidden(reader);
-        for (const t of this._wvAnnListTypes()) {
-            try { Zotero.Prefs.set(this._wvAnnListPrefName(t), hidden.indexOf(t) < 0); } catch (_) {}
+    /** Annotation keys the pane leaves out: the reader funnel's own matchers,
+     *  evaluated here instead of through Zotero's filter. */
+    _wvAnnPaneHiddenKeys(reader: any): string[] {
+        const st = this._wvAnnPaneState(reader);
+        const nat = { colors: st.colors || [], tags: st.tags || [], authors: st.addedBy || [] };
+        const out: string[] = [];
+        for (const a of this._wvReaderAnnotations(reader)) {
+            try {
+                if (!this._wvReaderPluginMatch(st, a) || !this._wvReaderNativeMatch(a, nat)) out.push(a.key);
+            } catch (_) {}
         }
-        await this._wvAnnListSetHidden(reader, null);
+        return out;
     }
 
-    /** Push the effective set to the content side and re-run the native
-     *  filter, so `_hidden` is recomputed from Zotero's own criteria and the
-     *  render wrapper re-marks with the new set (un-hiding needs exactly
-     *  that reset). Signature-gated: the scan calls this every pass. */
+    /** Types the pane hides through the TYPE dimension alone -- what "Use as
+     *  default" can write to the Preferences checkboxes. */
+    _wvAnnListHidden(reader: any): string[] {
+        const st = this._wvAnnPaneState(reader);
+        const inc = st.types || [], excl = st.typesExcl || [];
+        return this._wvAnnListTypes().filter(t =>
+            (inc.length ? inc.indexOf(t) < 0 : false) || excl.indexOf(t) >= 0);
+    }
+
+    /** Persist the current state -- as a DEPARTURE only: a state equal to the
+     *  global default removes the record (the outline page-numbers rule, user
+     *  choice 2026-09-11). */
+    async _wvAnnPanePersist(reader: any) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (!att || att.libraryID == null || !att.itemKey) return;
+            const st = this._wvAnnPaneState(reader);
+            const cur = this._wvAnnOrderEntry(att.libraryID, att.itemKey)
+                || { mode: "position", dir: undefined, keys: [] };
+            const next: any = { mode: cur.mode, dir: cur.dir, keys: cur.keys };
+            next.list = this._wvAnnPaneSame(st, this._wvAnnPaneDefaultState())
+                ? null : this._wvAnnPaneCanon(st);
+            await this._wvAnnOrderWrite(att.libraryID, att.itemKey, next);
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnPanePersist err: " + e); }
+    }
+
+    /** Apply the pane filter. `inc` carries the include arrays the shared
+     *  renderer hands to the reader funnel's native channel ({colors, tags,
+     *  authors}); here they live in our own state. */
+    async _wvAnnPaneApply(reader: any, inc?: any) {
+        try {
+            const st = this._wvAnnPaneState(reader);
+            if (inc) {
+                if (inc.colors) st.colors = (inc.colors || []).slice();
+                if (inc.tags) st.tags = (inc.tags || []).slice();
+                if (inc.authors) st.addedBy = (inc.authors || []).slice();
+            }
+            await this._wvAnnPanePersist(reader);
+            this._wvAnnListApply(reader, true);
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnPaneApply err: " + e); }
+    }
+
+    /** Reset every dimension (the popup's Clear / Clear-and-Close). */
+    async _wvAnnPaneClear(reader: any) {
+        const st = this._wvAnnPaneState(reader);
+        const blank = this._wvAnnPaneBlankState();
+        for (const k of Object.keys(blank)) st[k] = Array.isArray(blank[k]) ? [] : blank[k];
+        await this._wvAnnPaneApply(reader);
+    }
+
+    /** Make THIS state the global default, chips and all. The document then
+     *  matches the default, so its own record goes away and every other
+     *  document that follows the default picks it up. */
+    async _wvAnnListUseAsDefault(reader: any) {
+        this._wvAnnPaneSetDefault(this._wvAnnPaneState(reader));
+        await this._wvAnnPanePersist(reader);   // equal to the default now -> record removed
+        this._wvAnnListApply(reader, true);
+        this._wvAnnPaneRefreshAll();
+    }
+
+    /** Back to the default: forget the document's record and its state. */
+    async _wvAnnPaneBackToDefault(reader: any) {
+        try {
+            const att = this._wvReaderAtt(reader);
+            if (att && att.libraryID != null && att.itemKey) {
+                const cur = this._wvAnnOrderEntry(att.libraryID, att.itemKey)
+                    || { mode: "position", dir: undefined, keys: [] };
+                await this._wvAnnOrderWrite(att.libraryID, att.itemKey,
+                    { mode: cur.mode, dir: cur.dir, keys: cur.keys, list: null });
+            }
+        } catch (_) {}
+        this._wvAnnPaneForget(reader);
+        this._wvAnnListApply(reader, true);
+    }
+
+    /** Push the hidden set to the content side and re-run the native filter,
+     *  so `_hidden` is recomputed from Zotero's own criteria and the render
+     *  wrapper re-marks with the new set (un-hiding needs exactly that
+     *  reset). Signature-gated: the scan calls this every pass. */
     _wvAnnListApply(reader: any, force?: boolean) {
         try {
-            const hidden = this._getEnableFilters() ? this._wvAnnListHidden(reader) : [];
-            const sig = hidden.slice().sort().join(",");
+            const keys = this._wvAnnPaneEnabled() ? this._wvAnnPaneHiddenKeys(reader) : [];
+            const sig = keys.slice().sort().join(",");
             if (!force && (reader as any).__wvAnnListSig === sig) return;
             // The signature is recorded ONLY once the push actually landed.
             // A reopened tab is scanned before its annotation manager exists;
@@ -10744,19 +11024,19 @@ class _ReaderPanelsMixin {
                 && (Components as any).utils.waiveXrays(ir._annotationManager);
             if (!wired || !am || typeof am.setFilter !== "function") return;
             const obj: any = {};
-            for (const t of hidden) obj[t] = true;
-            iw.__wvAnnListHide = hidden.length
+            for (const k of keys) obj[k] = true;
+            iw.__wvAnnListHideKeys = keys.length
                 ? (Components as any).utils.cloneInto(obj, reader._iframeWindow) : null;
             (reader as any).__wvAnnListSig = sig;
             // setFilter recomputes `_hidden` from Zotero's own criteria and
             // ends in render(), where the wrapper re-marks -- the only way to
-            // UN-hide a type as well.
+            // UN-hide as well.
             try { Promise.resolve(am.setFilter(am._filter)).catch(() => {}); } catch (_) {}
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListApply err: " + e); }
     }
 
     /** Content-side wrap of each view's setAnnotations: reader.js hands the
-     *  views `annotations.filter(x => !x._hidden)`, so list-hidden annotations
+     *  views `annotations.filter(x => !x._hidden)`, so pane-hidden annotations
      *  would vanish from the page too; append them back. Per-view stamp --
      *  views are recreated on split/reload, so this runs on every scan. */
     _wvAnnListWireViews(reader: any) {
@@ -10766,10 +11046,11 @@ class _ReaderPanelsMixin {
             if (!amRaw) return;
             const iw: any = reader._iframeWindow && reader._iframeWindow.wrappedJSObject;
             if (!iw || typeof iw.eval !== "function") return;
+            const tag = this._wvWireTag();
             for (const v of [ir._primaryView, ir._secondaryView]) {
                 if (!v) continue;
                 const vw: any = (Components as any).utils.waiveXrays(v);
-                if (vw.__wvListWrapV === WV_ANNLIST_WRAP_V) continue;
+                if (vw.__wvListWrapV === tag) continue;
                 iw.__wvV = v; iw.__wvAM = amRaw;
                 iw.eval("(function(){" +
                     "var v = window.__wvV, m = window.__wvAM; delete window.__wvV; delete window.__wvAM;" +
@@ -10777,33 +11058,129 @@ class _ReaderPanelsMixin {
                     "v.__wvOrigSetAnnotations = v.setAnnotations;" +
                     "v.setAnnotations = function (anns) {" +
                     "  try {" +
-                    "    if (window.__wvAnnListHide && m && m._annotations && anns && anns.filter) {" +
+                    "    if (window.__wvAnnListHideKeys && m && m._annotations && anns && anns.filter) {" +
                     "      var extra = m._annotations.filter(function (a) { return a._wvListHidden && anns.indexOf(a) < 0; });" +
                     "      if (extra.length) anns = anns.concat(extra);" +
                     "    }" +
                     "  } catch (e) {}" +
                     "  return v.__wvOrigSetAnnotations.call(v, anns);" +
                     "};" +
-                    "v.__wvListWrapV = " + WV_ANNLIST_WRAP_V + ";" +
+                    "v.__wvListWrapV = " + JSON.stringify(tag) + ";" +
                     "})()");
             }
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListWireViews err: " + e); }
     }
 
     /** Per-scan entry: button + state, gated on the Filters master like the
-     *  toolbar funnel. */
+     *  reader funnel. */
     _wvAnnListEnsure(reader: any, idoc: any) {
         try {
-            if (!this._getEnableFilters()) { this._wvAnnListTeardown(reader, idoc); return; }
-            this._wvAnnOrderEnsureLoaded(reader);
             this._wvWireAnnListPrefWatch();
+            if (!this._wvAnnPaneEnabled()) { this._wvAnnListTeardown(reader, idoc); return; }
+            this._wvAnnOrderEnsureLoaded(reader);
             this._wvAnnListEnsureButton(reader, idoc);
+            this._wvAnnListWireSearchToggle(idoc);
+            this._wvAnnListApplyNativeSelector(idoc);
             this._wvAnnListApply(reader);
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsure err: " + e); }
     }
 
+    /** The pane funnel is on when the Filters master is on AND its own switch
+     *  is on (every Weavero feature is individually disableable). */
+    _wvAnnPaneEnabled(): boolean {
+        try { return !!this._getEnableFilters() && !!this._getEnableAnnPaneFilter(); }
+        catch (_) { return false; }
+    }
+
+    /** Zotero's own selector at the foot of the pane: hidden while the pane
+     *  funnel replaces it, unless the user asked to keep it. */
+    _wvAnnListApplyNativeSelector(idoc: any) {
+        try {
+            const sc = idoc.getElementById("sidebarContainer");
+            if (!sc) return;
+            const hide = this._wvAnnPaneEnabled() && !this._getShowNativeAnnSelector();
+            sc.classList.toggle("wv-al-nonative", hide);
+        } catch (_) {}
+    }
+
+    /** Make the sidebar search magnifier a real toggle: a second press closes
+     *  the box instead of reopening it.
+     *
+     *  Zotero's SearchBox collapses on BLUR (when empty) and its magnifier
+     *  handler FOCUSES on click. Pressing it while the box is open therefore
+     *  runs blur -> collapse -> click -> focus -> expand, i.e. nothing visibly
+     *  happens (MJT, 2026-09-18 -- same gesture as Weavero's own bookmarks
+     *  search row, fixed there too). Decide on POINTERDOWN, while the box is
+     *  still expanded, then swallow the click that follows so the native
+     *  handler cannot refocus. Closing also clears the query: an invisible
+     *  search box must never leave the pane filtered. */
+    _wvAnnListWireSearchToggle(idoc: any) {
+        try {
+            const tag = this._wvWireTag();
+            if ((idoc as any).__wvAlSearchToggleV === tag) return;
+            const prev = (idoc as any).__wvAlSearchToggleH;
+            if (prev) {
+                try { idoc.removeEventListener("pointerdown", prev, true); } catch (_) {}
+                try { idoc.removeEventListener("click", prev, true); } catch (_) {}
+            }
+            const h = (e: any) => {
+                try {
+                    if (!((Zotero as any).Weavero && (Zotero as any).Weavero.plugin)) return;
+                    const t = e.target;
+                    if (!t || !t.closest) return;
+                    const mag = t.closest("#sidebarContainer .sidebar-toolbar .search-box .btn.magnifier");
+                    if (!mag) return;
+                    const box = mag.closest(".search-box");
+                    if (!box) return;
+                    if (e.type === "pointerdown") {
+                        if (!box.classList.contains("expanded")) {
+                            (idoc as any).__wvAlSearchSwallow = 0;
+                            return;
+                        }
+                        const input = box.querySelector("input");
+                        if (input) {
+                            try {
+                                input.value = "";
+                                input.dispatchEvent(new (idoc.defaultView as any).Event("input", { bubbles: true }));
+                            } catch (_) {}
+                            try { input.blur(); } catch (_) {}
+                        }
+                        (idoc as any).__wvAlSearchSwallow = Date.now();
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                    }
+                    // The click that follows our own pointerdown: drop it, or
+                    // the magnifier's handler reopens what we just closed.
+                    if (Date.now() - ((idoc as any).__wvAlSearchSwallow || 0) < 800) {
+                        (idoc as any).__wvAlSearchSwallow = 0;
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                } catch (_) {}
+            };
+            idoc.addEventListener("pointerdown", h, true);
+            idoc.addEventListener("click", h, true);
+            (idoc as any).__wvAlSearchToggleH = h;
+            (idoc as any).__wvAlSearchToggleV = tag;
+        } catch (e) { Zotero.debug("[Weavero] _wvAnnListWireSearchToggle err: " + e); }
+    }
+
     _wvAnnListTeardown(reader: any, idoc: any) {
         try { for (const el of idoc.querySelectorAll(".wv-al-actions")) el.remove(); } catch (_) {}
+        try {
+            const sc = idoc.getElementById("sidebarContainer");
+            if (sc) sc.classList.remove("wv-al-nonative");
+        } catch (_) {}
+        try {
+            const h = (idoc as any).__wvAlSearchToggleH;
+            if (h) {
+                idoc.removeEventListener("pointerdown", h, true);
+                idoc.removeEventListener("click", h, true);
+                delete (idoc as any).__wvAlSearchToggleH;
+                delete (idoc as any).__wvAlSearchToggleV;
+            }
+        } catch (_) {}
         try {
             if ((reader as any).__wvAnnListSig) {
                 (reader as any).__wvAnnListSig = null;
@@ -10821,20 +11198,22 @@ class _ReaderPanelsMixin {
                 host = idoc.createElementNS(NS_HTML_RP, "div");
                 host.className = "wv-al-actions";
                 const btn = idoc.createElementNS(NS_HTML_RP, "button");
-                btn.className = "wv-bm-filter-btn wv-al-btn";
+                // `toolbar-button` = Zotero's own sidebar-toolbar button, so
+                // hover/active feedback is the native one (background only).
+                btn.className = "toolbar-button wv-al-btn";
                 btn.setAttribute("type", "button");
-                btn.setAttribute("title", "Show in list");
-                btn.setAttribute("aria-label", "Show in list");
-                // Same funnel artwork as the bookmarks funnel (stem clipped
-                // in the accent colour), own clipPath id so the two buttons
-                // can coexist in one document.
-                btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none">'
-                    + '<clipPath id="wv-al-stem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
-                    + '<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
-                    + '<path clip-path="url(#wv-al-stem)" fill="' + WV_FUNNEL_STEM_COLOR + '" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
-                    + '</svg>';
+                btn.setAttribute("tabindex", "-1");
+                btn.setAttribute("aria-label", "Filter Annotations Pane");
+                // The SAME baked two-tone funnel the toolbar funnel uses
+                // (outline context-fill, amber stem), so the two read as one
+                // control in two places; the prefetch swaps in its fetched
+                // copy, byte-identical.
+                const fimg = idoc.createElementNS(NS_HTML_RP, "img");
+                fimg.className = "wv-filter-svg";
+                fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
+                btn.appendChild(fimg);
                 const chev = idoc.createElementNS(NS_HTML_RP, "span");
-                chev.className = "wv-bm-filter-chev";
+                chev.className = "wv-rf-chev";
                 chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
                 btn.appendChild(chev);
                 btn.addEventListener("click", (e: any) => {
@@ -10847,98 +11226,116 @@ class _ReaderPanelsMixin {
                 if (bm) end.insertBefore(host, bm); else end.appendChild(host);
             }
             const btn = host.querySelector(".wv-al-btn");
-            if (btn) btn.classList.toggle("wv-bm-filter-active", this._wvAnnListHidden(reader).length > 0);
+            if (!btn) return;
+            // Blue dot = this pane is filtered right now. Green bowl = the
+            // DEFAULT itself hides something, so every document starts that
+            // way; the two are independent and can show together.
+            // TWO INDEPENDENT CUES (MJT's rule, 2026-09-18):
+            //   blue dot     a filter is in force in THIS pane -- inherited or
+            //                the document's own, whether or not it catches
+            //                anything here,
+            //   green bowl   the GLOBAL DEFAULT has been changed away from
+            //                "show everything". That is a fact about the
+            //                setting, not about this document, so it stays
+            //                green where a document overrides it; the popup's
+            //                scope row then says what the default would do
+            //                here.
+            const active = this._wvAnnPaneActive(reader);
+            const departs = this._wvAnnListIsDeparture(reader);
+            const defaultModified = Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
+            btn.classList.toggle("wv-rf-active", active);
+            const img = btn.querySelector("img.wv-filter-svg");
+            if (img) {
+                const want = defaultModified ? RP_FUNNEL_DEFAULT_DATA_URI : RP_FUNNEL_DATA_URI;
+                if (img.getAttribute("src") !== want) img.setAttribute("src", want);
+            }
+            const hidden = active ? this._wvAnnPaneHiddenKeys(reader).length : 0;
+            const lines = ["Filter Annotations Pane (the document keeps every annotation)"];
+            if (active) {
+                lines.push((departs ? "This document has its own filter" : "The default filter applies here")
+                    + (hidden
+                        ? " — hides " + hidden + " annotation" + (hidden === 1 ? "" : "s") + " here"
+                        : " — nothing to hide in this document"));
+            }
+            if (defaultModified) lines.push("The default has been changed from showing everything");
+            btn.setAttribute("title", lines.join("\n"));
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsureButton err: " + e); }
     }
 
     _wvAnnListTogglePopup(reader: any, idoc: any, anchorBtn: any) {
         const cur: any = idoc.getElementById(RP_FILTER_POPUP_ID);
         if (cur && cur.dataset && cur.dataset.wvKind === "list") { this._wvCloseReaderFilterPopup(idoc); return; }
-        this._wvOpenReaderFilterPopup(reader, idoc, anchorBtn, {
-            kind: "list",
-            render: (r: any, d: any, p: any) => this._wvRenderAnnListPopup(r, d, p),
-        });
-        try { anchorBtn.classList.add("wv-bm-filter-open"); } catch (_) {}
+        this._wvOpenReaderFilterPopup(reader, idoc, anchorBtn, { kind: "list", place: "beside" });
     }
 
-    /** Popup body: one row of type chips (every type, not only those present:
-     *  the choice is a display rule and must be visible for a type that has no
-     *  annotation yet -- add an ink stroke later, it stays hidden), then where
-     *  this document stands relative to the default. */
-    _wvRenderAnnListPopup(reader: any, idoc: any, popup: any) {
-        while (popup.firstChild) popup.firstChild.remove();
-        try { popup.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
+    /** After any change made FROM the popup: re-apply, refresh the button and
+     *  repaint the popup body (the footer and the chips both show state).
+     *  Its absence is what made "Use as Default" look dead -- the handlers
+     *  threw into an unhandled rejection, and the class's index signature
+     *  meant the compiler never saw the missing method (2026-09-18). */
+    _wvAnnListAfterChange(reader: any, idoc: any, popup: any) {
+        try { this._wvAnnListApply(reader, true); } catch (_) {}
+        try { this._wvAnnListEnsureButton(reader, idoc); } catch (_) {}
+        try { if (popup && popup.isConnected) this._wvRenderReaderFilterPopup(reader, idoc, popup); } catch (_) {}
+    }
+
+    /** The pane popup's footer: what the filter leaves out, and whether this
+     *  document departs from the default. Appended by the shared renderer. */
+    _wvAnnPaneFooter(reader: any, idoc: any, popup: any, stack: any) {
         const mk = (tag: string, cls?: string) => {
             const el = idoc.createElementNS(NS_HTML_RP, tag);
             if (cls) el.className = cls;
             return el;
         };
-        const hidden = this._wvAnnListHidden(reader);
+        const hiddenKeys = this._wvAnnPaneHiddenKeys(reader);
+        const total = this._wvReaderAnnotations(reader).length;
         const departure = this._wvAnnListIsDeparture(reader);
-        const stack = mk("div", "wv-rf-stack");
-        popup.appendChild(stack);
-        const head = mk("div", "wv-rf-head");
-        const title = mk("div", "wv-rf-title");
-        title.textContent = "Show in List";
-        head.appendChild(title);
-        const allBtn = mk("button", "wv-filter-clear-btn");
-        allBtn.type = "button";
-        allBtn.textContent = "Show all";
-        allBtn.title = "Show every annotation type in the list";
-        allBtn.style.visibility = hidden.length ? "" : "hidden";
-        allBtn.addEventListener("click", async (e: any) => {
-            e.stopPropagation();
-            await this._wvAnnListSetHidden(reader, []);
-            this._wvAnnListAfterChange(reader, idoc, popup);
-        });
-        head.appendChild(allBtn);
-        stack.appendChild(head);
-
-        const sec = mk("div", "wv-filter-section wv-al-section");
-        const opts = mk("div", "wv-filter-options");
-        const grp = mk("div", "wv-filter-or-inline");
-        const present = new Set<string>();
-        for (const a of this._wvReaderAnnotations(reader)) {
-            try { if (a.annotationType) present.add(a.annotationType); } catch (_) {}
-        }
-        for (const def of this._ANNOTATION_TYPES) {
-            const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
-            btn.type = "button";
-            const isHidden = hidden.indexOf(def.value) >= 0;
-            btn.title = def.label + (isHidden
-                ? " -- hidden from the list; click to show" : " -- click to hide from the list (stays on the page)");
-            if (isHidden) btn.dataset.excluded = "true";
-            if (!present.has(def.value)) btn.dataset.inactive = "true";
-            const img: any = mk("img");
-            img.className = "wv-filter-svg";
-            img.src = this._wvReaderIconUri(def.icon) || def.icon;
-            btn.appendChild(img);
-            btn.addEventListener("click", async (e: any) => {
-                e.stopPropagation();
-                const cur = this._wvAnnListHidden(reader);
-                const next = cur.indexOf(def.value) >= 0
-                    ? cur.filter(t => t !== def.value) : cur.concat([def.value]);
-                await this._wvAnnListSetHidden(reader, next);
-                this._wvAnnListAfterChange(reader, idoc, popup);
-            });
-            grp.appendChild(btn);
-        }
-        opts.appendChild(grp);
-        sec.appendChild(opts);
-        stack.appendChild(sec);
-
+        const defaultFilters = Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
         const foot = mk("div", "wv-al-foot");
-        const lb = mk("span", "wv-al-foot-label");
-        if (!departure) {
-            lb.textContent = "Default for all documents";
-            foot.appendChild(lb);
-        } else {
-            lb.textContent = "This document only";
-            foot.appendChild(lb);
+
+        // Row 1 -- what the filter does right now.
+        const countRow = mk("div", "wv-al-foot-row");
+        const count = mk("span", "wv-al-foot-count" + (hiddenKeys.length ? " wv-al-count-on" : ""));
+        count.textContent = hiddenKeys.length
+            ? hiddenKeys.length + " of " + total + " hidden from the pane"
+            : "Every annotation shown";
+        count.title = "The document still holds every annotation; only this pane is filtered.";
+        countRow.appendChild(count);
+        foot.appendChild(countRow);
+
+        // Row 2 -- where the setting applies, and how to move it.
+        const filteredByDefault = !departure
+            && Object.keys(this._wvAnnPaneCanon(this._wvAnnPaneDefaultState())).length > 0;
+        const scopeRow = mk("div", "wv-al-foot-row wv-al-foot-scope" + (filteredByDefault ? " wv-al-is-default" : ""));
+        const scope = mk("span", "wv-al-scope");
+        scope.textContent = departure ? "This Document Only" : "Default for All Documents";
+        scope.title = departure
+            ? "This document has its own filter; other documents follow the default."
+            : "This filter is the default every document starts from.";
+        scopeRow.appendChild(scope);
+        if (departure) {
+            // What the default would do here, so it stays visible in the one
+            // place where it is being overridden.
+            const defState = this._wvAnnPaneDefaultState();
+            if (Object.keys(this._wvAnnPaneCanon(defState)).length) {
+                const nat = { colors: defState.colors || [], tags: defState.tags || [], authors: defState.addedBy || [] };
+                let n = 0;
+                for (const a of this._wvReaderAnnotations(reader)) {
+                    try {
+                        if (!this._wvReaderPluginMatch(defState, a) || !this._wvReaderNativeMatch(a, nat)) n++;
+                    } catch (_) {}
+                }
+                const note = mk("span", "wv-al-scope-note");
+                note.textContent = n ? "default hides " + n + " here" : "default hides none here";
+                note.title = "What the default would leave out in this document";
+                scopeRow.appendChild(note);
+            }
+        }
+        if (departure) {
             const useBtn = mk("button", "wv-al-foot-btn");
             useBtn.type = "button";
-            useBtn.textContent = "Use as default";
-            useBtn.title = "Make this the default for every document (Preferences > Reader annotations list)";
+            useBtn.textContent = "Use as Default";
+            useBtn.title = "Make this filter, exactly as it stands, the default for every document";
             useBtn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 await this._wvAnnListUseAsDefault(reader);
@@ -10946,23 +11343,32 @@ class _ReaderPanelsMixin {
             });
             const backBtn = mk("button", "wv-al-foot-btn");
             backBtn.type = "button";
-            backBtn.textContent = "Back to default";
-            backBtn.title = "Forget this document's choice and follow the default";
+            backBtn.textContent = "Back to Default";
+            backBtn.title = "Forget this document's filter and follow the default";
             backBtn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
-                await this._wvAnnListSetHidden(reader, null);
+                await this._wvAnnPaneBackToDefault(reader);
                 this._wvAnnListAfterChange(reader, idoc, popup);
             });
-            foot.appendChild(useBtn);
-            foot.appendChild(backBtn);
+            scopeRow.appendChild(useBtn);
+            scopeRow.appendChild(backBtn);
         }
+        else if (defaultFilters) {
+            // Following a default that filters: the way out of it lives next
+            // to the statement that it is the default.
+            const clearDef = mk("button", "wv-al-foot-btn");
+            clearDef.type = "button";
+            clearDef.textContent = "Clear Default";
+            clearDef.title = "Show every annotation in every document again (clears the default, not this document)";
+            clearDef.addEventListener("click", async (e: any) => {
+                e.stopPropagation();
+                await this._wvAnnPaneClearDefault(reader, idoc);
+                this._wvAnnListAfterChange(reader, idoc, popup);
+            });
+            scopeRow.appendChild(clearDef);
+        }
+        foot.appendChild(scopeRow);
         stack.appendChild(foot);
-    }
-
-    _wvAnnListAfterChange(reader: any, idoc: any, popup: any) {
-        try { this._wvAnnListApply(reader, true); } catch (_) {}
-        try { this._wvAnnListEnsureButton(reader, idoc); } catch (_) {}
-        try { if (popup && popup.isConnected) this._wvRenderAnnListPopup(reader, idoc, popup); } catch (_) {}
     }
 
     /** Propagate a global-default flip (Preferences, or "Use as default") to
@@ -10978,16 +11384,33 @@ class _ReaderPanelsMixin {
                 delete g._wvAnnListPrefObs;
             }
             g._wvAnnListPrefObsVer = tag;
-            g._wvAnnListPrefObs = this._wvAnnListTypes().map(t => Zotero.Prefs.registerObserver(
-                this._wvAnnListPrefName(t),
+            const typePrefs = this._wvAnnListTypes().map(t => this._wvAnnListPrefName(t));
+            const watched = typePrefs.concat(["weavero.annPaneDefault",
+                "weavero.enableAnnPaneFilter", "weavero.showNativeAnnSelector"]);
+            g._wvAnnListPrefObs = watched.map(name => Zotero.Prefs.registerObserver(
+                name,
                 () => {
                     try {
                         const lp: any = Zotero.Weavero && Zotero.Weavero.plugin;
                         if (!lp) return;
+                        // A Settings checkbox rewrites the default's type part;
+                        // the JSON pref itself never triggers that path.
+                        if (typePrefs.indexOf(name) >= 0) lp._wvAnnPaneSyncDefaultFromPrefs();
                         for (const r of (Zotero.Reader._readers || [])) {
                             try {
+                                // A document that follows the default must pick
+                                // up the new one; one with its own record keeps
+                                // what it has.
+                                if (!lp._wvAnnListIsDeparture(r)) lp._wvAnnPaneForget(r);
                                 const idoc = r._iframeWindow && r._iframeWindow.document;
-                                if (idoc) lp._wvAnnListEnsure(r, idoc);
+                                if (!idoc) continue;
+                                lp._wvAnnListEnsure(r, idoc);
+                                // An open pane popup shows state; repaint it,
+                                // or its chips describe the old default.
+                                const op = idoc.getElementById(RP_FILTER_POPUP_ID);
+                                if (op && op.dataset && op.dataset.wvKind === "list") {
+                                    lp._wvRenderReaderFilterPopup(r, idoc, op);
+                                }
                             } catch (_) {}
                         }
                     } catch (_) {}
@@ -11032,7 +11455,6 @@ class _ReaderPanelsMixin {
             if (p) p.remove();
         } catch (_) {}
         if (this._wvReaderFilterDismiss) {
-            try { const a = this._wvReaderFilterDismiss.anchorBtn; if (a && a.classList) a.classList.remove("wv-bm-filter-open"); } catch (_) {}
             try {
                 const { docs, wins, onDown, onKey, swallowLoneAlt, onTab } = this._wvReaderFilterDismiss;
                 for (const d of (docs || [])) { try { d.removeEventListener("pointerdown", onDown, true); } catch (_) {} }
@@ -11087,7 +11509,7 @@ class _ReaderPanelsMixin {
             const popup = idoc.createElementNS(NS_HTML_RP, "div");
             popup.id = RP_FILTER_POPUP_ID;
             popup.dataset.wvKind = kind;
-            if (sbWidth > 0) {
+            if (sbWidth > 0 && !(opts && opts.place === "beside")) {
                 popup.style.width = sbWidth + "px";
                 popup.style.maxWidth = "none";
             }
@@ -11111,12 +11533,31 @@ class _ReaderPanelsMixin {
             // bounds, left-align the popup with it; otherwise fall back to
             // the anchor's left edge. Always clamp to stay on-screen.
             const r = anchorBtn.getBoundingClientRect();
-            const pw = sbWidth > 0 ? sbWidth : (popup.offsetWidth || 240);
-            let left = sbLeft >= 0 ? sbLeft : r.left;
             const vw = (idoc.documentElement && idoc.documentElement.clientWidth) || 9999;
-            if (left + pw > vw - 6) left = Math.max(6, vw - pw - 6);
-            popup.style.left = left + "px";
-            popup.style.top = (r.bottom + 4) + "px";
+            if (opts && opts.place === "beside") {
+                // Beside the sidebar, over the reader: the popup filters the
+                // list, so it must not sit on top of it. Falls back to the
+                // left of the sidebar edge when the reader area is too narrow.
+                const pw2 = popup.offsetWidth || 240;
+                let left2 = (sbLeft >= 0 ? sbLeft + sbWidth : r.right) + 6;
+                if (left2 + pw2 > vw - 6) left2 = Math.max(6, vw - pw2 - 6);
+                popup.style.left = Math.round(left2) + "px";
+                // Top-aligned with the BUTTON, not dropped under it (MJT,
+                // 2026-09-18): the popup then reads as an extension of the
+                // toolbar and never reaches down over the list.
+                const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
+                let top2 = r.top;
+                const ph2 = popup.offsetHeight || 120;
+                if (top2 + ph2 > vh - 6) top2 = Math.max(6, vh - ph2 - 6);
+                popup.style.top = Math.round(top2) + "px";
+            }
+            else {
+                const pw = sbWidth > 0 ? sbWidth : (popup.offsetWidth || 240);
+                let left = sbLeft >= 0 ? sbLeft : r.left;
+                if (left + pw > vw - 6) left = Math.max(6, vw - pw - 6);
+                popup.style.left = left + "px";
+                popup.style.top = (r.bottom + 4) + "px";
+            }
 
             // Dismiss on a click ANYWHERE else in the UI / Escape. The popup
             // lives in the reader-app iframe, so we listen across every
@@ -11236,7 +11677,7 @@ class _ReaderPanelsMixin {
                 } catch (_) {}
             };
             for (const w of wins) { try { w.addEventListener("keydown", onTab, true); } catch (_) {} }
-            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt, onTab, anchorBtn };
+            this._wvReaderFilterDismiss = { docs, wins, onDown, onKey, swallowLoneAlt, onTab };
         } catch (e) {
             Zotero.debug("[Weavero] _wvOpenReaderFilterPopup err: " + e);
         }
@@ -11251,7 +11692,44 @@ class _ReaderPanelsMixin {
     _wvRenderReaderFilterPopup(reader: any, idoc: any, popup: any) {
         while (popup.firstChild) popup.firstChild.remove();
         try { popup.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
-        const st = this._wvReaderFilterState(reader);
+        // TWO SCOPES share this renderer (issue #43). The reader funnel
+        // (no `kind`) filters the DOCUMENT: colour/tag/person includes go
+        // through Zotero's own filter and everything else removes annotations
+        // from the reader. The annotations-pane funnel (`kind: "list"`)
+        // filters only the sidebar pane: it cannot use Zotero's filter (that
+        // hides on the page too), so it evaluates every dimension itself and
+        // marks `_hidden`, and the page gets those annotations back through
+        // the per-view setAnnotations wrap. Same rows, same gestures, same
+        // chip styling -- only the state and the apply differ.
+        const pane = !!(popup && popup.dataset && popup.dataset.wvKind === "list");
+        const st = pane ? this._wvAnnPaneState(reader) : this._wvReaderFilterState(reader);
+        const incOf = () => (pane
+            ? { colors: (st.colors || []).slice(), tags: (st.tags || []).slice(), authors: (st.addedBy || []).slice() }
+            : this._wvReaderNativeIncludes(reader));
+        const applyF = async (inc?: any) => {
+            if (pane) await this._wvAnnPaneApply(reader, inc);
+            else await this._wvApplyReaderFilter(reader, inc);
+        };
+        const refreshBtn = () => {
+            // NOT `refreshBtn()` in the else branch: a blanket rename of the
+            // reader-scope call turned this helper into infinite recursion,
+            // so every chip click in the READER funnel threw instead of
+            // refreshing its button (found 2026-09-18).
+            if (pane) this._wvAnnListEnsureButton(reader, idoc);
+            else this._wvReaderEnsureFilterButton(reader, idoc);
+        };
+        // What the GLOBAL DEFAULT sets: the pane scope marks those chips green
+        // and keeps them on screen everywhere. The reader funnel has no
+        // default, hence null there.
+        const defSt = pane ? this._wvAnnPaneDefaultState() : null;
+        const defHas = (dim: string, value: string) => !!defSt
+            && (((defSt[dim] || []).indexOf(value) >= 0) || ((defSt[dim + "Excl"] || []).indexOf(value) >= 0));
+        const defFlag = (key: string) => !!defSt && (defSt[key] === true || defSt[key] === false);
+        const markDef = (btn: any, on: boolean) => {
+            if (!on) return;
+            btn.classList.add("wv-al-def-chip");
+            try { btn.title = (btn.title ? btn.title + "\n" : "") + "Part of the default filter"; } catch (_) {}
+        };
         const anns = this._wvReaderAnnotations(reader);
 
         // What's present in this document.
@@ -11272,7 +11750,22 @@ class _ReaderPanelsMixin {
                 if (a.lastModifiedByUserID != null) modifiedByNames.add(this._wvUserName(a.lastModifiedByUserID));
             } catch (_) {}
         }
-        const nat = this._wvReaderNativeIncludes(reader);
+        // A value the default sets gets its chip even when this document has
+        // nothing of that kind -- otherwise the default's own parameters are
+        // invisible exactly where they matter (a PDF with no ink cannot show
+        // that the default hides ink). Such a chip renders faded, like any
+        // value absent from the visible set.
+        if (defSt) {
+            const seed = (set: Set<string>, dim: string) => {
+                for (const v of (defSt[dim] || []).concat(defSt[dim + "Excl"] || [])) if (v) set.add(v);
+            };
+            seed(typesPresent, "types");
+            seed(colorsPresent, "colors");
+            seed(tagsPresent, "tags");
+            seed(addedByNames, "addedBy");
+            seed(modifiedByNames, "modifiedBy");
+        }
+        const nat = incOf();
 
         // Values present in the CURRENTLY-VISIBLE (filtered) annotation set —
         // chips whose value isn't here get faded (like Zotero's Tag Selector).
@@ -11318,7 +11811,7 @@ class _ReaderPanelsMixin {
         // Header + Clear / Clear-and-Close (mirrors the library filter).
         const head = mk("div", "wv-rf-head");
         const title = mk("div", "wv-rf-title");
-        title.textContent = "Filter Annotations";
+        title.textContent = pane ? "Filter Annotations Pane" : "Filter Annotations";
         head.appendChild(title);
         // Async: callers must AWAIT before re-rendering the popup — the popup
         // renders selection from the LIVE native filter, and the (async) apply
@@ -11332,10 +11825,11 @@ class _ReaderPanelsMixin {
             st.hasComment = null; st.hasRelated = null; st.hasLink = null; st.hasTag = null;
             st.dateAddedMode = null; st.dateAddedFrom = null; st.dateAddedTo = null; st.dateAddedNeg = false;
             st.dateModMode = null; st.dateModFrom = null; st.dateModTo = null; st.dateModNeg = false;
-            // The hide-annotations toggle counts as a filter — clear it too.
-            if (this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
-            // Also clear the native include channel (colour/tag/author).
-            await this._wvApplyReaderFilter(reader, { colors: [], tags: [], authors: [] });
+            // The hide-annotations toggle counts as a filter — clear it too
+            // (reader scope only; the pane never hides the document view).
+            if (!pane && this._wvReaderAnnotationsHidden(reader)) this._wvReaderApplyHideAnnotations(reader, false);
+            // Also clear the include channel (colour/tag/author).
+            await applyF({ colors: [], tags: [], authors: [] });
         };
         // "Clear" — clears every filter but keeps the popup open.
         const clearBtn = mk("button", "wv-filter-clear-btn");
@@ -11347,7 +11841,7 @@ class _ReaderPanelsMixin {
             e.stopPropagation();
             await clearState();
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
-            this._wvReaderEnsureFilterButton(reader, idoc);
+            refreshBtn();
         });
         // Red × — "Clear and Close": clears every filter AND dismisses.
         const clearCloseBtn = mk("button", "wv-filter-clear-icon");
@@ -11357,14 +11851,14 @@ class _ReaderPanelsMixin {
         clearCloseBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
             await clearState();
-            this._wvReaderEnsureFilterButton(reader, idoc);
+            refreshBtn();
             this._wvCloseReaderFilterPopup(idoc);
         });
         // Show Clear / Clear-and-Close only when at least one filter dimension
         // is set. Hidden via inline visibility (preserves layout); the chip-
         // toggle paths call `_wvRenderReaderFilterPopup` which re-runs this
         // check so the buttons appear/disappear in lockstep with state.
-        const anyActive = this._wvReaderFilterActive(reader);
+        const anyActive = pane ? this._wvAnnPaneActive(reader) : this._wvReaderFilterActive(reader);
         clearBtn.style.visibility = anyActive ? "" : "hidden";
         clearCloseBtn.style.visibility = anyActive ? "" : "hidden";
         head.appendChild(clearBtn);
@@ -11380,7 +11874,8 @@ class _ReaderPanelsMixin {
 
         // An icon-only `.wv-filter-opt` chip with include/exclude state.
         const mkOpt = (incl: string[], excl: string[], value: string, title2: string,
-                       fillIcon: (b: any) => void, onChange: (next: any) => void, active?: Set<string>) => {
+                       fillIcon: (b: any) => void, onChange: (next: any) => void, active?: Set<string>,
+                       defOn?: boolean) => {
             const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
             btn.type = "button";
             btn.title = title2;
@@ -11388,14 +11883,15 @@ class _ReaderPanelsMixin {
             if (sel) btn.dataset.selected = "true";
             if (exc) btn.dataset.excluded = "true";
             if (active && !sel && !exc && !active.has(value)) btn.dataset.inactive = "true";
+            markDef(btn, !!defOn);
             fillIcon(btn);
             btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 const next = this._toggleIncludeExclude(value, incl.slice(), excl.slice(), e.altKey);
                 onChange.call(null, next);
-                await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
+                await applyF();   // settle before re-render (see clearState)
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
-                this._wvReaderEnsureFilterButton(reader, idoc);
+                refreshBtn();
             });
             return btn;
         };
@@ -11433,7 +11929,8 @@ class _ReaderPanelsMixin {
         // ∈ "colors"|"tags"|"authors". inclArr = native include snapshot;
         // exclArr = the st.*Excl array (mutated in place).
         const mkNativeOpt = (dimKey: string, inclArr: string[], exclArr: string[],
-                             value: string, title2: string, fillIcon: (b: any) => void, active?: Set<string>) => {
+                             value: string, title2: string, fillIcon: (b: any) => void, active?: Set<string>,
+                             defOn?: boolean) => {
             const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
             btn.type = "button";
             btn.title = title2;
@@ -11441,6 +11938,7 @@ class _ReaderPanelsMixin {
             if (sel) btn.dataset.selected = "true";
             if (exc) btn.dataset.excluded = "true";
             if (active && !sel && !exc && !active.has(value)) btn.dataset.inactive = "true";
+            markDef(btn, !!defOn);
             fillIcon(btn);
             btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
@@ -11458,35 +11956,37 @@ class _ReaderPanelsMixin {
                 // clobbered by a stale snapshot.
                 const chain = reader._wvFilterUiChain || Promise.resolve();
                 reader._wvFilterUiChain = chain.then(async () => {
-                    const live = (this._wvReaderNativeIncludes(reader) as any)[dimKey] || [];
+                    const live = (incOf() as any)[dimKey] || [];
                     const next = this._toggleIncludeExclude(value, live.slice(), exclArr.slice(), alt);
                     exclArr.length = 0; for (const v of next.exclude) exclArr.push(v);
                     const inc: any = {}; inc[dimKey] = next.include;
-                    await this._wvApplyReaderFilter(reader, inc);
+                    await applyF(inc);
                 }).catch(() => {});
                 await reader._wvFilterUiChain;
                 // Re-render only after the apply settled -- the popup paints
                 // selection from the live native filter.
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
-                this._wvReaderEnsureFilterButton(reader, idoc);
+                refreshBtn();
             });
             return btn;
         };
         // Tri-state icon tile (Has Related / Has Link / Has Comment):
         // click=require / Alt+click=require-absent / re-click=off.
-        const mkTriTile = (cur: any, title2: string, iconBuilder: () => any, apply: (alt: boolean) => void) => {
+        const mkTriTile = (cur: any, title2: string, iconBuilder: () => any, apply: (alt: boolean) => void,
+                           defOn?: boolean) => {
             const btn = mk("button", "wv-filter-opt wv-filter-opt-icon");
             btn.type = "button";
             btn.title = title2;
             if (cur === true) btn.dataset.selected = "true";
             else if (cur === false) btn.dataset.excluded = "true";
+            markDef(btn, !!defOn);
             try { const ic = iconBuilder(); if (ic) btn.appendChild(ic); } catch (_) {}
             btn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
                 apply(!!e.altKey);
-                await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
+                await applyF();   // settle before re-render (see clearState)
                 this._wvRenderReaderFilterPopup(reader, idoc, popup);
-                this._wvReaderEnsureFilterButton(reader, idoc);
+                refreshBtn();
             });
             return btn;
         };
@@ -11508,7 +12008,7 @@ class _ReaderPanelsMixin {
                 opts.appendChild(mkNativeOpt("colors", nat.colors, st.colorsExcl, def.value,
                     def.label + " — Alt+click to exclude",
                     (b: any) => { b.appendChild((this as any)._wvNativeColorSwatch(idoc, def.value)); },
-                    actColors));
+                    actColors, defHas("colors", def.value)));
             }
         }, true);
 
@@ -11523,15 +12023,15 @@ class _ReaderPanelsMixin {
                     def.label + " — Alt+click to exclude",
                     (b: any) => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(def.icon) || def.icon; b.appendChild(img); },
                     (next: any) => { st.types = next.include; st.typesExcl = next.exclude; },
-                    actTypes);
+                    actTypes, defHas("types", def.value));
                 grp.appendChild(btn);
             }
             if (any) opts.appendChild(grp);
-            if (anyComment) {
+            if (anyComment || defFlag("hasComment")) {
                 const sep = mk("div", "wv-filter-vertical-separator");
                 sep.style.marginLeft = "auto";
                 opts.appendChild(sep);
-                opts.appendChild(this._wvMakeReaderHasCommentTile(reader, idoc, popup, st));
+                opts.appendChild(this._wvMakeReaderHasCommentTile(reader, idoc, popup, st, defFlag("hasComment")));
             }
         });
 
@@ -11564,15 +12064,18 @@ class _ReaderPanelsMixin {
                     img.style.color = "var(--accent-orange)";
                     return img;
                 },
-                (alt: boolean) => { st.hasTag = alt ? (st.hasTag === false ? null : false) : (st.hasTag === true ? null : true); }));
+                (alt: boolean) => { st.hasTag = alt ? (st.hasTag === false ? null : false) : (st.hasTag === true ? null : true); },
+                defFlag("hasTag")));
             opts.appendChild(mkTriTile(st.hasRelated,
                 "Has Related — annotations with at least one related-item link. Alt+click to exclude.",
                 () => { const img = mk("img"); img.className = "wv-filter-svg"; img.src = this._wvReaderIconUri(RP_RELATED_ICON) || RP_RELATED_ICON; img.style.color = "var(--accent-wood)"; return img; },
-                (alt: boolean) => { st.hasRelated = alt ? (st.hasRelated === false ? null : false) : (st.hasRelated === true ? null : true); }));
+                (alt: boolean) => { st.hasRelated = alt ? (st.hasRelated === false ? null : false) : (st.hasRelated === true ? null : true); },
+                defFlag("hasRelated")));
             opts.appendChild(mkTriTile(st.hasLink,
                 "Has Link — annotations whose comment contains a URL. Alt+click to exclude.",
                 () => this._makeLinkSvg(idoc),
-                (alt: boolean) => { st.hasLink = alt ? (st.hasLink === false ? null : false) : (st.hasLink === true ? null : true); }));
+                (alt: boolean) => { st.hasLink = alt ? (st.hasLink === false ? null : false) : (st.hasLink === true ? null : true); },
+                defFlag("hasLink")));
         });
 
         // ---- Tags (coloured dot when the tag has a colour) — include via native.
@@ -11600,7 +12103,7 @@ class _ReaderPanelsMixin {
                             if (col) { b.classList.add("wv-filter-tag-colored"); b.style.setProperty("--wv-tag-color", col); }
                             const sp = mk("span"); sp.textContent = tg; b.appendChild(sp);
                         },
-                        actTags));
+                        actTags, defHas("tags", tg)));
                 }
             }, true, undefined, "wv-rf-tags-row");
         }
@@ -11616,7 +12119,7 @@ class _ReaderPanelsMixin {
                     opts.appendChild(mkNativeOpt("authors", nat.authors, st.addedByExcl, name,
                         "Added by " + name + " — Alt+click to exclude",
                         (b: any) => { const ic = mk("span", "wv-rf-user-svg"); ic.innerHTML = RP_USER_SVG; b.appendChild(ic); const sp = mk("span"); sp.textContent = name; b.appendChild(sp); },
-                        actAddedBy));
+                        actAddedBy, defHas("addedBy", name)));
                 }
             }, true);
         }
@@ -11630,7 +12133,7 @@ class _ReaderPanelsMixin {
                         "Modified by " + name + " — Alt+click to exclude",
                         (b: any) => { const ic = mk("span", "wv-rf-user-svg"); ic.innerHTML = RP_USER_SVG; b.appendChild(ic); const sp = mk("span"); sp.textContent = name; b.appendChild(sp); },
                         (next: any) => { st.modifiedBy = next.include; st.modifiedByExcl = next.exclude; },
-                        actModifiedBy));
+                        actModifiedBy, defHas("modifiedBy", name)));
                 }
             }, true);
         }
@@ -11640,16 +12143,18 @@ class _ReaderPanelsMixin {
         //      "added in the last 30 days AND modified today" (user call).
         addHead("Date");
         const applyDate = async () => {
-            await this._wvApplyReaderFilter(reader);
+            await applyF();
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
-            this._wvReaderEnsureFilterButton(reader, idoc);
+            refreshBtn();
         };
-        const mkTextChip = (label: string, selected: boolean, excluded: boolean, title2: string, onClick: (alt: boolean) => void) => {
+        const mkTextChip = (label: string, selected: boolean, excluded: boolean, title2: string,
+                           onClick: (alt: boolean) => void, defOn?: boolean) => {
             const btn = mk("button", "wv-filter-opt");
             btn.type = "button";
             btn.title = title2;
             if (selected) btn.dataset.selected = "true";
             if (excluded) btn.dataset.excluded = "true";
+            markDef(btn, !!defOn);
             const sp = mk("span"); sp.textContent = label; btn.appendChild(sp);
             btn.addEventListener("click", (e: any) => { e.stopPropagation(); onClick(!!e.altKey); });
             return btn;
@@ -11669,7 +12174,7 @@ class _ReaderPanelsMixin {
                         if (st[pKey] === "last" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
                         else { st[pKey] = "last"; st[nKey] = alt; }
                         applyDate();
-                    }));
+                    }, !!defSt && defSt[pKey] === "last"));
                 const num: any = mk("input", "wv-rf-datenum");
                 num.type = "number";
                 num.min = "1"; num.max = "999";
@@ -11689,8 +12194,8 @@ class _ReaderPanelsMixin {
                     numT = cw2.setTimeout(async () => {
                         try {
                             if (st[pKey] === "last") {
-                                await this._wvApplyReaderFilter(reader);
-                                this._wvReaderEnsureFilterButton(reader, idoc);
+                                await applyF();
+                                refreshBtn();
                             }
                         } catch (_) {}
                     }, 300);
@@ -11753,7 +12258,7 @@ class _ReaderPanelsMixin {
                         if (st[pKey] === "custom" && !!st[nKey] === alt) { st[pKey] = null; st[nKey] = false; }
                         else { st[pKey] = "custom"; st[nKey] = alt; }
                         applyDate();
-                    }));
+                    }, !!defSt && defSt[pKey] === "custom"));
             }, true, label, "wv-rf-daterow");
             if (st[pKey] !== "custom") return;
             // Native input[type=date] for TYPED entry (segmented, localized,
@@ -12015,8 +12520,8 @@ class _ReaderPanelsMixin {
                             if (v && other && (which === "from" ? v > other : v < other)) {
                                 if (st[key] != null) {
                                     st[key] = null;
-                                    await this._wvApplyReaderFilter(reader);
-                                    this._wvReaderEnsureFilterButton(reader, idoc);
+                                    await applyF();
+                                    refreshBtn();
                                 }
                                 reflect(true);
                                 return;
@@ -12024,8 +12529,8 @@ class _ReaderPanelsMixin {
                             if (v === st[key]) { reflect(); return; }
                             st[key] = v;
                             reflect();
-                            await this._wvApplyReaderFilter(reader);
-                            this._wvReaderEnsureFilterButton(reader, idoc);
+                            await applyF();
+                            refreshBtn();
                         } catch (_) {}
                     }, 350);
                 };
@@ -12075,6 +12580,12 @@ class _ReaderPanelsMixin {
         // ---- "Hide annotations in the reader" — checkbox with a fixed label
         // (mirrors the library filter's bottom display toggles). Checked =
         // hidden in the document view; the sidebar list is unaffected.
+        if (pane) {
+            // The pane's own footer (scope + default/departure) replaces the
+            // reader-only "Hide Annotations in the Reader" toggle below.
+            this._wvAnnPaneFooter(reader, idoc, popup, stack);
+            return;
+        }
         const hidden = this._wvReaderAnnotationsHidden(reader);
         const hideRow = mk("label", "wv-rf-hideann");
         hideRow.title = "Hide the annotation marks in the document view (the sidebar list is unaffected).";
@@ -12089,7 +12600,7 @@ class _ReaderPanelsMixin {
             e.stopPropagation();
             this._wvReaderApplyHideAnnotations(reader, !!hideCb.checked);
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
-            this._wvReaderEnsureFilterButton(reader, idoc);   // refresh the funnel dot
+            refreshBtn();   // refresh the funnel dot
         });
         stack.appendChild(hideRow);
     }
@@ -12227,7 +12738,7 @@ class _ReaderPanelsMixin {
 
     /** Has Comment tile mirroring the library's: speech-bubble glyph,
      *  click=require / Alt+click=require-absent / re-click=off. */
-    _wvMakeReaderHasCommentTile(reader: any, idoc: any, popup: any, st: any) {
+    _wvMakeReaderHasCommentTile(reader: any, idoc: any, popup: any, st: any, defOn?: boolean) {
         const btn = idoc.createElementNS(NS_HTML_RP, "button");
         btn.type = "button";
         btn.className = "wv-filter-opt wv-filter-opt-icon";
@@ -12242,14 +12753,23 @@ class _ReaderPanelsMixin {
         if (st.hasComment === true) btn.dataset.selected = "true";
         else if (st.hasComment === false) btn.dataset.excluded = "true";
         btn.title = "Has Comment — annotations with non-empty comment text. Alt+click to exclude.";
+        // Same green marking as the chips the renderer builds itself.
+        if (defOn) {
+            btn.classList.add("wv-al-def-chip");
+            btn.title += "\nPart of the default filter";
+        }
         try { btn.appendChild(this._makeHasCommentSvg(idoc)); } catch (_) {}
         btn.addEventListener("click", async (e: any) => {
             e.stopPropagation();
             if (e.altKey) st.hasComment = (st.hasComment === false) ? null : false;
             else st.hasComment = (st.hasComment === true) ? null : true;
-            await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
+            // Same two scopes as the renderer that builds this tile.
+            const pane = !!(popup && popup.dataset && popup.dataset.wvKind === "list");
+            if (pane) await this._wvAnnPaneApply(reader);
+            else await this._wvApplyReaderFilter(reader);   // settle before re-render (see clearState)
             this._wvRenderReaderFilterPopup(reader, idoc, popup);
-            this._wvReaderEnsureFilterButton(reader, idoc);
+            if (pane) this._wvAnnListEnsureButton(reader, idoc);
+            else this._wvReaderEnsureFilterButton(reader, idoc);
         });
         return btn;
     }
@@ -13367,6 +13887,9 @@ class _ReaderPanelsMixin {
                 // Click outside while the input is empty → auto-close the
                 // search (mirrors the reader's annotation search box behavior).
                 searchInput.addEventListener("blur", () => {
+                    // A blur caused by pressing the search button belongs to
+                    // the toggle below, not to the auto-close.
+                    if (Date.now() - ((searchBtn as any)._wvTogglePd || 0) < 600) return;
                     if (!String(searchInput.value || "").trim()) {
                         searchRow.style.display = "none";
                         searchBtn.classList.remove("wv-bm-search-active");
@@ -13374,6 +13897,9 @@ class _ReaderPanelsMixin {
                 });
                 searchRow.appendChild(searchInput);
                 searchRow.appendChild(clearBtn);
+                searchBtn.addEventListener("pointerdown", () => {
+                    (searchBtn as any)._wvTogglePd = Date.now();
+                }, true);
                 searchBtn.addEventListener("click", () => {
                     const showing = searchRow.style.display !== "none";
                     if (showing) {

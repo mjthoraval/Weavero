@@ -717,10 +717,16 @@
     <html:p class="wv-desc">The “p. N” label at the right of each entry. Right-click the Outline tab in a reader to show or hide them for that document only.</html:p>
   </groupbox>
 
-  <!-- ============================ Reader annotations list -->
+  <!-- ============================ Reader annotations pane -->
   <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
-    <label><html:h2>Reader annotations list</html:h2></label>
-    <html:p class="wv-desc">Which annotation types the reader&#8217;s Annotations tab lists by default. A hidden type stays visible on the page; only the sidebar list omits it. The funnel next to the sidebar search box sets this for one document.</html:p>
+    <label><html:h2>Reader annotations pane</html:h2></label>
+    <checkbox label="Filter the annotations pane (funnel next to the pane&#8217;s search box)" native="true"
+      preference="extensions.zotero.weavero.enableAnnPaneFilter"/>
+    <html:p class="wv-desc">Narrows the reader&#8217;s annotations pane by colour, type, tag, comment, person or date, while the document keeps every annotation. Same chips and gestures as the funnel above the reader.</html:p>
+    <checkbox label="Keep Zotero&#8217;s colour and tag selector at the foot of the pane" native="true"
+      preference="extensions.zotero.weavero.showNativeAnnSelector"/>
+    <html:p class="wv-desc">Zotero&#8217;s own selector filters the pane and the document together, which the funnel above replaces. Off by default while the funnel is enabled.</html:p>
+    <html:p class="wv-desc">Which annotation types the pane shows by default. A hidden type stays visible on the page; only the pane omits it. The funnel sets this for one document.</html:p>
     <checkbox label="Highlights" native="true"
       preference="extensions.zotero.weavero.annListShowHighlight"/>
     <checkbox label="Underlines" native="true"

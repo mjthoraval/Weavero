@@ -879,6 +879,21 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return false; }
     }
+    /** The annotations-pane funnel itself (issue #43). Default ON; gated by
+     *  the Filters master like the reader funnel. */
+    _getEnableAnnPaneFilter() {
+        try {
+            const v = Zotero.Prefs.get("weavero.enableAnnPaneFilter");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
+    }
+    /** Keep Zotero's own selector (colours / tags / authors) at the foot of
+     *  the annotations pane. Default OFF: the pane funnel covers it, and the
+     *  native one also hides on the page. */
+    _getShowNativeAnnSelector() {
+        try { return !!Zotero.Prefs.get("weavero.showNativeAnnSelector"); }
+        catch(e) { return false; }
+    }
     /** Global default for the annotations-list funnel (issue #43): whether
      *  an annotation TYPE shows in the reader's sidebar list. Default ON. A
      *  per-document departure (`listHide` in ann-order.json) wins;
@@ -2132,6 +2147,9 @@ class WeaveroPlugin {
                 // departure lives in ann-order.json `listHide`.
                 "annListShowHighlight", "annListShowUnderline", "annListShowNote",
                 "annListShowImage", "annListShowInk", "annListShowText",
+                // The pane funnel itself — on by default, like every other
+                // Weavero feature, and individually switchable.
+                "enableAnnPaneFilter",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
                 // Default attachment/note to open — ON, but INERT until the user
@@ -2167,6 +2185,10 @@ class WeaveroPlugin {
                 "readerOutlineTakeover", "recolorAmLinks",
             ];
             const OFF = [
+                // Zotero's own colour/tag/author selector at the foot of the
+                // annotations pane: hidden while Weavero's pane funnel
+                // replaces it (MJT, 2026-09-18), shown again on request.
+                "showNativeAnnSelector",
                 "enableAppLinks", "enableAppLinksSkipConfirm",
                 "debug",
                 // Optional URL schemes — all opt-in
@@ -2203,6 +2225,11 @@ class WeaveroPlugin {
             // Ctrl/Cmd+click split orientation when no split is open yet:
             // "horizontal" (default) or "vertical".
             try { branch.setCharPref(P + "ctrlClickSplit", "horizontal"); } catch (e) {}
+            // Annotations-pane default filter (issue #43), stored verbatim as
+            // JSON so "Use as Default" keeps the chips the user set; empty
+            // means "show everything". The six annListShow<Type> checkboxes
+            // are the Settings-facing view of its type part.
+            try { branch.setCharPref(P + "annPaneDefault", ""); } catch (e) {}
             // Window-name-in-title mode: "off" (default — current design,
             // user decision 2026-07-16) | "prefix" | "replace".
             try { branch.setCharPref(P + "windowTitleNameMode", "off"); } catch (e) {}

@@ -372,13 +372,13 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.equal(popup.querySelector(".wv-al-scope").textContent, "This Document Only");
         const note = popup.querySelector(".wv-al-scope-note");
         assert.isOk(note, "the default is stated where it is overridden");
-        assert.include(note.textContent, "Default hides 1 here");
+        assert.include(note.textContent, "Default: not Ink \u00b7 hides 1 here");
         wv._wvCloseReaderFilterPopup(idoc);
         await wv._wvAnnPaneClearDefault(reader, idoc);
         await wv._wvAnnPaneBackToDefault(reader);
     });
 
-    it("the default's own chips stay visible, and green, in every reader", async function () {
+    it("the default's chips are marked and seeded while the document follows it, named in the footer where it does not", async function () {
         const idoc = reader._iframeWindow.document;
         const openPane = async () => {
             if (idoc.getElementById("wv-reader-filter-popup-v2")) wv._wvCloseReaderFilterPopup(idoc);
@@ -419,17 +419,20 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         assert.notEqual(cs.backgroundColor, plain.backgroundColor, "excluded still differs from neutral");
         wv._wvCloseReaderFilterPopup(idoc);
 
-        // A document that OVERRIDES the default still shows what the default
-        // sets -- marked, but carrying this document's own (empty) state.
+        // A document that OVERRIDES the default: no green anywhere on the
+        // chips (a mark there read as an active filter, MJT 2026-09-18), no
+        // seeded strangers, and the footer names the default instead.
         await wv._wvAnnPaneClear(reader);
         assert.isTrue(wv._wvAnnListIsDeparture(reader), "the override is recorded");
         popup = await openPane();
-        const img = chip(popup, "Image");
-        assert.isOk(img, "still rendered where the document overrides the default");
-        assert.isTrue(img.classList.contains("wv-al-def-chip"));
-        assert.notEqual(img.dataset.excluded, "true", "the override's state is what the chip paints");
-        assert.equal(img.dataset.inactive, "true", "and it reads as absent from this document");
+        assert.equal(popup.querySelectorAll(".wv-al-def-chip").length, 0, "no default marking in an overriding document");
+        assert.isNotOk(chip(popup, "Image"), "and no chip for a type the document does not have");
+        const note = popup.querySelector(".wv-al-scope-note");
+        assert.isOk(note, "the default is named in the footer");
+        assert.include(note.textContent, "Default: not Image, not Note");
+        assert.include(note.textContent, "hides none here");
         wv._wvCloseReaderFilterPopup(idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
 
         // A tri-state flag the default sets marks its tile the same way.
         await setPane({ hasTag: true });

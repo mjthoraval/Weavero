@@ -11150,6 +11150,45 @@ class _ReaderPanelsMixin {
         await this._wvAnnPaneApply(reader);
     }
 
+    /** Short labels for what a pane state sets, one per chip, for a footer
+     *  line or a tooltip: "Ink", "not Yellow", "Tag 3", "Has Tag",
+     *  "Added: last 3 days". Empty for a state that shows everything. */
+    _wvAnnPaneDescribe(st: any): string[] {
+        const out: string[] = [];
+        if (!st) return out;
+        const lbl = (table: any[], v: string) => {
+            const d = (table || []).find((x: any) => x.value === v);
+            return d ? d.label : v;
+        };
+        const pair = (inc: string[], exc: string[], name: (v: string) => string) => {
+            for (const v of (inc || [])) out.push(name(v));
+            for (const v of (exc || [])) out.push("not " + name(v));
+        };
+        pair(st.types, st.typesExcl, v => lbl(this._ANNOTATION_TYPES, v));
+        pair(st.colors, st.colorsExcl, v => lbl(this._ANNOTATION_COLORS, v));
+        pair(st.tags, st.tagsExcl, v => v);
+        pair(st.addedBy, st.addedByExcl, v => "added by " + v);
+        pair(st.modifiedBy, st.modifiedByExcl, v => "modified by " + v);
+        const flag = (v: any, yes: string, no: string) => { if (v === true) out.push(yes); else if (v === false) out.push(no); };
+        flag(st.hasComment, "Has Comment", "No Comment");
+        flag(st.hasTag, "Has Tag", "No Tag");
+        flag(st.hasRelated, "Has Related", "No Related");
+        flag(st.hasLink, "Has Link", "No Link");
+        const date = (pre: string, word: string) => {
+            const mode = st[pre + "Mode"];
+            if (!mode) return;
+            const neg = st[pre + "Neg"] ? "not " : "";
+            if (mode === "last") {
+                const u = st[pre + "Unit"] === "m" ? "min" : st[pre + "Unit"] === "h" ? "h" : st[pre + "Unit"] === "y" ? "y" : "d";
+                out.push(word + ": " + neg + "last " + (st[pre + "N"] || 1) + " " + u);
+            }
+            else out.push(word + ": " + neg + ((st[pre + "From"] || "\u2026") + " to " + (st[pre + "To"] || "\u2026")));
+        };
+        date("dateAdded", "Added");
+        date("dateMod", "Modified");
+        return out;
+    }
+
     /** Union a state INTO the existing default, dimension by dimension --
      *  what "Use as Default" does on Alt+click (MJT, 2026-09-18: a plain click
      *  REPLACES, which is the only way to drop a chip from the default, so
@@ -11554,9 +11593,16 @@ class _ReaderPanelsMixin {
                         if (!this._wvReaderPluginMatch(defState, a) || !this._wvReaderNativeMatch(a, nat)) n++;
                     } catch (_) {}
                 }
+                // The overriding document does not mark the default's chips
+                // (a mark there read as an active filter), so the default is
+                // NAMED here instead, plus what it would leave out.
+                const parts = this._wvAnnPaneDescribe(defState);
                 const note = mk("div", "wv-al-scope-note");
-                note.textContent = n ? "Default hides " + n + " here" : "Default hides none here";
-                note.title = "What the default would leave out in this document";
+                note.textContent = "Default: " + (parts.length ? parts.join(", ") : "everything")
+                    + " \u00b7 " + (n ? "hides " + n + " here" : "hides none here");
+                note.title = "The default filter, which this document does not use:\n"
+                    + (parts.length ? parts.join("\n") : "(shows everything)")
+                    + "\n\nBack to Default applies it here.";
                 noteEl = note;
             }
         }
@@ -11951,10 +11997,14 @@ class _ReaderPanelsMixin {
             if (pane) this._wvAnnListEnsureButton(reader, idoc);
             else this._wvReaderEnsureFilterButton(reader, idoc);
         };
-        // What the GLOBAL DEFAULT sets: the pane scope marks those chips green
-        // and keeps them on screen everywhere. The reader funnel has no
-        // default, hence null there.
-        const defSt = pane ? this._wvAnnPaneDefaultState() : null;
+        // What the GLOBAL DEFAULT sets -- ONLY while this document follows it.
+        // The green mark then always sits on a chip that is also selected or
+        // excluded, so it can only ever mean "on, because it is the default".
+        // Marking the default's chips in a document that overrides it read as
+        // an active filter that was not applying (MJT, 2026-09-18, twice);
+        // there, the footer states the default in words instead. The reader
+        // funnel has no default, hence null there.
+        const defSt = (pane && !this._wvAnnListIsDeparture(reader)) ? this._wvAnnPaneDefaultState() : null;
         const defHas = (dim: string, value: string) => !!defSt
             && (((defSt[dim] || []).indexOf(value) >= 0) || ((defSt[dim + "Excl"] || []).indexOf(value) >= 0));
         const defFlag = (key: string) => !!defSt && (defSt[key] === true || defSt[key] === false);
@@ -11987,7 +12037,9 @@ class _ReaderPanelsMixin {
         // nothing of that kind -- otherwise the default's own parameters are
         // invisible exactly where they matter (a PDF with no ink cannot show
         // that the default hides ink). Such a chip renders faded, like any
-        // value absent from the visible set.
+        // value absent from the visible set. Following documents only (see
+        // `defSt`): in an overriding document such a chip would be a faded
+        // stranger with nothing to explain it.
         if (defSt) {
             const seed = (set: Set<string>, dim: string) => {
                 for (const v of (defSt[dim] || []).concat(defSt[dim + "Excl"] || [])) if (v) set.add(v);
@@ -12068,7 +12120,12 @@ class _ReaderPanelsMixin {
         const clearBtn = mk("button", "wv-filter-clear-btn");
         clearBtn.type = "button";
         clearBtn.textContent = "Clear";
-        clearBtn.title = "Clear all filters (keep this window open)";
+        // In the pane scope, Clear is a choice FOR THIS DOCUMENT that outranks
+        // the default -- MJT expected it to return to the default instead
+        // (2026-09-18), so the tooltip says which is which.
+        clearBtn.title = pane
+            ? "Show every annotation in this document. This document's own choice: the default stays as it is, and Back to Default follows it again."
+            : "Clear all filters (keep this window open)";
         clearBtn.setAttribute("aria-label", "Clear all filters");
         clearBtn.addEventListener("click", async (e: any) => {
             e.stopPropagation();

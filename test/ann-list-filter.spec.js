@@ -417,6 +417,45 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnPaneBackToDefault(reader);
     });
 
+    it("Use as Default replaces; Alt+click adds to what the default already holds", async function () {
+        const idoc = reader._iframeWindow.document;
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
+
+        await setPane({ typesExcl: ["ink"] });
+        await wv._wvAnnListUseAsDefault(reader);
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), { typesExcl: ["ink"] },
+            "this document's filter became the default");
+
+        // A plain click REPLACES -- the only way to drop a chip from the
+        // default is to set a filter without it and use that.
+        await setPane({ typesExcl: [], colorsExcl: ["#ffd400"] });
+        await wv._wvAnnListUseAsDefault(reader);
+        assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), { colorsExcl: ["#ffd400"] },
+            "replaced: ink is no longer in the default");
+
+        // Alt+click MERGES, and the document adopts the merged default rather
+        // than being left departing from what it just contributed to.
+        await setPane({ colorsExcl: [], typesExcl: ["ink"], hasTag: true });
+        await wv._wvAnnListUseAsDefault(reader, true);
+        const merged = wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState());
+        assert.sameMembers(merged.typesExcl || [], ["ink"], "the document's chip was added");
+        assert.sameMembers(merged.colorsExcl || [], ["#ffd400"], "the default kept its own colour");
+        assert.strictEqual(merged.hasTag, true, "and the flag it set");
+        assert.isFalse(wv._wvAnnListIsDeparture(reader), "the document follows the merged default");
+
+        // Where the two disagree about a value, the document wins: it is the
+        // later instruction.
+        await setPane({ colorsExcl: [], colors: ["#ffd400"] });
+        await wv._wvAnnListUseAsDefault(reader, true);
+        const m2 = wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState());
+        assert.sameMembers(m2.colors || [], ["#ffd400"], "moved to the include side");
+        assert.notInclude(m2.colorsExcl || [], "#ffd400", "and left the exclude side");
+
+        await wv._wvAnnPaneClearDefault(reader, idoc);
+        await wv._wvAnnPaneBackToDefault(reader);
+    });
+
     it("no error-console entries from the feature", function () {
         const errs = (Zotero.getErrors(true) || []).map(String);
         assert.deepEqual(errs.filter(e => /_wvAnnList|_wvAnnPane/.test(e)), []);

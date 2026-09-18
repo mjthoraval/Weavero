@@ -11112,11 +11112,59 @@ class _ReaderPanelsMixin {
         await this._wvAnnPaneApply(reader);
     }
 
+    /** Union a state INTO the existing default, dimension by dimension --
+     *  what "Use as Default" does on Alt+click (MJT, 2026-09-18: a plain click
+     *  REPLACES, which is the only way to drop a chip from the default, so
+     *  adding one needed a gesture of its own). Rules:
+     *    - include / exclude lists: the two sets are merged, and where they
+     *      disagree about a value THIS document wins (it is the later
+     *      instruction: excluding here removes it from the default's include);
+     *    - Has Comment / Tag / Related / Link: the document's answer when it
+     *      has one, else the default keeps its own;
+     *    - dates: one block per dimension, taken from the document only when
+     *      it sets that dimension's mode. */
+    _wvAnnPaneMergeIntoDefault(st: any): any {
+        const base = this._wvAnnPaneDefaultState();
+        const out = this._wvAnnPaneBlankState();
+        const pairs = [["types", "typesExcl"], ["colors", "colorsExcl"], ["tags", "tagsExcl"],
+                       ["addedBy", "addedByExcl"], ["modifiedBy", "modifiedByExcl"]];
+        for (const [inc, exc] of pairs) {
+            const incSet = new Set<string>([...(base[inc] || []), ...(st[inc] || [])]);
+            const excSet = new Set<string>([...(base[exc] || []), ...(st[exc] || [])]);
+            for (const v of (st[inc] || [])) excSet.delete(v);
+            for (const v of (st[exc] || [])) incSet.delete(v);
+            out[inc] = Array.from(incSet);
+            out[exc] = Array.from(excSet);
+        }
+        for (const k of ["hasComment", "hasRelated", "hasLink", "hasTag"]) {
+            out[k] = (st[k] === null || st[k] === undefined) ? base[k] : st[k];
+        }
+        for (const pre of ["dateAdded", "dateMod"]) {
+            const src = st[pre + "Mode"] ? st : base;
+            for (const suf of ["Mode", "N", "Unit", "From", "To", "Neg"]) out[pre + suf] = src[pre + suf];
+        }
+        return out;
+    }
+
     /** Make THIS state the global default, chips and all. The document then
      *  matches the default, so its own record goes away and every other
-     *  document that follows the default picks it up. */
-    async _wvAnnListUseAsDefault(reader: any) {
-        this._wvAnnPaneSetDefault(this._wvAnnPaneState(reader));
+     *  document that follows the default picks it up. With `merge`, the
+     *  state is added to the existing default instead of replacing it, and
+     *  this document adopts the merged result -- clicking "add to the
+     *  default" and then being told the document departs from it would make
+     *  no sense. */
+    async _wvAnnListUseAsDefault(reader: any, merge?: boolean) {
+        const st = this._wvAnnPaneState(reader);
+        if (merge) {
+            const merged = this._wvAnnPaneMergeIntoDefault(st);
+            this._wvAnnPaneSetDefault(merged);
+            // Mutate the state IN PLACE: the open popup closed over this very
+            // object, so replacing it would leave the popup editing a ghost.
+            for (const k of Object.keys(st)) {
+                st[k] = Array.isArray(merged[k]) ? (merged[k] || []).slice() : merged[k];
+            }
+        }
+        else this._wvAnnPaneSetDefault(st);
         await this._wvAnnPanePersist(reader);   // equal to the default now -> record removed
         this._wvAnnListApply(reader, true);
         this._wvAnnPaneRefreshAll();
@@ -11478,10 +11526,11 @@ class _ReaderPanelsMixin {
             const useBtn = mk("button", "wv-al-foot-btn");
             useBtn.type = "button";
             useBtn.textContent = "Use as Default";
-            useBtn.title = "Make this filter, exactly as it stands, the default for every document";
+            useBtn.title = "Make this filter, exactly as it stands, the default for every document"
+                + "\nAlt+click to ADD its chips to the existing default instead of replacing it";
             useBtn.addEventListener("click", async (e: any) => {
                 e.stopPropagation();
-                await this._wvAnnListUseAsDefault(reader);
+                await this._wvAnnListUseAsDefault(reader, !!e.altKey);
                 this._wvAnnListAfterChange(reader, idoc, popup);
             });
             const backBtn = mk("button", "wv-al-foot-btn");

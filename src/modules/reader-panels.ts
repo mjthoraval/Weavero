@@ -330,7 +330,15 @@ const RP_POPUP_CSS = [
     // kind -- so the default parameters stay readable, including in a document
     // that overrides them (MJT, 2026-09-18). The chip's own include/exclude
     // painting still shows through inside the ring.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip{background:rgba(95,178,54,0.16);box-shadow:inset 0 0 0 1px rgba(95,178,54,0.6);}",
+    // The mark rides OUTSIDE the chip (outline), never its background: the
+    // include blue and the exclude red diagonal are the chip's own state and
+    // must stay readable underneath. `:not(:focus-visible)` keeps the keyboard
+    // focus ring winning -- this rule outranks the popup's focus style.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip:not(:focus-visible){outline:1.5px solid rgba(95,178,54,0.85);outline-offset:1px;}",
+    // A default chip with no state of its own in THIS document (the document
+    // overrides the default, or the default's other direction) still shows the
+    // green as a fill, since there is no state paint to preserve.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip:not([data-selected=\"true\"]):not([data-excluded=\"true\"]){background:rgba(95,178,54,0.16);}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip[data-inactive=\"true\"]{opacity:.75;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-row .wv-al-foot-btn:first-of-type{margin-left:auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;}",

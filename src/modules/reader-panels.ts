@@ -341,7 +341,12 @@ const RP_POPUP_CSS = [
     // the chips carry, so one mark means one thing everywhere (MJT,
     // 2026-09-18; it replaced a green-tinted bowl). `::after` is the dot.
     ".wv-al-btn.wv-al-def-on{position:relative;}",
-    ".wv-al-btn.wv-al-def-on::before{content:'';position:absolute;left:6px;right:6px;bottom:3px;height:2px;",
+    // Geometry: the 28-px button holds the 20-px funnel image at its left
+    // edge and the 8-px chevron after it, so the bar takes the image's own
+    // span (x 0-20), not the button's; and it sits on the button's bottom
+    // edge, 2 px clear of the image box (y 4-24), so it never touches the
+    // glyph (MJT, 2026-09-18).
+    ".wv-al-btn.wv-al-def-on::before{content:'';position:absolute;left:0;width:20px;bottom:0;height:2px;",
     "  border-radius:1px;background:rgba(95,178,54,0.95);pointer-events:none;}",
     "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after,.wv-al-btn.wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",

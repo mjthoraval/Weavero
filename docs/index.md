@@ -26,7 +26,7 @@ A funnel next to the search box opens a filter popup: annotation colour/type/com
 
 ## Bookmarks
 
-Bookmark items, collections, searches, and URLs from a collections-pane dropdown — and in-document locations (positions, pages, text passages, annotations) from a Bookmarks tab in the reader sidebar. Folders, drag-and-drop, search, filtering, and hover previews.
+Bookmark items, collections, searches, and URLs from a collections-pane dropdown — and in-document locations (positions, pages, text passages, annotations) from a Bookmarks tab in the reader sidebar. Folders, drag-and-drop, search, filtering, and hover previews. Right-click the Bookmarks tab to show or hide the “p. N” labels for that document, the way the Outline tab does.
 
 ## Reader outline
 

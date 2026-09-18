@@ -117,6 +117,28 @@ active), then:
       round-trip; the menu now reads **Show** / **✓ Hide (default)**; a
       document switched to Show from there still shows them.
 
+## Bookmarks tab menu (after touching the Bookmarks-tab wiring / page labels)
+
+The Outline tab's page-number menu, on the Bookmarks tab. Open a PDF with
+at least two bookmarks on different pages, Bookmarks tab active, then:
+
+- [ ] **Right-click the Bookmarks tab button** → the same menu opens under
+      it: heading **PAGE NUMBERS**, rows **✓ Show (default)** and **Hide**.
+      Left-click still switches to the tab; dragging an annotation onto the
+      tab still bookmarks it.
+- [ ] **Click "Hide"** → the "p. N" labels disappear from every row at
+      once, the menu closes. The **hover card still shows the page** (it is
+      the detail view).
+- [ ] **Switch to another document** → its labels are still shown. Back to
+      the first → still hidden, also after closing and reopening the tab
+      and after a Zotero restart.
+- [ ] **Click "Show (default)"** → labels return and `weavero/outlines.json`
+      no longer carries a `bmPageNumbers` entry for the document.
+- [ ] **Preferences → Bookmarks → uncheck "Show page numbers next to
+      document bookmarks"** → every open reader's bookmark list drops the
+      labels without a tab round-trip; the menu now reads **Show** /
+      **✓ Hide (default)**; the Outline tab's own labels are unaffected.
+
 ## Annotations-list funnel (after touching the sidebar funnel / list filter)
 
 Issue #43: hide annotation types from the reader's sidebar list while they

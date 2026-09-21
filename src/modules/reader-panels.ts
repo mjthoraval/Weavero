@@ -10766,7 +10766,12 @@ class _ReaderPanelsMixin {
         if (node.type !== "item") return !anyInclude;
         let it: any = null;
         try { it = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey); } catch (_) {}
-        if (!it) return false;
+        // An ORPHAN (its target deleted) is a leaf like any other for the
+        // kind dimension -- the facets count it under "item", the unfiltered
+        // list shows it with its warning -- and, like a pin or a page, it
+        // cannot express an annotation dimension. Dropping it outright here
+        // made "Items — 2" list one row (MJT, 2026-09-21).
+        if (!it) return !anyInclude;
         const isAnn = !!(it.isAnnotation && it.isAnnotation());
         if (st.colors.size) {
             if (!isAnn || !st.colors.has(String(it.annotationColor || ""))) return false;

@@ -1,4 +1,20 @@
 import { defineConfig } from "zotero-plugin-scaffold";
+import { copyFileSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { basename, join } from "node:path";
+
+/** `test` (the whole suite), or a scratch directory holding only the specs
+ *  named in WV_TEST_ENTRIES -- see the `test.entries` note below. */
+function wvTestEntries(): string[] {
+  const want = (process.env.WV_TEST_ENTRIES || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!want.length) return ["test"];
+  // Not under `.scaffold/`: the scaffold's glob skips dot-directories.
+  const dir = "test-targeted";
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  for (const f of want) copyFileSync(f, join(dir, basename(f)));
+  console.log("[weavero] targeted specs: " + readdirSync(dir).join(", "));
+  return [dir];
+}
 
 export default defineConfig({
   // Plain-JS plugin: scaffold copies src/* into the build verbatim
@@ -62,7 +78,13 @@ export default defineConfig({
   },
 
   test: {
-    entries: ["test"],
+    // Targeted run: `WV_TEST_ENTRIES=test/foo.spec.js[,test/bar.spec.js] npm
+    // test` runs only those specs in the temp-profile runner -- the way a
+    // NEW spec is proven before it is committed, without the full suite
+    // (2026-09-21, after a new spec went red on CI twice). The scaffold
+    // globs DIRECTORIES, so the listed files are copied into a scratch
+    // directory it can scan; specs are self-contained (no relative imports).
+    entries: wvTestEntries(),
     // We don't yet expose an "initialized" flag on a global, so
     // wait a fixed delay after Zotero starts before kicking off
     // the test suite. Once the plugin is converted to set a

@@ -586,6 +586,33 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await wv._wvAnnPaneClear(reader);
     });
 
+    it("the pane never puts back on the page what the reader funnel hides", async function () {
+        // Pane: hide ink (page keeps it). Reader funnel: a colour neither
+        // annotation has -> Zotero hides both; the pane's page re-append
+        // must not resurrect the ink (2026-09-21: a blue reader filter over a
+        // yellow pane filter showed every other colour on the page).
+        const idoc = reader._iframeWindow.document;
+        await setPane({ typesExcl: ["ink"] });
+        await waitFor(() => cards(idoc).length === 1, 15000, "ink row gone");
+        assert.sameMembers(pageKeys(), [hl.key, ink.key], "pane alone: the page keeps both");
+
+        await wv._wvApplyReaderFilter(reader, { colors: ["#ff6666"], tags: [], authors: [] });
+        await waitFor(() => pageKeys().length === 0, 15000, "page emptied by the reader funnel");
+        await waitFor(() => cards(idoc).length === 0, 15000, "nothing matches red in the pane either");
+
+        // A colour both have: the reader funnel shows both on the page, the
+        // pane still leaves the ink out.
+        await wv._wvApplyReaderFilter(reader, { colors: ["#ffd400"], tags: [], authors: [] });
+        await waitFor(() => pageKeys().length === 2, 15000, "page back to both");
+        assert.sameMembers(pageKeys(), [hl.key, ink.key]);
+        await waitFor(() => cards(idoc).length === 1, 15000, "pane still hides the ink");
+        assert.deepEqual(cards(idoc), [hl.key]);
+
+        await wv._wvApplyReaderFilter(reader, { colors: [], tags: [], authors: [] });
+        await wv._wvAnnPaneClear(reader);
+        await waitFor(() => cards(idoc).length === 2, 15000, "both rows back");
+    });
+
     it("no error-console entries from the feature", function () {
         const errs = (Zotero.getErrors(true) || []).map(String);
         assert.deepEqual(errs.filter(e => /_wvAnnList|_wvAnnPane/.test(e)), []);

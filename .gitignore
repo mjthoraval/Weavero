@@ -21,3 +21,6 @@ update-beta.json
 # Local Zotero binary path for the scaffold tester (machine-specific).
 .env
 test/compat-plugins/last-errors.log
+
+# Scratch directory of the targeted test run (WV_TEST_ENTRIES).
+test-targeted/

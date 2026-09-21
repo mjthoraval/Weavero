@@ -293,13 +293,20 @@ const RP_POPUP_CSS = [
     // (Weavero's Bookmarks/Outline tabs strip `.active` from #viewAnnotations
     // and React drops the search box on the other views). The button reuses
     // the bookmarks-funnel classes so the two funnels are one visual family.
+    // Shown while the annotations VIEW is displayed and neither Weavero tab
+    // (Bookmarks, Outline takeover) is on. Keyed on the view, not the tab
+    // button's `active` class: that class is React's, and the Bookmarks
+    // tab logic strips it by hand -- a sequence that left React believing
+    // it was still there lost the highlight and this funnel with it
+    // (2026-09-21). The two Weavero classes flip in the same style flush as
+    // their own toolbars, so the funnels never overlap for a frame.
     ".wv-al-actions{display:none;align-items:center;gap:2px;}",
     // Zotero's own selector (colours / tags / authors, bottom of the pane)
     // duplicates what the pane funnel does -- and its filter hides on the page
     // too. Hidden by default once the pane funnel is on; the Settings pane
     // brings it back (MJT, 2026-09-18). Class-gated so the pref decides.
     "#sidebarContainer.wv-al-nonative #annotationsView #selector{display:none;}",
-    "#sidebarContainer:has(#viewAnnotations.active) .wv-al-actions{display:flex;}",
+    "#sidebarContainer:not(.wv-bm-tab-on):not(.wv-outline-tab-on):has(#annotationsView:not(.hidden)) .wv-al-actions{display:flex;}",
     // The native search box expands to a 130-px input INSIDE `.end`; with a
     // funnel beside it that squeezes to nothing, so the OPEN input drops to
     // its own line under the toolbar (the Bookmarks tab's search row is the
@@ -316,6 +323,20 @@ const RP_POPUP_CSS = [
     // so DOM order is [funnel host][bookmarks host][search box]; `order`
     // keeps the magnifier first regardless (dev.3 came up funnel-left).
     "#sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end{display:flex;flex-direction:row;align-items:center;gap:2px;}",
+    // Zotero's sidebar floor is 180 px (sidebar-resizer.js SIDEBAR_MIN_WIDTH)
+    // and its toolbar needs 8 + 4 tabs x 28 + 8 (Zotero's .end margin) +
+    // (28 + 2 + 28) + 8 = 194 with the Bookmarks tab and a funnel beside the
+    // search box, so at the floor the funnel's chevron stood outside the pane
+    // (MJT, 2026-09-21). Below 190 px the toolbar gives up its side insets
+    // (4 each), the .end margin and the 2-px gap: 4 + 112 + 56 + 4 = 176
+    // fits, chevron kept (a first cut dropped the chevron; MJT preferred
+    // keeping it). Placed AFTER the .end rule above, which it must outrank.
+    "#sidebarContainer{container-type:inline-size;}",
+    "@container (max-width:189px){",
+    "  #sidebarContainer .sidebar-toolbar{padding-left:4px;padding-right:4px;}",
+    "  #sidebarContainer:has(.wv-al-actions) .sidebar-toolbar .end{gap:0;margin-left:0;}",
+    "  #sidebarContainer .sidebar-toolbar .end .wv-al-actions,#sidebarContainer .sidebar-toolbar .end .wv-bm-sidebar-actions{gap:0;}",
+    "}",
     "#sidebarContainer .sidebar-toolbar .end > .search-box{order:0;}",
     "#sidebarContainer .sidebar-toolbar .end > .wv-al-actions{order:1;}",
     "#sidebarContainer .sidebar-toolbar .end > .wv-bm-sidebar-actions{order:2;}",
@@ -401,11 +422,23 @@ const RP_POPUP_CSS = [
     // -- an earlier -5px guess based on box slack overshot badly (0.4px).
     ".annotation .preview:has(button.tags) + .wv-ann-date{margin-top:-1px;}",
     // Date-range custom row + Weavero mini calendar in the filter popup.
-    ".wv-rf-daterange{display:flex;gap:5px;align-items:center;padding:2px 10px 4px;font-size:11px;opacity:.9;}",
+    // Wraps between its two bounds and does not vote on the popup's width
+    // (`contain:inline-size`, the same rule as the tag row): at the popup's
+    // width the two "from/to [date] x" units go on two lines.
+    ".wv-rf-daterange{display:flex;flex-wrap:wrap;gap:3px 8px;align-items:center;padding:2px 10px 4px;font-size:11px;opacity:.9;contain:inline-size;}",
+    ".wv-rf-datefield{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;}",
+    ".wv-rf-datelbl{display:inline-block;min-width:2.6em;text-align:right;}",
     ".wv-rf-datechip-gap{flex:0 0 8px;}",
-    ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;",
+    // Fixed width: a filled field ("04 / 09 / 2026", 101 px) is narrower than
+    // the placeholder ("dd / mm / yyyy", 107 px), so the x after each field
+    // drifted once a date was typed (MJT, 2026-09-21). 110 px clears both.
+    ".wv-rf-dateinput{font-size:11px;padding:1px 4px;background:transparent;color:inherit;width:110px;min-width:110px;box-sizing:border-box;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
     ".wv-rf-dateinput[data-open]{border-color:var(--color-accent,#5e6ad2);}",
+    // While its calendar is open the field is also the focused control, and
+    // the popup's focus ring (2 px, offset 1) drew a second accent line round
+    // the accent border (MJT, 2026-09-21). One ring: the border says both.
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-dateinput[data-open]:focus-visible{outline:none;}",
     // A bound that is actively filtering: BACKGROUND tint (same language as
     // selected chips), NOT a ring -- an accent border read as a focus ring
     // and two applied bounds looked like two focus rings (user question
@@ -466,7 +499,7 @@ const RP_POPUP_CSS = [
     // (user report 2026-08-28).
     ".wv-ann-sortbar{display:none;gap:4px;align-items:center;padding:3px 8px;justify-content:flex-end;",
     "  border-bottom:1px solid var(--color-panedivider,rgba(127,127,127,.3));flex:0 0 auto;}",
-    "#sidebarContainer:has(#viewAnnotations.active) .wv-ann-sortbar{display:flex;}",
+    "#sidebarContainer:not(.wv-bm-tab-on):not(.wv-outline-tab-on):has(#annotationsView:not(.hidden)) .wv-ann-sortbar{display:flex;}",
     ".wv-ann-sortchip{font-size:11px;padding:2px 8px;border-radius:9px;border:1px solid transparent;",
     "  background:transparent;color:inherit;cursor:pointer;white-space:nowrap;}",
     ".wv-ann-sortchip:hover{background:var(--fill-quinary,rgba(127,127,127,.12));}",
@@ -1639,7 +1672,11 @@ const RP_OUTLINE_CSS = [
     ".wv-outline-twisty svg{width:8px;height:8px;}",
     // Header strip: title on the left, source chip on the right.
     ".wv-outline-head{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 8px 5px;border-bottom:1px solid rgba(127,127,127,.18);}",
-    ".wv-outline-head-title{flex:1 1 auto;font-size:11px;text-transform:uppercase;letter-spacing:.04em;opacity:.55;font-weight:600;}",
+    // The title shrinks with an ellipsis rather than pushing the row out of
+    // its left edge: as a one-word flex item it could not shrink below
+    // "ANNOTATIONS", so at a narrow sidebar the right-justified row overflowed
+    // leftwards and showed "TATIONS" (MJT, 2026-09-21).
+    ".wv-outline-head-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;text-transform:uppercase;letter-spacing:.04em;opacity:.55;font-weight:600;}",
     // Source chip: a coloured dot + label. Embedded=green (from the file),
     // Extracted=amber (heuristic), Weavero=accent (curated), None=muted grey
     // (no outline at all). Non-switchable chips are inert; switchable ones
@@ -1893,6 +1930,24 @@ class _ReaderPanelsMixin {
                 "var m = window.__wvAM; delete window.__wvAM;" +
                 "if (m.__wvOrigRender) { m.render = m.__wvOrigRender; }" +
                 "m.__wvOrigRender = m.render;" +
+                // setFilter() is Zotero's own verdict on `_hidden` (colour /
+                // tag / author includes, search): it sets `_hidden` on every
+                // annotation, clears it on the matches, then render()s -- all
+                // synchronously (async in name only). The pane filter must
+                // never put back on the PAGE an annotation that verdict hid,
+                // so the render wrap needs to know when `_hidden` is Zotero's
+                // and when it already carries the pane's marks from an earlier
+                // pass. This flag tells it (MJT, 2026-09-21: a blue reader
+                // filter over a yellow pane filter showed every colour on the
+                // page, because the pane's re-append resurrected what the
+                // native filter had hidden).
+                "if (m.__wvOrigSetFilter) { m.setFilter = m.__wvOrigSetFilter; }" +
+                "m.__wvOrigSetFilter = m.setFilter;" +
+                "m.setFilter = function () {" +
+                "  m.__wvNativePass = true;" +
+                "  try { return m.__wvOrigSetFilter.apply(m, arguments); }" +
+                "  finally { m.__wvNativePass = false; }" +
+                "};" +
                 "m.render = function () {" +
                 "  try {" +
                 // ALWAYS sort: with no rank map every rank is equal and the
@@ -1909,9 +1964,19 @@ class _ReaderPanelsMixin {
                 // this re-marks on every native pass; un-hiding is a
                 // setFilter() re-run (see _wvAnnListApply).
                 "    var lh = window.__wvAnnListHideKeys || null;" +
+                "    var nat = !!m.__wvNativePass;" +
                 "    for (var j = 0; j < arr.length; j++) {" +
                 "      var an = arr[j];" +
-                "      if (lh && lh[an.id]) { an._hidden = true; an._wvListHidden = true; }" +
+                // On a native pass `_hidden` is Zotero's verdict: remember it.
+                // On any other render it already carries our marks, so the
+                // remembered verdict is what decides. Only an annotation
+                // Zotero leaves VISIBLE is list-hidden (pane only, page keeps
+                // it); one Zotero hides stays hidden everywhere.
+                "      if (nat) { if (an._hidden) an._wvNativeHidden = true; else delete an._wvNativeHidden; }" +
+                "      if (lh && lh[an.id]) {" +
+                "        if (an._wvNativeHidden) { delete an._wvListHidden; } else { an._wvListHidden = true; }" +
+                "        an._hidden = true;" +
+                "      }" +
                 "      else if (an._wvListHidden) { delete an._wvListHidden; }" +
                 "    }" +
                 "    var dec = arr.map(function (a, i) {" +
@@ -10594,8 +10659,17 @@ class _ReaderPanelsMixin {
     /** A chip state's EXCLUDE set for `dim` ("colors"/"types"/"tags"/
      *  "authors"), lazily created — state bags predating the exclude
      *  feature (or rebuilt from older code paths) get it on first use. */
+    /** Duck-typed Set test. `instanceof Set` is false for a Set built in
+     *  another global -- a test's, the console's, another window's -- and
+     *  the chip-state guards then silently swapped the caller's Set for an
+     *  empty one, dropping every exclude (CI on 2026-09-21, from the
+     *  orphan spec). */
+    _wvIsSet(x: any): boolean {
+        return !!x && typeof x.has === "function" && typeof x.add === "function" && typeof x.size === "number";
+    }
+
     _wvBmChipExcl(st: any, dim: string): Set<string> {
-        if (!(st[dim + "Excl"] instanceof Set)) st[dim + "Excl"] = new Set<string>();
+        if (!this._wvIsSet(st[dim + "Excl"])) st[dim + "Excl"] = new Set<string>();
         return st[dim + "Excl"];
     }
 
@@ -10617,7 +10691,7 @@ class _ReaderPanelsMixin {
 
     _wvReaderBmChipsActive(reader: any): boolean {
         const st = this._wvReaderBmChipState(reader);
-        const bmTypes = (st.bmTypes instanceof Set) ? st.bmTypes.size : 0;
+        const bmTypes = this._wvIsSet(st.bmTypes) ? st.bmTypes.size : 0;
         return (st.colors.size + st.tags.size + st.authors.size + st.types.size + bmTypes
             + this._wvBmChipExcl(st, "colors").size + this._wvBmChipExcl(st, "tags").size
             + this._wvBmChipExcl(st, "authors").size + this._wvBmChipExcl(st, "types").size
@@ -10782,7 +10856,7 @@ class _ReaderPanelsMixin {
         // items alike), so it is gated first, before the annotation-only logic
         // below. Kept independent: it composes with colour/type/tag by AND, and
         // its EXCLUDE removes matching leaves even under exclude-only filtering.
-        const bmInc: Set<string> = (st.bmTypes instanceof Set) ? st.bmTypes : new Set();
+        const bmInc: Set<string> = this._wvIsSet(st.bmTypes) ? st.bmTypes : new Set();
         const bmExc = this._wvBmChipExcl(st, "bmTypes");
         if (bmInc.size || bmExc.size) {
             const cat = this._wvBmNodeTypeCategory(node);
@@ -12007,6 +12081,27 @@ class _ReaderPanelsMixin {
      *  wrapped in a `.wv-filter-or-inline` pill, colour swatches, the Has
      *  Comment speech-bubble tile, and tag chips. Click = include, Alt+click
      *  = exclude (mirrors `_toggleIncludeExclude`). */
+    /** Keep a positioned popup inside the reader viewport after a re-render.
+     *  The popup's width is its content's (`max-content`) and its left edge
+     *  is fixed at open time, so content that arrives later -- the Custom
+     *  date-range row, a calendar -- widened it past the reader's right
+     *  edge, where the iframe clips it (MJT, 2026-09-21). Re-clamp on every
+     *  render; a popup that already fits does not move. */
+    _wvReaderPopupKeepOnScreen(idoc: any, popup: any) {
+        try {
+            if (!popup || !popup.isConnected || !popup.style.left) return;
+            const de = idoc.documentElement;
+            const vw = (de && de.clientWidth) || 0, vh = (de && de.clientHeight) || 0;
+            if (!vw || !vh) return;
+            const pw = popup.offsetWidth, ph = popup.offsetHeight;
+            let left = parseFloat(popup.style.left) || 0, top = parseFloat(popup.style.top) || 0;
+            if (left + pw > vw - 6) left = Math.max(6, vw - pw - 6);
+            if (top + ph > vh - 6) top = Math.max(6, vh - ph - 6);
+            popup.style.left = Math.round(left) + "px";
+            popup.style.top = Math.round(top) + "px";
+        } catch (_) {}
+    }
+
     _wvRenderReaderFilterPopup(reader: any, idoc: any, popup: any) {
         while (popup.firstChild) popup.firstChild.remove();
         try { popup.style.colorScheme = (this._bmIsDark && this._bmIsDark(idoc.defaultView)) ? "dark" : "light"; } catch (_) {}
@@ -12237,6 +12332,7 @@ class _ReaderPanelsMixin {
             const empty = mk("div", "wv-rf-empty");
             empty.textContent = "No annotations in this document.";
             stack.appendChild(empty);
+            this._wvReaderPopupKeepOnScreen(idoc, popup);
             return;
         }
 
@@ -12684,8 +12780,15 @@ class _ReaderPanelsMixin {
             const focusEl = (el: any) => this._wvRfFocusEl(el);
             const popupFocusables = () => this._wvRfPopupFocusables(popup);
             const mkDateField = (which: string, lbl: string, key: string) => {
-                const lb = mk("span"); lb.textContent = lbl;
-                rangeRow.appendChild(lb);
+                // One unbreakable unit per bound ("from [date] x"), so the
+                // row wraps between the two bounds and never widens the
+                // popup (MJT, 2026-09-21: two lines, not a wider popup).
+                const grp = mk("span", "wv-rf-datefield");
+                rangeRow.appendChild(grp);
+                // Fixed-width, right-aligned label so the two date fields
+                // start at the same x on their two lines (MJT, 2026-09-21).
+                const lb = mk("span", "wv-rf-datelbl"); lb.textContent = lbl;
+                grp.appendChild(lb);
                 const inp: any = mk("input", "wv-rf-dateinput");
                 inp.type = "date";
                 if (st[key]) inp.value = st[key];
@@ -12922,7 +13025,7 @@ class _ReaderPanelsMixin {
                     // longer holds focus; focusin re-arms on return.
                     try { (inp as any).__wvSeg = null; } catch (_) {}
                 });
-                rangeRow.appendChild(inp);
+                grp.appendChild(inp);
                 const x = mk("button", "wv-rf-dateclear");
                 x.type = "button";
                 x.textContent = "×";
@@ -12932,7 +13035,7 @@ class _ReaderPanelsMixin {
                     st[key] = null;
                     await applyDate();
                 });
-                rangeRow.appendChild(x);
+                grp.appendChild(x);
                 return inp;
             };
             const fromInp: any = mkDateField("from", "from", fKey);
@@ -12957,6 +13060,7 @@ class _ReaderPanelsMixin {
             // The pane's own footer (scope + default/departure) replaces the
             // reader-only "Hide Annotations in the Reader" toggle below.
             this._wvAnnPaneFooter(reader, idoc, popup, stack);
+            this._wvReaderPopupKeepOnScreen(idoc, popup);
             return;
         }
         const hidden = this._wvReaderAnnotationsHidden(reader);
@@ -12976,6 +13080,7 @@ class _ReaderPanelsMixin {
             refreshBtn();   // refresh the funnel dot
         });
         stack.appendChild(hideRow);
+        this._wvReaderPopupKeepOnScreen(idoc, popup);
     }
 
     _wvReaderAnnotationsHidden(reader: any) {
@@ -14449,11 +14554,40 @@ class _ReaderPanelsMixin {
             // Only the ACTIVE takeover view is a [data-tabstop] (see the
             // outline takeover's note -- an invisible stop wedges Tab).
             try { if (on) view.setAttribute("data-tabstop", "1"); else view.removeAttribute("data-tabstop"); } catch (_) {}
+            // The native tabs' `active` is React's, and React only rewrites
+            // the attribute when the class STRING it renders changes. Stripping
+            // it by hand while the Bookmarks tab is on is fine as long as the
+            // sentinel view below makes React render "toolbar-button" next --
+            // but when that call is skipped (guard) or the view is already
+            // back, React's tree still says "active" and never restores it:
+            // the Annotations tab stayed unhighlighted until the view changed
+            // twice (runner sequence, 2026-09-21). So the hand-maintenance is
+            // symmetric: strip while on, put the current view's tab back when
+            // off. The pane-funnel and sort-bar CSS no longer key on this
+            // class at all (`#annotationsView:not(.hidden)`).
+            const tabFor: { [k: string]: string } = { thumbnails: "viewThumbnail", annotations: "viewAnnotations", outline: "viewOutline" };
             if (on) {
                 for (const id of ["viewThumbnail", "viewAnnotations", "viewOutline"]) {
                     const t = idoc.getElementById(id);
                     if (t) { t.classList.remove("active"); t.setAttribute("aria-selected", "false"); }
                 }
+            }
+            else {
+                try {
+                    const ir0 = reader._internalReader;
+                    let cur0 = ir0 && ir0._state ? ir0._state.sidebarView : undefined;
+                    if (cur0 === RP_BM_SIDEBAR_VIEW || !cur0) cur0 = reader._wvPrevSidebarView || "annotations";
+                    const wantId = tabFor[cur0];
+                    if (wantId) {
+                        for (const id of ["viewThumbnail", "viewAnnotations", "viewOutline"]) {
+                            const t = idoc.getElementById(id);
+                            if (!t) continue;
+                            const isIt = id === wantId;
+                            t.classList.toggle("active", isIt);
+                            t.setAttribute("aria-selected", isIt ? "true" : "false");
+                        }
+                    }
+                } catch (_) {}
             }
             // Tell the reader its sidebar is NOT showing the annotations view, so
             // it shows the in-document annotation popup on selection (it hides
@@ -14486,6 +14620,13 @@ class _ReaderPanelsMixin {
                         const back = reader._wvPrevSidebarView || "annotations";
                         reader._wvSidebarViewSet = back;
                         ir.setSidebarView(back);
+                    }
+                    else if (lastSet === RP_BM_SIDEBAR_VIEW) {
+                        // Zotero moved the view itself (a native tab click
+                        // lands before our restore): the tracker must follow,
+                        // or the next activation skips the sentinel and React
+                        // never learns the tabs changed (2026-09-21).
+                        reader._wvSidebarViewSet = cur;
                     }
                     // NEVER leave the sidebar with no renderable view: an
                     // undefined view (not our sentinel, no restore pending)
@@ -16067,8 +16208,8 @@ class _ReaderPanelsMixin {
                 const clearBmFilter = () => {
                     try {
                         for (const dim of ["colors", "tags", "authors", "types", "bmTypes"]) {
-                            if (st[dim] instanceof Set) st[dim].clear();
-                            if (st[dim + "Excl"] instanceof Set) st[dim + "Excl"].clear();
+                            if (this._wvIsSet(st[dim])) st[dim].clear();
+                            if (this._wvIsSet(st[dim + "Excl"])) st[dim + "Excl"].clear();
                         }
                     } catch (_) {}
                 };
@@ -16110,7 +16251,7 @@ class _ReaderPanelsMixin {
                     (chip as any).type = "button";
                     chip.className = "wv-filter-opt wv-filter-opt-icon";
                     chip.setAttribute("title", label + " — " + facets.bmTypes.get(cat) + " — Alt+click to exclude");
-                    if ((st.bmTypes instanceof Set) && st.bmTypes.has(cat)) (chip as any).dataset.selected = "true";
+                    if (this._wvIsSet(st.bmTypes) && st.bmTypes.has(cat)) (chip as any).dataset.selected = "true";
                     if (this._wvBmChipExcl(st, "bmTypes").has(cat)) (chip as any).dataset.excluded = "true";
                     chip.innerHTML = svg;
                     chip.addEventListener("click", (e: any) => { this._wvBmChipToggle(st, "bmTypes", cat, !!e.altKey); rerender(); });

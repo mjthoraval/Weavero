@@ -26,6 +26,14 @@ paths:
   the header-containment guard passed on dev (12 columns) and failed at 3
   on both `npm test` and CI (2026-09-14). Assert the INVARIANT, and derive
   the comparison from what the run itself measures.
+- A NEW or changed spec is run in the runner BEFORE it is committed, and
+  the full-suite gate ("after the user validates") does not excuse it:
+  `WV_TEST_ENTRIES=test/foo.spec.js[,test/bar.spec.js] npm test` runs only
+  those specs in the temp profile (~1 min). Two red CI runs came from specs
+  committed unrun (2026-09-14, 2026-09-21); the second also hid a real
+  plugin defect (`instanceof Set` false across globals) behind "it's just
+  the test". Objects a spec hands the plugin come from ANOTHER global:
+  `instanceof` on built-ins is false there — duck-type, in specs and in code.
 - Instrumentation masks races: verify timing-family fixes with plain loops
   only.
 - Restart/session testing: `test/restart/cycle.js` (canonical) — run it

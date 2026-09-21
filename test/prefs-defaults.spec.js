@@ -25,7 +25,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
 
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
     const PANE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "showNativeAnnSelector",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "hideNativeAnnSelector",
         "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "bookmarkPageNumbers", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
         "defattSortFirstAuto", "defattSortFirstDefault", "enableAddRelatedMenu", "enableAddedByColors",
@@ -49,7 +49,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
 
     // Getters written as `v === undefined ? true : !!v`.
     const DEFAULT_TRUE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
-        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "bookmarkPageNumbers",
+        "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "hideNativeAnnSelector", "bookmarkPageNumbers",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
         "enableCommentMarkdown", "enableCopyCollectionLink", "enableCopyItemLink", "enableDefaultChild",
@@ -105,5 +105,25 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         if (!wv._getEnableItemsTreeFilter()) this.skip();
         const asCheckbox = Zotero.Prefs.get("weavero.enableReadStatusFilter");
         assert.strictEqual(!!asCheckbox, wv._getEnableReadStatusFilter());
+    });
+
+    // The six "Annotation types shown in the pane" boxes carry the type's
+    // glyph -- the SAME chrome SVG the filter chips load (MJT, 2026-09-21:
+    // "the same glyphs as in the filters pane"), via the checkbox's own
+    // icon slot (`src` -> `.checkbox-icon`), so a click on it toggles the
+    // box. Compared against the chip catalogue, not a copy of the URLs.
+    it("the six type boxes carry the filter chips' glyphs", async () => {
+        const wv = Zotero.Weavero.plugin;
+        const rootURI = await Zotero.Plugins.getRootURI("weavero@mjthoraval");
+        const html = await (await fetch(rootURI + "prefs.html")).text();
+        const cap = k => k.charAt(0).toUpperCase() + k.slice(1);
+        const missing = [];
+        for (const def of wv._ANNOTATION_TYPES) {
+            const re = new RegExp('<checkbox[^>]*src="([^"]+)"[^>]*preference="extensions\\.zotero\\.weavero\\.annListShow'
+                + cap(def.value) + '"');
+            const m = html.match(re);
+            if (!m || m[1] !== def.icon) missing.push(def.value + " => " + (m ? m[1] : "no src"));
+        }
+        assert.deepEqual(missing, [], "Settings box glyph must be the chip's icon");
     });
 });

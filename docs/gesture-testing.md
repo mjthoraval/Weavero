@@ -203,7 +203,7 @@ stroke, Annotations tab active.
       chips to the existing default instead of replacing it.
 - [ ] **Zotero's own selector** (colours / tags at the foot of the pane) is
       GONE by default while the funnel is enabled. Settings -> Reader
-      annotations pane -> "Keep Zotero's colour and tag selector" brings it
+      annotations pane -> untick "Hide Zotero's colour and tag selector" brings it
       back live.
 - [ ] **Settings -> uncheck "Filter the annotations pane"** -> the funnel
       disappears, the pane shows every annotation again, Zotero's selector

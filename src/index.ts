@@ -887,12 +887,16 @@ class WeaveroPlugin {
             return v === undefined ? true : !!v;
         } catch(e) { return true; }
     }
-    /** Keep Zotero's own selector (colours / tags / authors) at the foot of
-     *  the annotations pane. Default OFF: the pane funnel covers it, and the
-     *  native one also hides on the page. */
-    _getShowNativeAnnSelector() {
-        try { return !!Zotero.Prefs.get("weavero.showNativeAnnSelector"); }
-        catch(e) { return false; }
+    /** Hide Zotero's own selector (colours / tags / authors) at the foot of
+     *  the annotations pane. Default ON: the pane funnel covers it, and the
+     *  native one also hides on the page. (Was `showNativeAnnSelector`,
+     *  default OFF, until v0.20.1 -- a "Keep" box that starts unticked read
+     *  as a broken setting; MJT 2026-09-21. Carried over once at startup.) */
+    _getHideNativeAnnSelector() {
+        try {
+            const v = Zotero.Prefs.get("weavero.hideNativeAnnSelector");
+            return v === undefined ? true : !!v;
+        } catch(e) { return true; }
     }
     /** Global default for the annotations-list funnel (issue #43): whether
      *  an annotation TYPE shows in the reader's sidebar list. Default ON. A
@@ -2163,6 +2167,10 @@ class WeaveroPlugin {
                 // The pane funnel itself — on by default, like every other
                 // Weavero feature, and individually switchable.
                 "enableAnnPaneFilter",
+                // Zotero's own colour/tag/author selector at the foot of the
+                // annotations pane is HIDDEN while the pane funnel replaces it
+                // (MJT, 2026-09-18); untick to keep it.
+                "hideNativeAnnSelector",
                 // Plugins Manager search box — pure addition, defaults ON.
                 "enablePluginsSearch",
                 // Default attachment/note to open — ON, but INERT until the user
@@ -2198,10 +2206,6 @@ class WeaveroPlugin {
                 "readerOutlineTakeover", "recolorAmLinks",
             ];
             const OFF = [
-                // Zotero's own colour/tag/author selector at the foot of the
-                // annotations pane: hidden while Weavero's pane funnel
-                // replaces it (MJT, 2026-09-18), shown again on request.
-                "showNativeAnnSelector",
                 "enableAppLinks", "enableAppLinksSkipConfirm",
                 "debug",
                 // Optional URL schemes — all opt-in
@@ -2263,6 +2267,12 @@ class WeaveroPlugin {
                     if (PB.prefHasUserValue(P + oldShort) && !PB.prefHasUserValue(P + newShort)) {
                         Zotero.Prefs.set("weavero." + newShort, !!Zotero.Prefs.get("weavero." + oldShort));
                     }
+                }
+                // Inverted rename (v0.20.1): showNativeAnnSelector (default
+                // OFF) -> hideNativeAnnSelector (default ON). A user who had
+                // asked to keep the selector keeps it.
+                if (PB.prefHasUserValue(P + "showNativeAnnSelector") && !PB.prefHasUserValue(P + "hideNativeAnnSelector")) {
+                    Zotero.Prefs.set("weavero.hideNativeAnnSelector", !Zotero.Prefs.get("weavero.showNativeAnnSelector"));
                 }
             } catch (e) { Zotero.debug("[Weavero] dev-pref rename migration err: " + e); }
         } catch (e) {

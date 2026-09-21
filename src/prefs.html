@@ -49,7 +49,7 @@
      children that default to non-selectable), so the toggle names can be
      copied too. */
   .wv-desc, .wv-note, .wv-master-desc,
-  .wv-tophead h2, .wv-subhead h2, .wv-subsec h2, .wv-children h3,
+  .wv-tophead h2, .wv-subhead h2, .wv-subsec h2, .wv-children h3, .wv-subsec h3,
   summary.wv-sec-summary h2,
   checkbox .checkbox-label, radio .radio-label {
     user-select: text;
@@ -108,7 +108,9 @@
   }
   .wv-subhead h2 { margin: 0; font-size: 1.05em; font-weight: 700; }
   .wv-subhead checkbox { margin: 0; margin-inline-start: auto; flex: 0 0 auto; accent-color: rgb(64, 128, 255); }
-  .wv-children h3 { font-size: 1.0em; font-weight: 600; }
+  /* In-group titles: 10 px above, 6 px below (MJT, 2026-09-21 -- the UA's
+     13 / 13 read as too much). The label wrapper adds 1 / 2 of its own. */
+  .wv-children h3, .wv-subsec h3 { font-size: 1.0em; font-weight: 600; margin: 9px 0 4px; }
   /* Dependent toggles under a sub-section's master toggle sit one level in,
      to read as lower-level than the sub-section header. */
   .wv-subsec .wv-children { margin-inline-start: 22px; }
@@ -141,6 +143,27 @@
   }
   .wv-show-row .wv-show-label { opacity: 0.72; font-size: 0.9em; margin-inline-end: 2px; }
   .wv-show-row checkbox { margin: 0; }
+  /* Reader annotations pane: the six type boxes as two rows of three under
+     their own h3 title (MJT, 2026-09-21: a column of six under a description
+     read as six unrelated switches). */
+  .wv-anntypes-row {
+    display: flex; flex-direction: row; flex-wrap: wrap;
+    align-items: center; margin: 2px 0 4px;
+  }
+  .wv-anntypes-row checkbox { flex: 0 0 33%; margin: 0; }
+  /* Each box carries its type's glyph -- the chrome SVG the filter chips
+     load -- between the tick and the label (MJT, 2026-09-21): the widget's
+     own icon slot (`src` -> `.checkbox-icon`), so a click on the glyph
+     toggles the box like the label. After the label it read as the NEXT
+     box's glyph; and the label's XUL `flex="1"` cannot be overridden by
+     CSS (measured: even inline `flex: 0 0 auto` stays `1 1 0%`), so the
+     glyph could not follow the text closely anyway. */
+  .wv-anntypes-row checkbox .checkbox-icon {
+    width: 16px; height: 16px;
+    margin-inline: 0 5px;
+    -moz-context-properties: fill, stroke, fill-opacity, stroke-opacity;
+    fill: currentColor; stroke: currentColor;
+  }
   /* "Apply to" split into labelled lines (Library / Reader / Notes). The
      fixed-width label aligns the checkboxes into a column across the rows. */
   .wv-apply-row {
@@ -241,6 +264,9 @@
   /* App link schemes / Debug headers match the plain sub-headers (Display
      mode etc.): 1.0em / 600, not the larger UA h2 default. */
   summary.wv-sec-summary > h2 { margin: 0; font-size: 1.0em; font-weight: 600; }
+  /* Open, the header keeps the same 6 px below it as those sub-headers: the
+     first line sat flush against it (MJT, 2026-09-21). */
+  details.wv-collapsible[open] > summary.wv-sec-summary { margin-bottom: 6px; }
   /* Sticky section strip (the old design's tabs, repurposed as scroll-nav).
      Underline-style tabs; prefs.js handles click-to-scroll + highlighting the
      section in view. no-highlight on the container makes Zotero's search hide
@@ -323,7 +349,7 @@
     <vbox class="wv-children" data-master="enableLinksAndRelations">
 
       <label><html:h3>Display mode</html:h3></label>
-      <html:p class="wv-desc" style="margin-inline-start:0">How links and markdown appear in comments and notes — <html:strong>Inline</html:strong> renders fully; <html:strong>Icon &amp; popup</html:strong> keeps text plain and opens a popup (lighter).</html:p>
+      <html:p class="wv-desc">How links and markdown appear in comments and notes — <html:strong>Inline</html:strong> renders fully; <html:strong>Icon &amp; popup</html:strong> keeps text plain and opens a popup (lighter).</html:p>
       <radiogroup id="wv-mode" orient="horizontal" class="wv-mode-row">
         <radio value="inline" label="Inline"/>
         <radio value="icon" label="Icon &amp; popup"/>
@@ -347,7 +373,7 @@
            master. -->
       <html:details class="wv-collapsible wv-subsec" data-gated-by="enableAppLinks">
         <html:summary class="wv-sec-summary"><html:h2>App link schemes</html:h2></html:summary>
-        <html:p class="wv-desc" style="margin-inline-start:0">Which schemes Weavero recognises as app links in comments. Active only when <html:strong>App links</html:strong> is on above.</html:p>
+        <html:p class="wv-desc">Which schemes Weavero recognises as app links in comments. Active only when <html:strong>App links</html:strong> is on above.</html:p>
         <checkbox label="Open without confirmation dialog" native="true"
           preference="extensions.zotero.weavero.enableAppLinksSkipConfirm"/>
         <html:p class="wv-desc">Skip Firefox&#8217;s &#8220;Allow this site to open the … link?&#8221; prompt for the enabled schemes.</html:p>
@@ -413,7 +439,7 @@
 
       <separator class="thin"/>
       <label><html:h3>Internal-link navigation</html:h3></label>
-      <html:p class="wv-desc" style="margin-inline-start:0"><html:strong>Ctrl/Cmd+click</html:strong> an internal link (figure, equation, citation) to send its target to a split pane; <html:strong>Shift+click</html:strong> sends it to a separate window. When no split is open yet, create a:</html:p>
+      <html:p class="wv-desc"><html:strong>Ctrl/Cmd+click</html:strong> an internal link (figure, equation, citation) to send its target to a split pane; <html:strong>Shift+click</html:strong> sends it to a separate window. When no split is open yet, create a:</html:p>
       <radiogroup id="wv-ctrlsplit" orient="horizontal" class="wv-mode-row">
         <radio value="horizontal" label="Horizontal split"/>
         <radio value="vertical" label="Vertical split"/>
@@ -567,7 +593,7 @@
         preference="extensions.zotero.weavero.windowTitleGlyphs"/>
       <html:p class="wv-desc">Alternative for non-Windows platforms (off by default): prefix each window&#8217;s title with a small type mark &#8212; &#9875; for the primary window, squares (&#9632; &#9633; &#9635;) for other main windows, circles (&#9679; &#9675; &#9673;) for reader windows. Takes effect as titles refresh, e.g. on the next tab switch.</html:p>
       <label><html:h3>Window name in the window title</html:h3></label>
-      <html:p class="wv-desc" style="margin-inline-start:0">Show a renamed window&#8217;s name in its OS title &#8212; taskbar previews, Alt+Tab and Task View &#8212; like Chrome&#8217;s &#8220;Name window&#8221;. <html:strong>Before the title</html:strong> keeps the page context (&#8220;Main &#8212; Azam et al.&#8221;); <html:strong>Replace the title</html:strong> shows the name alone. Windows without a custom name always keep the normal title.</html:p>
+      <html:p class="wv-desc">Show a renamed window&#8217;s name in its OS title &#8212; taskbar previews, Alt+Tab and Task View &#8212; like Chrome&#8217;s &#8220;Name window&#8221;. <html:strong>Before the title</html:strong> keeps the page context (&#8220;Main &#8212; Azam et al.&#8221;); <html:strong>Replace the title</html:strong> shows the name alone. Windows without a custom name always keep the normal title.</html:p>
       <radiogroup id="wv-wintitle-name" orient="horizontal" class="wv-mode-row">
         <radio value="off" label="Off"/>
         <radio value="prefix" label="Before the title"/>
@@ -633,7 +659,7 @@
     </html:div>
     <vbox class="wv-children" data-master="enableVisualExtras">
       <label><html:h3>Items-tree columns</html:h3></label>
-      <html:p class="wv-desc" style="margin-inline-start:0">Extra columns, hidden until you enable them from the column picker (right-click the items-tree header).</html:p>
+      <html:p class="wv-desc">Extra columns, hidden until you enable them from the column picker (right-click the items-tree header).</html:p>
       <checkbox label="“Annotations” column" native="true"
         preference="extensions.zotero.weavero.enableAnnotationsCountColumn"/>
       <html:p class="wv-desc">Count of annotations on attachments (summed across attachments on regular items).</html:p>
@@ -723,25 +749,30 @@
   <!-- ============================ Reader annotations pane -->
   <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
     <label><html:h2>Reader annotations pane</html:h2></label>
-    <checkbox label="Filter the annotations pane (funnel next to the pane&#8217;s search box)" native="true"
+    <checkbox label="Funnel next to the pane&#8217;s search box (filter one document at a time)" native="true"
       preference="extensions.zotero.weavero.enableAnnPaneFilter"/>
-    <html:p class="wv-desc">Narrows the reader&#8217;s annotations pane by colour, type, tag, comment, person or date, while the document keeps every annotation. Same chips and gestures as the funnel above the reader.</html:p>
-    <checkbox label="Keep Zotero&#8217;s colour and tag selector at the foot of the pane" native="true"
-      preference="extensions.zotero.weavero.showNativeAnnSelector"/>
-    <html:p class="wv-desc">Zotero&#8217;s own selector filters the pane and the document together, which the funnel above replaces. Off by default while the funnel is enabled.</html:p>
-    <html:p class="wv-desc">Which annotation types the pane shows by default. A hidden type stays visible on the page; only the pane omits it. The funnel sets this for one document.</html:p>
-    <checkbox label="Highlights" native="true"
-      preference="extensions.zotero.weavero.annListShowHighlight"/>
-    <checkbox label="Underlines" native="true"
-      preference="extensions.zotero.weavero.annListShowUnderline"/>
-    <checkbox label="Notes" native="true"
-      preference="extensions.zotero.weavero.annListShowNote"/>
-    <checkbox label="Images" native="true"
-      preference="extensions.zotero.weavero.annListShowImage"/>
-    <checkbox label="Ink" native="true"
-      preference="extensions.zotero.weavero.annListShowInk"/>
-    <checkbox label="Text" native="true"
-      preference="extensions.zotero.weavero.annListShowText"/>
+    <html:p class="wv-desc">Narrows the reader&#8217;s annotations pane by colour, type, tag, comment, person or date, while the document keeps every annotation &#8212; the same chips and gestures as the funnel above the reader. With the funnel off, the pane simply follows the types below.</html:p>
+    <vbox class="wv-anntypes-block">
+      <checkbox label="Hide Zotero&#8217;s colour and tag selector at the foot of the pane" native="true"
+        preference="extensions.zotero.weavero.hideNativeAnnSelector"/>
+      <html:p class="wv-desc">Zotero&#8217;s own selector filters the pane and the document together. Untick to keep it.</html:p>
+      <label><html:h3>Annotation types shown in the pane</html:h3></label>
+      <html:p class="wv-desc">Untick a type to leave it out of the pane in every document; it stays visible on the page. The funnel can override this for one document, and its &#8220;Use as Default&#8221; writes back here.</html:p>
+      <html:div class="wv-anntypes-row">
+        <checkbox label="Highlights" native="true" src="chrome://zotero/skin/16/universal/annotate-highlight.svg"
+          preference="extensions.zotero.weavero.annListShowHighlight"/>
+        <checkbox label="Underlines" native="true" src="chrome://zotero/skin/16/universal/annotate-underline.svg"
+          preference="extensions.zotero.weavero.annListShowUnderline"/>
+        <checkbox label="Notes" native="true" src="chrome://zotero/skin/16/universal/annotate-note.svg"
+          preference="extensions.zotero.weavero.annListShowNote"/>
+        <checkbox label="Images" native="true" src="chrome://zotero/skin/16/universal/annotate-area.svg"
+          preference="extensions.zotero.weavero.annListShowImage"/>
+        <checkbox label="Ink" native="true" src="chrome://zotero/skin/16/universal/annotate-ink.svg"
+          preference="extensions.zotero.weavero.annListShowInk"/>
+        <checkbox label="Text" native="true" src="chrome://zotero/skin/16/universal/annotate-text.svg"
+          preference="extensions.zotero.weavero.annListShowText"/>
+      </html:div>
+    </vbox>
   </groupbox>
 
   <!-- ============================ Debug (collapsible, very bottom) -->

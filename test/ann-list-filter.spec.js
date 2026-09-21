@@ -284,7 +284,11 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         await waitFor(() => cards(idoc).length === 2, 15000, "everything listed");
     });
 
-    it("disabling the feature removes the funnel, unfilters the pane and restores Zotero's selector", async function () {
+    it("the funnel switch removes the button only: the pane then follows Settings, and the selector setting stands", async function () {
+        // MJT, 2026-09-21: hiding types from Settings must work without the
+        // funnel. With the funnel off, a document's OWN filter is set aside
+        // (nothing could show or reset it) and the Settings default applies;
+        // the record survives for when the funnel comes back.
         const idoc = reader._iframeWindow.document;
         const sc = idoc.getElementById("sidebarContainer");
         await setPane({ typesExcl: ["ink"] });
@@ -294,12 +298,19 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         try {
             Zotero.Prefs.set("weavero.enableAnnPaneFilter", false);
             await waitFor(() => !idoc.querySelector(".wv-al-actions"), 15000, "funnel gone");
-            await waitFor(() => cards(idoc).length === 2, 15000, "pane unfiltered again");
-            assert.isFalse(sc.classList.contains("wv-al-nonative"), "the native selector is back");
+            await waitFor(() => cards(idoc).length === 2, 15000, "the document's own filter is set aside");
+            assert.isTrue(sc.classList.contains("wv-al-nonative"), "the native selector stays hidden: its own switch");
             assert.sameMembers(pageKeys(), [hl.key, ink.key], "the page never changed");
+            // Settings still filter the pane with the funnel off.
+            Zotero.Prefs.set("weavero.annListShowInk", false);
+            await waitFor(() => cards(idoc).length === 1, 15000, "Settings hide ink without the funnel");
+            assert.deepEqual(cards(idoc), [hl.key]);
+            Zotero.Prefs.set("weavero.annListShowInk", true);
+            await waitFor(() => cards(idoc).length === 2, 15000, "and show it again");
         }
         finally {
             Zotero.Prefs.set("weavero.enableAnnPaneFilter", true);
+            Zotero.Prefs.set("weavero.annListShowInk", true);
         }
         await waitFor(() => !!idoc.querySelector(".wv-al-actions"), 15000, "funnel back");
         // The document's own filter is still on record and applies again.
@@ -312,11 +323,11 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         const sc = idoc.getElementById("sidebarContainer");
         assert.isTrue(sc.classList.contains("wv-al-nonative"), "hidden by default");
         try {
-            Zotero.Prefs.set("weavero.showNativeAnnSelector", true);
+            Zotero.Prefs.set("weavero.hideNativeAnnSelector", false);
             await waitFor(() => !sc.classList.contains("wv-al-nonative"), 15000, "selector shown");
         }
         finally {
-            Zotero.Prefs.set("weavero.showNativeAnnSelector", false);
+            Zotero.Prefs.set("weavero.hideNativeAnnSelector", true);
         }
         await waitFor(() => sc.classList.contains("wv-al-nonative"), 15000, "hidden again");
     });

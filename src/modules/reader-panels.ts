@@ -11214,7 +11214,10 @@ class _ReaderPanelsMixin {
     /** Annotation keys the pane leaves out: the reader funnel's own matchers,
      *  evaluated here instead of through Zotero's filter. */
     _wvAnnPaneHiddenKeys(reader: any): string[] {
-        const st = this._wvAnnPaneState(reader);
+        // Funnel off: Settings only, never a stored per-document filter (see
+        // `_wvAnnPaneFunnelShown`). The record stays on disk for when the
+        // funnel comes back.
+        const st = this._wvAnnPaneFunnelShown() ? this._wvAnnPaneState(reader) : this._wvAnnPaneDefaultState();
         const nat = { colors: st.colors || [], tags: st.tags || [], authors: st.addedBy || [] };
         const out: string[] = [];
         for (const a of this._wvReaderAnnotations(reader)) {
@@ -11465,27 +11468,59 @@ class _ReaderPanelsMixin {
             this._wvWireAnnListPrefWatch();
             if (!this._wvAnnPaneEnabled()) { this._wvAnnListTeardown(reader, idoc); return; }
             this._wvAnnOrderEnsureLoaded(reader);
-            this._wvAnnListEnsureButton(reader, idoc);
-            this._wvAnnListWireSearchToggle(idoc);
+            // The funnel button is one switch; the filtering is another
+            // thing entirely (see `_wvAnnPaneFunnelShown`).
+            if (this._wvAnnPaneFunnelShown()) {
+                this._wvAnnListEnsureButton(reader, idoc);
+                this._wvAnnListWireSearchToggle(idoc);
+            }
+            else this._wvAnnListRemoveButton(reader, idoc);
             this._wvAnnListApplyNativeSelector(idoc);
             this._wvAnnListApply(reader);
         } catch (e) { Zotero.debug("[Weavero] _wvAnnListEnsure err: " + e); }
     }
 
-    /** The pane funnel is on when the Filters master is on AND its own switch
-     *  is on (every Weavero feature is individually disableable). */
+    /** The pane FILTERING runs under the Filters master alone: the Settings
+     *  type defaults and the native-selector switch apply whether or not the
+     *  funnel is shown (MJT, 2026-09-21: "it should be possible to hide
+     *  certain annotation types from the settings without wanting to see the
+     *  funnel"). */
     _wvAnnPaneEnabled(): boolean {
-        try { return !!this._getEnableFilters() && !!this._getEnableAnnPaneFilter(); }
+        try { return !!this._getEnableFilters(); }
         catch (_) { return false; }
     }
 
-    /** Zotero's own selector at the foot of the pane: hidden while the pane
-     *  funnel replaces it, unless the user asked to keep it. */
+    /** The funnel BUTTON (and with it per-document filters): its own switch.
+     *  With the button gone the pane follows Settings only -- a document's
+     *  own filter would otherwise apply with nothing to show or reset it. */
+    _wvAnnPaneFunnelShown(): boolean {
+        try { return this._wvAnnPaneEnabled() && !!this._getEnableAnnPaneFilter(); }
+        catch (_) { return false; }
+    }
+
+    /** The button and its search-toggle wiring, without touching the
+     *  filtering (the funnel switch turned off). */
+    _wvAnnListRemoveButton(reader: any, idoc: any) {
+        try { for (const el of idoc.querySelectorAll(".wv-al-actions")) el.remove(); } catch (_) {}
+        try { if (idoc.getElementById(RP_FILTER_POPUP_ID)) this._wvCloseReaderFilterPopup(idoc); } catch (_) {}
+        try {
+            const h = (idoc as any).__wvAlSearchToggleH;
+            if (h) {
+                idoc.removeEventListener("pointerdown", h, true);
+                idoc.removeEventListener("click", h, true);
+                delete (idoc as any).__wvAlSearchToggleH;
+                delete (idoc as any).__wvAlSearchToggleV;
+            }
+        } catch (_) {}
+    }
+
+    /** Zotero's own selector at the foot of the pane: hidden by default (it
+     *  filters the page as well), on its own switch, funnel or no funnel. */
     _wvAnnListApplyNativeSelector(idoc: any) {
         try {
             const sc = idoc.getElementById("sidebarContainer");
             if (!sc) return;
-            const hide = this._wvAnnPaneEnabled() && !this._getShowNativeAnnSelector();
+            const hide = this._wvAnnPaneEnabled() && this._getHideNativeAnnSelector();
             sc.classList.toggle("wv-al-nonative", hide);
         } catch (_) {}
     }
@@ -11778,7 +11813,7 @@ class _ReaderPanelsMixin {
             g._wvAnnListPrefObsVer = tag;
             const typePrefs = this._wvAnnListTypes().map(t => this._wvAnnListPrefName(t));
             const watched = typePrefs.concat(["weavero.annPaneDefault",
-                "weavero.enableAnnPaneFilter", "weavero.showNativeAnnSelector"]);
+                "weavero.enableAnnPaneFilter", "weavero.hideNativeAnnSelector"]);
             g._wvAnnListPrefObs = watched.map(name => Zotero.Prefs.registerObserver(
                 name,
                 () => {

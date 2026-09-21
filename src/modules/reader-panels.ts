@@ -261,11 +261,11 @@ const RP_POPUP_CSS = [
     "  width:8px;height:8px;margin-right:4px;border-radius:50%;background:var(--wv-tag-color,currentColor);",
     "  border:1px solid rgba(127,127,127,0.3);vertical-align:-1px;flex:0 0 auto;}",
     // ---- toolbar button ----
-    "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg,.wv-al-btn .wv-filter-svg{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
+    "." + RP_FILTER_BTN_CLASS + " .wv-filter-svg,.wv-al-btn .wv-filter-svg,.wv-bm-filter-btn .wv-filter-svg{width:20px;height:20px;-moz-context-properties:fill,stroke;fill:currentColor;stroke:currentColor;}",
     // Dropmarker chevron next to the funnel icon — same 8×8 inline SVG
     // the tabs-menu file-type button uses; signals "opens a popup" so
     // the affordance matches Zotero's native filter buttons.
-    "." + RP_FILTER_BTN_CLASS + " .wv-rf-chev,.wv-al-btn .wv-rf-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;margin-left:1px;}",
+    "." + RP_FILTER_BTN_CLASS + " .wv-rf-chev,.wv-al-btn .wv-rf-chev,.wv-bm-filter-btn .wv-rf-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;margin-left:1px;}",
     // Annotations-list funnel (issue #43): host in the sidebar toolbar's
     // `.end` slot, shown only while the NATIVE Annotations view is active
     // (Weavero's Bookmarks/Outline tabs strip `.active` from #viewAnnotations
@@ -343,7 +343,7 @@ const RP_POPUP_CSS = [
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt.wv-al-def-chip[data-inactive=\"true\"]{opacity:.75;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn{font-size:11px;padding:1px 7px;border:1px solid rgba(127,127,127,.4);border-radius:4px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap;flex:0 0 auto;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-al-foot-btn:hover{background:rgba(127,127,127,.15);}",
-    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active,.wv-al-btn.wv-rf-active{position:relative;}",
+    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active,.wv-al-btn.wv-rf-active,.wv-bm-filter-btn.wv-bm-filter-active{position:relative;}",
     // The pane funnel's "following a default" cue: the same green underline
     // the chips carry, so one mark means one thing everywhere (MJT,
     // 2026-09-18; it replaced a green-tinted bowl). `::after` is the dot.
@@ -355,13 +355,12 @@ const RP_POPUP_CSS = [
     // glyph (MJT, 2026-09-18).
     ".wv-al-btn.wv-al-def-on::before{content:'';position:absolute;left:0;width:20px;bottom:0;height:2px;",
     "  border-radius:1px;background:rgba(95,178,54,0.95);pointer-events:none;}",
-    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after,.wv-al-btn.wv-rf-active::after{content:'';position:absolute;top:4px;right:4px;",
+    "." + RP_FILTER_BTN_CLASS + ".wv-rf-active::after,.wv-al-btn.wv-rf-active::after,.wv-bm-filter-btn.wv-bm-filter-active::after{content:'';position:absolute;top:4px;right:4px;",
     "  width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);}",
     // The list funnel is a NATIVE `.toolbar-button`, exactly like the funnel
     // above the reader: Zotero's own hover changes the BACKGROUND and leaves
-    // the icon alone. The bookmarks funnel's `.wv-bm-filter-btn:hover` sets
-    // `color: var(--fill-primary)` instead, which turned the funnel white on
-    // hover -- wrong next to the native toolbar (MJT, 2026-09-18). It also
+    // the icon alone. (The bookmarks funnel once had a hover rule of its own
+    // that turned it white; since 2026-09-21 it is a native button too.) It also
     // No box rule of our own either: the sidebar toolbar sizes every
     // `.toolbar-button` at 28x28 with no padding, the same box the toolbar
     // funnel gets, so the two are pixel-identical (a `width:auto;padding:0 2px`
@@ -1258,61 +1257,24 @@ const RP_BM_CSS = [
     // upstream `.sidebar-toolbar > .end` slot isn't found — e.g. some
     // alternative theme).
     ".wv-bm-actionbar{display:flex;align-items:center;justify-content:flex-end;gap:2px;padding:4px 8px 2px;}",
-    ".wv-bm-search-btn,.wv-bm-reader-add{width:28px;height:28px;}",
-    // Filter button grows horizontally to fit the funnel + ▾ chevron
-    // (same icon-and-chevron pattern as the reader toolbar funnel).
-    ".wv-bm-filter-btn{height:28px;padding:0 4px;gap:1px;}",
+    ".wv-bm-reader-add{width:28px;height:28px;}",
     ".wv-bm-search-btn svg,.wv-bm-reader-add svg{width:20px;height:20px;}",
-    // Filter funnel renders at 16×16 (centered inside the 28×28 button)
-    // to match Zotero's reader-toolbar filter button exactly. Same SVG
-    // artwork, same dimensions, same visual weight.
-    // Direct-child selector so this only sizes the funnel SVG; the
-    // chevron's SVG is a grandchild inside `.wv-bm-filter-chev` and
-    // stays at its own 8×8 size.
-    ".wv-bm-filter-btn > svg{width:20px;height:20px;}",
-    ".wv-bm-filter-btn .wv-bm-filter-chev{display:inline-flex;align-items:center;width:8px;height:8px;opacity:0.85;}",
-    ".wv-bm-filter-btn .wv-bm-filter-chev svg{width:8px;height:8px;}",
-    // Hover/dim pattern lifted verbatim from Zotero's reader
-    // `_search-box.scss` so the bookmark action buttons (search /
-    // filter / add) feel native to the sidebar toolbar:
-    //   default: color var(--fill-secondary) — dim via colour, not opacity
-    //   hover:   var(--fill-quinary) background, colour goes primary
-    //   active:  var(--fill-quarternary) background (pressed feel)
-    //   open:    var(--fill-quinary) background, colour primary (search
-    //            row showing / filter popover open — sticky bg matches
-    //            the upstream `.expanded` state of the search box)
-    // Match Zotero's `_search-box.scss` exactly, including the smooth
-    // transition on background-color / color so the state changes don't
-    // pop. The hover rule is gated by `:not(.wv-bm-search-active)` to
-    // mirror upstream's `:not(.expanded)` — once the search row is open,
-    // the button stops responding to hover-bg (it stays in its open
-    // state visual instead of being overridden by hover). Active state
-    // uses a heavier `--fill-quarternary` background (matching upstream
-    // expanded look) — distinguishes "search is open" from "search is
-    // closed but you're hovering".
-    ".wv-bm-search-btn{display:flex;align-items:center;justify-content:center;border:none;background:transparent;cursor:pointer;border-radius:5px;color:var(--fill-secondary);transition:background-color 0.12s ease-out,color 0.12s ease-out;}",
-    ".wv-bm-search-btn:not(.wv-bm-search-active):hover{background-color:var(--fill-quinary);}",
-    ".wv-bm-search-btn:not(.wv-bm-search-active):active{background-color:var(--fill-quarternary);}",
+    // The search and filter buttons are Zotero's own `.toolbar-button`
+    // (28x28, radius 5, fill-secondary, native hover/active backgrounds),
+    // with the Annotations tab's exact contents: the 20-px magnifier of the
+    // sidebar search box, and the pane funnel's baked two-tone image with
+    // its 8-px chevron. No box, colour or hover rule of our own -- every
+    // difference the old ones introduced (a 16-px magnifier scaled to 20,
+    // a 37-px funnel with 4-px padding, a dot at another offset, a colour
+    // change on hover) is what made the two tabs disagree (MJT,
+    // 2026-09-21). Only the two STATE rules remain:
+    //   wv-bm-search-active  search row showing (sticky pressed look, the
+    //                        search box's own `.expanded` weight);
+    //   wv-bm-filter-open    popover open (sticky hover weight).
+    // `wv-bm-filter-active` (a chip is selected) draws the same accent dot
+    // as the other funnels, via the shared `.wv-rf-active::after` rule.
     ".wv-bm-search-btn.wv-bm-search-active{background-color:var(--fill-quarternary);}",
-    // Filter funnel button — same dimensions as the search button so the
-    // toolbar reads as a row of equal-sized affordances. `wv-bm-filter-open`
-    // marks the popover-open state; `wv-bm-filter-active` marks "any chip
-    // currently selected" so the user notices the list is filtered even
-    // when the popover is closed (accent dot in the bottom-right corner).
-    // Same hover/dim ladder as the search button — color via
-    // `--fill-secondary`, hover `--fill-quinary`, active `--fill-quarternary`,
-    // popover-open keeps `--fill-quinary` background for a sticky "active
-    // surface" feel. The accent-blue dot at the funnel icon's top-right
-    // surfaces when any chip is selected — same style/position as the
-    // library filter button's `.wv-filter-tb-dot` (see constants.ts).
-    ".wv-bm-filter-btn{display:flex;align-items:center;justify-content:center;border:none;background:none;cursor:pointer;border-radius:5px;color:var(--fill-secondary);position:relative;}",
-    ".wv-bm-filter-btn:hover{background-color:var(--fill-quinary);}",
-    ".wv-bm-filter-btn:active{background-color:var(--fill-quarternary);}",
     ".wv-bm-filter-btn.wv-bm-filter-open{background-color:var(--fill-quinary);}",
-    // Funnel icon sits at x=4..24 (padding 4 + 20-wide svg). Dot at
-    // top:3, left:18 lands at icon's top-right corner — same offset
-    // the library filter uses against its own 20-wide funnel icon.
-    ".wv-bm-filter-btn.wv-bm-filter-active::after{content:'';position:absolute;top:3px;left:18px;width:6px;height:6px;border-radius:50%;background:var(--color-accent,#5e6ad2);pointer-events:none;}",
     // Chip popover — anchored under the filter button by the toggle helper.
     // Position is set inline; visible-by-default once attached (toggle
     // adds/removes the element itself). Z-index sits above the row drop
@@ -14162,17 +14124,18 @@ class _ReaderPanelsMixin {
                 // labels (folders with matching descendants stay open). Same
                 // affordance as the reader's Annotations tab.
                 const searchBtn = idoc.createElementNS(NS_HTML_RP, "button");
-                searchBtn.className = "wv-bm-search-btn";
+                // Zotero's own sidebar toolbar button (see the CSS note).
+                searchBtn.className = "toolbar-button wv-bm-search-btn";
+                searchBtn.setAttribute("type", "button");
+                searchBtn.setAttribute("tabindex", "-1");
                 blockBmRowDrag(searchBtn);
                 searchBtn.setAttribute("title", "Search bookmarks");
-                // Use Zotero's 16-px `magnifier.svg` path (byte-
-                // identical to chrome://zotero/skin/16/universal/
-                // magnifier.svg) so the search affordance is visually
-                // consistent with the library's main quick-search
-                // magnifier + the bookmark popup search icon.
-                // `fill="currentColor"` for inline SVG so the icon
-                // inherits the button's text color.
-                searchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M11 6C11 8.76142 8.76142 11 6 11C3.23858 11 1 8.76142 1 6C1 3.23858 3.23858 1 6 1C8.76142 1 11 3.23858 11 6ZM9.87438 10.5816C8.82905 11.4664 7.47683 12 6 12C2.68629 12 0 9.31371 0 6C0 2.68629 2.68629 0 6 0C9.31371 0 12 2.68629 12 6C12 7.47687 11.4664 8.82911 10.5815 9.87446L16 15.2929L15.2929 16L9.87438 10.5816Z"/></svg>';
+                // The reader sidebar search box's OWN collapsed glyph: the
+                // 20-px `res/icons/20/magnifier.svg` (a 20-viewBox drawing),
+                // byte-identical path. The 16-px magnifier scaled to 20
+                // reads heavier than the one in the Annotations tab next
+                // door (MJT, 2026-09-21).
+                searchBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" fill="none"><path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12.75 7.5C12.75 10.3995 10.3995 12.75 7.5 12.75C4.60051 12.75 2.25 10.3995 2.25 7.5C2.25 4.60051 4.60051 2.25 7.5 2.25C10.3995 2.25 12.75 4.60051 12.75 7.5ZM11.6331 12.5169C10.5097 13.4435 9.06986 14 7.5 14C3.91015 14 1 11.0899 1 7.5C1 3.91015 3.91015 1 7.5 1C11.0899 1 14 3.91015 14 7.5C14 9.06984 13.4435 10.5097 12.517 11.6331L19 18.1161L18.1162 19L11.6331 12.5169Z"/></svg>';
                 const searchRow = idoc.createElementNS(NS_HTML_RP, "div");
                 searchRow.className = "wv-bm-search-row";
                 searchRow.style.display = "none";
@@ -14246,23 +14209,20 @@ class _ReaderPanelsMixin {
                 // to the funnel here instead of taking permanent vertical
                 // space below the list.
                 const filterBtn = idoc.createElementNS(NS_HTML_RP, "button");
-                filterBtn.className = "wv-bm-filter-btn";
+                // Zotero's own sidebar toolbar button, with the pane funnel's
+                // exact contents (see `_wvAnnListEnsureButton`): the baked
+                // two-tone funnel image and the 8-px chevron, in a 28-px box.
+                filterBtn.className = "toolbar-button wv-bm-filter-btn";
+                filterBtn.setAttribute("type", "button");
+                filterBtn.setAttribute("tabindex", "-1");
                 blockBmRowDrag(filterBtn);
                 filterBtn.setAttribute("title", "Filter bookmarks");
-                // Use the same funnel path Weavero's reader-filter
-                // button uses (the funnel above the reader in the
-                // annotations toolbar), amber stem included. 16
-                // viewBox, `currentColor` outline, rendered at 20×20
-                // to match the toolbar.
-                filterBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 16 16" fill="none">'
-                    + '<clipPath id="wv-bm-stem"><rect x="0" y="7" width="16" height="9"/></clipPath>'
-                    + '<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
-                    + '<path clip-path="url(#wv-bm-stem)" fill="' + WV_FUNNEL_STEM_COLOR + '" fill-rule="evenodd" clip-rule="evenodd" d="' + WV_FUNNEL_PATH + '"/>'
-                    + '</svg>';
-                // Tiny ▾ chevron — same affordance as the reader
-                // toolbar funnel (popup 2) signalling "opens a popup".
+                const fimg = idoc.createElementNS(NS_HTML_RP, "img");
+                fimg.className = "wv-filter-svg";
+                fimg.setAttribute("src", RP_FUNNEL_DATA_URI);
+                filterBtn.appendChild(fimg);
                 const chev = idoc.createElementNS(NS_HTML_RP, "span");
-                chev.className = "wv-bm-filter-chev";
+                chev.className = "wv-rf-chev";
                 chev.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><path d="M1 2.5h6L4 6z"/></svg>';
                 filterBtn.appendChild(chev);
                 filterBtn.addEventListener("click", (e: any) => {

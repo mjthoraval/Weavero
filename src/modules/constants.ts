@@ -1298,10 +1298,12 @@ export const PLUGIN_CSS = [
     "  font-size: 12px; opacity: 0.85;",
     "}",
     // Icon-only variant: compact square so 6-8 options fit on one row.
-    // 4 px around the 16-px glyph (Zotero's glyph-in-button ratio) -> 26x26;
-    // the reader popups pin the same box (reader-panels.ts).
+    // 4 px around the 16-px glyph (Zotero's glyph-in-button ratio) -> 26x26.
+    // The height is PINNED: the main window's line-height gives the button
+    // an 18-px content box, which made the tile 26x28 next to the reader
+    // popups' 26x26 (measured 2026-09-21).
     ".wv-filter-opt-icon {",
-    "  padding: 4px; min-width: 26px;",
+    "  padding: 4px; min-width: 26px; height: 26px; box-sizing: border-box;",
     "  justify-content: center; gap: 0;",
     "}",
     /* Text-labelled has-field chips (PMID / PMCID): two identical

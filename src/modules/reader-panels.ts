@@ -1307,7 +1307,16 @@ const RP_BM_CSS = [
     // adds/removes the element itself). Z-index sits above the row drop
     // indicators (which are at 2147483647 — see drop-line styles), and
     // matches the menu / context-menu z-index ladder.
-    ".wv-bm-chip-popup{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:8px 10px;min-width:220px;max-width:340px;max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:5px;font-size:12px;}",
+    // WIDTH RULE, the reader filter popups' (MJT, 2026-09-21): the width is
+    // what the one-line rows need (kinds, colours with room before black,
+    // types), measured by `width:max-content`; the wrapping rows (tags,
+    // authors) are `contain:inline-size` and do not vote. It used to be the
+    // sidebar's width, set inline on open.
+    ".wv-bm-chip-popup{position:absolute;z-index:2147483647;background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:8px 10px;width:max-content;min-width:220px;max-width:340px;max-height:60vh;overflow:auto;display:flex;flex-direction:column;gap:5px;font-size:12px;}",
+    ".wv-bm-chip-popup .wv-bm-chip-row.wv-bm-row-line{flex-wrap:nowrap;}",
+    ".wv-bm-chip-popup .wv-bm-chip-row.wv-bm-row-wrap{contain:inline-size;}",
+    ".wv-bm-chip-popup .wv-rf-colsep{flex:1 0 auto;min-width:16px;display:flex;justify-content:center;align-self:stretch;}",
+    ".wv-bm-chip-popup .wv-rf-colsep .wv-filter-vertical-separator{margin:2px 0;}",
     ".wv-bm-chip-popup-empty{padding:4px 2px;opacity:.6;font-style:italic;}",
     // The old docked chip-bar + its resizer are now superseded by the
     // popover above. Hard-hide them so any cached DOM from a previous
@@ -15738,10 +15747,10 @@ class _ReaderPanelsMixin {
             (idoc.body || idoc.documentElement).appendChild(popup);
             // Render the chips now that the popover exists.
             this._wvReaderRenderBmChipBar(reader, idoc);
-            // Match the bookmarks sidebar's width so the popup reads as
-            // a continuation of the bookmark list it filters. Override
-            // the CSS max-width: 340px since wider sidebars deserve
-            // wider popups.
+            // The sidebar's edge is where the popup goes (beside it); its
+            // WIDTH is the popup's own (see the CSS width rule) -- it used
+            // to copy the sidebar's width, which made it as wide or as
+            // narrow as the pane happened to be.
             let sbWidth = 0, sbRight = -1;
             try {
                 const sb = anchor && anchor.closest && anchor.closest("#sidebarContainer");
@@ -15751,10 +15760,6 @@ class _ReaderPanelsMixin {
                     sbRight = rectSb.right;
                 }
             } catch (_) {}
-            if (sbWidth > 0) {
-                popup.style.width = sbWidth + "px";
-                popup.style.maxWidth = "none";
-            }
             // Anchor to the right of the sidebar so the popup sits
             // alongside (not over) the bookmark list — the user can
             // see both at once while filtering. Top-aligned with the
@@ -15766,7 +15771,7 @@ class _ReaderPanelsMixin {
                 const vh = (idoc.documentElement && idoc.documentElement.clientHeight) || 9999;
                 popup.style.visibility = "hidden";
                 popup.style.display = "block";
-                const pw = sbWidth > 0 ? sbWidth : (popup.offsetWidth || 240);
+                const pw = popup.offsetWidth || 240;
                 const ph = popup.offsetHeight || 140;
                 let x = sbRight >= 0 ? (sbRight + 4) : (r.right + 4);
                 if (x + pw > vw - 6) {
@@ -15983,7 +15988,13 @@ class _ReaderPanelsMixin {
             // of these" set. CSS rule is scoped to `.wv-bm-chip-popup`
             // because the chip popup lives in the reader iframe, where
             // the chrome-window's `wv-filter-or-group` rule doesn't reach.
-            const mkRow = () => { const r = idoc.createElementNS(NS, "div"); r.className = "wv-bm-chip-row wv-filter-or-group"; return r; };
+            // "line" rows never wrap and set the popup's width; "wrap" rows
+            // wrap and do not vote on it (see `.wv-bm-chip-popup` width rule).
+            const mkRow = (kind?: string) => {
+                const r = idoc.createElementNS(NS, "div");
+                r.className = "wv-bm-chip-row wv-filter-or-group" + (kind === "line" ? " wv-bm-row-line" : kind === "wrap" ? " wv-bm-row-wrap" : "");
+                return r;
+            };
             const toggle = (set: Set<string>, key: string) => { if (set.has(key)) set.delete(key); else set.add(key); };
             const rerender = () => {
                 try {
@@ -16043,7 +16054,7 @@ class _ReaderPanelsMixin {
                     ["item", "Items", RP_BM_TYPE_ITEM_SVG],
                     ["link", "Links", URL_GLOBE_SVG],
                 ];
-                const row = mkRow();
+                const row = mkRow("line");
                 for (const [cat, label, svg] of BM_TYPE_META) {
                     if (!facets.bmTypes.has(cat)) continue;
                     const chip = idoc.createElementNS(NS, "button");
@@ -16065,7 +16076,7 @@ class _ReaderPanelsMixin {
             // ink/text). Any non-canonical colours sort alphabetically at the
             // end so the canonical palette stays in fixed positions.
             if (facets.colors.size) {
-                const row = mkRow();
+                const row = mkRow("line");
                 const CANON_ORDER = [
                     "#ffd400", "#ff6666", "#5fb236", "#2ea8e5",
                     "#a28ae5", "#e56eee", "#f19837", "#aaaaaa", "#000000",
@@ -16086,10 +16097,14 @@ class _ReaderPanelsMixin {
                     // right edge after a thin vertical separator — same
                     // pattern the library filter uses in filter.ts.
                     if (c === "#000000") {
+                        // Spacer (>= 16 px, takes the slack) with the line
+                        // in the middle -- the reader popups' `.wv-rf-colsep`.
+                        const sp = idoc.createElementNS(NS, "div");
+                        sp.className = "wv-rf-colsep";
                         const sep = idoc.createElementNS(NS, "div");
                         sep.className = "wv-filter-vertical-separator";
-                        (sep as any).style.marginLeft = "auto";
-                        row.appendChild(sep);
+                        sp.appendChild(sep);
+                        row.appendChild(sp);
                     }
                     // Unified with the filter popup (popups 1 & 2):
                     // 26×28 button holding the Zotero-native rounded-
@@ -16112,7 +16127,7 @@ class _ReaderPanelsMixin {
             // Types row (sits right below the colour row — the two
             // annotation-shape facets group together visually).
             if (facets.types.size) {
-                const row = mkRow();
+                const row = mkRow("line");
                 const order = ["highlight", "underline", "note", "text", "image", "ink"];
                 const keys = order.filter(t => facets.types.has(t));
                 for (const tp of keys) {
@@ -16149,7 +16164,7 @@ class _ReaderPanelsMixin {
                 const plain = allKeys.filter(k => !facets.tags.get(k)!.color).sort((a, b) => a.localeCompare(b));
                 const addTagRow = (keys: string[]) => {
                     if (!keys.length) return;
-                    const row = mkRow();
+                    const row = mkRow("wrap");
                     for (const t of keys) {
                         const info = facets.tags.get(t)!;
                         const chip = idoc.createElementNS(NS, "span");
@@ -16175,7 +16190,7 @@ class _ReaderPanelsMixin {
             }
             // Authors row (only when >1, matching upstream annotations pane)
             if (facets.authors.size > 1) {
-                const row = mkRow();
+                const row = mkRow("wrap");
                 const keys = Array.from(facets.authors.keys()).sort((a, b) => a.localeCompare(b));
                 for (const a of keys) {
                     const chip = idoc.createElementNS(NS, "span");

@@ -1298,8 +1298,10 @@ export const PLUGIN_CSS = [
     "  font-size: 12px; opacity: 0.85;",
     "}",
     // Icon-only variant: compact square so 6-8 options fit on one row.
+    // 4 px around the 16-px glyph (Zotero's glyph-in-button ratio) -> 26x26;
+    // the reader popups pin the same box (reader-panels.ts).
     ".wv-filter-opt-icon {",
-    "  padding: 4px 6px; min-width: 26px;",
+    "  padding: 4px; min-width: 26px;",
     "  justify-content: center; gap: 0;",
     "}",
     /* Text-labelled has-field chips (PMID / PMCID): two identical

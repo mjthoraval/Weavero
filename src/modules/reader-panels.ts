@@ -215,7 +215,13 @@ const RP_POPUP_CSS = [
     // annotation-type icons were 26 — mixed visual heights across what
     // should read as one row of tiles. Children center via flex
     // align-items, so the SVG/swatch inside is unaffected.
-    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon{padding:4px 6px;min-width:26px;height:28px;box-sizing:border-box;justify-content:center;gap:0;}",
+    // 4 px around the 16-px glyph box, Zotero's own ratio for a glyph in a
+    // button (20-px icons in 28-px toolbar buttons): a 26x26 tile. The old
+    // `4px 6px` in a 28-px box left 6/5 px to the box and 7/6 px to a colour
+    // swatch's painted square, which read as too airy (MJT, 2026-09-21).
+    // Same figure in the library popup (constants.ts), the tabs file-type
+    // popup (reader.ts) and the bookmarks chip popup below.
+    "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt-icon{padding:4px;min-width:26px;height:26px;box-sizing:border-box;justify-content:center;gap:0;}",
     // `_makeLinkSvg` builds a 1em×1em SVG so it scales with surrounding
     // text in reader badges. Inside a filter-popup tile (font-size:12px
     // → 12×12 icon) that ends up smaller than the 16×16 icons next to
@@ -1388,7 +1394,7 @@ const RP_BM_CSS = [
     ".wv-bm-chip-popup .wv-filter-opt[data-selected=\"true\"]:hover{background:rgba(94,106,210,0.45);}",
     ".wv-bm-chip-popup .wv-filter-opt[data-excluded=\"true\"]{background:linear-gradient(to top right,transparent calc(50% - 1px),rgba(220,72,72,0.95) calc(50% - 1px),rgba(220,72,72,0.95) calc(50% + 1px),transparent calc(50% + 1px)),rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);}",
     ".wv-bm-chip-popup .wv-bm-chip.excluded{background:rgba(220,72,72,0.16);border-color:rgba(220,72,72,0.95);text-decoration:line-through;}",
-    ".wv-bm-chip-popup .wv-filter-opt-icon{padding:4px 6px;min-width:26px;height:28px;box-sizing:border-box;justify-content:center;gap:0;}",
+    ".wv-bm-chip-popup .wv-filter-opt-icon{padding:4px;min-width:26px;height:26px;box-sizing:border-box;justify-content:center;gap:0;}",
     ".wv-bm-chip-popup .wv-chip-swatch{width:12px;height:12px;border-radius:50%;display:inline-block;box-sizing:border-box;border:1px solid rgba(0,0,0,0.15);}",
     ".wv-bm-chip-popup .wv-swatch-native{display:block;flex:0 0 auto;}",
     // OR-group card tint — applied to each chip row so the popup reads

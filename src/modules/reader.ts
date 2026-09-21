@@ -4587,7 +4587,7 @@ class _ReaderMixin {
                 "  background: transparent; color: inherit; font: inherit; font-size: 12px;",
                 "}",
                 "#wv-wtl-filetype-popup .wv-filter-opt:hover { background: rgba(127,127,127,0.08); }",
-                "#wv-wtl-filetype-popup .wv-filter-opt-icon { padding: 4px 6px; min-width: 26px; justify-content: center; gap: 0; }",
+                "#wv-wtl-filetype-popup .wv-filter-opt-icon { padding: 4px; min-width: 26px; justify-content: center; gap: 0; }",
                 "#wv-wtl-filetype-popup .wv-filter-opt[data-selected=\"true\"] {",
                 "  background: rgba(94,106,210,0.34); border-color: rgba(94,106,210,0.95);",
                 "  box-shadow: inset 0 0 0 1px rgba(94,106,210,0.55);",

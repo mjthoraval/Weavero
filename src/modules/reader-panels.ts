@@ -10641,6 +10641,38 @@ class _ReaderPanelsMixin {
      *  "pin" | "page" | "text" | "annotation" | "item" | "link", or null.
      *  `item` nodes split: an underlying annotation is "annotation", everything
      *  else (attachment / note / collection / library) is "item". */
+    /** What an item-bookmark's target IS or WAS, as {ann, type, color}:
+     *  `ann` true for an annotation. Live target first; for an ORPHAN
+     *  (target gone) the kind remembered at bookmark time (`kind`,
+     *  `annType`, `annColor`, 2026-09-21+); for a record from before that,
+     *  the type-name label a text-less annotation was given
+     *  (`_wvReaderAnnLabel`: "Ink annotation", "Highlight", ...) -- the only
+     *  trace such an orphan left. "Annotation" alone says annotation but
+     *  not which. A regular item titled "Ink annotation" is possible but
+     *  far less likely than what this actually is. */
+    _wvBmNodeWas(node: any): { ann: boolean, type: string | null, color: string | null, itemType: string | null } {
+        const none = { ann: false, type: null, color: null, itemType: null };
+        if (!node || node.type !== "item") return none;
+        try {
+            const it: any = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey);
+            if (it) {
+                if (it.isAnnotation && it.isAnnotation()) {
+                    return { ann: true, type: String(it.annotationType || "") || null, color: String(it.annotationColor || "") || null, itemType: null };
+                }
+                return { ann: false, type: null, color: null, itemType: String(it.itemType || "") || null };
+            }
+        } catch (_) {}
+        if (node.kind === "annotation") return { ann: true, type: node.annType || null, color: node.annColor || null, itemType: null };
+        if (node.kind) return { ann: false, type: null, color: null, itemType: String(node.kind) };
+        const lbl = String(node.originalLabel || node.label || "").trim();
+        const byLabel: { [k: string]: string | null } = {
+            "Image annotation": "image", "Ink annotation": "ink", "Text annotation": "text",
+            "Note": "note", "Highlight": "highlight", "Underline": "underline", "Annotation": null,
+        };
+        if (Object.prototype.hasOwnProperty.call(byLabel, lbl)) return { ann: true, type: byLabel[lbl], color: null, itemType: null };
+        return none;
+    }
+
     _wvBmNodeTypeCategory(node: any): string | null {
         if (!node) return null;
         switch (node.type) {
@@ -10648,24 +10680,7 @@ class _ReaderPanelsMixin {
             case "page": return "page";
             case "text": return "text";
             case "url": return "link";
-            case "item": {
-                try {
-                    const it: any = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey);
-                    if (it) return (it.isAnnotation && it.isAnnotation()) ? "annotation" : "item";
-                } catch (_) {}
-                // ORPHAN: the target is gone, so ask what it WAS.
-                // 1. The kind remembered at bookmark time (2026-09-21+).
-                if (node.kind === "annotation") return "annotation";
-                if (node.kind) return "item";
-                // 2. Older records carry no kind: an annotation with no
-                //    text was labelled by its type (`_wvReaderAnnLabel`),
-                //    and those labels are the only trace left. A regular
-                //    item titled "Ink annotation" is possible but far
-                //    less likely than what this actually is.
-                const lbl = String(node.originalLabel || node.label || "").trim();
-                if (/^(Image annotation|Ink annotation|Text annotation|Annotation|Note|Highlight|Underline)$/.test(lbl)) return "annotation";
-                return "item";
-            }
+            case "item": return this._wvBmNodeWas(node).ann ? "annotation" : "item";
             default: return null;
         }
     }
@@ -10694,7 +10709,16 @@ class _ReaderPanelsMixin {
                     if (n.type !== "item") continue;
                     let it: any = null;
                     try { it = Zotero.Items.getByLibraryAndKey(n.libraryID, n.itemKey); } catch (_) {}
-                    if (!it) continue;
+                    if (!it) {
+                        // ORPHAN: the remembered type / colour still count
+                        // (tags and authors were never remembered).
+                        try {
+                            const was = this._wvBmNodeWas(n);
+                            if (was.ann && was.color) colors.set(was.color, (colors.get(was.color) || 0) + 1);
+                            if (was.ann && was.type) types.set(was.type, (types.get(was.type) || 0) + 1);
+                        } catch (_) {}
+                        continue;
+                    }
                     try {
                         if (it.isAnnotation && it.isAnnotation()) {
                             const c = String(it.annotationColor || "");
@@ -10778,11 +10802,20 @@ class _ReaderPanelsMixin {
         let it: any = null;
         try { it = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey); } catch (_) {}
         // An ORPHAN (its target deleted) is a leaf like any other for the
-        // kind dimension -- the facets count it under "item", the unfiltered
-        // list shows it with its warning -- and, like a pin or a page, it
-        // cannot express an annotation dimension. Dropping it outright here
+        // kind dimension -- the facets count it, the unfiltered list shows
+        // it with its warning. It answers the colour and type dimensions
+        // from what was remembered at bookmark time (or its type-name
+        // label); tags and authors were never remembered, so like a pin or
+        // a page it cannot satisfy those includes. Dropping it outright here
         // made "Items — 2" list one row (MJT, 2026-09-21).
-        if (!it) return !anyInclude;
+        if (!it) {
+            const was = this._wvBmNodeWas(node);
+            if (st.colors.size && !(was.ann && was.color && st.colors.has(was.color))) return false;
+            if (excColors.size && was.ann && was.color && excColors.has(was.color)) return false;
+            if (st.types.size && !(was.ann && was.type && st.types.has(was.type))) return false;
+            if (excTypes.size && was.ann && was.type && excTypes.has(was.type)) return false;
+            return !(st.tags.size || st.authors.size);
+        }
         const isAnn = !!(it.isAnnotation && it.isAnnotation());
         if (st.colors.size) {
             if (!isAnn || !st.colors.has(String(it.annotationColor || ""))) return false;

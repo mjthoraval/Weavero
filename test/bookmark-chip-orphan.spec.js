@@ -86,3 +86,55 @@ describe("Weavero — bookmark kind remembered at bookmark time", () => {
             "the original label counts, a rename does not hide it");
     });
 });
+
+describe("Weavero — an orphan keeps its annotation type and colour", () => {
+    let wv;
+    const gone = (extra) => Object.assign({ type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", label: "x" }, extra);
+    const blank = () => ({
+        bmTypes: new Set(), bmTypesExcl: new Set(), colors: new Set(), colorsExcl: new Set(),
+        types: new Set(), typesExcl: new Set(), authors: new Set(), authorsExcl: new Set(),
+        tags: new Set(), tagsExcl: new Set(),
+    });
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._wvBmNodeWas !== "function") this.skip();
+    });
+
+    it("from the remembered kind", () => {
+        assert.deepEqual(wv._wvBmNodeWas(gone({ kind: "annotation", annType: "ink", annColor: "#ff6666" })),
+            { ann: true, type: "ink", color: "#ff6666", itemType: null });
+        assert.deepEqual(wv._wvBmNodeWas(gone({ kind: "journalArticle" })),
+            { ann: false, type: null, color: null, itemType: "journalArticle" });
+    });
+
+    it("from the type-name label when nothing was remembered", () => {
+        assert.deepEqual(wv._wvBmNodeWas(gone({ label: "Ink annotation" })), { ann: true, type: "ink", color: null, itemType: null });
+        assert.deepEqual(wv._wvBmNodeWas(gone({ label: "Annotation" })), { ann: true, type: null, color: null, itemType: null }, "annotation, type unknown");
+        assert.deepEqual(wv._wvBmNodeWas(gone({ label: "Some paper" })), { ann: false, type: null, color: null, itemType: null });
+    });
+
+    it("answers the type and colour chips from memory, never the tag or author chips", () => {
+        const o = gone({ kind: "annotation", annType: "ink", annColor: "#ff6666" });
+        let st = blank(); st.types.add("ink");
+        assert.isTrue(wv._wvBmNodeMatchesChips(o, st), "type include");
+        st = blank(); st.types.add("highlight");
+        assert.isFalse(wv._wvBmNodeMatchesChips(o, st), "other type");
+        st = blank(); st.typesExcl.add("ink");
+        assert.isFalse(wv._wvBmNodeMatchesChips(o, st), "type exclude");
+        st = blank(); st.colors.add("#ff6666");
+        assert.isTrue(wv._wvBmNodeMatchesChips(o, st), "colour include");
+        st = blank(); st.tags.add("t");
+        assert.isFalse(wv._wvBmNodeMatchesChips(o, st), "tags were never remembered");
+    });
+
+    it("draws the annotation icon in its colour, or the item type's icon", () => {
+        const win = Zotero.getMainWindow();
+        const ink = wv._bmIconInfo(gone({ kind: "annotation", annType: "ink", annColor: "#ff6666" }), win);
+        assert.include(ink.image, "annotate-ink.svg");
+        assert.equal(ink.fill, "#ff6666");
+        const byLabel = wv._bmIconInfo(gone({ label: "Ink annotation" }), win);
+        assert.include(byLabel.image, "annotate-ink.svg");
+        const article = wv._bmIconInfo(gone({ kind: "journalArticle" }), win);
+        assert.include(article.image, "journal-article.svg");
+    });
+});

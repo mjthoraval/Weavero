@@ -3155,6 +3155,22 @@ class _BookmarksMixin {
                     return { image: item.getImageSrc() };
                 }
             }
+            // ORPHAN: draw what it WAS -- the annotation type's icon in its
+            // colour, or the item type's icon -- from the kind remembered at
+            // bookmark time or the type-name label (MJT, 2026-09-21: "can it
+            // still show the Ink annotation icon?"). The row keeps its
+            // missing-target dimming and badge on top.
+            const was = (this as any)._wvBmNodeWas ? (this as any)._wvBmNodeWas(bm) : null;
+            if (was && was.ann) {
+                const svg = (was.type && BM_ANNOTATION_ICONS[was.type]) || "annotate-highlight.svg";
+                return { image: "chrome://zotero/skin/16/universal/" + svg, fill: was.color || null };
+            }
+            if (was && was.itemType) {
+                try {
+                    const src = (Zotero as any).ItemTypes.getImageSrc(was.itemType);
+                    if (src) return { image: src };
+                } catch (_) {}
+            }
         } catch (e) {}
         return { image: BM_FALLBACK_DATA_URI };
     }

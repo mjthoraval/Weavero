@@ -1249,6 +1249,14 @@ const RP_BM_CSS = [
     // appears (MJT, 2026-09-21).
     ".wv-bm-sidebar-actions{display:none;align-items:center;gap:2px;}",
     "#sidebarContainer." + RP_BM_TAB_ON + " .wv-bm-sidebar-actions{display:flex;}",
+    // Zotero's own annotations search box shares this slot. On a switch to
+    // the Bookmarks tab React removes it ~9 ms after the click, while the
+    // gate class above lands ~3 ms in -- for those frames BOTH magnifiers
+    // were in the slot, ours pushed right, then ours jumped left: the
+    // "magnifier flickering just left of the magnifier" (MJT, 2026-09-21).
+    // Hide the native box in the same style flush that shows ours; the
+    // Bookmarks tab has its own search, the native one searches annotations.
+    "#sidebarContainer." + RP_BM_TAB_ON + " .sidebar-toolbar .end .search-box{display:none;}",
     // Fallback action bar at the top of the pane (only used when the
     // upstream `.sidebar-toolbar > .end` slot isn't found — e.g. some
     // alternative theme).

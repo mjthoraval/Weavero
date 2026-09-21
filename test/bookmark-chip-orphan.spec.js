@@ -53,3 +53,36 @@ describe("Weavero — bookmark filter: an orphan matches the kind chip it is cou
         assert.isTrue(wv._wvBmNodeMatchesChips(orphan, blank()));
     });
 });
+
+// The kind is REMEMBERED at bookmark time so a later orphan still knows it
+// (Zotero keeps nothing but the key once an item is permanently deleted);
+// records from before that carry no kind and fall back to the type-name
+// labels annotations get when they have no text.
+describe("Weavero — bookmark kind remembered at bookmark time", () => {
+    let wv;
+    before(function () {
+        wv = Zotero.Weavero && Zotero.Weavero.plugin;
+        if (!wv || typeof wv._bmStampItemKind !== "function") this.skip();
+    });
+
+    it("stamps nothing for a target that does not resolve", () => {
+        const e = { type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", label: "gone" };
+        assert.isFalse(wv._bmStampItemKind(e));
+        assert.isUndefined(e.kind);
+    });
+
+    it("an orphan with a remembered kind is classified by it", () => {
+        assert.equal(wv._wvBmNodeTypeCategory({ type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", kind: "annotation", label: "some text" }), "annotation");
+        assert.equal(wv._wvBmNodeTypeCategory({ type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", kind: "journalArticle", label: "Ink annotation" }), "item",
+            "a remembered kind beats the label heuristic");
+    });
+
+    it("an orphan without a kind falls back to the type-name labels, else item", () => {
+        for (const lbl of ["Ink annotation", "Image annotation", "Text annotation", "Annotation", "Note", "Highlight", "Underline"]) {
+            assert.equal(wv._wvBmNodeTypeCategory({ type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", label: lbl }), "annotation", lbl);
+        }
+        assert.equal(wv._wvBmNodeTypeCategory({ type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", label: "Raimbaud et al. - 2021" }), "item");
+        assert.equal(wv._wvBmNodeTypeCategory({ type: "item", libraryID: 1, itemKey: "ZZZZZZZZ", label: "renamed", originalLabel: "Ink annotation" }), "annotation",
+            "the original label counts, a rename does not hide it");
+    });
+});

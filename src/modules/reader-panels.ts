@@ -10651,8 +10651,19 @@ class _ReaderPanelsMixin {
             case "item": {
                 try {
                     const it: any = Zotero.Items.getByLibraryAndKey(node.libraryID, node.itemKey);
-                    if (it && it.isAnnotation && it.isAnnotation()) return "annotation";
+                    if (it) return (it.isAnnotation && it.isAnnotation()) ? "annotation" : "item";
                 } catch (_) {}
+                // ORPHAN: the target is gone, so ask what it WAS.
+                // 1. The kind remembered at bookmark time (2026-09-21+).
+                if (node.kind === "annotation") return "annotation";
+                if (node.kind) return "item";
+                // 2. Older records carry no kind: an annotation with no
+                //    text was labelled by its type (`_wvReaderAnnLabel`),
+                //    and those labels are the only trace left. A regular
+                //    item titled "Ink annotation" is possible but far
+                //    less likely than what this actually is.
+                const lbl = String(node.originalLabel || node.label || "").trim();
+                if (/^(Image annotation|Ink annotation|Text annotation|Annotation|Note|Highlight|Underline)$/.test(lbl)) return "annotation";
                 return "item";
             }
             default: return null;

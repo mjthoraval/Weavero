@@ -15,10 +15,18 @@
 //
 // Data shape (v2 — a tree; v1 flat data is forward-compatible):
 //   { version: 2, bookmarks: [
-//       { id, type: "item",       libraryID, itemKey,       label, created },
+//       { id, type: "item",       libraryID, itemKey,       label, created,
+//         kind, annType?, annColor? },
 //       { id, type: "collection", libraryID, collectionKey, label, created },
 //       { id, type: "folder", name, expanded, created, children: [ … ] }
 //   ] }   (annotations are items with itemType 'annotation')
+//
+//   `kind` (2026-09-21): what the item WAS, remembered at bookmark time --
+//   "annotation" (with its annType / annColor) or the Zotero itemType --
+//   so an orphan (target deleted) still knows its kind. Zotero keeps
+//   nothing about a permanently deleted item beyond its key, so this is
+//   the only place the answer can live. Stamped on add and backfilled for
+//   every record whose target still resolves (`_bmStampItemKinds`).
 //
 // (An alternative docked-panel "tab" UI is parked at
 // work/saved-variants/bookmarks-panel-variant.ts.)
@@ -871,6 +879,7 @@ class _BookmarksMixin {
         if (entry.type === "text" && entry.text == null && entry.label) {
             entry.text = entry.label;
         }
+        try { this._bmStampItemKind(entry); } catch (_) {}
         doc[section].push(entry);
         await this._bmPersist();
         // First-bookmark-on-empty-doc transition: tell the reader-panels
@@ -1358,6 +1367,9 @@ class _BookmarksMixin {
             try { this._bmMigrateSectionPlacement(); } catch (e) {
                 Zotero.debug("[Weavero] _bmMigrateSectionPlacement err: " + e);
             }
+            try { this._bmStampItemKinds(); } catch (e) {
+                Zotero.debug("[Weavero] _bmStampItemKinds err: " + e);
+            }
             // Now that the bookmarks store is loaded, re-evaluate the
             // Bookmarks tab on every open reader. Two things need
             // catching up:
@@ -1442,6 +1454,61 @@ class _BookmarksMixin {
      *  section. Folders themselves stay in their own section — they're
      *  organizational and have no inherent "local vs global" identity.
      *  Idempotent: a second pass over a clean store does nothing. */
+    /** Remember what an item-bookmark's target IS while it still exists:
+     *  `kind` = "annotation" (+ annType, annColor) or the Zotero itemType.
+     *  Returns true when the record changed. No-op for a target that does
+     *  not resolve -- nothing to learn from a key. */
+    _bmStampItemKind(entry: any): boolean {
+        if (!entry || entry.type !== "item") return false;
+        let it: any = null;
+        try { it = Zotero.Items.getByLibraryAndKey(entry.libraryID, entry.itemKey); } catch (_) {}
+        if (!it) return false;
+        let changed = false;
+        try {
+            if (it.isAnnotation && it.isAnnotation()) {
+                const tp = String(it.annotationType || "");
+                const col = String(it.annotationColor || "");
+                if (entry.kind !== "annotation") { entry.kind = "annotation"; changed = true; }
+                if (tp && entry.annType !== tp) { entry.annType = tp; changed = true; }
+                if (col && entry.annColor !== col) { entry.annColor = col; changed = true; }
+            }
+            else {
+                const k = String(it.itemType || "item");
+                if (entry.kind !== k) { entry.kind = k; changed = true; }
+            }
+        } catch (_) {}
+        return changed;
+    }
+
+    /** One pass over every item-bookmark in both stores: stamp the kind
+     *  where the target still resolves, persist once if anything changed.
+     *  Runs at load, so a record made before `kind` existed learns its kind
+     *  before its target can disappear. Already-orphaned records stay as
+     *  they are (the category falls back to the label, see
+     *  `_wvBmNodeTypeCategory`). */
+    _bmStampItemKinds() {
+        if (!this._bmDoc) return;
+        let changed = false;
+        const walk = (nodes: any[]) => {
+            for (const n of (nodes || [])) {
+                if (!n) continue;
+                if (n.type === "folder") { walk(n.children); continue; }
+                if (this._bmStampItemKind(n)) changed = true;
+            }
+        };
+        try { walk(this._bmDoc.bookmarks); } catch (_) {}
+        try {
+            const rs = this._bmDoc.readerBookmarks || {};
+            for (const key of Object.keys(rs)) {
+                const doc = rs[key];
+                if (!doc || typeof doc !== "object") continue;
+                if (Array.isArray(doc)) walk(doc);
+                else { walk(doc.local); walk(doc.global); }
+            }
+        } catch (_) {}
+        if (changed) { try { this._bmPersist(); } catch (_) {} }
+    }
+
     _bmMigrateSectionPlacement() {
         if (!this._bmDoc || !this._bmDoc.readerBookmarks) return;
         let changed = false;
@@ -1973,14 +2040,16 @@ class _BookmarksMixin {
                 ? item.getDisplayTitle()
                 : (item.getField ? item.getField("title") : "");
         } catch (_) {}
-        this._bmDoc.bookmarks.push({
+        const entry: any = {
             id: "wv-" + Zotero.Utilities.randomString(8),
             type: "item",
             libraryID,
             itemKey,
             label: label || itemKey,
             created: new Date().toISOString(),
-        });
+        };
+        try { this._bmStampItemKind(entry); } catch (_) {}
+        this._bmDoc.bookmarks.push(entry);
         return true;
     }
 

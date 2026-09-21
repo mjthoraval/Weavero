@@ -153,8 +153,15 @@ const RP_USER_SVG =
 // XUL <panel>; here it's an HTML div inside the reader iframe).
 const RP_POPUP_CSS = [
     // ---- popup frame ----
+    // WIDTH RULE (MJT, 2026-09-21): the reader popups are not tied to a
+    // search field like the library one, so they take exactly the width
+    // their one-line rows need -- the colour swatches on one line with room
+    // before the black one, and each Date line on one line -- and nothing
+    // more. `width:max-content` measures those rows; the rows that WRAP
+    // (tags, people) are `contain:inline-size` so they never push the width
+    // up to the cap the way they used to (360/340, always reached).
     "#" + RP_FILTER_POPUP_ID + "{",
-    "  position:absolute; z-index:2147483600; min-width:230px; max-width:360px;",
+    "  position:absolute; z-index:2147483600; width:max-content; min-width:230px; max-width:360px;",
     "  background:Canvas; color:CanvasText;",
     "  border:1px solid rgba(127,127,127,.55); border-radius:5px;",
     "  box-shadow:0 6px 24px rgba(0,0,0,.30); padding:8px 10px;",
@@ -195,6 +202,15 @@ const RP_POPUP_CSS = [
     // `scrollbar-width:thin` strips the legacy up/down arrow buttons
     // from the scrollbar so the thumb reads as one continuous track.
     "#" + RP_FILTER_POPUP_ID + " .wv-rf-tags-row .wv-filter-options{max-height:170px;overflow-y:auto;scrollbar-width:thin;align-content:flex-start;padding-right:2px;}",
+    // Wrapping rows do not vote on the popup's width (see the width rule).
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-tags-row .wv-filter-options,#" + RP_FILTER_POPUP_ID + " .wv-rf-people-row .wv-filter-options{contain:inline-size;}",
+    // The colour row never wraps: it is one of the two rows that set the
+    // width. The black swatch sits after a spacer that is at least 16 px wide
+    // (the line centred in it) and takes any slack, so there is always room
+    // before the black one and it hugs the right edge when there is more.
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-colors-row .wv-filter-options{flex-wrap:nowrap;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-colsep{flex:1 0 auto;min-width:16px;display:flex;justify-content:center;align-self:stretch;}",
+    "#" + RP_FILTER_POPUP_ID + " .wv-rf-colsep .wv-filter-vertical-separator{margin:2px 0;}",
     "#" + RP_FILTER_POPUP_ID + " .wv-filter-opt{display:inline-flex;align-items:center;gap:6px;",
     "  padding:2px 8px;border-radius:4px;cursor:pointer;border:1px solid rgba(127,127,127,0.4);",
     "  background:transparent;color:inherit;font:inherit;font-size:12px;}",
@@ -404,7 +420,8 @@ const RP_POPUP_CSS = [
     // Date rows: label left, preset chips packed RIGHT so the plain label
     // reads apart from the clickable chips (user call 2026-08-03).
     ".wv-rf-daterow{display:flex;align-items:center;gap:6px;}",
-    ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;}",
+    // One line each (the other row that sets the popup's width).
+    ".wv-rf-daterow .wv-filter-options{margin-left:auto;display:flex;flex-wrap:nowrap;justify-content:flex-end;align-items:center;}",
     ".wv-rf-datenum{width:44px;font-size:11px;padding:1px 2px 1px 6px;background:transparent;color:inherit;",
     "  border:1px solid var(--color-panedivider,rgba(127,127,127,.35));border-radius:4px;color-scheme:inherit;}",
     // Compact unit dropdown (Weavero-own -- no ContentSelectDropdown in
@@ -12297,16 +12314,18 @@ class _ReaderPanelsMixin {
                 // Black is the ink/text-only "extra" colour — push it to the
                 // right edge after a separator, same as the library filter.
                 if (def.value === "#000000") {
-                    const sep = mk("div", "wv-filter-vertical-separator");
-                    sep.style.marginLeft = "auto";
-                    opts.appendChild(sep);
+                    // Spacer (>= 16 px, takes the slack) with the line in
+                    // the middle -- see `.wv-rf-colsep`.
+                    const sp = mk("div", "wv-rf-colsep");
+                    sp.appendChild(mk("div", "wv-filter-vertical-separator"));
+                    opts.appendChild(sp);
                 }
                 opts.appendChild(mkNativeOpt("colors", nat.colors, st.colorsExcl, def.value,
                     def.label + " — Alt+click to exclude",
                     (b: any) => { b.appendChild((this as any)._wvNativeColorSwatch(idoc, def.value)); },
                     actColors, defHas("colors", def.value)));
             }
-        }, true);
+        }, true, undefined, "wv-rf-colors-row");
 
         // ---- Annotation Type (icons in an OR-inline pill) + Has Comment.
         addRow((opts: any) => {
@@ -12417,7 +12436,7 @@ class _ReaderPanelsMixin {
                         (b: any) => { const ic = mk("span", "wv-rf-user-svg"); ic.innerHTML = RP_USER_SVG; b.appendChild(ic); const sp = mk("span"); sp.textContent = name; b.appendChild(sp); },
                         actAddedBy, defHas("addedBy", name)));
                 }
-            }, true);
+            }, true, undefined, "wv-rf-people-row");
         }
         // ---- Modified By (group libraries only) — plugin-only (no native dim).
         if (isGroupLib && modifiedByNames.size) {
@@ -12431,7 +12450,7 @@ class _ReaderPanelsMixin {
                         (next: any) => { st.modifiedBy = next.include; st.modifiedByExcl = next.exclude; },
                         actModifiedBy, defHas("modifiedBy", name)));
                 }
-            }, true);
+            }, true, undefined, "wv-rf-people-row");
         }
 
         // ---- Date ranges (2026-08-03): Added and Modified are SEPARATE

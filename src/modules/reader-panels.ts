@@ -1242,17 +1242,13 @@ const RP_BM_CSS = [
     // tab is active, so the other tabs (thumbnails / annotations /
     // outline) keep their clean toolbar.
     //
-    // Fade-in instead of jumping when the bookmarks tab is focused.
-    // Plain `display:none -> display:flex` is instant — we use Firefox's
-    // `@starting-style` + `transition-behavior: allow-discrete` (Gecko
-    // 129+, Zotero 10 runs Firefox 140) so opacity transitions from 0
-    // even though the resting state is `display:none`. On other tabs
-    // the buttons take no space; on the bookmarks tab they fade in.
-    ".wv-bm-sidebar-actions{display:none;align-items:center;gap:2px;opacity:0;transition:opacity 0.15s ease-out, display 0.15s ease-out allow-discrete;}",
-    "#sidebarContainer." + RP_BM_TAB_ON + " .wv-bm-sidebar-actions{display:flex;opacity:1;}",
-    "@starting-style{",
-    " #sidebarContainer." + RP_BM_TAB_ON + " .wv-bm-sidebar-actions{opacity:0;}",
-    "}",
+    // Shown and hidden instantly, exactly like the Annotations tab's own
+    // funnel (`.wv-al-actions`): the 150-ms opacity fade-in this once had
+    // (`@starting-style` + `allow-discrete`) read as the icons flickering on
+    // every switch to the tab, next to a toolbar where everything else just
+    // appears (MJT, 2026-09-21).
+    ".wv-bm-sidebar-actions{display:none;align-items:center;gap:2px;}",
+    "#sidebarContainer." + RP_BM_TAB_ON + " .wv-bm-sidebar-actions{display:flex;}",
     // Fallback action bar at the top of the pane (only used when the
     // upstream `.sidebar-toolbar > .end` slot isn't found — e.g. some
     // alternative theme).

@@ -99,6 +99,34 @@ describe("Weavero — annotations-pane funnel (issue #43)", function () {
         try { if (att) await att.eraseTx(); } catch (e) {}
     });
 
+    it("a colour outside Zotero's palette gets its own tile in the pane popup, after the palette", async function () {
+        // #ffed99 -- a pale yellow no Zotero picker offers (an imported PDF's
+        // reader wrote it). The popup only made tiles for the nine palette
+        // colours, so the document could not be narrowed to it (MJT, 2026-09-22).
+        const odd = /** @type {any} */ (new Zotero.Item("annotation"));
+        odd.libraryID = att.libraryID; odd.parentID = att.id;
+        odd.annotationType = "highlight"; odd.annotationText = "odd colour"; odd.annotationComment = "";
+        odd.annotationColor = "#ffed99"; odd.annotationPageLabel = "1";
+        odd.annotationSortIndex = "00000|000200|00000";
+        odd.annotationPosition = JSON.stringify({ pageIndex: 0, rects: [[40, 500, 300, 512]] });
+        await odd.saveTx();
+        const idoc = reader._iframeWindow.document;
+        try {
+            await waitFor(() => cards(idoc).length === 3, 15000, "three pane cards");
+            wv._wvAnnListEnsureButton(reader, idoc);
+            idoc.querySelector("#sidebarContainer .wv-al-btn").click();
+            const popup = await waitFor(() => idoc.getElementById("wv-reader-filter-popup-v2"), 5000, "popup");
+            const tiles = [...popup.querySelectorAll(".wv-rf-colors-row .wv-filter-opt")]
+                .map(b => (b.title || "").split(" — ")[0]);
+            assert.deepEqual(tiles, ["Yellow", "#FFED99"], "palette first, the odd colour after it");
+            wv._wvCloseReaderFilterPopup(idoc);
+        }
+        finally {
+            try { await odd.eraseTx(); } catch (e) {}
+            await waitFor(() => cards(idoc).length === 2, 15000, "back to two cards");
+        }
+    });
+
     it("global default: nothing filtered, the six prefs registered TRUE", function () {
         assert.deepEqual(wv._wvAnnPaneCanon(wv._wvAnnPaneDefaultState()), {});
         for (const t of wv._wvAnnListTypes()) {

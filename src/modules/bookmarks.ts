@@ -35,7 +35,7 @@
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_20, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
 import { BM_HOVERCARD_CSS, WV_PIN_ICON_URI } from "./reader-panels";
-import { wvPopupHost, wvDismissTooltip } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 
 // Gecko globals — not in the project's TS lib set (cf. tabs.ts).
 declare const IOUtils: any;
@@ -3240,6 +3240,10 @@ class _BookmarksMixin {
             btn.style.setProperty("-moz-context-properties", "fill, stroke");
             btn.style.setProperty("fill", "currentColor");
             btn.style.setProperty("stroke", "currentColor");
+            // The toolbar's 8-px rhythm (Zotero's buttons carry `margin: 0
+            // 4px`; New Collection, which this follows, carries none) --
+            // it abutted New Collection (MJT, 2026-09-22).
+            btn.style.setProperty("margin-inline-start", "8px");
             btn.addEventListener("command", () => {
                 // Live-resolve (reload-proof wiring trap #2): wire-time
                 // `this` would open the popup from a dead instance's store.
@@ -4137,8 +4141,8 @@ class _BookmarksMixin {
                 const mi = doc.createXULElement("menuitem");
                 mi.setAttribute("label", label);
                 mi.setAttribute("type", "radio");
-                mi.toggleAttribute("checked", !!checked);
-                mi.toggleAttribute("disabled", !!disabled);
+                wvSetBoolAttr(mi, "checked", !!checked);
+                wvSetBoolAttr(mi, "disabled", !!disabled);
                 mi.addEventListener("command", fn);
                 menu.appendChild(mi);
             };

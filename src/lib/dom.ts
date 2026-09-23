@@ -63,6 +63,25 @@ export function wvDismissTooltip(doc: any): void {
     } catch (e) {}
 }
 
+/** Write a boolean XUL attribute (hidden / collapsed / disabled / checked /
+ *  selected) so that it takes effect on every Zotero we support.
+ *
+ *  Measured on Zotero 10 (Firefox 140, 2026-09-23): `toggleAttribute(name,
+ *  true)` writes `""`, which that platform does NOT honour -- the IDL getter
+ *  stays false, a vbox stays visible, a menuitem stays enabled. It honours
+ *  only the literal `"true"`. Zotero 11 (Firefox 153) matches presence, so
+ *  the literal works there too. A computed string (`String(cond)`, "false")
+ *  is wrong on Zotero 11 (presence = true). Hence: the literal "true", or
+ *  the attribute removed. */
+export function wvSetBoolAttr(el: any, name: string, on: boolean): void {
+    try {
+        if (!el) return;
+        if (on) { if (el.getAttribute(name) !== "true") el.setAttribute(name, "true"); }
+        else if (el.hasAttribute(name)) el.removeAttribute(name);
+    }
+    catch (e) {}
+}
+
 /** True if a XUL element is hidden or collapsed, on every Zotero we support.
  *
  *  Firefox 153 made `hidden`/`collapsed` (and `selected`/`disabled`/`checked`)

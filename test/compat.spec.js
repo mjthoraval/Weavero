@@ -77,12 +77,29 @@ describe("Weavero — Firefox 153 compatibility", () => {
     // "false" -- means true. Measured on 11.0.SOURCE.77a3a8815 (2026-08-21):
     // setAttribute("disabled", "false") leaves el.disabled === true, so the
     // four sites that wrote String(cond) disabled their menu items
-    // unconditionally. toggleAttribute() is correct on Zotero 7-11 alike.
-    it("writes boolean XUL attributes with toggleAttribute, never setAttribute", () => {
-        const re = /setAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']/g;
-        const hits = bundle.match(re) || [];
-        expect(hits, `boolean attrs must use toggleAttribute: ${hits.join(", ")}`)
+    // unconditionally. The 2026-08-21 fix moved them to toggleAttribute(),
+    // which is WRONG THE OTHER WAY on Zotero 10 (Firefox 140), measured
+    // 2026-09-23 on 10.0.3-beta.2: toggleAttribute(name, true) writes "",
+    // which that platform does not honour -- the IDL getter stays false, a
+    // vbox stays visible, a menuitem stays enabled -- it honours only the
+    // literal "true" (the Advanced Search window's side panes never
+    // collapsed; twelve menu entries never greyed or checked). Zotero 11
+    // matches presence, which "true" satisfies. The one form correct on
+    // both is the literal "true" / removeAttribute: wvSetBoolAttr() in
+    // lib/dom.ts. So: no toggleAttribute() on these five, and no
+    // setAttribute() with anything but the literal "true".
+    it("writes boolean XUL attributes with the literal \"true\" (wvSetBoolAttr), never toggleAttribute or a computed value", () => {
+        const reToggle = /toggleAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']/g;
+        const toggles = bundle.match(reToggle) || [];
+        expect(toggles, `toggleAttribute is a no-op on Zotero 10 for: ${toggles.join(", ")}`)
             .to.have.lengthOf(0);
+        // the whitespace lives INSIDE the lookahead: after `,\s*` the engine backtracks
+        // the spaces and tests the lookahead against a space, which then passes
+        const reComputed = /setAttribute\(\s*["'](hidden|collapsed|selected|disabled|checked)["']\s*,(?!\s*["']true["']\s*\)|\s*true\s*\))/g;
+        const computed = bundle.match(reComputed) || [];
+        expect(computed, `boolean attrs take the literal "true" only: ${computed.join(", ")}`)
+            .to.have.lengthOf(0);
+        expect(bundle, "wvSetBoolAttr must ship").to.include("wvSetBoolAttr");
     });
 
     // The sneakier half: once anything sets these by presence, getAttribute()

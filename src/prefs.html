@@ -630,13 +630,20 @@
 
   <!-- ============================ Multiple main windows -->
   <groupbox class="wv-subsec" data-gated-by="enableTabsAndWindows">
-    <label><html:h2>Multiple main windows</html:h2></label>    <checkbox label="Open a new main window (Ctrl+N, or the hamburger menu)" native="true"
+    <label><html:h2>Multiple main windows</html:h2></label>
+    <checkbox label="Open new main windows" native="true"
       preference="extensions.zotero.weavero.newMainWindow"/>
-    <html:p class="wv-desc">Opens an independent second main window with its own tabs, columns, filters and pane widths.</html:p>
+    <html:p class="wv-desc">An independent second main window with its own tabs, columns, filters and pane widths: Ctrl+N / &#8984;N, <html:em>File &#8594; New Main Window</html:em>, the <html:em>New Window</html:em> entries of the tab and item menus, and Advanced Search in a new window. Off, none of these opens one.</html:p>
     <vbox class="wv-children" data-master="newMainWindow">
       <checkbox label="Restore extra windows on restart" native="true"
         preference="extensions.zotero.weavero.sessionAutoReopen"/>
       <html:p class="wv-desc">Reopen the extra windows you had open when Zotero restarts.</html:p>
+      <checkbox label="Ctrl+Shift+F / &#8679;&#8984;F opens Advanced Search in a new window" native="true"
+        preference="extensions.zotero.weavero.advSearchShortcutNewWindow"/>
+      <html:p class="wv-desc">Zotero&#8217;s Advanced Search shortcut opens the search in this window. With this on it opens a new window on the current collection instead &#8212; the same as Shift+click on the funnel or <html:em>Edit &#8594; Advanced Search in New Window</html:em>. Zotero 10.</html:p>
+      <checkbox label="Hide the side panes in the Advanced Search window" native="true"
+        preference="extensions.zotero.weavero.advSearchWindowHidePanes"/>
+      <html:p class="wv-desc">The window opens with the search and its results only &#8212; no collections pane, no item pane &#8212; like the separate Advanced Search window of Zotero 9. <html:em>View &#8594; Layout</html:em> brings a pane back in that window.</html:p>
     </vbox>
   </groupbox>
 
@@ -683,6 +690,10 @@
       <html:p class="wv-desc">A cluster glyph on the file-type icon of tabs whose item is in a group library, plus a richer tooltip.</html:p>
 
       <separator class="thin"/>
+      <label><html:h3>Collections pane</html:h3></label>
+      <checkbox label="Collapse / expand button for the collections pane" native="true"
+        preference="extensions.zotero.weavero.collectionsPaneToggle"/>
+      <html:p class="wv-desc">A button at the left end of the toolbar, like the item pane&#8217;s and the reader&#8217;s. <html:em>View &#8594; Layout</html:em> keeps working alongside it.</html:p>
       <label><html:h3>Plugins Manager</html:h3></label>
       <checkbox label="Plugins Manager extras (search box, card details, normal window)" native="true"
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
@@ -749,9 +760,9 @@
   <!-- ============================ Reader annotations pane -->
   <groupbox class="wv-subsec" data-gated-by="enableVisualExtras">
     <label><html:h2>Reader annotations pane</html:h2></label>
-    <checkbox label="Funnel next to the pane&#8217;s search box (filter one document at a time)" native="true"
+    <checkbox label="Funnel next to the pane&#8217;s search box" native="true"
       preference="extensions.zotero.weavero.enableAnnPaneFilter"/>
-    <html:p class="wv-desc">Narrows the reader&#8217;s annotations pane by colour, type, tag, comment, person or date, while the document keeps every annotation &#8212; the same chips and gestures as the funnel above the reader. With the funnel off, the pane simply follows the types below.</html:p>
+    <html:p class="wv-desc">Unlike the funnel above the reader, which hides annotations from the page as well, this one narrows the annotations pane only &#8212; by colour, type, tag, comment, person or date &#8212; and the page keeps every annotation. Same chips and gestures. Each document keeps its own filter; the types below are the starting point for all of them. With the funnel off, the pane simply follows the types below.</html:p>
     <vbox class="wv-anntypes-block">
       <checkbox label="Hide Zotero&#8217;s colour and tag selector at the foot of the pane" native="true"
         preference="extensions.zotero.weavero.hideNativeAnnSelector"/>

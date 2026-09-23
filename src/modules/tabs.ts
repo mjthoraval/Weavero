@@ -16,7 +16,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties (see modules/annotation.ts for the pattern).
 
-import { winOf } from "../lib/dom";
+import { winOf, wvSetBoolAttr } from "../lib/dom";
 import { WV_FUNNEL_DATA_URI } from "./constants";
 
 // Zotero_Tabs is the per-window globals — it's declared as `any`
@@ -7507,14 +7507,20 @@ class _TabsMixin {
                         } catch (e) { Zotero.debug("[Weavero] dev wvMainState err: " + e); }
                     }
                 } else {
-                    // CLEAN window (Ctrl+N / hamburger): land on My Library.
-                    // One selectLibrary call is not enough — Zotero's
-                    // collections-view init asynchronously restores the
-                    // GLOBAL lastViewedFolder pref (the collection some
-                    // other window last viewed) and can override us after
-                    // the fact (user report 2026-07-16). Re-assert until
-                    // the selection verifiably IS the user library.
-                    const wanted = "L" + Zotero.Libraries.userLibraryID;
+                    // CLEAN window (Ctrl+N / hamburger): land on My Library --
+                    // or on the row the opener asked for (`_wvPendingDevWindowSelect`
+                    // = {id, libraryID}: "Open in New Window" on a collection,
+                    // library or saved search, and Shift+click on one; MJT,
+                    // 2026-09-22). One select call is not enough — Zotero's
+                    // collections-view init asynchronously restores the GLOBAL
+                    // lastViewedFolder pref (the collection some other window
+                    // last viewed) and can override us after the fact (user
+                    // report 2026-07-16). Re-assert until the selection
+                    // verifiably IS the wanted row.
+                    const askedRaw = (this as any)._wvPendingDevWindowSelect || null;
+                    (this as any)._wvPendingDevWindowSelect = null;
+                    const asked = (askedRaw && askedRaw.id) ? askedRaw : null;
+                    const wanted = asked ? String(asked.id) : ("L" + Zotero.Libraries.userLibraryID);
                     const enforceLib = (tries: number) => {
                         try {
                             const zp = win.ZoteroPane;
@@ -7528,7 +7534,17 @@ class _TabsMixin {
                                 const row = (rows0 && rows0[0])
                                     || (!rows0 && zp.getCollectionTreeRow && zp.getCollectionTreeRow());
                                 if (row && row.id === wanted) return;   // settled
-                                cv.selectLibrary(Zotero.Libraries.userLibraryID);
+                                if (asked && typeof cv.selectByID === "function") {
+                                    // A row under a collapsed library has no
+                                    // index: open the library first (no-op once open).
+                                    const lib = asked.libraryID;
+                                    const ready = (lib != null && wanted[0] !== "L" && typeof cv.expandLibrary === "function")
+                                        ? Promise.resolve().then(() => cv.expandLibrary(lib)).catch(() => {})
+                                        : Promise.resolve();
+                                    ready.then(() => cv.selectByID(wanted)).catch(() => {});
+                                } else {
+                                    cv.selectLibrary(Zotero.Libraries.userLibraryID);
+                                }
                             }
                         } catch (e) {}
                         if (tries < 10) { try { win.setTimeout(() => enforceLib(tries + 1), 250); } catch (e) {} }
@@ -8622,11 +8638,9 @@ class _TabsMixin {
                 const en = Services.wm.getEnumerator("navigator:browser");
                 while (en.hasMoreElements()) { if ((en.getNext() as any)._wvManagedWindow) return; }
             } catch (e) {}
-            let featureOn = false;
-            try { featureOn = (this as any)._getNewMainWindow(); } catch (e) {}
-            // Cascades from the Tabs and Windows section master.
-            try { if (featureOn && !(this as any)._getTabsAndWindowsMaster()) featureOn = false; } catch (e) {}
-            if (!featureOn) return;
+            // Multiple main windows (master + switch): the one gate for a
+            // second main window since v0.20.2 (see `_wvMultiMainOn`).
+            if (!(this as any)._wvMultiMainOn()) return;
             let auto = true;
             try { const v = Zotero.Prefs.get("weavero.sessionAutoReopen"); auto = (v === undefined) ? true : !!v; } catch (e) {}
             if (!auto) return;
@@ -11062,8 +11076,10 @@ class _TabsMixin {
                 if (win.Zotero_Tabs && win.Zotero_Tabs.selectedType === "library") {
                     const ctxEl = win.document.getElementById("zotero-context-pane");
                     const splitter = win.document.getElementById("zotero-context-splitter");
-                    if (ctxEl) ctxEl.toggleAttribute("collapsed", true);
-                    if (splitter) splitter.toggleAttribute("hidden", true);
+                    // `collapsed` needs the literal "true" on Zotero 10 (FF140): toggleAttribute's
+                    // "" leaves the pane visible (measured 2026-09-23); Zotero 11 matches presence.
+                    wvSetBoolAttr(ctxEl, "collapsed", true);
+                    wvSetBoolAttr(splitter, "hidden", true);
                 }
             } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvGuardContextPaneCrossWindow err: " + e); }

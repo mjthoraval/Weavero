@@ -24,7 +24,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
 import { BOOKMARK_PATH, BOOKMARK_PATH_14, BOOKMARK_PATH_20, SCHEME_SVG_TEMPLATE, URL_GLOBE_SVG, URL_EXTERNAL_SVG, WV_FUNNEL_DATA_URI, WV_FUNNEL_PATH, WV_FUNNEL_STEM_COLOR } from "./constants";
-import { wvPopupHost, wvDismissTooltip } from "../lib/dom";
+import { wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 
 declare const Components: any;
 declare const Services: any;
@@ -7537,7 +7537,7 @@ class _ReaderPanelsMixin {
                     wrap.setAttribute("style", "display:inline-flex;align-items:center;gap:5px;cursor:pointer;");
                     const r: any = idoc.createElementNS(NS, "input");
                     r.setAttribute("type", "radio"); r.setAttribute("name", "wv-outline-pos"); r.value = val;
-                    r.toggleAttribute("checked", !!checked);
+                    wvSetBoolAttr(r, "checked", !!checked);
                     const t = idoc.createElementNS(NS, "span"); t.textContent = label;
                     wrap.appendChild(r); wrap.appendChild(t);
                     return r;
@@ -12498,21 +12498,33 @@ class _ReaderPanelsMixin {
 
         // ---- Annotation Colour (swatches) — include via native channel.
         addRow((opts: any) => {
+            const tile = (value: string, label: string) => {
+                opts.appendChild(mkNativeOpt("colors", nat.colors, st.colorsExcl, value,
+                    label + " — Alt+click to exclude",
+                    (b: any) => { b.appendChild((this as any)._wvNativeColorSwatch(idoc, value)); },
+                    actColors, defHas("colors", value)));
+            };
+            const present = new Set(Array.from(colorsPresent).map((c: any) => String(c).toLowerCase()));
+            const known = new Set(this._ANNOTATION_COLORS.map((d: any) => d.value));
             for (const def of this._ANNOTATION_COLORS) {
-                if (!colorsPresent.has(def.value)) continue;
-                // Black is the ink/text-only "extra" colour — push it to the
-                // right edge after a separator, same as the library filter.
-                if (def.value === "#000000") {
-                    // Spacer (>= 16 px, takes the slack) with the line in
-                    // the middle -- see `.wv-rf-colsep`.
-                    const sp = mk("div", "wv-rf-colsep");
-                    sp.appendChild(mk("div", "wv-filter-vertical-separator"));
-                    opts.appendChild(sp);
-                }
-                opts.appendChild(mkNativeOpt("colors", nat.colors, st.colorsExcl, def.value,
-                    def.label + " — Alt+click to exclude",
-                    (b: any) => { b.appendChild((this as any)._wvNativeColorSwatch(idoc, def.value)); },
-                    actColors, defHas("colors", def.value)));
+                if (def.value !== "#000000" && present.has(def.value)) tile(def.value, def.label);
+            }
+            // Colours outside Zotero's palette -- an imported PDF's own reader,
+            // a hand-set value -- get a tile each after the palette, labelled
+            // by their hex (MJT, 2026-09-22: a #ffed99 highlight had no tile,
+            // so the document could not be narrowed to it).
+            const extras = Array.from(present).filter(c => !known.has(c) && /^#[0-9a-f]{6}$/.test(c)).sort();
+            for (const c of extras) tile(c, c.toUpperCase());
+            // Black is the ink/text-only "extra" colour -- pushed to the right
+            // edge after a separator, same as the library filter.
+            if (present.has("#000000")) {
+                // Spacer (>= 16 px, takes the slack) with the line in the
+                // middle -- see `.wv-rf-colsep`.
+                const sp = mk("div", "wv-rf-colsep");
+                sp.appendChild(mk("div", "wv-filter-vertical-separator"));
+                opts.appendChild(sp);
+                const black = this._ANNOTATION_COLORS.find((d: any) => d.value === "#000000");
+                tile("#000000", black ? black.label : "Black");
             }
         }, true, undefined, "wv-rf-colors-row");
 

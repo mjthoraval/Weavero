@@ -71,6 +71,10 @@ touching drag/drop, window moves, or focus code.
 - [ ] Restoring a saved window/session: the restored window opens with
       its saved geometry (maximized windows reopen maximized) and does
       not steal focus from where you are typing (background restore).
+- [ ] Reader tab: click into the item pane on the right, press Ctrl+F —
+      the reader's find bar opens (Zotero's own binding only selects the
+      hidden library search box there). With the cursor in a note in the
+      context pane, Ctrl+F stays the note editor's.
 
 ## Reader pin bookmarks (after touching pin drag / `_wvReaderShowPin`)
 
@@ -247,6 +251,84 @@ Run `test/popups.spec.js` first, then by hand:
 - [ ] Second click on the same anchor toggles the popup closed.
 - [ ] A click anywhere outside — including other documents/iframes —
       dismisses it.
+
+## File / Edit menubar entries (macOS, after touching the window commands)
+
+`test/menubar-window-entries.spec.js` proves the entries, their order and
+their gating on whatever platform runs the suite; the point of the feature
+is the Mac, where the hamburger does not exist and no Windows check can
+stand in. On macOS, by hand:
+
+- [ ] *File* opens with **New Tab…** (⌘T), **New Reader Window…** and
+      **New Main Window** (⌘N) as its first three entries, a separator
+      under them, then Zotero's *New Item*; the two shortcut glyphs render.
+- [ ] *Edit* shows **Advanced Search in New Window** ("Shift+Click")
+      directly under *Advanced Search*.
+- [ ] Each of the four does what its name says: the picker opens as a
+      dialog; a new main window comes up clean; the Advanced Search window
+      opens on the current collection with the search already open.
+- [ ] *Settings → Weavero → Tabs and Windows*: untick *Open new main
+      windows* → *New Main Window* and the Edit entry are gone on the next
+      open of the menu, the other two stay, ⌘N / Ctrl+N does nothing, the
+      hamburger (Windows/Linux) drops its *New Main Window*, the item menu
+      its *New Window* row, and Shift+click on the funnel opens Zotero's
+      in-window search; untick the section master → all four entries gone.
+      No restart in between.
+- [ ] (Any platform, primary window maximized.) *Edit → Advanced Search in
+      New Window*: the new window is NOT maximized -- a modest window in the
+      middle of the screen. Resize it, close it, open it again: it comes back
+      at the size you gave it.
+- [ ] (Any platform.) With *"Hide the side panes in the Advanced Search
+      window"* on (the default): the Advanced Search window has no
+      collections pane and no item pane; *View → Layout* brings one back
+      there; the primary window's panes are untouched, also after a restart.
+- [ ] (Any platform.) The collections-pane button at the window's top-left
+      collapses the pane and stays exactly where it was (it re-homes from
+      the collections toolbar to the items toolbar under the same pixels);
+      a second press expands the pane; *View → Layout → Collections Pane*
+      shows the matching tick and, used itself, leaves the button in place;
+      the state survives a restart. *Extras → Collections pane* off removes
+      the button at once.
+- [ ] (Any platform.) Collections tree: with *My Library* selected,
+      right-click another collection — *My Library* stays highlighted and
+      the items list stays (no reload); the right-clicked row only shows a
+      dashed outline while its menu is open; press Escape — outline gone,
+      nothing else changed. Right-click → *New Subcollection…*: while the
+      dialog is up nothing moves; *Cancel* — still nothing, the outline
+      goes at your next click; *Create Collection* — you stay on *My
+      Library*, the new subcollection appears with the dashed outline
+      (gone at your next click). *Rename Collection…* → Enter — same:
+      you stay, the renamed row keeps the outline until your next click.
+      Right-click a saved search you are not on → *Edit Saved Search* —
+      the search is selected at once (list and editor agree). Right-click a
+      collection you are not on → *Delete Collection…* → confirm — the
+      collection goes, you stay where you were. Right-click a saved search
+      you are not on → *Generate Report from Saved Search…* — the report is
+      that search's (the list switches to it first). Right-click *Group
+      Libraries* — no menu; middle-click it — nothing.
+      Right-click → *Open in New Window* (first entry of the plugin section
+      at the bottom, a separator under it when other plugins' entries
+      follow; Zotero's own actions keep their places) — a new window on
+      that collection, the first window still on *My Library*.
+      Middle-click a collection — a new window on it, the first window
+      unchanged, no selection change; Shift+click and Ctrl+click still
+      select several collections (Zotero's own gestures). Same with
+      *Multiple main windows* off: middle-click and right-click behave as
+      in plain Zotero except the restore, and the menu entry is absent.
+- [ ] (Any platform.) Tick *"Ctrl+Shift+F / ⇧⌘F opens Advanced Search in a
+      new window"*: the shortcut opens a new window on the current collection
+      and the in-window pane stays closed; *Edit* now shows the shortcut on
+      Weavero's entry and none on Zotero's. Untick: the shortcut opens the
+      pane again and the shortcut text is back on Zotero's line. Trusted key
+      events cannot be scripted -- this one is hands only.
+- [ ] (Any platform.) Middle-click the Advanced Search funnel at the right
+      end of the search box — the search opens in a new window, the same
+      as Shift+click; the in-window pane stays closed. With *Multiple main
+      windows* off the middle-click does nothing.
+- [ ] A focused standalone reader window: its *File* leads with **New
+      Reader Window…** and **New Main Window** (⌘N); **New Tab…** appears
+      only when the window has Weavero's tab strip (*Hide title bar* →
+      reader windows). No Edit entry there.
 
 ## Windows taskbar (multi-monitor, after identity/badge changes)
 

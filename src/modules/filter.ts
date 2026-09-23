@@ -44,7 +44,7 @@
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via
 // defineProperties.
 
-import { winOf, wvPopupHost, wvDismissTooltip } from "../lib/dom";
+import { winOf, wvPopupHost, wvDismissTooltip, wvSetBoolAttr } from "../lib/dom";
 import { URL_SCHEMES } from "./url";
 import {
     BTN_CLASS, BTN_TREE_CLASS, BTN_PANE_CLASS, BTN_POPUP_CLASS,
@@ -8949,7 +8949,7 @@ class _FilterMixin {
                 item.setAttribute("label", m.label);
                 item.setAttribute("type", "radio");
                 item.setAttribute("name", "wv-filter-mode");
-                item.toggleAttribute("checked", m.key === mode.key);
+                wvSetBoolAttr(item, "checked", m.key === mode.key);
                 item.addEventListener("command", () => {
                     switchMode(m.key);
                     try { search.focus(); } catch (err) {}

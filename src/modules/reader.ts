@@ -27,7 +27,7 @@ import {
     PANEL_ID, BTN_CLASS, BTN_SIDEBAR_CLASS, BTN_POPUP_CLASS,
     WV_FUNNEL_DATA_URI,
 } from "./constants";
-import { winOf, wvIsHiddenOrCollapsed } from "../lib/dom";
+import { winOf, wvIsHiddenOrCollapsed, wvSetBoolAttr } from "../lib/dom";
 
 class _ReaderMixin {
     [k: string]: any;
@@ -5658,7 +5658,10 @@ class _ReaderMixin {
                 hbox.className = "wv-note-outline-hbox";
                 const pane = doc.createXULElement("vbox");
                 pane.className = "wv-note-outline-pane";
-                pane.toggleAttribute("collapsed", !!(win._wvWT && win._wvWT.noteOutlineCollapsed));
+                // `collapsed` needs the literal "true" on Zotero 10 (FF140): toggleAttribute's
+                // "" leaves the pane visible (measured 2026-09-23); Zotero 11 matches presence.
+                if (win._wvWT && win._wvWT.noteOutlineCollapsed) pane.setAttribute("collapsed", "true");
+                else pane.removeAttribute("collapsed");
                 const splitter = doc.createXULElement("splitter");
                 splitter.className = "wv-note-outline-splitter";
                 splitter.setAttribute("collapse", "before");
@@ -15908,10 +15911,12 @@ class _ReaderMixin {
             // cluster below — the hamburger then holds NOTHING but this
             // window's own menubar, mirrored.
             if (!(opts && opts.mirrorOnly)) try {
-                const mkTop = (label: string, fn: () => void, accel?: string) => {
+                const mkTop = (label: string, fn: () => void, accel?: string, hideWhen?: () => boolean) => {
                     const mi: any = doc.createXULElement("menuitem");
                     mi.setAttribute("label", label);
                     if (accel) mi.setAttribute("acceltext", accel);
+                    // Re-read on every open (the popupshowing handler below).
+                    if (hideWhen) mi._wvHideWhen = hideWhen;
                     mi.addEventListener("command", () => {
                         try { popup.hidePopup(); } catch (e2) {}
                         try { fn(); } catch (e2) {}
@@ -15937,7 +15942,7 @@ class _ReaderMixin {
                 mkTop("New Main Window", () => {
                     const p: any = liveP();
                     if (p) p._wvOpenEmptyMainWindow();
-                }, ACCEL + "N");
+                }, ACCEL + "N", () => { const p: any = liveP(); return !(p && p._wvMultiMainOn && p._wvMultiMainOn()); });
                 popup.appendChild(doc.createXULElement("menuseparator"));
             } catch (e2) { Zotero.debug("[Weavero][hamburger] top entries err: " + e2); }
             // Build one menubar-mirror submenu entry — used for both the
@@ -16162,6 +16167,7 @@ class _ReaderMixin {
                 if (e.target !== popup) return;   // not the nested source placeholders
                 try {
                     for (const sm of [...popup.children] as any[]) {
+                        if (sm._wvHideWhen) { try { sm.hidden = !!sm._wvHideWhen(); } catch (er) {} }
                         const pid = sm._wvSrcPopupId;
                         if (!pid) continue;
                         const srcMenu: any = doc.getElementById(pid)?.parentElement;
@@ -16948,10 +16954,10 @@ class _ReaderMixin {
                         try {
                             const lpR: any = (Zotero as any).Weavero?.plugin;
                             const wlabel = lpR && lpR._wvClosedTopLabel && lpR._wvClosedTopLabel();
-                            if (wlabel) { reopen.setAttribute("label", wlabel); reopen.toggleAttribute("disabled", false); }
+                            if (wlabel) { reopen.setAttribute("label", wlabel); wvSetBoolAttr(reopen, "disabled", false); }
                             else {
                                 reopen.setAttribute("label", str("tabs.undoClose", "Reopen Closed Tab", 1));
-                                reopen.toggleAttribute("disabled", !(win._wvWTClosed && win._wvWTClosed.length));
+                                wvSetBoolAttr(reopen, "disabled", !(win._wvWTClosed && win._wvWTClosed.length));
                             }
                         } catch (e) {}
                         try { const t = targetTab(); pinTab.setAttribute("label", (t && t.pinned) ? "Unpin Tab" : "Pin Tab"); } catch (e) {}
@@ -16977,8 +16983,8 @@ class _ReaderMixin {
                             const t = targetTab(); const stx = win._wvWT;
                             if (t && stx) {
                                 const idx = stx.tabs.findIndex((x: any) => x.id === t.id);
-                                moveStartItem.toggleAttribute("disabled", idx <= 0);
-                                moveEndItem.toggleAttribute("disabled", idx >= stx.tabs.length - 1);
+                                wvSetBoolAttr(moveStartItem, "disabled", idx <= 0);
+                                wvSetBoolAttr(moveEndItem, "disabled", idx >= stx.tabs.length - 1);
                             }
                         } catch (e) {}
                     } catch (e) {}

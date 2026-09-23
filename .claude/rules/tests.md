@@ -36,6 +36,35 @@ paths:
   `instanceof` on built-ins is false there — duck-type, in specs and in code.
 - Instrumentation masks races: verify timing-family fixes with plain loops
   only.
+- Menu entries: a synthetic `command` (untrusted) is not delivered to chrome
+  `addEventListener` listeners, and `menuitem.doCommand()` reaches no JS
+  listener either (measured 2026-09-22) -- so a spec cannot "click" a
+  MenuManager entry. Drive the popup with a synthetic `popupshowing` on the
+  popup element (inline `onpopupshowing` handlers do run) and call the
+  plugin's own stored `onCommand(null, { menuElem })`
+  (`test/menubar-window-entries.spec.js`, via `_wvMenubarMenus`). And when
+  an `onShowing` both moves a menuitem and labels it: move FIRST -- a fresh
+  `acceltext` does not survive `insertBefore`.
+- A test that cares about the selected collection sets it FIRST -- never
+  rely on the previous test's trailing restore: an assertion failure there
+  skips it, and the next test then fails on the leftover state and looks
+  like a second bug (the dev.35 landing test, 2026-09-22).
+- The runner's window is NEVER raised: `document.hasFocus()` is false there
+  for the whole run, while it is true in the dev instance even with VS Code
+  in front (Gecko keeps the last-raised window "active"). Any plugin path
+  gated on focus behaves differently in the runner -- the cross-window
+  collection guard (tabs.ts) adds `skipSelect` to a collection add, so
+  Zotero neither expands the parent nor selects the new row (2026-09-23:
+  a green live check, a red runner, a whole trace to find it). Pin
+  `doc.hasFocus = () => true/false` in the spec (delete it in `finally`)
+  and test BOTH paths when the feature has both.
+- A spec's MutationObserver that checks what the plugin's own observer
+  leaves in the DOM (the collections-tree paint guard) must be REGISTERED
+  AFTER the plugin's -- observers are notified in registration order, so
+  one registered before the right-click sees Zotero's paint before the
+  guard corrects it (three false "selected" entries, 2026-09-23). For a
+  paint-visible check, sample at TASK level too (a 20 ms `setInterval`):
+  a task never runs between a mutation and the guard's microtask.
 - Restart/session testing: `test/restart/cycle.js` (canonical) — run it
   once (backup + before snapshot + restart) and once more after the restart
   (settle + after snapshot + diff + verdict, `restart-test/report.md`);

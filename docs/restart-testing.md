@@ -126,6 +126,20 @@ a changed reader page, sidebar or item-pane state, and error-console entries.
 - **Tab mid-load at quit**: `{ loadingAtQuit: true }` selects an unloaded
   reader tab of the anchor window and quits 150 ms later, so the session is
   saved while that tab is `reader-loading` (the type Zotero once dropped).
+- **Companions off** (attribution, not coverage): disable Better BibTeX
+  and/or Better Notes through the AddonManager (`await addon.disable()`),
+  run the cycle on the workspace as it stands (no rebuild needed), re-enable
+  afterwards. The companion check compares before and after, so a plugin
+  that was already off in the before snapshot is not a failure, and
+  COVERAGE prints how many were active. Use it whenever a FAIL could be a
+  companion's doing before touching Weavero: Better Notes rebuilds every
+  note tab at startup (`updateExistingNoteTabs`: close, then `Notes.open`
+  without `allowDuplicate`), which for a note open twice in one window
+  redirects the reopen to the twin and moves the copy next to it
+  (2026-09-23: "tab ORDER changed" + "selected tab is a different COPY",
+  gone with Better Notes off). There is no "Weavero alone" leg beyond
+  this; the Troubleshooting-Mode leg below turns off every plugin,
+  Weavero included.
 - **Troubleshooting Mode**: see the section below.
 - **Empty Zotero session** (the upstream bug of forums 133542, fixed in
   10.0.3-beta.1 but present in 10.0.2: a startup error made the quit save

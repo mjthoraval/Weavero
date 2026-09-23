@@ -2387,4 +2387,45 @@ export const PLUGIN_CSS = [
     // a thin dark halo so the teal temple reads against the item icon beneath it
     "  filter: drop-shadow(0 0 0.7px #1c1c1e) drop-shadow(0 0 0.7px #1c1c1e);",
     "}",
+    // The collections search box, once open, takes a line of its own under
+    // the toolbar buttons at the pane's full width. Zotero caps it at 180 px
+    // and shrinks it to whatever the row leaves, and the row now holds
+    // Weavero's pane toggle and Bookmarks next to New Collection -- it had
+    // become a slot a few characters wide (MJT, 2026-09-22). Zotero's
+    // `.toolbar { height: 41px !important }` needs an !important of higher
+    // specificity; the 6-px insets keep row 1 exactly where it was. The
+    // magnifier stays where it was too (Zotero hides it inline while the
+    // box is open; a second click there collapses the box -- pane.ts
+    // `_wvWireCollectionsSearchToggle`): its wrapper dissolves
+    // (display: contents) so the button keeps its place at the end of row 1
+    // while the box alone wraps to the second line.
+    "#zotero-toolbar-collection-tree:has(#zotero-collections-search.visible) {",
+    "  height: auto !important; min-height: 41px !important;",
+    "}",
+    "#zotero-collections-toolbar:has(#zotero-collections-search.visible) {",
+    "  flex-wrap: wrap; height: auto !important; padding-top: 6px; padding-bottom: 6px;",
+    "}",
+    "#zotero-collections-toolbar:has(#zotero-collections-search.visible) > div {",
+    "  display: contents !important;",
+    "}",
+    "#zotero-collections-toolbar:has(#zotero-collections-search.visible) #zotero-tb-collections-search {",
+    "  display: flex !important;",
+    "}",
+    "#zotero-collections-search.visible {",
+    "  max-width: none !important; flex: 1 1 100%; width: auto; margin-top: 6px;",
+    "}",
+    // Closed, Zotero keeps an 8-px sliver of the box (max-width 0 plus its
+    // end padding) to the right of the magnifier; open, that sliver moved to
+    // line 2 and the button slid 8 px into its place (MJT, 2026-09-22: "the
+    // magnifier is jumping around"). No sliver on row 1: the button sits at
+    // the row's right end in both states.
+    "#zotero-collections-search:not(.visible) {",
+    "  display: none !important;",
+    "}",
+    // The collection row a context menu is open for: Weavero keeps the
+    // selection (and the items list) where they were, this is the only cue.
+    "#collection-tree .row.wv-ctx-row {",
+    "  outline: 1px dashed color-mix(in srgb, currentColor 55%, transparent);",
+    "  outline-offset: -2px;",
+    "}",
 ].join("\n");

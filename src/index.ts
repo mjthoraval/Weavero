@@ -1049,6 +1049,59 @@ class WeaveroPlugin {
         } catch (e) { return true; }
     }
 
+    /** THE switch for a second main window: the Tabs and Windows master AND
+     *  Multiple main windows. Every route goes through it -- Ctrl+N, the
+     *  hamburger, File -> New Main Window, the tab and item menus' New
+     *  Window, Advanced Search in a new window (gesture, Edit entry,
+     *  shortcut), the restart restore. Until v0.20.2 the switch hid two menu
+     *  entries and nothing else; Ctrl+N and the hamburger had been added
+     *  after the flag and never wired to it (MJT, 2026-09-22: a switch that
+     *  means what it says, with its dependants nested under it again). */
+    _wvMultiMainOn() {
+        try { return !!(this._getTabsAndWindowsMaster() && this._getNewMainWindow()); }
+        catch (e) { return false; }
+    }
+
+    /** Zotero's own Advanced Search shortcut (Ctrl+Shift+F / ⇧⌘F) opens the
+     *  search in a NEW main window instead of this one. Default ON (MJT,
+     *  2026-09-22 -- it began opt-in as a remap of a Zotero-wide key); a
+     *  child of Multiple main windows (see `_wvMultiMainOn`). Forum 518424
+     *  (dclunie): "the separate Advanced Search window that is critical to
+     *  my workflow" -- with this on the old reflex works again (a remap, not
+     *  a fourth chord; MJT, 2026-09-22). */
+    _getAdvSearchShortcutNewWindow() {
+        try {
+            if (!this._wvMultiMainOn()) return false;
+            const v = Zotero.Prefs.get("weavero.advSearchShortcutNewWindow");
+            return v === undefined ? true : !!v;
+        } catch (e) { return false; }
+    }
+
+    /** The Advanced Search window opens with its side panes hidden -- no
+     *  collections pane, no item pane -- so it reads as the old separate
+     *  search window: conditions and results (MJT, 2026-09-22). Default ON
+     *  (MJT, same day: "This should be the default"); a child of Multiple
+     *  main windows, applied only when that window opens (View -> Layout
+     *  shows a pane again for that window). */
+    _getAdvSearchWindowHidePanes() {
+        try {
+            const v = Zotero.Prefs.get("weavero.advSearchWindowHidePanes");
+            return v === undefined ? true : !!v;
+        } catch (e) { return true; }
+    }
+
+    /** Collapse / expand button for the collections pane (Extras, default
+     *  ON): the library's left pane had no toggle where the item pane and
+     *  both reader panes have one (MJT, 2026-09-22). Cascades from the
+     *  Extras master. */
+    _getCollectionsPaneToggle() {
+        try {
+            if (!this._getEnableVisualExtras()) return false;
+            const v = Zotero.Prefs.get("weavero.collectionsPaneToggle");
+            return v === undefined ? true : !!v;
+        } catch (e) { return false; }
+    }
+
     /** Whether the "Multiple main windows" feature is on (default ON). Callers
      *  still cascade from the Tabs and Windows section master. The pref dropped
      *  its historical "dev" prefix when the feature graduated from experimental
@@ -2167,6 +2220,9 @@ class WeaveroPlugin {
                 // The pane funnel itself — on by default, like every other
                 // Weavero feature, and individually switchable.
                 "enableAnnPaneFilter",
+                // The Advanced Search window without side panes (MJT,
+                // 2026-09-22) and the collections-pane toggle button.
+                "advSearchWindowHidePanes", "collectionsPaneToggle", "advSearchShortcutNewWindow",
                 // Zotero's own colour/tag/author selector at the foot of the
                 // annotations pane is HIDDEN while the pane funnel replaces it
                 // (MJT, 2026-09-18); untick to keep it.
@@ -2263,16 +2319,28 @@ class WeaveroPlugin {
                     ["devNewMainWindow", "newMainWindow"],
                     ["devSessionAutoReopen", "sessionAutoReopen"],
                 ];
+                // ONCE: the old key is retired after the carry-over. Setting a
+                // pref to its default clears its user value, so a user who
+                // ticked the new box back to the default looked "never set"
+                // to a migration that ran at every startup -- and an install
+                // is a startup: the Hide box went off again on each new build
+                // (MJT, 2026-09-22). Retiring the old key ends that.
+                const retire = (short: string) => { try { PB.clearUserPref(P + short); } catch (e) {} };
                 for (const [oldShort, newShort] of renames) {
-                    if (PB.prefHasUserValue(P + oldShort) && !PB.prefHasUserValue(P + newShort)) {
+                    if (!PB.prefHasUserValue(P + oldShort)) continue;
+                    if (!PB.prefHasUserValue(P + newShort)) {
                         Zotero.Prefs.set("weavero." + newShort, !!Zotero.Prefs.get("weavero." + oldShort));
                     }
+                    retire(oldShort);
                 }
                 // Inverted rename (v0.20.1): showNativeAnnSelector (default
                 // OFF) -> hideNativeAnnSelector (default ON). A user who had
                 // asked to keep the selector keeps it.
-                if (PB.prefHasUserValue(P + "showNativeAnnSelector") && !PB.prefHasUserValue(P + "hideNativeAnnSelector")) {
-                    Zotero.Prefs.set("weavero.hideNativeAnnSelector", !Zotero.Prefs.get("weavero.showNativeAnnSelector"));
+                if (PB.prefHasUserValue(P + "showNativeAnnSelector")) {
+                    if (!PB.prefHasUserValue(P + "hideNativeAnnSelector")) {
+                        Zotero.Prefs.set("weavero.hideNativeAnnSelector", !Zotero.Prefs.get("weavero.showNativeAnnSelector"));
+                    }
+                    retire("showNativeAnnSelector");
                 }
             } catch (e) { Zotero.debug("[Weavero] dev-pref rename migration err: " + e); }
         } catch (e) {
@@ -3291,6 +3359,12 @@ class WeaveroPlugin {
         // Copy Open Link for the tab's attachment (via Zotero.MenuManager;
         // no-op on builds without that API).
         this._registerTabContextMenu();
+        // 7b-quater. File / Edit menubar entries for the window commands (the
+        // hamburger's New Tab / New Reader Window / New Main Window, and
+        // Advanced Search in New Window) -- the only menu home of these on
+        // macOS, where the hamburger is never built.
+        try { (this as any)._wvRegisterMenubarWindowEntries(); } catch (e) {}
+        try { (this as any)._wvRegisterCollectionMenuEntries(); } catch (e) {}
         // Keep reader-window tab titles in sync with the "Show tabs as" setting.
         try { (this as any)._wvRegisterTabTitlePrefObserver(); } catch (e) {}
         // Boot tracer for the group-restore investigation (2026-07-27): records
@@ -3754,6 +3828,13 @@ class WeaveroPlugin {
                     }
                     if (data === "extensions.zotero.weavero.inlineLinks") {
                         this._applyInlineLinksPref(this._getInlineLinks());
+                    }
+                    if (data === "extensions.zotero.weavero.collectionsPaneToggle"
+                        || data === "extensions.zotero.weavero.enableVisualExtras") {
+                        try {
+                            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                            for (const w of wins) (this as any)._wvApplyCollectionsPaneToggle(w);
+                        } catch (e) {}
                     }
                     if (data === "extensions.zotero.weavero.enableItemsList") {
                         this._applySurfacePref("itemsList");
@@ -4382,6 +4463,11 @@ class WeaveroPlugin {
                 try { (this as any)._wvWireMainNewTabShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireNewWindowShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireAdvSearchNewWindow(w); } catch (e) {}
+                try { (this as any)._wvApplyCollectionsPaneToggle(w); } catch (e) {}
+                try { (this as any)._wvWireCollectionsSearchToggle(w); } catch (e) {}
+                try { (this as any)._wvWireCollectionTreeGestures(w); } catch (e) {}
+                try { (this as any)._wvWireMenuGhostWorkaround(w); } catch (e) {}
+                try { (this as any)._wvWireReaderFindKey(w); } catch (e) {}
                 try { (this as any)._wvWireColumnPickerMark(w); } catch (e) {}
                 try { (this as any)._wvWireItemsCrossWindowDrop(w); } catch (e) {}
             }
@@ -4490,6 +4576,11 @@ class WeaveroPlugin {
             try { (this as any)._wvWireMainNewTabShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireNewWindowShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireAdvSearchNewWindow(_window); } catch (e) {}
+            try { (this as any)._wvApplyCollectionsPaneToggle(_window); } catch (e) {}
+            try { (this as any)._wvWireCollectionsSearchToggle(_window); } catch (e) {}
+            try { (this as any)._wvWireCollectionTreeGestures(_window); } catch (e) {}
+            try { (this as any)._wvWireMenuGhostWorkaround(_window); } catch (e) {}
+            try { (this as any)._wvWireReaderFindKey(_window); } catch (e) {}
             try { (this as any)._wvWireColumnPickerMark(_window); } catch (e) {}
             try { (this as any)._wvWireItemsCrossWindowDrop(_window); } catch (e) {}
             // Per-window taskbar identity (pref-gated, default off).
@@ -5224,6 +5315,13 @@ class WeaveroPlugin {
         this._teardownItemsListContextMenu();
         this._teardownCollectionsContextMenu();
         this._teardownTabContextMenu();
+        try { (this as any)._wvTeardownMenubarWindowEntries(); } catch (e) {}
+        try { (this as any)._wvTeardownCollectionsPaneToggle(); } catch (e) {}
+        try { (this as any)._wvUnwireCollectionsSearchToggle(); } catch (e) {}
+        try { (this as any)._wvUnwireCollectionTreeGestures(); } catch (e) {}
+        try { (this as any)._wvUnwireMenuGhostWorkaround(); } catch (e) {}
+        try { (this as any)._wvUnwireReaderFindKey(); } catch (e) {}
+        try { (this as any)._wvTeardownCollectionMenuEntries(); } catch (e) {}
         this._unregisterPinTabMenu();
         try { this._teardownTabGroups(); } catch (e) {}
         try { (this as any)._teardownPluginsSearch(); } catch (e) {}

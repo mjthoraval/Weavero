@@ -1,5 +1,6 @@
 import { MD_REGEX } from "../lib/links";
 import { normalize as wvNormalize } from "../lib/text";
+import { wvSetBoolAttr } from "../lib/dom";
 
 // Module: annotation comment text + URL detection + icon
 // rendering + annotation model access + related-item nav
@@ -603,7 +604,7 @@ class _AnnotationMixin {
                 mi.classList.add("menuitem-iconic");
                 mi.setAttribute("image", opts.iconURL);
             }
-            mi.toggleAttribute("disabled", !!opts.disabled);
+            wvSetBoolAttr(mi, "disabled", !!opts.disabled);
             mi.addEventListener("command", () => {
                 try { onCommand(); }
                 catch (e) {

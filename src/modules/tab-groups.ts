@@ -21,6 +21,8 @@
 //
 // Mixed onto WeaveroPlugin.prototype from src/index.ts via defineProperties.
 
+import { wvSetBoolAttr } from "../lib/dom";
+
 declare const Zotero: any;
 declare const Services: any;
 
@@ -1754,7 +1756,7 @@ class _TabGroupsMixin {
                 // Window-identity colour glyph on the RIGHT, like the
                 // list-all-tabs headers (user request 2026-07-15).
                 try { (this as any)._wvDecorateWindowTargetMenuitem(doc, wi, w, !!t.isReader); } catch (e) {}
-                if (isSrc) wi.toggleAttribute("disabled", true);
+                if (isSrc) wvSetBoolAttr(wi, "disabled", true);
                 else wi.addEventListener("command", () => { try { onPick({ win: w, isReader: t.isReader, groupId: null }); } catch (e) {} });
                 place(wi);
                 added++;
@@ -1819,6 +1821,8 @@ class _TabGroupsMixin {
      *  the whole menu chain manually (only real menuitems auto-close)
      *  before running `fn`. */
     _wvNewWindowIconRow(doc: any, dark: boolean, buttons: any[]): any {
+        // Main-window targets only while Multiple main windows is on.
+        try { if (!(this as any)._wvMultiMainOn()) buttons = buttons.filter((b: any) => !b.main); } catch (e) {}
         const row = doc.createXULElement("hbox");
         row.setAttribute("align", "center");
         row.setAttribute("style", "padding: 3px 10px;");
@@ -4349,6 +4353,7 @@ class _TabGroupsMixin {
      *  window is actually up, so a spawn failure leaves the group untouched. */
     async _wvTabGroupMoveToNewMainWindow(win: any, groupID: any) {
         try {
+            if (!(this as any)._wvMultiMainOn()) return;   // Multiple main windows off
             const before = new Set(Zotero.getMainWindows());
             (this as any)._wvDevSpawnQueue = (this as any)._wvDevSpawnQueue || [];
             (this as any)._wvDevSpawnQueue.push({
@@ -4572,7 +4577,7 @@ class _TabGroupsMixin {
                 mi.classList.add("menuitem-iconic");
                 mi.setAttribute("label", label);
                 try { if (icon) mi.setAttribute("image", icon); } catch (er) {}
-                if (disabled) mi.toggleAttribute("disabled", true);
+                if (disabled) wvSetBoolAttr(mi, "disabled", true);
                 else mi.addEventListener("command", (ev: any) => {
                     try {
                         ev.stopPropagation();

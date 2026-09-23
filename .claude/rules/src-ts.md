@@ -120,6 +120,14 @@ name to a Zotero object, window, or document.
 - `winOf(node)` from `src/lib/dom.ts`, never `node.ownerGlobal` (renamed in
   FF153/Zotero 11; works on the dev platform, breaks silently later —
   `test/compat.spec.js` enforces this on the bundle).
+- Boolean XUL attributes (`hidden`, `collapsed`, `disabled`, `checked`,
+  `selected`): write them with `wvSetBoolAttr(el, name, on)` from
+  `src/lib/dom.ts` (the literal `"true"` or the attribute removed) and read
+  them with `wvIsHiddenOrCollapsed()`. `toggleAttribute(name, true)` writes
+  `""`, which Zotero 10 (FF140) does NOT honour — measured 2026-09-23: the
+  vbox stays visible, the menuitem stays enabled — while Zotero 11 (FF153)
+  matches presence, where `setAttribute(name, String(cond))` is the trap
+  ("false" = true). `compat.spec.js` forbids both wrong forms.
 - Zotero 9 compatibility: plural-first selection APIs with singular fallback
   guarded on the plural's ABSENCE (the singular getters THROW on v10 — an
   `existence-check && call()` passes the check then throws inside).
@@ -179,3 +187,12 @@ This is invisible to standalone rasterisation: serialising the same markup to
 a data URI and drawing it to a canvas shows it crisp, because the class rule
 never applies there. **Verify icons in situ** — `getComputedStyle` on a child
 of the rendered node — not on a copy (2026-08-20, three rounds lost to it).
+
+Zotero's context menus `#zotero-collectionmenu` and `#zotero-itemmenu` are
+addressed **by child index** in `buildCollectionContextMenu` /
+`buildItemContextMenu` (`menu.childNodes[i]`; ids, labels and commands are
+rewritten on every build). Never insert anything before Zotero's own children
+there — dev.37 turned "Open in New Window" into "Sync" and renamed Zotero's
+separators (2026-09-22). Plugin entries live after them, MenuManager's group
+separator marks the boundary, and MenuManager refuses a whole registration
+that carries a top-level separator for those targets.

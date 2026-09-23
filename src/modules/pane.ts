@@ -30,7 +30,7 @@ import {
     BTN_SIDEBAR_CLASS, MENU_LABEL_PREFIXES, SCHEME_SVG_TEMPLATE,
 } from "./constants";
 import { BBT_BIBTEX_TRANSLATOR_ID, BBT_BIBLATEX_TRANSLATOR_ID } from "./url";
-import { winOf } from "../lib/dom";
+import { winOf, wvSetBoolAttr } from "../lib/dom";
 
 class _PaneMixin {
     [k: string]: any;
@@ -864,13 +864,15 @@ class _PaneMixin {
             // "into a fresh group there" variant, as the shared icon-only
             // row (same compact treatment as the Move Tab / Move Group
             // menus — user request 2026-07-15); full text in the tooltips.
-            pop.appendChild(doc.createXULElement("menuseparator"));
-            pop.appendChild((this as any)._wvNewWindowIconRow(doc, dark, [
-                { main: true, grp: false, tip: "New Main Window",
-                    fn: () => this._wvOpenInNewMainWindow(win, false) },
-                { main: true, grp: true, tip: "A New Group in a New Main Window",
-                    fn: () => this._wvOpenInNewMainWindow(win, true) },
-            ]));
+            if ((this as any)._wvMultiMainOn()) {
+                pop.appendChild(doc.createXULElement("menuseparator"));
+                pop.appendChild((this as any)._wvNewWindowIconRow(doc, dark, [
+                    { main: true, grp: false, tip: "New Main Window",
+                        fn: () => this._wvOpenInNewMainWindow(win, false) },
+                    { main: true, grp: true, tip: "A New Group in a New Main Window",
+                        fn: () => this._wvOpenInNewMainWindow(win, true) },
+                ]));
+            }
 
             // Placement: an all-notes selection sits right BELOW the native "Open
             // Note in New Tab / New Window" entries; otherwise directly above the
@@ -909,11 +911,941 @@ class _PaneMixin {
      *  into managed-window init with an empty spawn queue = clean start. */
     _wvOpenEmptyMainWindow() {
         try {
+            if (!(this as any)._wvMultiMainOn()) return;   // Multiple main windows off
+            const before = new Set<any>((Zotero as any).getMainWindows ? (Zotero as any).getMainWindows() : []);
             (this as any)._wvPendingDevWindow = true;
             try { (this as any)._wvClearSessionPaneState(); } catch (e) {}
+            this._wvPrimeNewWindowLanding();
             try { (Zotero as any).openMainWindow(); }
-            catch (e) { (this as any)._wvPendingDevWindow = false; }
+            catch (e) { (this as any)._wvPendingDevWindow = false; return; }
+            // Zotero.openMainWindow is a bare ww.openWindow(null, ...) -- no
+            // parent, no focus() -- and on Windows the new window can come
+            // up BEHIND the one that opened it (MJT, 2026-09-22, Ctrl+N; the
+            // Advanced Search window had the same on 2026-09-01). Raise it.
+            this._wvRaiseNewMainWindow(before);
         } catch (e) {}
+    }
+
+    /** Zotero's collection tree selects the global `lastViewedFolder` pref
+     *  when a new window initialises (collectionTree.jsx init) -- the row
+     *  some window last viewed -- and the clean start in tabs.ts only
+     *  corrected it afterwards, so a new window first showed that row's
+     *  name and items before switching (MJT, 2026-09-23). Point the pref at
+     *  the row the window is meant for before opening it: Zotero rewrites
+     *  the pref on every selection, so the end state is what it was. The
+     *  tabs.ts loop stays as the safety net (it returns at once when the
+     *  landing already matches). */
+    _wvPrimeNewWindowLanding(rowID?: string | null) {
+        try {
+            const want = (this as any)._wvPendingDevWindowSelect;
+            const id = rowID || ((want && want.id) ? String(want.id) : ("L" + Zotero.Libraries.userLibraryID));
+            Zotero.Prefs.set("lastViewedFolder", id);
+        } catch (_) {}
+    }
+
+    /** Open a collection-tree row -- a library, collection, saved search,
+     *  Trash, Unfiled... anything with a tree id -- in a NEW main window
+     *  (MJT, 2026-09-22): the window lands on that row (the clean start in
+     *  tabs.ts honours `_wvPendingDevWindowSelect`), raised like Ctrl+N's. */
+    _wvOpenRowInNewMainWindow(rowID: string, libraryID?: number | null) {
+        try {
+            if (!rowID || !(this as any)._wvMultiMainOn()) return;
+            (this as any)._wvPendingDevWindowSelect = { id: String(rowID), libraryID: (libraryID == null) ? null : libraryID };
+            this._wvOpenEmptyMainWindow();
+            // The opener refused (nothing will consume the request): drop it.
+            if (!(this as any)._wvPendingDevWindow) (this as any)._wvPendingDevWindowSelect = null;
+        } catch (e) { (this as any)._wvPendingDevWindowSelect = null; }
+    }
+
+    /** Two gestures on the collections tree (MJT, 2026-09-22).
+     *
+     *  MIDDLE-CLICK on a row opens it in a new main window and the current
+     *  selection stays -- the browsers' and file managers' "open in a new
+     *  tab/window" gesture. Shift+click, Ctrl+click and Ctrl+Shift+click
+     *  are Zotero 10's own range / toggle / extend selection in this tree
+     *  (Shift+click was Weavero's until MJT found the collision,
+     *  2026-09-23; no modifier fallback for now, Alt+click being neither
+     *  standard nor discoverable). Zotero's tree ignores the middle button
+     *  on mouseup but its mousedown would select the row, so that mousedown
+     *  is swallowed in capture at the pane, above the React root; the open
+     *  happens on the mouseup released on the same row -- only with
+     *  Multiple main windows on; otherwise the click is Zotero's.
+     *
+     *  A right-click no longer leaves the current collection. Zotero's tree
+     *  selects the right-clicked row on MOUSEDOWN (_handleMouseDown does
+     *  not check the button), which reloads the items list, and its
+     *  context-menu items act on the selection. So the row is selected
+     *  SILENTLY instead: Zotero's mousedown handler is pre-empted at the
+     *  pane (capture, above the row's own listener) and the selection
+     *  state is set by hand -- selected/focused/pivot, WITHOUT the row
+     *  repaint, so the visible selection does not move either (MJT after
+     *  dev.41: the moving highlight still read as "focuses that
+     *  collection"); the target row only gets a dashed outline while its
+     *  menu is up -- and without the select event, so the items list
+     *  stays where it was (measured 2026-09-22: the real gesture had
+     *  switched the list for the whole time the menu was up;
+     *  `selectEventsSuppressed` is not usable, its setter fires the event
+     *  when cleared and a Zotero action selecting meanwhile would hang in
+     *  selectWait). The menu then builds for the context row. When it
+     *  closes: dismissed or Weavero's "Open in New Window" -> the previous
+     *  selection comes back, silently again, after a short grace. One of
+     *  Zotero's own actions -> the context is KEPT for it (MJT: no
+     *  focusing while the dialog is up, none at all if cancelled): the
+     *  action reads the context row, and the context ends either when the
+     *  selection becomes real -- Zotero selects the collection it just
+     *  created, the parent after a delete -- or at the user's next click
+     *  or key, which restores. Never a timer under an action: Delete
+     *  re-reads the selection after its confirm. A right press that never
+     *  opens the menu is undone after the mouseup grace. Only the menu's
+     *  OWN popupshowing/popuphidden count (submenus bubble theirs). */
+    _wvWireCollectionTreeGestures(win: any) {
+        try {
+            const doc = win && win.document;
+            const pane = doc && doc.getElementById("zotero-collections-pane");
+            const menu = doc && doc.getElementById("zotero-collectionmenu");
+            if (!pane || !menu || doc._wvCollTreeWired) return;
+            doc._wvCollTreeWired = true;
+            const live = (): any => {
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                return p && !p._wvDestroyed ? p : null;
+            };
+            const rowOf = (target: any, e?: any) => {
+                try {
+                    let el = target && target.closest && target.closest(".row[id^='collection-tree-row-']");
+                    if (!el && e && typeof e.clientX === "number" && doc.elementFromPoint) {
+                        // The target can be DETACHED (a row re-rendered during the
+                        // dispatch): fall back to what is under the pointer now.
+                        const hit = doc.elementFromPoint(e.clientX, e.clientY);
+                        el = hit && hit.closest && hit.closest(".row[id^='collection-tree-row-']");
+                    }
+                    if (!el) return null;
+                    const idx = parseInt(el.id.slice("collection-tree-row-".length), 10);
+                    const cv = win.ZoteroPane && win.ZoteroPane.collectionsView;
+                    return (cv && !isNaN(idx)) ? cv.getRow(idx) : null;
+                } catch (_) { return null; }
+            };
+            const selectedID = () => {
+                try { const cv = win.ZoteroPane.collectionsView; const r = cv.getRow(cv.selection.focused); return r ? r.id : null; }
+                catch (_) { return null; }
+            };
+            const snapshot = () => {
+                const cv = win.ZoteroPane.collectionsView, s = cv.selection;
+                const ids = [...s.selected].map((i: number) => { const r = cv.getRow(i); return r && r.id; }).filter(Boolean);
+                const f = cv.getRow(s.focused);
+                return { ids, focusedId: (f && f.id) || null };
+            };
+            /** Selection state without the select event (what TreeSelection.select
+             *  does under suppression); `repaint` adds the row repaint it skips. */
+            const applySilently = (snap: any, repaint: boolean) => {
+                const cv = win.ZoteroPane.collectionsView, s = cv.selection;
+                const idx = snap.ids.map((id: string) => cv.getRowIndexByID(id)).filter((i: any) => i !== false && i >= 0);
+                if (!idx.length) return false;
+                let f: any = snap.focusedId != null ? cv.getRowIndexByID(snap.focusedId) : false;
+                if (f === false || f < 0) f = idx[0];
+                const touched = new Set<number>([...s.selected, s.focused, ...idx, f]);
+                s.selected = new Set(idx); s.focused = f; s.pivot = f;
+                if (repaint) repaintRows(touched);
+                return true;
+            };
+            /** Bring the rows' selection classes in line with the state, IN
+             *  PLACE -- what Zotero's renderItem would set (selected,
+             *  first-/last-selected, focused, aria-selected), without its
+             *  rebuild: renderItem empties the row and resets its class, which
+             *  detaches the element under the pointer when this runs inside
+             *  a mousedown, and the browser's default focus handling then
+             *  blurs the tree for a tick -- the selected row flashed grey
+             *  (traced 2026-09-22). Neighbours are synced too for the
+             *  selection-block corners. */
+            const repaintRows = (rows: Iterable<number>) => {
+                try {
+                    const cv = win.ZoteroPane.collectionsView, s = cv.selection, n = cv.rowCount;
+                    const all = new Set<number>();
+                    for (const i of rows) { all.add(i); all.add(i - 1); all.add(i + 1); }
+                    for (const i of all) {
+                        if (i < 0 || i >= n) continue;
+                        const el = doc.getElementById("collection-tree-row-" + i);
+                        if (!el) continue;
+                        const on = !!s.isSelected(i);
+                        el.classList.toggle("selected", on);
+                        el.classList.toggle("first-selected", on && (typeof s.isFirstRowOfSelectionBlock === "function" ? !!s.isFirstRowOfSelectionBlock(i) : !s.isSelected(i - 1)));
+                        el.classList.toggle("last-selected", on && (typeof s.isLastRowOfSelectionBlock === "function" ? !!s.isLastRowOfSelectionBlock(i) : !s.isSelected(i + 1)));
+                        el.classList.toggle("focused", s.focused === i);
+                        if (on) el.setAttribute("aria-selected", "true"); else el.removeAttribute("aria-selected");
+                    }
+                } catch (_) {}
+            };
+            /** Paint guard. While a context selection is in place, every
+             *  re-render of the rows (the tree focuses and blurs around the
+             *  menu, scroll) would paint the highlight from the moved state
+             *  (seen live 2026-09-22: three rows painted selected). Fixed back
+             *  before paint -- a MutationObserver runs as a microtask -- the
+             *  rows selected before keep `.selected`/`.focused`, the context
+             *  row shows only the dashed cue. */
+            /** Rows are tracked by ID, not index: a rename re-inserts the row
+             *  at its new sorted position (index 12 -> 2 measured 2026-09-23),
+             *  and an index-keyed guard then left Zotero's `selected` paint on
+             *  the moved row -- a blue flash until the restore (MJT). */
+            const guard: any = { obs: null, prevIds: new Set<string>(), prevFocusedId: null as string | null, ctxId: null as string | null };
+            const rowIdAt = (i: number): string | null => { try { const r = win.ZoteroPane.collectionsView.getRow(i); return (r && r.id) || null; } catch (_) { return null; } };
+            const fixRow = (el: any) => {
+                try {
+                    const m = /^collection-tree-row-(\d+)$/.exec(el.id || "");
+                    if (!m) return;
+                    const i = +m[1], cl = el.classList, id = rowIdAt(i);
+                    const want = (name: string, on: boolean) => { if (cl.contains(name) !== on) cl.toggle(name, on); };
+                    if (id && id === guard.ctxId) {
+                        want("selected", false); want("first-selected", false); want("last-selected", false); want("focused", false);
+                        want("wv-ctx-row", true);
+                        if (el.hasAttribute("aria-selected")) el.removeAttribute("aria-selected");
+                    } else if (id && guard.prevIds.has(id)) {
+                        const above = rowIdAt(i - 1), below = rowIdAt(i + 1);
+                        want("selected", true);
+                        want("first-selected", !(above && guard.prevIds.has(above)));
+                        want("last-selected", !(below && guard.prevIds.has(below)));
+                        want("focused", id === guard.prevFocusedId);
+                        want("wv-ctx-row", false);
+                        if (el.getAttribute("aria-selected") !== "true") el.setAttribute("aria-selected", "true");
+                    } else {
+                        // neither: nothing else is selected while the context is up
+                        want("selected", false); want("first-selected", false); want("last-selected", false); want("focused", false);
+                        want("wv-ctx-row", false);
+                        if (el.hasAttribute("aria-selected")) el.removeAttribute("aria-selected");
+                    }
+                } catch (_) {}
+            };
+            const guardRoot = () => doc.getElementById("collection-tree") || pane;
+            const stopGuard = () => {
+                try { if (guard.obs) guard.obs.disconnect(); } catch (_) {}
+                guard.obs = null; guard.ctxId = null; guard.prevIds = new Set(); guard.prevFocusedId = null;
+                try { for (const k of Array.from(doc.querySelectorAll(".row.wv-ctx-row")) as any[]) k.classList.remove("wv-ctx-row"); } catch (_) {}
+            };
+            const startGuard = (prevIds: string[], prevFocusedId: string | null, ctxId: string) => {
+                stopGuard();
+                guard.prevIds = new Set(prevIds); guard.prevFocusedId = prevFocusedId; guard.ctxId = ctxId;
+                const root = guardRoot();
+                for (const el of Array.from(root.querySelectorAll(".row")) as any[]) fixRow(el);
+                const MO = win.MutationObserver;
+                if (!MO) return;
+                guard.obs = new MO((muts: any[]) => {
+                    for (const m of muts) {
+                        if (m.type === "attributes") fixRow(m.target);
+                        else for (const n of Array.from(m.addedNodes) as any[]) {
+                            if (!n || n.nodeType !== 1) continue;
+                            if (n.classList && n.classList.contains("row")) fixRow(n);
+                            else if (n.querySelectorAll) for (const el of Array.from(n.querySelectorAll(".row")) as any[]) fixRow(el);
+                        }
+                    }
+                });
+                guard.obs.observe(root, { attributes: true, attributeFilter: ["class"], subtree: true, childList: true });
+            };
+            const idxOf = (id: string) => { const i = win.ZoteroPane.collectionsView.getRowIndexByID(id); return (i === false || i < 0) ? -1 : i; };
+            const restore = (c: any) => {
+                try {
+                    disarmDetector();
+                    stopGuard();
+                    const cur = snapshot();
+                    if (cur.ids.length !== 1 || cur.focusedId !== c.ctxId) return;   // Zotero moved it meanwhile: leave it
+                    applySilently(c.prev, true);
+                    const i = idxOf(c.ctxId); if (i >= 0) repaintRows([i]);
+                    fixTabTitle();   // an action may have renamed the library tab to the context row
+                } catch (_) {}
+            };
+            /** The context row is GONE (Delete Collection, Remove Library, a
+             *  trashed search): Zotero selected a neighbour because the deleted
+             *  row was "selected" -- but the user never left the previous
+             *  row, so that is where they stay (the survey of 2026-09-23). */
+            const restoreAfterRemoval = (c: any) => {
+                try {
+                    disarmDetector();
+                    stopGuard();
+                    const pnd = doc._wvCollPending;
+                    if (pnd && pnd.c === c) { try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {} doc._wvCollPending = null; }
+                    if (doc._wvCollMenuCtx === c) doc._wvCollMenuCtx = null;
+                    applySilently(c.prev, true);
+                    fixTabTitle();
+                    try { win.setTimeout(fixTabTitle, 60); } catch (_) {}
+                } catch (_) {}
+            };
+            const isHeader = (row: any) => { try { return !!((row.isHeader && row.isHeader()) || (row.isSeparator && row.isSeparator())); } catch (_) { return false; } };
+            /** The dashed outline on a row that an action just created or
+             *  renamed, while the user stays where they were (MJT, 2026-09-23:
+             *  "showing an empty collection does not have any value"). Cleared
+             *  at the next click or key, like the context outline. */
+            const afterglow = (id: string) => {
+                try {
+                    clearAfterglow();
+                    doc._wvCollAfterglow = id;
+                    // The row of a just-created collection is rendered a moment later,
+                    // and a refresh may re-render it (renderItem resets the class):
+                    // re-apply for a while, until the next input clears it.
+                    const apply = (tries: number) => {
+                        try {
+                            if (doc._wvCollAfterglow !== id) return;
+                            const i = idxOf(id);
+                            const el = i >= 0 ? doc.getElementById("collection-tree-row-" + i) : null;
+                            if (el && !el.classList.contains("wv-ctx-row")) el.classList.add("wv-ctx-row");
+                            if (tries < 20) win.setTimeout(() => apply(tries + 1), 100);
+                        } catch (_) {}
+                    };
+                    apply(0);
+                } catch (_) {}
+            };
+            const clearAfterglow = () => {
+                try {
+                    const id = doc._wvCollAfterglow; doc._wvCollAfterglow = null;
+                    if (!id) return;
+                    const i = idxOf(id);
+                    const el = i >= 0 ? doc.getElementById("collection-tree-row-" + i) : null;
+                    if (el && guard.ctxId !== id) el.classList.remove("wv-ctx-row");
+                } catch (_) {}
+            };
+            /** Ids of the collections and searches that exist in a library --
+             *  taken at command time, so a row selected afterwards that is not
+             *  among them was CREATED by the action. */
+            const knownRowIds = (libraryID: any) => {
+                const known = new Set<string>();
+                try { for (const c of (Zotero as any).Collections.getByLibrary(libraryID, true) || []) known.add("C" + c.id); } catch (_) {}
+                try { for (const s of (Zotero as any).Searches.getByLibrary(libraryID) || []) known.add("S" + s.id); } catch (_) {}
+                return known;
+            };
+            /** The first collection/search row in the tree that did not exist at
+             *  command time -- the row an action created when Zotero did NOT
+             *  select it (the cross-window guard in tabs.ts adds skipSelect in
+             *  a window without OS focus; the runner's window is one). ONLY rows
+             *  of the context row's library: `known` is that library's set, and
+             *  the tree also lists group libraries (dev.62 outlined the first
+             *  group collection after a rename, MJT 2026-09-23). */
+            const createdRowId = (c: any): string | null => {
+                try {
+                    if (!c.known || c.knownLib == null) return null;
+                    const cv = win.ZoteroPane.collectionsView;
+                    for (let i = 0; i < cv.rowCount; i++) {
+                        const r = cv.getRow(i); const id = r && r.id;
+                        if (!id || !/^[CS]/.test(id) || !r.ref || r.ref.libraryID !== c.knownLib) continue;
+                        if (!c.known.has(id)) return id;
+                    }
+                } catch (_) {}
+                return null;
+            };
+            /** A real selection change while a context is kept for an action
+             *  -- Zotero selecting the collection it just created, the parent
+             *  after a delete -- ends the context: the highlight and the list
+             *  follow it, nothing is restored. Detected on the selection's
+             *  own event path (TreeSelection._updateTree, instance override
+             *  over the prototype method). */
+            const detector: any = { sel: null, timer: null };
+            const disarmDetector = () => {
+                try { const s = detector.sel; if (s && Object.prototype.hasOwnProperty.call(s, "_updateTree")) delete s._updateTree; } catch (_) {}
+                try { if (detector.timer) win.clearTimeout(detector.timer); } catch (_) {}
+                detector.timer = null;
+                detector.sel = null;
+            };
+            const endContext = (c: any) => {
+                disarmDetector();
+                stopGuard();
+                const pnd = doc._wvCollPending;
+                if (pnd && pnd.c === c) { try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {} doc._wvCollPending = null; }
+                if (doc._wvCollMenuCtx === c) doc._wvCollMenuCtx = null;
+                const rows = new Set<number>();
+                for (const id of (c.prev.ids || [])) { const i = idxOf(id); if (i >= 0) rows.add(i); }
+                const i = idxOf(c.ctxId); if (i >= 0) rows.add(i);
+                repaintRows(rows);
+            };
+            const armDetector = (c: any) => {
+                disarmDetector();
+                try {
+                    const s = win.ZoteroPane.collectionsView.selection;
+                    const proto = Object.getPrototypeOf(s);
+                    if (!proto || typeof proto._updateTree !== "function") return;
+                    detector.sel = s;
+                    /** The verdict on a real selection event under a kept context. */
+                    const decide = (cur: any) => {
+                        if (cur.ids.length === 1 && cur.focusedId === c.ctxId) {
+                            // Zotero re-selecting the context row ITSELF: the tree
+                            // refreshes a renamed (or synced) collection by removing
+                            // and re-adding its row, then selectByID(current row).
+                            // Not a move (MJT 2026-09-23: after renaming, no need to
+                            // focus it): back to the previous selection, silently --
+                            // the select event that follows is for that one, so the
+                            // list does not reload. Zotero renamed the library tab to
+                            // the collection meanwhile: put the tab title back too,
+                            // and outline the row so the rename shows where it is.
+                            restore(c);
+                            const pnd = doc._wvCollPending;
+                            if (pnd && pnd.c === c) { try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {} doc._wvCollPending = null; }
+                            fixTabTitle();
+                            try { win.setTimeout(fixTabTitle, 60); } catch (_) {}
+                            // A row the action created but Zotero did not select
+                            // (skipSelect) gets the outline instead of the context row.
+                            if (c.acted) afterglow(createdRowId(c) || c.ctxId);
+                        }
+                        else if (idxOf(c.ctxId) < 0 && (c.prev.ids || []).length && c.prev.ids.every((id: string) => idxOf(id) >= 0)) {
+                            restoreAfterRemoval(c);   // the context row was deleted; the previous rows still exist
+                        }
+                        else if (c.known && cur.focusedId && !c.known.has(cur.focusedId) && /^[CS]/.test(cur.focusedId)
+                                && (c.prev.ids || []).length && c.prev.ids.every((id: string) => idxOf(id) >= 0)) {
+                            // A row the action CREATED (New Subcollection…, New
+                            // Collection…, Duplicate, Copy): Zotero selects it, but an
+                            // empty collection is nothing to look at -- stay where you
+                            // were and outline the new row where it appeared.
+                            const created = cur.focusedId;
+                            restoreAfterRemoval(c);
+                            afterglow(created);
+                        }
+                        else endContext(c);
+                    };
+                    s._updateTree = function (...args: any[]) {
+                        try {
+                            const cur = snapshot();
+                            if (!cur.ids.length) {
+                                // transient: a row removed under the selection during a refresh
+                            }
+                            else if (cur.ids.length === 1 && cur.focusedId === c.ctxId) {
+                                // An inline rename is being typed: Zotero's own handler
+                                // returns early while the focused row is the one edited
+                                // (_handleSelectionChange) -- any other model here would
+                                // COMMIT the edit. Pass the event through as is.
+                                if (editing()) return proto._updateTree.apply(this, args);
+                                if (!c.acted) {
+                                    // No command yet (the menu is open, or the verdict of a
+                                    // dismissed menu is pending): not a selection change --
+                                    // a notification ending (collectionTree.notify sets
+                                    // selectEventsSuppressed = false, whose setter fires
+                                    // this) or a re-select of the silently selected row.
+                                    // Zotero's handler would load the context row's list
+                                    // (traced 2026-09-23: one 3.7 s after a rename, while
+                                    // the next menu was open -- "the list follows the
+                                    // target, My Library stays blue"). Not passed on at
+                                    // all: ZoteroPane.onCollectionSelected is serialised
+                                    // (Zotero.serial), so a model flipped for the call is
+                                    // read LATER when a list load is still running (the
+                                    // full suite caught exactly that, 2026-09-23). Only the
+                                    // tree's 'select' listeners run -- what notify's
+                                    // waitForSelect() awaits -- with nothing selected anew.
+                                    try { const cv = win.ZoteroPane.collectionsView; if (typeof cv.runListeners === "function") cv.runListeners("select"); } catch (_) {}
+                                    return;
+                                }
+                                // The context row "re-selected" -- the end of a rename, OR
+                                // only a step on the way to selecting a CREATED row: Zotero
+                                // expands the parent (a select event with the selection
+                                // unchanged) before selectByID(new). Decide after a short
+                                // grace unless a real change arrives first (measured
+                                // 2026-09-23: acting at once ended the context and the new
+                                // subcollection got selected after all).
+                                // The event itself waits with the verdict: fired at once it
+                                // would load the context row's list before a restore.
+                                if (!detector.timer) {
+                                    detector.timer = win.setTimeout(() => {
+                                        detector.timer = null;
+                                        try { if (detector.sel === s) decide(snapshot()); } catch (_) {}
+                                        try { proto._updateTree.call(s); } catch (_) {}
+                                    }, 250);
+                                }
+                                return;
+                            }
+                            else {
+                                if (detector.timer) { try { win.clearTimeout(detector.timer); } catch (_) {} detector.timer = null; }
+                                decide(cur);
+                            }
+                        } catch (_) {}
+                        return proto._updateTree.apply(this, args);
+                    };
+                } catch (_) {}
+            };
+            const fixTabTitle = () => {
+                try {
+                    const zp = win.ZoteroPane, rows = zp.getCollectionTreeRows();
+                    const name = rows.length === 1 ? rows[0].getName() : Zotero.getString("tab-title-multiple-collections");
+                    if (name && win.Zotero_Tabs && typeof win.Zotero_Tabs.rename === "function") win.Zotero_Tabs.rename("zotero-pane", name);
+                } catch (_) {}
+            };
+            /** The verdict on a closed menu. Measured live (2026-09-22): the
+             *  popup hides FIRST and the chosen item's command arrives as a
+             *  separate task a few ms later -- a 0-ms timer at popuphidden ran
+             *  in between, restored the selection and "New Subcollection…"
+             *  then read no collection at all. So a command COMMITS the
+             *  context at once (document capture: items wired through a
+             *  `<command>` element -- New Collection…, New Saved Search… --
+             *  have their event redirected to that element and never pass
+             *  through the popup), the restore waits a grace after
+             *  popuphidden, and any mousedown settles a pending verdict
+             *  first: the click that dismisses a menu by right-clicking
+             *  another row lands before the grace and the next context would
+             *  snapshot the unrestored state as its "previous" selection. */
+            const editing = () => { try { return !!win.ZoteroPane.collectionsView._editing; } catch (_) { return false; } };
+            const settle = () => {
+                clearAfterglow();   // any click or key ends a created/renamed row's outline
+                const pnd = doc._wvCollPending; if (!pnd) return;
+                if (editing()) return;   // the inline rename of the context row is under way: keep its state
+                doc._wvCollPending = null;
+                try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {}
+                restore(pnd.c);
+            };
+            const onRightDown = (e: any) => {   // every mousedown on the pane: resolve, then settle
+                try {
+                    // The row is read BEFORE settling: a pending restore repaints
+                    // the rows synchronously, which rebuilds the row under the
+                    // pointer and detaches the event's target -- closest() then
+                    // finds nothing and Zotero's own row listener, still on the
+                    // dispatch path, selects for real (traced 2026-09-22: the
+                    // second right-click after a cancelled New Subcollection…).
+                    const row = (e.button === 2 || e.button === 1) ? rowOf(e.target, e) : null;
+                    settle();
+                    if (e.button === 1) { onMiddleDown(e, row); return; }
+                    if (e.button !== 2) return;
+                    if (!row || !row.id) return;
+                    const stale = doc._wvCollCtx;   // a press whose menu never came
+                    if (stale) { doc._wvCollCtx = null; restore(stale); }
+                    const cv = win.ZoteroPane.collectionsView;
+                    const idx = idxOf(row.id);
+                    if (idx < 0 || cv.selection.isSelected(idx)) return;   // Zotero's own path changes nothing
+                    if (typeof cv.isSelectable === "function" && !cv.isSelectable(idx)) return;
+                    const prev = snapshot();
+                    if (!applySilently({ ids: [row.id], focusedId: row.id }, false)) return;
+                    e.stopPropagation();   // Zotero's mousedown handler would select for real
+                    // ...and would focus the tree; do that part ourselves, or the
+                    // selected row only turns its focused colour ~100 ms later when
+                    // the contextmenu handler focuses (a visible flicker after a
+                    // dialog had taken the focus away, MJT 2026-09-22).
+                    try { if (cv.tree && typeof cv.tree.focus === "function") cv.tree.focus(); } catch (_) {}
+                    startGuard(prev.ids, prev.focusedId != null ? prev.focusedId : null, row.id);
+                    doc._wvCollCtx = { prev, ctxId: row.id, t: Date.now(), shown: false };
+                    // From the press on, not only after a command: a notification
+                    // ending while the menu is open fires a select event with the
+                    // silent state (2026-09-23).
+                    armDetector(doc._wvCollCtx);
+                } catch (_) {}
+            };
+            const onRightUp = (e: any) => {   // no menu after the press (right-drag, suppressed contextmenu): undo
+                try {
+                    if (e.button !== 2) return;
+                    const c = doc._wvCollCtx;
+                    if (!c) return;
+                    win.setTimeout(() => { try { if (doc._wvCollCtx === c && !c.shown) { doc._wvCollCtx = null; restore(c); } } catch (_) {} }, 1200);
+                } catch (_) {}
+            };
+            /** Zotero greys Export / Create Bibliography / Generate Report (and
+             *  Empty Trash) from the ITEMS LIST's row count, which with the
+             *  silent context is still the previous row's list. Re-derive from
+             *  the target row: collections synchronously from their child items
+             *  (descendants too when items from subcollections are shown), saved
+             *  searches and the trash from the row's own query, a moment after
+             *  the menu opens; libraries are left to Zotero (counting a whole
+             *  library per right-click is not worth it). MJT 2026-09-23. */
+            const fixMenuEnabledFromRow = (c: any) => {
+                try {
+                    const cv = win.ZoteroPane.collectionsView, idx = idxOf(c.ctxId);
+                    if (idx < 0) return;
+                    const row = cv.getRow(idx);
+                    if (!row) return;
+                    const setDisabled = (ids: string[], disabled: boolean) => {
+                        if (menu.state === "closed" || doc._wvCollMenuCtx !== c) return;
+                        for (const id of ids) { const el = menu.querySelector("#" + id); if (el && !el.hidden) el.disabled = !!disabled; }
+                    };
+                    if (row.isCollection && row.isCollection()) {
+                        let own = 0, below = 0;
+                        try { own = row.ref.getChildItems(true, false).length; } catch (_) {}
+                        try { const d0 = row.ref.getDescendents(false, "item", false); below = Array.isArray(d0) ? d0.length : 0; } catch (_) {}
+                        const shown = own || (Zotero.Prefs.get("recursiveCollections") ? below : 0);
+                        setDisabled(["createBibCollection", "loadReport"], !shown);
+                        setDisabled(["exportCollection"], !shown && !below);
+                    }
+                    else if ((row.isSearch && row.isSearch()) || (row.isTrash && row.isTrash())) {
+                        const trash = !!(row.isTrash && row.isTrash());
+                        if (trash && row.isWithinGroup && row.isWithinGroup() && row.isWithinEditableGroup && !row.isWithinEditableGroup()) return;   // Zotero's reason stands
+                        Promise.resolve(row.getItems()).then((items: any[]) => {
+                            const empty = !(items && items.length);
+                            if (trash) setDisabled(["emptyTrash"], empty);
+                            else setDisabled(["exportCollection", "createBibCollection", "loadReport"], empty);
+                        }).catch(() => {});
+                    }
+                } catch (_) {}
+            };
+            const onShowing = (e: any) => {
+                if (e.target !== menu) return;
+                doc._wvCollMenuActed = false;
+                const c = doc._wvCollCtx; doc._wvCollCtx = null;
+                if (c) c.shown = true;
+                doc._wvCollMenuCtx = (c && Date.now() - c.t < 3000) ? c : null;
+                if (doc._wvCollMenuCtx) fixMenuEnabledFromRow(doc._wvCollMenuCtx);
+            };
+            /** Actions that work on the ITEMS LIST of the row, not just on the
+             *  row: they need the selection real before they run. Edit Saved
+             *  Search opens the editor in the items pane for the selected
+             *  search (setSavedSearchEditorState reads the first selected row,
+             *  the pane shows that search's results) -- MJT 2026-09-23: "the
+             *  saved search collection should be selected". Zotero's builder
+             *  gives the items their option id. */
+            const needsRealSelection = (target: any, c: any) => {
+                try {
+                    const id = target && target.id;
+                    return id === "editSelectedCollection" && typeof c.ctxId === "string" && c.ctxId[0] === "S";
+                } catch (_) { return false; }
+            };
+            const commitNow = (c: any) => {
+                try {
+                    disarmDetector();
+                    stopGuard();
+                    const pnd = doc._wvCollPending;
+                    if (pnd && pnd.c === c) { try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {} doc._wvCollPending = null; }
+                    if (doc._wvCollMenuCtx === c) doc._wvCollMenuCtx = null;
+                    const cv = win.ZoteroPane.collectionsView, s = cv.selection;
+                    if (typeof s._updateTree === "function") s._updateTree();   // the select event: list follows
+                    else win.ZoteroPane.onCollectionSelected();
+                    const rows = new Set<number>([...s.selected, s.focused]);
+                    for (const id of (c.prev.ids || [])) { const i = idxOf(id); if (i >= 0) rows.add(i); }
+                    repaintRows(rows);
+                } catch (_) {}
+            };
+            /** Actions that take their items from the ITEMS LIST, on a saved
+             *  search row: Export… and Generate Report… fall back to
+             *  getSortedItems() (the list) for searches, while for collections
+             *  they read the collection objects. With the silent context the
+             *  list is still the previous row's, so these run only once the
+             *  selection is committed AND the list shows the search (the
+             *  survey of 2026-09-23). The item's own handler is pre-empted and
+             *  the underlying function called instead. */
+            const listDependentRunner = (target: any, c: any): (() => void) | null => {
+                try {
+                    if (!(typeof c.ctxId === "string" && c.ctxId[0] === "S")) return null;
+                    const id = target && target.id;
+                    if (id === "exportCollection") return () => win.Zotero_File_Interface.exportCollection();
+                    if (id === "loadReport") return () => win.Zotero_Report_Interface.loadCollectionReport();
+                    return null;
+                } catch (_) { return null; }
+            };
+            const runWhenListShows = (rowID: string, fn: () => void, tries = 0) => {
+                try {
+                    const iv = win.ZoteroPane.itemsView, rows = iv && iv.collectionTreeRows;
+                    // The rows switch at the START of the list's load and the load
+                    // deferred is reset at the same moment, so once they match,
+                    // waitForLoad() is the new load's promise (itemTree.jsx).
+                    if (rows && rows[0] && rows[0].id === rowID) {
+                        const p = (typeof iv.waitForLoad === "function") ? iv.waitForLoad() : null;
+                        Promise.resolve(p).then(() => {
+                            const r2 = iv.collectionTreeRows;
+                            if (r2 && r2[0] && r2[0].id === rowID) fn();
+                            else runWhenListShows(rowID, fn, tries + 1);
+                        }).catch((e: any) => Zotero.debug("[Weavero] deferred menu action err: " + e));
+                        return;
+                    }
+                    if (tries < 300) win.setTimeout(() => runWhenListShows(rowID, fn, tries + 1), 50);
+                    else Zotero.debug("[Weavero] deferred menu action: the list never showed " + rowID);
+                } catch (e) { Zotero.debug("[Weavero] runWhenListShows err: " + e); }
+            };
+            const onCommand = (e: any) => {   // document capture, see above
+                try {
+                    const pnd = doc._wvCollPending;
+                    const c = doc._wvCollMenuCtx || (pnd && pnd.c);
+                    if (!c) return;
+                    // Weavero's own entry needs no selection: restore afterwards.
+                    if (e.target && e.target.hasAttribute && e.target.hasAttribute("data-wv-collection-open")) return;
+                    doc._wvCollMenuActed = true;
+                    c.acted = true;
+                    try {
+                        const r = win.ZoteroPane.collectionsView.getRow(idxOf(c.ctxId));
+                        c.knownLib = r && r.ref && r.ref.libraryID != null ? r.ref.libraryID : Zotero.Libraries.userLibraryID;
+                        c.known = knownRowIds(c.knownLib);
+                    } catch (_) {}
+                    const deferred = listDependentRunner(e.target, c);
+                    if (deferred) {
+                        e.stopPropagation(); e.preventDefault();   // the item's own handler would read the previous list
+                        const id = c.ctxId;
+                        commitNow(c);
+                        runWhenListShows(id, deferred);
+                        return;
+                    }
+                    if (needsRealSelection(e.target, c)) { commitNow(c); return; }   // before the item's handler
+                    if (pnd) { try { if (pnd.timer) win.clearTimeout(pnd.timer); } catch (_) {} pnd.timer = null; }   // no timer under an action
+                    armDetector(c);   // the item's handler runs next, on the context row
+                } catch (_) {}
+            };
+            const onHidden = (e: any) => {
+                try {
+                    if (e.target !== menu) return;
+                    const c = doc._wvCollMenuCtx; doc._wvCollMenuCtx = null;
+                    if (!c) return;
+                    settle();   // an older verdict still pending (defensive)
+                    doc._wvCollPending = { c, timer: c.acted ? null : win.setTimeout(settle, 250) };   // the command, if any, lands within a few ms
+                } catch (_) {}
+            };
+            const onMiddleDown = (e: any, row: any) => {   // from onRightDown, button 1
+                try {
+                    doc._wvCollMiddle = null;
+                    if (!row || !row.id) return;
+                    if (isHeader(row)) { e.preventDefault(); e.stopPropagation(); return; }   // the "Group Libraries" header, separators: nothing to open (the Feeds row is a real row)
+                    const p = live();
+                    if (!p || !p._wvMultiMainOn()) return;   // Zotero's click
+                    e.preventDefault(); e.stopPropagation();   // Zotero's mousedown would select the row (and no autoscroll)
+                    doc._wvCollMiddle = { id: row.id, libraryID: (row.ref && row.ref.libraryID != null) ? row.ref.libraryID : null, t: Date.now() };
+                } catch (_) {}
+            };
+            const onMiddleUp = (e: any) => {   // mouseup AND auxclick, button 1
+                try {
+                    if (e.button !== 1) return;
+                    const m = doc._wvCollMiddle;
+                    if (e.type !== "mouseup") {   // the auxclick that follows an open: swallowed
+                        if (doc._wvCollMiddleOpenedAt && Date.now() - doc._wvCollMiddleOpenedAt < 800) { e.preventDefault(); e.stopPropagation(); }
+                        return;
+                    }
+                    doc._wvCollMiddle = null;
+                    if (!m || Date.now() - m.t > 3000) return;
+                    const row = rowOf(e.target, e);
+                    if (!row || row.id !== m.id) return;   // released elsewhere: nothing
+                    const p = live();
+                    if (!p || !p._wvMultiMainOn()) return;
+                    e.preventDefault(); e.stopPropagation();
+                    doc._wvCollMiddleOpenedAt = Date.now();
+                    p._wvOpenRowInNewMainWindow(m.id, m.libraryID);
+                } catch (_) {}
+            };
+            /** A right-click on the "Group Libraries" header (a separator too)
+             *  shows Zotero's menu for whatever IS selected -- confusing, no
+             *  target (MJT, 2026-09-23): no menu there at all. The Feeds row is
+             *  not a header: it is selectable, has its own menu, and is left
+             *  alone. */
+            const onContext = (e: any) => {
+                try {
+                    const row = rowOf(e.target, e);
+                    if (row && isHeader(row)) { e.preventDefault(); e.stopPropagation(); }
+                } catch (_) {}
+            };
+            // Outside the pane a mousedown just settles; inside, onRightDown
+            // settles itself after resolving the row (see there).
+            const settleOutside = (e: any) => { try { if (pane.contains(e.target)) return; } catch (_) {} settle(); };
+            pane.addEventListener("mousedown", onRightDown, true);
+            pane.addEventListener("mouseup", onRightUp, true);
+            pane.addEventListener("mouseup", onMiddleUp, true);
+            pane.addEventListener("auxclick", onMiddleUp, true);
+            pane.addEventListener("contextmenu", onContext, true);
+            menu.addEventListener("popupshowing", onShowing, true);
+            doc.addEventListener("command", onCommand, true);
+            doc.addEventListener("mousedown", settleOutside, true);   // a pending verdict settles before the input is handled
+            doc.addEventListener("keydown", settle, true);
+            menu.addEventListener("popuphidden", onHidden);
+            doc._wvCollTreeGestures = { onRightDown, onRightUp, onMiddleUp, onContext, onHidden, onShowing, onCommand, settle };   // for the guard
+            doc._wvCollTreeUnwire = () => {
+                try {
+                    pane.removeEventListener("mousedown", onRightDown, true);
+                    pane.removeEventListener("mouseup", onRightUp, true);
+                    pane.removeEventListener("mouseup", onMiddleUp, true);
+                    pane.removeEventListener("contextmenu", onContext, true);
+                    pane.removeEventListener("auxclick", onMiddleUp, true);
+                    menu.removeEventListener("popupshowing", onShowing, true);
+                    doc.removeEventListener("command", onCommand, true);
+                    doc.removeEventListener("mousedown", settleOutside, true);
+                    doc.removeEventListener("keydown", settle, true);
+                    menu.removeEventListener("popuphidden", onHidden);
+                } catch (_) {}
+                try { settle(); disarmDetector(); stopGuard(); } catch (_) {}
+                delete doc._wvCollTreeWired; delete doc._wvCollTreeGestures; delete doc._wvCollTreeUnwire; delete doc._wvCollPending;
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvWireCollectionTreeGestures err: " + e); }
+    }
+
+    _wvUnwireCollectionTreeGestures() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) { try { const d = w.document; if (d && d._wvCollTreeUnwire) d._wvCollTreeUnwire(); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    /** "Open in New Window" on the collections context menu (MenuManager,
+     *  `main/library/collection`), for one library, collection, saved
+     *  search, Trash, Unfiled... row -- not a feed; Multiple main windows on.
+     *  FIRST OF THE PLUGIN SECTION at the bottom, right after MenuManager's
+     *  group separator -- NOT at the top where "Open in..." usually lives:
+     *  ZoteroPane.buildCollectionContextMenu addresses `menu.childNodes[i]`
+     *  BY INDEX and rewrites id/label/command on each, so anything inserted
+     *  before Zotero's own children shifts the whole menu (dev.37: the entry
+     *  became "Sync", Zotero's separators took our attributes; measured
+     *  2026-09-22). MenuManager also refuses a registration carrying a
+     *  top-level separator for context-menu targets (dev.36 lost the entry).
+     *  MenuManager re-appends custom entries at the bottom in registration
+     *  order on every popupshowing, so the entry moves itself up to the
+     *  group separator -- BEFORE labelling: a fresh acceltext does not
+     *  survive insertBefore. A separator of Weavero's OWN follows the entry
+     *  (MJT, 2026-09-22): safe there, after Zotero's positional block, and
+     *  MenuManager's cleanup only touches `.zotero-custom-menu-item`. It
+     *  shows only when a visible entry follows it (other plugins decide
+     *  their visibility in their own hooks, hence the popupshown re-check). */
+    _wvRegisterCollectionMenuEntries() {
+        try {
+            const MM: any = (Zotero as any).MenuManager;
+            if (!(MM && typeof MM.registerMenu === "function")) return;
+            this._wvTeardownCollectionMenuEntries();
+            const live = (): any => {
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                return p && !p._wvDestroyed ? p : null;
+            };
+            const rowFor = (ctx: any) => {
+                try {
+                    const rows = ctx && ctx.collectionTreeRows;
+                    if (!rows || rows.length !== 1) return null;
+                    const r = rows[0];
+                    if (!r || !r.id) return null;
+                    if ((r.isFeed && r.isFeed()) || (r.isFeeds && r.isFeeds())) return null;
+                    return r;
+                } catch (_) { return null; }
+            };
+            const shown = (ctx: any) => { const p = live(); return !!(p && p._wvMultiMainOn() && rowFor(ctx)); };
+            const placeFirstOfPlugins = (el: any, visible: boolean) => {
+                const popup = el && el.parentNode;
+                if (!popup) return;
+                const grp = popup.querySelector(":scope > .zotero-custom-menu-group-separator");
+                if (grp && grp.nextSibling !== el) popup.insertBefore(el, grp.nextSibling);
+                let sep = popup.querySelector(":scope > [data-wv-collection-open-sep]");
+                if (!sep) {
+                    sep = el.ownerDocument.createXULElement("menuseparator");
+                    sep.setAttribute("data-wv-collection-open-sep", "true");
+                }
+                if (el.nextSibling !== sep) popup.insertBefore(sep, el.nextSibling);
+                const decide = () => {
+                    try {
+                        let n = sep.nextElementSibling;
+                        while (n && n.hidden) n = n.nextElementSibling;
+                        sep.hidden = !visible || !n || n.localName === "menuseparator";
+                    } catch (_) { sep.hidden = true; }
+                };
+                decide();
+                (sep as any)._wvDecide = decide;   // for the guard (untrusted popupshown never reaches us)
+                popup.addEventListener("popupshown", decide, { once: true });
+            };
+            // Zotero's own "new window" glyph, the one Weavero's other
+            // open-in-new-window rows already carry (annotation menus).
+            const ICON_NEW_WINDOW = "chrome://zotero/skin/16/universal/new-window.svg";
+            const menus = [{
+                menuType: "menuitem",
+                icon: ICON_NEW_WINDOW,
+                darkIcon: ICON_NEW_WINDOW,
+                onShowing: (_ev: any, ctx: any) => {
+                    try {
+                        const el = ctx.menuElem, visible = shown(ctx);
+                        placeFirstOfPlugins(el, visible);
+                        el.setAttribute("label", "Open in New Window");
+                        el.setAttribute("acceltext", "Middle-click");
+                        el.setAttribute("data-wv-collection-open", "true");
+                        ctx.setVisible(visible);
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev: any, ctx: any) => {
+                    try {
+                        const p = live(), r = rowFor(ctx);
+                        if (p && r) p._wvOpenRowInNewMainWindow(r.id, (r.ref && r.ref.libraryID != null) ? r.ref.libraryID : null);
+                    }
+                    catch (e) { Zotero.debug("[Weavero] collection Open in New Window err: " + e); }
+                },
+            }];
+            const id = MM.registerMenu({ menuID: "weavero-collection-open-window", pluginID: "weavero@mjthoraval", target: "main/library/collection", menus });
+            (this as any)._wvCollectionMenuID = id || null;
+            (this as any)._wvCollectionMenus = menus;
+            this._wvPurgeCollectionMenuStrays();
+        } catch (e) { Zotero.debug("[Weavero] _wvRegisterCollectionMenuEntries err: " + e); }
+    }
+
+    _wvTeardownCollectionMenuEntries() {
+        try {
+            const MM: any = (Zotero as any).MenuManager, id = (this as any)._wvCollectionMenuID;
+            if (id && MM && typeof MM.unregisterMenu === "function") MM.unregisterMenu(id);
+        } catch (e) {}
+        this._wvPurgeCollectionMenuStrays();
+        (this as any)._wvCollectionMenuID = null;
+        (this as any)._wvCollectionMenus = null;
+    }
+
+    /** Windows ghost menus (Zotero forum 128935, 130191; intermittent,
+     *  unfixed): a context-menu item that opens a MODAL dialog -- New
+     *  Collection…, Delete Collection…, Change Parent Item… -- leaves an
+     *  empty afterimage of the menu on screen until the dialog closes.
+     *  Measured 2026-09-22 (dev profile, Zotero 10, Gecko 140): with the
+     *  dialog up the popup's DOM state is "closed" and its native window is
+     *  hidden (EnumWindows), and Zotero's own render of the main window
+     *  shows no menu -- the pixels are stale composition, cleared only by
+     *  the main window's next presented frame, which the modal's nested
+     *  loop postpones (a popup opened from the bridge meanwhile stuck in
+     *  "showing"). The popup hides BEFORE the item's command is dispatched
+     *  (Mozilla PopupGuide; the trace), so a refresh tick forced from a
+     *  document-level capture `command` listener lands between the two and
+     *  presents that frame before the dialog opens. Windows only; no-op
+     *  elsewhere. WV-TEMP: retire when Zotero/Gecko fix it. */
+    _wvWireMenuGhostWorkaround(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc || doc._wvMenuGhostFix) return;
+            const isWin = !!(Zotero as any).isWin;
+            const fix = (e: any) => {
+                try {
+                    if (!isWin) return false;
+                    const t = e && e.target;
+                    if (!t) return false;
+                    const fromPopup = !!(t.closest && t.closest("menupopup"));
+                    if (!fromPopup && t.localName !== "command") return false;
+                    const u = win.windowUtils;
+                    if (!u || typeof u.advanceTimeAndRefresh !== "function") return false;
+                    u.advanceTimeAndRefresh(0);
+                    u.restoreNormalRefresh();
+                    return true;
+                } catch (_) { try { win.windowUtils.restoreNormalRefresh(); } catch (_2) {} return false; }
+            };
+            doc.addEventListener("command", fix, true);
+            doc._wvMenuGhostFix = fix;
+            doc._wvMenuGhostUnwire = () => {
+                try { doc.removeEventListener("command", fix, true); } catch (_) {}
+                delete doc._wvMenuGhostFix; delete doc._wvMenuGhostUnwire;
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvWireMenuGhostWorkaround err: " + e); }
+    }
+
+    _wvUnwireMenuGhostWorkaround() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) { try { const d = w.document; if (d && d._wvMenuGhostUnwire) d._wvMenuGhostUnwire(); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    /** Remove the separator Weavero itself inserts into the collections
+     *  menu (and dev.37's strays, which Zotero's positional pass renamed):
+     *  not MenuManager's, so it never cleans them up. Recreated on the next
+     *  popupshowing while the entry is registered. */
+    _wvPurgeCollectionMenuStrays() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) {
+                try {
+                    const menu = w.document.getElementById("zotero-collectionmenu");
+                    if (!menu) continue;
+                    for (const k of Array.from(menu.querySelectorAll("[data-wv-collection-open-sep]"))) (k as any).remove();
+                } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    /** Bring the main window that is not in `before` to the front: best
+     *  effort, bounded -- window.focus() until the document has OS focus,
+     *  at most ten times over four seconds (a retry loop that never ends
+     *  would fight the user's next focus change). */
+    _wvRaiseNewMainWindow(before: Set<any>) {
+        try {
+            const mw: any = Zotero.getMainWindow();
+            const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
+            const t0 = Date.now();
+            let nw: any = null, tries = 0;
+            const tick = () => {
+                try {
+                    if (!nw) nw = ((Zotero as any).getMainWindows() || []).find((w: any) => !before.has(w)) || null;
+                    if (nw && !nw.closed) {
+                        if (nw.document.hasFocus()) return;   // in front: done
+                        nw.focus();
+                        if (++tries >= 10) return;
+                    }
+                    if (Date.now() - t0 < 4000) setT(tick, 100);
+                } catch (_) {}
+            };
+            setT(tick, 100);
+        } catch (_) {}
     }
 
     /** Picker → open the chosen items in a NEW reader window: the first
@@ -984,11 +1916,228 @@ class _PaneMixin {
                     const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
                     if (!accel || ke.shiftKey || ke.altKey
                         || String(ke.key).toLowerCase() !== "n") return;
-                    ke.preventDefault(); ke.stopPropagation();
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (live && !live._wvDestroyed) live._wvOpenEmptyMainWindow();
+                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;
+                    ke.preventDefault(); ke.stopPropagation();
+                    live._wvOpenEmptyMainWindow();
                 } catch (e2) {}
             }, true);
+        } catch (e) {}
+    }
+
+    /** Native menubar entries for Weavero's window commands -- File: New Tab...
+     *  / New Reader Window... / New Main Window (the hamburger's three top
+     *  entries, same order, same handlers); Edit: Advanced Search in New
+     *  Window, right under Zotero's own Advanced Search (the Shift+click /
+     *  right-click gesture, named). Forum comment 518424 (dclunie, macOS,
+     *  2026-09-19): "couldn't figure out how to get it to show me a new main
+     *  window or an advanced search popup" -- the hamburger, the only menu
+     *  home of these commands until v0.20.2, sits in the compact title bar's
+     *  tab strip, which is never built on macOS, so a Mac user had the
+     *  shortcuts and nothing else.
+     *
+     *  Zotero.MenuManager (no-op without it). Two facts of that API shape the
+     *  code: it has no `label` option (l10nID only), and it RE-APPENDS every
+     *  custom entry at the BOTTOM of the popup on each popupshowing, then runs
+     *  onShowing -- so each entry labels itself, moves itself into place and
+     *  re-reads its prefs there (a Settings change shows on the next open,
+     *  no reload). Gating: the Tabs and Windows master for all four; the two
+     *  that open a MAIN window (New Main Window, Advanced Search in New
+     *  Window) also follow Multiple main windows (`_wvMultiMainOn`, the one
+     *  switch for a second main window); the Edit entry is Z10-only like the
+     *  gesture (skipped when `cmd_zotero_advancedSearch` is absent).
+     *  Reader windows get the File three as well (`reader/menubar/file`;
+     *  MJT, 2026-09-22): New Tab only when that window has Weavero's tab
+     *  strip (`win._wvWT` -- a single-document window has no tab to add),
+     *  the other two always. No Edit entry there: a reader's Edit menu has
+     *  no Advanced Search to sit under.
+     *
+     *  The hamburger (Windows/Linux) mirrors the LIVE File popup, and keeps
+     *  its own Firefox-style New Tab / New Reader Window / New Main Window at
+     *  the top -- so inside the hamburger the three File entries would show
+     *  twice (MJT, 2026-09-22: "Stick only to the Firefox like menu", which is
+     *  also what Firefox does: its app menu never repeats its File menu). The
+     *  File popup opened from the hamburger anchors on a menu INSIDE
+     *  #wv-hamburger-popup (from the menubar it anchors on #fileMenu), and the
+     *  three entries and their separator hide in that case. The Edit entry has
+     *  no hamburger twin and shows in both. Guard:
+     *  test/menubar-window-entries.spec.js. */
+    _wvRegisterMenubarWindowEntries() {
+        try {
+            const MM: any = (Zotero as any).MenuManager;
+            if (!(MM && typeof MM.registerMenu === "function")) {
+                this._dbg("[Weavero] MenuManager unavailable; skip menubar window entries");
+                return;
+            }
+            this._wvTeardownMenubarWindowEntries();
+            const liveP = (): any => {
+                const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                return p && !p._wvDestroyed ? p : null;
+            };
+            const winOfCtx = (ctx: any): any => {
+                try { return ctx.menuElem.ownerDocument.defaultView; } catch (e) { return null; }
+            };
+            const ACCEL = Zotero.isMac ? "\u2318" : "Ctrl+";
+            const SHORTCUT_F = Zotero.isMac ? "\u21E7\u2318F" : "Ctrl+Shift+F";
+            const master = (): boolean => {
+                try { const p = liveP(); return !!(p && p._getTabsAndWindowsMaster()); }
+                catch (e) { return false; }
+            };
+            const newMain = (): boolean => {
+                try { const p = liveP(); return master() && !!(p && p._getNewMainWindow()); }
+                catch (e) { return false; }
+            };
+            // The popup this entry sits in was opened from the hamburger (its
+            // mirrored File submenu), where the same three already lead.
+            const inHamburger = (el: any): boolean => {
+                try {
+                    const a = el.parentNode && el.parentNode.anchorNode;
+                    return !!(a && a.closest && a.closest("#wv-hamburger-popup"));
+                } catch (e) { return false; }
+            };
+            // MenuManager appended `el` last; put it at `index` among the
+            // popup's other children, or right after `after`. ALWAYS before
+            // the attributes go on: a freshly set `acceltext` does not survive
+            // the move (Gecko drops it when the menuitem's frame is rebuilt;
+            // `label` survives -- measured 2026-09-22, closed and open popup),
+            // set after the move it stays.
+            const place = (el: any, index: number, after?: any) => {
+                try {
+                    const popup = el.parentNode;
+                    if (!popup) return;
+                    let ref: any = null;
+                    if (after) ref = after.nextSibling;
+                    else {
+                        const kids = Array.from(popup.children).filter((k: any) => k !== el);
+                        ref = kids[index] || null;
+                    }
+                    if (ref !== el) popup.insertBefore(el, ref);
+                } catch (e) {}
+            };
+            const entry = (key: string, label: string, accel: string | null, index: number,
+                           shown: (win: any) => boolean, run: (win: any, p: any) => void) => ({
+                menuType: "menuitem",
+                onShowing: (_ev: any, ctx: any) => {
+                    try {
+                        const el = ctx.menuElem;
+                        place(el, index);
+                        el.dataset.wvMenubar = key;
+                        el.setAttribute("label", label);
+                        if (accel) el.setAttribute("acceltext", accel);
+                        ctx.setVisible(shown(el.ownerDocument.defaultView) && !inHamburger(el));
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev: any, ctx: any) => {
+                    try { const p = liveP(); if (p) run(winOfCtx(ctx), p); }
+                    catch (e) { Zotero.debug("[Weavero] menubar entry " + key + " err: " + e); }
+                },
+            });
+            // MenuManager stamps its keys onto the menu data, so each
+            // registration gets its own objects.
+            const sep = () => ({
+                menuType: "separator",
+                onShowing: (_ev: any, ctx: any) => {
+                    try {
+                        const el = ctx.menuElem;
+                        el.dataset.wvMenubar = "sep";
+                        place(el, 3);
+                        ctx.setVisible(master() && !inHamburger(el));
+                    } catch (e) {}
+                },
+            });
+            const newReaderWin = () => entry("newreaderwin", "New Reader Window\u2026", null, 1, master,
+                (win, p) => p._wvNewReaderWindowPicker(win));
+            const newMainWin = () => entry("newmainwin", "New Main Window", ACCEL + "N", 2, newMain,
+                (_win, p) => p._wvOpenEmptyMainWindow());
+            const fileMenus = [
+                entry("newtab", "New Tab\u2026", ACCEL + "T", 0, master,
+                    (win, p) => p._wvMainNewTabPicker(win)),
+                newReaderWin(),
+                newMainWin(),
+                sep(),
+            ];
+            // Reader window: New Tab is the strip's + button (the hamburger's
+            // own route), present only with the strip.
+            const readerFileMenus = [
+                entry("newtab", "New Tab\u2026", ACCEL + "T", 0,
+                    (win) => master() && !!(win && win._wvWT),
+                    (win, _p) => {
+                        const b = win && win.document && win.document.querySelector(".wv-window-newtab-btn");
+                        if (b) b.click();
+                    }),
+                newReaderWin(),
+                newMainWin(),
+                sep(),
+            ];
+            const editMenus = [{
+                menuType: "menuitem",
+                onShowing: (_ev: any, ctx: any) => {
+                    try {
+                        const el = ctx.menuElem;
+                        const doc = el.ownerDocument;
+                        const anchor = doc.getElementById("menu_advancedSearch");
+                        if (anchor) place(el, -1, anchor);
+                        el.dataset.wvMenubar = "advsearchwin";
+                        el.setAttribute("label", "Advanced Search in New Window");
+                        // With the shortcut remapped (Settings), it is ours to
+                        // show and Zotero's line loses it. Its acceltext is
+                        // rebuilt from the `key` attribute and cannot be
+                        // blanked directly (measured 2026-09-22), so the
+                        // attribute itself moves; teardown puts it back.
+                        const lp = liveP();
+                        const remap = !!(lp && lp._getAdvSearchShortcutNewWindow && lp._getAdvSearchShortcutNewWindow());
+                        el.setAttribute("acceltext", remap ? SHORTCUT_F : "Shift+Click");
+                        if (anchor) {
+                            if (remap) { anchor.removeAttribute("key"); anchor.removeAttribute("acceltext"); }
+                            else if (!anchor.hasAttribute("key")) anchor.setAttribute("key", "key_advancedSearch");
+                        }
+                        ctx.setVisible(newMain() && !!anchor
+                            && !!doc.getElementById("cmd_zotero_advancedSearch"));
+                    } catch (e) { try { ctx.setVisible(false); } catch (e2) {} }
+                },
+                onCommand: (_ev: any, _ctx: any) => {
+                    try { const p = liveP(); if (p) p._wvAdvSearchOpenNewWindow(); }
+                    catch (e) { Zotero.debug("[Weavero] menubar entry advsearchwin err: " + e); }
+                },
+            }];
+            const ids: any[] = [];
+            for (const [menuID, target, menus] of [
+                ["weavero-menubar-file-windows", "main/menubar/file", fileMenus],
+                ["weavero-menubar-edit-advsearch", "main/menubar/edit", editMenus],
+                ["weavero-menubar-reader-file-windows", "reader/menubar/file", readerFileMenus],
+            ] as any[]) {
+                const id = MM.registerMenu({ menuID, pluginID: "weavero@mjthoraval", target, menus });
+                if (id) ids.push(id);
+            }
+            (this as any)._wvMenubarMenuIDs = ids;
+            // The unwrapped menu data, for the spec: a synthetic `command`
+            // never reaches MenuManager's listener (chrome listeners ignore
+            // untrusted events, and `doCommand()` reaches no JS listener at
+            // all -- measured 2026-09-22), so the guard calls onCommand here.
+            (this as any)._wvMenubarMenus = { file: fileMenus, edit: editMenus, readerFile: readerFileMenus };
+            this._dbg("[Weavero] menubar window entries registered: " + ids.join(", "));
+        } catch (e) { Zotero.debug("[Weavero] _wvRegisterMenubarWindowEntries err: " + e); }
+    }
+
+    _wvTeardownMenubarWindowEntries() {
+        try {
+            const MM: any = (Zotero as any).MenuManager;
+            const ids: any[] = (this as any)._wvMenubarMenuIDs || [];
+            if (MM && typeof MM.unregisterMenu === "function") {
+                for (const id of ids) { try { MM.unregisterMenu(id); } catch (e) {} }
+            }
+        } catch (e) {}
+        (this as any)._wvMenubarMenuIDs = [];
+        (this as any)._wvMenubarMenus = null;
+        // Zotero's Advanced Search line gets its shortcut back (the remap
+        // moved the `key` attribute onto our entry's acceltext).
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) {
+                const a = w.document && w.document.getElementById("menu_advancedSearch");
+                if (a && !a.hasAttribute("key")) a.setAttribute("key", "key_advancedSearch");
+            }
         } catch (e) {}
     }
 
@@ -1019,6 +2168,15 @@ class _PaneMixin {
             if (oldCtx) {
                 try { doc.removeEventListener("contextmenu", oldCtx, true); } catch (_) {}
             }
+            const oldKey = doc._wvAdvSearchKeyHandler;
+            if (oldKey) {
+                try { doc.removeEventListener("keydown", oldKey, true); } catch (_) {}
+            }
+            const oldMid = doc._wvAdvSearchMidHandler;
+            if (oldMid) {
+                try { doc.removeEventListener("mousedown", oldMid, true); } catch (_) {}
+                try { doc.removeEventListener("auxclick", oldMid, true); } catch (_) {}
+            }
             // Rebuild the popup on rewire — its command listeners close over
             // the OLD build's labels otherwise (entries resolve the live
             // plugin at command time, but a stale DOM node is still stale).
@@ -1047,6 +2205,8 @@ class _PaneMixin {
                     if (!e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
                     if (e.type === "click" && e.button !== 0) return;
                     if (!isTarget(e.target)) return;
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;   // native
                     e.preventDefault();
                     e.stopPropagation();
                     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
@@ -1054,8 +2214,7 @@ class _PaneMixin {
                         const p = e.target.closest && e.target.closest("menupopup");
                         if (p && p.hidePopup) p.hidePopup();
                     } catch (_) {}
-                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow();
+                    live._wvAdvSearchOpenNewWindow();
                 } catch (_) {}
             };
             doc._wvAdvSearchWinHandler = handler;
@@ -1069,14 +2228,52 @@ class _PaneMixin {
                 try {
                     const t = e.target;
                     if (!(t && t.closest && t.closest("#zotero-tb-search-advanced-button"))) return;
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;
                     e.preventDefault();
                     e.stopPropagation();
-                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
-                    if (live && !live._wvDestroyed) live._wvAdvSearchContextMenu(win, e);
+                    live._wvAdvSearchContextMenu(win, e);
                 } catch (_) {}
             };
             doc._wvAdvSearchCtxHandler = ctx;
             doc.addEventListener("contextmenu", ctx, true);
+            // Middle-click on the funnel → the same new window (MJT, 2026-09-23;
+            // the browsers' "open in a new tab/window" button, as for the
+            // collections). The press is swallowed (autoscroll), the open is
+            // the auxclick that follows the release.
+            const mid = (e: any) => {
+                try {
+                    if (e.button !== 1) return;
+                    const t = e.target;
+                    if (!(t && t.closest && t.closest("#zotero-tb-search-advanced-button"))) return;
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!live || live._wvDestroyed || !live._wvMultiMainOn()) return;   // native
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.type === "auxclick") live._wvAdvSearchOpenNewWindow();
+                } catch (_) {}
+            };
+            doc._wvAdvSearchMidHandler = mid;
+            doc.addEventListener("mousedown", mid, true);
+            doc.addEventListener("auxclick", mid, true);
+            // Ctrl+Shift+F / ⇧⌘F itself, when Settings says so. A capture
+            // keydown in the DEFAULT event group runs before Zotero's <key>:
+            // GlobalKeyListener sits in the system group and returns as soon
+            // as the event is default-prevented (Gecko GlobalKeyListener.cpp,
+            // read 2026-09-22). The pref is read per press -- no rewire.
+            const key = (ke: any) => {
+                try {
+                    const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                    if (!accel || !ke.shiftKey || ke.altKey || String(ke.key).toLowerCase() !== "f") return;
+                    const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!live || live._wvDestroyed || !live._getAdvSearchShortcutNewWindow()) return;
+                    ke.preventDefault();
+                    ke.stopPropagation();
+                    live._wvAdvSearchOpenNewWindow();
+                } catch (_) {}
+            };
+            doc._wvAdvSearchKeyHandler = key;
+            doc.addEventListener("keydown", key, true);
         } catch (e) {}
     }
 
@@ -1101,7 +2298,7 @@ class _PaneMixin {
                 mk("Open Advanced Search", null, () => {
                     try { win.ZoteroPane.toggleAdvancedSearchState("open"); } catch (_) {}
                 });
-                mk("Open in New Window", "Shift+Click", () => {
+                mk("Open in New Window", "Shift+Click / Middle-click", () => {
                     const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
                     if (live && !live._wvDestroyed) live._wvAdvSearchOpenNewWindow();
                 });
@@ -1114,8 +2311,375 @@ class _PaneMixin {
     /** Open a fresh main window and, once its pane is ready, open the
      *  advanced-search pane there. Bounded polls only; on a miss the new
      *  window stays open (still useful) and the failure is logged. */
+    /** Window features for the Advanced Search window. Without explicit
+     *  width/height a new main window takes the primary's persisted size AND
+     *  `sizemode=maximized` -- full screen (MJT, 2026-09-22: "should get a
+     *  similar size as the old advanced search window had"). The old dialog
+     *  sized to its content and persisted what the user gave it; this one
+     *  opens at a modest default, centred, and remembers its last size
+     *  (`weavero.advSearchWindowSize`, "WxH"). Explicit features win over the
+     *  persisted maximized state (measured: 760x560 requested -> a normal
+     *  943x592 window next to a maximized primary; 943 is the main layout's
+     *  minimum width). */
+    _wvAdvSearchWindowFeatures(): string {
+        let w = 1100, h = 720;
+        try {
+            const m = String(Zotero.Prefs.get("weavero.advSearchWindowSize") || "").match(/^(\d{3,5})x(\d{3,5})$/);
+            if (m) { w = parseInt(m[1], 10); h = parseInt(m[2], 10); }
+        } catch (_) {}
+        return "chrome,all,dialog=no,resizable=yes,centerscreen,width=" + w + ",height=" + h;
+    }
+
+    /** Collapse / expand button for the collections pane. The library's
+     *  left pane had no toggle where the item pane (sidenav) and both reader
+     *  panes have one (MJT, 2026-09-22). A `.zotero-tb-button` with Zotero's
+     *  own sidebar glyph (20/universal/sidebar.svg, the panel on the left --
+     *  the item pane's button shows it mirrored); the icon rides
+     *  `list-style-image` on the button as Zotero's toolbar buttons do.
+     *
+     *  It lives at the window's TOP-LEFT and does not move when pressed
+     *  (MJT, same day). No one toolbar spans that spot in both states -- the
+     *  collections toolbar collapses with its pane, the items toolbar only
+     *  reaches the left edge once the pane is gone -- so the button re-homes:
+     *  first in the collections toolbar while the pane is open, first in the
+     *  items toolbar while it is collapsed, and a margin measured on each
+     *  re-home matches the left offset (the collapsed splitter is 8 or 10 px
+     *  by density, the collections toolbar's inset 8). A MutationObserver on
+     *  the pane's `collapsed` attribute re-homes it whichever way the pane
+     *  was toggled (button, View -> Layout, the splitter).
+     *  Settings: Extras -> "Collapse / expand button for the collections
+     *  pane", on by default; applied per window, re-applied on pref change. */
+    _wvApplyCollectionsPaneToggle(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            let btn: any = doc.getElementById("wv-tb-toggle-collections-pane");
+            const pane = doc.getElementById("zotero-collections-pane");
+            if (!(this as any)._getCollectionsPaneToggle() || !pane) {
+                if (btn) btn.remove();
+                try { if (win._wvCollPaneObs) { win._wvCollPaneObs.disconnect(); delete win._wvCollPaneObs; } } catch (_) {}
+                return;
+            }
+            const collBar = doc.getElementById("zotero-collections-toolbar");
+            const itemsBar = doc.getElementById("zotero-items-toolbar");
+            if (!collBar || !itemsBar) return;
+            if (!btn) {
+                btn = doc.createXULElement("toolbarbutton");
+                btn.id = "wv-tb-toggle-collections-pane";
+                btn.className = "zotero-tb-button";
+                btn.setAttribute("tabindex", "-1");
+                btn.setAttribute("tooltiptext", "Toggle Collections Pane");
+                btn.style.listStyleImage = 'url("chrome://zotero/skin/20/universal/sidebar.svg")';
+                // Zotero's id-mapped buttons get `fill: currentColor` from
+                // their SCSS rule; without it the glyph's context-fill paints
+                // black in the dark theme (measured 2026-09-22).
+                btn.style.fill = "currentColor";
+                btn.addEventListener("command", () => {
+                    try {
+                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (live && !live._wvDestroyed) live._wvCollectionsPaneToggle(win);
+                    } catch (e) {}
+                });
+            }
+            const collapsed = pane.hasAttribute("collapsed");
+            const home = collapsed ? itemsBar : collBar;
+            if (btn.parentNode !== home || home.firstChild !== btn) home.insertBefore(btn, home.firstChild);
+            btn.style.marginInlineStart = "0px";
+            // Zotero's toolbar buttons keep an 8-px rhythm (`margin: 0 4px`
+            // each). New Collection carries no margin, New Item carries 4.
+            btn.style.marginInlineEnd = collapsed ? "4px" : "8px";
+            if (collapsed) {
+                // Match the open-state offset: the collections toolbar's inset
+                // (its container's padding, the pane sits at x = 0).
+                let target = 8;
+                try {
+                    const tb = doc.getElementById("zotero-toolbar-collection-tree");
+                    const v = tb && parseFloat(win.getComputedStyle(tb).paddingInlineStart);
+                    if (v != null && !isNaN(v)) target = Math.round(v);
+                } catch (_) {}
+                const fix = () => {
+                    try {
+                        btn.style.marginInlineStart = "0px";
+                        const l = Math.round(btn.getBoundingClientRect().left);
+                        if (l !== target) btn.style.marginInlineStart = (target - l) + "px";
+                    } catch (_) {}
+                };
+                fix();
+                try { win.requestAnimationFrame(fix); } catch (_) {}
+            }
+            if (!win._wvCollPaneObs) {
+                const obs = new win.MutationObserver(() => {
+                    try {
+                        const live: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                        if (live && !live._wvDestroyed) live._wvApplyCollectionsPaneToggle(win);
+                    } catch (e) {}
+                });
+                obs.observe(pane, { attributes: true, attributeFilter: ["collapsed"] });
+                win._wvCollPaneObs = obs;
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyCollectionsPaneToggle err: " + e); }
+    }
+
+    /** The collections search magnifier collapses the box on a second click.
+     *  Zotero hides the button while the box is open and, if it were shown,
+     *  a click would only focus the box; the box closes on blur when empty.
+     *  With the box on its own line (constants.ts) the button keeps its
+     *  place at the end of row 1 -- the natural spot to close from (MJT,
+     *  2026-09-22: "so that it can be collapsed back from another click at
+     *  the same position"). Capture on the toolbar, ahead of Zotero's own
+     *  listener on the button: clear the filter, blur, hide. The button
+     *  carries `open` while the box shows (Zotero's pressed look).
+     *
+     *  A REAL click is mousedown first: the box loses focus, Zotero's blur
+     *  handler closes it (when empty), and by the time `click` arrives the
+     *  box is closed -- Zotero's listener then opens it again (MJT,
+     *  2026-09-22: "a second click on the magnifier opens it again"). So a
+     *  box that blur-closed within the last 350 ms belongs to this gesture,
+     *  and the click is swallowed.
+     *
+     *  Ctrl+F / ⌘F with the focus in the collections pane opens THIS box,
+     *  not the items quick search (MJT, 2026-09-22): a capture keydown on
+     *  the window runs before Zotero's <key> (GlobalKeyListener sits in the
+     *  system group and yields once the event is default-prevented).
+     *
+     *  An empty box closes on blur (Zotero's listener, registered by
+     *  function reference at init -- so it is swapped, not wrapped). A blur
+     *  because the WINDOW lost focus -- Settings, another window -- keeps
+     *  the box: it was opened on purpose and is there again on return,
+     *  focused (MJT, 2026-09-22: toggling a setting closed it). A blur
+     *  inside the window still closes it, as Zotero does. */
+    _wvWireCollectionsSearchToggle(win: any) {
+        try {
+            const doc = win && win.document;
+            const bar = doc && doc.getElementById("zotero-collections-toolbar");
+            const field = doc && doc.getElementById("zotero-collections-search");
+            const sbtn = doc && doc.getElementById("zotero-tb-collections-search");
+            if (!bar || !field || !sbtn || doc._wvCollSearchWired) return;
+            doc._wvCollSearchWired = true;
+            const onClick = (e: any) => {
+                try {
+                    if (!(e.target && e.target.closest && e.target.closest("#zotero-tb-collections-search"))) return;
+                    if (!field.classList.contains("visible")) {
+                        // Closed by this gesture's own mousedown/blur: done.
+                        if (Date.now() - (doc._wvCollSearchClosedAt || 0) < 350) { e.stopPropagation(); e.preventDefault(); }
+                        return;   // otherwise Zotero opens it
+                    }
+                    e.stopPropagation();
+                    e.preventDefault();
+                    field.value = "";
+                    try { win.ZoteroPane.collectionsView.setFilter(""); } catch (_) {}
+                    try { field.blur(); } catch (_) {}
+                    try { win.ZoteroPane.hideCollectionSearch(); } catch (_) {}
+                } catch (_) {}
+            };
+            bar.addEventListener("click", onClick, true);
+            const onKey = (ke: any) => {
+                try {
+                    const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                    if (!accel || ke.shiftKey || ke.altKey || String(ke.key).toLowerCase() !== "f") return;
+                    const pane = doc.getElementById("zotero-collections-pane");
+                    const ae = doc.activeElement;
+                    if (!pane || !ae || !pane.contains(ae) || pane.hasAttribute("collapsed")) return;   // elsewhere: Zotero's find
+                    ke.preventDefault();
+                    ke.stopPropagation();
+                    if (field.classList.contains("visible")) { try { field.focus(); field.select && field.select(); } catch (_) {} }
+                    else sbtn.click();   // Zotero opens and focuses it
+                } catch (_) {}
+            };
+            win.addEventListener("keydown", onKey, true);
+            doc._wvCollSearchKeyHandler = onKey;   // for the guard (trusted keys cannot be made in a spec)
+            const ZP: any = win.ZoteroPane, origHide = ZP && ZP.hideCollectionSearch;
+            const onBlur = (ev: any) => {
+                try {
+                    if (!doc.hasFocus()) return;   // the window lost focus: keep the box
+                    if (origHide) origHide.call(ZP, ev);
+                } catch (_) {}
+            };
+            if (origHide) { field.removeEventListener("blur", origHide); field.addEventListener("blur", onBlur); }
+            let wasVisible = field.classList.contains("visible");
+            const obs = new win.MutationObserver(() => {
+                try {
+                    const vis = field.classList.contains("visible");
+                    if (vis) sbtn.setAttribute("open", "true");
+                    else sbtn.removeAttribute("open");
+                    if (wasVisible && !vis) doc._wvCollSearchClosedAt = Date.now();
+                    if (!wasVisible && vis) {
+                        // Zotero enables and focuses the box only 250 ms after
+                        // revealing it -- the length of its own max-width
+                        // animation, which the full-width line no longer has.
+                        // Focus at once; Zotero's later pass is a no-op (MJT,
+                        // 2026-09-22: "why the delay before the blue line").
+                        field.removeAttribute("disabled");
+                        field.classList.remove("expanding");
+                        try { field.focus(); } catch (_) {}
+                    }
+                    wasVisible = vis;
+                } catch (_) {}
+            });
+            obs.observe(field, { attributes: true, attributeFilter: ["class"] });
+            doc._wvCollSearchUnwire = () => {
+                try { bar.removeEventListener("click", onClick, true); } catch (_) {}
+                try { win.removeEventListener("keydown", onKey, true); } catch (_) {}
+                delete doc._wvCollSearchKeyHandler;
+                if (origHide) { try { field.removeEventListener("blur", onBlur); field.addEventListener("blur", origHide); } catch (_) {} }
+                try { obs.disconnect(); } catch (_) {}
+                try { sbtn.removeAttribute("open"); } catch (_) {}
+                delete doc._wvCollSearchWired; delete doc._wvCollSearchUnwire;
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvWireCollectionsSearchToggle err: " + e); }
+    }
+
+    /** Reader tab: Ctrl/Cmd+F with focus on chrome OUTSIDE the reader (the
+     *  item pane on the right, the context pane's sidenav, the tab strip...)
+     *  opens the reader's find bar. Zotero binds `key_find` to `cmd_find` in
+     *  every tab, and cmd_find selects the library's quick-search box --
+     *  invisible in a reader tab, so nothing happened (MJT, 2026-09-23);
+     *  only the Edit menu's reader entry calls toggleFindPopup. Focus INSIDE
+     *  an embedded document (the reader itself, a note editor, a preview)
+     *  is left to that document. Cascades from the Extras master. */
+    _wvWireReaderFindKey(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc || doc._wvReaderFindKeyHandler) return;
+            const route = (tabType: string, active: any, readerBrowser: any) => {
+                if (tabType !== "reader") return false;
+                if (!active || active === doc.body || active === doc.documentElement) return true;   // nothing focused: the tab itself
+                const ln = active.localName;
+                if (ln === "browser" || ln === "iframe") return false;   // an embedded document handles its own keys
+                if (readerBrowser && readerBrowser.contains && readerBrowser.contains(active)) return false;
+                return true;
+            };
+            const onKey = (ke: any) => {
+                try {
+                    const accel = Zotero.isMac ? ke.metaKey : ke.ctrlKey;
+                    if (!accel || ke.shiftKey || ke.altKey || String(ke.key).toLowerCase() !== "f") return;
+                    const p: any = (Zotero as any).Weavero && (Zotero as any).Weavero.plugin;
+                    if (!p || p._wvDestroyed || !p._getEnableVisualExtras()) return;
+                    const tabs = win.Zotero_Tabs;
+                    if (!tabs || tabs.selectedType !== "reader") return;
+                    const reader = (Zotero as any).Reader.getByTabID(tabs.selectedID);
+                    if (!reader || typeof reader.toggleFindPopup !== "function") return;
+                    if (!route("reader", doc.activeElement, reader._iframe)) return;
+                    ke.preventDefault();
+                    ke.stopPropagation();
+                    reader.toggleFindPopup({ open: true });
+                } catch (_) {}
+            };
+            win.addEventListener("keydown", onKey, true);
+            doc._wvReaderFindKeyHandler = onKey;   // for the guard (trusted keys cannot be made in a spec)
+            doc._wvReaderFindRoute = route;
+            doc._wvReaderFindUnwire = () => {
+                try { win.removeEventListener("keydown", onKey, true); } catch (_) {}
+                delete doc._wvReaderFindKeyHandler; delete doc._wvReaderFindRoute; delete doc._wvReaderFindUnwire;
+            };
+        } catch (e) { Zotero.debug("[Weavero] _wvWireReaderFindKey err: " + e); }
+    }
+
+    _wvUnwireReaderFindKey() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) { try { const d = w.document; if (d && d._wvReaderFindUnwire) d._wvReaderFindUnwire(); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    _wvUnwireCollectionsSearchToggle() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) { try { const d = w.document; if (d && d._wvCollSearchUnwire) d._wvCollSearchUnwire(); } catch (e) {} }
+        } catch (e) {}
+    }
+
+    /** View -> Layout -> Collections Pane's own logic (standalone.js
+     *  onViewMenuItemClick): splitter state + pane `collapsed`, then
+     *  updateLayoutConstraints -- so the menu's checkbox and pane.persist
+     *  stay in step with the button. */
+    _wvCollectionsPaneToggle(win: any) {
+        try {
+            const doc = win && win.document;
+            const pane = doc && doc.getElementById("zotero-collections-pane");
+            const sp = doc && doc.getElementById("zotero-collections-splitter");
+            if (!pane || !sp) return;
+            if (pane.hasAttribute("collapsed")) {
+                sp.setAttribute("state", "open");
+                pane.removeAttribute("collapsed");
+            } else {
+                sp.setAttribute("state", "collapsed");
+                wvSetBoolAttr(pane, "collapsed", true);   // the literal "true": Zotero 10 ignores toggleAttribute's "" (lib/dom.ts)
+            }
+            try { win.ZoteroPane.updateLayoutConstraints(); } catch (_) {}
+            // Re-home now (the observer does it too, a microtask later).
+            try { this._wvApplyCollectionsPaneToggle(win); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvCollectionsPaneToggle err: " + e); }
+    }
+
+    _wvTeardownCollectionsPaneToggle() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) {
+                try { const b = w.document && w.document.getElementById("wv-tb-toggle-collections-pane"); if (b) b.remove(); } catch (e) {}
+                try { if (w._wvCollPaneObs) { w._wvCollPaneObs.disconnect(); delete w._wvCollPaneObs; } } catch (e) {}
+            }
+        } catch (e) {}
+    }
+
+    /** Hide the side panes of the Advanced Search window when Settings says
+     *  so: the collections pane and the item pane collapse the way Zotero's
+     *  own View -> Layout does it (pane `collapsed` + splitter `state`, then
+     *  updateLayoutConstraints -- standalone.js onViewMenuItemClick). Run
+     *  once the window's pane init is over, since unserializePersist has set
+     *  the inherited layout by then. Managed windows persist their layout
+     *  under a per-window key (`_wvApplyPerWindowPanePersist`), so this never
+     *  reaches the primary. */
+    _wvAdvSearchApplyPaneLayout(nw: any) {
+        try {
+            if (!(this as any)._getAdvSearchWindowHidePanes()) return;
+            const doc = nw && nw.document;
+            if (!doc) return;
+            const collapse = (paneId: string, splitterId: string) => {
+                const pane = doc.getElementById(paneId), sp = doc.getElementById(splitterId);
+                if (!pane || !sp) return;
+                sp.setAttribute("state", "collapsed");
+                wvSetBoolAttr(pane, "collapsed", true);
+            };
+            collapse("zotero-collections-pane", "zotero-collections-splitter");
+            collapse("zotero-item-pane", "zotero-items-splitter");
+            try { nw.ZoteroPane.updateLayoutConstraints(); } catch (_) {}
+        } catch (e) { Zotero.debug("[Weavero] _wvAdvSearchApplyPaneLayout err: " + e); }
+    }
+
+    /** Remember the Advanced Search window's size: on resize (debounced --
+     *  Gecko fires `resize` with the paint cycle, so never while the window
+     *  is occluded) and again at unload, which sees the final size whatever
+     *  happened in between (measured 2026-09-22). Normal state only -- a
+     *  maximized size would bring the full screen back. One hook per window. */
+    _wvAdvSearchRememberSize(nw: any) {
+        if (!nw || nw._wvAdvSearchSizeWired) return;
+        nw._wvAdvSearchSizeWired = true;
+        let timer: any = null;
+        // `closed` is already true DURING unload (measured 2026-09-22), so
+        // only the debounced resize path checks it.
+        const store = (atUnload?: boolean) => {
+            try {
+                if ((!atUnload && nw.closed) || nw.windowState !== nw.STATE_NORMAL) return;
+                // INNER size: the width/height features set the content
+                // area, so storing the outer size would grow the window by
+                // its frame on every open (measured: 1240 -> 1256).
+                const w = nw.innerWidth, h = nw.innerHeight;
+                if (w >= 100 && h >= 100) Zotero.Prefs.set("weavero.advSearchWindowSize", w + "x" + h);
+            } catch (_) {}
+        };
+        nw.addEventListener("resize", () => {
+            try { if (timer) nw.clearTimeout(timer); timer = nw.setTimeout(() => store(false), 400); } catch (_) {}
+        });
+        nw.addEventListener("unload", () => store(true));
+    }
+
     async _wvAdvSearchOpenNewWindow() {
         try {
+            if (!(this as any)._wvMultiMainOn()) return;   // Multiple main windows off
             // click + synthesized command can both reach the interceptor for
             // one gesture -- collapse them.
             const now = Date.now();
@@ -1128,12 +2692,13 @@ class _PaneMixin {
             // as _wvOpenEmptyMainWindow.
             (this as any)._wvPendingDevWindow = true;
             try { (this as any)._wvClearSessionPaneState(); } catch (_) {}
+            this._wvPrimeNewWindowLanding("L" + Zotero.Libraries.userLibraryID);   // lands on My Library by design
             const { AppConstants } = ChromeUtils.importESModule(
                 "resource://gre/modules/AppConstants.sys.mjs");
             let nw: any = null;
             try {
                 nw = Services.ww.openWindow(null, AppConstants.BROWSER_CHROME_URL,
-                    "_blank", "chrome,all,dialog=no,resizable=yes", null);
+                    "_blank", this._wvAdvSearchWindowFeatures(), null);
             } catch (e) { (this as any)._wvPendingDevWindow = false; throw e; }
             const mw: any = Zotero.getMainWindow();
             const setT = (mw && mw.setTimeout) ? mw.setTimeout.bind(mw) : setTimeout;
@@ -1165,6 +2730,8 @@ class _PaneMixin {
                 }
             } catch (_) {}
             try { nw.focus(); } catch (_) {}
+            try { this._wvAdvSearchRememberSize(nw); } catch (_) {}
+            try { this._wvAdvSearchApplyPaneLayout(nw); } catch (_) {}
             try { await nw.ZoteroPane.toggleAdvancedSearchState("open"); }
             catch (e) { Zotero.debug("[Weavero] advsearch-new-window open err: " + e); }
             // FOCUS PARITY with the in-main open (native focuses the pane's
@@ -1351,6 +2918,7 @@ class _PaneMixin {
     async _wvOpenInNewMainWindow(srcWin: any, createNewGroup?: boolean) {
         const LOG = (m: string) => { try { Zotero.debug("[Weavero][NewMainWindow] " + m); } catch (e) {} };
         try {
+            if (!(this as any)._wvMultiMainOn()) return;   // Multiple main windows off
             const zp = srcWin && srcWin.ZoteroPane;
             const sel = (zp && typeof zp.getSelectedItems === "function") ? zp.getSelectedItems() : [];
             // One entry per openable item: a note (opens as a note tab) or an

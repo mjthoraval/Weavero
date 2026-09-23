@@ -24,7 +24,7 @@ describe("Weavero — Settings prefs have registered defaults", () => {
     let db;
 
     // Mirrors prefs.html: grep -oE 'preference="extensions\.zotero\.weavero\.[A-Za-z.]+"'
-    const PANE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
+    const PANE = ["advSearchShortcutNewWindow", "advSearchWindowHidePanes", "collectionsPaneToggle", "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
         "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "hideNativeAnnSelector",
         "autoHideEmptyLibraryBookmarks", "autoHideEmptyReaderBookmarks", "bookmarkPageNumbers", "compactTitleBar",
         "compactTitleBarMain", "compactTitleBarNote", "compactTitleBarReader", "debug", "defattMarkAuto",
@@ -48,7 +48,8 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         "sessionAutoReopen", "showLibraryBookmarksInReader", "windowIcons", "windowTitleGlyphs"];
 
     // Getters written as `v === undefined ? true : !!v`.
-    const DEFAULT_TRUE = ["annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
+    const DEFAULT_TRUE = ["advSearchWindowHidePanes", "collectionsPaneToggle", "advSearchShortcutNewWindow",
+        "annListShowHighlight", "annListShowImage", "annListShowInk", "annListShowNote",
         "annListShowText", "annListShowUnderline", "enableAnnPaneFilter", "hideNativeAnnSelector", "bookmarkPageNumbers",
         "enableAddRelatedMenu", "enableAddedByColors", "enableAnnSort",
         "enableAnnotationAddedBy", "enableAnnotationsCountColumn", "enableBookmarks", "enableChainBadge",
@@ -105,6 +106,36 @@ describe("Weavero — Settings prefs have registered defaults", () => {
         if (!wv._getEnableItemsTreeFilter()) this.skip();
         const asCheckbox = Zotero.Prefs.get("weavero.enableReadStatusFilter");
         assert.strictEqual(!!asCheckbox, wv._getEnableReadStatusFilter());
+    });
+
+    // A pref rename is carried over ONCE, then the old key is retired. Setting
+    // a pref to its default clears its user value, so a migration that keyed
+    // on "new pref has no user value" re-ran at every startup and flipped the
+    // Hide box off on each install (MJT, 2026-09-22). One cycle per session:
+    // a retired user-only pref cannot be re-created until restart.
+    it("the showNativeAnnSelector carry-over runs once and retires the old key", function () {
+        const wv = Zotero.Weavero.plugin;
+        if (typeof wv._wvRegisterDefaultPrefs !== "function") this.skip();
+        const PB = Services.prefs.getBranch("extensions.zotero.weavero.");
+        if (PB.prefHasUserValue("showNativeAnnSelector")) this.skip();   // a real profile choice: leave it
+        const savedHide = PB.prefHasUserValue("hideNativeAnnSelector") ? Zotero.Prefs.get("weavero.hideNativeAnnSelector") : undefined;
+        try {
+            try { Zotero.Prefs.set("weavero.showNativeAnnSelector", true); }   // "Keep" under 0.20.0
+            catch (e) { this.skip(); }                                         // retired earlier this session
+            try { PB.clearUserPref("hideNativeAnnSelector"); } catch (e) {}
+            wv._wvRegisterDefaultPrefs();
+            assert.strictEqual(Zotero.Prefs.get("weavero.hideNativeAnnSelector"), false, "Keep carried over as Hide = off");
+            assert.isFalse(PB.prefHasUserValue("showNativeAnnSelector"), "the old key is retired");
+            // The user ticks Hide back on -- its default, so the user value goes.
+            Zotero.Prefs.set("weavero.hideNativeAnnSelector", true);
+            assert.isFalse(PB.prefHasUserValue("hideNativeAnnSelector"), "default value = no user value (Gecko)");
+            wv._wvRegisterDefaultPrefs();   // the next startup
+            assert.strictEqual(Zotero.Prefs.get("weavero.hideNativeAnnSelector"), true, "stays on: the migration does not run again");
+        }
+        finally {
+            if (savedHide === undefined) { try { PB.clearUserPref("hideNativeAnnSelector"); } catch (e) {} }
+            else Zotero.Prefs.set("weavero.hideNativeAnnSelector", savedHide);
+        }
     });
 
     // The six "Annotation types shown in the pane" boxes carry the type's

@@ -2428,4 +2428,12 @@ export const PLUGIN_CSS = [
     "  outline: 1px dashed color-mix(in srgb, currentColor 55%, transparent);",
     "  outline-offset: -2px;",
     "}",
+    // Collapsed collections pane with Weavero's toggle button on: the band
+    // Zotero leaves for dragging the pane back open (8/10 px by density) is
+    // redundant -- shrink it to 1 px, as Zotero itself does for the context
+    // pane, which also has a button (_splitter.scss). The border line stays
+    // as the pane edge. The attribute is set only while the button exists.
+    "#zotero-collections-splitter[state=\"collapsed\"][wv-thin] {",
+    "  --draggable-size: 1px !important;",
+    "}",
 ].join("\n");

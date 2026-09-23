@@ -98,11 +98,42 @@ describe("Weavero — collections-pane toggle button", () => {
         await waitFor(() => btn().parentNode === doc.getElementById("zotero-collections-toolbar"), 3000, "and back");
     });
 
+    it("side-pane splitters stop at the minimum width while the setting is on; off gives Zotero's snap back", async () => {
+        const cs = doc.getElementById("zotero-collections-splitter"), is = doc.getElementById("zotero-items-splitter");
+        const xs = doc.getElementById("zotero-context-splitter");
+        const saved = Zotero.Prefs.get("weavero.paneDragNoCollapse");
+        try {
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", true);
+            await waitFor(() => !cs.hasAttribute("collapse") && !is.hasAttribute("collapse") && !xs.hasAttribute("collapse"), 3000, "snap removed on every side");
+            assert.equal(cs.getAttribute("data-wv-collapse"), "before");
+            assert.equal(is.getAttribute("data-wv-collapse"), "after");
+            assert.equal(xs.getAttribute("data-wv-collapse"), "after", "reader tabs' context pane too");
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", false);
+            await waitFor(() => cs.getAttribute("collapse") === "before" && is.getAttribute("collapse") === "after" && xs.getAttribute("collapse") === "after", 3000, "Zotero's snap back");
+            assert.isFalse(cs.hasAttribute("data-wv-collapse"));
+            // Independent of the collections-pane button.
+            Zotero.Prefs.set("weavero.paneDragNoCollapse", true);
+            Zotero.Prefs.set("weavero.collectionsPaneToggle", false);
+            await waitFor(() => !btn(), 3000, "button off");
+            assert.isFalse(cs.hasAttribute("collapse"), "still no snap without the button");
+            Zotero.Prefs.set("weavero.collectionsPaneToggle", true);
+            await waitFor(() => !!btn(), 3000, "button back");
+        }
+        finally { Zotero.Prefs.set("weavero.paneDragNoCollapse", saved === undefined ? true : !!saved); }
+    });
+
     it("follows its setting without a reload: off removes the button, on brings it back; the Extras master too", async () => {
+        // With the button, the collapsed splitter's drag band shrinks to 1 px
+        // (Zotero's own treatment of the context pane's splitter); without it,
+        // Zotero's band is the way back and keeps its width.
+        const splitter = doc.getElementById("zotero-collections-splitter");
+        assert.isTrue(splitter.hasAttribute("wv-thin"), "button on: splitter marked thin");
         Zotero.Prefs.set("weavero.collectionsPaneToggle", false);
         await waitFor(() => !btn(), 3000, "button removed on pref change");
+        assert.isFalse(splitter.hasAttribute("wv-thin"), "button off: Zotero's band back");
         Zotero.Prefs.set("weavero.collectionsPaneToggle", true);
         await waitFor(() => !!btn(), 3000, "button back on pref change");
+        assert.isTrue(splitter.hasAttribute("wv-thin"), "and thin again");
         const master = Zotero.Prefs.get("weavero.enableVisualExtras");
         try {
             Zotero.Prefs.set("weavero.enableVisualExtras", false);

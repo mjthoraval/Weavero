@@ -242,6 +242,26 @@ Annotations / Tags / Related, then:
       first column stops at 66 px, the previous one shrinks to 30 px like
       any other. Move it back → same, reversed.
 
+## Side panes: drag, collapse, reopen (after touching splitters or the reader-window item pane)
+
+Synthetic drags do not move Gecko splitters, so these are hands-only. Setting:
+*Extras → Collections pane → Resizing a side pane stops at its minimum width*.
+
+- [ ] **Setting on**: drag each pane edge hard past its minimum → it stops:
+      collections pane 200 px, item pane 357 px, the context pane of a reader
+      tab 357 px, the item pane of a reader window 357 px.
+- [ ] **Setting off**: the same drags snap each pane shut, as in Zotero. In a
+      reader window the pane and its icon column go and the reader toolbar
+      shows the toggle at its right end.
+- [ ] **Reader window, either setting**: collapse with the icon column's top
+      button → pane and column gone, toolbar toggle appears with no frame of
+      the funnel at the toolbar's end; the toolbar toggle reopens the pane;
+      the MAIN window's context pane never changes.
+- [ ] **Reader window open across a plugin update or reload** → its item pane
+      behaves as the new build (it is rebuilt in place, collapsed state kept).
+- [ ] **Collections-pane button on, pane collapsed** → the band at the left
+      edge is 1 px; button off → Zotero's 8/10 px band is back.
+
 ## Popups (after touching popup code)
 
 Run `test/popups.spec.js` first, then by hand:

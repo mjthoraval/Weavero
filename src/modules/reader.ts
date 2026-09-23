@@ -2427,7 +2427,19 @@ class _ReaderMixin {
                     Services.scriptloader.loadSubScript("chrome://zotero/content/locateMenu.js", win);
                 }
             } catch (e) { Zotero.debug("[Weavero] locateMenu load err: " + e); }
-            if (existing) { try { this._wvReaderPaneSync(win); } catch (e) {} return; }
+            // A pane built by ANOTHER build keeps that build's closures (its
+            // collapse logic, its handlers) for the window's lifetime -- a plugin
+            // update never touched it, so the dev.14 collapse fix did not reach
+            // an open window (MJT 2026-09-23, "still not"). Rebuild it in place,
+            // keeping its collapsed state.
+            let carryCollapsed: boolean | null = null;
+            if (existing && existing.dataset.wvBuild !== String(this._wvWireTag())) {
+                try { const od: any = doc.getElementById("wv-reader-item-details"); carryCollapsed = !!(od && od._collapsed); } catch (e) {}
+                try { existing.remove(); } catch (e) {}
+                try { const osp = doc.getElementById("wv-reader-pane-splitter"); if (osp) osp.remove(); } catch (e) {}
+                try { delete win._wvReaderPaneItemID; } catch (e) {}
+            }
+            else if (existing) { try { this._wvReaderPaneSync(win); } catch (e) {} return; }
             const readerVbox = doc.getElementById("zotero-reader");
             const hbox: any = readerVbox ? readerVbox.parentNode : null;
             if (!hbox) return;
@@ -2462,13 +2474,18 @@ class _ReaderMixin {
                 }
             } catch (e) {}
             let width = 360;
-            try { const v = Zotero.Prefs.get("weavero.readerItemPaneWidth"); if (typeof v === "number" && v > 240) width = v; } catch (e) {}
+            // Minimum = Zotero's own item pane: $min-width-item-pane (320) +
+            // $width-sidenav (37) -- the same <item-details> the main window
+            // never shows narrower (was 280, a Weavero figure; MJT 2026-09-23).
+            const WV_READER_PANE_MIN = 357;
+            try { const v = Zotero.Prefs.get("weavero.readerItemPaneWidth"); if (typeof v === "number" && v > 240) width = Math.max(v, WV_READER_PANE_MIN); } catch (e) {}
             const splitter = doc.createXULElement("splitter");
             splitter.id = "wv-reader-pane-splitter";
             splitter.className = "wv-reader-pane-splitter";
             const pane = doc.createXULElement("hbox");
             pane.id = "wv-reader-pane";
-            pane.style.cssText = "width:" + width + "px;min-width:280px;min-height:0;overflow:hidden;"
+            pane.dataset.wvBuild = String(this._wvWireTag());
+            pane.style.cssText = "width:" + width + "px;min-width:" + WV_READER_PANE_MIN + "px;min-height:0;overflow:hidden;"
                 + "border-inline-start:1px solid var(--fill-quinary, rgba(128,128,128,0.3));";
             const details = doc.createXULElement("item-details");
             details.id = "wv-reader-item-details";
@@ -2584,20 +2601,30 @@ class _ReaderMixin {
             // Wire the sidenav's "toggle pane" button. Its native `_collapsed`
             // delegates to a parent <item-pane>/<context-pane> (absent here), so
             // the toggle no-ops. Override `_collapsed` on this item-details so
-            // the sidenav toggle (and section-icon clicks) collapse our pane to
-            // just the sidenav strip and restore it.
+            // the sidenav toggle (and section-icon clicks) collapse our pane and
+            // restore it.
             try {
                 let collapsed = false;
+                // Collapsed = the reader tabs' pattern (zotero/zotero #3648, #5263):
+                // the pane AND its icon column go -- "content is sacred" in a
+                // reader -- and the reader toolbar shows the toggle at its right
+                // end instead (MJT 2026-09-23: "the sidenav is not collapsed
+                // properly in the reader window"). Zotero hides that toolbar
+                // toggle in standalone reader windows (5dcaf65: it has no pane
+                // there); Weavero turns it on while its own pane is collapsed.
                 const applyCollapse = () => {
                     try {
+                        // The toolbar button first, rendered synchronously: hiding the
+                        // pane first painted a frame with the funnel at the toolbar's
+                        // right end before the button pushed it left (MJT 2026-09-23).
+                        try { (this as any)._wvReaderWindowToolbarToggle(win, collapsed); } catch (e) {}
                         deck.style.display = collapsed ? "none" : "";
                         splitter.style.display = collapsed ? "none" : "";
-                        if (collapsed) {
-                            pane.style.width = ""; pane.style.minWidth = "0";
-                        } else {
+                        pane.style.display = collapsed ? "none" : "";
+                        if (!collapsed) {
                             let w = 360;
-                            try { const v = Zotero.Prefs.get("weavero.readerItemPaneWidth"); if (typeof v === "number" && v > 240) w = v; } catch (e) {}
-                            pane.style.width = w + "px"; pane.style.minWidth = "280px";
+                            try { const v = Zotero.Prefs.get("weavero.readerItemPaneWidth"); if (typeof v === "number" && v > 240) w = Math.max(v, WV_READER_PANE_MIN); } catch (e) {}
+                            pane.style.width = w + "px"; pane.style.minWidth = WV_READER_PANE_MIN + "px";
                         }
                     } catch (e) {}
                 };
@@ -2608,15 +2635,96 @@ class _ReaderMixin {
                 });
             } catch (e) {}
             this._wvReaderPaneSync(win);
-            // Persist the user's width when the splitter is released.
+            if (carryCollapsed) { try { details._collapsed = true; } catch (e) {} }
+            // On release: a drag the splitter turned into a native collapse
+            // (setting off, see _wvApplyReaderPaneSnap) becomes the pane's own
+            // collapse -- pane and icon column hidden, the toggle in the reader
+            // toolbar, as in reader tabs. Gecko
+            // toggles `collapsed` live while the drag crosses the minimum, so
+            // the verdict waits for the release. Otherwise persist the width.
             try {
                 splitter.addEventListener("mouseup", () => {
-                    try { const w = pane.getBoundingClientRect().width; if (w > 240) Zotero.Prefs.set("weavero.readerItemPaneWidth", Math.round(w)); } catch (e) {}
+                    try {
+                        if (pane.hasAttribute("collapsed")) {
+                            pane.removeAttribute("collapsed");
+                            splitter.setAttribute("state", "open");
+                            details._collapsed = true;
+                            return;
+                        }
+                        const w = pane.getBoundingClientRect().width;
+                        if (w > 240) Zotero.Prefs.set("weavero.readerItemPaneWidth", Math.round(w));
+                    } catch (e) {}
                 });
             } catch (e) {}
+            this._wvApplyReaderPaneSnap(win);
         } catch (e) {
             Zotero.debug("[Weavero] _ensureReaderWindowItemPane err: " + e);
         }
+    }
+
+    /** The reader window's item-pane splitter follows the same setting as
+     *  Zotero's library and reader-tab panes (MJT 2026-09-23: "snapping
+     *  consistent when Weavero does not implement the stop"): setting on,
+     *  a drag stops at the minimum (no `collapse`); setting off, it snaps
+     *  shut like Zotero's panes (`collapse="after"`, the pane follows the
+     *  splitter), and the release turns that into the pane's collapse to
+     *  its sidenav strip (see the mouseup handler). */
+    _wvApplyReaderPaneSnap(win: any) {
+        try {
+            const sp: any = win && win.document && win.document.getElementById("wv-reader-pane-splitter");
+            if (!sp) return;
+            const stop = !!(this as any)._getPaneDragNoCollapse();
+            if (stop) { if (sp.hasAttribute("collapse")) sp.removeAttribute("collapse"); }
+            else if (sp.getAttribute("collapse") !== "after") sp.setAttribute("collapse", "after");
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyReaderPaneSnap err: " + e); }
+    }
+
+    /** Show or hide the reader toolbar's own context-pane toggle in every
+     *  reader of a Weavero reader window, and route its click to Weavero's
+     *  pane. The reader renders the button when `showContextPaneToggle` and
+     *  not `contextPaneOpen` (reader-ui.js); its click handler is bound once
+     *  at the reader's creation to Zotero's `onToggleContextPane`, which
+     *  toggles the MAIN window's context pane (measured 2026-09-23: a click
+     *  opened the main window's pane) -- so the click is taken in the
+     *  reader's document at capture, before React's root listener. */
+    _wvReaderWindowToolbarToggle(win: any, show: boolean) {
+        try {
+            const rs: any[] = (Zotero.Reader as any)._readers || [];
+            for (const r of rs) {
+                try {
+                    const iw: any = r && r._iframeWindow;
+                    if (!iw || !(r._window === win || iw.top === win)) continue;
+                    const ir: any = r._internalReader;
+                    if (!ir || typeof ir._updateState !== "function") continue;
+                    // `showContextPaneToggle` stays on for the window's lifetime (the
+                    // button only renders while `contextPaneOpen` is false); the flip
+                    // goes through the reader's own setContextPaneOpen, which renders
+                    // synchronously (flushSync) -- the plain _updateState render lands
+                    // a frame later.
+                    const st = ir._state || {};
+                    if (!st.showContextPaneToggle) {
+                        ir._updateState((Components as any).utils.cloneInto({ showContextPaneToggle: true, contextPaneOpen: !show }, iw));
+                    }
+                    else if (!!st.contextPaneOpen !== !show) {
+                        if (typeof ir.setContextPaneOpen === "function") ir.setContextPaneOpen(!show);
+                        else ir._updateState((Components as any).utils.cloneInto({ contextPaneOpen: !show }, iw));
+                    }
+                    const idoc = iw.document;
+                    if (idoc && !idoc._wvCtxToggleWired) {
+                        idoc._wvCtxToggleWired = true;
+                        idoc.addEventListener("click", (e: any) => {
+                            try {
+                                const b = e.target && e.target.closest && e.target.closest(".toolbar .context-pane-toggle");
+                                if (!b) return;
+                                e.stopPropagation(); e.preventDefault();
+                                const d: any = win.document.getElementById("wv-reader-item-details");
+                                if (d) d._collapsed = false;
+                            } catch (er) {}
+                        }, true);
+                    }
+                } catch (e) {}
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvReaderWindowToolbarToggle err: " + e); }
     }
 
     /** Bind the reader-window item pane to the active reader's parent item.
@@ -2629,6 +2737,7 @@ class _ReaderMixin {
             const details: any = doc.getElementById("wv-reader-item-details");
             if (!details) return;
             const sidenav: any = doc.getElementById("wv-reader-item-sidenav");
+            try { (this as any)._wvReaderWindowToolbarToggle(win, !!details._collapsed); } catch (e) {}
             let itemID: any = null;
             try {
                 const wt = win._wvWT;

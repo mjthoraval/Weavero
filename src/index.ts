@@ -1102,6 +1102,20 @@ class WeaveroPlugin {
         } catch (e) { return false; }
     }
 
+    /** Dragging a side pane's splitter stops at the pane's minimum width
+     *  instead of snapping it shut, like the reader window's panes (Extras,
+     *  default ON; MJT 2026-09-23). Both library panes: collapsing stays one
+     *  click away -- the collections pane has Weavero's button, the item
+     *  pane Zotero's own sidenav toggle -- and View -> Layout. Deliberately
+     *  NOT tied to the collections-pane button. Cascades from Extras. */
+    _getPaneDragNoCollapse() {
+        try {
+            if (!this._getEnableVisualExtras()) return false;
+            const v = Zotero.Prefs.get("weavero.paneDragNoCollapse");
+            return v === undefined ? true : !!v;
+        } catch (e) { return false; }
+    }
+
     /** Whether the "Multiple main windows" feature is on (default ON). Callers
      *  still cascade from the Tabs and Windows section master. The pref dropped
      *  its historical "dev" prefix when the feature graduated from experimental
@@ -2223,6 +2237,8 @@ class WeaveroPlugin {
                 // The Advanced Search window without side panes (MJT,
                 // 2026-09-22) and the collections-pane toggle button.
                 "advSearchWindowHidePanes", "collectionsPaneToggle", "advSearchShortcutNewWindow",
+                // Side-pane splitters stop at the minimum width (2026-09-23).
+                "paneDragNoCollapse",
                 // Zotero's own colour/tag/author selector at the foot of the
                 // annotations pane is HIDDEN while the pane funnel replaces it
                 // (MJT, 2026-09-18); untick to keep it.
@@ -3392,6 +3408,14 @@ class WeaveroPlugin {
         try { (this as any)._registerReopenClosedMenu(); } catch (e) {}
         // Plugins Manager search box (Ctrl+F filter over installed plugins).
         try { (this as any)._registerPluginsSearch(); } catch (e) {}
+        // Standalone reader windows already open (a plugin update or reload):
+        // rebuild a reader-window item pane left by another build (its
+        // closures are that build's), see _ensureReaderWindowItemPane.
+        try {
+            for (const r of ((Zotero.Reader as any)._readers || []).filter((r: any) => !r.tabID && r._window)) {
+                try { (this as any)._ensureReaderWindowItemPane(r); } catch (e) {}
+            }
+        } catch (e) {}
         // Unified Weavero window store (Phase 1): flush dev-window state on
         // quit, and once the UI is ready re-open the dev windows that were
         // open last time (gated by newMainWindow + sessionAutoReopen).
@@ -3834,6 +3858,15 @@ class WeaveroPlugin {
                         try {
                             const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
                             for (const w of wins) (this as any)._wvApplyCollectionsPaneToggle(w);
+                        } catch (e) {}
+                    }
+                    if (data === "extensions.zotero.weavero.paneDragNoCollapse"
+                        || data === "extensions.zotero.weavero.enableVisualExtras") {
+                        try {
+                            const wins = Zotero.getMainWindows ? Zotero.getMainWindows() : [Zotero.getMainWindow()].filter(Boolean);
+                            for (const w of wins) (this as any)._wvApplyPaneDragNoCollapse(w);
+                            const en = Services.wm.getEnumerator("zotero:reader");
+                            while (en.hasMoreElements()) { try { (this as any)._wvApplyReaderPaneSnap(en.getNext()); } catch (e) {} }
                         } catch (e) {}
                     }
                     if (data === "extensions.zotero.weavero.enableItemsList") {
@@ -4464,6 +4497,7 @@ class WeaveroPlugin {
                 try { (this as any)._wvWireNewWindowShortcut(w); } catch (e) {}
                 try { (this as any)._wvWireAdvSearchNewWindow(w); } catch (e) {}
                 try { (this as any)._wvApplyCollectionsPaneToggle(w); } catch (e) {}
+                try { (this as any)._wvApplyPaneDragNoCollapse(w); } catch (e) {}
                 try { (this as any)._wvWireCollectionsSearchToggle(w); } catch (e) {}
                 try { (this as any)._wvWireCollectionTreeGestures(w); } catch (e) {}
                 try { (this as any)._wvWireMenuGhostWorkaround(w); } catch (e) {}
@@ -4577,6 +4611,7 @@ class WeaveroPlugin {
             try { (this as any)._wvWireNewWindowShortcut(_window); } catch (e) {}
             try { (this as any)._wvWireAdvSearchNewWindow(_window); } catch (e) {}
             try { (this as any)._wvApplyCollectionsPaneToggle(_window); } catch (e) {}
+            try { (this as any)._wvApplyPaneDragNoCollapse(_window); } catch (e) {}
             try { (this as any)._wvWireCollectionsSearchToggle(_window); } catch (e) {}
             try { (this as any)._wvWireCollectionTreeGestures(_window); } catch (e) {}
             try { (this as any)._wvWireMenuGhostWorkaround(_window); } catch (e) {}
@@ -5317,6 +5352,7 @@ class WeaveroPlugin {
         this._teardownTabContextMenu();
         try { (this as any)._wvTeardownMenubarWindowEntries(); } catch (e) {}
         try { (this as any)._wvTeardownCollectionsPaneToggle(); } catch (e) {}
+        try { (this as any)._wvTeardownPaneDragNoCollapse(); } catch (e) {}
         try { (this as any)._wvUnwireCollectionsSearchToggle(); } catch (e) {}
         try { (this as any)._wvUnwireCollectionTreeGestures(); } catch (e) {}
         try { (this as any)._wvUnwireMenuGhostWorkaround(); } catch (e) {}

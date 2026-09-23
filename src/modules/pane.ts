@@ -2349,14 +2349,66 @@ class _PaneMixin {
      *  was toggled (button, View -> Layout, the splitter).
      *  Settings: Extras -> "Collapse / expand button for the collections
      *  pane", on by default; applied per window, re-applied on pref change. */
+    /** Side-pane splitters stop at the pane's minimum width instead of
+     *  collapsing it on a drag (setting "Resizing a side pane stops at its
+     *  minimum width", MJT 2026-09-23 -- the reader window's behaviour).
+     *  Zotero declares the snap statically (zoteroPane.xhtml: `collapse=
+     *  "before"` on the collections splitter, `"after"` on the items
+     *  splitter) and never rewrites it, so the attribute is stashed and
+     *  removed while on, put back when off. Collapsing stays a click away:
+     *  Weavero's collections-pane button, Zotero's item-pane sidenav toggle,
+     *  View -> Layout -- all of them set the pane's `collapsed` directly. */
+    _wvApplyPaneDragNoCollapse(win: any) {
+        try {
+            const doc = win && win.document;
+            if (!doc) return;
+            const on = !!(this as any)._getPaneDragNoCollapse();
+            // The reader tabs' context pane too: it has its own sidenav toggle.
+            for (const id of ["zotero-collections-splitter", "zotero-items-splitter", "zotero-context-splitter"]) {
+                const sp: any = doc.getElementById(id);
+                if (!sp) continue;
+                if (on) {
+                    if (sp.hasAttribute("collapse")) {
+                        sp.setAttribute("data-wv-collapse", sp.getAttribute("collapse"));
+                        sp.removeAttribute("collapse");
+                    }
+                } else if (sp.hasAttribute("data-wv-collapse")) {
+                    sp.setAttribute("collapse", sp.getAttribute("data-wv-collapse"));
+                    sp.removeAttribute("data-wv-collapse");
+                }
+            }
+        } catch (e) { Zotero.debug("[Weavero] _wvApplyPaneDragNoCollapse err: " + e); }
+    }
+
+    _wvTeardownPaneDragNoCollapse() {
+        try {
+            const wins: any[] = (Zotero as any).getMainWindows ? (Zotero as any).getMainWindows()
+                : [Zotero.getMainWindow()].filter(Boolean);
+            for (const w of wins) {
+                for (const id of ["zotero-collections-splitter", "zotero-items-splitter", "zotero-context-splitter"]) {
+                    try {
+                        const sp: any = w.document && w.document.getElementById(id);
+                        if (sp && sp.hasAttribute("data-wv-collapse")) {
+                            sp.setAttribute("collapse", sp.getAttribute("data-wv-collapse"));
+                            sp.removeAttribute("data-wv-collapse");
+                        }
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
+    }
+
     _wvApplyCollectionsPaneToggle(win: any) {
         try {
             const doc = win && win.document;
             if (!doc) return;
             let btn: any = doc.getElementById("wv-tb-toggle-collections-pane");
             const pane = doc.getElementById("zotero-collections-pane");
+            const splitter = doc.getElementById("zotero-collections-splitter");
             if (!(this as any)._getCollectionsPaneToggle() || !pane) {
                 if (btn) btn.remove();
+                // Button off: Zotero's full-width band is the way back again.
+                try { if (splitter) splitter.removeAttribute("wv-thin"); } catch (_) {}
                 try { if (win._wvCollPaneObs) { win._wvCollPaneObs.disconnect(); delete win._wvCollPaneObs; } } catch (_) {}
                 return;
             }
@@ -2381,6 +2433,9 @@ class _PaneMixin {
                     } catch (e) {}
                 });
             }
+            // The button reopens the pane, so the collapsed splitter's drag band
+            // shrinks to 1 px (CSS in constants.ts keys on this attribute).
+            try { if (splitter && !splitter.hasAttribute("wv-thin")) splitter.setAttribute("wv-thin", "true"); } catch (_) {}
             const collapsed = pane.hasAttribute("collapsed");
             const home = collapsed ? itemsBar : collBar;
             if (btn.parentNode !== home || home.firstChild !== btn) home.insertBefore(btn, home.firstChild);
@@ -2620,6 +2675,7 @@ class _PaneMixin {
                 : [Zotero.getMainWindow()].filter(Boolean);
             for (const w of wins) {
                 try { const b = w.document && w.document.getElementById("wv-tb-toggle-collections-pane"); if (b) b.remove(); } catch (e) {}
+                try { const s = w.document && w.document.getElementById("zotero-collections-splitter"); if (s) s.removeAttribute("wv-thin"); } catch (e) {}
                 try { if (w._wvCollPaneObs) { w._wvCollPaneObs.disconnect(); delete w._wvCollPaneObs; } } catch (e) {}
             }
         } catch (e) {}
@@ -7782,6 +7838,17 @@ class _PaneMixin {
         } catch (e) {}
     }
 
+    /** The manager reopens on the Plugins list, never on the view it was
+     *  closed on: about:addons restores `extensions.ui.lastCategory` at
+     *  initialization (aboutaddons.js, "Select an initial view") and Zotero
+     *  never resets it, so a manager closed on Recent Updates came back there
+     *  (MJT 2026-09-23). Set, not cleared: the page writes the pref on every
+     *  view change, and a cleared user pref can refuse re-creation until
+     *  restart (the cleared-pref trap). */
+    _wvPMResetLastView(this: any): void {
+        try { Services.prefs.setStringPref("extensions.ui.lastCategory", "addons://list/extension"); } catch (e) {}
+    }
+
     _wvPMOpenViewerNonDialog(this: any, uri: string, options: any, orig: any, thisArg: any) {
         // Same shape as upstream, only `dialog=no` differs.
         const viewerWins = Services.wm.getEnumerator("zotero:basicViewer");
@@ -7793,6 +7860,7 @@ class _PaneMixin {
                 return existingWin;
             }
         }
+        this._wvPMResetLastView();   // a fresh manager starts on the Plugins list
         const ww: any = Components.classes["@mozilla.org/embedcomp/window-watcher;1"]
             .getService(Components.interfaces.nsIWindowWatcher);
         const arg: any = { uri, options: Object.assign({}, options, { onLoad: undefined }) };
@@ -7872,6 +7940,7 @@ class _PaneMixin {
                     const st = cd.getElementById("wv-pm-search-styles");
                     if (st) st.remove();
                     for (const m of cd.querySelectorAll(".wv-pm-meta")) m.remove();
+                    this._wvPMRemoveRecentFrame(cd);   // heading row + dropdown
                     if (cd._wvPMKeyHandler) {
                         try { cd.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
                         try { w.document.removeEventListener("keydown", cd._wvPMKeyHandler, true); } catch (e) {}
@@ -8029,6 +8098,7 @@ class _PaneMixin {
                             if (!box && m) m.insertBefore(wrap, m.firstChild);
                             apply();   // keep the filter applied as cards (re)render
                             self._wvPMDecorateCards(doc);   // version + updated meta lines
+                            self._wvPMEnsureRecentFrame(win, doc);   // Recent Updates time frame
                             // Already-open managers initialized before the
                             // recent-updates pref flip — unhide directly.
                             try {
@@ -8059,6 +8129,263 @@ class _PaneMixin {
             doc._wvPMKeyHandler = key;
             try { input.focus(); } catch (e) {}
         } catch (e) { Zotero.debug("[Weavero] _wvPMInject err: " + e); }
+    }
+
+    // ---- Plugins Manager: Recent Updates time frame ---------------------------
+    // about:addons hard-codes "recent" as the last 2 days (aboutaddons.js
+    // `UPDATES_RECENT_TIMESPAN`) and shows no hint of it. A dropdown on the
+    // "Recent Updates" heading row says how far back the list goes and lets
+    // the user pick (MJT 2026-09-23); the choice is a Weavero pref, so it
+    // holds across managers and restarts. Nothing of Zotero's is patched: the
+    // list's own `setSections` + `render` are called with our filter.
+
+    /** The time frames offered, in days; 0 = All. Zotero's own is 2. */
+    static readonly WV_PM_RECENT_FRAMES: ReadonlyArray<[number, string]> = [
+        [1, "Last day"], [2, "Last 2 days"], [7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"], [0, "All"],
+    ];
+
+    /** Days the Recent Updates list covers (0 = all); default 2 = Zotero's own. */
+    _wvPMRecentDays(this: any): number {
+        try {
+            const v = Zotero.Prefs.get("weavero.pluginsRecentUpdatesDays");
+            const n = typeof v === "number" ? v : parseInt(String(v), 10);
+            if (!Number.isFinite(n) || n < 0) return 2;
+            return _PaneMixin.WV_PM_RECENT_FRAMES.some(([d]) => d === n) ? n : 2;
+        } catch (e) { return 2; }
+    }
+
+    /** Our version of the view's section filter: same shape as aboutaddons.js
+     *  (`!addon.hidden && addon.updateDate && addon.updateDate > limit`), the
+     *  limit taken from the frame; 0 = no limit. */
+    _wvPMRecentSections(this: any, days: number): any[] {
+        const limit = days > 0 ? Date.now() - days * 86400000 : -Infinity;
+        return [{
+            headingId: "recent-updates-heading",
+            filterFn: (addon: any) => !addon.hidden && !!addon.updateDate && addon.updateDate > limit,
+        }];
+    }
+
+    /** Re-filter the list to `days` and re-render it. Idempotent per list: the
+     *  frame is stamped on the element before the async render, so the
+     *  observer's re-entries during the render see it applied. */
+    _wvPMApplyRecentFrame(this: any, list: any, days: number): void {
+        try {
+            if (!list || typeof list.setSections !== "function" || typeof list.render !== "function") return;
+            list._wvRecentDays = days;
+            list.setSections(this._wvPMRecentSections(days));
+            Promise.resolve(list.render()).catch(() => {});
+        } catch (e) { Zotero.debug("[Weavero] _wvPMApplyRecentFrame err: " + e); }
+    }
+
+    /** On the Recent Updates view, keep a heading row "Recent Updates … [Last N
+     *  days ▾]" at the top of the list's section and the list filtered to the
+     *  stored frame. Called from the injection's body observer on every
+     *  re-render, so it must be a steady-state no-op: the row is rebuilt only
+     *  when the list's render wiped it, the frame re-applied only when the
+     *  list carries another one. A view reload builds a NEW <addon-list> with
+     *  Zotero's 2-day sections; a stored 2 is left as is (same result, no
+     *  second render), anything else is re-applied once. Empty result: the
+     *  page renders no heading, so the row carries its own, or the frame
+     *  could never be widened again. */
+    _wvPMEnsureRecentFrame(this: any, win: any, doc: any): void {
+        try {
+            const list: any = doc.querySelector("addon-list");
+            if (!list) return;
+            const heading = doc.querySelector('addon-list h2.list-section-heading[data-l10n-id="recent-updates-heading"]');
+            let onRecent = !!heading;
+            if (!onRecent) {
+                try {
+                    // "addons://updates/recent" live (measured 2026-09-23); match the tail.
+                    const gvc = doc.defaultView && doc.defaultView.gViewController;
+                    onRecent = !!(gvc && /updates\/recent$/.test(String(gvc.currentViewId || "")));
+                } catch (e) {}
+                if (!onRecent) {
+                    try { onRecent = !!(list.sections && list.sections[0] && list.sections[0].headingId === "recent-updates-heading"); } catch (e) {}
+                }
+            }
+            if (!onRecent) return;
+            const days = this._wvPMRecentDays();
+            // The frame: Zotero's own render (no stamp) equals a stored 2.
+            if (list._wvRecentDays === undefined && days === 2) list._wvRecentDays = 2;
+            if (list._wvRecentDays !== days) { this._wvPMApplyRecentFrame(list, days); return; }   // the render rebuilds the DOM; back here after it
+            // The row. Host: the section node when the list has one, else the list.
+            let host: any = null;
+            try { host = (list.sections && list.sections[0] && list.sections[0].node) || null; } catch (e) {}
+            if (!host || !host.isConnected) host = list;
+            let row: any = doc.getElementById("wv-pm-recent-row");
+            if (row && !row.isConnected) row = null;
+            // A render is async: the observer can run between the wipe and the
+            // new section, when the row can only go into the list itself. Once
+            // the section exists, the row moves into it (a no-op afterwards).
+            if (row && host !== list && row.parentNode !== host) host.insertBefore(row, host.firstChild);
+            if (!row) {
+                // Own sheet, replaced on every build: the search box's sheet is
+                // under a spec that forbids fades and hover tints there. Discreet
+                // (MJT 2026-09-23, "the font is too large"): the cards' meta-line
+                // size and colour, no background until hovered; the page's button
+                // rules set 600 15px and a 32px minimum, so each is an override.
+                {
+                    const stale = doc.getElementById("wv-pm-recent-styles");
+                    if (stale) { try { stale.remove(); } catch (e) {} }
+                    const style = doc.createElement("style");
+                    style.id = "wv-pm-recent-styles";
+                    style.textContent = [
+                        "#wv-pm-recent-frame { font-size: 12px; font-weight: normal; line-height: 1.2;",
+                        "  min-height: 0; min-width: 0; height: auto; padding: 4px 8px; margin: 0; margin-inline-start: auto;",
+                        "  border-radius: 4px; background: transparent;",
+                        "  color: var(--text-color-deemphasized, color-mix(in srgb, currentColor 70%, transparent)); }",
+                        "#wv-pm-recent-frame:hover { background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; }",
+                        "#wv-pm-recent-frame:active { background: color-mix(in srgb, currentColor 14%, transparent); }",
+                        "#wv-pm-recent-frame > img { width: 10px; height: 10px; }",
+                    ].join("\n");
+                    (doc.head || doc.documentElement).appendChild(style);
+                }
+                row = doc.createElement("div");
+                row.id = "wv-pm-recent-row";
+                row.style.cssText = "display: flex; align-items: center; gap: 12px;";
+                // The control is the page's own kind: a plain <button> in the
+                // page's button style, opening a <panel-list> of <panel-item>s
+                // -- what the gear menu and the cards' "…" use. Not an HTML
+                // <select>: the basic viewer hosts no dropdown for content
+                // selects (Firefox's browser window provides one), so a select
+                // here opens nothing (MJT 2026-09-23: "I cannot click on it").
+                const btn = doc.createElement("button");
+                btn.id = "wv-pm-recent-frame";
+                btn.title = "How far back Recent Updates goes";
+                btn.setAttribute("aria-haspopup", "menu");
+                btn.setAttribute("aria-expanded", "false");
+                btn.style.cssText = "margin-inline-start: auto; display: inline-flex; align-items: center; gap: 5px;";
+                const label = doc.createElement("span");
+                label.className = "wv-pm-recent-label";
+                btn.appendChild(label);
+                const arrow = doc.createElement("img");
+                arrow.src = "chrome://global/skin/icons/arrow-down-12.svg";
+                arrow.alt = "";
+                arrow.style.cssText = "width: 12px; height: 12px; -moz-context-properties: fill; fill: currentColor;";
+                btn.appendChild(arrow);
+                const panel: any = doc.createElement("panel-list");
+                panel.setAttribute("role", "menu");
+                const self = this;
+                const setLabel = (d: number) => {
+                    try {
+                        const f = _PaneMixin.WV_PM_RECENT_FRAMES.find(([x]) => x === d);
+                        label.textContent = f ? f[1] : "Last " + d + " days";
+                        row.dataset.days = String(d);
+                        for (const it of Array.from(panel.querySelectorAll("panel-item")) as any[]) {
+                            const on = it.dataset.days === String(d);
+                            if (it.hasAttribute("checked") !== on) { if (on) it.setAttribute("checked", "true"); else it.removeAttribute("checked"); }
+                        }
+                    } catch (e) {}
+                };
+                const pick = (d: number) => {
+                    try {
+                        if (!Number.isFinite(d)) return;
+                        Zotero.Prefs.set("weavero.pluginsRecentUpdatesDays", d);
+                        setLabel(d);
+                        const l: any = doc.querySelector("addon-list");
+                        if (l) self._wvPMApplyRecentFrame(l, d);
+                    } catch (e) {}
+                };
+                for (const [d, text] of _PaneMixin.WV_PM_RECENT_FRAMES) {
+                    const it: any = doc.createElement("panel-item");
+                    it.setAttribute("type", "checkbox");
+                    it.setAttribute("role", "menuitemradio");
+                    it.dataset.days = String(d);
+                    // Zotero's own frame is named as the default in the menu (MJT
+                    // 2026-09-23); the button keeps the short label.
+                    it.textContent = d === 2 ? text + " (default)" : text;
+                    it.addEventListener("click", () => pick(d));
+                    panel.appendChild(it);
+                }
+                // Anchor = the BUTTON, passed explicitly: panel-list anchors to the
+                // event's target by default, which is the label <span> inside the
+                // button, and the menu then lines up with the text, not the
+                // control (MJT 2026-09-23, "should be better aligned").
+                // A second click CLOSES: panel-list hides itself on any mousedown
+                // outside it -- the button included -- so by the click the menu
+                // is already closed and a plain toggle reopened it (MJT
+                // 2026-09-23). Remember at mousedown whether it was open; a click
+                // that follows such a mousedown does nothing. Keyboard activation
+                // (Enter / Space) has no mousedown and toggles as before.
+                btn.addEventListener("mousedown", () => { try { btn._wvWasOpen = !!panel.open; } catch (er) {} });
+                btn.addEventListener("click", (e: any) => {
+                    try {
+                        const wasOpen = !!btn._wvWasOpen; btn._wvWasOpen = false;
+                        if (wasOpen) return;
+                        // panel-list measures the EVENT's composed target in setAlign
+                        // (not the anchor node it is handed), so a click on the label
+                        // text or on the arrow gave two different positions (MJT
+                        // 2026-09-23). Its `_savedComposedTarget` short-circuit takes
+                        // the button instead.
+                        try { e._savedComposedTarget = btn; } catch (er) {}
+                        if (typeof panel.toggle === "function") panel.toggle(e, btn);
+                    } catch (er) {}
+                });
+                // Right-aligned under the button with a small gap, whatever the
+                // page's left/right choice: its setAlign writes left/top and
+                // removes `showing`; run right after it, in the same microtask
+                // continuation, so the first paint is already at our position
+                // (the "shown" event only fires a frame later).
+                try {
+                    const origSetAlign = panel.setAlign;
+                    if (typeof origSetAlign === "function") {
+                        panel.setAlign = async function (...a: any[]) {
+                            const r = await origSetAlign.apply(this, a);
+                            try {
+                                const b = btn.getBoundingClientRect(), p = panel.getBoundingClientRect();
+                                const dx = p.right - b.right;
+                                if (Math.abs(dx) > 0.5) panel.style.left = (parseFloat(panel.style.left || "0") - dx) + "px";
+                                const below = panel.getAttribute("valign") !== "top";
+                                panel.style.top = (parseFloat(panel.style.top || "0") + (below ? 4 : -4)) + "px";
+                            } catch (er) {}
+                            return r;
+                        };
+                    }
+                } catch (er) {}
+                try {
+                    panel.addEventListener("shown", () => { try { btn.setAttribute("aria-expanded", "true"); } catch (e) {} });
+                    panel.addEventListener("hidden", () => { try { btn.setAttribute("aria-expanded", "false"); } catch (e) {} });
+                } catch (e) {}
+                row._wvPick = pick;
+                row._wvSetLabel = setLabel;
+                row.appendChild(btn);
+                row.appendChild(panel);
+                host.insertBefore(row, host.firstChild);
+            }
+            // The heading goes INTO the row (moved once); with no cards the page
+            // renders none, so the row keeps its own until one appears.
+            const btn: any = row.querySelector("#wv-pm-recent-frame");
+            const h2: any = doc.querySelector('addon-list h2.list-section-heading[data-l10n-id="recent-updates-heading"]');
+            if (h2 && h2.parentNode !== row) {
+                const own = row.querySelector("h2[data-wv-own]");
+                if (own) own.remove();
+                h2.style.marginInlineEnd = "auto";
+                row.insertBefore(h2, btn);
+            } else if (!h2 && !row.querySelector("h2")) {
+                const own = doc.createElement("h2");
+                own.className = "list-section-heading";
+                own.setAttribute("data-wv-own", "1");
+                own.textContent = "Recent Updates";
+                own.style.marginInlineEnd = "auto";
+                row.insertBefore(own, btn);
+            }
+            if (row.dataset.days !== String(days) && typeof row._wvSetLabel === "function") row._wvSetLabel(days);
+        } catch (e) { Zotero.debug("[Weavero] _wvPMEnsureRecentFrame err: " + e); }
+    }
+
+    /** Undo the heading row in a page (teardown / feature off): the heading
+     *  goes back where the page put it, the row goes. The list keeps its
+     *  current cards until its next render. */
+    _wvPMRemoveRecentFrame(this: any, doc: any): void {
+        try {
+            try { const st = doc && doc.getElementById("wv-pm-recent-styles"); if (st) st.remove(); } catch (e) {}
+            const row: any = doc && doc.getElementById("wv-pm-recent-row");
+            if (!row) return;
+            try { const p = row.querySelector("panel-list"); if (p && p.open && typeof p.hide === "function") p.hide(); } catch (e) {}
+            const h2 = row.querySelector('h2[data-l10n-id="recent-updates-heading"]');
+            if (h2) { h2.style.marginInlineEnd = ""; row.parentNode.insertBefore(h2, row); }
+            row.remove();
+        } catch (e) {}
     }
 }
 

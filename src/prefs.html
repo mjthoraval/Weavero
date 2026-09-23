@@ -694,10 +694,13 @@
       <checkbox label="Collapse / expand button for the collections pane" native="true"
         preference="extensions.zotero.weavero.collectionsPaneToggle"/>
       <html:p class="wv-desc">A button at the left end of the toolbar, like the item pane&#8217;s and the reader&#8217;s. <html:em>View &#8594; Layout</html:em> keeps working alongside it.</html:p>
+      <checkbox label="Resizing a side pane stops at its minimum width" native="true"
+        preference="extensions.zotero.weavero.paneDragNoCollapse"/>
+      <html:p class="wv-desc">Dragging the edge of a side pane stops at its narrowest width instead of snapping it shut: the collections pane, the item pane, the context pane of reader tabs and the item pane of reader windows. Collapse them with their buttons or <html:em>View &#8594; Layout</html:em>. Off, all of them snap shut as in Zotero.</html:p>
       <label><html:h3>Plugins Manager</html:h3></label>
       <checkbox label="Plugins Manager extras (search box, card details, normal window)" native="true"
         preference="extensions.zotero.weavero.enablePluginsSearch"/>
-      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize and the main window&#8217;s title-bar layout, and Recent Updates always visible.</html:p>
+      <html:p class="wv-desc">Tools → Plugins gets a search box (Ctrl+F focuses it, × clears it), cards showing author [GitHub owner] · version · last updated, a normal window with minimize/maximize and the main window&#8217;s title-bar layout, and Recent Updates always visible, with a menu on its heading for how far back it goes (last day to all; Zotero&#8217;s own stops at 2 days), remembered. The manager reopens on the Plugins list.</html:p>
     </vbox>
   </groupbox>
 
